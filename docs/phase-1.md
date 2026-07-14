@@ -880,10 +880,14 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   state, stream staging proof, billing Queue availability, replay code, replay
   proof, and final cutover. The absent Queue/replay keeps cutover false even if
   stream evidence flags are changed.
-- Next: close pre-bind owner generation and non-stream parse-failure windows,
-  then replace clone-only finalization with bounded instrumented forwarding plus
-  frozen-snapshot Queue/CAS replay, DLQ, reconcile, abort/idle-timeout taxonomy,
-  and the deployed direct/Gateway/WFP failure matrix.
+- Pre-bind owner generation is now locally closed by migration 0026. Positive-
+  reserve non-stream responses are also finalized synchronously: an intact 2xx
+  response that cannot be inspected settles at the approved reserve, while a
+  consumed or malformed response is converted to 502 and refunded before the
+  error is returned.
+- Next: prove those paths on deployed direct/Gateway/WFP transports, instrument
+  flat and zero-reserve forwarding, and complete the abort/idle-timeout,
+  Queue/DLQ, reconciliation, and provider-invoice matrix.
 
 ## 2026-07-14 Durable HTTP Billing Finalization Queue Increment
 
@@ -1000,3 +1004,31 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   in isolated staging with all Realtime writers off, establish dual-control and
   retention policy, replay provider/D1/concurrency/rollback faults, and archive
   invoice-to-ledger reconciliation. Production remains **NO-GO**.
+
+## 2026-07-14 Non-Stream Billing And Reconciliation Cutover Increment
+
+- Positive-reserve non-stream relay responses no longer depend on a detached
+  clone for financial completion. The Worker reads within the configured JSON
+  bound before returning the response and validates non-empty bodies as JSON.
+- If the original response remains forwardable but usage inspection is blocked
+  before body consumption, the client receives the provider 2xx and the frozen
+  reservation settles conservatively at `pre_consumed_quota`, with audit source
+  `unavailable_parse_failure`. If reading consumed the body or JSON is malformed,
+  the Worker returns 502 and synchronously refunds through the same owned
+  Queue/D1 finalizer. Cohere rerank now follows the same terminal rule.
+- Release Workerd regressions cover both outcomes with one provider call, one
+  terminal reservation, exact user/token/channel/request accounting, and Queue
+  finalization evidence.
+- Realtime reconciliation now has separate compiled, runtime-ready, staging-
+  verified, and cutover-ready capabilities. The v1 Realtime predicate requires
+  reconciliation cutover readiness as its 37th independent gate. The immutable
+  staging-proof flag remains false in every tracked Wrangler environment.
+- A local forced-eviction experiment with an active outbound WebSocket was
+  rejected because the DO still had active references. This matches the
+  platform boundary: accepted inbound WebSockets may hibernate, while an active
+  outgoing WebSocket keeps the DO active. Existing local eviction evidence is
+  therefore limited to the detached-upstream fail-closed path; live redeploy,
+  network interruption, provider accounting, and rollback proof remain open.
+- Production remains **NO-GO** pending credential rotation, remote migration
+  and resource readback, the signed staging fault/accounting matrix, and G1-G8
+  approval.

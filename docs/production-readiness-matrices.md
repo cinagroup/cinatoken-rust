@@ -254,8 +254,11 @@ missing, null, malformed, zero-completed, identity-less, or settlement-
 ambiguous terminal usage. These reservations remain pre-consumed and reserved;
 settlement, refund, and global orphan recovery exclude them. The admin ledger
 v2 and React panel expose only hashed fingerprints and controlled reason/state
-metadata. This is quarantine visibility, not an operator financial repair
-workflow or staging proof.
+metadata. Migration 0028 subsequently adds a default-off, revision-fenced root
+preview/apply workflow that prices only from the frozen expression. Its
+compiled, runtime-ready, staging-verified, and cutover-ready states are separate;
+`realtime_session_v1_cutover_ready` now requires the final reconciliation gate.
+No local capability is staging proof.
 
 WFP outbound correction (2026-07-14): WFP is a default-off post-admission transport,
 not an admin/public paid entry point. The central relay authenticates the token,
@@ -612,9 +615,9 @@ WFP paid-egress output must retain separate
 | Reported usage followed by read error | Workerd preserves the pre-error `10/5/15` usage, settles once, and records `usage_source=upstream` plus `completion_reason=stream_error` | Repeat on direct, AI Gateway, and WFP with real provider invoice/audit correlation |
 | Partial output followed by read error | Workerd estimates only when the charge-affecting estimate gate is enabled; exact user/token/channel deltas and one request count are asserted | Prove deployed abort, malformed, idle-timeout, and clean-EOF matrix; keep the staging gate false until approved |
 | Empty/output Responses distinction | Rust unit tests keep empty Responses at zero and estimate only after `response.output_text.delta` | Live Responses matrix with provider usage and disconnect evidence |
-| Durable finalization after response/disconnect | Partial E3/E4: default-off `BILLING_QUEUE`, per-message consumer, environment DLQ contract, D1 CAS replay, unique audit marker, and duplicate/cross-queue/poison Workerd tests are implemented. Operator reconcile/DLQ replay and deployed cancellation/race evidence are absent. | Hard NO-GO for HTTP orphan-recovery cutover until reconcile, authenticated Queue/DLQ readback, retry exhaustion, cancellation, and recovery-race evidence exist |
+| Durable finalization after response/disconnect | Partial E3/E4: default-off `BILLING_QUEUE`, per-message consumer, environment DLQ contract, D1 CAS replay, unique audit marker, duplicate/cross-queue/poison Workerd tests, and the 0025 root-step-up DLQ reconcile/requeue workflow are implemented. Deployed cancellation/race and remote resource evidence are absent. | Hard NO-GO for HTTP orphan-recovery cutover until authenticated Queue/DLQ/parking readback, retry exhaustion, alert/retention response, cancellation, D1 ambiguity, and recovery-race evidence exist |
 | Pre-bind lease ownership | Partial E3/E4: migration 0026 adds owner generation and pre-bind renewal metadata; reserve starts at generation 1, bind CAS advances to generation 2, and terminal/recovery CAS advances again. Direct, AI Gateway, and model-fallback waits renew only the unbound generation. Queue schema v2 freezes the expected generation; legacy v1 is generation-1 drain compatibility only. | Drain all active old-writer reservations before 0026, deploy with recovery/Queue gates false, and replay delayed provider headers, late bind, ambiguous reserve/bind, concurrent recovery, cancellation, Queue duplicate, and rollback in isolated staging. |
-| Buffered success clone/read failure | Not closed: a delivered 2xx can still lose usage parsing and refund | Add bounded durable usage/finalization handling before G4/G5 approval |
+| Buffered success clone/read failure | Local E3 closed for positive tiered reservations: bounded synchronous inspection forwards an intact uninspectable 2xx only after settling at the frozen reserve; consumed/malformed bodies return 502 after owned refund. Workerd proves the OpenAI and Cohere cases. | Repeat on direct, AI Gateway, and WFP with remote Queue/D1, provider invoice, body-limit, cancellation, and failure-injection evidence; separately instrument flat/zero-reserve traffic before G4/G5 approval |
 
 Normal missing usage, abnormal termination with partial evidence, and durable
 finalization replay are separate gates. A single refund-on-missing-usage rule or

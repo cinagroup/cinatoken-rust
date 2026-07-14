@@ -4533,3 +4533,59 @@ This remains local implementation evidence. Remote migration 0028, staging D1
 application, authenticated operator drills, provider traffic, alert delivery,
 rollback rehearsal, and production approval are absent. The production gate is
 default-off, Go/VPS remains authoritative, and production is **NO-GO**.
+
+## Non-Stream Billing Finalization And Reconciliation Cutover Verification (2026-07-14)
+
+Scope: the positive-reserve non-stream parse/read boundary, consumed Cohere
+rerank failures, independent 0028 staging proof, Realtime v1 cutover composition,
+and the exact Cloudflare outbound-WebSocket hibernation boundary.
+
+```powershell
+cargo test -p cinatoken-worker --lib
+# PASS; 667/667
+
+bunx vitest run --config vitest.do.config.mjs `
+  -t "settles a delivered non-stream response|refunds a consumed Cohere"
+# PASS; 2/2 selected, with Queue ACK and QuotaCoordinator terminal observation
+
+bun run check:do-lifecycle-runtime
+# PASS; release Worker/WFP builds and 31/31 Workerd tests
+
+bunx vitest run --config vitest.do.config.mjs
+# PASS; 31/31 after the Queue/DO logging quiescence fix, with no Vitest RPC
+# teardown error. Controlled poison, stream-read, and corrupt-storage fault logs
+# remain expected test evidence.
+
+bun run check:web:readiness
+# PASS; 51/51
+
+bun run check
+# PASS; Workerd 31/31, Playground 1/1, frontend build/audits, zero route gaps,
+# 28 D1 migrations, workspace tests, and Worker/WFP wasm32 checks
+
+cargo fmt --all -- --check
+git diff --check
+# PASS
+```
+
+Verified behavior:
+
+- A positive-reserve 2xx whose untouched body cannot be inspected is delivered
+  once and settles once at the frozen reserve with parse-fallback audit evidence.
+- A consumed Cohere body-limit failure returns 502 only after one owned refund;
+  user/token quota is restored, request accounting occurs once, and channel
+  usage remains zero.
+- Both runtime paths wait for the QuotaCoordinator terminal observation before
+  test storage reset, so Queue ACK is not confused with D1 result visibility.
+- Reconciliation readiness is represented in four stages. Its staging flag is
+  false in every tracked environment and is required by the 37-input Realtime
+  v1 cutover predicate.
+- Workerd rejects forced eviction while the outgoing provider WebSocket remains
+  active. No active-upstream hibernation claim is recorded. The retained local
+  regression covers only detached-upstream restore and fail-closed cleanup,
+  consistent with Cloudflare's documented inbound/outgoing socket distinction.
+
+This remains local evidence. Remote direct/AI Gateway/WFP replay, migration and
+Queue/D1 readback, provider invoice reconciliation, live network/redeploy
+interruption, alerts, rollback, credential rotation, and G1-G8 approval remain
+open. Production remains **NO-GO**.

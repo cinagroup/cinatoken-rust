@@ -3536,6 +3536,7 @@ async fn relay_endpoint_with_auth(
         estimated_prompt_tokens,
         missing_usage_estimate_enabled: relay_billing_missing_usage_estimate_enabled(&env),
         usage_locally_estimated: false,
+        non_stream_usage_parse_failed: false,
         stream_lease_heartbeat: None,
         affinity: affinity_audit,
         model_route: model_route_audit,
@@ -8262,6 +8263,26 @@ async fn complete_relay_response(
     }
 
     if let Some(context) = context {
+        if audit
+            .tiered_billing_preflight
+            .as_ref()
+            .is_some_and(|preflight| preflight.reserve_applied)
+        {
+            return complete_buffered_relay_response(
+                upstream,
+                &env,
+                &db,
+                &auth,
+                &channel,
+                &model,
+                &group,
+                &endpoint_path,
+                provider,
+                &audit,
+                max_json_response_bytes,
+            )
+            .await;
+        }
         let mut audit_response = match upstream.cloned() {
             Ok(response) => response,
             Err(err) => {
@@ -8302,6 +8323,7 @@ async fn complete_relay_response(
                 Ok(resolved) => resolved,
                 Err(err) => {
                     worker::console_error!("failed to parse non-streaming relay usage: {}", err);
+                    audit.non_stream_usage_parse_failed = true;
                     (UsageSummary::default(), false)
                 }
             };
@@ -8550,6 +8572,22 @@ async fn complete_cohere_rerank_response(
             .await;
         }
         Err(err) => {
+            record_owned_relay_audit(
+                context,
+                env,
+                db,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                502,
+                UsageSummary::default(),
+                audit,
+                upstream_request_id,
+                "Cohere rerank response read failure",
+            )
+            .await;
             return openai_error_response(
                 format!(
                     "failed to read Cohere rerank response: {}",
@@ -8828,8 +8866,10 @@ async fn complete_buffered_relay_response(
                 "skipping buffered relay usage parsing: {}",
                 err.message("relay response body")
             );
+            let mut parse_failure_audit = audit.clone();
+            parse_failure_audit.non_stream_usage_parse_failed = true;
             if let Err(err) = record_relay_audit(
-                &env,
+                env,
                 db,
                 auth,
                 channel,
@@ -8838,7 +8878,7 @@ async fn complete_buffered_relay_response(
                 endpoint_path,
                 status,
                 &UsageSummary::default(),
-                audit,
+                &parse_failure_audit,
                 upstream_request_id.as_deref(),
                 false,
             )
@@ -8850,6 +8890,27 @@ async fn complete_buffered_relay_response(
             return finalize_relay_response(upstream, &content_type);
         }
         Err(err) => {
+            if let Err(audit_err) = record_relay_audit(
+                env,
+                db,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                502,
+                &UsageSummary::default(),
+                audit,
+                upstream_request_id.as_deref(),
+                false,
+            )
+            .await
+            {
+                worker::console_error!(
+                    "failed to finalize consumed non-streaming relay response: {}",
+                    audit_err
+                );
+            }
             return openai_error_response(
                 format!(
                     "failed to read relay response: {}",
@@ -8859,6 +8920,30 @@ async fn complete_buffered_relay_response(
             );
         }
     };
+    if !body.trim().is_empty() && serde_json::from_str::<Value>(&body).is_err() {
+        if let Err(audit_err) = record_relay_audit(
+            env,
+            db,
+            auth,
+            channel,
+            model,
+            group,
+            endpoint_path,
+            502,
+            &UsageSummary::default(),
+            audit,
+            upstream_request_id.as_deref(),
+            false,
+        )
+        .await
+        {
+            worker::console_error!(
+                "failed to finalize malformed non-streaming relay response: {}",
+                audit_err
+            );
+        }
+        return openai_error_response("invalid upstream JSON response".to_string(), 502);
+    }
     let usage = usage_summary_for_provider(&body, provider, endpoint_path);
 
     if let Err(err) = record_relay_audit(
@@ -8898,6 +8983,11 @@ async fn response_usage_summary(
     let body = read_response_text_limited(response, max_json_response_bytes)
         .await
         .map_err(|err| worker::Error::RustError(err.message("relay response body")))?;
+    if !body.trim().is_empty() {
+        serde_json::from_str::<Value>(&body).map_err(|err| {
+            worker::Error::RustError(format!("invalid relay response JSON: {err}"))
+        })?;
+    }
     let usage = usage_summary_for_provider(&body, provider, endpoint_path);
     // Missing-usage estimate fallback only applies to the OpenAI chat shape
     // (the body-text extraction is OpenAI-shaped); rerank carries its own usage.
@@ -9434,6 +9524,11 @@ struct RelayAuditContext {
     /// missing-usage fallback fired) rather than reported by the upstream. Drives
     /// the `usage_source` audit field (Go `ContextKeyLocalCountTokens`).
     usage_locally_estimated: bool,
+    /// The client-visible non-stream response could not be safely inspected for
+    /// usage. Positive tiered reservations settle at the already approved
+    /// pre-consumption instead of being misclassified as missing usage and
+    /// refunded after the provider result was delivered.
+    non_stream_usage_parse_failed: bool,
     /// Bounded D1 lease-renewal evidence for positive-reserve SSE requests.
     /// This is populated by the cloned stream branch and never contains the
     /// reservation key or account identity.
@@ -9576,7 +9671,9 @@ async fn record_relay_audit(
     let request_contract_usage =
         usage_less_request_contract_applies(endpoint_path, reported_usage_present);
     let usage_present = reported_usage_present || request_contract_usage;
-    let usage_source = if audit.usage_locally_estimated {
+    let usage_source = if audit.non_stream_usage_parse_failed {
+        "unavailable_parse_failure"
+    } else if audit.usage_locally_estimated {
         "local_estimate"
     } else if request_contract_usage {
         "request_contract"
@@ -9604,6 +9701,9 @@ async fn record_relay_audit(
             "wfp_worker": audit.model_route.wfp_worker,
         },
     });
+    if audit.non_stream_usage_parse_failed {
+        set_json_bool(&mut other, "non_stream_usage_parse_failed", true);
+    }
     let mut admin_info = serde_json::Map::new();
     if let Some(affinity_context) = audit.affinity.as_ref() {
         admin_info.insert(
@@ -9667,7 +9767,75 @@ async fn record_relay_audit(
             );
             set_json_string(&mut other, "billing_ledger_outcome", "pending".to_string());
         }
-        if upstream_status < 400 && usage_present {
+        if upstream_status < 400 && audit.non_stream_usage_parse_failed && preflight.reserve_applied
+        {
+            let finalization_reason = "non_stream_parse_fallback_settlement";
+            let fallback_settlement = if billing_queue_available {
+                PendingRelayBillingFinalization::settlement(
+                    preflight,
+                    channel.id,
+                    group,
+                    preflight.pre_consumed_quota,
+                    finalization_reason,
+                )
+                .map(|pending| {
+                    pending_billing_finalization = Some(pending);
+                })
+            } else {
+                match preflight.reservation_key.as_deref() {
+                    Some(reservation_key) => {
+                        let outcome = crate::d1_repositories::settle_relay_billing_reservation(
+                            db,
+                            reservation_key,
+                            tiered_billing_owner_generation(preflight)?,
+                            channel.id,
+                            group,
+                            preflight.pre_consumed_quota,
+                            finalization_reason,
+                            now,
+                        )
+                        .await?;
+                        require_observed_relay_billing_finalization(
+                            env,
+                            db,
+                            reservation_key,
+                            outcome,
+                            "non-stream parse fallback settlement",
+                        )
+                        .await
+                    }
+                    None => Err(worker::Error::RustError(
+                        "relay billing reservation key is missing".to_string(),
+                    )),
+                }
+            };
+            match fallback_settlement {
+                Ok(()) => {
+                    quota = preflight.pre_consumed_quota;
+                    billing_applied = true;
+                    billing_resolved = true;
+                    request_count_owned_by_ledger = true;
+                    set_json_bool(&mut other, "billing_pending", false);
+                    set_json_string(&mut other, "billing_ledger_outcome", "settled".to_string());
+                    set_json_value(
+                        &mut other,
+                        "tiered_billing_parse_fallback",
+                        json!({
+                            "reason": finalization_reason,
+                            "final_quota": preflight.pre_consumed_quota,
+                            "applied": true,
+                        }),
+                    );
+                }
+                Err(err) => {
+                    set_json_string(
+                        &mut other,
+                        "tiered_billing_shadow_error",
+                        format!("non-stream parse fallback settle failed: {err}"),
+                    );
+                }
+            }
+        } else if upstream_status < 400 && usage_present {
             match tiered_billing_settlement(preflight, usage, &audit.billing_request_input) {
                 Ok(outcome) => {
                     let final_quota = outcome.final_quota;

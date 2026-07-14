@@ -156,7 +156,9 @@ and no in-memory bridge, the DO makes no provider reconnect, emits
 metadata-only `upstream_unavailable`, closes with 1011, atomically refunds the
 segment-owned D1 reservation once, restores user/token quota once, clears the
 private lease, and gives the next client a new segment. This deliberately does
-not claim outbound WebSocket hibernation. Reservation lease configuration now
+not claim active-outbound WebSocket hibernation or eviction. Cloudflare does not
+hibernate outgoing WebSockets; while one is active it keeps the DO resident.
+Reservation lease configuration now
 defaults to and rejects values below 900 seconds, covering the 840-second
 bridge cap plus a mandatory 60-second safety margin. G7 remains blocked on
 remote evidence, a global D1 orphan scan, and per-reservation owner/outcome
@@ -554,12 +556,14 @@ by clearing the flag, no redeploy required.
   `serialize_attachment`. Settle on close with the **Go parity formula**
   (`source-token-estimation-parity.md:24,89-90`): request-time estimate = 0;
   input = `int(duration/60*100/0.06)`, output = `int(duration/60*200/0.24)`.
-- **Honest hibernation semantics (§5.3):** the accepted client socket survives
-  hibernation; the outbound `connect`ed upstream socket is a transient JS handle
-  that does **not**. OpenAI Realtime is server-side stateful, so an evicted DO
-  cannot resume the upstream — reconnect opens a fresh session. Hibernation
-  therefore buys idle-*client* survival within an active bridge, **not**
-  free resurrection of a long-idle session. If session-resume fidelity is
+- **Honest hibernation semantics (§5.3):** the accepted client socket can
+  survive hibernation. The outgoing provider socket does **not** hibernate; an
+  active outgoing WebSocket keeps the DO active and prevents eviction. Once the
+  outgoing bridge is detached, a later restored inbound attachment has no
+  resumable OpenAI session and fails closed; reconnect opens a fresh provider
+  session. Hibernation therefore preserves idle client attachments only when no
+  active outgoing reference prevents it, not the live provider bridge. If
+  session-resume fidelity is
   required, escalate to the plan `§21.4` Container bridge with the DO for
   idle/accounting only (recorded per M0).
 - **Files:** `crates/realtime/src/lib.rs` (new DO), `crates/worker/src/{lib,relay}.rs`,
@@ -686,11 +690,13 @@ Additional decisions forced by ground truth:
 ### 5.3 The realtime hibernation caveat, stated plainly
 cinaVibeSDK hibernates a DO whose *entire* state is client-owned and
 reconstructable. OpenAI Realtime is not: the upstream holds authoritative,
-non-serializable session state. So the Rust translation keeps Paradigm A's
-structure (persistent `RealtimeState`, transient `upstream_ws`, reconnect-masks-
-eviction) but is explicit that eviction **ends** the upstream session. This is the
-one place the paradigm does not transfer 1:1, and the plan says so rather than
-shipping a silent correctness gap.
+non-serializable session state. Cloudflare hibernates accepted inbound sockets,
+not outgoing sockets; an active outgoing socket keeps the DO resident (see the
+[Durable Objects WebSocket best practices](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)). The Rust
+translation therefore persists only reconstructable client/accounting state.
+After the outgoing reference is gone, restoration cannot resume that provider
+session and must fail closed or establish a fresh session through normal
+admission. This is the one place the paradigm does not transfer 1:1.
 
 ---
 
@@ -910,12 +916,15 @@ per request. Its target ownership is:
    coordination and hibernation. Their lease/retry collections are not a generic
    HTTP settlement service.
 
-The current clone plus `waitUntil()` parser still owns usage observation, but
-reservation-backed terminal decisions can now cross the dedicated default-off
-Queue. Producer failure uses the same idempotent D1 finalizer. This closes local
-consumer/replay mechanics, not response-lifetime proof: pre-bind ownership,
-client cancellation, buffered parse failure, remote Queue/DLQ readback, retry
-exhaustion, parking retention alerts, and deployed reconcile proof remain open.
+Streaming clone parsing still owns SSE usage observation. Positive-reserve
+non-stream responses now use bounded synchronous inspection: a still-forwardable
+uninspectable 2xx settles at the frozen reserve, while consumed/malformed bodies
+return 502 after owned refund. Reservation-backed terminal decisions cross the
+dedicated default-off Queue, with the same idempotent D1 fallback on producer
+failure. This closes local pre-bind ownership, positive-reserve buffered parse,
+consumer, and replay mechanics; client cancellation, remote Queue/DLQ readback,
+retry exhaustion, parking retention alerts, direct/Gateway/WFP accounting, and
+deployed reconcile proof remain open.
 Platform capabilities keep HTTP recovery
 cutover false until every runtime and evidence gate is approved.
 

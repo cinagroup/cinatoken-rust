@@ -140,6 +140,11 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   realtime_session_upstream_bridge_compiled: false,
   realtime_session_billing_settlement_compiled: false,
   realtime_session_billing_settlement_batch_compiled: false,
+  realtime_session_billing_reconciliation_compiled: false,
+  realtime_session_billing_reconciliation_enabled: false,
+  realtime_session_billing_reconciliation_ready: false,
+  realtime_session_billing_reconciliation_staging_verified: false,
+  realtime_session_billing_reconciliation_cutover_ready: false,
   realtime_session_platform_smoke_ready: false,
   realtime_session_billing_settlement_staging_smoke_ready: false,
   realtime_session_v1_cutover_ready: false,
@@ -177,11 +182,15 @@ describe('Cloudflare platform readiness headline', () => {
       'quota-coordinator-foundation': 'QuotaCoordinator foundation',
       'quota-coordinator-relay-observer': 'QuotaCoordinator relay observer',
       'realtime-implementation': 'Realtime',
+      'realtime-billing-reconciliation-implementation':
+        'Realtime billing reconciliation',
       'task-runner-implementation': 'TaskRunner',
       'ai-gateway-runtime': 'AI Gateway',
       'ai-gateway-fallback-runtime': 'AI Gateway fallback',
       'wfp-tenant-runtime': 'WFP tenant',
       'realtime-runtime': 'Realtime',
+      'realtime-billing-reconciliation-runtime':
+        'Realtime billing reconciliation',
       'task-runner-runtime': 'TaskRunner',
       'quota-coordinator-binding': 'QuotaCoordinator binding',
       'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
@@ -195,6 +204,8 @@ describe('Cloudflare platform readiness headline', () => {
       'wfp-tenant-smoke': 'WFP tenant smoke',
       'wfp-relay-authority-smoke': 'WFP relay authority smoke',
       'realtime-smoke': 'Realtime smoke',
+      'realtime-billing-reconciliation-staging-proof':
+        'Realtime billing reconciliation proof',
       'task-runner-replay': 'TaskRunner replay',
       'quota-coordinator-staging-bake': 'QuotaCoordinator staging bake',
       'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
@@ -210,6 +221,8 @@ describe('Cloudflare platform readiness headline', () => {
       'quota-coordinator-write-authority': 'QuotaCoordinator write authority',
       'quota-coordinator-cutover': 'QuotaCoordinator cutover',
       'realtime-v1-cutover': 'Realtime v1',
+      'realtime-billing-reconciliation-cutover':
+        'Realtime billing reconciliation',
     })
   })
 
@@ -285,6 +298,7 @@ describe('Cloudflare platform readiness headline', () => {
         realtime_session_upstream_bridge_compiled: true,
         realtime_session_billing_settlement_compiled: true,
         realtime_session_billing_settlement_batch_compiled: true,
+        realtime_session_billing_reconciliation_compiled: true,
         task_runner_do_available: true,
         task_runner_do_foundation_compiled: true,
         task_runner_alarm_contract_compiled: true,
@@ -664,6 +678,7 @@ describe('Cloudflare platform readiness headline', () => {
         'blocked',
         'blocked',
         'blocked',
+        'blocked',
       ]
     )
   })
@@ -1007,6 +1022,7 @@ describe('Cloudflare platform readiness headline', () => {
         relay_billing_orphan_recovery_cutover_ready: true,
         relay_billing_prebind_owner_generation_cutover_ready: true,
         realtime_session_v1_cutover_ready: true,
+        realtime_session_billing_reconciliation_cutover_ready: true,
         quota_coordinator_contract_version: 1,
         quota_coordinator_do_available: true,
         quota_coordinator_shadow_enabled: true,
@@ -1034,7 +1050,52 @@ describe('Cloudflare platform readiness headline', () => {
 
     assert.equal(getStage(blocked, 'cutover').complete, false)
     assert.equal(getStage(ready, 'cutover').complete, true)
-    assert.equal(getStage(ready, 'cutover').readyCount, 7)
+    assert.equal(getStage(ready, 'cutover').readyCount, 8)
+  })
+
+  test('keeps Realtime billing reconciliation split across all four production stages', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        realtime_session_billing_reconciliation_compiled: true,
+        realtime_session_billing_reconciliation_enabled: true,
+        realtime_session_billing_reconciliation_ready: true,
+        realtime_session_billing_reconciliation_staging_verified: true,
+        realtime_session_billing_reconciliation_cutover_ready: true,
+      })
+    )
+
+    assert.equal(
+      getSignalStatus(
+        summary,
+        'implementation',
+        'realtime-billing-reconciliation-implementation'
+      ),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(
+        summary,
+        'configuration',
+        'realtime-billing-reconciliation-runtime'
+      ),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(
+        summary,
+        'smoke',
+        'realtime-billing-reconciliation-staging-proof'
+      ),
+      'verified'
+    )
+    assert.equal(
+      getSignalStatus(
+        summary,
+        'cutover',
+        'realtime-billing-reconciliation-cutover'
+      ),
+      'ready'
+    )
   })
 
   test('keeps relay owner generation split across all four production stages', () => {

@@ -12,7 +12,7 @@ import {
   SELF,
   waitOnExecutionContext,
 } from "cloudflare:test";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   queue as runQueue,
   scheduled as runScheduled,
@@ -33,9 +33,19 @@ const relayStreamErrorModel = "gpt-runtime-stream-error";
 const relayStreamErrorToken = "sk-runtime-stream-error-billing";
 const relayStreamUsageErrorModel = "gpt-runtime-stream-usage-error";
 const relayStreamUsageErrorToken = "sk-runtime-stream-usage-error-billing";
+const relayNonStreamAuditLimitModel = "gpt-runtime-non-stream-audit-limit";
+const relayNonStreamAuditLimitToken = "sk-runtime-non-stream-audit-limit";
+const relayCohereConsumedLimitModel = "rerank-runtime-cohere-consumed-limit";
+const relayCohereConsumedLimitToken = "sk-runtime-cohere-consumed-limit";
 
 afterEach(async () => {
   await reset();
+});
+
+afterAll(async () => {
+  // Controlled Queue/DO failures can finish logging after their assertions.
+  // Keep Vitest's RPC channel alive until those runtime tasks have quiesced.
+  await delay(1_000);
 });
 
 describe("Rust Durable Object lifecycle contracts", () => {
@@ -1597,6 +1607,155 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(duplicateReplay.status).toBe(409);
   }, 30_000);
 
+  it("settles a delivered non-stream response at the reserve when usage inspection is unavailable", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayNonStreamAuditLimitModel,
+      token: relayNonStreamAuditLimitToken,
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const response = await SELF.fetch(
+      "https://cinatoken.test/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${relayNonStreamAuditLimitToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: relayNonStreamAuditLimitModel,
+          stream: false,
+          messages: [{ role: "user", content: "runtime bounded response" }],
+          max_completion_tokens: 20,
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      choices: [
+        { message: { role: "assistant", content: "bounded result" } },
+      ],
+    });
+
+    const settled = await waitForRelayTerminalByModel(
+      relayNonStreamAuditLimitModel,
+      "settled",
+    );
+    expect(settled.reservation.pre_consumed_quota).toBeGreaterThan(0);
+    expect(settled.reservation).toMatchObject({
+      status: "settled",
+      final_quota: settled.reservation.pre_consumed_quota,
+      finalization_reason: "non_stream_parse_fallback_settlement",
+      request_accounted: 1,
+    });
+    expect(settled.user).toMatchObject({
+      quota: account.userQuota - settled.reservation.pre_consumed_quota,
+      used_quota: settled.reservation.pre_consumed_quota,
+      request_count: 1,
+    });
+    expect(settled.token).toMatchObject({
+      remain_quota:
+        account.tokenRemainQuota - settled.reservation.pre_consumed_quota,
+      used_quota: settled.reservation.pre_consumed_quota,
+    });
+    expect(settled.channel.used_quota).toBe(
+      settled.reservation.pre_consumed_quota,
+    );
+    expect(settled.log).toMatchObject({
+      usageSource: "unavailable_parse_failure",
+      nonStreamUsageParseFailed: true,
+      parseFallbackReason: "non_stream_parse_fallback_settlement",
+      finalizationTransport: "billing_queue",
+    });
+    await expect(providerState()).resolves.toMatchObject({
+      count: 1,
+      path: "/v1/chat/completions",
+      nonStreamAuditLimit: true,
+    });
+    const observedSettlement = await waitForQuotaCoordinatorTerminal(
+      1,
+      "settle",
+    );
+    expect(observedSettlement).toMatchObject({
+      reserve_count: 1,
+      settle_count: 1,
+      active_reservations: 0,
+      terminal_reservations: 1,
+    });
+    await delay(2_000);
+  }, 30_000);
+
+  it("refunds a consumed Cohere rerank parse failure before returning 502", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayCohereConsumedLimitModel,
+      token: relayCohereConsumedLimitToken,
+      channelType: 34,
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const response = await SELF.fetch("https://cinatoken.test/v1/rerank", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${relayCohereConsumedLimitToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: relayCohereConsumedLimitModel,
+        query: "runtime query",
+        documents: ["first", "second"],
+        top_n: 1,
+      }),
+    });
+    expect(response.status).toBe(502);
+
+    const refunded = await waitForRelayTerminalByModel(
+      relayCohereConsumedLimitModel,
+      "refunded",
+    );
+    expect(refunded.reservation.pre_consumed_quota).toBeGreaterThan(0);
+    expect(refunded.reservation).toMatchObject({
+      status: "refunded",
+      final_quota: 0,
+      finalization_reason: "upstream_error",
+      request_accounted: 1,
+    });
+    expect(refunded.user).toMatchObject({
+      quota: account.userQuota,
+      used_quota: 0,
+      request_count: 1,
+    });
+    expect(refunded.token).toMatchObject({
+      remain_quota: account.tokenRemainQuota,
+      used_quota: 0,
+    });
+    expect(refunded.channel.used_quota).toBe(0);
+    expect(refunded.log).toMatchObject({
+      usageSource: "upstream",
+      finalizationTransport: "billing_queue",
+    });
+    await expect(providerState()).resolves.toMatchObject({
+      count: 1,
+      path: "/v1/rerank",
+      cohereConsumedLimit: true,
+    });
+    const observedRefund = await waitForQuotaCoordinatorTerminal(1, "refund");
+    expect(observedRefund).toMatchObject({
+      reserve_count: 1,
+      refund_count: 1,
+      active_reservations: 0,
+      terminal_reservations: 1,
+    });
+    await delay(2_000);
+  }, 30_000);
+
   it("renews a selected HTTP SSE billing lease without changing quota ownership", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const account = await seedStreamingRelayBillingGateway();
@@ -2506,6 +2665,7 @@ async function seedAuthenticatedRealtimeGateway({
 async function seedStreamingRelayBillingGateway({
   model = relayStreamModel,
   token = relayStreamToken,
+  channelType = 1,
 } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const userQuota = 1_000_000;
@@ -2532,10 +2692,10 @@ async function seedStreamingRelayBillingGateway({
         (id, type, "key", status, name, weight, created_time, base_url, other,
          balance, models, "group", used_quota, model_mapping,
          status_code_mapping, priority, auto_ban, other_info, channel_info, settings)
-       VALUES (43, 1, 'runtime-stream-upstream-secret', 1, 'runtime stream upstream',
+       VALUES (43, ?3, 'runtime-stream-upstream-secret', 1, 'runtime stream upstream',
          1000, ?1, 'https://realtime-provider.invalid', '', 0, ?2, 'default',
          0, NULL, '', 1000, 0, '{}', '{}', '')`,
-    ).bind(now, model),
+    ).bind(now, model, channelType),
     env.DB.prepare(
       `INSERT INTO abilities
         (group_name, model, channel_id, enabled, priority, weight)
@@ -2741,6 +2901,72 @@ async function waitForRelayBillingReservation(modelName) {
   throw new Error(`relay reservation was not bound: ${JSON.stringify(state)}`);
 }
 
+async function waitForRelayTerminalByModel(modelName, expectedStatus) {
+  const deadline = Date.now() + 5_000;
+  let state;
+  while (Date.now() < deadline) {
+    const reservation = await env.DB.prepare(
+      `SELECT reservation_key, status, pre_consumed_quota, final_quota,
+              finalization_reason, request_accounted
+       FROM relay_billing_reservations
+       WHERE model_name = ?1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+      .bind(modelName)
+      .first();
+    const reservationKey = reservation?.reservation_key;
+    const [user, token, channel, log] = await Promise.all([
+      env.DB.prepare(
+        "SELECT quota, used_quota, request_count FROM users WHERE id = 1",
+      ).first(),
+      env.DB.prepare(
+        "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
+      ).first(),
+      env.DB.prepare("SELECT used_quota FROM channels WHERE id = 43").first(),
+      reservationKey
+        ? env.DB.prepare(
+            `SELECT other, billing_finalization_event_id
+             FROM logs WHERE other LIKE ?1 ORDER BY id DESC LIMIT 1`,
+          )
+            .bind(`%${reservationKey}%`)
+            .first()
+        : Promise.resolve(null),
+    ]);
+    let usageSource = null;
+    let nonStreamUsageParseFailed = false;
+    let parseFallbackReason = null;
+    let finalizationTransport = null;
+    if (typeof log?.other === "string" && log.other.length > 0) {
+      const other = JSON.parse(log.other);
+      usageSource = other?.usage_source ?? null;
+      nonStreamUsageParseFailed =
+        other?.non_stream_usage_parse_failed === true;
+      parseFallbackReason =
+        other?.tiered_billing_parse_fallback?.reason ?? null;
+      finalizationTransport = other?.billing_finalization_transport ?? null;
+    }
+    state = {
+      reservation,
+      user,
+      token,
+      channel,
+      log: {
+        usageSource,
+        nonStreamUsageParseFailed,
+        parseFallbackReason,
+        finalizationTransport,
+        finalizationEventId: log?.billing_finalization_event_id ?? null,
+      },
+    };
+    if (reservation?.status === expectedStatus && log) return state;
+    await delay(10);
+  }
+  throw new Error(
+    `relay reservation did not reach ${expectedStatus}: ${JSON.stringify(state)}`,
+  );
+}
+
 async function waitForRelayLeaseRenewal(reservationKey, previousLease) {
   const deadline = Date.now() + 10_000;
   let state;
@@ -2835,6 +3061,29 @@ async function waitForQuotaCoordinatorSummary(tokenId, observationCount) {
   }
   throw new Error(
     `QuotaCoordinator did not reach ${observationCount} observations: ${JSON.stringify(summary)}`,
+  );
+}
+
+async function waitForQuotaCoordinatorTerminal(tokenId, terminalKind) {
+  const countField = `${terminalKind}_count`;
+  const deadline = Date.now() + 5_000;
+  let summary;
+  while (Date.now() < deadline) {
+    const result = await quotaCoordinatorStatus(
+      quotaCoordinatorStub(tokenId),
+      tokenId,
+    );
+    summary = result.status;
+    if (
+      Number(summary[countField] ?? 0) >= 1 &&
+      summary.active_reservations === 0
+    ) {
+      return summary;
+    }
+    await delay(10);
+  }
+  throw new Error(
+    `QuotaCoordinator did not observe ${terminalKind}: ${JSON.stringify(summary)}`,
   );
 }
 

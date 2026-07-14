@@ -1778,10 +1778,12 @@ Run only after credential rotation, remote migration 0028 readback, and named
 billing plus SRE reviewers. Keep Go/VPS authoritative and all unrelated
 Realtime writer/recovery gates false.
 
-1. Deploy with `REALTIME_BILLING_RECONCILIATION_ENABLED=false`. Require 28
-   exact migrations, 30 tables, 137 checked columns, 27 indexes, compiled=true,
-   enabled=false, and ready=false. Prove apply returns fail-closed while queue
-   and root preview remain no-store.
+1. Deploy with `REALTIME_BILLING_RECONCILIATION_ENABLED=false` and
+   `REALTIME_BILLING_RECONCILIATION_STAGING_VERIFIED=false`. Require 28 exact
+   migrations, 30 tables, 137 checked columns, 27 indexes, compiled=true,
+   enabled=false, staging-verified=false, reconciliation-cutover=false, and
+   v1-cutover=false. Prove apply returns fail-closed while queue and root
+   preview remain no-store.
 2. Create isolated missing/null/malformed usage fixtures. Queue pagination must
    be stable across equal timestamps and expose no reservation key, session,
    bridge segment, provider response identity, user/token/channel identity,
@@ -1804,6 +1806,13 @@ Realtime writer/recovery gates false.
    cross that owner, and the queue contains only unresolved rows. Archive only
    redacted ids/digests, controlled reasons, aggregate deltas, alerts, and
    reviewer signatures.
+7. Keep the staging-proof flag false while evidence is reviewed. Set
+   `REALTIME_BILLING_RECONCILIATION_STAGING_VERIFIED=true` only in a new reviewed
+   candidate after billing and SRE sign the complete operator, race, D1,
+   provider-invoice, alert, retention, cleanup, and rollback packet. Require
+   reconciliation cutover to become true only when compiled, enabled, exact-D1,
+   and staging proof are all true; the full Realtime v1 predicate must still
+   require every other independent gate.
 
 Any raw financial identity leak, client-supplied pricing authority, missing
 audit, unexplained quota delta, second provider charge, partial D1 commit, or

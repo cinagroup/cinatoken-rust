@@ -38,6 +38,7 @@ use crate::quota_coordinator::{
 };
 use crate::realtime_billing_reconcile::{
     realtime_billing_reconciliation_compiled, realtime_billing_reconciliation_enabled,
+    REALTIME_BILLING_RECONCILIATION_STAGING_VERIFIED_ENV,
 };
 use crate::realtime_session::{
     realtime_billing_global_orphan_recovery_compiled, realtime_billing_orphan_recovery_enabled,
@@ -448,6 +449,8 @@ struct PlatformCapabilities {
     realtime_session_billing_reconciliation_compiled: bool,
     realtime_session_billing_reconciliation_enabled: bool,
     realtime_session_billing_reconciliation_ready: bool,
+    realtime_session_billing_reconciliation_staging_verified: bool,
+    realtime_session_billing_reconciliation_cutover_ready: bool,
     realtime_session_billing_settlement_staging_smoke_compiled: bool,
     realtime_session_billing_settlement_staging_smoke_enabled: bool,
     realtime_session_billing_settlement_staging_smoke_ready: bool,
@@ -954,6 +957,11 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_reconciliation_compiled
             && realtime_session_billing_reconciliation_enabled
             && d1_migration_ready;
+    let realtime_session_billing_reconciliation_staging_verified =
+        env_flag(&env, REALTIME_BILLING_RECONCILIATION_STAGING_VERIFIED_ENV);
+    let realtime_session_billing_reconciliation_cutover_ready =
+        realtime_session_billing_reconciliation_ready
+            && realtime_session_billing_reconciliation_staging_verified;
     let realtime_session_billing_settlement_staging_smoke_compiled =
         realtime_settlement_staging_smoke_compiled();
     let realtime_session_billing_settlement_staging_smoke_enabled =
@@ -1018,6 +1026,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_platform_header_boundary_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
+        realtime_session_billing_reconciliation_cutover_ready,
     );
     let task_poller_config = task_poller_config_from_env(&env);
     let task_poller_timeout_sweep_compiled = task_timeout_sweep_compiled();
@@ -1231,6 +1240,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_reconciliation_compiled,
         realtime_session_billing_reconciliation_enabled,
         realtime_session_billing_reconciliation_ready,
+        realtime_session_billing_reconciliation_staging_verified,
+        realtime_session_billing_reconciliation_cutover_ready,
         realtime_session_billing_settlement_staging_smoke_compiled,
         realtime_session_billing_settlement_staging_smoke_enabled,
         realtime_session_billing_settlement_staging_smoke_ready,
@@ -3230,6 +3241,7 @@ fn is_realtime_session_v1_cutover_ready(
     platform_header_boundary_compiled: bool,
     upstream_bridge_compiled: bool,
     billing_settlement_compiled: bool,
+    billing_reconciliation_cutover_ready: bool,
 ) -> bool {
     do_available
         && v1_gate_enabled
@@ -3267,6 +3279,7 @@ fn is_realtime_session_v1_cutover_ready(
         && platform_header_boundary_compiled
         && upstream_bridge_compiled
         && billing_settlement_compiled
+        && billing_reconciliation_cutover_ready
 }
 
 fn gateway_error(status: u16, code: &str, message: &str) -> WorkerResult<Response> {
@@ -4122,10 +4135,10 @@ mod tests {
 
     #[test]
     fn realtime_v1_cutover_ready_requires_every_runtime_and_environment_gate() {
-        assert!(realtime_v1_ready_with_flags([true; 36]));
+        assert!(realtime_v1_ready_with_flags([true; 37]));
 
-        for false_gate in 0..36 {
-            let mut flags = [true; 36];
+        for false_gate in 0..37 {
+            let mut flags = [true; 37];
             flags[false_gate] = false;
             assert!(
                 !realtime_v1_ready_with_flags(flags),
@@ -4134,13 +4147,13 @@ mod tests {
         }
     }
 
-    fn realtime_v1_ready_with_flags(flags: [bool; 36]) -> bool {
+    fn realtime_v1_ready_with_flags(flags: [bool; 37]) -> bool {
         is_realtime_session_v1_cutover_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
             flags[8], flags[9], flags[10], flags[11], flags[12], flags[13], flags[14], flags[15],
             flags[16], flags[17], flags[18], flags[19], flags[20], flags[21], flags[22], flags[23],
             flags[24], flags[25], flags[26], flags[27], flags[28], flags[29], flags[30], flags[31],
-            flags[32], flags[33], flags[34], flags[35],
+            flags[32], flags[33], flags[34], flags[35], flags[36],
         )
     }
 

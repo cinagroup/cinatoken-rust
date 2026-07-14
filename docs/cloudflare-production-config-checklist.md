@@ -416,6 +416,8 @@ captured.
 | `REALTIME_BILLING_RESERVATION_LEASE_SECONDS` | Plain non-secret var that bounds how long a newly created per-response reservation may remain unsettled before the Durable Object's shared alarm attempts an idempotent D1 refund | Default and minimum `900`; accepted range `900..3600`; missing, unparsable, or out-of-range values fall back to `900`. The minimum is the 840-second bridge lifetime plus a mandatory 60-second close/clock-skew margin, preventing a live response from being refunded before its terminal usage arrives. Changes do not rewrite persisted deadlines. Archive the capability value, prove a not-yet-due lease is untouched and an expired lease refunds once after eviction/restart, and alert on repeated refund attempts before production canary. Expiry refunds continue when the settlement write gate is off |
 | `REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED` | Allows the scheduled Worker to scan globally orphaned Realtime reservations after the settlement grace deadline | Default `false` in default/staging/production. Enable only after 0022 exact-set readiness, isolated-staging accounting snapshots, concurrent schedule proof, failed-head fairness, alerting, and rollback rehearsal. Disable immediately to stop new global refund attempts; terminal CAS results remain authoritative. |
 | `REALTIME_BILLING_ORPHAN_SWEEP_LIMIT` | Bounds candidates handled before the shared task pollers run | Default `32`, accepted `1..64`, invalid values fall back to 32. The defensive maximum preserves D1 query/subrequest headroom for per-candidate guarded batches and the other cron workloads; raise only from measured rows-read/query-count evidence. |
+| `REALTIME_BILLING_RECONCILIATION_ENABLED` | Allows the root step-up 0028 operator workflow to apply a revision-fenced settle/refund decision | Default `false` in default/staging/production. Enable only for an isolated drill after remote 0028 readback, dual-control approval, frozen-expression preview validation, D1 rollback injection, invoice reconciliation, and alert ownership. Disable before traffic rollback. |
+| `REALTIME_BILLING_RECONCILIATION_STAGING_VERIFIED` | Immutable release-evidence assertion used by Realtime reconciliation and v1 cutover capabilities | Default `false` in default/staging/production. It is not a runtime enable switch. Set only in a reviewed candidate after the full operator, concurrency, accounting, invoice, alert, retention, and rollback matrix is archived; code presence, local tests, or enabling mutation cannot satisfy it. |
 
 ### WFP tenant artifact, relay authority, and outbound service
 
@@ -677,9 +679,12 @@ G1 can pass only when:
    rows; both migrations fail closed because active ownership cannot be safely
    reconstructed across the lease and bridge-segment schema transitions.
    Apply 0022 with global recovery disabled, then complete the isolated recovery
-   smoke before enabling its gate. Apply 0028 with
-   `REALTIME_BILLING_RECONCILIATION_ENABLED=false`; do not enable mutation until
-   the isolated operator drill, dual-control policy, and rollback evidence pass.
+   smoke before enabling its gate. Apply 0028 with both
+   `REALTIME_BILLING_RECONCILIATION_ENABLED=false` and
+   `REALTIME_BILLING_RECONCILIATION_STAGING_VERIFIED=false`; do not enable
+   mutation until the isolated operator drill, dual-control policy, and rollback
+   evidence pass. Do not set the staging-proof flag until the independently
+   reviewed evidence packet is complete.
 9. Upstash staging credentials are configured or the feature is deliberately
    disabled.
 10. No placeholder IDs or development origins remain in staging config.

@@ -3,6 +3,8 @@ import { DurableObject } from "cloudflare:workers";
 const providerName = "realtime-provider";
 const relayStreamSafetyTimeoutMs = 20_000;
 const realtimeUsageNullModel = "gpt-runtime-realtime-usage-null";
+const nonStreamAuditLimitModel = "gpt-runtime-non-stream-audit-limit";
+const cohereConsumedLimitModel = "rerank-runtime-cohere-consumed-limit";
 
 export class MockRealtimeProvider extends DurableObject {
   async fetch(request) {
@@ -26,6 +28,34 @@ export class MockRealtimeProvider extends DurableObject {
         return new Response("Relay stream already active", { status: 409 });
       }
       const requestBody = await request.json().catch(() => ({}));
+      if (requestBody.model === nonStreamAuditLimitModel) {
+        const previous = (await this.ctx.storage.get("state")) ?? { count: 0 };
+        const body = JSON.stringify({
+          id: "chatcmpl-runtime-audit-limit",
+          object: "chat.completion",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "bounded result" },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        });
+        await this.ctx.storage.put("state", {
+          count: previous.count + 1,
+          method: request.method,
+          path: url.pathname,
+          authorizationPresent: request.headers.has("authorization"),
+          nonStreamAuditLimit: true,
+        });
+        return new Response(body, {
+          headers: {
+            "content-type": "application/json",
+            "content-length": "2048",
+          },
+        });
+      }
       const failAfterFirstChunk = requestBody.model === "gpt-runtime-stream-error";
       const failAfterUsageChunk =
         requestBody.model === "gpt-runtime-stream-usage-error";
@@ -83,6 +113,30 @@ export class MockRealtimeProvider extends DurableObject {
       return new Response(body, {
         headers: { "content-type": "text/event-stream" },
       });
+    }
+    if (url.pathname.endsWith("/rerank") && request.method === "POST") {
+      const requestBody = await request.json().catch(() => ({}));
+      const previous = (await this.ctx.storage.get("state")) ?? { count: 0 };
+      await this.ctx.storage.put("state", {
+        count: previous.count + 1,
+        method: request.method,
+        path: url.pathname,
+        authorizationPresent: request.headers.has("authorization"),
+        cohereConsumedLimit: requestBody.model === cohereConsumedLimitModel,
+      });
+      if (requestBody.model === cohereConsumedLimitModel) {
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode("x".repeat(2048)));
+              controller.close();
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return Response.json({ results: [], meta: { billed_units: {} } });
     }
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket upgrade required", { status: 426 });

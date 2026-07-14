@@ -468,10 +468,11 @@ upgrade through provider WebSocket frames, D1 pre-reserve, safe client error and
 recovery. Capability reporting and the React/Bun admin panel expose only
 allowlisted, hashed, read-only state.
 
-No operator resolution action exists. Remote migration, provider invoice
-correlation, missing/malformed/zero/D1/disconnect/redeploy race coverage,
-alerts, retention, dual-control repair design, rollback, and G1-G8 approval
-remain open. Go/VPS stays authoritative and production remains **NO-GO**.
+At the 0027 checkpoint no operator resolution action existed. The later 0028
+control plane below closes that local implementation gap, but remote migration,
+provider invoice correlation, missing/malformed/zero/D1/disconnect/redeploy race
+coverage, alerts, retention, dual control, rollback, and G1-G8 approval remain
+open. Go/VPS stays authoritative and production remains **NO-GO**.
 
 ## 2026-07-13 Ordinary Relay Billing Reservation Status
 
@@ -521,9 +522,10 @@ separately.
 This remains local E3 evidence. `BILLING_QUEUE` and replay are intentionally
 reported unavailable/unimplemented, all new proof flags remain false, and
 cutover remains false. Client disconnect beyond the post-response window,
-request abort/idle timeout, pre-bind ownership, non-stream clone/read failure,
-bounded accumulator memory, Queue/DLQ replay, staging migration, and remote
-accounting evidence remain blockers. Production remains **NO-GO**.
+request abort/idle timeout, bounded accumulator memory, staging migration, and
+remote direct/Gateway/WFP accounting evidence remain blockers. Pre-bind owner
+generation, Queue/DLQ replay, and the positive-reserve non-stream parse window
+are addressed by later increments below. Production remains **NO-GO**.
 
 ## 2026-07-14 Durable HTTP Billing Finalization Queue Status
 
@@ -544,9 +546,10 @@ separate queue enablement, binding, consumer, DLQ, replay, reconcile, runtime,
 and staging proof; proof cannot override missing prerequisites.
 
 The local chain now verifies as 24 migrations, 29 tables, 106 incremental
-columns, and 21 key indexes. Consumer/DLQ/CAS is Partial E3/E4, not production
-readiness: the operator reconcile/DLQ replay workflow remains absent, so runtime
-readiness, scheduled HTTP orphan recovery, and cutover stay false. Remote
+columns, and 21 key indexes. At this checkpoint consumer/DLQ/CAS was Partial
+E3/E4 and the operator reconcile workflow remained absent; migration 0025 below
+supersedes that local gap. Runtime readiness, scheduled HTTP orphan recovery,
+and cutover still remain false. Remote
 migration/Queue/DLQ readback, retry exhaustion, alerting, client cancellation,
 D1 ambiguity and recovery-race accounting, credential rotation, canary, and
 rollback remain blockers. Production remains **NO-GO**.
@@ -647,3 +650,29 @@ incremental columns, and 27 key indexes. Remote migration, actual-provider
 invoice reconciliation, dual-control and evidence retention policy, concurrent
 operator races, D1 outage/rollback, alerts, and G1-G8 approval remain open.
 Go/VPS stays authoritative and production remains **NO-GO**.
+
+## 2026-07-14 Non-Stream Billing Finalization And Cutover Interlock
+
+Two financial correctness gaps identified by the production audit are now
+closed locally. Positive-reserve non-stream responses use bounded synchronous
+inspection instead of detached clone ownership. If an intact provider 2xx
+cannot be inspected before body consumption, it is delivered and the frozen
+reservation settles at its approved pre-consumption. If the body was consumed
+or is malformed, the Worker returns 502 and refunds before returning the error.
+Cohere rerank read-limit failure now finalizes its bound reservation by the same
+owned path.
+
+Release Workerd covers both cases with one provider invocation, one terminal
+ledger state, exact user/token/channel/request accounting, and billing Queue
+evidence. This is local E3 evidence only; deployed direct, AI Gateway, and WFP
+body-limit/error matrices plus provider-invoice reconciliation remain required.
+
+The Realtime reconciliation workflow now has a separate immutable staging-proof
+flag and cutover capability. Base, staging, and production keep
+`REALTIME_BILLING_RECONCILIATION_STAGING_VERIFIED=false`, and the 37-input v1
+predicate requires reconciliation cutover readiness. Active outbound WebSockets
+cannot be used as a local hibernation proof because Workerd retains the DO while
+that reference is active; only detached-upstream eviction is locally covered.
+Credential rotation, remote 0028/resource readback, signed operator and fault
+drills, live interruption/redeploy evidence, rollback, and G1-G8 approval remain
+open. Go/VPS stays authoritative and production remains **NO-GO**.

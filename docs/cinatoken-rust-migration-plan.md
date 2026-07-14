@@ -12113,8 +12113,9 @@ billing audit, and no refund after forcing the lease overdue and running the
 real scheduled recovery handler. The local schema baseline is now 27
 migrations, 30 tables, 130 checked incremental columns, and 24 key indexes.
 
-This increment deliberately does not provide an operator repair/charge/refund
-action. Promotion requires a rotated scoped credential, remote migration 0027
+At the 0027 checkpoint this increment deliberately did not provide an operator
+repair/charge/refund action; 22.200 supersedes that local implementation gap.
+Promotion still requires a rotated scoped credential, remote migration 0027
 with all Realtime write/recovery gates false, live missing/null/malformed/zero
 usage and disconnect/redeploy races, provider invoice correlation, alert and
 retention ownership, a separately approved reconciliation workflow, and
@@ -12167,3 +12168,48 @@ and evidence-retention ownership, actual-provider invoice correlation,
 concurrent duplicate/revision races, D1 failure and rollback drills, alerts,
 and signed G1-G8 approval. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+### 22.201 2026-07-14 Non-Stream Billing Finalization And Reconciliation Cutover Interlock
+
+The production audit found two P1 financial paths and one false-ready cutover
+path. A delivered non-stream 2xx could lose clone-side usage parsing and be
+treated as zero usage, a consumed Cohere rerank body could return 502 without
+finalizing its bound reservation, and Realtime v1 readiness did not depend on
+the 0028 reconciliation workflow being independently proven in staging.
+
+Implemented locally:
+
+- A positive-reserve non-stream response is now bounded and inspected on the
+  request path before it is returned. Non-empty bodies must be valid JSON.
+- If the original provider response remains forwardable but inspection is
+  rejected before consuming the body, the client receives the original 2xx and
+  the reservation settles conservatively at `pre_consumed_quota`. The audit
+  records `usage_source=unavailable_parse_failure` and
+  `non_stream_parse_fallback_settlement` without inventing token usage.
+- If inspection consumed the body or the buffered body is malformed, the
+  Worker returns 502 only after the owned Queue/D1 finalizer refunds the
+  reservation. Cohere rerank now records the same terminal refund before its
+  consumed-read error is returned.
+- Release Workerd regressions assert one provider request, one final ledger
+  state, exact user/token/channel/request deltas, reason/source metadata, and
+  Queue transport for the delivered-2xx and Cohere-502 cases.
+- `REALTIME_BILLING_RECONCILIATION_STAGING_VERIFIED` is explicit and false in
+  every tracked environment. Capabilities expose implementation, runtime,
+  staging proof, and cutover separately. Realtime v1 now requires all 37 gates,
+  including reconciliation cutover readiness, so code/config alone cannot
+  produce a green production cutover state.
+
+Cloudflare's hibernation boundary is also made explicit. The accepted inbound
+client WebSocket can hibernate and restore its attachment, but an active
+outgoing WebSocket does not hibernate and keeps the Durable Object active. A
+release-Workerd forced-eviction experiment while the provider socket remained
+open was rejected with active references, so it was not retained as a fake
+proof. The existing eviction regression covers only a detached upstream and
+requires fail-closed 1011/refund behavior without reconnecting the provider.
+
+This increment closes the identified local financial and readiness defects; it
+does not approve production. Promotion still requires credential rotation,
+remote 0028 and Queue/D1 readback, direct/Gateway/WFP body-limit fault replay,
+provider invoice correlation, live network/redeploy interruption, dual-control
+and retention policy, alerts, rollback, and signed G1-G8 approval. Go/VPS
+remains authoritative and production remains **NO-GO**.

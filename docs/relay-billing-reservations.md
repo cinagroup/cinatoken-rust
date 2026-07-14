@@ -130,9 +130,12 @@ any expected mutation changes a row count other than one.
   price, usage, or expression input.
 - No ordinary HTTP SSE Durable Object is planned; the Rust gateway remains the
   financial owner while WFP remains transport-only.
-- Pre-bind lease ownership, non-stream clone/read failure, client abort and idle
-  timeout classification, bounded streamed-text accumulation, and durable
-  finalization replay remain open production blockers.
+- Pre-bind lease ownership and positive-reserve non-stream parse failure are
+  locally closed. The latter uses bounded synchronous inspection: an intact
+  uninspectable 2xx settles at the frozen reserve; a consumed or malformed body
+  returns 502 after owned refund. Client abort and idle-timeout classification,
+  bounded streamed-text accumulation, remote direct/Gateway/WFP replay, and
+  deployed finalization reconciliation remain production blockers.
 
 ## Configuration
 

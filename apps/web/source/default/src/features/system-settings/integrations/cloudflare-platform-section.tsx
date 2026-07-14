@@ -2012,6 +2012,23 @@ function buildCapabilityGroups(
           missingLabel: t('Blocked'),
         },
         {
+          label: t('Realtime reconciliation cutover'),
+          description: t(
+            'Requires the operator mutation gate, exact D1 migration, and an independently archived staging fault-and-accounting replay before Realtime cutover can become ready.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_reconciliation_cutover_ready,
+          readyLabel: t('Verified'),
+          missingLabel: capabilities
+            .realtime_session_billing_reconciliation_enabled
+            ? t('Awaiting staging proof')
+            : t('Disabled'),
+          missingVariant: capabilities
+            .realtime_session_billing_reconciliation_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
           label: t('Realtime settlement retry'),
           description: t(
             'Persists up to 64 independent failed settlements in the session Durable Object and schedules the earliest due item through one bounded-backoff alarm without overwriting another response.'
@@ -2098,7 +2115,7 @@ function buildCapabilityGroups(
         {
           label: t('v1 cutover readiness'),
           description: t(
-            'Requires DO binding, v1 gate, auth boundary, hibernation, metrics, no-echo controls, upstream bridge, and billing settlement.'
+            'Requires DO binding, v1 gate, auth boundary, hibernation, metrics, no-echo controls, upstream bridge, billing settlement, and verified reconciliation.'
           ),
           ready: capabilities.realtime_session_v1_cutover_ready,
           readyLabel: t('Ready'),

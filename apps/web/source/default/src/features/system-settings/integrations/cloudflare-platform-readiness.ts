@@ -33,11 +33,13 @@ export type PlatformReadinessSignalId =
   | 'quota-coordinator-foundation'
   | 'quota-coordinator-relay-observer'
   | 'realtime-implementation'
+  | 'realtime-billing-reconciliation-implementation'
   | 'task-runner-implementation'
   | 'ai-gateway-runtime'
   | 'ai-gateway-fallback-runtime'
   | 'wfp-tenant-runtime'
   | 'realtime-runtime'
+  | 'realtime-billing-reconciliation-runtime'
   | 'task-runner-runtime'
   | 'quota-coordinator-binding'
   | 'quota-coordinator-shadow-runtime'
@@ -49,6 +51,7 @@ export type PlatformReadinessSignalId =
   | 'wfp-tenant-smoke'
   | 'wfp-relay-authority-smoke'
   | 'realtime-smoke'
+  | 'realtime-billing-reconciliation-staging-proof'
   | 'task-runner-replay'
   | 'quota-coordinator-staging-bake'
   | 'relay-billing-stream-error-smoke'
@@ -62,6 +65,7 @@ export type PlatformReadinessSignalId =
   | 'quota-coordinator-cutover'
   | 'ai-gateway-fallback-cutover'
   | 'realtime-v1-cutover'
+  | 'realtime-billing-reconciliation-cutover'
 
 export type PlatformReadinessSignalStatus =
   | 'ready'
@@ -185,6 +189,11 @@ export type PlatformReadinessCapabilities = Pick<
   | 'realtime_session_upstream_bridge_compiled'
   | 'realtime_session_billing_settlement_compiled'
   | 'realtime_session_billing_settlement_batch_compiled'
+  | 'realtime_session_billing_reconciliation_compiled'
+  | 'realtime_session_billing_reconciliation_enabled'
+  | 'realtime_session_billing_reconciliation_ready'
+  | 'realtime_session_billing_reconciliation_staging_verified'
+  | 'realtime_session_billing_reconciliation_cutover_ready'
   | 'realtime_session_platform_smoke_ready'
   | 'realtime_session_billing_settlement_staging_smoke_ready'
   | 'realtime_session_v1_cutover_ready'
@@ -215,11 +224,15 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'quota-coordinator-foundation': 'QuotaCoordinator foundation',
   'quota-coordinator-relay-observer': 'QuotaCoordinator relay observer',
   'realtime-implementation': 'Realtime',
+  'realtime-billing-reconciliation-implementation':
+    'Realtime billing reconciliation',
   'task-runner-implementation': 'TaskRunner',
   'ai-gateway-runtime': 'AI Gateway',
   'ai-gateway-fallback-runtime': 'AI Gateway fallback',
   'wfp-tenant-runtime': 'WFP tenant',
   'realtime-runtime': 'Realtime',
+  'realtime-billing-reconciliation-runtime':
+    'Realtime billing reconciliation',
   'task-runner-runtime': 'TaskRunner',
   'quota-coordinator-binding': 'QuotaCoordinator binding',
   'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
@@ -232,6 +245,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'wfp-tenant-smoke': 'WFP tenant smoke',
   'wfp-relay-authority-smoke': 'WFP relay authority smoke',
   'realtime-smoke': 'Realtime smoke',
+  'realtime-billing-reconciliation-staging-proof':
+    'Realtime billing reconciliation proof',
   'task-runner-replay': 'TaskRunner replay',
   'quota-coordinator-staging-bake': 'QuotaCoordinator staging bake',
   'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
@@ -246,6 +261,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'quota-coordinator-cutover': 'QuotaCoordinator cutover',
   'ai-gateway-fallback-cutover': 'AI Gateway fallback',
   'realtime-v1-cutover': 'Realtime v1',
+  'realtime-billing-reconciliation-cutover':
+    'Realtime billing reconciliation',
 } satisfies Record<PlatformReadinessSignalId, string>
 
 export function getPlatformReadinessSignalLabel(
@@ -433,6 +450,10 @@ export function buildPlatformReadinessSummary(
       quotaCoordinator.relayObserver
     ),
     readySignal('realtime-implementation', realtimeImplementation),
+    readySignal(
+      'realtime-billing-reconciliation-implementation',
+      capabilities.realtime_session_billing_reconciliation_compiled
+    ),
     readySignal('task-runner-implementation', taskRunnerImplementation),
   ])
 
@@ -462,6 +483,10 @@ export function buildPlatformReadinessSummary(
         capabilities.realtime_session_v1_enabled,
         capabilities.realtime_session_billing_settlement_write_enabled
       )
+    ),
+    readySignal(
+      'realtime-billing-reconciliation-runtime',
+      capabilities.realtime_session_billing_reconciliation_ready
     ),
     readySignal(
       'task-runner-runtime',
@@ -530,6 +555,11 @@ export function buildPlatformReadinessSummary(
       false
     ),
     verificationSignal(
+      'realtime-billing-reconciliation-staging-proof',
+      capabilities.realtime_session_billing_reconciliation_ready,
+      capabilities.realtime_session_billing_reconciliation_staging_verified
+    ),
+    verificationSignal(
       'task-runner-replay',
       taskRunnerReplayReady,
       capabilities.task_runner_staging_replay_verified
@@ -592,6 +622,10 @@ export function buildPlatformReadinessSummary(
     readySignal(
       'realtime-v1-cutover',
       capabilities.realtime_session_v1_cutover_ready
+    ),
+    readySignal(
+      'realtime-billing-reconciliation-cutover',
+      capabilities.realtime_session_billing_reconciliation_cutover_ready
     ),
   ])
 

@@ -569,6 +569,8 @@ export type PlatformCapabilities = {
   realtime_session_billing_reconciliation_compiled: boolean
   realtime_session_billing_reconciliation_enabled: boolean
   realtime_session_billing_reconciliation_ready: boolean
+  realtime_session_billing_reconciliation_staging_verified: boolean
+  realtime_session_billing_reconciliation_cutover_ready: boolean
   realtime_session_billing_settlement_staging_smoke_compiled: boolean
   realtime_session_billing_settlement_staging_smoke_enabled: boolean
   realtime_session_billing_settlement_staging_smoke_ready: boolean

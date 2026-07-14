@@ -326,7 +326,7 @@ def main() -> int:
     if relay_owner_guard_verified:
         message += " + 0026 relay-owner drain guard"
     if flat_intent_guard_verified:
-        message += " + 0029 flat-intent snapshot guard"
+        message += " + 0029 flat-intent guard + 0030 immutable billing contract"
 
     if args.seed:
         for value in args.seed:
@@ -369,9 +369,10 @@ def verify_flat_billing_intent_guard(conn: sqlite3.Connection) -> None:
     for trigger in (
         "relay_flat_billing_snapshot_insert_guard",
         "relay_flat_billing_snapshot_update_guard",
+        "relay_billing_contract_immutable_guard",
     ):
         if not trigger_exists(conn, trigger):
-            raise SystemExit(f"0029 flat billing intent trigger missing: {trigger}")
+            raise SystemExit(f"flat billing contract trigger missing: {trigger}")
 
     conn.execute(
         """
@@ -408,8 +409,26 @@ def verify_flat_billing_intent_guard(conn: sqlite3.Connection) -> None:
             "WHERE reservation_key = 'flat-valid-snapshot'"
         )
     except sqlite3.IntegrityError:
-        return
-    raise SystemExit("0029 must reject clearing a frozen flat billing snapshot")
+        pass
+    else:
+        raise SystemExit("0029 must reject clearing a frozen flat billing snapshot")
+
+    immutable_mutations = (
+        "billing_snapshot_json = '{\"changed\":true}'",
+        "expr_hash = 'flat-v1:changed'",
+        "billing_kind = 'tiered_expr'",
+        "pre_consumed_quota = pre_consumed_quota + 1",
+        "model_name = 'changed-model'",
+    )
+    for mutation in immutable_mutations:
+        try:
+            conn.execute(
+                "UPDATE relay_billing_reservations SET "
+                f"{mutation} WHERE reservation_key = 'flat-valid-snapshot'"
+            )
+        except sqlite3.IntegrityError:
+            continue
+        raise SystemExit(f"0030 must reject billing contract mutation: {mutation}")
 
 
 def verify_realtime_lease_migration_guard(schema_paths: list[Path]) -> None:

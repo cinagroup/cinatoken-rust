@@ -26,16 +26,16 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 | Rust Durable Objects | RealtimeSession has a six-scenario local workerd/D1/mock-upstream suite plus an explicit release-Wasm Workerd/SQLite hibernate-evict-restore test for the client socket, attachment/bridge segment, and persisted metrics; reservation binding, settlement, and refund are isolated by bridge segment; TaskRunner, channel affinity, Passkey ceremony, and WFP authority replay have focused tests | Locally exercised substrate | Active-upstream eviction must prove 1011 fail-closed, exactly-once refund/lease handoff, no replacement call, and clean reconnect; deployed eviction/alarm/reconnect/replay/load evidence remains required on Cloudflare staging |
 | WFP Rust tenant script | Dedicated Rust/Wasm tenant crate, strict artifact manifest/uploader, central-authority v3 transport, signed physical-target/policy claims, outbound invocation context, platform-owned Gateway policy, and final-boundary replay guard are present; tenant has no authority key, replay binding, bearer, or Gateway policy authority | Gated substrate | Real staging namespace/schema-3 outbound readback, live context/policy propagation, missing-worker/resource-limit/context faults, tenant-policy spoof negatives, one paid provider call, central billing outcome, and traces |
 | AI Gateway multi-model forwarding | Default-off direct and cross-model paths, actual-serving-group billing contract, and operator readiness exist | Gated substrate | Deployed provider-route canary, usage/error reconciliation, terminal audit delivery, fault injection, and rollback |
-| HTTP flat billing intent | Migration 0029, frozen per-candidate pricing snapshots, domain-separated digest validation, reserve/bind/Queue/CAS finalization, request-id replay rejection, and a five-layer React/Bun readiness view pass locally | Gated local substrate | Decimal terminal parity, unset-ratio/self-use policy, complete image/audio/tool/provider multipliers, remote 0029 and Queue/D1 readback, invoice reconciliation, abort/idle faults, rollback, and approval |
+| HTTP flat billing intent | Migrations 0029-0030, frozen immutable per-candidate pricing snapshots, domain-separated digest validation, reserve/bind/Queue/CAS finalization, request-id replay rejection, exact-decimal final rounding, fail-closed unknown-model admission with site/user policy, and a five-layer React/Bun readiness view pass locally | Gated local substrate | Complete image/audio/tool/provider multipliers and usage-source semantics, Go-generated immutable flat golden manifest, remote 0030 and Queue/D1 readback, invoice reconciliation, abort/idle faults, rollback, and approval |
 | Realtime billing reconciliation | Migration 0028, an admin queue, frozen-expression preview, root step-up apply, atomic settle/refund, and a React/Bun workbench pass locally with mutation default-off | Gated local control plane | Rotated credential, remote 0028, dual-control/retention policy, provider invoice correlation, D1/concurrency/rollback drills, alerts, and approval |
 | `cinatoken.com` production deployment | No current deployment evidence; the credential included in the task is exposed and was not used | Not started | Revoke/rotate the exposed token, issue least-privilege replacement credentials, finish G1-G8, deploy staging, canary, then production DNS/cutover |
 
 This re-audit keeps the overall migration goal open. Passing local gates proves
 implementation readiness only for the covered behavior.
 
-The current local D1 head is migration 0029: 29 contiguous migrations, 30
+The current local D1 head is migration 0030: 30 contiguous migrations, 30
 tables, 139 checked incremental columns, and 27 key indexes. Flat intent runtime
-readiness does not imply pricing cutover readiness;
+and admission readiness do not imply pricing cutover readiness;
 `relay_flat_billing_go_parity_ready` remains hard false.
 
 ## Substantial And Verified
@@ -702,3 +702,25 @@ uses the existing non-ledger D1 mutation path. A frozen flat-pricing intent,
 abort/idle taxonomy, remote direct/Gateway/WFP fault replay, provider invoices,
 alerts, rollback, credential rotation, and G1-G8 approval remain open. Go/VPS
 stays authoritative and production remains **NO-GO**.
+
+## 2026-07-14 Flat Pricing Admission And Immutable Contract
+
+This section supersedes the non-ledger conclusion immediately above. Generic
+flat billing now owns a frozen reservation, Queue/D1 CAS settlement or refund,
+and replay identity. Migration 0030 prevents post-insert mutation of the
+reservation's financial contract.
+
+Go-compatible decimal terminal rounding, empty-option-map replacement, site
+self-use admission, per-user unset-model admission, fail-closed unknown-model
+rejection, fallback ratio 37.5, and matching model-list visibility are covered
+locally. Release Workerd passes 38/38 and includes strict rejection before
+provider egress, both admitted-unknown policies, exact settlement, and D1
+snapshot-mutation rejection. The local schema proof is 30 migrations, 30
+tables, 139 checked columns, and 27 indexes.
+
+Flat cutover remains blocked by per-token audio pricing, image size/quality and
+actual-count rules, tool-call surcharges, complete provider `OtherRatios` and
+usage-source semantics, a Go-generated immutable flat golden manifest, and all
+remote Queue/DLQ/provider/accounting/fault/rollback evidence. The parity
+capability remains hard false; Go/VPS stays authoritative and production
+remains **NO-GO**.

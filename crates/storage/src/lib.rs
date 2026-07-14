@@ -23,6 +23,8 @@ pub struct AuthenticatedToken {
     pub token_group: String,
     #[serde(default)]
     pub cross_group_retry: i32,
+    #[serde(default)]
+    pub accept_unset_ratio_model: i32,
     pub username: String,
     pub user_status: i32,
     pub user_quota: i64,
@@ -48,6 +50,10 @@ impl AuthenticatedToken {
 
     pub fn cross_group_retry_enabled(&self) -> bool {
         self.effective_group() == "auto" && self.cross_group_retry != 0
+    }
+
+    pub fn accepts_unset_ratio_model(&self) -> bool {
+        self.accept_unset_ratio_model != 0
     }
 }
 
@@ -291,6 +297,7 @@ mod tests {
             allow_ips: String::new(),
             token_group: token_group.to_string(),
             cross_group_retry: 0,
+            accept_unset_ratio_model: 0,
             username: "dev".to_string(),
             user_status: 1,
             user_quota: 100,
@@ -312,8 +319,10 @@ mod tests {
         assert!(!auth.has_model_limits());
         auth.unlimited_quota = 1;
         auth.model_limits_enabled = 1;
+        auth.accept_unset_ratio_model = 1;
         assert!(auth.has_unlimited_quota());
         assert!(auth.has_model_limits());
+        assert!(auth.accepts_unset_ratio_model());
     }
 
     #[test]

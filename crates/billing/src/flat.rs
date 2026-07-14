@@ -21,7 +21,7 @@
 //! base_tokens        = prompt                                   // Anthropic
 //! cached_contrib     = cached * cache_ratio
 //! cache_create_contrib = cache_creation * cache_creation_ratio   // 5m/1h split
-//!                     // for Anthropic: remaining*5m + 5m_tokens*5m + 1h_tokens*1h
+//!                     // for Anthropic: remaining*generic + 5m_tokens*5m + 1h_tokens*1h
 //! image_contrib      = image * image_ratio
 //! completion_quota   = completion * completion_ratio
 //! prompt_quota       = base_tokens + cached_contrib + image_contrib + cache_create_contrib
@@ -34,9 +34,9 @@
 //! - Per-token mode with `total_tokens == 0` returns `quota = 0`.
 //! - `ratio != 0 && quota <= 0` → `quota = 1` (floor for billable models).
 //!
-//! Rounding uses the shared `crate::quota_round` (half-away-from-zero, with
-//! saturating guards for NaN/out-of-i64), the same rounder the tiered path
-//! uses — Go mandates every billing path call `QuotaRound`.
+//! Final flat settlement uses decimal intermediates and explicit
+//! half-away-from-zero rounding, matching Go's `shopspring/decimal` path.
+//! Tiered expressions retain the shared float `crate::quota_round` contract.
 //!
 //! ## Simplifications vs Go (deferred)
 //!
@@ -47,11 +47,8 @@
 //! - No `ToolCallSurcharge` (web_search / file_search fixed fees).
 
 use crate::pricing::PricingConfig;
-// Reuse the single canonical rounder (`crate::quota_round`, lib.rs) that the
-// tiered path uses — Go mandates every billing path call `QuotaRound`
-// (`int(math.Round)`) to avoid ±1 discrepancies. Do not reintroduce a
-// per-path rounding variant here.
-use crate::quota_round;
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 
 /// Default cache-creation multiplier (matches Go default of 1.25). Exposed
@@ -267,33 +264,60 @@ pub fn compute_flat_quota_from_snapshot(
     let cache_creation_ratio_5m = snapshot.cache_creation_ratio_5m;
     let cache_creation_ratio_1h = snapshot.cache_creation_ratio_1h;
     let image_ratio = snapshot.image_ratio;
+    let result = |quota| FlatQuotaResult {
+        quota,
+        mode: snapshot.mode,
+        model_ratio,
+        completion_ratio,
+        group_ratio,
+        cache_ratio,
+        fixed_price_multiplier,
+    };
+
+    let (
+        Some(d_model_ratio),
+        Some(d_completion_ratio),
+        Some(d_group_ratio),
+        Some(d_cache_ratio),
+        Some(d_cache_creation_ratio),
+        Some(d_cache_creation_ratio_5m),
+        Some(d_cache_creation_ratio_1h),
+        Some(d_image_ratio),
+        Some(d_quota_per_unit),
+        Some(d_fixed_price_multiplier),
+    ) = (
+        go_decimal_from_f64(model_ratio),
+        go_decimal_from_f64(completion_ratio),
+        go_decimal_from_f64(group_ratio),
+        go_decimal_from_f64(cache_ratio),
+        go_decimal_from_f64(cache_creation_ratio),
+        go_decimal_from_f64(cache_creation_ratio_5m),
+        go_decimal_from_f64(cache_creation_ratio_1h),
+        go_decimal_from_f64(image_ratio),
+        go_decimal_from_f64(snapshot.quota_per_unit),
+        go_decimal_from_f64(fixed_price_multiplier),
+    )
+    else {
+        return result(i64::MAX);
+    };
 
     // Fixed-price mode is request-priced and therefore independent of token
     // usage. The caller admits only successful billable responses.
     if let Some(price) = snapshot.model_price {
-        let quota = price * snapshot.quota_per_unit * group_ratio * fixed_price_multiplier;
-        return FlatQuotaResult {
-            quota: quota_round(quota),
-            mode: FlatBillingMode::FixedPrice,
-            model_ratio,
-            completion_ratio,
-            group_ratio,
-            cache_ratio,
-            fixed_price_multiplier,
-        };
+        let quota = go_decimal_from_f64(price).and_then(|price| {
+            checked_decimal_product(&[
+                price,
+                d_quota_per_unit,
+                d_group_ratio,
+                d_fixed_price_multiplier,
+            ])
+        });
+        return result(round_decimal_quota(quota));
     }
 
     // Per-token mode cannot charge without usage.
     if usage.total_tokens <= 0 {
-        return FlatQuotaResult {
-            quota: 0,
-            mode: FlatBillingMode::PerToken,
-            model_ratio,
-            completion_ratio,
-            group_ratio,
-            cache_ratio,
-            fixed_price_multiplier,
-        };
+        return result(0);
     }
 
     // Per-token mode. Ports Go `calculateTextQuotaSummary` (service/text_quota.go):
@@ -302,73 +326,142 @@ pub fn compute_flat_quota_from_snapshot(
     // cache-write, and image tokens are SUBTRACTED from the prompt base (for
     // non-Anthropic usage) and re-added at their own ratio, so e.g. image
     // tokens bill at image_ratio, not the prompt rate.
-    let ratio = model_ratio * group_ratio;
-    let prompt = usage.prompt_tokens.max(0) as f64;
-    let completion = usage.completion_tokens.max(0) as f64;
-    let cached = usage.cached_tokens.max(0) as f64;
-    let cache_creation = usage.cache_creation_tokens.max(0) as f64;
-    let image = usage.image_tokens.max(0) as f64;
+    let Some(ratio) = checked_decimal_product(&[d_model_ratio, d_group_ratio]) else {
+        return result(i64::MAX);
+    };
+    let prompt = Decimal::from(usage.prompt_tokens.max(0));
+    let completion = Decimal::from(usage.completion_tokens.max(0));
+    let cached = Decimal::from(usage.cached_tokens.max(0));
+    let cache_creation = Decimal::from(usage.cache_creation_tokens.max(0));
+    let cache_creation_5m = Decimal::from(usage.cache_creation_5m_tokens.max(0));
+    let cache_creation_1h = Decimal::from(usage.cache_creation_1h_tokens.max(0));
+    let image = Decimal::from(usage.image_tokens.max(0));
 
     let mut base_tokens = prompt;
-    let mut cached_with_ratio = 0.0;
-    let mut cache_creation_with_ratio = 0.0;
-    let mut image_with_ratio = 0.0;
+    let mut cached_with_ratio = Decimal::ZERO;
+    let mut cache_creation_with_ratio = Decimal::ZERO;
+    let mut image_with_ratio = Decimal::ZERO;
 
-    if cached > 0.0 {
+    if !cached.is_zero() {
         if !usage.is_anthropic_usage_semantic {
             // OpenAI: cached tokens are INCLUDED in prompt_tokens; subtract.
             base_tokens -= cached;
         }
-        cached_with_ratio = cached * cache_ratio;
+        let Some(value) = cached.checked_mul(d_cache_ratio) else {
+            return result(i64::MAX);
+        };
+        cached_with_ratio = value;
     }
 
-    if cache_creation > 0.0
+    if !cache_creation.is_zero()
         || usage.cache_creation_5m_tokens > 0
         || usage.cache_creation_1h_tokens > 0
     {
         if !usage.is_anthropic_usage_semantic {
             base_tokens -= cache_creation;
-            cache_creation_with_ratio = cache_creation * cache_creation_ratio;
+            let Some(value) = cache_creation.checked_mul(d_cache_creation_ratio) else {
+                return result(i64::MAX);
+            };
+            cache_creation_with_ratio = value;
         } else {
-            // Anthropic: prompt excludes cache-write; price the remainder at the
-            // 5m ratio and the explicit 5m/1h split at their own ratios.
-            let remaining = (cache_creation
-                - usage.cache_creation_5m_tokens as f64
-                - usage.cache_creation_1h_tokens as f64)
-                .max(0.0);
-            cache_creation_with_ratio = remaining * cache_creation_ratio_5m
-                + (usage.cache_creation_5m_tokens as f64) * cache_creation_ratio_5m
-                + (usage.cache_creation_1h_tokens as f64) * cache_creation_ratio_1h;
+            // Go prices the unbucketed remainder with the generic creation
+            // ratio, then applies explicit ratios to the 5m/1h buckets.
+            let remaining =
+                (cache_creation - cache_creation_5m - cache_creation_1h).max(Decimal::ZERO);
+            let parts = [
+                remaining.checked_mul(d_cache_creation_ratio),
+                cache_creation_5m.checked_mul(d_cache_creation_ratio_5m),
+                cache_creation_1h.checked_mul(d_cache_creation_ratio_1h),
+            ];
+            let Some(value) = checked_decimal_options_sum(&parts) else {
+                return result(i64::MAX);
+            };
+            cache_creation_with_ratio = value;
         }
     }
 
-    if image > 0.0 {
+    if !image.is_zero() {
         base_tokens -= image;
-        image_with_ratio = image * image_ratio;
+        let Some(value) = image.checked_mul(d_image_ratio) else {
+            return result(i64::MAX);
+        };
+        image_with_ratio = value;
     }
 
-    base_tokens = base_tokens.max(0.0);
-    let prompt_quota =
-        base_tokens + cached_with_ratio + image_with_ratio + cache_creation_with_ratio;
-    let completion_quota = completion * completion_ratio;
-    let raw_quota = (prompt_quota + completion_quota) * ratio;
-
-    // Floor: a billable model with ratio > 0 must charge at least 1.
-    let quota = if ratio != 0.0 && raw_quota <= 0.0 {
-        1
-    } else {
-        quota_round(raw_quota)
+    base_tokens = base_tokens.max(Decimal::ZERO);
+    let Some(prompt_quota) = checked_decimal_sum(&[
+        base_tokens,
+        cached_with_ratio,
+        image_with_ratio,
+        cache_creation_with_ratio,
+    ]) else {
+        return result(i64::MAX);
+    };
+    let Some(completion_quota) = completion.checked_mul(d_completion_ratio) else {
+        return result(i64::MAX);
+    };
+    let Some(raw_quota) = prompt_quota
+        .checked_add(completion_quota)
+        .and_then(|quota| quota.checked_mul(ratio))
+    else {
+        return result(i64::MAX);
     };
 
-    FlatQuotaResult {
-        quota,
-        mode: FlatBillingMode::PerToken,
-        model_ratio,
-        completion_ratio,
-        group_ratio,
-        cache_ratio,
-        fixed_price_multiplier,
+    // Floor: a billable model with ratio > 0 must charge at least 1.
+    let quota = if !ratio.is_zero() && raw_quota <= Decimal::ZERO {
+        1
+    } else {
+        round_decimal_quota(Some(raw_quota))
+    };
+
+    result(quota)
+}
+
+fn go_decimal_from_f64(value: f64) -> Option<Decimal> {
+    if !value.is_finite() {
+        return None;
     }
+
+    let value = value.to_string();
+    if value.contains(['e', 'E']) {
+        Decimal::from_scientific(&value).ok()
+    } else {
+        value.parse().ok()
+    }
+}
+
+fn checked_decimal_product(values: &[Decimal]) -> Option<Decimal> {
+    values
+        .iter()
+        .try_fold(Decimal::ONE, |product, value| product.checked_mul(*value))
+}
+
+fn checked_decimal_sum(values: &[Decimal]) -> Option<Decimal> {
+    values
+        .iter()
+        .try_fold(Decimal::ZERO, |sum, value| sum.checked_add(*value))
+}
+
+fn checked_decimal_options_sum(values: &[Option<Decimal>]) -> Option<Decimal> {
+    values.iter().try_fold(Decimal::ZERO, |sum, value| {
+        sum.checked_add(value.as_ref().copied()?)
+    })
+}
+
+fn round_decimal_quota(value: Option<Decimal>) -> i64 {
+    let Some(value) = value else {
+        return i64::MAX;
+    };
+    value
+        .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
+        .to_i64()
+        .unwrap_or_else(|| {
+            if value < Decimal::ZERO {
+                i64::MIN
+            } else {
+                i64::MAX
+            }
+        })
 }
 
 /// Go-compatible pre-consume estimate. Fixed-price requests reserve their
@@ -631,6 +724,28 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_unbucketed_cache_creation_uses_generic_ratio() {
+        let config = config_with_model_ratio("claude-test", 1.0);
+        let mut snapshot =
+            FlatPricingSnapshot::from_config("claude-test", "default", &config, 1.0, 0);
+        snapshot.cache_creation_ratio = 1.0;
+        snapshot.cache_creation_ratio_5m = 2.0;
+        snapshot.cache_creation_ratio_1h = 3.0;
+        let usage = FlatUsage {
+            total_tokens: 1,
+            cache_creation_tokens: 100,
+            cache_creation_5m_tokens: 20,
+            cache_creation_1h_tokens: 30,
+            is_anthropic_usage_semantic: true,
+            ..FlatUsage::default()
+        };
+
+        // remaining=50 uses generic ratio 1, then 20*2 + 30*3 = 180.
+        let result = compute_flat_quota_from_snapshot(&usage, &snapshot);
+        assert_eq!(result.quota, 180);
+    }
+
+    #[test]
     fn combined_subcategories_non_anthropic() {
         // OpenAI: prompt=2000 includes 500 cached + 300 image + 200 cache-write.
         // cache_ratio=0.5, image_ratio=2, create_cache_ratio=1.25.
@@ -678,6 +793,25 @@ mod tests {
         let usage = simple_usage(0, 1);
         let result = compute_flat_quota(&usage, "deepseek-chat", "default", &config);
         assert_eq!(result.quota, 1, "0.5 must round half-away-from-zero to 1");
+    }
+
+    #[test]
+    fn flat_path_uses_go_decimal_intermediates_before_rounding() {
+        let mut config = config_with_model_ratio("decimal-parity", 3.75);
+        config.group_ratios.insert("vip".to_string(), 4.1);
+        let usage = simple_usage(4, 0);
+
+        // Binary float computes 4 * (3.75 * 4.1) as 61.49999999999999 and
+        // would charge 61. Go decimal computes exactly 61.500 and charges 62.
+        let result = compute_flat_quota(&usage, "decimal-parity", "vip", &config);
+        assert_eq!(result.quota, 62);
+
+        let mut fixed = FlatPricingSnapshot::from_config("decimal-parity", "vip", &config, 4.0, 0);
+        fixed.mode = FlatBillingMode::FixedPrice;
+        fixed.model_price = Some(3.75);
+        fixed.quota_per_unit = 1.0;
+        let result = compute_flat_quota_from_snapshot(&FlatUsage::default(), &fixed);
+        assert_eq!(result.quota, 62);
     }
 
     #[test]

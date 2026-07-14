@@ -4665,3 +4665,49 @@ and provider-specific multipliers, remote 0029/Queue readback, client abort and
 idle fault classes, invoice reconciliation, credential rotation, and G1-G8
 approval remain open. The capability parity gate is hard false and production
 remains **NO-GO**.
+
+## Flat Pricing Admission And Contract Immutability Verification (2026-07-14)
+
+```powershell
+cargo test -p cinatoken-billing -p cinatoken-storage -p cinatoken-relay
+# PASS; billing 87 unit + 10 Go-expression parity, storage 7/7, relay 75/75
+
+cargo test -p cinatoken-worker --lib
+# PASS; 671/671
+
+python tools/verify_sqlite.py
+# PASS; 30 migrations, 30 tables, 139 checked columns, 27 indexes;
+# 0030 financial-contract mutation probes rejected
+
+bun run check:d1:migration-config
+# PASS; exact 30-file set, latest 0030_billing_contract_immutability.sql
+
+bun run check:do-lifecycle-runtime
+# PASS; release main/tenant/outbound Rust/Wasm builds and Workerd 38/38
+
+bun run check
+# PASS; complete release gate, frontend production build/readiness/bundle audits,
+# 223 frontend calls / 326 Worker routes / zero missing, workspace tests, and
+# main/tenant/outbound wasm32 checks
+```
+
+Verified behavior:
+
+- Exact decimal intermediates and half-away-from-zero final rounding match the
+  audited Go boundary, including `61.5 -> 62`.
+- An existing empty pricing option replaces the seeded defaults; a missing row
+  uses defaults and explicit zero remains configured.
+- Strict unknown-model admission returns 400 before provider egress with no
+  reservation, quota, or audit mutation. Site self-use and per-user unset-model
+  policy admit the same request, expose the model through `/v1/models`, freeze
+  ratio 37.5, and settle once. Tiered-expression-only models remain visible.
+- D1 rejects post-insert mutation of the frozen reservation identity and
+  financial contract in both the SQLite verifier and the Workerd runtime.
+
+This is local E3 evidence only. Per-token audio, fixed-image size/quality and
+actual-count, Ali `prompt_extend`, actual tool-call surcharges, full provider
+`OtherRatios`, usage-source semantics, and a Go-generated immutable flat
+manifest remain open. Remote 0030/Queue/DLQ/provider-invoice and direct/Gateway/
+WFP fault evidence, credential rotation, rollback, and G1-G8 approval are also
+absent. `relay_flat_billing_go_parity_ready` remains hard false and production
+remains **NO-GO**.

@@ -669,11 +669,11 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-    `d1_migration_status_available=true`, applied count `29`, latest/expected
-    `0029_flat_billing_intents.sql`, exact set match, and
+    `d1_migration_status_available=true`, applied count `30`, latest/expected
+    `0030_billing_contract_immutability.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0029 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0030 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely
@@ -687,6 +687,9 @@ G1 can pass only when:
    reviewed evidence packet is complete.
    Apply 0029 before flat intent smoke with finalization/recovery gates disabled;
    prove the empty-snapshot guards and old tiered-writer defaults remotely.
+   Apply 0030 before admitting new Rust traffic and prove D1 rejects mutation of
+   reservation identity, model, endpoint, request/contract hashes, billing kind,
+   frozen snapshot, candidate count, strategy, and pre-consumed quota.
 9. Upstash staging credentials are configured or the feature is deliberately
    disabled.
 10. No placeholder IDs or development origins remain in staging config.
@@ -750,7 +753,7 @@ armed only when:
 ### Flat Billing Intent Requirements
 
 - Keep `RELAY_FLAT_BILLING_INTENT_STAGING_VERIFIED=false` in every tracked
-  environment until remote 0029, Queue/D1 settlement/refund replay, duplicate
+  environment until remote 0030, Queue/D1 settlement/refund replay, duplicate
   request identity, body-limit, and rollback evidence is reviewed.
 - Require a non-empty frozen snapshot and a repository-validated
   `flat-v1:<sha256>` digest for every flat reservation. Mutable options are not
@@ -759,8 +762,11 @@ armed only when:
   before provider egress. Never log or persist the raw identity.
 - Staging proof cannot override source parity. Cutover additionally requires
   `relay_flat_billing_go_parity_ready=true`; this remains hard false until
-  decimal terminal arithmetic, unset-ratio/self-use policy, and complete image,
-  audio, tool, and provider multiplier parity are implemented and verified.
+  per-token audio, fixed-image size/quality/actual-count and Ali
+  `prompt_extend`, actual tool-call surcharges, complete provider `OtherRatios`
+  and usage-source semantics, and an immutable Go-generated flat manifest are
+  implemented and verified. Decimal rounding and site/user unset-model
+  admission are locally closed but are not sufficient for cutover.
 - Ordinary upstream failure and zero-usage refund must leave request count and
   channel usage unchanged. Successful billable usage owns one terminal request
   mutation through the reservation ledger.

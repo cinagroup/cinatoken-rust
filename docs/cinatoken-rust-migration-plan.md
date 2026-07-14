@@ -12301,3 +12301,50 @@ Queue/D1 readback, direct/AI Gateway/WFP fault replay, client abort and upstream
 idle taxonomy, provider invoice reconciliation, credential rotation, alerts,
 rollback, and signed G1-G8 approval remain open. Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+### 22.204 2026-07-14 Flat Pricing Admission And Immutable Contract Parity
+
+This increment supersedes the 22.203 list of open decimal and unset-model
+admission gaps. The source audit was repeated against Go baseline
+`73652508abc5`, including `pkg/billingexpr/expr.md`; the one-expression,
+one-truth, frozen-pricing contract remains unchanged.
+
+Implemented and verified locally:
+
+- Flat terminal arithmetic now converts the shortest finite input decimal into
+  exact decimal operations and applies Go-compatible half-away-from-zero final
+  rounding. Regression fixtures include a `61.5 -> 62` boundary. Anthropic
+  unbucketed cache creation uses the generic creation ratio, while explicit 5m
+  and 1h buckets retain their dedicated ratios.
+- A present D1 pricing option is authoritative even when its JSON object is
+  empty: it replaces the Go-seeded runtime map instead of being merged over it.
+  A missing option row still uses the source defaults, and explicit zero values
+  remain configured values.
+- Unknown flat models fail with 400 before provider egress unless
+  `SelfUseModeEnabled` or the authenticated user's
+  `accept_unset_model_ratio_model` policy admits them. An admitted unknown uses
+  the Go fallback ratio `37.5`; `/v1/models` applies the same visibility rule
+  while retaining models with a complete tiered-expression contract. The
+  token-auth read-through cache schema is versioned with this policy.
+- Migration `0030_billing_contract_immutability.sql` prevents later mutation of
+  reservation identity and financial contract fields, including model,
+  endpoint, request/contract hashes, billing kind, frozen snapshot, candidate
+  count, strategy, and pre-consumed quota. The verifier proves both migration
+  replay and mutation rejection.
+- Release-Wasm Workerd covers strict rejection with no provider, ledger, quota,
+  or audit mutation; site self-use admission; per-user unset-model admission;
+  model-list visibility; frozen `37.5` settlement; and runtime rejection of
+  snapshot mutation. The full lifecycle suite passes 38/38.
+- Local gates pass with 30 contiguous migrations through 0030, 30 tables, 139
+  checked incremental columns, and 27 key indexes; Worker tests pass 671/671;
+  billing tests pass 87 unit plus 10 Go-expression parity fixtures.
+
+This does **not** authorize flat-billing cutover. The immutable
+`relay_flat_billing_go_parity_ready` capability remains hard false pending
+per-token audio duration/response pricing, fixed-image size/quality/actual-count
+and Ali `prompt_extend`, actual tool-call surcharges, complete provider
+`OtherRatios` and usage-source semantics, and a Go-generated immutable flat
+golden-fixture manifest. Remote migration 0030 and Queue/DLQ/provider evidence,
+direct/AI Gateway/WFP abort and idle fault replay, provider-invoice
+reconciliation, credential rotation, rollback, and signed G1-G8 approval also
+remain open. Go/VPS remains authoritative and production remains **NO-GO**.

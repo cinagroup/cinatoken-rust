@@ -1077,3 +1077,27 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   invoice reconciliation, credential rotation, rollback, and G1-G8 approval.
   `relay_flat_billing_go_parity_ready` remains hard false and production remains
   **NO-GO**.
+
+## 2026-07-14 Flat Pricing Admission And Contract Immutability Increment
+
+- Flat quota math now uses exact decimal intermediates and Go-compatible
+  half-away-from-zero final rounding. Anthropic generic cache creation is no
+  longer incorrectly assigned to the explicit 5m bucket.
+- Existing D1 option rows replace the seeded default pricing map, including an
+  intentional empty object. Missing rows retain defaults; zero remains an
+  explicit configured value.
+- Unconfigured flat models are rejected before provider egress unless site
+  self-use or the authenticated user's unset-model policy admits them. Admitted
+  unknowns use ratio 37.5, and model discovery follows the same rule.
+- Migration 0030 makes the frozen reservation identity and financial contract
+  immutable after insert. SQLite and Workerd regressions prove snapshot and
+  quota mutation are rejected.
+- Local evidence now passes 30 migrations / 30 tables / 139 checked columns /
+  27 indexes, Worker 671/671, billing 87 unit plus 10 Go-expression parity
+  fixtures, and release Workerd 38/38.
+- Remaining flat blockers are provider-specific audio, image, tool-call,
+  `OtherRatios`, and usage-source semantics plus a Go-generated immutable flat
+  golden manifest. Remote 0030/Queue/DLQ/provider-invoice evidence, abort/idle
+  faults, credential rotation, rollback, and G1-G8 approval remain open.
+  `relay_flat_billing_go_parity_ready` stays hard false and production remains
+  **NO-GO**.

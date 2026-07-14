@@ -6,6 +6,7 @@ const realtimeUsageNullModel = "gpt-runtime-realtime-usage-null";
 const nonStreamAuditLimitModel = "gpt-runtime-non-stream-audit-limit";
 const zeroReserveModel = "gpt-runtime-zero-reserve";
 const flatAuditLimitModel = "gpt-runtime-flat-audit-limit";
+const unsetModel = "gpt-runtime-unset-model";
 const fixedAudioModel = "tts-runtime-fixed-price";
 const cohereConsumedLimitModel = "rerank-runtime-cohere-consumed-limit";
 
@@ -18,9 +19,14 @@ export class MockRealtimeProvider extends DurableObject {
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/__mock/state" && request.method === "GET") {
-      return Response.json((await this.ctx.storage.get("state")) ?? { count: 0 });
+      return Response.json(
+        (await this.ctx.storage.get("state")) ?? { count: 0 },
+      );
     }
-    if (url.pathname === "/__mock/release-relay-stream" && request.method === "POST") {
+    if (
+      url.pathname === "/__mock/release-relay-stream" &&
+      request.method === "POST"
+    ) {
       if (!this.releaseRelayStream?.()) {
         return new Response("No relay stream is waiting", { status: 409 });
       }
@@ -34,7 +40,8 @@ export class MockRealtimeProvider extends DurableObject {
       if (
         requestBody.model === nonStreamAuditLimitModel ||
         requestBody.model === zeroReserveModel ||
-        requestBody.model === flatAuditLimitModel
+        requestBody.model === flatAuditLimitModel ||
+        requestBody.model === unsetModel
       ) {
         const previous = (await this.ctx.storage.get("state")) ?? { count: 0 };
         const body = JSON.stringify({
@@ -57,16 +64,21 @@ export class MockRealtimeProvider extends DurableObject {
           nonStreamAuditLimit: requestBody.model === nonStreamAuditLimitModel,
           zeroReserve: requestBody.model === zeroReserveModel,
           flatAuditLimit: requestBody.model === flatAuditLimitModel,
+          unsetModel: requestBody.model === unsetModel,
         });
         const responseHeaders = { "content-type": "application/json" };
-        if (requestBody.model !== zeroReserveModel) {
+        if (
+          requestBody.model !== zeroReserveModel &&
+          requestBody.model !== unsetModel
+        ) {
           responseHeaders["content-length"] = "2048";
         }
         return new Response(body, {
           headers: responseHeaders,
         });
       }
-      const failAfterFirstChunk = requestBody.model === "gpt-runtime-stream-error";
+      const failAfterFirstChunk =
+        requestBody.model === "gpt-runtime-stream-error";
       const failAfterUsageChunk =
         requestBody.model === "gpt-runtime-stream-usage-error";
       const previous = (await this.ctx.storage.get("state")) ?? { count: 0 };

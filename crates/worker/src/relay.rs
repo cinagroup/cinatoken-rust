@@ -1690,8 +1690,17 @@ async fn model_names_for_authenticated_token(
     db: &D1Database,
     auth: &AuthenticatedToken,
 ) -> Result<Vec<String>, worker::Result<Response>> {
+    let pricing = flat_model_admission_config(db, auth.accepts_unset_ratio_model())
+        .await
+        .map_err(worker_error_response)?;
+    let tiered_models = crate::d1_repositories::tiered_billing_models(db)
+        .await
+        .map_err(worker_error_response)?;
     if auth.model_limits_enabled != 0 {
-        return Ok(csv_model_names(&auth.model_limits));
+        return Ok(csv_model_names(&auth.model_limits)
+            .into_iter()
+            .filter(|model| tiered_models.contains(model) || pricing.admits_model(model))
+            .collect());
     }
     let group = auth.effective_group();
     let groups = if group == "auto" {
@@ -1717,7 +1726,31 @@ async fn model_names_for_authenticated_token(
             push_unique_model(&mut models, model);
         }
     }
-    Ok(models)
+    Ok(models
+        .into_iter()
+        .filter(|model| tiered_models.contains(model) || pricing.admits_model(model))
+        .collect())
+}
+
+async fn flat_model_admission_config(
+    db: &D1Database,
+    accept_unset_ratio_model: bool,
+) -> worker::Result<PricingConfig> {
+    let values = crate::d1_repositories::option_values(
+        db,
+        &["ModelRatio", "ModelPrice", "SelfUseModeEnabled"],
+    )
+    .await?;
+    Ok(PricingConfig::new()
+        .with_json_maps(
+            values[0].as_deref(),
+            None,
+            values[1].as_deref(),
+            None,
+            None,
+            None,
+        )
+        .with_self_use_mode(accept_unset_ratio_model || option_flag_enabled(values[2].as_deref())))
 }
 
 fn model_list_response(format: ModelListFormat, models: &[String]) -> Value {
@@ -2568,6 +2601,7 @@ async fn relay_endpoint_with_auth(
         &db,
         &model,
         &auth.user_group,
+        auth.accepts_unset_ratio_model(),
         &attempt_plan,
         &endpoint.upstream_path,
         json_body.as_ref().unwrap_or(&Value::Null),
@@ -2577,7 +2611,10 @@ async fn relay_endpoint_with_auth(
     )
     .await
     {
-        Ok(plan) => plan,
+        Ok(RelayBillingGroupPlanPreparation::Ready(plan)) => Some(plan),
+        Ok(RelayBillingGroupPlanPreparation::UnconfiguredModel) => {
+            return openai_error_response(format!("model {model} price not configured"), 400);
+        }
         Err(err) => {
             return openai_error_response(format!("relay billing preflight failed: {err}"), 500);
         }
@@ -3179,6 +3216,7 @@ async fn relay_endpoint_with_auth(
                     &db,
                     fallback_model,
                     &auth.user_group,
+                    auth.accepts_unset_ratio_model(),
                     &fallback_attempt_plan,
                     &endpoint.upstream_path,
                     &fallback_request_body,
@@ -3188,7 +3226,13 @@ async fn relay_endpoint_with_auth(
                 )
                 .await
                 {
-                    Ok(plan) => plan,
+                    Ok(RelayBillingGroupPlanPreparation::Ready(plan)) => Some(plan),
+                    Ok(RelayBillingGroupPlanPreparation::UnconfiguredModel) => {
+                        return openai_error_response(
+                            format!("model {fallback_model} price not configured"),
+                            400,
+                        );
+                    }
                     Err(err) => {
                         return openai_error_response(
                             format!("fallback billing preflight failed: {err}"),
@@ -3871,7 +3915,7 @@ pub(crate) fn relay_terminal_attempt_audit_contract_compiled() -> bool {
 }
 
 pub(crate) fn relay_actual_serving_group_billing_contract_compiled() -> bool {
-    RELAY_CACHE_SCHEMA_VERSION == 4
+    RELAY_CACHE_SCHEMA_VERSION == 5
         && TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY == "max_candidate_group"
         && TIERED_BILLING_SELECTED_GROUP_STRATEGY == "selected_group"
         && settle(Quota(20), Quota(10)).refund_quota == Quota(10)
@@ -7140,6 +7184,13 @@ async fn authenticate_playground_session(
         allow_ips: String::new(),
         token_group: group,
         cross_group_retry: 0,
+        accept_unset_ratio_model: i32::from(
+            crate::d1_repositories::get_user_setting(db, user.id)
+                .await
+                .map_err(worker_error_response)?
+                .as_deref()
+                .is_some_and(user_setting_accepts_unset_ratio_model),
+        ),
         username: user.username,
         user_status: user.status,
         user_quota: user.quota,
@@ -10737,6 +10788,11 @@ enum RelayBillingGroupPlan {
     Flat(FlatBillingGroupPlan),
 }
 
+enum RelayBillingGroupPlanPreparation {
+    Ready(RelayBillingGroupPlan),
+    UnconfiguredModel,
+}
+
 impl RelayBillingGroupPlan {
     fn reserve_applied(&self) -> bool {
         match self {
@@ -11066,13 +11122,14 @@ async fn prepare_relay_billing_group_plan(
     db: &D1Database,
     model: &str,
     user_group: &str,
+    accept_unset_ratio_model: bool,
     attempts: &[RelayAttemptPlan],
     endpoint_path: &str,
     request_body: &Value,
     request: &RequestInput,
     is_openai_chat: bool,
     extra_prompt_tokens: i64,
-) -> worker::Result<Option<RelayBillingGroupPlan>> {
+) -> worker::Result<RelayBillingGroupPlanPreparation> {
     let groups = attempts
         .iter()
         .map(|attempt| attempt.group.clone())
@@ -11089,12 +11146,15 @@ async fn prepare_relay_billing_group_plan(
     )
     .await?
     {
-        return Ok(Some(RelayBillingGroupPlan::Tiered(plan)));
+        return Ok(RelayBillingGroupPlanPreparation::Ready(
+            RelayBillingGroupPlan::Tiered(plan),
+        ));
     }
     prepare_flat_billing_group_plan(
         db,
         model,
         user_group,
+        accept_unset_ratio_model,
         attempts,
         endpoint_path,
         request_body,
@@ -11102,7 +11162,6 @@ async fn prepare_relay_billing_group_plan(
         extra_prompt_tokens,
     )
     .await
-    .map(|plan| plan.map(RelayBillingGroupPlan::Flat))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -11110,12 +11169,13 @@ async fn prepare_flat_billing_group_plan(
     db: &D1Database,
     model: &str,
     user_group: &str,
+    accept_unset_ratio_model: bool,
     attempts: &[RelayAttemptPlan],
     endpoint_path: &str,
     request_body: &Value,
     is_openai_chat: bool,
     extra_prompt_tokens: i64,
-) -> worker::Result<Option<FlatBillingGroupPlan>> {
+) -> worker::Result<RelayBillingGroupPlanPreparation> {
     let mut groups = Vec::new();
     let mut candidates = Vec::new();
     for attempt in attempts {
@@ -11128,7 +11188,9 @@ async fn prepare_flat_billing_group_plan(
         }
     }
     if candidates.is_empty() {
-        return Ok(None);
+        return Err(worker::Error::RustError(
+            "flat billing plan has no serving candidates".to_string(),
+        ));
     }
 
     let keys = [
@@ -11146,6 +11208,7 @@ async fn prepare_flat_billing_group_plan(
         "AudioRatio",
         "AudioCompletionRatio",
         "PreConsumedQuota",
+        "SelfUseModeEnabled",
     ];
     let values = crate::d1_repositories::option_values(db, &keys).await?;
     let mut config = PricingConfig::new()
@@ -11162,9 +11225,10 @@ async fn prepare_flat_billing_group_plan(
             values[10].as_deref(),
             values[11].as_deref(),
             values[12].as_deref(),
-        );
-    if !config.has_model_pricing(model) {
-        return Ok(None);
+        )
+        .with_self_use_mode(accept_unset_ratio_model || option_flag_enabled(values[14].as_deref()));
+    if !config.admits_model(model) {
+        return Ok(RelayBillingGroupPlanPreparation::UnconfiguredModel);
     }
     let effective_ratios = crate::d1_repositories::resolve_effective_group_ratios_from_options(
         user_group,
@@ -11232,19 +11296,21 @@ async fn prepare_flat_billing_group_plan(
         "{FLAT_BILLING_CONTRACT_PREFIX}{:x}",
         Sha256::digest(billing_snapshot_json.as_bytes())
     );
-    Ok(Some(FlatBillingGroupPlan {
-        snapshots,
-        billing_snapshot_json,
-        contract_hash,
-        candidate_group_count: groups.len(),
-        estimated_prompt_tokens,
-        reserved_quota,
-        reserve_applied: false,
-        reservation_key: None,
-        owner_generation: None,
-        owner_lease_expires_at: None,
-        owner_deadline_at: None,
-    }))
+    Ok(RelayBillingGroupPlanPreparation::Ready(
+        RelayBillingGroupPlan::Flat(FlatBillingGroupPlan {
+            snapshots,
+            billing_snapshot_json,
+            contract_hash,
+            candidate_group_count: groups.len(),
+            estimated_prompt_tokens,
+            reserved_quota,
+            reserve_applied: false,
+            reservation_key: None,
+            owner_generation: None,
+            owner_lease_expires_at: None,
+            owner_deadline_at: None,
+        }),
+    ))
 }
 
 /// Execute one fixed staging-smoke billing plan through the same D1 reserve,
@@ -11997,6 +12063,26 @@ fn fixed_price_request_multiplier(
         body.get("n").and_then(Value::as_u64)
     };
     image_count.unwrap_or(1).max(1) as f64
+}
+
+fn option_flag_enabled(raw: Option<&str>) -> bool {
+    raw.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "t" | "true"
+        )
+    })
+}
+
+fn user_setting_accepts_unset_ratio_model(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw.trim())
+        .ok()
+        .and_then(|value| {
+            value
+                .get("accept_unset_model_ratio_model")
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 fn tiered_billing_metadata(
@@ -14073,6 +14159,7 @@ mod tests {
             allow_ips: String::new(),
             token_group: "default".to_string(),
             cross_group_retry: 0,
+            accept_unset_ratio_model: 0,
             username: "user".to_string(),
             user_status: 1,
             user_quota: 100,
@@ -18361,6 +18448,24 @@ mod tests {
             ),
             1.0
         );
+    }
+
+    #[test]
+    fn unset_model_policy_inputs_are_strict_and_go_compatible() {
+        assert!(option_flag_enabled(Some("true")));
+        assert!(option_flag_enabled(Some("T")));
+        assert!(option_flag_enabled(Some("1")));
+        assert!(!option_flag_enabled(Some("on")));
+        assert!(!option_flag_enabled(Some("false")));
+        assert!(!option_flag_enabled(None));
+
+        assert!(user_setting_accepts_unset_ratio_model(
+            r#"{"accept_unset_model_ratio_model":true}"#
+        ));
+        assert!(!user_setting_accepts_unset_ratio_model(
+            r#"{"accept_unset_model_ratio_model":"true"}"#
+        ));
+        assert!(!user_setting_accepts_unset_ratio_model("not-json"));
     }
 
     #[test]

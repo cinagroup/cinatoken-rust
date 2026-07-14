@@ -156,7 +156,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0029_flat_billing_intents.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0030_billing_contract_immutability.sql";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
     "migration_0026_applied",
     "legacy_workers_drained",
@@ -197,6 +197,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0027_realtime_usage_reconciliation.sql",
     "0028_realtime_usage_reconciliation_resolution.sql",
     "0029_flat_billing_intents.sql",
+    "0030_billing_contract_immutability.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -807,8 +808,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let relay_flat_billing_intent_runtime_ready = relay_flat_billing_intent_compiled
         && relay_flat_billing_intent_schema_ready
         && relay_billing_finalization_runtime_ready;
-    // Intent durability is implemented, but decimal finalization, unset-ratio
-    // policy, and every provider OtherRatios branch still block Go cutover.
+    // Intent durability, decimal finalization, and unset-model admission are
+    // implemented. Audio usage, image size/quality/actual-count, tool fees,
+    // provider OtherRatios, and immutable golden evidence still block cutover.
     let relay_flat_billing_go_parity_ready = false;
     let relay_flat_billing_intent_staging_verified =
         env_flag(&env, RELAY_FLAT_BILLING_INTENT_STAGING_VERIFIED_ENV);
@@ -3984,7 +3986,10 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(EXPECTED_D1_MIGRATION, "0029_flat_billing_intents.sql");
+        assert_eq!(
+            EXPECTED_D1_MIGRATION,
+            "0030_billing_contract_immutability.sql"
+        );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")
@@ -4041,6 +4046,9 @@ mod tests {
         assert!(flat_billing_intents.contains("ADD COLUMN billing_snapshot_json"));
         assert!(flat_billing_intents.contains("relay_flat_billing_snapshot_insert_guard"));
         assert!(flat_billing_intents.contains("relay_flat_billing_snapshot_update_guard"));
+        let billing_contract_immutability =
+            include_str!("../../../migrations/d1/0030_billing_contract_immutability.sql");
+        assert!(billing_contract_immutability.contains("relay_billing_contract_immutable_guard"));
     }
 
     #[test]

@@ -41,6 +41,8 @@ const relayFlatAuditLimitModel = "gpt-runtime-flat-audit-limit";
 const relayFlatAuditLimitToken = "sk-runtime-flat-audit-limit";
 const relayFixedAudioModel = "tts-runtime-fixed-price";
 const relayFixedAudioToken = "sk-runtime-fixed-audio";
+const relayUnsetModel = "gpt-runtime-unset-model";
+const relayUnsetToken = "sk-runtime-unset-model";
 const relayCohereConsumedLimitModel = "rerank-runtime-cohere-consumed-limit";
 const relayCohereConsumedLimitToken = "sk-runtime-cohere-consumed-limit";
 
@@ -1268,9 +1270,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 29,
-        d1_expected_migration:
-          "0029_flat_billing_intents.sql",
+        d1_migration_applied_count: 30,
+        d1_expected_migration: "0030_billing_contract_immutability.sql",
         d1_migration_ready: true,
         relay_billing_prebind_owner_generation_contract_version: 1,
         relay_billing_prebind_owner_generation_compiled: true,
@@ -1643,9 +1644,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      choices: [
-        { message: { role: "assistant", content: "bounded result" } },
-      ],
+      choices: [{ message: { role: "assistant", content: "bounded result" } }],
     });
 
     const settled = await waitForRelayTerminalByModel(
@@ -1708,6 +1707,14 @@ describe("Rust Durable Object lifecycle contracts", () => {
       { method: "POST" },
     );
 
+    const modelsResponse = await SELF.fetch(
+      "https://cinatoken.test/v1/models",
+      { headers: { authorization: `Bearer ${relayZeroReserveToken}` } },
+    );
+    expect(modelsResponse.status).toBe(200);
+    const models = await modelsResponse.json();
+    expect(models.data.map((item) => item.id)).toContain(relayZeroReserveModel);
+
     const response = await SELF.fetch(
       "https://cinatoken.test/v1/chat/completions",
       {
@@ -1725,9 +1732,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      choices: [
-        { message: { role: "assistant", content: "bounded result" } },
-      ],
+      choices: [{ message: { role: "assistant", content: "bounded result" } }],
     });
 
     const settled = await waitForRelayTerminalByModel(
@@ -1747,13 +1752,10 @@ describe("Rust Durable Object lifecycle contracts", () => {
       request_count: 1,
     });
     expect(settled.token).toMatchObject({
-      remain_quota:
-        account.tokenRemainQuota - settled.reservation.final_quota,
+      remain_quota: account.tokenRemainQuota - settled.reservation.final_quota,
       used_quota: settled.reservation.final_quota,
     });
-    expect(settled.channel.used_quota).toBe(
-      settled.reservation.final_quota,
-    );
+    expect(settled.channel.used_quota).toBe(settled.reservation.final_quota);
     expect(settled.log).toMatchObject({
       usageSource: "upstream",
       finalizationTransport: "billing_queue",
@@ -1844,6 +1846,156 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   }, 30_000);
 
+  it("rejects an unconfigured flat model before provider or ledger mutation", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayUnsetModel,
+      token: relayUnsetToken,
+      billingExpression: null,
+      pricingOptions: { ModelRatio: {}, ModelPrice: {} },
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const modelsResponse = await SELF.fetch(
+      "https://cinatoken.test/v1/models",
+      {
+        headers: { authorization: `Bearer ${relayUnsetToken}` },
+      },
+    );
+    expect(modelsResponse.status).toBe(200);
+    await expect(modelsResponse.json()).resolves.toMatchObject({ data: [] });
+
+    const response = await requestUnsetFlatModel();
+    expect(response.status).toBe(400);
+    await expect(response.text()).resolves.toContain("price not configured");
+    await expect(providerState()).resolves.toMatchObject({ count: 0 });
+
+    const [user, token, channel, reservation, log] = await Promise.all([
+      env.DB.prepare(
+        "SELECT quota, used_quota, request_count FROM users WHERE id = 1",
+      ).first(),
+      env.DB.prepare(
+        "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
+      ).first(),
+      env.DB.prepare("SELECT used_quota FROM channels WHERE id = 43").first(),
+      env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM relay_billing_reservations",
+      ).first(),
+      env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM logs WHERE type = 2",
+      ).first(),
+    ]);
+    expect(user).toMatchObject({
+      quota: account.userQuota,
+      used_quota: 0,
+      request_count: 0,
+    });
+    expect(token).toMatchObject({
+      remain_quota: account.tokenRemainQuota,
+      used_quota: 0,
+    });
+    expect(channel.used_quota).toBe(0);
+    expect(reservation.count).toBe(0);
+    expect(log.count).toBe(0);
+  }, 30_000);
+
+  it.each([
+    {
+      policy: "site self-use",
+      acceptUnsetRatioModel: false,
+      selfUseModeEnabled: true,
+    },
+    {
+      policy: "user AcceptUnsetRatioModel",
+      acceptUnsetRatioModel: true,
+      selfUseModeEnabled: false,
+    },
+  ])(
+    "admits an unconfigured flat model through $policy at ratio 37.5",
+    async ({ acceptUnsetRatioModel, selfUseModeEnabled }) => {
+      await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+      const account = await seedStreamingRelayBillingGateway({
+        model: relayUnsetModel,
+        token: relayUnsetToken,
+        billingExpression: null,
+        acceptUnsetRatioModel,
+        pricingOptions: {
+          ModelRatio: {},
+          ModelPrice: {},
+          SelfUseModeEnabled: selfUseModeEnabled,
+        },
+      });
+      await env.REALTIME_PROVIDER_MOCK.fetch(
+        "https://realtime-provider-mock/__mock/reset",
+        { method: "POST" },
+      );
+
+      const modelsResponse = await SELF.fetch(
+        "https://cinatoken.test/v1/models",
+        { headers: { authorization: `Bearer ${relayUnsetToken}` } },
+      );
+      expect(modelsResponse.status).toBe(200);
+      const models = await modelsResponse.json();
+      expect(models.data.map((item) => item.id)).toContain(relayUnsetModel);
+
+      const response = await requestUnsetFlatModel();
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        choices: [
+          { message: { role: "assistant", content: "bounded result" } },
+        ],
+      });
+
+      const state = await waitForNonTieredRelayLog(relayUnsetModel);
+      expect(state.reservation).toMatchObject({
+        billing_kind: "flat",
+        status: "settled",
+        request_accounted: 1,
+      });
+      expect(state.reservation.pre_consumed_quota).toBeGreaterThan(0);
+      expect(state.reservation.final_quota).toBeGreaterThan(0);
+      expect(state.log).toMatchObject({
+        billingPending: false,
+        usageSource: "upstream",
+        flatBillingMode: "per_token",
+      });
+      expect(state.user).toMatchObject({
+        quota: account.userQuota - state.reservation.final_quota,
+        used_quota: state.reservation.final_quota,
+        request_count: 1,
+      });
+      const frozen = JSON.parse(state.reservation.billing_snapshot_json)
+        .default["1"];
+      expect(frozen).toMatchObject({ model_ratio: 37.5 });
+      await expect(
+        env.DB.prepare(
+          `UPDATE relay_billing_reservations
+           SET billing_snapshot_json = '{}'
+           WHERE model_name = ?1`,
+        )
+          .bind(relayUnsetModel)
+          .run(),
+      ).rejects.toThrow();
+      const immutable = await env.DB.prepare(
+        `SELECT billing_snapshot_json
+         FROM relay_billing_reservations WHERE model_name = ?1`,
+      )
+        .bind(relayUnsetModel)
+        .first();
+      expect(immutable.billing_snapshot_json).toBe(
+        state.reservation.billing_snapshot_json,
+      );
+      await expect(providerState()).resolves.toMatchObject({
+        count: 1,
+        unsetModel: true,
+      });
+    },
+    30_000,
+  );
+
   it("reserves usage-less fixed-price audio before returning and settles it durably", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const account = await seedStreamingRelayBillingGateway({
@@ -1859,18 +2011,21 @@ describe("Rust Durable Object lifecycle contracts", () => {
       { method: "POST" },
     );
 
-    const response = await SELF.fetch("https://cinatoken.test/v1/audio/speech", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${relayFixedAudioToken}`,
-        "content-type": "application/json",
+    const response = await SELF.fetch(
+      "https://cinatoken.test/v1/audio/speech",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${relayFixedAudioToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: relayFixedAudioModel,
+          input: "runtime fixed price audio",
+          voice: "alloy",
+        }),
       },
-      body: JSON.stringify({
-        model: relayFixedAudioModel,
-        input: "runtime fixed price audio",
-        voice: "alloy",
-      }),
-    });
+    );
     expect(response.status).toBe(200);
     const audio = new TextDecoder().decode(await response.arrayBuffer());
     expect(audio).toBe("runtime-audio");
@@ -2902,6 +3057,21 @@ function providerState() {
   ).then((response) => response.json());
 }
 
+function requestUnsetFlatModel() {
+  return SELF.fetch("https://cinatoken.test/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${relayUnsetToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: relayUnsetModel,
+      stream: false,
+      messages: [{ role: "user", content: "runtime unset admission" }],
+    }),
+  });
+}
+
 async function seedAuthenticatedRealtimeGateway({
   mockFault = "runtime_detached",
   upstreamModel = realtimeModel,
@@ -2968,6 +3138,7 @@ async function seedStreamingRelayBillingGateway({
   channelType = 1,
   billingExpression = 'tier("runtime_stream", p * 2 + c * 8)',
   pricingOptions = {},
+  acceptUnsetRatioModel = false,
 } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const userQuota = 1_000_000;
@@ -2976,10 +3147,16 @@ async function seedStreamingRelayBillingGateway({
     env.DB.prepare(
       `INSERT INTO users
         (id, username, password, display_name, role, status, email, quota,
-         used_quota, request_count, "group", aff_code, created_at, deleted_at)
+         used_quota, request_count, "group", aff_code, setting, created_at, deleted_at)
        VALUES (1, 'runtime-stream-user', 'disabled-runtime-user', 'Runtime Stream',
-         1, 1, '', ?1, 0, 0, 'default', 'stream01', ?2, NULL)`,
-    ).bind(userQuota, now),
+         1, 1, '', ?1, 0, 0, 'default', 'stream01', ?3, ?2, NULL)`,
+    ).bind(
+      userQuota,
+      now,
+      JSON.stringify({
+        accept_unset_model_ratio_model: acceptUnsetRatioModel,
+      }),
+    ),
     env.DB.prepare(
       `INSERT INTO tokens
         (id, user_id, "key", status, name, created_time, accessed_time,
@@ -3017,9 +3194,10 @@ async function seedStreamingRelayBillingGateway({
   }
   for (const [key, value] of Object.entries(pricingOptions)) {
     statements.push(
-      env.DB.prepare(
-        `INSERT INTO options ("key", value) VALUES (?1, ?2)`,
-      ).bind(key, JSON.stringify(value)),
+      env.DB.prepare(`INSERT INTO options ("key", value) VALUES (?1, ?2)`).bind(
+        key,
+        JSON.stringify(value),
+      ),
     );
   }
   await env.DB.batch(statements);
@@ -3254,8 +3432,7 @@ async function waitForRelayTerminalByModel(modelName, expectedStatus) {
     if (typeof log?.other === "string" && log.other.length > 0) {
       const other = JSON.parse(log.other);
       usageSource = other?.usage_source ?? null;
-      nonStreamUsageParseFailed =
-        other?.non_stream_usage_parse_failed === true;
+      nonStreamUsageParseFailed = other?.non_stream_usage_parse_failed === true;
       parseFallbackReason =
         other?.tiered_billing_parse_fallback?.reason ?? null;
       finalizationTransport = other?.billing_finalization_transport ?? null;
@@ -3285,36 +3462,38 @@ async function waitForNonTieredRelayLog(modelName) {
   const deadline = Date.now() + 5_000;
   let state;
   while (Date.now() < deadline) {
-    const [user, token, channel, reservationCount, reservation, log] = await Promise.all([
-      env.DB.prepare(
-        "SELECT quota, used_quota, request_count FROM users WHERE id = 1",
-      ).first(),
-      env.DB.prepare(
-        "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
-      ).first(),
-      env.DB.prepare("SELECT used_quota FROM channels WHERE id = 43").first(),
-      env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM relay_billing_reservations WHERE model_name = ?1",
-      )
-        .bind(modelName)
-        .first(),
-      env.DB.prepare(
-        `SELECT billing_kind, expr_hash, length(billing_snapshot_json) AS snapshot_bytes,
+    const [user, token, channel, reservationCount, reservation, log] =
+      await Promise.all([
+        env.DB.prepare(
+          "SELECT quota, used_quota, request_count FROM users WHERE id = 1",
+        ).first(),
+        env.DB.prepare(
+          "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
+        ).first(),
+        env.DB.prepare("SELECT used_quota FROM channels WHERE id = 43").first(),
+        env.DB.prepare(
+          "SELECT COUNT(*) AS count FROM relay_billing_reservations WHERE model_name = ?1",
+        )
+          .bind(modelName)
+          .first(),
+        env.DB.prepare(
+          `SELECT billing_kind, expr_hash, billing_snapshot_json,
+                length(billing_snapshot_json) AS snapshot_bytes,
                 status, pre_consumed_quota, final_quota, request_accounted
          FROM relay_billing_reservations
          WHERE model_name = ?1
          ORDER BY created_at DESC LIMIT 1`,
-      )
-        .bind(modelName)
-        .first(),
-      env.DB.prepare(
-        `SELECT quota, other FROM logs
+        )
+          .bind(modelName)
+          .first(),
+        env.DB.prepare(
+          `SELECT quota, other FROM logs
          WHERE model_name = ?1 AND type = 2
          ORDER BY id DESC LIMIT 1`,
-      )
-        .bind(modelName)
-        .first(),
-    ]);
+        )
+          .bind(modelName)
+          .first(),
+      ]);
     let parsedLog = null;
     if (typeof log?.other === "string" && log.other.length > 0) {
       const other = JSON.parse(log.other);
@@ -3624,7 +3803,9 @@ async function realtimeBillingState(reservationKey) {
     )
       .bind(reservationKey)
       .first(),
-    env.DB.prepare("SELECT quota, request_count FROM users WHERE id = 1").first(),
+    env.DB.prepare(
+      "SELECT quota, request_count FROM users WHERE id = 1",
+    ).first(),
     env.DB.prepare(
       "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
     ).first(),
@@ -3634,7 +3815,9 @@ async function realtimeBillingState(reservationKey) {
 
 async function realtimeBillingMutationCounts() {
   const [replay, audit] = await Promise.all([
-    env.DB.prepare("SELECT COUNT(*) AS count FROM realtime_settlement_replays").first(),
+    env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM realtime_settlement_replays",
+    ).first(),
     env.DB.prepare(
       "SELECT COUNT(*) AS count FROM logs WHERE channel_id = 42 AND type = 2",
     ).first(),

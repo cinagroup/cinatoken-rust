@@ -1,13 +1,13 @@
 # Source Pricing And Ratio Resolution Parity (G4, non-tiered)
 
-Date: 2026-06-25
+Date: 2026-07-14
 
 Status: canonical, source-derived specification of the **non-tiered (legacy
 ratio/price) billing path** — the default for most models, distinct from the
-tiered expression engine in `docs/source-billing-expr-parity.md`. This is the
-`quota=0 / billing_pending` gap flagged there: until Rust implements this path,
-any ratio/price-billed model cannot settle. Highest-priority remaining billing
-work.
+tiered expression engine in `docs/source-billing-expr-parity.md`. The core
+ratio/price path, frozen ledger intent, and unknown-model admission policy are
+implemented locally. Provider-specific multipliers and source-generated golden
+evidence remain cutover blockers.
 
 ## Source Of Truth
 
@@ -73,8 +73,9 @@ porting; the variable set above is authoritative.)
 1. **Unconfigured model ratio defaults to `37.5`**, but `GetModelRatio` returns
    `success = SelfUseModeEnabled`. So outside self-use mode an unconfigured model
    is treated as *not configured* and errors (`modelPriceNotConfiguredError`)
-   **unless** the user's `AcceptUnsetRatioModel` is set. Rust must reproduce this
-   tri-state (configured / default-37.5-in-self-use / error).
+   **unless** the user's `AcceptUnsetRatioModel` is set. Rust reproduces this
+   tri-state (configured / admitted default-37.5 / fail-closed error) and uses
+   the same decision for model visibility.
 2. **Hardcoded completion ratios.** `GetCompletionRatio` consults a built-in
    per-model table (`getHardcodedCompletionModelRatio`) before/around the options
    map. Rust must port the hardcoded table, not only the options map.
@@ -111,8 +112,8 @@ porting; the variable set above is authoritative.)
 4. **Sub-category ratios mirror the tiered variables** (`cr`/`cc`/`cc1h`/`img`/
    `ai`/`ao`) so usage parsing (`docs/source-usage-parsing-parity.md`) feeds both
    paths; reuse the same parsed `Usage`.
-5. **Default-37.5 + self-use/AcceptUnsetRatio tri-state** is an easy divergence
-   that changes whether unconfigured models bill or error.
+5. **Default-37.5 + self-use/AcceptUnsetRatio tri-state** is implemented and
+   regression-tested because it changes whether unknown models bill or error.
 
 ## Rust Status And Checklist
 
@@ -155,17 +156,20 @@ gaps vs Go (the actual remaining work):
   Go's buggy `0` (strict parity, makes them free) or keep `0.5` (corrected);
   needs a billing call. The small sonar variants use `0.2 / 1000 * USD`
   (float) → `0.1` in both.
-- **Default-table base layer + 37.5/self-use tri-state** — DONE 2026-06-26.
-  Go's `InitRatioSettings` seeds the operator ratio/price/completion maps with
-  hardcoded defaults as a base the operator `options` overrides per-entry.
-  `pricing.rs::{model_ratio,model_price,completion_ratio}` now consult
-  `cinatoken_core::default_ratios` (`defaultModelRatio` ~250 entries,
-  `defaultModelPrice`, `defaultCompletionRatio`) as a fallback beneath the
-  operator map; `with_self_use_mode(true)` reproduces Go's `37.5` unconfigured
-  default (`SelfUseModeEnabled`); `worker/relay.rs::has_pricing` now counts a
-  default-table model as priced so e.g. unconfigured `gpt-4o` bills at 1.25
-  instead of being treated as free. Still pending: `AcceptUnsetRatioModel`
-  per-user override + the `modelPriceNotConfigured` error outside self-use.
+- **Option-map replacement + 37.5 admission tri-state** — DONE 2026-07-14.
+  Go seeds defaults only when an option row is absent. A present row is loaded
+  through the update setter and replaces the whole runtime map, so `{}` is an
+  intentional empty map rather than a no-op overlay. Rust now preserves this
+  distinction for model, completion, price, cache/create-cache, image, and
+  audio maps; explicit zero remains configured. Unknown models fail before
+  provider egress unless `SelfUseModeEnabled` or the authenticated user's
+  `accept_unset_model_ratio_model` policy admits them. Admitted unknowns use
+  ratio `37.5`, and `/v1/models` applies the same visibility policy.
+- **Terminal decimal parity** — DONE for the currently implemented flat formula
+  2026-07-14. Rust converts shortest finite decimal inputs to exact decimal
+  intermediates and rounds the final quota half away from zero, matching Go's
+  `shopspring/decimal` boundary behavior. Provider-specific formula coverage is
+  still incomplete and therefore does not open the cutover gate.
 - Sub-category settlement arithmetic + tables — DONE 2026-06-26. The Go
   `defaultCacheRatio`/`defaultCreateCacheRatio`/`defaultImageRatio`/
   `defaultAudioRatio`/`defaultAudioCompletionRatio` tables are ported to
@@ -176,8 +180,9 @@ gaps vs Go (the actual remaining work):
   `flat.rs::compute_flat_quota` now prices each sub-category at its own ratio:
   for non-Anthropic usage it SUBTRACTS cache/cache-write/image tokens from the
   prompt base and re-adds them at `cacheRatio`/`cacheCreationRatio`/
-  `imageRatio`; Anthropic usage keeps the no-subtract semantic with the 5m/1h
-  split. Still pending: Gemini separate audio-input pricing
+  `imageRatio`; Anthropic usage keeps the no-subtract semantic, uses the generic
+  create-cache ratio for unbucketed tokens, and uses dedicated ratios only for
+  explicit 5m/1h buckets. Still pending: Gemini separate audio-input pricing
   (`GetGeminiInputAudioPricePerMillionTokens`), `OtherRatios` (image `n`
   multiplier), and `ToolCallSurcharge` (web/file search, image-gen call) — all
   niche additive adjustments.
@@ -186,28 +191,22 @@ Remaining checklist:
 
 1. Three-way branch (per-call / tiered / per-token) — done; verify the
    `GetModelPrice`-vs-billing-mode keying matches Go.
-2. `FormatMatchingModelName` + the hardcoded completion-ratio table are wired
-   (verified 2026-06-26) into `pricing.rs::completion_ratio` with Go's
-   authoritative > options-map > soft-default precedence. The default-table
-   base layer + 37.5/self-use tri-state are also wired (2026-06-26): the Go
-   `defaultModelRatio`/`Price`/`CompletionRatio` tables are ported as
-   `cinatoken_core::default_ratios` and consulted beneath the operator map,
-   and `with_self_use_mode` reproduces the unconfigured-37.5 path. The
-   compact-suffix (`-openai-compact`) wildcard fallback is wired (2026-06-26)
-   into `model_ratio`/`model_price`, and `has_model_pricing` consults the same
-   layers so the billability gate agrees. Still pending: the
-   `AcceptUnsetRatioModel` per-user override + `modelPriceNotConfigured` error
-   outside self-use.
-3. Load ratio/price/group maps from `options` into a cached, invalidated store
-   (CONFIG_KV/DO); refresh on admin option mutation.
+2. `FormatMatchingModelName`, hardcoded completion precedence, exact option-map
+   replacement, compact suffixes, and site/user unset-model admission are wired.
+   The relay and model-list billability gates use the same decision.
+3. Pricing option maps are loaded from D1 and participate in the existing
+   token/channel read-through lifecycle. Keep mutation invalidation and cache
+   schema versioning covered whenever another admission field is added.
 4. Per-token settlement arithmetic with the full sub-category ratio set — DONE
    2026-06-26 in `flat.rs::compute_flat_quota` (cache-read/cache-write/image at
    their own ratios, base subtraction for non-Anthropic, 5m/1h split for
    Anthropic). Still pending: the `OtherRatios` multiplier and
    `ToolCallSurcharge` additive adjustments (niche).
 5. Implement the free-model rule and `EnableFreeModelPreConsume`.
-6. Add Go<->Rust golden fixtures: per-call, per-token, each sub-category ratio,
-   unconfigured (self-use vs error), free model, group ratio 0/fractional/large.
+6. Add an immutable Go-generated flat manifest covering per-call, per-token,
+   every sub-category, site/user unknown-model admission, free models, and group
+   ratio 0/fractional/large. Existing Go expression and default-table fixtures
+   do not satisfy this cutover requirement.
 
 ## Wire-In
 

@@ -4,7 +4,7 @@ use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayC
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use worker::{D1Database, D1Result, D1Type};
 
 pub(crate) const BILLING_MODE_OPTION_KEY: &str = "billing_setting.billing_mode";
@@ -573,6 +573,11 @@ pub async fn authenticate_token(
           t.allow_ips AS allow_ips,
           t."group" AS token_group,
           t.cross_group_retry AS cross_group_retry,
+          CASE
+            WHEN json_valid(u.setting) = 1
+             AND json_extract(u.setting, '$.accept_unset_model_ratio_model') = 1
+            THEN 1 ELSE 0
+          END AS accept_unset_ratio_model,
           u.username AS username,
           u.status AS user_status,
           u.quota AS user_quota,
@@ -4824,6 +4829,11 @@ pub async fn tiered_billing_expr_for_model(
     resolve_tiered_billing_expr_for_model(model, values[0].as_deref(), values[1].as_deref())
 }
 
+pub async fn tiered_billing_models(db: &D1Database) -> worker::Result<HashSet<String>> {
+    let values = option_values(db, &[BILLING_MODE_OPTION_KEY, BILLING_EXPR_OPTION_KEY]).await?;
+    resolve_tiered_billing_models(values[0].as_deref(), values[1].as_deref())
+}
+
 pub async fn group_ratio_for_group(db: &D1Database, group: &str) -> worker::Result<f64> {
     if let Some(raw) = option_value(db, GROUP_RATIO_OPTION_KEY).await? {
         if let Some(ratio) = resolve_group_ratio(group, &raw)? {
@@ -4920,6 +4930,24 @@ fn resolve_tiered_billing_expr_for_model(
         .map(str::trim)
         .filter(|expr| !expr.is_empty())
         .map(str::to_string))
+}
+
+fn resolve_tiered_billing_models(
+    billing_mode: Option<&str>,
+    billing_expr: Option<&str>,
+) -> worker::Result<HashSet<String>> {
+    let modes = parse_string_map_option(BILLING_MODE_OPTION_KEY, billing_mode)?;
+    let expressions = parse_string_map_option(BILLING_EXPR_OPTION_KEY, billing_expr)?;
+    Ok(modes
+        .into_iter()
+        .filter_map(|(model, mode)| {
+            (mode.trim() == BILLING_MODE_TIERED_EXPR
+                && expressions
+                    .get(&model)
+                    .is_some_and(|expr| !expr.trim().is_empty()))
+            .then_some(model)
+        })
+        .collect())
 }
 
 fn parse_string_map_option(
@@ -13179,6 +13207,20 @@ mod tests {
             .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn lists_only_models_with_complete_tiered_contracts() {
+        let models = resolve_tiered_billing_models(
+            Some(
+                r#"{"tiered":"tiered_expr","ratio":"ratio","missing":"tiered_expr","blank":"tiered_expr"}"#,
+            ),
+            Some(r#"{"tiered":"tier(\"base\", p)","ratio":"tier(\"base\", p)","blank":"  "}"#),
+        )
+        .unwrap();
+
+        assert_eq!(models.len(), 1);
+        assert!(models.contains("tiered"));
     }
 
     #[test]

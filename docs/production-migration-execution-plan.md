@@ -330,8 +330,8 @@ Corrected production rules:
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0029, `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 28/28 and 30-table replay are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0030, `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 30/30 and 30-table replay are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go for production-shaped inputs | Golden fixtures, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -345,7 +345,7 @@ Corrected production rules:
 | Workstream | Current Status | Production Target | Next Evidence |
 | --- | --- | --- | --- |
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
-| Data migration | Partial: local 20/20 Wrangler apply and 26-table SQLite replay pass | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 20/20 staging apply, real source inventory, staging import report, and rollback point |
+| Data migration | Partial: local exact-set SQLite replay passes 30/30 migrations, 30 tables, 139 checked columns, and 27 indexes; historical local Wrangler evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 30/30 staging apply, immutable-contract negative probes, real source inventory, staging import report, and rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
 | Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers plus bounded commit-watermark compaction and a 1.5 MB local JSON guard, but no deployed retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, deployed hot-token window/structured-clone/load/cost report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
@@ -1112,10 +1112,12 @@ enable HTTP recovery after stream-heartbeat proof alone.
 2. Freeze old and new Rust relay admission. Drain Queue/DLQ work and reconcile
    every HTTP billing row until `status='reserved'` is zero. Keep Go/VPS
    authoritative.
-3. Apply the exact migration set through 0029 in isolated staging. The 0026
-   guard must reject a nonzero active count and 0029 must reject an empty flat
-   snapshot while preserving an old tiered writer. Verify 29 migrations, 30
-   tables, 139 checked incremental columns, 27 indexes, and exact-set state.
+3. Apply the exact migration set through 0030 in isolated staging. The 0026
+   guard must reject a nonzero active count, 0029 must reject an empty flat
+   snapshot while preserving an old tiered writer, and 0030 must reject later
+   mutation of reservation identity and financial-contract fields. Verify 30
+   migrations, 30 tables, 139 checked incremental columns, 27 indexes, and
+   exact-set state.
 4. Deploy with Queue, reconcile, orphan recovery, and staging-proof flags false.
    Explicitly configure the reservation deadline and heartbeat. Require owner
    generation compiled/schema/configured true and staging/cutover false.
@@ -1132,7 +1134,7 @@ enable HTTP recovery after stream-heartbeat proof alone.
 
 Rollback order is recovery off, reconcile off, Queue finalization off, new Rust
 admission off, traffic to Go/VPS, then ledger/Queue drain and reconciliation.
-Retain migrations 0026-0029 and the highest generation/Realtime finalization
+Retain migrations 0026-0030 and the highest generation/Realtime finalization
 owner. No remote evidence is
 currently archived, so production remains **NO-GO**.
 
@@ -1142,10 +1144,11 @@ currently archived, so production remains **NO-GO**.
    a separate scoped deploy identity from the readback identity.
 2. Freeze new Realtime admission, drain or explicitly classify every active
    reservation, and archive redacted counts by status/finalization owner.
-3. Apply 0027, 0028, then 0029 with `REALTIME_SESSION_V1_ENABLED=false`, settlement
+3. Apply 0027 through 0030 with `REALTIME_SESSION_V1_ENABLED=false`, settlement
    writes false, reconciliation mutation false, and global orphan recovery
-   false. Require exact 29-file migration readback, 139 checked columns, 27
-   indexes, and both reconciliation capability signals compiled/schema-ready.
+   false. Require exact 30-file migration readback, 139 checked columns, 27
+   indexes, immutable-contract negative probes, and both reconciliation
+   capability signals compiled/schema-ready.
 4. Enable one isolated fixture. Replay valid completed/cancelled/failed/
    incomplete usage plus missing identity, missing/null/malformed/negative/
    inconsistent/completed-zero usage, D1 ambiguity, client disconnect, provider
@@ -1199,3 +1202,38 @@ Shadow enablement is blocked until step 3 produces deployed load, window-
 duration, structured-clone-size, cost, eviction, and alert evidence;
 then staging may set a bounded allowlist before opening the shadow gate. This is
 not staging evidence and does not change the production **NO-GO** decision.
+
+## 2026-07-14 Flat Pricing Admission And 0030 Rollout
+
+1. Keep Go/VPS authoritative and rotate the exposed Cloudflare credential.
+   Preserve separate least-privilege deploy and readback identities; never put
+   their values in the evidence packet.
+2. Generate an immutable flat-pricing manifest from Go baseline
+   `73652508abc5`. Cover fixed and per-token models, every usage sub-category,
+   site/user unknown-model policy, zero/free values, all enabled providers, and
+   the exact final integer quota. Sign and version the fixture with source hash.
+3. Close the remaining provider formulas in Rust: per-token audio,
+   image size/quality/actual count and Ali `prompt_extend`, actual tool-call
+   surcharge, provider `OtherRatios`, and usage-source rules. Keep
+   `relay_flat_billing_go_parity_ready` hard false until the manifest is exact.
+4. Apply migrations through 0030 in isolated staging with all Queue, recovery,
+   reconciliation, and staging-proof gates false. Archive exact-set readback,
+   then prove direct D1 attempts to mutate every protected financial field are
+   rejected without changing the row.
+5. Run strict, site-self-use, and per-user-unset admission across direct,
+   AI Gateway, and WFP. For rejection require zero provider calls and zero
+   ledger/quota/audit mutation; for admission require one frozen ratio 37.5,
+   one provider call, and one terminal Queue/D1 outcome.
+6. Replay fixed and per-token success, body limit, malformed usage, client
+   abort, upstream idle, clean EOF, Queue duplicate, DLQ, D1 ambiguity, Worker
+   interruption, and disable-first rollback. Correlate provider invoice, user,
+   token, channel, request count, reservation, Queue, and audit identities.
+7. Promote the staging-proof flag only after signed zero-delta reconciliation,
+   alert/runbook ownership, retention evidence, and rollback rehearsal. The
+   proof flag cannot override the compiled source-parity predicate.
+8. Allow a bounded internal-token canary only after G1-G6 pass. Broader rollout
+   still requires G7 and G8 approval; any unexplained financial delta returns
+   traffic to Go/VPS and drains the Rust ledger before retry.
+
+No authenticated remote evidence is currently archived. This sequence is a
+runbook, not a release authorization; production remains **NO-GO**.

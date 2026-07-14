@@ -136,6 +136,8 @@ REQUIRED_COLUMNS = {
         "endpoint_path",
         "request_id_hash",
         "expr_hash",
+        "billing_kind",
+        "billing_snapshot_json",
         "candidate_group_count",
         "reservation_strategy",
         "pre_consumed_quota",
@@ -261,6 +263,7 @@ def main() -> int:
     lease_guard_verified = False
     segment_guard_verified = False
     relay_owner_guard_verified = False
+    flat_intent_guard_verified = False
     if not args.schema:
         verify_realtime_lease_migration_guard(schema_paths)
         lease_guard_verified = True
@@ -275,6 +278,10 @@ def main() -> int:
             conn.executescript(schema_path.read_text(encoding="utf-8"))
         except sqlite3.Error as error:
             raise SystemExit(f"migration failed: {schema_path}: {error}") from error
+
+    if not args.schema:
+        verify_flat_billing_intent_guard(conn)
+        flat_intent_guard_verified = True
 
     missing = [
         table
@@ -318,6 +325,8 @@ def main() -> int:
         message += " + 0021 bridge-segment guard"
     if relay_owner_guard_verified:
         message += " + 0026 relay-owner drain guard"
+    if flat_intent_guard_verified:
+        message += " + 0029 flat-intent snapshot guard"
 
     if args.seed:
         for value in args.seed:
@@ -346,6 +355,61 @@ def table_exists(conn: sqlite3.Connection, table: str) -> bool:
         (table,),
     ).fetchone()
     return row is not None
+
+
+def trigger_exists(conn: sqlite3.Connection, trigger: str) -> bool:
+    row = conn.execute(
+        "select 1 from sqlite_master where type = 'trigger' and name = ?",
+        (trigger,),
+    ).fetchone()
+    return row is not None
+
+
+def verify_flat_billing_intent_guard(conn: sqlite3.Connection) -> None:
+    for trigger in (
+        "relay_flat_billing_snapshot_insert_guard",
+        "relay_flat_billing_snapshot_update_guard",
+    ):
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0029 flat billing intent trigger missing: {trigger}")
+
+    conn.execute(
+        """
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, model_name, lease_expires_at, created_at, updated_at
+        ) VALUES ('legacy-tiered-writer', 1, 'guard-model', 100, 1, 1)
+        """
+    )
+    try:
+        conn.execute(
+            """
+            INSERT INTO relay_billing_reservations (
+              reservation_key, user_id, model_name, lease_expires_at, created_at, updated_at,
+              billing_kind, billing_snapshot_json
+            ) VALUES ('flat-empty-snapshot', 1, 'guard-model', 100, 1, 1, 'flat', '')
+            """
+        )
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise SystemExit("0029 must reject a flat reservation without a frozen snapshot")
+
+    conn.execute(
+        """
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, model_name, lease_expires_at, created_at, updated_at,
+          billing_kind, billing_snapshot_json
+        ) VALUES ('flat-valid-snapshot', 1, 'guard-model', 100, 1, 1, 'flat', '{}')
+        """
+    )
+    try:
+        conn.execute(
+            "UPDATE relay_billing_reservations SET billing_snapshot_json = '' "
+            "WHERE reservation_key = 'flat-valid-snapshot'"
+        )
+    except sqlite3.IntegrityError:
+        return
+    raise SystemExit("0029 must reject clearing a frozen flat billing snapshot")
 
 
 def verify_realtime_lease_migration_guard(schema_paths: list[Path]) -> None:

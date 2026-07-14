@@ -33,6 +33,13 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   d1_migration_ready: false,
   relay_billing_reservation_ledger_compiled: false,
   relay_billing_ledger_status_compiled: false,
+  relay_flat_billing_intent_contract_version: 0,
+  relay_flat_billing_intent_compiled: false,
+  relay_flat_billing_intent_schema_ready: false,
+  relay_flat_billing_intent_runtime_ready: false,
+  relay_flat_billing_go_parity_ready: false,
+  relay_flat_billing_intent_staging_verified: false,
+  relay_flat_billing_intent_cutover_ready: false,
   relay_billing_prebind_owner_generation_compiled: false,
   relay_billing_prebind_owner_generation_configured: false,
   relay_billing_prebind_owner_generation_staging_verified: false,
@@ -95,6 +102,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   quota_coordinator_shadow_token_allowlist_configured: false,
   quota_coordinator_shadow_token_allowlist_valid: true,
   quota_coordinator_shadow_token_count: 0,
+  quota_coordinator_reservation_ledger_only: false,
   quota_coordinator_tiered_only: false,
   quota_coordinator_write_authority_enabled: false,
   quota_coordinator_staging_verified: false,
@@ -177,6 +185,7 @@ describe('Cloudflare platform readiness headline', () => {
       'ai-gateway-implementation': 'AI Gateway',
       'wfp-tenant-implementation': 'WFP tenant',
       'relay-billing-implementation': 'Relay billing ledger',
+      'relay-flat-billing-intent-implementation': 'Relay flat billing intent',
       'relay-billing-owner-generation-compiled':
         'Relay billing owner generation',
       'quota-coordinator-foundation': 'QuotaCoordinator foundation',
@@ -195,6 +204,7 @@ describe('Cloudflare platform readiness headline', () => {
       'quota-coordinator-binding': 'QuotaCoordinator binding',
       'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
       'quota-coordinator-reconciliation': 'QuotaCoordinator reconciliation',
+      'relay-flat-billing-intent-runtime': 'Relay flat billing intent',
       'relay-billing-owner-generation-configured':
         'Relay billing owner generation',
       'ai-gateway-canary': 'AI Gateway canary',
@@ -211,11 +221,14 @@ describe('Cloudflare platform readiness headline', () => {
       'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
       'relay-billing-finalization-replay': 'Relay billing finalization replay',
       'relay-billing-recovery-smoke': 'Relay billing recovery smoke',
+      'relay-flat-billing-intent-staging-proof':
+        'Relay flat billing intent proof',
       'relay-billing-owner-generation-staging-proof':
         'Relay billing owner race proof',
       'ai-gateway-fallback-cutover': 'AI Gateway fallback',
       'task-runner-cutover': 'TaskRunner',
       'relay-billing-recovery-cutover': 'Relay billing recovery',
+      'relay-flat-billing-intent-cutover': 'Relay flat billing intent',
       'relay-billing-owner-generation-cutover':
         'Relay billing owner generation',
       'quota-coordinator-write-authority': 'QuotaCoordinator write authority',
@@ -236,6 +249,8 @@ describe('Cloudflare platform readiness headline', () => {
         d1_migration_ready: true,
         relay_billing_reservation_ledger_compiled: true,
         relay_billing_ledger_status_compiled: true,
+        relay_flat_billing_intent_contract_version: 1,
+        relay_flat_billing_intent_compiled: true,
         relay_billing_prebind_owner_generation_compiled: true,
         relay_billing_stream_lease_renewal_compiled: true,
         relay_billing_stream_lease_heartbeat_configured: true,
@@ -268,7 +283,8 @@ describe('Cloudflare platform readiness headline', () => {
         quota_coordinator_relay_observation_compiled: true,
         quota_coordinator_retention_compaction_compiled: true,
         quota_coordinator_reconciliation_compiled: true,
-        quota_coordinator_tiered_only: true,
+        quota_coordinator_reservation_ledger_only: true,
+        quota_coordinator_tiered_only: false,
         wfp_dispatch_binding_available: true,
         wfp_tenant_supported_routes: ['/v1/responses'],
         wfp_tenant_cutover_guards: ['internal-dispatch'],
@@ -679,6 +695,7 @@ describe('Cloudflare platform readiness headline', () => {
         'blocked',
         'blocked',
         'blocked',
+        'blocked',
       ]
     )
   })
@@ -858,7 +875,8 @@ describe('Cloudflare platform readiness headline', () => {
       makeCapabilities({
         quota_coordinator_contract_version: 1,
         quota_coordinator_foundation_compiled: true,
-        quota_coordinator_tiered_only: true,
+        quota_coordinator_reservation_ledger_only: true,
+        quota_coordinator_tiered_only: false,
       })
     )
 
@@ -893,7 +911,8 @@ describe('Cloudflare platform readiness headline', () => {
       makeCapabilities({
         quota_coordinator_contract_version: 1,
         quota_coordinator_foundation_compiled: true,
-        quota_coordinator_tiered_only: true,
+        quota_coordinator_reservation_ledger_only: true,
+        quota_coordinator_tiered_only: false,
         quota_coordinator_observer_contract_compiled: true,
         quota_coordinator_reserve_observation_compiled: true,
         quota_coordinator_finalization_observation_compiled: true,
@@ -923,7 +942,8 @@ describe('Cloudflare platform readiness headline', () => {
         quota_coordinator_foundation_compiled: true,
         quota_coordinator_observer_contract_compiled: false,
         quota_coordinator_relay_observation_compiled: false,
-        quota_coordinator_tiered_only: true,
+        quota_coordinator_reservation_ledger_only: true,
+        quota_coordinator_tiered_only: false,
         quota_coordinator_staging_verified: true,
         quota_coordinator_shadow_runtime_ready: true,
         quota_coordinator_write_authority_enabled: false,
@@ -972,7 +992,8 @@ describe('Cloudflare platform readiness headline', () => {
       quota_coordinator_shadow_token_allowlist_configured: true,
       quota_coordinator_shadow_token_allowlist_valid: true,
       quota_coordinator_shadow_token_count: 1,
-      quota_coordinator_tiered_only: true,
+      quota_coordinator_reservation_ledger_only: true,
+      quota_coordinator_tiered_only: false,
       quota_coordinator_staging_verified: true,
       quota_coordinator_shadow_runtime_ready: true,
       quota_coordinator_write_authority_enabled: true,
@@ -1013,6 +1034,104 @@ describe('Cloudflare platform readiness headline', () => {
     )
   })
 
+  test('keeps flat billing intent split across four fail-closed stages', () => {
+    const pendingStaging = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_flat_billing_intent_contract_version: 1,
+        relay_flat_billing_intent_compiled: true,
+        relay_flat_billing_intent_schema_ready: true,
+        relay_flat_billing_intent_runtime_ready: true,
+        relay_flat_billing_go_parity_ready: true,
+        relay_flat_billing_intent_staging_verified: false,
+        relay_flat_billing_intent_cutover_ready: true,
+      })
+    )
+    const verified = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_flat_billing_intent_contract_version: 1,
+        relay_flat_billing_intent_compiled: true,
+        relay_flat_billing_intent_schema_ready: true,
+        relay_flat_billing_intent_runtime_ready: true,
+        relay_flat_billing_go_parity_ready: true,
+        relay_flat_billing_intent_staging_verified: true,
+        relay_flat_billing_intent_cutover_ready: true,
+      })
+    )
+    const parityBlocked = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_flat_billing_intent_contract_version: 1,
+        relay_flat_billing_intent_compiled: true,
+        relay_flat_billing_intent_schema_ready: true,
+        relay_flat_billing_intent_runtime_ready: true,
+        relay_flat_billing_go_parity_ready: false,
+        relay_flat_billing_intent_staging_verified: true,
+        relay_flat_billing_intent_cutover_ready: false,
+      })
+    )
+
+    assert.equal(
+      getSignalStatus(
+        pendingStaging,
+        'implementation',
+        'relay-flat-billing-intent-implementation'
+      ),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(
+        pendingStaging,
+        'configuration',
+        'relay-flat-billing-intent-runtime'
+      ),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(
+        pendingStaging,
+        'smoke',
+        'relay-flat-billing-intent-staging-proof'
+      ),
+      'ready-to-verify'
+    )
+    assert.equal(
+      getSignalStatus(
+        pendingStaging,
+        'cutover',
+        'relay-flat-billing-intent-cutover'
+      ),
+      'blocked'
+    )
+    assert.equal(getStage(pendingStaging, 'cutover').complete, false)
+    assert.equal(
+      getSignalStatus(
+        verified,
+        'smoke',
+        'relay-flat-billing-intent-staging-proof'
+      ),
+      'verified'
+    )
+    assert.equal(
+      getSignalStatus(verified, 'cutover', 'relay-flat-billing-intent-cutover'),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(
+        parityBlocked,
+        'smoke',
+        'relay-flat-billing-intent-staging-proof'
+      ),
+      'verified'
+    )
+    assert.equal(
+      getSignalStatus(
+        parityBlocked,
+        'cutover',
+        'relay-flat-billing-intent-cutover'
+      ),
+      'blocked'
+    )
+  })
+
   test('requires every backend cutover readiness field for stage success', () => {
     const blocked = buildPlatformReadinessSummary(makeCapabilities())
     const ready = buildPlatformReadinessSummary(
@@ -1020,6 +1139,13 @@ describe('Cloudflare platform readiness headline', () => {
         relay_ai_gateway_cross_model_fallback_cutover_ready: true,
         task_runner_cutover_ready: true,
         relay_billing_orphan_recovery_cutover_ready: true,
+        relay_flat_billing_intent_contract_version: 1,
+        relay_flat_billing_intent_compiled: true,
+        relay_flat_billing_intent_schema_ready: true,
+        relay_flat_billing_intent_runtime_ready: true,
+        relay_flat_billing_go_parity_ready: true,
+        relay_flat_billing_intent_staging_verified: true,
+        relay_flat_billing_intent_cutover_ready: true,
         relay_billing_prebind_owner_generation_cutover_ready: true,
         realtime_session_v1_cutover_ready: true,
         realtime_session_billing_reconciliation_cutover_ready: true,
@@ -1039,7 +1165,8 @@ describe('Cloudflare platform readiness headline', () => {
         quota_coordinator_shadow_token_allowlist_configured: true,
         quota_coordinator_shadow_token_allowlist_valid: true,
         quota_coordinator_shadow_token_count: 1,
-        quota_coordinator_tiered_only: true,
+        quota_coordinator_reservation_ledger_only: true,
+        quota_coordinator_tiered_only: false,
         quota_coordinator_write_authority_enabled: true,
         quota_coordinator_staging_verified: true,
         quota_coordinator_shadow_runtime_ready: true,
@@ -1050,7 +1177,7 @@ describe('Cloudflare platform readiness headline', () => {
 
     assert.equal(getStage(blocked, 'cutover').complete, false)
     assert.equal(getStage(ready, 'cutover').complete, true)
-    assert.equal(getStage(ready, 'cutover').readyCount, 8)
+    assert.equal(getStage(ready, 'cutover').readyCount, 9)
   })
 
   test('keeps Realtime billing reconciliation split across all four production stages', () => {

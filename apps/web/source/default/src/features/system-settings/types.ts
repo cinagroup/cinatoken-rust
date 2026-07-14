@@ -452,6 +452,7 @@ export type PlatformCapabilities = {
   quota_coordinator_shadow_token_allowlist_configured: boolean
   quota_coordinator_shadow_token_allowlist_valid: boolean
   quota_coordinator_shadow_token_count: number
+  quota_coordinator_reservation_ledger_only: boolean
   quota_coordinator_tiered_only: boolean
   quota_coordinator_write_authority_enabled: boolean
   quota_coordinator_staging_verified: boolean
@@ -490,6 +491,13 @@ export type PlatformCapabilities = {
   wfp_tenant_smoke_ready: boolean
   relay_billing_reservation_ledger_compiled: boolean
   relay_billing_ledger_status_compiled: boolean
+  relay_flat_billing_intent_contract_version: number
+  relay_flat_billing_intent_compiled: boolean
+  relay_flat_billing_intent_schema_ready: boolean
+  relay_flat_billing_intent_runtime_ready: boolean
+  relay_flat_billing_go_parity_ready: boolean
+  relay_flat_billing_intent_staging_verified: boolean
+  relay_flat_billing_intent_cutover_ready: boolean
   relay_billing_reservation_lease_seconds: number
   relay_billing_prebind_owner_generation_contract_version: number
   relay_billing_prebind_owner_generation_compiled: boolean

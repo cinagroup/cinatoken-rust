@@ -163,9 +163,9 @@ for (const expected of [
 }
 
 const producerCoverage = {
-  reserve: relaySource.includes("async fn reserve_tiered_billing_group_plan(")
-    && relaySource.includes("plan.reserve_applied = true;")
-    && relaySource.includes("observe_committed_relay_billing_reservation("),
+  reserve: relaySource.includes("async fn reserve_relay_billing_group_plan(")
+    && relaySource.includes("plan.apply_reservation(")
+    && relaySource.includes("observe_or_defer_committed_relay_billing_reservation("),
   directFinalization: relaySource.includes(
     "async fn require_observed_relay_billing_finalization(",
   ),
@@ -200,7 +200,7 @@ assert(
 assert(
   repositorySource.includes("pub async fn relay_billing_quota_projection")
     && repositorySource.includes("AND expr_hash <> ''"),
-  "QuotaCoordinator reconciliation must aggregate only the D1 tiered ledger",
+  "QuotaCoordinator reconciliation must aggregate only identified D1 reservations",
 );
 
 const report = {

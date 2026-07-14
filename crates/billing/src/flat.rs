@@ -52,6 +52,7 @@ use crate::pricing::PricingConfig;
 // (`int(math.Round)`) to avoid ±1 discrepancies. Do not reintroduce a
 // per-path rounding variant here.
 use crate::quota_round;
+use serde::{Deserialize, Serialize};
 
 /// Default cache-creation multiplier (matches Go default of 1.25). Exposed
 /// for future cache-creation billing; the current flat path only prices
@@ -104,12 +105,115 @@ impl FlatUsage {
 }
 
 /// Which billing mode produced the quota. Surfaced in audit metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FlatBillingMode {
     /// `ModelPrice` was set: quota = price × quota_per_unit × group_ratio.
     FixedPrice,
     /// Per-token formula with model_ratio × completion_ratio × group_ratio.
     PerToken,
+}
+
+/// Fully resolved, request-time pricing facts for one serving group/channel
+/// candidate. Persisting this snapshot prevents mutable D1 options from
+/// changing the financial contract while an upstream request is in flight.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlatPricingSnapshot {
+    pub schema_version: u16,
+    pub mode: FlatBillingMode,
+    pub model_ratio: f64,
+    pub completion_ratio: f64,
+    pub group_ratio: f64,
+    pub cache_ratio: f64,
+    pub cache_creation_ratio: f64,
+    pub cache_creation_ratio_5m: f64,
+    pub cache_creation_ratio_1h: f64,
+    pub image_ratio: f64,
+    pub audio_ratio: f64,
+    pub audio_completion_ratio: f64,
+    pub quota_per_unit: f64,
+    pub model_price: Option<f64>,
+    pub fixed_price_multiplier: f64,
+    pub pre_consumed_token_floor: i64,
+}
+
+impl FlatPricingSnapshot {
+    pub const SCHEMA_VERSION: u16 = 1;
+
+    pub fn from_config(
+        model: &str,
+        group: &str,
+        config: &PricingConfig,
+        fixed_price_multiplier: f64,
+        pre_consumed_token_floor: i64,
+    ) -> Self {
+        let fixed_price_multiplier =
+            if fixed_price_multiplier.is_finite() && fixed_price_multiplier > 0.0 {
+                fixed_price_multiplier
+            } else {
+                1.0
+            };
+        let model_price = config.model_price(model);
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            mode: if model_price.is_some() {
+                FlatBillingMode::FixedPrice
+            } else {
+                FlatBillingMode::PerToken
+            },
+            model_ratio: config.model_ratio(model),
+            completion_ratio: config.completion_ratio(model),
+            group_ratio: config.group_ratio(group),
+            cache_ratio: config.cache_ratio(model),
+            cache_creation_ratio: config.cache_creation_ratio(model),
+            cache_creation_ratio_5m: config.cache_creation_ratio_5m(model),
+            cache_creation_ratio_1h: config.cache_creation_ratio_1h(model),
+            image_ratio: config.image_ratio(model),
+            audio_ratio: config.audio_ratio(model),
+            audio_completion_ratio: config.audio_completion_ratio(model),
+            quota_per_unit: config.quota_per_unit,
+            model_price,
+            fixed_price_multiplier,
+            pre_consumed_token_floor: pre_consumed_token_floor.max(0),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err("flat pricing snapshot schema is unsupported");
+        }
+        let values = [
+            self.model_ratio,
+            self.completion_ratio,
+            self.group_ratio,
+            self.cache_ratio,
+            self.cache_creation_ratio,
+            self.cache_creation_ratio_5m,
+            self.cache_creation_ratio_1h,
+            self.image_ratio,
+            self.audio_ratio,
+            self.audio_completion_ratio,
+            self.quota_per_unit,
+            self.fixed_price_multiplier,
+        ];
+        if values
+            .into_iter()
+            .any(|value| !value.is_finite() || value < 0.0)
+            || self
+                .model_price
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
+            || self.pre_consumed_token_floor < 0
+        {
+            return Err("flat pricing snapshot contains an invalid price or ratio");
+        }
+        if self.quota_per_unit <= 0.0 || self.fixed_price_multiplier <= 0.0 {
+            return Err("flat pricing snapshot contains an invalid multiplier");
+        }
+        if (self.mode == FlatBillingMode::FixedPrice) != self.model_price.is_some() {
+            return Err("flat pricing snapshot mode conflicts with model price");
+        }
+        Ok(())
+    }
 }
 
 /// Result of a flat quota computation. Includes the resolved ratios for
@@ -144,25 +248,30 @@ pub fn compute_flat_quota_with_fixed_price_multiplier(
     config: &PricingConfig,
     fixed_price_multiplier: f64,
 ) -> FlatQuotaResult {
-    let fixed_price_multiplier =
-        if fixed_price_multiplier.is_finite() && fixed_price_multiplier > 0.0 {
-            fixed_price_multiplier
-        } else {
-            1.0
-        };
-    let group_ratio = config.group_ratio(group);
-    let model_ratio = config.model_ratio(model);
-    let completion_ratio = config.completion_ratio(model);
-    let cache_ratio = config.cache_ratio(model);
-    let cache_creation_ratio = config.cache_creation_ratio(model);
-    let cache_creation_ratio_5m = config.cache_creation_ratio_5m(model);
-    let cache_creation_ratio_1h = config.cache_creation_ratio_1h(model);
-    let image_ratio = config.image_ratio(model);
+    let snapshot =
+        FlatPricingSnapshot::from_config(model, group, config, fixed_price_multiplier, 0);
+    compute_flat_quota_from_snapshot(usage, &snapshot)
+}
+
+/// Compute an actual charge exclusively from request-time frozen facts.
+pub fn compute_flat_quota_from_snapshot(
+    usage: &FlatUsage,
+    snapshot: &FlatPricingSnapshot,
+) -> FlatQuotaResult {
+    let fixed_price_multiplier = snapshot.fixed_price_multiplier;
+    let group_ratio = snapshot.group_ratio;
+    let model_ratio = snapshot.model_ratio;
+    let completion_ratio = snapshot.completion_ratio;
+    let cache_ratio = snapshot.cache_ratio;
+    let cache_creation_ratio = snapshot.cache_creation_ratio;
+    let cache_creation_ratio_5m = snapshot.cache_creation_ratio_5m;
+    let cache_creation_ratio_1h = snapshot.cache_creation_ratio_1h;
+    let image_ratio = snapshot.image_ratio;
 
     // Fixed-price mode is request-priced and therefore independent of token
     // usage. The caller admits only successful billable responses.
-    if let Some(price) = config.model_price(model) {
-        let quota = price * config.quota_per_unit * group_ratio * fixed_price_multiplier;
+    if let Some(price) = snapshot.model_price {
+        let quota = price * snapshot.quota_per_unit * group_ratio * fixed_price_multiplier;
         return FlatQuotaResult {
             quota: quota_round(quota),
             mode: FlatBillingMode::FixedPrice,
@@ -259,6 +368,35 @@ pub fn compute_flat_quota_with_fixed_price_multiplier(
         group_ratio,
         cache_ratio,
         fixed_price_multiplier,
+    }
+}
+
+/// Go-compatible pre-consume estimate. Fixed-price requests reserve their
+/// exact request price. Per-token requests reserve `(max(prompt, floor) +
+/// max_completion) * model_ratio * group_ratio`, truncating toward zero like
+/// Go's `int(float64(...))`; completion/cache/media premiums remain settlement
+/// facts and can produce an additional CAS debit.
+pub fn estimate_flat_pre_consumed_quota(
+    snapshot: &FlatPricingSnapshot,
+    estimated_prompt_tokens: i64,
+    estimated_completion_tokens: i64,
+) -> i64 {
+    if snapshot.mode == FlatBillingMode::FixedPrice {
+        return compute_flat_quota_from_snapshot(&FlatUsage::default(), snapshot)
+            .quota
+            .max(0);
+    }
+    let tokens = estimated_prompt_tokens
+        .max(snapshot.pre_consumed_token_floor)
+        .max(0)
+        .saturating_add(estimated_completion_tokens.max(0));
+    let raw = (tokens as f64) * snapshot.model_ratio * snapshot.group_ratio;
+    if !raw.is_finite() || raw <= 0.0 {
+        0
+    } else if raw >= i64::MAX as f64 {
+        i64::MAX
+    } else {
+        raw.trunc() as i64
     }
 }
 
@@ -540,5 +678,63 @@ mod tests {
         let usage = simple_usage(0, 1);
         let result = compute_flat_quota(&usage, "deepseek-chat", "default", &config);
         assert_eq!(result.quota, 1, "0.5 must round half-away-from-zero to 1");
+    }
+
+    #[test]
+    fn frozen_snapshot_ignores_later_config_mutation() {
+        let mut config = config_with_model_ratio("snapshot-model", 2.0);
+        config
+            .completion_ratios
+            .insert("snapshot-model".to_string(), 3.0);
+        config.group_ratios.insert("vip".to_string(), 1.5);
+        let snapshot = FlatPricingSnapshot::from_config("snapshot-model", "vip", &config, 1.0, 500);
+        snapshot.validate().unwrap();
+
+        config
+            .model_ratios
+            .insert("snapshot-model".to_string(), 99.0);
+        config
+            .completion_ratios
+            .insert("snapshot-model".to_string(), 99.0);
+        config.group_ratios.insert("vip".to_string(), 99.0);
+
+        let usage = simple_usage(100, 20);
+        let frozen = compute_flat_quota_from_snapshot(&usage, &snapshot);
+        let mutable = compute_flat_quota(&usage, "snapshot-model", "vip", &config);
+        assert_eq!(frozen.quota, 480);
+        assert_ne!(frozen.quota, mutable.quota);
+    }
+
+    #[test]
+    fn flat_preconsume_matches_go_truncation_and_fixed_price() {
+        let mut config = config_with_model_ratio("token-model", 1.25);
+        config.group_ratios.insert("default".to_string(), 1.5);
+        let token_snapshot =
+            FlatPricingSnapshot::from_config("token-model", "default", &config, 1.0, 500);
+        // (max(100, 500) + 33) * 1.25 * 1.5 = 999.375, truncated to 999.
+        assert_eq!(
+            estimate_flat_pre_consumed_quota(&token_snapshot, 100, 33),
+            999
+        );
+
+        config.model_prices.insert("fixed-model".to_string(), 0.02);
+        let fixed_snapshot =
+            FlatPricingSnapshot::from_config("fixed-model", "default", &config, 3.0, 500);
+        assert_eq!(
+            estimate_flat_pre_consumed_quota(&fixed_snapshot, 0, 0),
+            45_000
+        );
+    }
+
+    #[test]
+    fn snapshot_round_trips_without_losing_financial_facts() {
+        let mut config = PricingConfig::new();
+        config.model_prices.insert("fixed-model".to_string(), 0.04);
+        config.group_ratios.insert("vip".to_string(), 1.2);
+        let snapshot = FlatPricingSnapshot::from_config("fixed-model", "vip", &config, 2.0, 500);
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let restored: FlatPricingSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, snapshot);
+        restored.validate().unwrap();
     }
 }

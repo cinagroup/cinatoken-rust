@@ -669,11 +669,11 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-    `d1_migration_status_available=true`, applied count `28`, latest/expected
-    `0028_realtime_usage_reconciliation_resolution.sql`, exact set match, and
+    `d1_migration_status_available=true`, applied count `29`, latest/expected
+    `0029_flat_billing_intents.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0028 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0029 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely
@@ -685,6 +685,8 @@ G1 can pass only when:
    mutation until the isolated operator drill, dual-control policy, and rollback
    evidence pass. Do not set the staging-proof flag until the independently
    reviewed evidence packet is complete.
+   Apply 0029 before flat intent smoke with finalization/recovery gates disabled;
+   prove the empty-snapshot guards and old tiered-writer defaults remotely.
 9. Upstash staging credentials are configured or the feature is deliberately
    disabled.
 10. No placeholder IDs or development origins remain in staging config.
@@ -744,6 +746,24 @@ armed only when:
   grow without a documented memory ceiling under the 128 MB isolate limit.
 - Pre-bind owner generation and non-stream successful-response parse failures
   have deterministic recovery tests before HTTP orphan recovery is enabled.
+
+### Flat Billing Intent Requirements
+
+- Keep `RELAY_FLAT_BILLING_INTENT_STAGING_VERIFIED=false` in every tracked
+  environment until remote 0029, Queue/D1 settlement/refund replay, duplicate
+  request identity, body-limit, and rollback evidence is reviewed.
+- Require a non-empty frozen snapshot and a repository-validated
+  `flat-v1:<sha256>` digest for every flat reservation. Mutable options are not
+  a terminal pricing source.
+- A stable caller request identity must reject an in-flight or terminal replay
+  before provider egress. Never log or persist the raw identity.
+- Staging proof cannot override source parity. Cutover additionally requires
+  `relay_flat_billing_go_parity_ready=true`; this remains hard false until
+  decimal terminal arithmetic, unset-ratio/self-use policy, and complete image,
+  audio, tool, and provider multiplier parity are implemented and verified.
+- Ordinary upstream failure and zero-usage refund must leave request count and
+  channel usage unchanged. Successful billable usage owns one terminal request
+  mutation through the reservation ledger.
 
 ### Pre-Bind Owner Generation Requirements
 

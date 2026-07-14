@@ -1,4 +1,4 @@
-//! Pure, I/O-free quota coordination for tiered-expression shadow observations.
+//! Pure, I/O-free quota coordination for reservation-ledger shadow observations.
 //!
 //! This crate projects accounting deltas but never writes user, token, or
 //! channel balances. Validation and arithmetic failures return `Err` without
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const QUOTA_COORDINATOR_CONTRACT_VERSION: u32 = 1;
-pub const QUOTA_COORDINATOR_MODE: &str = "tiered_expression_shadow_only";
+pub const QUOTA_COORDINATOR_MODE: &str = "reservation_ledger_shadow_only";
 pub const DEFAULT_MAX_ACTIVE_RESERVATIONS: u32 = 512;
 pub const DEFAULT_MAX_TERMINAL_RESERVATIONS: u32 = 1_536;
 pub const MAX_ACTIVE_RESERVATIONS: u32 = 2_048;

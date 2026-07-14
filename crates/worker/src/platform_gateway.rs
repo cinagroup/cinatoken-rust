@@ -121,6 +121,8 @@ pub const WFP_RELAY_TRANSPORT_ENABLED_ENV: &str = "WFP_RELAY_TRANSPORT_ENABLED";
 pub const WFP_PREVIEW_HOST_SUFFIX_ENV: &str = "WFP_PREVIEW_HOST_SUFFIX";
 pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
 pub const RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV: &str = "RELAY_AI_GATEWAY_ROUTER_ENABLED";
+pub const RELAY_FLAT_BILLING_INTENT_STAGING_VERIFIED_ENV: &str =
+    "RELAY_FLAT_BILLING_INTENT_STAGING_VERIFIED";
 
 #[wasm_bindgen::prelude::wasm_bindgen]
 extern "C" {
@@ -154,7 +156,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0028_realtime_usage_reconciliation_resolution.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0029_flat_billing_intents.sql";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
     "migration_0026_applied",
     "legacy_workers_drained",
@@ -194,6 +196,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0026_relay_billing_owner_generation.sql",
     "0027_realtime_usage_reconciliation.sql",
     "0028_realtime_usage_reconciliation_resolution.sql",
+    "0029_flat_billing_intents.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -333,6 +336,7 @@ struct PlatformCapabilities {
     quota_coordinator_shadow_token_allowlist_configured: bool,
     quota_coordinator_shadow_token_allowlist_valid: bool,
     quota_coordinator_shadow_token_count: usize,
+    quota_coordinator_reservation_ledger_only: bool,
     quota_coordinator_tiered_only: bool,
     quota_coordinator_write_authority_enabled: bool,
     quota_coordinator_staging_verified: bool,
@@ -370,6 +374,13 @@ struct PlatformCapabilities {
     wfp_tenant_smoke_ready: bool,
     relay_billing_reservation_ledger_compiled: bool,
     relay_billing_ledger_status_compiled: bool,
+    relay_flat_billing_intent_contract_version: u32,
+    relay_flat_billing_intent_compiled: bool,
+    relay_flat_billing_intent_schema_ready: bool,
+    relay_flat_billing_intent_runtime_ready: bool,
+    relay_flat_billing_go_parity_ready: bool,
+    relay_flat_billing_intent_staging_verified: bool,
+    relay_flat_billing_intent_cutover_ready: bool,
     relay_billing_reservation_lease_seconds: i64,
     relay_billing_prebind_owner_generation_contract_version: u32,
     relay_billing_prebind_owner_generation_compiled: bool,
@@ -689,7 +700,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let quota_coordinator_storage_retention_ready =
         env_flag(&env, QUOTA_COORD_RETENTION_VERIFIED_ENV);
     let quota_coordinator_shadow_scope = quota_coordinator_shadow_scope_status(&env);
-    let quota_coordinator_tiered_only = true;
+    let quota_coordinator_reservation_ledger_only = true;
+    let quota_coordinator_tiered_only = false;
     let quota_coordinator_write_authority_enabled = false;
     let quota_coordinator_staging_verified = env_flag(&env, QUOTA_COORD_STAGING_VERIFIED_ENV);
     let quota_coordinator_shadow_runtime_ready = quota_coordinator_shadow_runtime_ready(
@@ -701,7 +713,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         quota_coordinator_storage_retention_ready,
         quota_coordinator_shadow_scope.configured,
         quota_coordinator_shadow_scope.valid,
-        quota_coordinator_tiered_only,
+        quota_coordinator_reservation_ledger_only,
         quota_coordinator_write_authority_enabled,
     );
     let quota_coordinator_reconciliation_runtime_ready =
@@ -712,7 +724,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         quota_coordinator_observer_contract_compiled,
         quota_coordinator_relay_observation_compiled,
         quota_coordinator_storage_retention_ready,
-        quota_coordinator_tiered_only,
+        quota_coordinator_reservation_ledger_only,
         quota_coordinator_staging_verified,
         quota_coordinator_write_authority_enabled,
     );
@@ -788,6 +800,21 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         );
     let relay_billing_finalization_replay_staging_verified =
         env_flag(&env, RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED_ENV);
+    let relay_flat_billing_intent_contract_version = 1;
+    let relay_flat_billing_intent_compiled =
+        relay_billing_reservation_ledger_compiled && relay_billing_finalization_consumer_compiled;
+    let relay_flat_billing_intent_schema_ready = d1_migration_ready;
+    let relay_flat_billing_intent_runtime_ready = relay_flat_billing_intent_compiled
+        && relay_flat_billing_intent_schema_ready
+        && relay_billing_finalization_runtime_ready;
+    // Intent durability is implemented, but decimal finalization, unset-ratio
+    // policy, and every provider OtherRatios branch still block Go cutover.
+    let relay_flat_billing_go_parity_ready = false;
+    let relay_flat_billing_intent_staging_verified =
+        env_flag(&env, RELAY_FLAT_BILLING_INTENT_STAGING_VERIFIED_ENV);
+    let relay_flat_billing_intent_cutover_ready = relay_flat_billing_intent_runtime_ready
+        && relay_flat_billing_go_parity_ready
+        && relay_flat_billing_intent_staging_verified;
     let relay_billing_prebind_owner_generation_cutover_ready =
         relay_billing_prebind_owner_generation_configured
             && relay_billing_prebind_owner_generation_staging_verified
@@ -1122,6 +1149,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             .configured,
         quota_coordinator_shadow_token_allowlist_valid: quota_coordinator_shadow_scope.valid,
         quota_coordinator_shadow_token_count: quota_coordinator_shadow_scope.token_count,
+        quota_coordinator_reservation_ledger_only,
         quota_coordinator_tiered_only,
         quota_coordinator_write_authority_enabled,
         quota_coordinator_staging_verified,
@@ -1160,6 +1188,13 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_tenant_smoke_ready,
         relay_billing_reservation_ledger_compiled,
         relay_billing_ledger_status_compiled,
+        relay_flat_billing_intent_contract_version,
+        relay_flat_billing_intent_compiled,
+        relay_flat_billing_intent_schema_ready,
+        relay_flat_billing_intent_runtime_ready,
+        relay_flat_billing_go_parity_ready,
+        relay_flat_billing_intent_staging_verified,
+        relay_flat_billing_intent_cutover_ready,
         relay_billing_reservation_lease_seconds,
         relay_billing_prebind_owner_generation_contract_version,
         relay_billing_prebind_owner_generation_compiled,
@@ -3019,7 +3054,7 @@ fn quota_coordinator_cutover_guards() -> Vec<&'static str> {
     vec![
         "quota_coord_binding",
         "shadow_gate",
-        "tiered_only",
+        "reservation_ledger_only",
         "observer_contract",
         "relay_observation",
         "bounded_retention",
@@ -3038,7 +3073,7 @@ fn quota_coordinator_shadow_runtime_ready(
     storage_retention_ready: bool,
     token_allowlist_configured: bool,
     token_allowlist_valid: bool,
-    tiered_only: bool,
+    reservation_ledger_only: bool,
     write_authority_enabled: bool,
 ) -> bool {
     binding_available
@@ -3049,7 +3084,7 @@ fn quota_coordinator_shadow_runtime_ready(
         && storage_retention_ready
         && token_allowlist_configured
         && token_allowlist_valid
-        && tiered_only
+        && reservation_ledger_only
         && !write_authority_enabled
 }
 
@@ -3059,7 +3094,7 @@ fn quota_coordinator_cutover_ready(
     observer_contract_compiled: bool,
     relay_observation_compiled: bool,
     storage_retention_ready: bool,
-    tiered_only: bool,
+    reservation_ledger_only: bool,
     staging_verified: bool,
     write_authority_enabled: bool,
 ) -> bool {
@@ -3068,7 +3103,7 @@ fn quota_coordinator_cutover_ready(
         && observer_contract_compiled
         && relay_observation_compiled
         && storage_retention_ready
-        && tiered_only
+        && reservation_ledger_only
         && staging_verified
         && write_authority_enabled
 }
@@ -3827,7 +3862,7 @@ mod tests {
         for guard in [
             "quota_coord_binding",
             "shadow_gate",
-            "tiered_only",
+            "reservation_ledger_only",
             "observer_contract",
             "relay_observation",
             "bounded_retention",
@@ -3949,10 +3984,7 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(
-            EXPECTED_D1_MIGRATION,
-            "0028_realtime_usage_reconciliation_resolution.sql"
-        );
+        assert_eq!(EXPECTED_D1_MIGRATION, "0029_flat_billing_intents.sql");
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")
@@ -4003,6 +4035,12 @@ mod tests {
         assert!(realtime_usage_resolution.contains("reconciliation_id"));
         assert!(realtime_usage_resolution.contains("reconciliation_revision"));
         assert!(realtime_usage_resolution.contains("idx_realtime_billing_reconciliation_id"));
+        let flat_billing_intents =
+            include_str!("../../../migrations/d1/0029_flat_billing_intents.sql");
+        assert!(flat_billing_intents.contains("ADD COLUMN billing_kind"));
+        assert!(flat_billing_intents.contains("ADD COLUMN billing_snapshot_json"));
+        assert!(flat_billing_intents.contains("relay_flat_billing_snapshot_insert_guard"));
+        assert!(flat_billing_intents.contains("relay_flat_billing_snapshot_update_guard"));
     }
 
     #[test]

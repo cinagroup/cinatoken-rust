@@ -12254,3 +12254,50 @@ upstream idle timeout, remote Queue/D1 ambiguity, direct/Gateway/WFP replay,
 provider invoice correlation, credential rotation, alerts, rollback, and
 signed G1-G8 approval remain required. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+### 22.203 2026-07-14 Frozen Flat Billing Intent And Replay Interlock
+
+This increment replaces the remaining successful flat-billing direct mutation
+with the same reservation ledger, owner generation, Queue finalization, D1 CAS,
+recovery, and audit identity used by tiered HTTP billing. It also supersedes the
+22.202 statement that fixed-price audio completes its final channel/request
+mutation synchronously before response return: the reserve is synchronous, but
+terminal settlement is now an idempotent Queue/D1 operation.
+
+Implemented locally:
+
+- Migration `0029_flat_billing_intents.sql` adds `billing_kind` and a bounded
+  frozen snapshot to `relay_billing_reservations`. Insert/update triggers reject
+  a flat row without a snapshot while defaults preserve old tiered writers. The
+  local verifier now replays 29 migrations, 30 tables, 139 checked incremental
+  columns, and 27 key indexes, including positive and negative trigger probes.
+- Flat preflight resolves candidate `(serving_group, channel_type)` snapshots
+  before the provider call, reserves the maximum candidate estimate, and stores
+  the currently implemented price/ratio facts, fixed request multiplier, and
+  pre-consume floor. The repository recomputes the domain-separated
+  `flat-v1:<sha256>` digest from the exact stored bytes before any debit.
+- A caller-supplied `x-request-id` produces a private, length-framed
+  `relayreserve-v2` identity scoped by user, token, route, model, billing kind,
+  and contract hash. An in-flight or terminal replay returns 409 before a second
+  provider call. Requests without a stable caller identity retain a CSPRNG key.
+- Flat settlement and refund now use Queue v2/D1 CAS. Uninspectable per-token
+  responses refund and return 502; only fixed-price flat responses may settle
+  conservatively at their exact frozen reserve. Ordinary failures and zero-
+  usage refunds do not increment `request_count`; successful billable usage is
+  accounted exactly once. Usage-less image generation uses Go's one-token
+  request-contract normalization.
+- QuotaCoordinator is now explicitly `reservation_ledger_shadow_only`, so flat
+  and tiered reservations share observation/reconciliation plumbing while D1
+  remains the only writer. The React/Bun cockpit exposes implementation,
+  runtime, staging proof, Go pricing parity, and cutover as separate states.
+
+The Go audit also identified remaining cutover blockers: decimal-string
+terminal arithmetic/rounding, `AcceptUnsetRatioModel` and self-use admission,
+the complete image size/quality and provider `OtherRatios` matrix, audio/tool
+surcharges, and provider-specific usage-source parity. Therefore
+`relay_flat_billing_go_parity_ready` is hard false in code and cannot be bypassed
+by setting the staging-proof environment variable. Remote migration 0029,
+Queue/D1 readback, direct/AI Gateway/WFP fault replay, client abort and upstream
+idle taxonomy, provider invoice reconciliation, credential rotation, alerts,
+rollback, and signed G1-G8 approval remain open. Go/VPS remains authoritative
+and production remains **NO-GO**.

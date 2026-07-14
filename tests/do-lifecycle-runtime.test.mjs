@@ -1268,9 +1268,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 28,
+        d1_migration_applied_count: 29,
         d1_expected_migration:
-          "0028_realtime_usage_reconciliation_resolution.sql",
+          "0029_flat_billing_intents.sql",
         d1_migration_ready: true,
         relay_billing_prebind_owner_generation_contract_version: 1,
         relay_billing_prebind_owner_generation_compiled: true,
@@ -1299,7 +1299,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
         quota_coordinator_shadow_token_allowlist_configured: true,
         quota_coordinator_shadow_token_allowlist_valid: true,
         quota_coordinator_shadow_token_count: 1,
-        quota_coordinator_tiered_only: true,
+        quota_coordinator_tiered_only: false,
+        quota_coordinator_reservation_ledger_only: true,
         quota_coordinator_write_authority_enabled: false,
         quota_coordinator_staging_verified: false,
         quota_coordinator_shadow_runtime_ready: true,
@@ -1309,7 +1310,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload.data.quota_coordinator_cutover_guards).toEqual([
       "quota_coord_binding",
       "shadow_gate",
-      "tiered_only",
+      "reservation_ledger_only",
       "observer_contract",
       "relay_observation",
       "bounded_retention",
@@ -1812,20 +1813,28 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(state.user).toMatchObject({
       quota: account.userQuota,
       used_quota: 0,
-      request_count: 1,
+      request_count: 0,
     });
     expect(state.token).toMatchObject({
       remain_quota: account.tokenRemainQuota,
       used_quota: 0,
     });
     expect(state.channel.used_quota).toBe(0);
-    expect(state.reservationCount).toBe(0);
+    expect(state.reservationCount).toBe(1);
+    expect(state.reservation).toMatchObject({
+      billing_kind: "flat",
+      status: "refunded",
+      final_quota: 0,
+      request_accounted: 0,
+    });
+    expect(state.reservation.expr_hash).toMatch(/^flat-v1:[a-f0-9]{64}$/);
+    expect(state.reservation.snapshot_bytes).toBeGreaterThan(0);
     expect(state.log).toMatchObject({
       quota: 0,
       billingPending: false,
-      billingLedgerOutcome: "not_charged_response_blocked",
+      billingLedgerOutcome: "refunded",
       usageSource: "unavailable_parse_failure",
-      reservationClass: "flat_or_unconfigured",
+      reservationClass: "positive_flat_reservation",
       clientDisposition: "blocked_before_delivery",
     });
     await expect(providerState()).resolves.toMatchObject({
@@ -1835,7 +1844,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   }, 30_000);
 
-  it("charges usage-less fixed-price audio before returning the response", async () => {
+  it("reserves usage-less fixed-price audio before returning and settles it durably", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const account = await seedStreamingRelayBillingGateway({
       model: relayFixedAudioModel,
@@ -1866,19 +1875,16 @@ describe("Rust Durable Object lifecycle contracts", () => {
     const audio = new TextDecoder().decode(await response.arrayBuffer());
     expect(audio).toBe("runtime-audio");
 
-    const [immediateUser, immediateToken, immediateChannel] = await Promise.all([
+    const [immediateUser, immediateToken] = await Promise.all([
       env.DB.prepare(
-        "SELECT quota, used_quota, request_count FROM users WHERE id = 1",
+        "SELECT quota, used_quota FROM users WHERE id = 1",
       ).first(),
       env.DB.prepare(
         "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
       ).first(),
-      env.DB.prepare("SELECT used_quota FROM channels WHERE id = 43").first(),
     ]);
     expect(immediateUser.quota).toBeLessThan(account.userQuota);
-    expect(immediateUser.request_count).toBe(1);
     expect(immediateToken.remain_quota).toBeLessThan(account.tokenRemainQuota);
-    expect(immediateChannel.used_quota).toBeGreaterThan(0);
 
     const state = await waitForNonTieredRelayLog(relayFixedAudioModel);
     expect(state.log.quota).toBeGreaterThan(0);
@@ -1892,7 +1898,15 @@ describe("Rust Durable Object lifecycle contracts", () => {
       used_quota: state.log.quota,
     });
     expect(state.channel.used_quota).toBe(state.log.quota);
-    expect(state.reservationCount).toBe(0);
+    expect(state.reservationCount).toBe(1);
+    expect(state.reservation).toMatchObject({
+      billing_kind: "flat",
+      status: "settled",
+      final_quota: state.log.quota,
+      request_accounted: 1,
+    });
+    expect(state.reservation.expr_hash).toMatch(/^flat-v1:[a-f0-9]{64}$/);
+    expect(state.reservation.snapshot_bytes).toBeGreaterThan(0);
     expect(state.log).toMatchObject({
       billingPending: false,
       usageSource: "request_contract",
@@ -1941,12 +1955,12 @@ describe("Rust Durable Object lifecycle contracts", () => {
       status: "refunded",
       final_quota: 0,
       finalization_reason: "upstream_error",
-      request_accounted: 1,
+      request_accounted: 0,
     });
     expect(refunded.user).toMatchObject({
       quota: account.userQuota,
       used_quota: 0,
-      request_count: 1,
+      request_count: 0,
     });
     expect(refunded.token).toMatchObject({
       remain_quota: account.tokenRemainQuota,
@@ -1970,6 +1984,76 @@ describe("Rust Durable Object lifecycle contracts", () => {
       terminal_reservations: 1,
     });
     await delay(2_000);
+  }, 30_000);
+
+  it("rejects an in-flight relay billing idempotency replay before a second provider call", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await seedStreamingRelayBillingGateway();
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const request = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${relayStreamToken}`,
+        "content-type": "application/json",
+        "x-request-id": "runtime-idempotency-replay",
+      },
+      body: JSON.stringify({
+        model: relayStreamModel,
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: [{ role: "user", content: "runtime idempotency" }],
+        max_completion_tokens: 20,
+      }),
+    };
+    const first = await SELF.fetch(
+      "https://cinatoken.test/v1/chat/completions",
+      request,
+    );
+    expect(first.status).toBe(200);
+    const firstBody = first.text();
+    const reserved = await waitForRelayBillingReservation(relayStreamModel);
+    expect(reserved.reservation.reservation_key).toMatch(
+      /^relayreserve-v2-[a-f0-9]{64}$/,
+    );
+    expect(reserved.reservation.request_id_hash).toMatch(
+      /^sha256:[a-f0-9]{64}$/,
+    );
+    expect(reserved.reservation.request_id_hash).not.toContain(
+      "runtime-idempotency-replay",
+    );
+
+    const replay = await SELF.fetch(
+      "https://cinatoken.test/v1/chat/completions",
+      request,
+    );
+    expect(replay.status).toBe(409);
+    await expect(replay.text()).resolves.toContain("idempotency");
+    await expect(providerState()).resolves.toMatchObject({ count: 1 });
+    const reservationCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM relay_billing_reservations WHERE model_name = ?1",
+    )
+      .bind(relayStreamModel)
+      .first();
+    expect(reservationCount.count).toBe(1);
+
+    const release = await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/release-relay-stream",
+      { method: "POST" },
+    );
+    expect(release.status).toBe(204);
+    await expect(firstBody).resolves.toContain("[DONE]");
+    const settled = await waitForRelaySettlement(
+      reserved.reservation.reservation_key,
+    );
+    expect(settled.reservation).toMatchObject({
+      status: "settled",
+      request_accounted: 1,
+    });
+    expect(settled.user.request_count).toBe(1);
   }, 30_000);
 
   it("renews a selected HTTP SSE billing lease without changing quota ownership", async () => {
@@ -3109,7 +3193,7 @@ async function waitForRelayBillingReservation(modelName) {
     const [reservation, user] = await Promise.all([
       env.DB.prepare(
         `SELECT reservation_key, status, channel_id, selected_group,
-                pre_consumed_quota, lease_expires_at, request_accounted,
+                request_id_hash, pre_consumed_quota, lease_expires_at, request_accounted,
                 owner_generation
          FROM relay_billing_reservations
          WHERE model_name = ?1
@@ -3156,9 +3240,10 @@ async function waitForRelayTerminalByModel(modelName, expectedStatus) {
       reservationKey
         ? env.DB.prepare(
             `SELECT other, billing_finalization_event_id
-             FROM logs WHERE other LIKE ?1 ORDER BY id DESC LIMIT 1`,
+             FROM logs WHERE billing_finalization_event_id = ?1
+             ORDER BY id DESC LIMIT 1`,
           )
-            .bind(`%${reservationKey}%`)
+            .bind(`relay-finalization-v1:${reservationKey}`)
             .first()
         : Promise.resolve(null),
     ]);
@@ -3200,7 +3285,7 @@ async function waitForNonTieredRelayLog(modelName) {
   const deadline = Date.now() + 5_000;
   let state;
   while (Date.now() < deadline) {
-    const [user, token, channel, reservationCount, log] = await Promise.all([
+    const [user, token, channel, reservationCount, reservation, log] = await Promise.all([
       env.DB.prepare(
         "SELECT quota, used_quota, request_count FROM users WHERE id = 1",
       ).first(),
@@ -3210,6 +3295,15 @@ async function waitForNonTieredRelayLog(modelName) {
       env.DB.prepare("SELECT used_quota FROM channels WHERE id = 43").first(),
       env.DB.prepare(
         "SELECT COUNT(*) AS count FROM relay_billing_reservations WHERE model_name = ?1",
+      )
+        .bind(modelName)
+        .first(),
+      env.DB.prepare(
+        `SELECT billing_kind, expr_hash, length(billing_snapshot_json) AS snapshot_bytes,
+                status, pre_consumed_quota, final_quota, request_accounted
+         FROM relay_billing_reservations
+         WHERE model_name = ?1
+         ORDER BY created_at DESC LIMIT 1`,
       )
         .bind(modelName)
         .first(),
@@ -3240,10 +3334,17 @@ async function waitForNonTieredRelayLog(modelName) {
       user,
       token,
       channel,
+      reservation,
       reservationCount: reservationCount?.count ?? -1,
       log: parsedLog,
     };
-    if (parsedLog) return state;
+    if (
+      parsedLog &&
+      reservation &&
+      ["settled", "refunded", "recovery_required"].includes(reservation.status)
+    ) {
+      return state;
+    }
     await delay(10);
   }
   throw new Error(
@@ -3296,9 +3397,10 @@ async function waitForRelaySettlement(reservationKey) {
       env.DB.prepare("SELECT used_quota FROM channels WHERE id = 43").first(),
       env.DB.prepare(
         `SELECT other, billing_finalization_event_id
-         FROM logs WHERE other LIKE ?1 ORDER BY id DESC LIMIT 1`,
+         FROM logs WHERE billing_finalization_event_id = ?1
+         ORDER BY id DESC LIMIT 1`,
       )
-        .bind(`%${reservationKey}%`)
+        .bind(`relay-finalization-v1:${reservationKey}`)
         .first(),
     ]);
     let adminHeartbeat = null;

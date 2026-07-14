@@ -4623,3 +4623,45 @@ This remains local E3 evidence. Generic flat billing idempotency, abort/idle
 classification, remote direct/Gateway/WFP replay, provider invoice correlation,
 credential rotation, alerts, rollback, and G1-G8 approval remain open.
 Production remains **NO-GO**.
+
+## Frozen Flat Billing Intent Verification (2026-07-14)
+
+```powershell
+cargo test -p cinatoken-billing
+# PASS; 83 unit + 10 Go-expression parity tests
+
+cargo test -p cinatoken-coordinator
+# PASS; 15/15
+
+cargo test -p cinatoken-worker --lib
+# PASS; 669/669
+
+python tools/verify_sqlite.py
+# PASS; 29 migrations, 30 tables, 139 checked columns, 27 indexes,
+# including the 0029 empty-flat-snapshot insert/update guards
+
+bunx vitest run --config vitest.do.config.mjs `
+  -t "blocks an uninspectable flat-billed response|reserves usage-less fixed-price audio|rejects an in-flight relay billing idempotency replay"
+# PASS; 3 selected Workerd scenarios
+```
+
+Verified behavior:
+
+- Per-token flat body-inspection failure creates one frozen reservation, blocks
+  delivery, refunds user/token quota, leaves channel usage and request count at
+  zero, and records a terminal Queue audit.
+- Fixed-price audio reserves before response delivery and then settles one
+  exact frozen amount through Queue/D1, with one terminal request accounting
+  mutation.
+- Two in-flight requests with the same caller request identity create one D1
+  reservation and one provider call; the replay receives 409 while the original
+  request can still settle.
+- Snapshot bytes and `flat-v1` digest are durable and cross-validated; mutable
+  pricing options are not reread for terminal computation.
+
+This proves local intent durability, not Go pricing cutover parity. Decimal
+terminal arithmetic, unset-ratio/self-use admission, complete image/audio/tool
+and provider-specific multipliers, remote 0029/Queue readback, client abort and
+idle fault classes, invoice reconciliation, credential rotation, and G1-G8
+approval remain open. The capability parity gate is hard false and production
+remains **NO-GO**.

@@ -335,7 +335,7 @@ pub(crate) fn quota_coordinator_contract_version() -> u32 {
 
 pub(crate) fn quota_coordinator_foundation_compiled() -> bool {
     QUOTA_COORDINATOR_CONTRACT_VERSION == 1
-        && QUOTA_COORDINATOR_MODE == "tiered_expression_shadow_only"
+        && QUOTA_COORDINATOR_MODE == "reservation_ledger_shadow_only"
 }
 
 pub(crate) fn quota_coordinator_observer_contract_compiled() -> bool {
@@ -373,7 +373,7 @@ pub(crate) fn quota_coordinator_reconciliation_compiled() -> bool {
         && quota_coordinator_relay_observation_compiled()
 }
 
-/// Compare a stable D1 tiered-ledger snapshot with the observation-only DO.
+/// Compare a stable D1 reservation-ledger snapshot with the observation-only DO.
 /// The probe is admin-only, read-only, allowlist-scoped, and unavailable until
 /// the same shadow and retention gates used by observation delivery are open.
 pub(crate) async fn quota_coordinator_reconciliation(
@@ -545,7 +545,7 @@ fn quota_coordinator_reconciliation_allowed(env: &Env, token_id: i64) -> bool {
     scope.valid && scope.token_ids.contains(&token_id)
 }
 
-/// Project one committed tiered reservation into the observation-only DO.
+/// Project one committed billing reservation into the observation-only DO.
 /// Every error is logged and swallowed: D1 has already committed and remains
 /// the sole financial writer. Terminal projection always replays reserve first
 /// so delayed Queue and recovery delivery can reconstruct a missing observer.
@@ -1191,6 +1191,8 @@ mod tests {
             endpoint_path: "chat/completions".to_string(),
             request_id_hash: String::new(),
             expr_hash: "expr-a".to_string(),
+            billing_kind: "tiered_expr".to_string(),
+            billing_snapshot_json: String::new(),
             candidate_group_count: 1,
             reservation_strategy: "selected_group".to_string(),
             pre_consumed_quota: 120,

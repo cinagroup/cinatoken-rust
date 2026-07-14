@@ -26,11 +26,17 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 | Rust Durable Objects | RealtimeSession has a six-scenario local workerd/D1/mock-upstream suite plus an explicit release-Wasm Workerd/SQLite hibernate-evict-restore test for the client socket, attachment/bridge segment, and persisted metrics; reservation binding, settlement, and refund are isolated by bridge segment; TaskRunner, channel affinity, Passkey ceremony, and WFP authority replay have focused tests | Locally exercised substrate | Active-upstream eviction must prove 1011 fail-closed, exactly-once refund/lease handoff, no replacement call, and clean reconnect; deployed eviction/alarm/reconnect/replay/load evidence remains required on Cloudflare staging |
 | WFP Rust tenant script | Dedicated Rust/Wasm tenant crate, strict artifact manifest/uploader, central-authority v3 transport, signed physical-target/policy claims, outbound invocation context, platform-owned Gateway policy, and final-boundary replay guard are present; tenant has no authority key, replay binding, bearer, or Gateway policy authority | Gated substrate | Real staging namespace/schema-3 outbound readback, live context/policy propagation, missing-worker/resource-limit/context faults, tenant-policy spoof negatives, one paid provider call, central billing outcome, and traces |
 | AI Gateway multi-model forwarding | Default-off direct and cross-model paths, actual-serving-group billing contract, and operator readiness exist | Gated substrate | Deployed provider-route canary, usage/error reconciliation, terminal audit delivery, fault injection, and rollback |
+| HTTP flat billing intent | Migration 0029, frozen per-candidate pricing snapshots, domain-separated digest validation, reserve/bind/Queue/CAS finalization, request-id replay rejection, and a five-layer React/Bun readiness view pass locally | Gated local substrate | Decimal terminal parity, unset-ratio/self-use policy, complete image/audio/tool/provider multipliers, remote 0029 and Queue/D1 readback, invoice reconciliation, abort/idle faults, rollback, and approval |
 | Realtime billing reconciliation | Migration 0028, an admin queue, frozen-expression preview, root step-up apply, atomic settle/refund, and a React/Bun workbench pass locally with mutation default-off | Gated local control plane | Rotated credential, remote 0028, dual-control/retention policy, provider invoice correlation, D1/concurrency/rollback drills, alerts, and approval |
 | `cinatoken.com` production deployment | No current deployment evidence; the credential included in the task is exposed and was not used | Not started | Revoke/rotate the exposed token, issue least-privilege replacement credentials, finish G1-G8, deploy staging, canary, then production DNS/cutover |
 
 This re-audit keeps the overall migration goal open. Passing local gates proves
 implementation readiness only for the covered behavior.
+
+The current local D1 head is migration 0029: 29 contiguous migrations, 30
+tables, 139 checked incremental columns, and 27 key indexes. Flat intent runtime
+readiness does not imply pricing cutover readiness;
+`relay_flat_billing_go_parity_ready` remains hard false.
 
 ## Substantial And Verified
 

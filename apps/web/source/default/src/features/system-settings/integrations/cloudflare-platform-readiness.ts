@@ -29,6 +29,7 @@ export type PlatformReadinessSignalId =
   | 'ai-gateway-implementation'
   | 'wfp-tenant-implementation'
   | 'relay-billing-implementation'
+  | 'relay-flat-billing-intent-implementation'
   | 'relay-billing-owner-generation-compiled'
   | 'quota-coordinator-foundation'
   | 'quota-coordinator-relay-observer'
@@ -44,6 +45,7 @@ export type PlatformReadinessSignalId =
   | 'quota-coordinator-binding'
   | 'quota-coordinator-shadow-runtime'
   | 'quota-coordinator-reconciliation'
+  | 'relay-flat-billing-intent-runtime'
   | 'relay-billing-owner-generation-configured'
   | 'ai-gateway-canary'
   | 'ai-gateway-actual-group-billing-smoke'
@@ -57,9 +59,11 @@ export type PlatformReadinessSignalId =
   | 'relay-billing-stream-error-smoke'
   | 'relay-billing-finalization-replay'
   | 'relay-billing-recovery-smoke'
+  | 'relay-flat-billing-intent-staging-proof'
   | 'relay-billing-owner-generation-staging-proof'
   | 'task-runner-cutover'
   | 'relay-billing-recovery-cutover'
+  | 'relay-flat-billing-intent-cutover'
   | 'relay-billing-owner-generation-cutover'
   | 'quota-coordinator-write-authority'
   | 'quota-coordinator-cutover'
@@ -82,6 +86,13 @@ export type PlatformReadinessCapabilities = Pick<
   | 'd1_migration_ready'
   | 'relay_billing_reservation_ledger_compiled'
   | 'relay_billing_ledger_status_compiled'
+  | 'relay_flat_billing_intent_contract_version'
+  | 'relay_flat_billing_intent_compiled'
+  | 'relay_flat_billing_intent_schema_ready'
+  | 'relay_flat_billing_intent_runtime_ready'
+  | 'relay_flat_billing_go_parity_ready'
+  | 'relay_flat_billing_intent_staging_verified'
+  | 'relay_flat_billing_intent_cutover_ready'
   | 'relay_billing_prebind_owner_generation_compiled'
   | 'relay_billing_prebind_owner_generation_configured'
   | 'relay_billing_prebind_owner_generation_staging_verified'
@@ -144,6 +155,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'quota_coordinator_shadow_token_allowlist_configured'
   | 'quota_coordinator_shadow_token_allowlist_valid'
   | 'quota_coordinator_shadow_token_count'
+  | 'quota_coordinator_reservation_ledger_only'
   | 'quota_coordinator_tiered_only'
   | 'quota_coordinator_write_authority_enabled'
   | 'quota_coordinator_staging_verified'
@@ -220,6 +232,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'ai-gateway-implementation': 'AI Gateway',
   'wfp-tenant-implementation': 'WFP tenant',
   'relay-billing-implementation': 'Relay billing ledger',
+  'relay-flat-billing-intent-implementation': 'Relay flat billing intent',
   'relay-billing-owner-generation-compiled': 'Relay billing owner generation',
   'quota-coordinator-foundation': 'QuotaCoordinator foundation',
   'quota-coordinator-relay-observer': 'QuotaCoordinator relay observer',
@@ -231,12 +244,12 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'ai-gateway-fallback-runtime': 'AI Gateway fallback',
   'wfp-tenant-runtime': 'WFP tenant',
   'realtime-runtime': 'Realtime',
-  'realtime-billing-reconciliation-runtime':
-    'Realtime billing reconciliation',
+  'realtime-billing-reconciliation-runtime': 'Realtime billing reconciliation',
   'task-runner-runtime': 'TaskRunner',
   'quota-coordinator-binding': 'QuotaCoordinator binding',
   'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
   'quota-coordinator-reconciliation': 'QuotaCoordinator reconciliation',
+  'relay-flat-billing-intent-runtime': 'Relay flat billing intent',
   'relay-billing-owner-generation-configured': 'Relay billing owner generation',
   'ai-gateway-canary': 'AI Gateway canary',
   'ai-gateway-actual-group-billing-smoke':
@@ -252,17 +265,18 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
   'relay-billing-finalization-replay': 'Relay billing finalization replay',
   'relay-billing-recovery-smoke': 'Relay billing recovery smoke',
+  'relay-flat-billing-intent-staging-proof': 'Relay flat billing intent proof',
   'relay-billing-owner-generation-staging-proof':
     'Relay billing owner race proof',
   'task-runner-cutover': 'TaskRunner',
   'relay-billing-recovery-cutover': 'Relay billing recovery',
+  'relay-flat-billing-intent-cutover': 'Relay flat billing intent',
   'relay-billing-owner-generation-cutover': 'Relay billing owner generation',
   'quota-coordinator-write-authority': 'QuotaCoordinator write authority',
   'quota-coordinator-cutover': 'QuotaCoordinator cutover',
   'ai-gateway-fallback-cutover': 'AI Gateway fallback',
   'realtime-v1-cutover': 'Realtime v1',
-  'realtime-billing-reconciliation-cutover':
-    'Realtime billing reconciliation',
+  'realtime-billing-reconciliation-cutover': 'Realtime billing reconciliation',
 } satisfies Record<PlatformReadinessSignalId, string>
 
 export function getPlatformReadinessSignalLabel(
@@ -285,7 +299,7 @@ export function getQuotaCoordinatorReadiness(
   const foundation = allReady(
     capabilities.quota_coordinator_contract_version > 0,
     capabilities.quota_coordinator_foundation_compiled,
-    capabilities.quota_coordinator_tiered_only
+    capabilities.quota_coordinator_reservation_ledger_only
   )
   const binding = allReady(
     foundation,
@@ -356,10 +370,37 @@ export function getQuotaCoordinatorReadiness(
   }
 }
 
+export function getFlatBillingIntentReadiness(
+  capabilities: PlatformReadinessCapabilities
+) {
+  const implementation = allReady(
+    capabilities.relay_flat_billing_intent_contract_version > 0,
+    capabilities.relay_flat_billing_intent_compiled
+  )
+  const runtime = allReady(
+    implementation,
+    capabilities.relay_flat_billing_intent_schema_ready,
+    capabilities.relay_flat_billing_intent_runtime_ready
+  )
+  const staging = allReady(
+    runtime,
+    capabilities.relay_flat_billing_intent_staging_verified
+  )
+  const parity = capabilities.relay_flat_billing_go_parity_ready
+  const cutover = allReady(
+    staging,
+    parity,
+    capabilities.relay_flat_billing_intent_cutover_ready
+  )
+
+  return { implementation, runtime, staging, parity, cutover }
+}
+
 export function buildPlatformReadinessSummary(
   capabilities: PlatformReadinessCapabilities
 ): PlatformReadinessStage[] {
   const quotaCoordinator = getQuotaCoordinatorReadiness(capabilities)
+  const flatBillingIntent = getFlatBillingIntentReadiness(capabilities)
   const schedulingGatewayImplementation = allReady(
     capabilities.scheduling_gateway_compiled,
     capabilities.scheduling_gateway_active,
@@ -441,6 +482,10 @@ export function buildPlatformReadinessSummary(
     readySignal('wfp-tenant-implementation', wfpTenantImplementation),
     readySignal('relay-billing-implementation', relayBillingImplementation),
     readySignal(
+      'relay-flat-billing-intent-implementation',
+      flatBillingIntent.implementation
+    ),
+    readySignal(
       'relay-billing-owner-generation-compiled',
       capabilities.relay_billing_prebind_owner_generation_compiled
     ),
@@ -504,6 +549,7 @@ export function buildPlatformReadinessSummary(
       'quota-coordinator-reconciliation',
       quotaCoordinator.reconciliation
     ),
+    readySignal('relay-flat-billing-intent-runtime', flatBillingIntent.runtime),
     readySignal(
       'relay-billing-owner-generation-configured',
       capabilities.relay_billing_prebind_owner_generation_configured
@@ -594,6 +640,11 @@ export function buildPlatformReadinessSummary(
       capabilities.relay_billing_stream_lease_renewal_staging_verified
     ),
     verificationSignal(
+      'relay-flat-billing-intent-staging-proof',
+      flatBillingIntent.runtime,
+      flatBillingIntent.staging
+    ),
+    verificationSignal(
       'relay-billing-owner-generation-staging-proof',
       capabilities.relay_billing_prebind_owner_generation_configured,
       capabilities.relay_billing_prebind_owner_generation_staging_verified
@@ -610,6 +661,7 @@ export function buildPlatformReadinessSummary(
       'relay-billing-recovery-cutover',
       capabilities.relay_billing_orphan_recovery_cutover_ready
     ),
+    readySignal('relay-flat-billing-intent-cutover', flatBillingIntent.cutover),
     readySignal(
       'relay-billing-owner-generation-cutover',
       capabilities.relay_billing_prebind_owner_generation_cutover_ready

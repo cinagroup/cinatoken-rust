@@ -24,6 +24,7 @@ pub(crate) const RELAY_BILLING_FINALIZATION_INCIDENT_MIGRATION: &str =
     "0025_relay_billing_finalization_incidents.sql";
 pub(crate) const RELAY_BILLING_OWNER_GENERATION_MIGRATION: &str =
     "0026_relay_billing_owner_generation.sql";
+pub(crate) const RELAY_FLAT_BILLING_INTENT_MIGRATION: &str = "0029_flat_billing_intents.sql";
 pub(crate) const REALTIME_USAGE_RECONCILIATION_MIGRATION: &str =
     "0027_realtime_usage_reconciliation.sql";
 pub(crate) const REALTIME_USAGE_RECONCILIATION_RESOLUTION_MIGRATION: &str =
@@ -33,6 +34,8 @@ pub(crate) const RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS: i64 = 300;
 const RELAY_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const RELAY_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
 const RELAY_BILLING_ORPHAN_RETRY_MAX_SECONDS: i64 = 3_600;
+const RELAY_BILLING_SNAPSHOT_MAX_BYTES: usize = 32 * 1024;
+const RELAY_FLAT_BILLING_CONTRACT_PREFIX: &str = "flat-v1:";
 const REALTIME_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const REALTIME_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
 const REALTIME_BILLING_ORPHAN_RETRY_MAX_SECONDS: i64 = 3_600;
@@ -46,6 +49,8 @@ pub struct RelayBillingReservationRecord<'a> {
     pub endpoint_path: &'a str,
     pub request_id_hash: &'a str,
     pub expr_hash: &'a str,
+    pub billing_kind: &'a str,
+    pub billing_snapshot_json: &'a str,
     pub candidate_group_count: i64,
     pub reservation_strategy: &'a str,
     pub pre_consumed_quota: i64,
@@ -62,6 +67,8 @@ pub struct RelayBillingReservation {
     pub endpoint_path: String,
     pub request_id_hash: String,
     pub expr_hash: String,
+    pub billing_kind: String,
+    pub billing_snapshot_json: String,
     pub candidate_group_count: i64,
     pub reservation_strategy: String,
     pub pre_consumed_quota: i64,
@@ -1377,15 +1384,22 @@ pub async fn reserve_relay_billing_quota(
     let model_name = non_empty_relay_reservation_field(record.model_name, "model name")?;
     let reservation_strategy =
         non_empty_relay_reservation_field(record.reservation_strategy, "strategy")?;
+    let expr_hash = non_empty_relay_reservation_field(record.expr_hash, "contract hash")?;
+    let billing_kind = non_empty_relay_reservation_field(record.billing_kind, "billing kind")?;
+    let billing_snapshot_json = record.billing_snapshot_json.trim();
     if record.user_id <= 0
         || record.token_id < 0
         || record.candidate_group_count <= 0
         || record.lease_expires_at <= record.created_at
+        || !matches!(billing_kind, "tiered_expr" | "flat")
+        || billing_snapshot_json.len() > RELAY_BILLING_SNAPSHOT_MAX_BYTES
+        || (billing_kind == "flat" && billing_snapshot_json.is_empty())
     {
         return Err(worker::Error::RustError(
             "relay billing reservation identity is invalid".to_string(),
         ));
     }
+    validate_relay_billing_snapshot_contract(billing_kind, expr_hash, billing_snapshot_json)?;
     let quota = quota_i32(record.pre_consumed_quota)?;
     let args = [
         D1Type::Text(reservation_key),
@@ -1394,7 +1408,9 @@ pub async fn reserve_relay_billing_quota(
         D1Type::Text(model_name),
         D1Type::Text(record.endpoint_path.trim()),
         D1Type::Text(record.request_id_hash.trim()),
-        D1Type::Text(record.expr_hash.trim()),
+        D1Type::Text(expr_hash),
+        D1Type::Text(billing_kind),
+        D1Type::Text(billing_snapshot_json),
         D1Type::Integer(d1_i32(record.candidate_group_count)),
         D1Type::Text(reservation_strategy),
         D1Type::Integer(quota),
@@ -1406,10 +1422,12 @@ pub async fn reserve_relay_billing_quota(
             r#"
             INSERT INTO relay_billing_reservations (
               reservation_key, user_id, token_id, model_name, endpoint_path, request_id_hash,
-              expr_hash, candidate_group_count, reservation_strategy,
+              expr_hash, billing_kind, billing_snapshot_json,
+              candidate_group_count, reservation_strategy,
               pre_consumed_quota, status, created_at, updated_at,
               lease_expires_at, owner_deadline_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'reserved', ?11, ?11, ?12, ?12)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+              'reserved', ?13, ?13, ?14, ?14)
             "#,
         )
         .bind_refs(&args)?;
@@ -1455,6 +1473,27 @@ pub async fn reserve_relay_billing_quota(
     })
 }
 
+fn validate_relay_billing_snapshot_contract(
+    billing_kind: &str,
+    contract_hash: &str,
+    billing_snapshot_json: &str,
+) -> worker::Result<()> {
+    if billing_kind != "flat" {
+        return Ok(());
+    }
+    let expected_hash = format!(
+        "{RELAY_FLAT_BILLING_CONTRACT_PREFIX}{:x}",
+        Sha256::digest(billing_snapshot_json.as_bytes())
+    );
+    if contract_hash == expected_hash {
+        Ok(())
+    } else {
+        Err(worker::Error::RustError(
+            "flat billing reservation contract hash does not match its frozen snapshot".to_string(),
+        ))
+    }
+}
+
 fn relay_billing_reservation_matches_record(
     current: &RelayBillingReservation,
     expected: &RelayBillingReservationRecord<'_>,
@@ -1466,6 +1505,8 @@ fn relay_billing_reservation_matches_record(
         && current.endpoint_path == expected.endpoint_path.trim()
         && current.request_id_hash == expected.request_id_hash.trim()
         && current.expr_hash == expected.expr_hash.trim()
+        && current.billing_kind == expected.billing_kind.trim()
+        && current.billing_snapshot_json == expected.billing_snapshot_json.trim()
         && current.candidate_group_count == expected.candidate_group_count
         && current.reservation_strategy == expected.reservation_strategy.trim()
         && current.pre_consumed_quota == expected.pre_consumed_quota
@@ -1989,13 +2030,14 @@ pub async fn relay_billing_reservation_schema_ready(db: &D1Database) -> worker::
         D1Type::Text(RELAY_BILLING_FINALIZATION_MIGRATION),
         D1Type::Text(RELAY_BILLING_FINALIZATION_INCIDENT_MIGRATION),
         D1Type::Text(RELAY_BILLING_OWNER_GENERATION_MIGRATION),
+        D1Type::Text(RELAY_FLAT_BILLING_INTENT_MIGRATION),
     ];
     let row = db
-        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2, ?3, ?4)")
+        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2, ?3, ?4, ?5)")
         .bind_refs(&args)?
         .first::<CountRow>(None)
         .await?;
-    Ok(row.map(|row| row.count == 4).unwrap_or(false))
+    Ok(row.map(|row| row.count == 5).unwrap_or(false))
 }
 
 pub async fn sweep_expired_relay_billing_reservations(
@@ -2637,7 +2679,8 @@ pub(crate) async fn relay_billing_reservation(
     db.prepare(
         r#"
         SELECT reservation_key, user_id, token_id, model_name, endpoint_path, request_id_hash,
-               expr_hash, candidate_group_count, reservation_strategy,
+               expr_hash, billing_kind, billing_snapshot_json,
+               candidate_group_count, reservation_strategy,
                pre_consumed_quota, status, channel_id, selected_group,
                selected_at, final_quota, finalization_reason, request_accounted,
                lease_expires_at, owner_generation, owner_deadline_at,
@@ -12681,6 +12724,8 @@ mod tests {
             endpoint_path: "chat/completions".to_string(),
             request_id_hash: "sha256:test".to_string(),
             expr_hash: "expr".to_string(),
+            billing_kind: "tiered_expr".to_string(),
+            billing_snapshot_json: String::new(),
             candidate_group_count: 2,
             reservation_strategy: "max_candidate_group".to_string(),
             pre_consumed_quota: 100,
@@ -12721,6 +12766,22 @@ mod tests {
             "CHECK (status IN ('reserved', 'settled', 'refunded', 'recovery_required'))"
         ));
         assert!(migration.contains("idx_relay_billing_reservations_recovery_required"));
+        let flat_intent = include_str!("../../../migrations/d1/0029_flat_billing_intents.sql");
+        assert!(flat_intent.contains("ADD COLUMN billing_kind"));
+        assert!(flat_intent.contains("ADD COLUMN billing_snapshot_json"));
+        assert!(flat_intent.contains("length(billing_snapshot_json) <= 32768"));
+        assert!(flat_intent.contains("relay_flat_billing_snapshot_insert_guard"));
+        assert!(flat_intent.contains("relay_flat_billing_snapshot_update_guard"));
+    }
+
+    #[test]
+    fn flat_billing_snapshot_contract_hash_is_domain_separated_and_exact() {
+        let snapshot = r#"{"default":{"1":{"schema_version":1}}}"#;
+        let hash = format!("flat-v1:{:x}", Sha256::digest(snapshot.as_bytes()));
+
+        validate_relay_billing_snapshot_contract("flat", &hash, snapshot).unwrap();
+        assert!(validate_relay_billing_snapshot_contract("flat", "flat-v1:00", snapshot).is_err());
+        validate_relay_billing_snapshot_contract("tiered_expr", "expr-hash", "").unwrap();
     }
 
     #[test]

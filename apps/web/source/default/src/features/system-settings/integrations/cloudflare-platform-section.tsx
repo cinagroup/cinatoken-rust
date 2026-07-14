@@ -29,6 +29,7 @@ import { SettingsSection } from '../components/settings-section'
 import type { PlatformCapabilities, TaskRunnerStatusProbe } from '../types'
 import {
   buildPlatformReadinessSummary,
+  getFlatBillingIntentReadiness,
   getPlatformReadinessSignalLabel,
   getQuotaCoordinatorReadiness,
   type PlatformReadinessSignal,
@@ -386,6 +387,7 @@ function buildCapabilityGroups(
   const quotaCoordinatorGuards =
     capabilities.quota_coordinator_cutover_guards.join(', ') || t('No guards')
   const quotaCoordinator = getQuotaCoordinatorReadiness(capabilities)
+  const flatBillingIntent = getFlatBillingIntentReadiness(capabilities)
 
   return [
     {
@@ -420,20 +422,31 @@ function buildCapabilityGroups(
     {
       title: t('QuotaCoordinator'),
       description: t(
-        'Shadow-first, tiered-only quota coordination with D1 retaining write authority until every production gate passes.'
+        'Shadow-first, reservation-ledger-only quota coordination with D1 retaining write authority until every production gate passes.'
       ),
       rows: [
         {
           label: t('Foundation'),
           description: t(
-            'Contract version {{version}} must compile with the tiered-only scope intact.',
+            'Contract version {{version}} must compile with the reservation-ledger-only scope intact.',
             { version: capabilities.quota_coordinator_contract_version }
           ),
           ready: quotaCoordinator.foundation,
           readyLabel: t('Compiled'),
-          missingLabel: capabilities.quota_coordinator_tiered_only
+          missingLabel: capabilities.quota_coordinator_reservation_ledger_only
             ? t('Blocked')
             : t('Scope unsafe'),
+        },
+        {
+          label: t('Legacy tiered-only compatibility'),
+          description: t(
+            'Compatibility telemetry only; readiness is based on the reservation-ledger-only scope.'
+          ),
+          ready: capabilities.quota_coordinator_tiered_only,
+          readyLabel: t('Reported'),
+          missingLabel: t('Retired'),
+          readyVariant: 'info',
+          missingVariant: 'neutral',
         },
         {
           label: t('Binding'),
@@ -563,6 +576,71 @@ function buildCapabilityGroups(
           missingVariant:
             capabilities.quota_coordinator_cutover_ready &&
             !quotaCoordinator.cutover
+              ? 'red'
+              : 'neutral',
+        },
+      ],
+    },
+    {
+      title: t('Flat billing intent'),
+      description: t(
+        'Immutable flat-price settlement snapshots tracked through each production gate.'
+      ),
+      rows: [
+        {
+          label: t('Implementation'),
+          description: t('Intent contract version {{version}}.', {
+            version: capabilities.relay_flat_billing_intent_contract_version,
+          }),
+          ready: flatBillingIntent.implementation,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Blocked'),
+        },
+        {
+          label: t('Runtime'),
+          description: t(
+            'Migration 0029 schema and durable finalization runtime.'
+          ),
+          ready: flatBillingIntent.runtime,
+          readyLabel: t('Runtime ready'),
+          missingLabel: !capabilities.relay_flat_billing_intent_schema_ready
+            ? t('Migration missing')
+            : t('Runtime blocked'),
+        },
+        {
+          label: t('Staging'),
+          description: t('Deployed flat-price replay and settlement evidence.'),
+          ready: flatBillingIntent.staging,
+          readyLabel: t('Staging verified'),
+          missingLabel: capabilities.relay_flat_billing_intent_runtime_ready
+            ? t('Awaiting staging proof')
+            : t('Runtime blocked'),
+        },
+        {
+          label: t('Go pricing parity'),
+          description: t(
+            'Requires decimal finalization, unset-ratio policy, and complete provider pricing multipliers.'
+          ),
+          ready: flatBillingIntent.parity,
+          readyLabel: t('Verified'),
+          missingLabel: t('Parity blocked'),
+          missingVariant: 'warning',
+        },
+        {
+          label: t('Cutover'),
+          description: t(
+            'Requires runtime and staging proof; backend approval alone never completes this gate.'
+          ),
+          ready: flatBillingIntent.cutover,
+          readyLabel: t('Cutover-ready'),
+          missingLabel: !capabilities.relay_flat_billing_intent_staging_verified
+            ? t('Awaiting staging proof')
+            : !capabilities.relay_flat_billing_go_parity_ready
+              ? t('Parity blocked')
+              : t('Blocked'),
+          missingVariant:
+            capabilities.relay_flat_billing_intent_cutover_ready &&
+            !capabilities.relay_flat_billing_intent_staging_verified
               ? 'red'
               : 'neutral',
         },
@@ -2019,14 +2097,14 @@ function buildCapabilityGroups(
           ready:
             capabilities.realtime_session_billing_reconciliation_cutover_ready,
           readyLabel: t('Verified'),
-          missingLabel: capabilities
-            .realtime_session_billing_reconciliation_enabled
-            ? t('Awaiting staging proof')
-            : t('Disabled'),
-          missingVariant: capabilities
-            .realtime_session_billing_reconciliation_enabled
-            ? 'warning'
-            : 'neutral',
+          missingLabel:
+            capabilities.realtime_session_billing_reconciliation_enabled
+              ? t('Awaiting staging proof')
+              : t('Disabled'),
+          missingVariant:
+            capabilities.realtime_session_billing_reconciliation_enabled
+              ? 'warning'
+              : 'neutral',
         },
         {
           label: t('Realtime settlement retry'),

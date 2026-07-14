@@ -1053,3 +1053,27 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   add client-abort and upstream-idle taxonomy, and execute the signed remote
   direct/Gateway/WFP fault and provider-invoice matrix after credential
   rotation. Production remains **NO-GO**.
+
+## 2026-07-14 Frozen Flat Billing Intent Increment
+
+- Migration 0029 adds additive flat intent kind/snapshot fields plus database
+  guards that reject empty flat snapshots and preserve legacy tiered writers.
+- Flat requests now freeze candidate group/channel pricing, reserve the maximum
+  estimate, bind the actual serving attempt, and settle/refund through Queue v2
+  and D1 CAS. The `flat-v1` digest is recomputed by the repository.
+- Stable caller request IDs derive private `relayreserve-v2` keys. Concurrent or
+  terminal replay returns 409 before another provider call; no raw request ID is
+  stored.
+- Ordinary failure and zero-usage refund paths no longer increment request
+  count. The fixed-price audio reserve is synchronous, while terminal channel
+  and request accounting is Queue-owned; this corrects the previous phase note.
+- QuotaCoordinator now observes the generic reservation ledger. The admin
+  cockpit separates flat intent implementation, runtime, staging proof, Go
+  pricing parity, and cutover.
+- Local schema proof is 29 migrations, 30 tables, 139 checked incremental
+  columns, and 27 key indexes. Remaining flat cutover blockers are decimal
+  terminal parity, unset-ratio/self-use policy, complete image/audio/tool and
+  provider `OtherRatios`, remote 0029/Queue evidence, abort/idle taxonomy,
+  invoice reconciliation, credential rotation, rollback, and G1-G8 approval.
+  `relay_flat_billing_go_parity_ready` remains hard false and production remains
+  **NO-GO**.

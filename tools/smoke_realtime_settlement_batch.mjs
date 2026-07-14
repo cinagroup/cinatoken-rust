@@ -79,7 +79,7 @@ function runSelfTest() {
     runCheck("response_reservation_settles_once", responseReservationSettlesOnce),
     runCheck("response_reservation_guard_rolls_back", responseReservationGuardRollsBack),
     runCheck("response_reservation_refund_is_idempotent", responseReservationRefundIsIdempotent),
-    runCheck("response_reservation_lease_expiry_refunds_once", responseReservationLeaseExpiryRefundsOnce),
+    runCheck("response_reservation_recovery_grace_refunds_once", responseReservationRecoveryGraceRefundsOnce),
     runCheck("settlement_deadline_has_disjoint_terminal_winners", settlementDeadlineHasDisjointTerminalWinners),
     runCheck("stale_lease_generation_does_not_refund_new_reservation", staleLeaseGenerationDoesNotRefundNewReservation),
     runCheck("parallel_responses_settle_by_response_identity", parallelResponsesSettleByResponseIdentity),
@@ -569,7 +569,7 @@ function responseReservationRefundIsIdempotent() {
   });
 }
 
-function responseReservationLeaseExpiryRefundsOnce() {
+function responseReservationRecoveryGraceRefundsOnce() {
   return withDatabase((db) => {
     seedSettlementFixture(db, {
       userQuota: 1_000,
@@ -584,16 +584,32 @@ function responseReservationLeaseExpiryRefundsOnce() {
       leaseExpiresAt: defaultNow + 600,
     });
     const reserve = reserveRealtimeResponse(db, record);
-    const before = refundExpiredRealtimeResponse(db, record, record.leaseExpiresAt - 1);
-    const first = refundExpiredRealtimeResponse(db, record, record.leaseExpiresAt);
-    const second = refundExpiredRealtimeResponse(db, record, record.leaseExpiresAt + 1);
+    const beforeLease = refundExpiredRealtimeResponse(db, record, record.leaseExpiresAt - 1);
+    const atLease = refundExpiredRealtimeResponse(db, record, record.leaseExpiresAt);
+    const atGraceBoundary = refundExpiredRealtimeResponse(
+      db,
+      record,
+      record.leaseExpiresAt + orphanRecoveryGraceSeconds,
+    );
+    const first = refundExpiredRealtimeResponse(
+      db,
+      record,
+      record.leaseExpiresAt + orphanRecoveryGraceSeconds + 1,
+    );
+    const second = refundExpiredRealtimeResponse(
+      db,
+      record,
+      record.leaseExpiresAt + orphanRecoveryGraceSeconds + 2,
+    );
     const snapshot = settlementSnapshot(db, record);
     const reservation = db
       .prepare("SELECT status, request_json FROM realtime_billing_reservations WHERE reservation_key = ?1")
       .get(record.reservationKey);
     assert(reserve.outcome === "Applied", "lease fixture reservation should apply");
-    assert(before.outcome === "NotDue", "lease must not refund before expiry");
-    assert(first.outcome === "Applied", "expired lease should refund once");
+    assert(beforeLease.outcome === "NotDue", "lease must not refund before expiry");
+    assert(atLease.outcome === "NotDue", "lease must not refund at expiry");
+    assert(atGraceBoundary.outcome === "NotDue", "settlement must own the exact grace boundary");
+    assert(first.outcome === "Applied", "post-grace recovery should refund once");
     assert(second.outcome === "AlreadyFinalized", "lease replay must not double refund");
     assert(snapshot.userQuota === 1_000, "expired lease should restore user quota");
     assert(snapshot.tokenRemainQuota === 500, "expired lease should restore token quota");
@@ -601,7 +617,9 @@ function responseReservationLeaseExpiryRefundsOnce() {
     assert(reservation.request_json === "{}", "expired lease should clear private request input");
     return {
       reserve: reserve.outcome,
-      before: before.outcome,
+      beforeLease: beforeLease.outcome,
+      atLease: atLease.outcome,
+      atGraceBoundary: atGraceBoundary.outcome,
       first: first.outcome,
       second: second.outcome,
     };
@@ -695,7 +713,11 @@ function staleLeaseGenerationDoesNotRefundNewReservation() {
     const reserve = reserveRealtimeResponse(db, current);
     const staleRefund = refundExpiredRealtimeResponse(db, stale, stale.leaseExpiresAt);
     const beforeCurrentExpiry = settlementSnapshot(db, current);
-    const currentRefund = refundExpiredRealtimeResponse(db, current, current.leaseExpiresAt);
+    const currentRefund = refundExpiredRealtimeResponse(
+      db,
+      current,
+      current.leaseExpiresAt + orphanRecoveryGraceSeconds + 1,
+    );
     const afterCurrentExpiry = settlementSnapshot(db, current);
     assert(reserve.outcome === "Applied", "generation fixture reservation should apply");
     assert(staleRefund.outcome === "LeaseActive", "stale generation must not refund current reservation");
@@ -1838,7 +1860,10 @@ function refundExpiredRealtimeResponse(db, record, now) {
       leaseExpiresAt: Number(reservation.lease_expires_at),
     };
   }
-  if (Number(reservation.lease_expires_at) <= 0 || Number(reservation.lease_expires_at) > now) {
+  if (
+    Number(reservation.lease_expires_at) <= 0 ||
+    now <= Number(reservation.lease_expires_at) + orphanRecoveryGraceSeconds
+  ) {
     return { outcome: "NotDue" };
   }
   return refundRealtimeResponse(db, record);

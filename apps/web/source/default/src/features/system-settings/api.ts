@@ -17,6 +17,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@cinagroup.com
 */
 import { api } from '@/lib/api'
+import {
+  buildQuotaCoordinatorReconciliationRequest,
+  type CanonicalPositiveI64String,
+  type QuotaCoordinatorReconciliationResponse,
+} from './integrations/quota-coordinator-reconciliation'
 import type {
   ConfirmPaymentComplianceResponse,
   DeleteLogsResponse,
@@ -88,6 +93,16 @@ export async function getTaskRunnerStatus(taskId: string) {
   const res = await api.get<TaskRunnerStatusProbeResponse>(
     `/api/platform/task-runner/${encodeURIComponent(taskId)}/status`,
     { disableDuplicate: true }
+  )
+  return res.data
+}
+
+export async function reconcileQuotaCoordinator(
+  tokenId: CanonicalPositiveI64String
+) {
+  const res = await api.post<QuotaCoordinatorReconciliationResponse>(
+    '/api/platform/quota-coordinator/reconciliation',
+    buildQuotaCoordinatorReconciliationRequest(tokenId)
   )
   return res.data
 }

@@ -4332,3 +4332,64 @@ This is local E3/E4 evidence only. No authenticated remote namespace readback,
 load/latency/cost measurement, alert delivery, rollback exercise, or 30-day bake
 was performed. Reconciliation runtime remains false in tracked environments,
 D1 remains the sole financial writer, and production is **NO-GO**.
+
+## 2026-07-14 Realtime Terminal Ownership And Reconciliation UI Verification
+
+The Realtime increment changes terminal ownership and recovery scheduling only;
+it does not change billing-expression parsing, evaluation, frozen request input,
+price lookup, group ratio, or settlement arithmetic.
+
+```powershell
+cargo test -p cinatoken-worker --lib
+# PASS; 658 passed, including strict Realtime settlement/recovery boundaries
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS; only the two pre-existing unused topup repository warnings
+
+bun run check:realtime-session:settlement-batch-contract
+# PASS; 15/15, including NotDue at L, NotDue at L+300, one refund at L+301
+
+bun run check:do-lifecycle-runtime
+# PASS; release Worker/WFP builds and 25/25 Workerd tests
+
+bun run check:web
+bun run check:web:quality
+# PASS; TypeScript/build, ESLint, and Prettier
+
+bun run check:web:readiness
+# PASS; 37/37, including six reconciliation workbench contract tests
+
+bun run check:web:routes
+# PASS; 218 frontend calls, 323 Worker routes, zero missing calls
+
+bun run check
+# PASS; release Worker/WFP builds, Workerd 25/25, Playground 1/1, frontend
+# build/audits, 26 D1 migrations, workspace tests, and all three wasm32 targets
+
+bun run check:cf:dry-run
+bun run check:cf:startup
+# PASS with Wrangler 4.110.0; bindings and default-off gates were inspected,
+# startup was analysed locally, the generated profile was removed, no deploy ran
+```
+
+Verified local contracts:
+
+- Expected-generation lease refund is rejected through `L+300` and may apply
+  only from `L+301`. The DO alarm stores that first recovery instant, while D1
+  repeats generation, lease, status, and strict grace predicates in the CAS.
+- Client close/error and bridge/lifetime termination retain bound reservations
+  and any segment with an in-flight `response.done`. Only unbound work with no
+  active settlement is immediately refundable. Retry and lease queues retain
+  exclusive ownership.
+- The React workbench sends one strict body-only token scope, exposes all four
+  reconciliation states and 13 comparison fields, and builds copied evidence
+  from a redacted allowlist. It has no polling, URL/storage identity, replay,
+  repair, or gate mutation.
+
+This is local E3/E4 evidence. The Workerd suite exercises the existing runtime
+matrix but does not yet inject a deterministic D1 delay to race a live
+`response.done` against close/error and the DO alarm at all three boundaries.
+Authenticated staging bake, provider traffic, alert delivery, and remote
+rollback evidence remain absent. All Realtime writer/recovery and
+QuotaCoordinator runtime/cutover gates remain default-off; production is
+**NO-GO**.

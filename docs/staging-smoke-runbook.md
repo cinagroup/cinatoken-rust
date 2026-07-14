@@ -730,7 +730,8 @@ local D1-shape settlement batch replay. It does not write Cloudflare D1; it
 proves the Worker batch contract locally for applied, duplicate,
 guarded-update rollback, audit-failure rollback, refund, and tokenless
 settlement paths, plus the 0020 reservation-lease contract for not-yet-due
-work, expiry refund, idempotent replay, and earliest-deadline scheduling:
+work, inclusive settlement grace, first recovery at `L+301`, idempotent replay,
+and earliest-deadline scheduling:
 
 ```powershell
 bun run check:realtime-session:settlement-batch-contract
@@ -755,13 +756,13 @@ a staging-only Worker binding smoke probe.
 
 The six Worker-binding scenarios exercise the settlement batch itself; they do
 not prove Durable Object alarm recovery. Archive separate staging evidence that
-uses the minimum safe 900-second test lease to show: an alarm before expiry
-does not refund, expiry after DO eviction/restart refunds once, a forced D1
-refund failure leaves one redacted lease and re-arms the alarm, settlement-retry
-ownership suppresses lease refund, and the shared alarm selects the earliest
-deadline across both queues. Restore the production candidate lease value after
-the test and verify it exceeds measured response-duration p99 plus the approved
-retry/clock-skew margin.
+uses the minimum safe 900-second test lease to show: alarms at `L` and `L+300`
+do not refund, the first alarm at `L+301` after DO eviction/restart refunds
+once, a forced D1 refund failure leaves one redacted lease and re-arms the
+alarm, settlement-retry ownership suppresses lease refund, and the shared alarm
+selects the earliest deadline across both queues. Restore the production
+candidate lease value after the test and verify it exceeds measured response-
+duration p99 plus the approved retry/clock-skew margin.
 
 ### Reservation Lease Recovery Drill
 
@@ -775,11 +776,11 @@ HTTP/WS status plus D1 snapshots before and after every transition:
    `REALTIME_BILLING_RESERVATION_LEASE_SECONDS="900"`, and keep production
    unchanged.
 2. Create one response reservation without a terminal `response.done`. Before
-   900 seconds, prove the D1 row is still `reserved`, `due_count=0`, and no quota
-   refund occurred.
+   900 seconds, at the raw lease expiry, and at `lease + 300s`, prove the D1 row
+   is still `reserved`, `due_count=0`, and no quota refund occurred.
 3. Let the DO hibernate or restart the staging Worker without deleting DO/D1
-   state. After expiry, prove one CAS refund, zero duplicate quota changes, and
-   lease removal. Replay the alarm/status path and prove it stays a no-op.
+   state. At `lease + 301s`, prove one CAS refund, zero duplicate quota changes,
+   and lease removal. Replay the alarm/status path and prove it stays a no-op.
 4. On a dedicated fixture reservation, install a temporary D1 trigger that
    aborts the `reserved` to `refunded` update. Prove the redacted lease attempt
    count increases and the alarm re-arms; drop the trigger, then prove recovery
@@ -790,12 +791,16 @@ HTTP/WS status plus D1 snapshots before and after every transition:
    remains and eventually clears.
 6. Create lease and retry deadlines in both orders. Prove the single alarm
    follows the earlier absolute deadline and later work is not overwritten.
-7. Abort D1 reservation insert after the DO lease is stored. At lease expiry,
-   prove `NotFound` removes that lease without quota mutation.
+7. Abort D1 reservation insert after the DO lease is stored. At the first
+   post-grace recovery instant, prove `NotFound` removes that lease without
+   quota mutation.
 8. Exercise normal settle, missing usage, forward failure, disconnect, and
-   terminal error. Every path must remove its lease. Then use mock-only
-   reservations to prove 128 active records are accepted and the 129th fails
-   before D1 reservation/upstream forwarding.
+   terminal error. Unbound failures must refund immediately; a bound or
+   in-flight `response.done` interrupted by disconnect/error must remain
+   reserved through `L+300`, then settle or refund exactly once at/after its
+   legal boundary. Every terminal path must eventually remove its lease. Then
+   use mock-only reservations to prove 128 active records are accepted and the
+   129th fails before D1 reservation/upstream forwarding.
 9. Restore the production-candidate lease value, redeploy, archive the before
    and after capabilities, and verify both persisted queues and all fixture
    rows/triggers are empty.

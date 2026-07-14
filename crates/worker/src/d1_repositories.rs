@@ -286,6 +286,12 @@ fn realtime_billing_settlement_deadline_allows(lease_expires_at: i64, applied_at
         && applied_at
             <= lease_expires_at.saturating_add(REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)
 }
+
+fn realtime_billing_recovery_deadline_allows(lease_expires_at: i64, recovered_at: i64) -> bool {
+    lease_expires_at > 0
+        && recovered_at
+            > lease_expires_at.saturating_add(REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)
+}
 // Auto cross-group selection settings (Go option keys, see model/option.go).
 const AUTO_GROUPS_OPTION_KEY: &str = "AutoGroups";
 const USER_USABLE_GROUPS_OPTION_KEY: &str = "UserUsableGroups";
@@ -3197,7 +3203,7 @@ async fn refund_realtime_billing_reservation_inner(
     if let Some((reservation_sequence, lease_expires_at)) = expected_lease {
         if record.reservation_sequence != reservation_sequence
             || record.lease_expires_at != lease_expires_at
-            || record.lease_expires_at > refunded_at
+            || !realtime_billing_recovery_deadline_allows(record.lease_expires_at, refunded_at)
         {
             return Ok(RealtimeBillingReservationRefundOutcome::LeaseActive {
                 reservation_sequence: record.reservation_sequence,
@@ -3216,6 +3222,7 @@ async fn refund_realtime_billing_reservation_inner(
         D1Type::Integer(d1_i32(
             expected_lease.map(|value| value.1).unwrap_or_default(),
         )),
+        D1Type::Integer(d1_i32(REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)),
     ];
     let status_update = db
         .prepare(
@@ -3240,7 +3247,7 @@ async fn refund_realtime_billing_reservation_inner(
                 ?4 = 0 OR (
                   reservation_sequence = ?4
                   AND lease_expires_at = ?5
-                  AND lease_expires_at <= ?2
+                  AND lease_expires_at < ?2 - ?6
                 )
               )
             "#,
@@ -3299,7 +3306,10 @@ async fn refund_realtime_billing_reservation_inner(
                         |(reservation_sequence, lease_expires_at)| {
                             current.reservation_sequence != reservation_sequence
                                 || current.lease_expires_at != lease_expires_at
-                                || current.lease_expires_at > refunded_at
+                                || !realtime_billing_recovery_deadline_allows(
+                                    current.lease_expires_at,
+                                    refunded_at,
+                                )
                         },
                     ) =>
                 {
@@ -12161,6 +12171,9 @@ mod tests {
         assert!(realtime_billing_settlement_deadline_allows(900, 1_200));
         assert!(!realtime_billing_settlement_deadline_allows(900, 1_201));
         assert!(!realtime_billing_settlement_deadline_allows(0, 1));
+        assert!(!realtime_billing_recovery_deadline_allows(900, 1_200));
+        assert!(realtime_billing_recovery_deadline_allows(900, 1_201));
+        assert!(!realtime_billing_recovery_deadline_allows(0, 1));
         assert_eq!(REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS, 300);
         assert_eq!(realtime_billing_orphan_retry_delay_seconds(1), 60);
         assert_eq!(realtime_billing_orphan_retry_delay_seconds(2), 120);

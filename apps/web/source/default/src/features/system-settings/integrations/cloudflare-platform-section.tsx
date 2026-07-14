@@ -34,6 +34,7 @@ import {
   type PlatformReadinessSignal,
   type PlatformReadinessStage,
 } from './cloudflare-platform-readiness'
+import { QuotaCoordinatorReconciliationPanel } from './quota-coordinator-reconciliation-panel'
 
 type CapabilityRow = {
   label: string
@@ -156,6 +157,12 @@ export function CloudflarePlatformSection() {
               submittedTaskId={taskRunnerProbeId}
               taskId={taskRunnerTaskId}
               t={t}
+            />
+
+            <QuotaCoordinatorReconciliationPanel
+              runtimeReady={
+                capabilities.quota_coordinator_reconciliation_runtime_ready
+              }
             />
 
             <div className='rounded-lg border p-4'>
@@ -445,9 +452,10 @@ function buildCapabilityGroups(
           readyLabel: t('{{count}} tokens', {
             count: capabilities.quota_coordinator_shadow_token_count,
           }),
-          missingLabel: !capabilities.quota_coordinator_shadow_token_allowlist_valid
-            ? t('Invalid')
-            : t('Empty'),
+          missingLabel:
+            !capabilities.quota_coordinator_shadow_token_allowlist_valid
+              ? t('Invalid')
+              : t('Empty'),
           missingVariant:
             capabilities.quota_coordinator_shadow_enabled &&
             !quotaCoordinator.shadowScope

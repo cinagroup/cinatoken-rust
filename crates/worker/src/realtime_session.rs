@@ -379,6 +379,7 @@ struct RealtimeUpstreamBridgeState {
     upstream: WebSocket,
     upstream_ready: bool,
     closed: bool,
+    billing_settlement_inflight: bool,
     lifetime_abort: Option<AbortHandle>,
     pending: RealtimeBridgePendingQueue,
     billing_settlement: Option<RealtimeBillingSettlementHandoff>,
@@ -1296,11 +1297,17 @@ impl DurableObject for RealtimeSession {
             .map(|attachment| attachment.session.clone())
             .unwrap_or_else(|| self.state.id().to_string());
         let action = realtime_bridge_close_action(RealtimeBridgeCloseCause::ClientClosed);
+        let settlement_inflight = attachment
+            .as_ref()
+            .is_some_and(|attachment| self.realtime_billing_settlement_inflight_for(attachment));
         if let Some(attachment) = attachment.as_ref() {
             self.close_upstream_bridge_for(attachment, action);
         }
-        self.refund_realtime_bridge_reservations_best_effort(attachment.as_ref())
-            .await;
+        self.refund_realtime_bridge_reservations_best_effort(
+            attachment.as_ref(),
+            settlement_inflight,
+        )
+        .await;
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_close(attachment.as_ref(), now_ms, code, &reason);
         if !realtime_bridge_generated_close_reason(&reason) {
@@ -1331,11 +1338,17 @@ impl DurableObject for RealtimeSession {
             .map(|attachment| attachment.session.clone())
             .unwrap_or_else(|| self.state.id().to_string());
         let action = realtime_bridge_close_action(RealtimeBridgeCloseCause::ClientError);
+        let settlement_inflight = attachment
+            .as_ref()
+            .is_some_and(|attachment| self.realtime_billing_settlement_inflight_for(attachment));
         if let Some(attachment) = attachment.as_ref() {
             self.close_upstream_bridge_for(attachment, action);
         }
-        self.refund_realtime_bridge_reservations_best_effort(attachment.as_ref())
-            .await;
+        self.refund_realtime_bridge_reservations_best_effort(
+            attachment.as_ref(),
+            settlement_inflight,
+        )
+        .await;
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_error(attachment.as_ref(), now_ms, &error.to_string());
         metrics.record_bridge_terminal_event(
@@ -1436,7 +1449,9 @@ impl DurableObject for RealtimeSession {
                         }) {
                             current.reservation_sequence = reservation_sequence;
                             current.lease_expires_at = lease_expires_at;
-                            current.expires_at_ms = (lease_expires_at as f64 * 1_000.0)
+                            current.expires_at_ms = realtime_billing_reservation_first_recovery_at_ms(
+                                lease_expires_at,
+                            )
                                 .max(js_sys::Date::now() + 1.0);
                             current.last_error = None;
                         }
@@ -1703,7 +1718,10 @@ impl DurableObject for RealtimeSession {
                             &retry.reservation_key,
                             retry.reservation_sequence,
                             retry.lease_expires_at,
-                            now_ms + BILLING_RESERVATION_LEASE_RETRY_DELAY_MS as f64,
+                            realtime_billing_reservation_first_recovery_at_ms(
+                                retry.lease_expires_at,
+                            )
+                            .max(now_ms + BILLING_RESERVATION_LEASE_RETRY_DELAY_MS as f64),
                             now_ms,
                         )
                         .await
@@ -1861,6 +1879,7 @@ impl RealtimeSession {
                 closed: false,
                 lifetime_abort: Some(lifetime_abort),
                 pending: RealtimeBridgePendingQueue::default(),
+                billing_settlement_inflight: false,
                 billing_settlement: handoff.billing_settlement.clone(),
             })),
         };
@@ -1968,7 +1987,8 @@ impl RealtimeSession {
         let lease_seconds = realtime_billing_reservation_lease_seconds(&self.env);
         let created_at = crate::admin::unix_timestamp();
         let lease_expires_at = created_at.saturating_add(lease_seconds as i64);
-        let lease_expires_at_ms = lease_expires_at as f64 * 1_000.0;
+        let lease_expires_at_ms =
+            realtime_billing_reservation_first_recovery_at_ms(lease_expires_at);
         persist_realtime_billing_reservation_lease(
             &mut storage,
             &reservation_key,
@@ -2027,7 +2047,9 @@ impl RealtimeSession {
                         &reservation_key,
                         identity.reservation_sequence,
                         identity.lease_expires_at,
-                        identity.lease_expires_at as f64 * 1_000.0,
+                        realtime_billing_reservation_first_recovery_at_ms(
+                            identity.lease_expires_at,
+                        ),
                         js_sys::Date::now(),
                     )
                     .await
@@ -2175,11 +2197,13 @@ impl RealtimeSession {
             realtime_bridge_terminal_event(cause, action, now_ms, frame),
         );
         send_realtime_bridge_terminal_event(client, context, cause, action, frame);
+        let settlement_inflight = attachment
+            .is_some_and(|attachment| self.realtime_billing_settlement_inflight_for(attachment));
         if let Some(attachment) = attachment {
             self.close_upstream_bridge_for(attachment, action);
         }
         let _ = client.close(Some(action.client_code), Some(action.client_reason));
-        self.refund_realtime_bridge_reservations_best_effort(attachment)
+        self.refund_realtime_bridge_reservations_best_effort(attachment, settlement_inflight)
             .await;
         self.store_metrics(metrics).await?;
         Ok(())
@@ -2188,6 +2212,7 @@ impl RealtimeSession {
     async fn refund_realtime_bridge_reservations_best_effort(
         &self,
         attachment: Option<&SocketAttachment>,
+        settlement_inflight: bool,
     ) {
         let Some(attachment) = attachment else {
             worker::console_warn!(
@@ -2196,7 +2221,19 @@ impl RealtimeSession {
             return;
         };
         let mut storage = self.state.storage();
-        refund_realtime_bridge_reservations_best_effort(&self.env, &mut storage, attachment).await;
+        refund_realtime_bridge_reservations_best_effort(
+            &self.env,
+            &mut storage,
+            attachment,
+            settlement_inflight,
+        )
+        .await;
+    }
+
+    fn realtime_billing_settlement_inflight_for(&self, attachment: &SocketAttachment) -> bool {
+        self.upstream_bridges
+            .get(&realtime_upstream_bridge_key(attachment))
+            .is_some_and(|runtime| runtime.state.borrow().billing_settlement_inflight)
     }
 
     fn forward_text_to_upstream(
@@ -2344,6 +2381,7 @@ async fn refund_realtime_bridge_reservations_best_effort(
     env: &Env,
     storage: &mut Storage,
     attachment: &SocketAttachment,
+    settlement_inflight: bool,
 ) {
     if attachment.bridge_segment.trim().is_empty() {
         worker::console_warn!(
@@ -2389,6 +2427,28 @@ async fn refund_realtime_bridge_reservations_best_effort(
     let now = crate::admin::unix_timestamp();
     for reservation in reservations {
         if retry_reservations.contains(&reservation.reservation_key) {
+            continue;
+        }
+        if realtime_billing_terminal_refund_deferred(
+            settlement_inflight,
+            &reservation.upstream_response_id_hash,
+        ) {
+            if let Err(err) = persist_realtime_billing_reservation_lease(
+                storage,
+                &reservation.reservation_key,
+                reservation.reservation_sequence,
+                reservation.lease_expires_at,
+                realtime_billing_reservation_first_recovery_at_ms(reservation.lease_expires_at),
+                js_sys::Date::now(),
+            )
+            .await
+            {
+                worker::console_warn!(
+                    "RealtimeSession failed to retain settlement-owned reservation lease {}: {}",
+                    reservation.reservation_key,
+                    err
+                );
+            }
             continue;
         }
         match crate::d1_repositories::refund_realtime_billing_reservation(
@@ -2856,8 +2916,10 @@ impl RealtimeBillingReservationLeaseQueue {
             .find(|record| record.reservation_key == reservation_key)
         {
             if existing.reservation_sequence == reservation_sequence {
-                existing.lease_expires_at = existing.lease_expires_at.min(lease_expires_at);
-                existing.expires_at_ms = existing.expires_at_ms.min(expires_at_ms);
+                existing.lease_expires_at = lease_expires_at;
+                existing.expires_at_ms = expires_at_ms;
+                existing.attempts = 0;
+                existing.last_error = None;
             } else {
                 existing.reservation_sequence = reservation_sequence;
                 existing.lease_expires_at = lease_expires_at;
@@ -4721,6 +4783,7 @@ pub(crate) fn realtime_billing_reservation_lease_compiled() -> bool {
         && normalize_realtime_billing_reservation_lease_seconds(Some("3600".to_string())) == 3_600
         && normalize_realtime_billing_reservation_lease_seconds(Some("0".to_string()))
             == BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+        && realtime_billing_reservation_first_recovery_at_ms(900) == 1_201_000.0
 }
 
 pub(crate) fn realtime_billing_global_orphan_recovery_compiled() -> bool {
@@ -4738,6 +4801,20 @@ pub(crate) fn realtime_billing_orphan_recovery_enabled(env: &Env) -> bool {
 
 pub(crate) fn realtime_billing_orphan_recovery_grace_seconds() -> i64 {
     crate::d1_repositories::REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS
+}
+
+fn realtime_billing_reservation_first_recovery_at_ms(lease_expires_at: i64) -> f64 {
+    lease_expires_at
+        .saturating_add(crate::d1_repositories::REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)
+        .saturating_add(1) as f64
+        * 1_000.0
+}
+
+fn realtime_billing_terminal_refund_deferred(
+    settlement_inflight: bool,
+    upstream_response_id_hash: &str,
+) -> bool {
+    settlement_inflight || !upstream_response_id_hash.trim().is_empty()
 }
 
 fn realtime_billing_bridge_segment_compiled() -> bool {
@@ -6117,7 +6194,8 @@ fn spawn_realtime_upstream_event_pump(
                         if let Some(usage) = realtime_usage_metadata_from_upstream_text_frame(&text)
                         {
                             let now_ms = js_sys::Date::now();
-                            if record_realtime_upstream_usage(
+                            runtime_state.borrow_mut().billing_settlement_inflight = true;
+                            let billing_result = record_realtime_upstream_usage(
                                 &mut metrics_storage,
                                 &env,
                                 &attachment,
@@ -6125,9 +6203,9 @@ fn spawn_realtime_upstream_event_pump(
                                 usage,
                                 billing_settlement.as_ref(),
                             )
-                            .await
-                            .is_err()
-                            {
+                            .await;
+                            runtime_state.borrow_mut().billing_settlement_inflight = false;
+                            if billing_result.is_err() {
                                 worker::console_warn!(
                                     "RealtimeSession upstream usage metadata capture failed"
                                 );
@@ -6238,14 +6316,20 @@ fn spawn_realtime_upstream_lifetime_guard(
 
         let cause = RealtimeBridgeCloseCause::UpstreamLifetimeExceeded;
         let action = realtime_bridge_close_action(cause);
+        let settlement_inflight = runtime_state.borrow().billing_settlement_inflight;
         if !close_realtime_upstream_runtime(&runtime_state, action) {
             return;
         }
         let now_ms = js_sys::Date::now();
         send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
         let _ = client.close(Some(action.client_code), Some(action.client_reason));
-        refund_realtime_bridge_reservations_best_effort(&env, &mut metrics_storage, &attachment)
-            .await;
+        refund_realtime_bridge_reservations_best_effort(
+            &env,
+            &mut metrics_storage,
+            &attachment,
+            settlement_inflight,
+        )
+        .await;
 
         match load_realtime_session_metrics(&metrics_storage, &attachment.session, now_ms).await {
             Ok(mut metrics) => {
@@ -8544,6 +8628,16 @@ mod tests {
         assert!(realtime_billing_global_orphan_recovery_compiled());
         assert_eq!(realtime_billing_orphan_recovery_grace_seconds(), 300);
         assert_eq!(
+            realtime_billing_reservation_first_recovery_at_ms(900),
+            1_201_000.0
+        );
+        assert!(!realtime_billing_terminal_refund_deferred(false, ""));
+        assert!(realtime_billing_terminal_refund_deferred(true, ""));
+        assert!(realtime_billing_terminal_refund_deferred(
+            false,
+            "response-hash"
+        ));
+        assert_eq!(
             normalize_realtime_billing_reservation_lease_seconds(None),
             BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
         );
@@ -8579,6 +8673,13 @@ mod tests {
         queue
             .upsert("private-reservation-1", 1, 5, 5_000.0)
             .unwrap();
+        let refreshed = queue
+            .records
+            .iter()
+            .find(|record| record.reservation_key == "private-reservation-1")
+            .unwrap();
+        assert_eq!(refreshed.lease_expires_at, 5);
+        assert_eq!(refreshed.expires_at_ms, 5_000.0);
         queue
             .upsert("private-reservation-1", 3, 500, 500.0)
             .unwrap();

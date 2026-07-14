@@ -857,6 +857,17 @@ current ownership. Production observability must correlate the global D1 view
 with the redacted per-DO retry/lease aggregate before operators decide to
 intervene.
 
+The local DO alarm uses the same terminal boundary as the global scanner. Its
+stored `next_expiry_at_ms` is the first recoverable instant, not the raw provider
+lease expiry: settlement remains legal at `L + 300s`, and lease recovery starts
+at `L + 301s`. Client close, client error, and lifetime termination immediately
+refund only reservations that have neither a bound upstream response nor an
+in-flight `response.done` settlement. Bound or in-flight work retains its
+generation-pinned lease through the grace window. D1 repeats the generation,
+lease, status, and strict post-grace predicates in the terminal CAS, so a stale
+DO alarm, global schedule overlap, or disconnect cleanup cannot replace a
+settlement with an early refund.
+
 This design follows the cinaVibeSDK-inspired split: durable session authority
 stays in the DO, global reconciliation stays in the scheduling gateway, WFP
 tenants remain provider transport only, and central D1 billing authority never

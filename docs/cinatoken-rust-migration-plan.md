@@ -11876,3 +11876,81 @@ eviction/compaction scenarios, alert on every non-matched outcome, rehearse
 disable-first rollback, and complete the signed 30-day zero-unexplained-delta
 bake. Authenticated namespace readback, remote latency/cost, alert delivery, and
 that bake remain open. Production remains **NO-GO**.
+
+### 22.194 2026-07-14 Realtime Grace-Aware Terminal Ownership
+
+This increment closes a local M6 race between `response.done` settlement,
+client close/error cleanup, and the per-session Durable Object lease alarm. It
+does not enable Realtime settlement in any tracked environment and does not
+change the frozen billing-expression calculation. D1 remains the only quota
+writer and terminal CAS authority.
+
+Implemented locally:
+
+- Realtime settlement keeps the inclusive ownership window through
+  `lease_expires_at + 300s`. Both the DO lease alarm and D1 expected-generation
+  refund now begin only at the first legal integer second, `L+301`; the D1 SQL
+  CAS repeats status, reservation generation, exact lease, and strict grace
+  predicates.
+- The DO lease queue stores the first recovery instant rather than raw lease
+  expiry. Existing early queue entries self-heal when D1 reports the lease is
+  still active. Same-generation refresh replaces stale scheduling metadata and
+  clears prior retry diagnostics.
+- An active upstream bridge marks `response.done` settlement as in-flight
+  before awaiting D1 and clears the marker after the attempt. Client close,
+  client error, bridge termination, and lifetime expiry immediately refund only
+  unbound work with no in-flight settlement. Bound or in-flight reservations
+  retain their generation-pinned lease for settlement/retry or post-grace
+  recovery.
+- Settlement-retry ownership remains exclusive. A failed retry that cannot
+  complete its terminal refund schedules lease recovery no earlier than the
+  legal grace boundary; global recovery remains the independent fallback and
+  overlapping recovery deliveries remain idempotent through the D1 CAS.
+- The executable SQLite contract now proves no refund before `L`, at `L`, or at
+  `L+300`; exactly one refund may apply at `L+301`; settlement owns `L+300`, and
+  a late settlement cannot replace a post-grace recovery winner.
+
+This removes the known early-refund winner locally without introducing a new
+schema or financial owner. Production evidence is still open: staging must
+race real `response.done` processing against client close/error and DO/global
+alarms, include D1 latency/failure and eviction/redeploy, prove no provider
+replay or double accounting, and archive redacted D1 plus per-DO status around
+all three exact boundaries. Realtime write and recovery gates remain default-
+off. No remote resource, credential, provider request, migration, or deployment
+was used. Production remains **NO-GO**.
+
+### 22.195 2026-07-14 QuotaCoordinator Reconciliation Workbench
+
+The default React/Bun operations surface now consumes the M4 off-path
+reconciliation endpoint instead of showing capability badges alone. This is a
+read-only shadow-bake workbench; it does not initialize observer state, replay
+an observation, repair a difference, mutate D1, or set a verification gate.
+
+Implemented locally:
+
+- The panel is enabled only when the backend reports
+  `quota_coordinator_reconciliation_runtime_ready`. Operators enter one token
+  ID; the client accepts only a canonical positive signed 64-bit value and sends
+  exactly `{ "token_id": "..." }` in the POST body. Token identity is never
+  placed in the URL, browser storage, or an automatic polling loop.
+- Results distinguish `matched`, `mismatch`, `source_changed`, and
+  `observer_state_missing`. The workbench displays all 13 authoritative D1,
+  observer, and difference fields plus source stability, observer health, the
+  redacted scope hash, retention/conflict diagnostics, and persisted-size
+  evidence.
+- Copy produces a new JSON object from an explicit allowlist. It includes only
+  the redacted scope hash, status, the 13 projections, and bounded diagnostics;
+  unknown response properties and raw token identity are excluded.
+- Six focused tests cover strict i64 normalization, runtime gating, the token-
+  only request contract, archive redaction, mismatch presentation, source
+  changes, and missing observer state. The test is part of the root
+  `check:web:readiness` gate. The audited frontend route baseline advances by
+  exactly one known call, from 217 to 218, with zero missing Worker routes.
+
+The workbench makes the staged bake operable but does not satisfy it. Runtime
+readiness remains false in tracked environments. Production promotion still
+requires authenticated staging namespace readback, repeated matched archives,
+alert delivery for every non-matched state, load/latency/cost evidence,
+disable-first rollback, and the signed 30-day zero-unexplained-delta window. No
+credential, remote resource, provider request, or deployment was used.
+Production remains **NO-GO**.

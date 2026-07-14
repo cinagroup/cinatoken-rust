@@ -4270,3 +4270,65 @@ Wrangler custom build and failed while reading an in-progress worker-build
 metadata file. Running the two build-writing checks serially passed. CI and
 operator scripts must keep Wrangler custom builds for the same checkout
 serialized.
+
+## 2026-07-14 QuotaCoordinator Off-Path Reconciliation Verification
+
+The billing-expression source contract was re-read before implementing the D1
+projection. The probe compares frozen tiered reservation facts only; it does not
+evaluate expressions, read mutable prices, or mutate user/token/channel state.
+
+```powershell
+cargo test -p cinatoken-worker --lib
+# PASS; 658 passed; includes D1-minus-observer projection/difference checks
+
+bun run check:do-lifecycle-runtime
+# PASS; 25 passed; AdminAuth/no-store/redaction, stable matched evidence, then
+# a deliberately unobserved second D1 reservation producing a positive mismatch
+
+bun run check:web:readiness
+# PASS; 31 passed; reconciliation compile/runtime remains separate from bake
+
+bun run check:cf:quota-coordinator
+# PASS; all three environments remain shadow/retention/staging default-off
+
+bun run check:quota-coordinator:reconciliation-contract
+# PASS; 5/5 self-tests for redaction, confirmation, zero-diff and health gates
+
+bun run check:quota-coordinator:reconciliation-plan
+# PASS; redacted, read-only capability + fixed reconciliation POST plan
+
+bun run check
+# PASS; release Worker/WFP builds, Workerd 25/25, Playground 1/1, frontend
+# production build and audits, 217 frontend calls / 323 Worker routes / zero
+# missing, 26 D1 migrations, workspace tests, and all three wasm32 checks
+
+bun run check:cf:dry-run
+# PASS with Wrangler 4.110.0; QUOTA_COORD is bound, all quota gates remain
+# default-off, token scope is empty, and no deployment occurred
+
+bun run check:cf:startup
+# PASS with Wrangler 4.110.0; local startup analysis completed serially after
+# the dry-run build, and its generated diagnostic profile was not retained
+```
+
+Verified contracts:
+
+- The admin route accepts token identity only in a strict JSON string body, not
+  in the URL. The canonical positive ID must already be in the configured
+  shadow allowlist, with shadow and retention gates open. The route does not
+  provide an initialization, replay, repair, or write action.
+- D1 is sampled before and after the DO status read. Any changed aggregate or
+  revision marker produces `source_changed` with no difference decision.
+- Stable projection compares reserve/settle/refund counts, active/terminal
+  counts, four quota totals, user/token net deltas, channel used quota, and
+  request count. Differences are D1 authoritative value minus observer value.
+- A numerical zero diff is not sufficient: contract mismatch, persisted
+  conflict, legacy terminal state, or size-limit breach makes the observer
+  unhealthy and prevents `matched`.
+- Responses are `no-store` and return only a domain-separated token scope hash;
+  the staging harness omits both the admin cookie and raw token identity.
+
+This is local E3/E4 evidence only. No authenticated remote namespace readback,
+load/latency/cost measurement, alert delivery, rollback exercise, or 30-day bake
+was performed. Reconciliation runtime remains false in tracked environments,
+D1 remains the sole financial writer, and production is **NO-GO**.

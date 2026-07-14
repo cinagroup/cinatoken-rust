@@ -139,6 +139,8 @@ for (const expected of [
 for (const expected of [
   "quota_coordinator_relay_observation_compiled",
   "quota_coordinator_retention_compaction_compiled",
+  "quota_coordinator_reconciliation_compiled",
+  "quota_coordinator_reconciliation_runtime_ready",
   "quota_coordinator_write_authority_enabled",
   "quota_coordinator_cutover_ready",
   "quota_coordinator_cutover_guards",
@@ -183,6 +185,23 @@ assert(
   coordinatorSource.includes("context.wait_until(async move"),
   "QuotaCoordinator fetch-path observation must be deferred with waitUntil",
 );
+assert(
+  coordinatorSource.includes("relay_billing_quota_projection")
+    && coordinatorSource.includes("QuotaReconciliationStatus::SourceChanged")
+    && coordinatorSource.includes('set("Cache-Control", "no-store")'),
+  "QuotaCoordinator reconciliation must use a stable D1 double-read and no-store response",
+);
+assert(
+  workerSource.includes(
+    '"/api/platform/quota-coordinator/reconciliation"',
+  ),
+  "QuotaCoordinator reconciliation admin route is missing",
+);
+assert(
+  repositorySource.includes("pub async fn relay_billing_quota_projection")
+    && repositorySource.includes("AND expr_hash <> ''"),
+  "QuotaCoordinator reconciliation must aggregate only the D1 tiered ledger",
+);
 
 const report = {
   ok: true,
@@ -194,6 +213,7 @@ const report = {
   shadowTokenAllowlistDefaultEmpty: true,
   retentionVerifiedDefaultOff: true,
   retentionCompactionCompiled: true,
+  reconciliationCompiled: true,
   fetchObservationDeferred: true,
   stagingProofDefaultOff: true,
   producerCoverage: Object.keys(producerCoverage),

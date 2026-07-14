@@ -41,6 +41,7 @@ export type PlatformReadinessSignalId =
   | 'task-runner-runtime'
   | 'quota-coordinator-binding'
   | 'quota-coordinator-shadow-runtime'
+  | 'quota-coordinator-reconciliation'
   | 'relay-billing-owner-generation-configured'
   | 'ai-gateway-canary'
   | 'ai-gateway-actual-group-billing-smoke'
@@ -130,6 +131,8 @@ export type PlatformReadinessCapabilities = Pick<
   | 'quota_coordinator_recovery_observation_compiled'
   | 'quota_coordinator_relay_observation_compiled'
   | 'quota_coordinator_retention_compaction_compiled'
+  | 'quota_coordinator_reconciliation_compiled'
+  | 'quota_coordinator_reconciliation_runtime_ready'
   | 'quota_coordinator_storage_retention_ready'
   | 'quota_coordinator_shadow_token_allowlist_configured'
   | 'quota_coordinator_shadow_token_allowlist_valid'
@@ -217,6 +220,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'task-runner-runtime': 'TaskRunner',
   'quota-coordinator-binding': 'QuotaCoordinator binding',
   'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
+  'quota-coordinator-reconciliation': 'QuotaCoordinator reconciliation',
   'relay-billing-owner-generation-configured': 'Relay billing owner generation',
   'ai-gateway-canary': 'AI Gateway canary',
   'ai-gateway-actual-group-billing-smoke':
@@ -289,6 +293,10 @@ export function getQuotaCoordinatorReadiness(
     capabilities.quota_coordinator_retention_compaction_compiled,
     capabilities.quota_coordinator_storage_retention_ready
   )
+  const reconciliation = allReady(
+    capabilities.quota_coordinator_reconciliation_compiled,
+    capabilities.quota_coordinator_reconciliation_runtime_ready
+  )
   const shadowRuntime = allReady(
     shadowGate,
     relayObserver,
@@ -298,6 +306,7 @@ export function getQuotaCoordinatorReadiness(
   )
   const stagingBake = allReady(
     shadowRuntime,
+    reconciliation,
     capabilities.quota_coordinator_staging_verified
   )
   const writeAuthority = allReady(
@@ -318,6 +327,7 @@ export function getQuotaCoordinatorReadiness(
     retentionCompaction:
       capabilities.quota_coordinator_retention_compaction_compiled,
     storageRetention,
+    reconciliation,
     relayObserver,
     shadowRuntime,
     stagingBake,
@@ -460,6 +470,10 @@ export function buildPlatformReadinessSummary(
     readySignal(
       'quota-coordinator-shadow-runtime',
       quotaCoordinator.shadowRuntime
+    ),
+    readySignal(
+      'quota-coordinator-reconciliation',
+      quotaCoordinator.reconciliation
     ),
     readySignal(
       'relay-billing-owner-generation-configured',

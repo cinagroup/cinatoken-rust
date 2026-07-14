@@ -11826,3 +11826,53 @@ deployed candidate. Any legacy record, size-guard failure, unexplained expired
 event, or reconciliation delta blocks the gate. Off-path reconciliation,
 authenticated namespace readback, alerts, and the signed 30-day bake remain
 open. Production remains **NO-GO**.
+
+### 22.193 2026-07-14 QuotaCoordinator Off-Path Reconciliation
+
+This increment closes the local implementation gap for M4 shadow comparison
+without granting the coordinator any financial authority. D1 remains the sole
+writer; the new probe only reads the frozen tiered reservation ledger and the
+per-token observer summary under existing AdminAuth, retention, shadow, and
+token-allowlist gates.
+
+Implemented locally:
+
+- `relay_billing_quota_projection` aggregates only rows with a non-empty
+  `expr_hash`. Its reserve/settle/refund, active/terminal, outstanding/reserved/
+  final/refunded, user/token/channel, and request-count formulas mirror the
+  frozen billing settlement contract; it never evaluates an expression or
+  reads mutable pricing configuration.
+- `POST /api/platform/quota-coordinator/reconciliation` accepts only a strict
+  `{ "token_id": "<canonical-positive-i64>" }` body, then reads D1, reads the
+  canonical token DO, and reads D1 again. Keeping token identity out of the URL
+  avoids ordinary access-log exposure. A changed D1 snapshot is
+  `source_changed`, not a mismatch decision. Stable results are classified as
+  `matched`, `mismatch`, or `observer_state_missing`.
+- `matched` additionally requires coordinator contract v1, zero persisted
+  conflicts, zero legacy terminal records, and state size within the compiled
+  guard. The response is `no-store`, returns a domain-separated SHA-256 token
+  scope fingerprint instead of the raw token ID, and has no repair, replay, or
+  mutation action.
+- Capabilities and the React/Bun production-readiness panel expose compiled and
+  runtime reconciliation separately. Runtime readiness depends on the same
+  default-off shadow/retention/scope boundary; write authority remains false.
+- `smoke_quota_coordinator_reconciliation.mjs` performs the capability read and
+  reconciliation request in a fixed sequence. Live mode requires explicit
+  confirmation plus an admin cookie, and PASS requires stable/healthy/matched
+  evidence with every accounting difference equal to zero. Dry-run and live
+  output omit both the cookie and raw token identity.
+
+Local evidence is green: 658 Worker Rust tests, the 25-case Workerd lifecycle
+suite (including matched then deliberately missing-observation mismatch), 31
+frontend readiness tests, the config audit, and five reconciliation harness
+self-tests. No remote request, credential, resource, migration, or deployment
+was used.
+
+This is the local reconciliation mechanism, not staging reconciliation proof.
+Before `QUOTA_COORD_STAGING_VERIFIED=true`, operators must first approve
+deployed retention/load evidence, use isolated allowlisted staging tokens,
+archive repeated redacted `matched` reports across normal/replay/recovery/
+eviction/compaction scenarios, alert on every non-matched outcome, rehearse
+disable-first rollback, and complete the signed 30-day zero-unexplained-delta
+bake. Authenticated namespace readback, remote latency/cost, alert delivery, and
+that bake remain open. Production remains **NO-GO**.

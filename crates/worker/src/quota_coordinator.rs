@@ -7,7 +7,7 @@ use cinatoken_coordinator::{
     QUOTA_COORDINATOR_CONTRACT_VERSION, QUOTA_COORDINATOR_MODE,
 };
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use wasm_bindgen::JsValue;
@@ -32,6 +32,7 @@ const APPLY_VALIDATION_MARKER: &str = "cinatoken_quota_observation_validation:";
 const STATE_SIZE_MARKER: &str = "cinatoken_quota_state_size:";
 const RESERVATION_FINGERPRINT_DOMAIN: &str = "cinatoken-quota-reservation-v1";
 const OPERATION_ID_DOMAIN: &str = "cinatoken-quota-operation-v1";
+const TOKEN_SCOPE_FINGERPRINT_DOMAIN: &str = "cinatoken-quota-token-scope-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QuotaCoordinatorShadowScopeStatus {
@@ -46,12 +47,89 @@ struct QuotaCoordinatorShadowScope {
     valid: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct QuotaCoordinatorStatus {
     #[serde(flatten)]
     summary: QuotaCoordinatorSummary,
     persisted_state_json_bytes: usize,
     persisted_state_json_limit_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct QuotaAccountingProjection {
+    reserve_count: i64,
+    settle_count: i64,
+    refund_count: i64,
+    active_reservations: i64,
+    terminal_reservations: i64,
+    outstanding_quota: i64,
+    reserved_quota: i64,
+    final_quota: i64,
+    refunded_quota: i64,
+    user_net_delta: i64,
+    token_net_delta: i64,
+    channel_used_quota: i64,
+    request_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct QuotaAccountingDifference {
+    reserve_count: i64,
+    settle_count: i64,
+    refund_count: i64,
+    active_reservations: i64,
+    terminal_reservations: i64,
+    outstanding_quota: i64,
+    reserved_quota: i64,
+    final_quota: i64,
+    refunded_quota: i64,
+    user_net_delta: i64,
+    token_net_delta: i64,
+    channel_used_quota: i64,
+    request_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct QuotaCoordinatorDiagnostics {
+    contract_version: u32,
+    observation_count: u64,
+    applied_count: u64,
+    replay_count: u64,
+    conflict_count: u64,
+    retained_terminal_reservations: u64,
+    compacted_terminal_reservations: u64,
+    legacy_terminal_reservations: u64,
+    retention_watermark_committed_at: u64,
+    persisted_state_json_bytes: usize,
+    persisted_state_json_limit_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum QuotaReconciliationStatus {
+    Matched,
+    Mismatch,
+    ObserverStateMissing,
+    SourceChanged,
+}
+
+#[derive(Debug, Serialize)]
+struct QuotaReconciliationReport {
+    contract_version: u32,
+    status: QuotaReconciliationStatus,
+    token_scope_hash: String,
+    source_stable: bool,
+    observer_healthy: bool,
+    d1: crate::d1_repositories::RelayBillingQuotaProjection,
+    observer: Option<QuotaAccountingProjection>,
+    difference: Option<QuotaAccountingDifference>,
+    observer_diagnostics: Option<QuotaCoordinatorDiagnostics>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QuotaReconciliationRequest {
+    token_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,6 +368,164 @@ pub(crate) fn quota_coordinator_relay_observation_compiled() -> bool {
         && quota_coordinator_recovery_observation_compiled()
 }
 
+pub(crate) fn quota_coordinator_reconciliation_compiled() -> bool {
+    TOKEN_SCOPE_FINGERPRINT_DOMAIN == "cinatoken-quota-token-scope-v1"
+        && quota_coordinator_relay_observation_compiled()
+}
+
+/// Compare a stable D1 tiered-ledger snapshot with the observation-only DO.
+/// The probe is admin-only, read-only, allowlist-scoped, and unavailable until
+/// the same shadow and retention gates used by observation delivery are open.
+pub(crate) async fn quota_coordinator_reconciliation(
+    mut req: Request,
+    env: Env,
+) -> WorkerResult<Response> {
+    if let Err(response) = crate::admin::require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let body = match crate::admin::read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let request = match serde_json::from_value::<QuotaReconciliationRequest>(body) {
+        Ok(request) => request,
+        Err(_) => {
+            return Ok(crate::admin::envelope_error_response(
+                422,
+                "A valid quota reconciliation request is required",
+            ))
+        }
+    };
+    let Some(token_id) = canonical_positive_i64(&request.token_id) else {
+        return Ok(crate::admin::envelope_error_response(
+            422,
+            "A valid quota token identity is required",
+        ));
+    };
+    if !quota_coordinator_reconciliation_allowed(&env, token_id) {
+        return Ok(crate::admin::envelope_error_response(
+            409,
+            "Quota coordinator reconciliation is not enabled for this token",
+        ));
+    }
+
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(error) => {
+            worker::console_error!("QuotaCoordinator reconciliation D1 unavailable: {error}");
+            return Ok(crate::admin::envelope_error_response(
+                503,
+                "Quota coordinator reconciliation is unavailable",
+            ));
+        }
+    };
+    let before = match crate::d1_repositories::relay_billing_quota_projection(&db, token_id).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            worker::console_error!("QuotaCoordinator reconciliation query failed: {error}");
+            return Ok(crate::admin::envelope_error_response(
+                503,
+                "Quota coordinator reconciliation is unavailable",
+            ));
+        }
+    };
+    let observer = match fetch_quota_coordinator_status(&env, token_id).await {
+        Ok(status) => status,
+        Err(error) => {
+            worker::console_error!("QuotaCoordinator reconciliation status failed: {error}");
+            return Ok(crate::admin::envelope_error_response(
+                503,
+                "Quota coordinator reconciliation is unavailable",
+            ));
+        }
+    };
+    let after = match crate::d1_repositories::relay_billing_quota_projection(&db, token_id).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            worker::console_error!("QuotaCoordinator reconciliation recheck failed: {error}");
+            return Ok(crate::admin::envelope_error_response(
+                503,
+                "Quota coordinator reconciliation is unavailable",
+            ));
+        }
+    };
+
+    let token_scope_hash =
+        quota_identity_hash(TOKEN_SCOPE_FINGERPRINT_DOMAIN, &[&token_id.to_string()]);
+    let report = if before != after {
+        QuotaReconciliationReport {
+            contract_version: QUOTA_COORDINATOR_CONTRACT_VERSION,
+            status: QuotaReconciliationStatus::SourceChanged,
+            token_scope_hash,
+            source_stable: false,
+            observer_healthy: false,
+            d1: after,
+            observer: observer.as_ref().and_then(observer_projection),
+            difference: None,
+            observer_diagnostics: observer.as_ref().map(observer_diagnostics),
+        }
+    } else if let Some(observer) = observer {
+        let d1_projection = match d1_projection(&after) {
+            Some(projection) => projection,
+            None => {
+                return Ok(crate::admin::envelope_error_response(
+                    503,
+                    "Quota coordinator reconciliation is unavailable",
+                ))
+            }
+        };
+        let Some(observer_projection) = observer_projection(&observer) else {
+            return Ok(crate::admin::envelope_error_response(
+                503,
+                "Quota coordinator reconciliation is unavailable",
+            ));
+        };
+        let Some(difference) = projection_difference(&d1_projection, &observer_projection) else {
+            return Ok(crate::admin::envelope_error_response(
+                503,
+                "Quota coordinator reconciliation is unavailable",
+            ));
+        };
+        let observer_healthy = observer.summary.contract_version
+            == QUOTA_COORDINATOR_CONTRACT_VERSION
+            && observer.summary.conflict_count == 0
+            && observer.summary.legacy_terminal_reservations == 0
+            && observer.persisted_state_json_bytes <= observer.persisted_state_json_limit_bytes;
+        let status = if difference.is_zero() && observer_healthy {
+            QuotaReconciliationStatus::Matched
+        } else {
+            QuotaReconciliationStatus::Mismatch
+        };
+        QuotaReconciliationReport {
+            contract_version: QUOTA_COORDINATOR_CONTRACT_VERSION,
+            status,
+            token_scope_hash,
+            source_stable: true,
+            observer_healthy,
+            d1: after,
+            observer: Some(observer_projection),
+            difference: Some(difference),
+            observer_diagnostics: Some(observer_diagnostics(&observer)),
+        }
+    } else {
+        QuotaReconciliationReport {
+            contract_version: QUOTA_COORDINATOR_CONTRACT_VERSION,
+            status: QuotaReconciliationStatus::ObserverStateMissing,
+            token_scope_hash,
+            source_stable: true,
+            observer_healthy: false,
+            d1: after,
+            observer: None,
+            difference: None,
+            observer_diagnostics: None,
+        }
+    };
+
+    let mut response = crate::admin::envelope_ok_response(&report)?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
+}
+
 pub(crate) fn quota_coordinator_shadow_scope_status(
     env: &Env,
 ) -> QuotaCoordinatorShadowScopeStatus {
@@ -299,6 +535,14 @@ pub(crate) fn quota_coordinator_shadow_scope_status(
         valid: scope.valid,
         token_count: scope.token_ids.len(),
     }
+}
+
+fn quota_coordinator_reconciliation_allowed(env: &Env, token_id: i64) -> bool {
+    if !quota_coordinator_observation_runtime_enabled(env) {
+        return false;
+    }
+    let scope = quota_coordinator_shadow_scope(env);
+    scope.valid && scope.token_ids.contains(&token_id)
 }
 
 /// Project one committed tiered reservation into the observation-only DO.
@@ -538,6 +782,143 @@ fn relay_observations_for_reservation(
     Ok(observations)
 }
 
+async fn fetch_quota_coordinator_status(
+    env: &Env,
+    token_id: i64,
+) -> WorkerResult<Option<QuotaCoordinatorStatus>> {
+    let namespace = env.durable_object(QUOTA_COORD_BINDING)?;
+    let stub = namespace
+        .id_from_name(&format!("token:{token_id}"))?
+        .get_stub()?;
+    let mut headers = Headers::new();
+    headers.set(TOKEN_ID_HEADER, &token_id.to_string())?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Get).with_headers(headers);
+    let request = Request::new_with_init("https://quota-coordinator.internal/status", &init)?;
+    let mut response = stub.fetch_with_request(request).await?;
+    match response.status_code() {
+        200 => response.json::<QuotaCoordinatorStatus>().await.map(Some),
+        409 => Ok(None),
+        status => Err(Error::RustError(format!(
+            "QuotaCoordinator returned status {status}"
+        ))),
+    }
+}
+
+fn d1_projection(
+    value: &crate::d1_repositories::RelayBillingQuotaProjection,
+) -> Option<QuotaAccountingProjection> {
+    if [
+        value.reserve_count,
+        value.settle_count,
+        value.refund_count,
+        value.active_reservations,
+        value.terminal_reservations,
+        value.request_count,
+    ]
+    .into_iter()
+    .any(|value| value < 0)
+    {
+        return None;
+    }
+    Some(QuotaAccountingProjection {
+        reserve_count: value.reserve_count,
+        settle_count: value.settle_count,
+        refund_count: value.refund_count,
+        active_reservations: value.active_reservations,
+        terminal_reservations: value.terminal_reservations,
+        outstanding_quota: value.outstanding_quota,
+        reserved_quota: value.reserved_quota,
+        final_quota: value.final_quota,
+        refunded_quota: value.refunded_quota,
+        user_net_delta: value.user_net_delta,
+        token_net_delta: value.token_net_delta,
+        channel_used_quota: value.channel_used_quota,
+        request_count: value.request_count,
+    })
+}
+
+fn observer_projection(value: &QuotaCoordinatorStatus) -> Option<QuotaAccountingProjection> {
+    Some(QuotaAccountingProjection {
+        reserve_count: i64::try_from(value.summary.reserve_count).ok()?,
+        settle_count: i64::try_from(value.summary.settle_count).ok()?,
+        refund_count: i64::try_from(value.summary.refund_count).ok()?,
+        active_reservations: i64::try_from(value.summary.active_reservations).ok()?,
+        terminal_reservations: i64::try_from(value.summary.terminal_reservations).ok()?,
+        outstanding_quota: value.summary.outstanding_quota,
+        reserved_quota: value.summary.reserved_quota,
+        final_quota: value.summary.final_quota,
+        refunded_quota: value.summary.refunded_quota,
+        user_net_delta: value.summary.user_net_delta,
+        token_net_delta: value.summary.token_net_delta,
+        channel_used_quota: value.summary.channel_used_quota,
+        request_count: i64::try_from(value.summary.request_count).ok()?,
+    })
+}
+
+fn projection_difference(
+    d1: &QuotaAccountingProjection,
+    observer: &QuotaAccountingProjection,
+) -> Option<QuotaAccountingDifference> {
+    Some(QuotaAccountingDifference {
+        reserve_count: d1.reserve_count.checked_sub(observer.reserve_count)?,
+        settle_count: d1.settle_count.checked_sub(observer.settle_count)?,
+        refund_count: d1.refund_count.checked_sub(observer.refund_count)?,
+        active_reservations: d1
+            .active_reservations
+            .checked_sub(observer.active_reservations)?,
+        terminal_reservations: d1
+            .terminal_reservations
+            .checked_sub(observer.terminal_reservations)?,
+        outstanding_quota: d1
+            .outstanding_quota
+            .checked_sub(observer.outstanding_quota)?,
+        reserved_quota: d1.reserved_quota.checked_sub(observer.reserved_quota)?,
+        final_quota: d1.final_quota.checked_sub(observer.final_quota)?,
+        refunded_quota: d1.refunded_quota.checked_sub(observer.refunded_quota)?,
+        user_net_delta: d1.user_net_delta.checked_sub(observer.user_net_delta)?,
+        token_net_delta: d1.token_net_delta.checked_sub(observer.token_net_delta)?,
+        channel_used_quota: d1
+            .channel_used_quota
+            .checked_sub(observer.channel_used_quota)?,
+        request_count: d1.request_count.checked_sub(observer.request_count)?,
+    })
+}
+
+impl QuotaAccountingDifference {
+    fn is_zero(&self) -> bool {
+        self.reserve_count == 0
+            && self.settle_count == 0
+            && self.refund_count == 0
+            && self.active_reservations == 0
+            && self.terminal_reservations == 0
+            && self.outstanding_quota == 0
+            && self.reserved_quota == 0
+            && self.final_quota == 0
+            && self.refunded_quota == 0
+            && self.user_net_delta == 0
+            && self.token_net_delta == 0
+            && self.channel_used_quota == 0
+            && self.request_count == 0
+    }
+}
+
+fn observer_diagnostics(value: &QuotaCoordinatorStatus) -> QuotaCoordinatorDiagnostics {
+    QuotaCoordinatorDiagnostics {
+        contract_version: value.summary.contract_version,
+        observation_count: value.summary.observation_count,
+        applied_count: value.summary.applied_count,
+        replay_count: value.summary.replay_count,
+        conflict_count: value.summary.conflict_count,
+        retained_terminal_reservations: value.summary.retained_terminal_reservations,
+        compacted_terminal_reservations: value.summary.compacted_terminal_reservations,
+        legacy_terminal_reservations: value.summary.legacy_terminal_reservations,
+        retention_watermark_committed_at: value.summary.retention_watermark_committed_at,
+        persisted_state_json_bytes: value.persisted_state_json_bytes,
+        persisted_state_json_limit_bytes: value.persisted_state_json_limit_bytes,
+    }
+}
+
 async fn send_observation(
     env: &Env,
     token_id: i64,
@@ -668,8 +1049,9 @@ mod tests {
     use cinatoken_coordinator::QuotaObservationKind;
 
     use super::{
-        parse_quota_coordinator_shadow_scope, quota_coordinator_observation_gates_open,
-        quota_identity_hash, relay_observations_for_reservation, OPERATION_ID_DOMAIN,
+        d1_projection, parse_quota_coordinator_shadow_scope, projection_difference,
+        quota_coordinator_observation_gates_open, quota_identity_hash,
+        relay_observations_for_reservation, OPERATION_ID_DOMAIN,
     };
 
     #[test]
@@ -715,6 +1097,38 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         assert!(!parse_quota_coordinator_shadow_scope(&oversized).valid);
+    }
+
+    #[test]
+    fn reconciliation_difference_is_d1_minus_observer() {
+        let d1 = crate::d1_repositories::RelayBillingQuotaProjection {
+            reserve_count: 2,
+            settle_count: 1,
+            refund_count: 0,
+            active_reservations: 1,
+            terminal_reservations: 1,
+            outstanding_quota: 50,
+            reserved_quota: 150,
+            final_quota: 70,
+            refunded_quota: 30,
+            user_net_delta: -120,
+            token_net_delta: -120,
+            channel_used_quota: 70,
+            request_count: 1,
+            max_updated_at: 200,
+            owner_generation_sum: 4,
+        };
+        let authoritative = d1_projection(&d1).unwrap();
+        let mut observer = authoritative.clone();
+        observer.reserve_count = 1;
+        observer.reserved_quota = 100;
+        let difference = projection_difference(&authoritative, &observer).unwrap();
+        assert_eq!(difference.reserve_count, 1);
+        assert_eq!(difference.reserved_quota, 50);
+        assert!(!difference.is_zero());
+        assert!(projection_difference(&authoritative, &authoritative)
+            .unwrap()
+            .is_zero());
     }
 
     #[test]

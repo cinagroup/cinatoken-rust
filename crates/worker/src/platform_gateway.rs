@@ -30,8 +30,8 @@ use crate::admin::{
 use crate::quota_coordinator::{
     quota_coordinator_contract_version, quota_coordinator_finalization_observation_compiled,
     quota_coordinator_foundation_compiled, quota_coordinator_observer_contract_compiled,
-    quota_coordinator_recovery_observation_compiled, quota_coordinator_relay_observation_compiled,
-    quota_coordinator_reserve_observation_compiled,
+    quota_coordinator_reconciliation_compiled, quota_coordinator_recovery_observation_compiled,
+    quota_coordinator_relay_observation_compiled, quota_coordinator_reserve_observation_compiled,
     quota_coordinator_retention_compaction_compiled, quota_coordinator_shadow_scope_status,
     QUOTA_COORD_BINDING, QUOTA_COORD_RETENTION_VERIFIED_ENV, QUOTA_COORD_SHADOW_ENABLED_ENV,
     QUOTA_COORD_STAGING_VERIFIED_ENV,
@@ -315,6 +315,8 @@ struct PlatformCapabilities {
     quota_coordinator_recovery_observation_compiled: bool,
     quota_coordinator_relay_observation_compiled: bool,
     quota_coordinator_retention_compaction_compiled: bool,
+    quota_coordinator_reconciliation_compiled: bool,
+    quota_coordinator_reconciliation_runtime_ready: bool,
     quota_coordinator_storage_retention_ready: bool,
     quota_coordinator_shadow_token_allowlist_configured: bool,
     quota_coordinator_shadow_token_allowlist_valid: bool,
@@ -642,6 +644,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         quota_coordinator_relay_observation_compiled();
     let quota_coordinator_retention_compaction_compiled =
         quota_coordinator_retention_compaction_compiled();
+    let quota_coordinator_reconciliation_compiled = quota_coordinator_reconciliation_compiled();
     // This operator assertion remains false in every tracked environment until
     // long-lived hot-token retention has measured, reviewable evidence.
     let quota_coordinator_storage_retention_ready =
@@ -662,6 +665,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         quota_coordinator_tiered_only,
         quota_coordinator_write_authority_enabled,
     );
+    let quota_coordinator_reconciliation_runtime_ready =
+        quota_coordinator_shadow_runtime_ready && quota_coordinator_reconciliation_compiled;
     let quota_coordinator_cutover_ready = quota_coordinator_cutover_ready(
         quota_coordinator_do_available,
         quota_coordinator_foundation_compiled,
@@ -1053,6 +1058,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         quota_coordinator_recovery_observation_compiled,
         quota_coordinator_relay_observation_compiled,
         quota_coordinator_retention_compaction_compiled,
+        quota_coordinator_reconciliation_compiled,
+        quota_coordinator_reconciliation_runtime_ready,
         quota_coordinator_storage_retention_ready,
         quota_coordinator_shadow_token_allowlist_configured: quota_coordinator_shadow_scope
             .configured,
@@ -2908,6 +2915,7 @@ fn quota_coordinator_cutover_guards() -> Vec<&'static str> {
         "observer_contract",
         "relay_observation",
         "bounded_retention",
+        "shadow_reconciliation",
         "staging_shadow_bake",
         "write_authority",
     ]
@@ -3708,6 +3716,7 @@ mod tests {
             "observer_contract",
             "relay_observation",
             "bounded_retention",
+            "shadow_reconciliation",
             "staging_shadow_bake",
             "write_authority",
         ] {

@@ -184,6 +184,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/platform/capabilities", |req, ctx| async move {
             platform_gateway::capabilities(req, ctx.env).await
         })
+        .post_async(
+            "/api/platform/quota-coordinator/reconciliation",
+            |req, ctx| async move {
+                quota_coordinator::quota_coordinator_reconciliation(req, ctx.env).await
+            },
+        )
         .get_async(
             "/api/platform/relay/billing-finalization/incidents",
             |req, ctx| async move { relay_billing_reconcile::list_incidents(req, ctx.env).await },
@@ -2050,6 +2056,7 @@ mod tests {
             "/api/status",
             "/api/setup",
             "/api/platform/capabilities",
+            "/api/platform/quota-coordinator/reconciliation",
             "/api/platform/relay-billing/ledger/status",
             "/api/platform/task-runner/task-smoke/status",
             "/api/platform/dispatch/tenant-a",

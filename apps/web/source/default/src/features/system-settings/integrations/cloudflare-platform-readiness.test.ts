@@ -86,6 +86,8 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   quota_coordinator_recovery_observation_compiled: false,
   quota_coordinator_relay_observation_compiled: false,
   quota_coordinator_retention_compaction_compiled: false,
+  quota_coordinator_reconciliation_compiled: false,
+  quota_coordinator_reconciliation_runtime_ready: false,
   quota_coordinator_storage_retention_ready: false,
   quota_coordinator_shadow_token_allowlist_configured: false,
   quota_coordinator_shadow_token_allowlist_valid: true,
@@ -180,6 +182,7 @@ describe('Cloudflare platform readiness headline', () => {
       'task-runner-runtime': 'TaskRunner',
       'quota-coordinator-binding': 'QuotaCoordinator binding',
       'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
+      'quota-coordinator-reconciliation': 'QuotaCoordinator reconciliation',
       'relay-billing-owner-generation-configured':
         'Relay billing owner generation',
       'ai-gateway-canary': 'AI Gateway canary',
@@ -247,6 +250,7 @@ describe('Cloudflare platform readiness headline', () => {
         quota_coordinator_recovery_observation_compiled: true,
         quota_coordinator_relay_observation_compiled: true,
         quota_coordinator_retention_compaction_compiled: true,
+        quota_coordinator_reconciliation_compiled: true,
         quota_coordinator_tiered_only: true,
         wfp_dispatch_binding_available: true,
         wfp_tenant_supported_routes: ['/v1/responses'],
@@ -848,6 +852,7 @@ describe('Cloudflare platform readiness headline', () => {
         quota_coordinator_recovery_observation_compiled: true,
         quota_coordinator_relay_observation_compiled: true,
         quota_coordinator_retention_compaction_compiled: false,
+        quota_coordinator_reconciliation_compiled: true,
       })
     )
 
@@ -913,6 +918,8 @@ describe('Cloudflare platform readiness headline', () => {
       quota_coordinator_recovery_observation_compiled: true,
       quota_coordinator_relay_observation_compiled: true,
       quota_coordinator_retention_compaction_compiled: true,
+      quota_coordinator_reconciliation_compiled: true,
+      quota_coordinator_reconciliation_runtime_ready: true,
       quota_coordinator_storage_retention_ready: true,
       quota_coordinator_shadow_token_allowlist_configured: true,
       quota_coordinator_shadow_token_allowlist_valid: true,
@@ -977,6 +984,8 @@ describe('Cloudflare platform readiness headline', () => {
         quota_coordinator_recovery_observation_compiled: true,
         quota_coordinator_relay_observation_compiled: true,
         quota_coordinator_retention_compaction_compiled: true,
+        quota_coordinator_reconciliation_compiled: true,
+        quota_coordinator_reconciliation_runtime_ready: true,
         quota_coordinator_storage_retention_ready: true,
         quota_coordinator_shadow_token_allowlist_configured: true,
         quota_coordinator_shadow_token_allowlist_valid: true,

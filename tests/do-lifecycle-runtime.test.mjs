@@ -816,6 +816,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
         quota_coordinator_recovery_observation_compiled: true,
         quota_coordinator_relay_observation_compiled: true,
         quota_coordinator_retention_compaction_compiled: true,
+        quota_coordinator_reconciliation_compiled: true,
+        quota_coordinator_reconciliation_runtime_ready: true,
         quota_coordinator_storage_retention_ready: true,
         quota_coordinator_shadow_token_allowlist_configured: true,
         quota_coordinator_shadow_token_allowlist_valid: true,
@@ -834,6 +836,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
       "observer_contract",
       "relay_observation",
       "bounded_retention",
+      "shadow_reconciliation",
       "staging_shadow_bake",
       "write_authority",
     ]);
@@ -849,6 +852,106 @@ describe("Rust Durable Object lifecycle contracts", () => {
       "queue_v2_generation",
       "staging_race_replay",
     ]);
+  }, 30_000);
+
+  it("reconciles a stable D1 quota projection without exposing token identity", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const { cookie } = await setupAndLoginBillingRoot();
+    const now = Math.floor(Date.now() / 1000);
+    await seedRelayBillingReservation({
+      reservationKey: "relayreserve-runtime-quota-reconcile-a",
+      leaseExpiresAt: now + 300,
+    });
+    const observation = {
+      contract_version: 1,
+      kind: "reserve",
+      operation_id: quotaHex("a"),
+      reservation_fingerprint: quotaHex("b"),
+      generation: 1,
+      reserved_quota: 100,
+      final_quota: 0,
+      request_count: 0,
+    };
+    expect(
+      (await observeQuota(quotaCoordinatorStub(1), 1, observation)).status,
+    ).toBe(204);
+
+    const url =
+      "https://cinatoken.test/api/platform/quota-coordinator/reconciliation";
+    const reconciliationRequest = {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ token_id: "1" }),
+    };
+    expect(
+      (
+        await SELF.fetch(url, {
+          ...reconciliationRequest,
+          headers: { "content-type": "application/json" },
+        })
+      ).status,
+    ).toBe(401);
+    const matched = await SELF.fetch(url, reconciliationRequest);
+    expect(matched.status).toBe(200);
+    expect(matched.headers.get("cache-control")).toBe("no-store");
+    const matchedPayload = await matched.json();
+    expect(matchedPayload).toMatchObject({
+      success: true,
+      data: {
+        contract_version: 1,
+        status: "matched",
+        source_stable: true,
+        observer_healthy: true,
+        d1: {
+          reserve_count: 1,
+          active_reservations: 1,
+          outstanding_quota: 100,
+          reserved_quota: 100,
+          user_net_delta: -100,
+          token_net_delta: -100,
+        },
+        observer: {
+          reserve_count: 1,
+          active_reservations: 1,
+          outstanding_quota: 100,
+          reserved_quota: 100,
+        },
+        difference: {
+          reserve_count: 0,
+          active_reservations: 0,
+          reserved_quota: 0,
+        },
+        observer_diagnostics: {
+          conflict_count: 0,
+          legacy_terminal_reservations: 0,
+        },
+      },
+    });
+    expect(matchedPayload.data.token_scope_hash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(matchedPayload.data).not.toHaveProperty("token_id");
+
+    await seedRelayBillingReservation({
+      reservationKey: "relayreserve-runtime-quota-reconcile-b",
+      leaseExpiresAt: now + 300,
+    });
+    const mismatch = await SELF.fetch(url, reconciliationRequest);
+    expect(mismatch.status).toBe(200);
+    await expect(mismatch.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        status: "mismatch",
+        source_stable: true,
+        observer_healthy: true,
+        difference: {
+          reserve_count: 1,
+          active_reservations: 1,
+          outstanding_quota: 100,
+          reserved_quota: 100,
+          user_net_delta: -100,
+          token_net_delta: -100,
+        },
+      },
+    });
   }, 30_000);
 
   it("refunds a bound HTTP reservation exactly once through the billing Queue", async () => {

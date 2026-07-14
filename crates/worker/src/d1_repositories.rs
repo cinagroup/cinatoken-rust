@@ -75,6 +75,25 @@ pub struct RelayBillingReservation {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RelayBillingQuotaProjection {
+    pub reserve_count: i64,
+    pub settle_count: i64,
+    pub refund_count: i64,
+    pub active_reservations: i64,
+    pub terminal_reservations: i64,
+    pub outstanding_quota: i64,
+    pub reserved_quota: i64,
+    pub final_quota: i64,
+    pub refunded_quota: i64,
+    pub user_net_delta: i64,
+    pub token_net_delta: i64,
+    pub channel_used_quota: i64,
+    pub request_count: i64,
+    pub max_updated_at: i64,
+    pub owner_generation_sum: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayBillingReservationWriteOutcome {
     Applied { owner_generation: i64 },
@@ -2113,6 +2132,84 @@ pub async fn recent_relay_billing_ledger_status(
     .all()
     .await?
     .results::<RelayBillingLedgerStatusRow>()
+}
+
+/// Aggregate the D1-authoritative tiered relay ledger for one token.
+///
+/// This projection intentionally mirrors the observation-only
+/// `QuotaCoordinatorSummary` accounting fields. It does not read or modify
+/// user, token, or channel balances and is only used by the admin
+/// reconciliation probe outside the relay request path.
+pub async fn relay_billing_quota_projection(
+    db: &D1Database,
+    token_id: i64,
+) -> worker::Result<RelayBillingQuotaProjection> {
+    let token_id = token_id.to_string();
+    let args = [D1Type::Text(&token_id)];
+    db.prepare(
+        r#"
+        SELECT
+          COUNT(*) AS reserve_count,
+          COALESCE(SUM(CASE WHEN status = 'settled' THEN 1 ELSE 0 END), 0)
+            AS settle_count,
+          COALESCE(SUM(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END), 0)
+            AS refund_count,
+          COALESCE(SUM(
+            CASE WHEN status IN ('reserved', 'recovery_required') THEN 1 ELSE 0 END
+          ), 0) AS active_reservations,
+          COALESCE(SUM(
+            CASE WHEN status IN ('settled', 'refunded') THEN 1 ELSE 0 END
+          ), 0) AS terminal_reservations,
+          COALESCE(SUM(
+            CASE WHEN status IN ('reserved', 'recovery_required')
+              THEN pre_consumed_quota ELSE 0 END
+          ), 0) AS outstanding_quota,
+          COALESCE(SUM(pre_consumed_quota), 0) AS reserved_quota,
+          COALESCE(SUM(
+            CASE WHEN status = 'settled' THEN final_quota ELSE 0 END
+          ), 0) AS final_quota,
+          COALESCE(SUM(
+            CASE
+              WHEN status = 'refunded' THEN pre_consumed_quota
+              WHEN status = 'settled' AND pre_consumed_quota > final_quota
+                THEN pre_consumed_quota - final_quota
+              ELSE 0
+            END
+          ), 0) AS refunded_quota,
+          COALESCE(SUM(
+            CASE
+              WHEN status = 'settled' THEN -final_quota
+              WHEN status = 'refunded' THEN 0
+              ELSE -pre_consumed_quota
+            END
+          ), 0) AS user_net_delta,
+          COALESCE(SUM(
+            CASE
+              WHEN status = 'settled' THEN -final_quota
+              WHEN status = 'refunded' THEN 0
+              ELSE -pre_consumed_quota
+            END
+          ), 0) AS token_net_delta,
+          COALESCE(SUM(
+            CASE WHEN status = 'settled' THEN final_quota ELSE 0 END
+          ), 0) AS channel_used_quota,
+          COALESCE(SUM(
+            CASE WHEN status IN ('settled', 'refunded')
+              THEN request_accounted ELSE 0 END
+          ), 0) AS request_count,
+          COALESCE(MAX(updated_at), 0) AS max_updated_at,
+          COALESCE(SUM(owner_generation), 0) AS owner_generation_sum
+        FROM relay_billing_reservations
+        WHERE token_id = CAST(?1 AS INTEGER)
+          AND expr_hash <> ''
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayBillingQuotaProjection>(None)
+    .await?
+    .ok_or_else(|| {
+        worker::Error::RustError("relay billing quota projection returned no row".to_string())
+    })
 }
 
 async fn refund_relay_billing_reservation_inner(

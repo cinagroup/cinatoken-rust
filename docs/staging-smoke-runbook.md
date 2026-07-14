@@ -1677,9 +1677,10 @@ Preconditions:
 1. Authenticated configuration readback proves one SQLite-backed
    `QuotaCoordinator` class in staging and no namespace reuse with production.
    Capabilities must report foundation/binding and all producer families true,
-   plus `quota_coordinator_retention_compaction_compiled=true`, but operator
-   retention readiness, shadow runtime, write authority, staging proof, and
-   cutover false while the token allowlist remains empty.
+   plus `quota_coordinator_retention_compaction_compiled=true` and
+   `quota_coordinator_reconciliation_compiled=true`, but operator retention
+   readiness, reconciliation runtime, shadow runtime, write authority, staging
+   proof, and cutover false while the token allowlist remains empty.
 2. A producer-coverage audit maps tiered reserve, synchronous settle/refund,
    billing Queue finalize/replay, and orphan recovery to exactly one observer
    emission after the corresponding D1 outcome. Flat billing emits none.
@@ -1705,9 +1706,28 @@ Execution:
    Worker replacement, DO eviction, and malformed/corrupt state. Before-window
    replay must be idempotent; after-window replay must be an explicit conflict
    and alert without any D1 mutation. D1 remains the sole mutation source.
-3. Reconcile user/token quota, channel used quota, request count, reservation
-   generation, terminal disposition, and audit identity off the request path.
-   Archive only hashes and aggregate deltas.
+3. Confirm capabilities now report
+   `quota_coordinator_reconciliation_runtime_ready=true`, then run the read-only
+   D1-DO-D1 probe for each isolated allowlisted token:
+
+   ```powershell
+   bun run smoke:quota-coordinator-reconciliation -- `
+     --url https://<staging-worker-origin> `
+     --token-id $env:QUOTA_COORD_RECONCILIATION_TOKEN_ID `
+     --cookie $env:QUOTA_COORD_RECONCILIATION_COOKIE `
+     --confirm-live --json
+   ```
+
+   PASS requires `matched`, `source_stable=true`, `observer_healthy=true`, all
+   13 differences equal to zero, no persisted conflict, no legacy terminal
+   record, and state bytes within the reported limit. `source_changed` is an
+   inconclusive sample and may be retried after the ledger is quiet;
+   `mismatch` or `observer_state_missing` is an abort and alert. Reconcile
+   normal settle-above/below-reserve, refund, Queue replay, orphan recovery,
+   eviction, and compaction windows. Archive only the candidate SHA, capability
+   snapshot, token scope hash, aggregate projections/deltas, diagnostics,
+   timestamps, and alert/rollback evidence. Never archive the cookie or raw
+   token/reservation identity.
 4. Disable shadow before rollback traffic changes, then clear retention and
    token-scope assertions. Prove requests and all D1 finalizers continue
    normally, drain observer/reconciliation work, and retain DO state only as

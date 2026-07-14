@@ -4656,7 +4656,7 @@ Verified behavior:
 - Two in-flight requests with the same caller request identity create one D1
   reservation and one provider call; the replay receives 409 while the original
   request can still settle.
-- Snapshot bytes and `flat-v1` digest are durable and cross-validated; mutable
+- Snapshot bytes and `flat-v2` digest are durable and cross-validated; mutable
   pricing options are not reread for terminal computation.
 
 This proves local intent durability, not Go pricing cutover parity. Decimal

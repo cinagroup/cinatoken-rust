@@ -12348,3 +12348,42 @@ golden-fixture manifest. Remote migration 0030 and Queue/DLQ/provider evidence,
 direct/AI Gateway/WFP abort and idle fault replay, provider-invoice
 reconciliation, credential rotation, rollback, and signed G1-G8 approval also
 remain open. Go/VPS remains authoritative and production remains **NO-GO**.
+
+### 22.205 2026-07-14 Flat Provider Pricing Contract V2
+
+This increment supersedes the request-multiplier arithmetic in 22.203 and the
+corresponding open size/quality and Gemini input-audio items in 22.204.
+
+Implemented and verified locally:
+
+- `FlatPricingSnapshot` schema v2 freezes `image_price_ratio`, the request-time
+  `other_ratio_product`, and the resolved Gemini input-audio USD price per
+  million tokens. The durable digest is domain-separated as
+  `flat-v2:<sha256>` and repository validation rejects a mismatched prefix or
+  payload.
+- Fixed-price pre-consume now reproduces Go's ordering and truncation: image
+  size/quality is included, while `OtherRatios` such as image count are deferred
+  to terminal settlement. Final fixed and per-token settlement both apply the
+  frozen `OtherRatios` product after base/additive charges and round once with
+  decimal half-away-from-zero semantics.
+- DALL-E image price ratios cover 256 and 512 square requests, standard 1024,
+  rectangular requests, and DALL-E 3 HD. Image count uses top-level `n` rather
+  than SiliconFlow `batch_size`; the frozen resolver also represents Ali
+  `z-image` nested `n` and `prompt_extend=2` for future route enablement.
+- Gemini audio input tokens are removed from the ordinary prompt base and
+  charged from the frozen model-prefix price without `ModelRatio`. Successful
+  speech/transcription/translation responses with no upstream usage now reuse
+  the frozen request estimate, preventing the prior per-token reserve refund.
+- Audit output records image price ratio, `OtherRatios` product, Gemini audio
+  price, and `request_estimate` provenance. Worker tests pass 671/671 and the
+  billing crate passes its expanded flat arithmetic suite.
+
+This is not a cutover approval. Open P0/P1 parity includes TTS response-duration
+and byte-fallback charging, dedicated audio-detail `AudioRatio` arithmetic,
+multipart image-edit pricing, Ali response actual-count replacement, Responses
+and Claude tool-call surcharges, Zhipu/llama/OpenRouter/Gemini usage
+normalization, and a Go-generated immutable flat golden manifest. Remote
+migration/readback, Queue/DLQ/provider-invoice proof, abort/idle replay,
+credential rotation, rollback, and signed G1-G8 approval remain mandatory.
+`relay_flat_billing_go_parity_ready` stays hard false, Go/VPS remains
+authoritative, and production remains **NO-GO**.

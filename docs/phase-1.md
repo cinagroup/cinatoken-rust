@@ -1101,3 +1101,27 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   faults, credential rotation, rollback, and G1-G8 approval remain open.
   `relay_flat_billing_go_parity_ready` stays hard false and production remains
   **NO-GO**.
+
+## 2026-07-14 Flat Provider Pricing Contract V2 Increment
+
+- The frozen flat snapshot is now schema v2 and uses a domain-separated
+  `flat-v2` contract hash. It stores image size/quality and `OtherRatios` as
+  separate facts so reservation and terminal settlement follow Go's order.
+- Fixed-price reservation now truncates
+  `model_price * image_price_ratio * quota_per_unit * group_ratio` and excludes
+  image count. Terminal settlement performs one decimal half-away-from-zero
+  round after applying `OtherRatios`.
+- `OtherRatios` now apply to both fixed-price and per-token flat billing. The
+  request resolver covers image `n`, Ali `z-image` `prompt_extend`, and removes
+  the prior SiliconFlow `batch_size` billing divergence.
+- DALL-E size and quality pricing now matches Go, including 256/512 square,
+  rectangular, and DALL-E 3 HD combinations. Gemini input-audio pricing is
+  frozen per model and added without the model ratio, as in Go.
+- Successful usage-less audio requests now settle from the frozen request
+  estimate instead of refunding per-token reservations; audit provenance is
+  `request_estimate`.
+- Local Worker tests pass 671/671. Remaining flat blockers include response-
+  duration TTS charging, dedicated audio-detail ratios, image edits and Ali
+  actual-count replacement, tool-call surcharges, provider usage normalization,
+  a Go-generated immutable flat manifest, and all remote evidence. Production
+  remains **NO-GO**.

@@ -756,7 +756,7 @@ armed only when:
   environment until remote 0030, Queue/D1 settlement/refund replay, duplicate
   request identity, body-limit, and rollback evidence is reviewed.
 - Require a non-empty frozen snapshot and a repository-validated
-  `flat-v1:<sha256>` digest for every flat reservation. Mutable options are not
+  `flat-v2:<sha256>` digest for every flat reservation. Mutable options are not
   a terminal pricing source.
 - A stable caller request identity must reject an in-flight or terminal replay
   before provider egress. Never log or persist the raw identity.

@@ -35,7 +35,7 @@ const RELAY_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const RELAY_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
 const RELAY_BILLING_ORPHAN_RETRY_MAX_SECONDS: i64 = 3_600;
 const RELAY_BILLING_SNAPSHOT_MAX_BYTES: usize = 32 * 1024;
-const RELAY_FLAT_BILLING_CONTRACT_PREFIX: &str = "flat-v1:";
+const RELAY_FLAT_BILLING_CONTRACT_PREFIX: &str = "flat-v2:";
 const REALTIME_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const REALTIME_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
 const REALTIME_BILLING_ORPHAN_RETRY_MAX_SECONDS: i64 = 3_600;
@@ -12804,11 +12804,11 @@ mod tests {
 
     #[test]
     fn flat_billing_snapshot_contract_hash_is_domain_separated_and_exact() {
-        let snapshot = r#"{"default":{"1":{"schema_version":1}}}"#;
-        let hash = format!("flat-v1:{:x}", Sha256::digest(snapshot.as_bytes()));
+        let snapshot = r#"{"default":{"1":{"schema_version":2}}}"#;
+        let hash = format!("flat-v2:{:x}", Sha256::digest(snapshot.as_bytes()));
 
         validate_relay_billing_snapshot_contract("flat", &hash, snapshot).unwrap();
-        assert!(validate_relay_billing_snapshot_contract("flat", "flat-v1:00", snapshot).is_err());
+        assert!(validate_relay_billing_snapshot_contract("flat", "flat-v2:00", snapshot).is_err());
         validate_relay_billing_snapshot_contract("tiered_expr", "expr-hash", "").unwrap();
     }
 

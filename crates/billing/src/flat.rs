@@ -9,7 +9,8 @@
 //!
 //! Fixed-price mode (`ModelPrice` configured):
 //! ```text
-//! quota = round(model_price * quota_per_unit * group_ratio * fixed_price_multiplier)
+//! quota = round(model_price * image_price_ratio * quota_per_unit * group_ratio
+//!               * other_ratio_product)
 //! ```
 //!
 //! Per-token mode (ports Go `calculateTextQuotaSummary`): each token
@@ -40,10 +41,8 @@
 //!
 //! ## Simplifications vs Go (deferred)
 //!
-//! - No Gemini separate audio-input pricing
-//!   (`GetGeminiInputAudioPricePerMillionTokens`).
-//! - Only the image count `OtherRatios["n"]` equivalent is implemented; other
-//!   provider-specific fixed-price multipliers remain deferred.
+//! - Only request-derived image `OtherRatios` are frozen; response-derived
+//!   provider adjustments remain deferred.
 //! - No `ToolCallSurcharge` (web_search / file_search fixed fees).
 
 use crate::pricing::PricingConfig;
@@ -76,6 +75,8 @@ pub struct FlatUsage {
     /// Vision/image input token count (subtracted from the prompt base and
     /// re-priced at `image_ratio`).
     pub image_tokens: i64,
+    /// Audio input tokens used by Gemini's separate per-million USD price.
+    pub audio_input_tokens: i64,
     /// True when the upstream usage follows Anthropic semantics, where
     /// `prompt_tokens` already excludes cache hits (so we add them back at
     /// the cache ratio instead of subtracting-then-remultiplying).
@@ -128,28 +129,33 @@ pub struct FlatPricingSnapshot {
     pub image_ratio: f64,
     pub audio_ratio: f64,
     pub audio_completion_ratio: f64,
+    pub audio_input_price_per_million: f64,
     pub quota_per_unit: f64,
     pub model_price: Option<f64>,
-    pub fixed_price_multiplier: f64,
+    /// Fixed-price image size/quality adjustment. Go includes this factor in
+    /// pre-consume while excluding `OtherRatios`.
+    pub image_price_ratio: f64,
+    /// Product of request-time `OtherRatios`, applied after all base and
+    /// additive charges in both fixed-price and per-token modes.
+    pub other_ratio_product: f64,
     pub pre_consumed_token_floor: i64,
 }
 
 impl FlatPricingSnapshot {
-    pub const SCHEMA_VERSION: u16 = 1;
+    pub const SCHEMA_VERSION: u16 = 2;
 
     pub fn from_config(
         model: &str,
         group: &str,
         config: &PricingConfig,
-        fixed_price_multiplier: f64,
+        other_ratio_product: f64,
         pre_consumed_token_floor: i64,
     ) -> Self {
-        let fixed_price_multiplier =
-            if fixed_price_multiplier.is_finite() && fixed_price_multiplier > 0.0 {
-                fixed_price_multiplier
-            } else {
-                1.0
-            };
+        let other_ratio_product = if other_ratio_product.is_finite() && other_ratio_product > 0.0 {
+            other_ratio_product
+        } else {
+            1.0
+        };
         let model_price = config.model_price(model);
         Self {
             schema_version: Self::SCHEMA_VERSION,
@@ -168,11 +174,22 @@ impl FlatPricingSnapshot {
             image_ratio: config.image_ratio(model),
             audio_ratio: config.audio_ratio(model),
             audio_completion_ratio: config.audio_completion_ratio(model),
+            audio_input_price_per_million: config.audio_input_price_per_million(model),
             quota_per_unit: config.quota_per_unit,
             model_price,
-            fixed_price_multiplier,
+            image_price_ratio: 1.0,
+            other_ratio_product,
             pre_consumed_token_floor: pre_consumed_token_floor.max(0),
         }
+    }
+
+    pub fn with_image_price_ratio(mut self, image_price_ratio: f64) -> Self {
+        self.image_price_ratio = if image_price_ratio.is_finite() && image_price_ratio > 0.0 {
+            image_price_ratio
+        } else {
+            1.0
+        };
+        self
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -190,8 +207,10 @@ impl FlatPricingSnapshot {
             self.image_ratio,
             self.audio_ratio,
             self.audio_completion_ratio,
+            self.audio_input_price_per_million,
             self.quota_per_unit,
-            self.fixed_price_multiplier,
+            self.image_price_ratio,
+            self.other_ratio_product,
         ];
         if values
             .into_iter()
@@ -203,7 +222,10 @@ impl FlatPricingSnapshot {
         {
             return Err("flat pricing snapshot contains an invalid price or ratio");
         }
-        if self.quota_per_unit <= 0.0 || self.fixed_price_multiplier <= 0.0 {
+        if self.quota_per_unit <= 0.0
+            || self.image_price_ratio <= 0.0
+            || self.other_ratio_product <= 0.0
+        {
             return Err("flat pricing snapshot contains an invalid multiplier");
         }
         if (self.mode == FlatBillingMode::FixedPrice) != self.model_price.is_some() {
@@ -223,7 +245,9 @@ pub struct FlatQuotaResult {
     pub completion_ratio: f64,
     pub group_ratio: f64,
     pub cache_ratio: f64,
-    pub fixed_price_multiplier: f64,
+    pub image_price_ratio: f64,
+    pub other_ratio_product: f64,
+    pub audio_input_price_per_million: f64,
 }
 
 /// Compute the flat quota for a single relay response.
@@ -233,20 +257,18 @@ pub fn compute_flat_quota(
     group: &str,
     config: &PricingConfig,
 ) -> FlatQuotaResult {
-    compute_flat_quota_with_fixed_price_multiplier(usage, model, group, config, 1.0)
+    compute_flat_quota_with_other_ratio_product(usage, model, group, config, 1.0)
 }
 
-/// Compute flat quota while applying a request-derived multiplier only to the
-/// fixed-price branch. This is the Rust equivalent of Go's image `n` ratio.
-pub fn compute_flat_quota_with_fixed_price_multiplier(
+/// Compute flat quota while applying a request-derived `OtherRatios` product.
+pub fn compute_flat_quota_with_other_ratio_product(
     usage: &FlatUsage,
     model: &str,
     group: &str,
     config: &PricingConfig,
-    fixed_price_multiplier: f64,
+    other_ratio_product: f64,
 ) -> FlatQuotaResult {
-    let snapshot =
-        FlatPricingSnapshot::from_config(model, group, config, fixed_price_multiplier, 0);
+    let snapshot = FlatPricingSnapshot::from_config(model, group, config, other_ratio_product, 0);
     compute_flat_quota_from_snapshot(usage, &snapshot)
 }
 
@@ -255,7 +277,7 @@ pub fn compute_flat_quota_from_snapshot(
     usage: &FlatUsage,
     snapshot: &FlatPricingSnapshot,
 ) -> FlatQuotaResult {
-    let fixed_price_multiplier = snapshot.fixed_price_multiplier;
+    let other_ratio_product = snapshot.other_ratio_product;
     let group_ratio = snapshot.group_ratio;
     let model_ratio = snapshot.model_ratio;
     let completion_ratio = snapshot.completion_ratio;
@@ -271,7 +293,9 @@ pub fn compute_flat_quota_from_snapshot(
         completion_ratio,
         group_ratio,
         cache_ratio,
-        fixed_price_multiplier,
+        image_price_ratio: snapshot.image_price_ratio,
+        other_ratio_product,
+        audio_input_price_per_million: snapshot.audio_input_price_per_million,
     };
 
     let (
@@ -284,7 +308,9 @@ pub fn compute_flat_quota_from_snapshot(
         Some(d_cache_creation_ratio_1h),
         Some(d_image_ratio),
         Some(d_quota_per_unit),
-        Some(d_fixed_price_multiplier),
+        Some(d_image_price_ratio),
+        Some(d_other_ratio_product),
+        Some(d_audio_input_price_per_million),
     ) = (
         go_decimal_from_f64(model_ratio),
         go_decimal_from_f64(completion_ratio),
@@ -295,7 +321,9 @@ pub fn compute_flat_quota_from_snapshot(
         go_decimal_from_f64(cache_creation_ratio_1h),
         go_decimal_from_f64(image_ratio),
         go_decimal_from_f64(snapshot.quota_per_unit),
-        go_decimal_from_f64(fixed_price_multiplier),
+        go_decimal_from_f64(snapshot.image_price_ratio),
+        go_decimal_from_f64(other_ratio_product),
+        go_decimal_from_f64(snapshot.audio_input_price_per_million),
     )
     else {
         return result(i64::MAX);
@@ -307,9 +335,10 @@ pub fn compute_flat_quota_from_snapshot(
         let quota = go_decimal_from_f64(price).and_then(|price| {
             checked_decimal_product(&[
                 price,
+                d_image_price_ratio,
                 d_quota_per_unit,
                 d_group_ratio,
-                d_fixed_price_multiplier,
+                d_other_ratio_product,
             ])
         });
         return result(round_decimal_quota(quota));
@@ -336,6 +365,7 @@ pub fn compute_flat_quota_from_snapshot(
     let cache_creation_5m = Decimal::from(usage.cache_creation_5m_tokens.max(0));
     let cache_creation_1h = Decimal::from(usage.cache_creation_1h_tokens.max(0));
     let image = Decimal::from(usage.image_tokens.max(0));
+    let audio_input = Decimal::from(usage.audio_input_tokens.max(0));
 
     let mut base_tokens = prompt;
     let mut cached_with_ratio = Decimal::ZERO;
@@ -388,7 +418,21 @@ pub fn compute_flat_quota_from_snapshot(
         image_with_ratio = value;
     }
 
-    base_tokens = base_tokens.max(Decimal::ZERO);
+    let mut audio_input_quota = Decimal::ZERO;
+    if !audio_input.is_zero() && !d_audio_input_price_per_million.is_zero() {
+        base_tokens -= audio_input;
+        let Some(value) = checked_decimal_product(&[
+            d_audio_input_price_per_million,
+            audio_input,
+            d_group_ratio,
+            d_quota_per_unit,
+        ])
+        .and_then(|value| value.checked_div(Decimal::from(1_000_000))) else {
+            return result(i64::MAX);
+        };
+        audio_input_quota = value;
+    }
+
     let Some(prompt_quota) = checked_decimal_sum(&[
         base_tokens,
         cached_with_ratio,
@@ -403,6 +447,8 @@ pub fn compute_flat_quota_from_snapshot(
     let Some(raw_quota) = prompt_quota
         .checked_add(completion_quota)
         .and_then(|quota| quota.checked_mul(ratio))
+        .and_then(|quota| quota.checked_add(audio_input_quota))
+        .and_then(|quota| quota.checked_mul(d_other_ratio_product))
     else {
         return result(i64::MAX);
     };
@@ -475,9 +521,17 @@ pub fn estimate_flat_pre_consumed_quota(
     estimated_completion_tokens: i64,
 ) -> i64 {
     if snapshot.mode == FlatBillingMode::FixedPrice {
-        return compute_flat_quota_from_snapshot(&FlatUsage::default(), snapshot)
-            .quota
-            .max(0);
+        let raw = snapshot.model_price.unwrap_or(0.0)
+            * snapshot.image_price_ratio
+            * snapshot.quota_per_unit
+            * snapshot.group_ratio;
+        return if !raw.is_finite() || raw <= 0.0 {
+            0
+        } else if raw >= i64::MAX as f64 {
+            i64::MAX
+        } else {
+            raw.trunc() as i64
+        };
     }
     let tokens = estimated_prompt_tokens
         .max(snapshot.pre_consumed_token_floor)
@@ -571,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_price_multiplier_scales_before_rounding_and_ignores_invalid_values() {
+    fn other_ratio_product_scales_fixed_price_and_ignores_invalid_values() {
         let mut config = PricingConfig::new();
         config.model_prices.insert("image-model".to_string(), 0.04);
         let usage = FlatUsage {
@@ -580,7 +634,7 @@ mod tests {
             ..FlatUsage::default()
         };
 
-        let result = compute_flat_quota_with_fixed_price_multiplier(
+        let result = compute_flat_quota_with_other_ratio_product(
             &usage,
             "image-model",
             "default",
@@ -588,10 +642,10 @@ mod tests {
             4.0,
         );
         assert_eq!(result.quota, 80_000);
-        assert_eq!(result.fixed_price_multiplier, 4.0);
+        assert_eq!(result.other_ratio_product, 4.0);
 
         for invalid in [0.0, -1.0, f64::NAN] {
-            let result = compute_flat_quota_with_fixed_price_multiplier(
+            let result = compute_flat_quota_with_other_ratio_product(
                 &usage,
                 "image-model",
                 "default",
@@ -599,8 +653,52 @@ mod tests {
                 invalid,
             );
             assert_eq!(result.quota, 20_000);
-            assert_eq!(result.fixed_price_multiplier, 1.0);
+            assert_eq!(result.other_ratio_product, 1.0);
         }
+    }
+
+    #[test]
+    fn other_ratio_product_applies_to_per_token_after_weighting() {
+        let config = config_with_model_ratio("other-ratio-model", 1.0);
+        let usage = simple_usage(10, 0);
+        let result = compute_flat_quota_with_other_ratio_product(
+            &usage,
+            "other-ratio-model",
+            "default",
+            &config,
+            3.0,
+        );
+        assert_eq!(result.quota, 30);
+    }
+
+    #[test]
+    fn gemini_audio_input_uses_frozen_per_million_price_without_model_ratio() {
+        let mut config = config_with_model_ratio("gemini-2.5-flash", 10.0);
+        config.quota_per_unit = 500_000.0;
+        let usage = FlatUsage {
+            prompt_tokens: 1_000,
+            total_tokens: 1_000,
+            audio_input_tokens: 1_000,
+            ..FlatUsage::default()
+        };
+        let snapshot =
+            FlatPricingSnapshot::from_config("gemini-2.5-flash", "default", &config, 1.0, 0);
+        let result = compute_flat_quota_from_snapshot(&usage, &snapshot);
+        assert_eq!(snapshot.audio_input_price_per_million, 1.0);
+        assert_eq!(result.quota, 500);
+    }
+
+    #[test]
+    fn negative_prompt_base_is_not_clamped_before_go_final_floor() {
+        let config = config_with_model_ratio("go-negative-base", 1.0);
+        let usage = FlatUsage {
+            prompt_tokens: 1,
+            total_tokens: 1,
+            image_tokens: 2,
+            ..FlatUsage::default()
+        };
+        let result = compute_flat_quota(&usage, "go-negative-base", "default", &config);
+        assert_eq!(result.quota, 1);
     }
 
     #[test]
@@ -853,10 +951,15 @@ mod tests {
 
         config.model_prices.insert("fixed-model".to_string(), 0.02);
         let fixed_snapshot =
-            FlatPricingSnapshot::from_config("fixed-model", "default", &config, 3.0, 500);
+            FlatPricingSnapshot::from_config("fixed-model", "default", &config, 3.0, 500)
+                .with_image_price_ratio(2.0);
         assert_eq!(
             estimate_flat_pre_consumed_quota(&fixed_snapshot, 0, 0),
-            45_000
+            30_000
+        );
+        assert_eq!(
+            compute_flat_quota_from_snapshot(&FlatUsage::default(), &fixed_snapshot).quota,
+            90_000
         );
     }
 

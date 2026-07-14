@@ -54,9 +54,6 @@
 //!
 //! ## Not implemented here (deferred)
 //!
-//! - Gemini separate audio-input pricing
-//!   (`GetGeminiInputAudioPricePerMillionTokens`) — a per-million-USD override
-//!   distinct from the ratio path.
 //! - `OtherRatios` (image `n` multiplier) and `ToolCallSurcharge` (web/file
 //!   search, image-generation call) additive quota adjustments.
 
@@ -342,6 +339,25 @@ impl PricingConfig {
                     .flatten()
             })
             .unwrap_or(1.0)
+    }
+
+    /// Gemini input-audio price in USD per million tokens. This mirrors the
+    /// ordered prefix lookup in Go's `GetGeminiInputAudioPricePerMillionTokens`.
+    pub fn audio_input_price_per_million(&self, model: &str) -> f64 {
+        if model.starts_with("gemini-2.5-flash-preview-native-audio") {
+            3.0
+        } else if model.starts_with("gemini-2.5-flash-preview-lite") {
+            0.5
+        } else if model.starts_with("gemini-2.5-flash-preview")
+            || model.starts_with("gemini-2.5-flash")
+            || model.starts_with("gemini-robotics-er-1.5")
+        {
+            1.0
+        } else if model.starts_with("gemini-2.0-flash") {
+            0.7
+        } else {
+            0.0
+        }
     }
 
     /// Per-group multiplier. Default 1.0.
@@ -793,5 +809,30 @@ mod tests {
         assert_eq!(config.image_ratio("gpt-image-1"), 1.0);
         assert_eq!(config.audio_ratio("gpt-4o-audio-preview"), 1.0);
         assert_eq!(config.audio_completion_ratio("gpt-4o-audio-preview"), 1.0);
+    }
+
+    #[test]
+    fn gemini_audio_input_price_prefix_order_matches_go() {
+        let config = PricingConfig::new();
+        assert_eq!(
+            config.audio_input_price_per_million("gemini-2.5-flash-preview-native-audio-dialog"),
+            3.0
+        );
+        assert_eq!(
+            config.audio_input_price_per_million("gemini-2.5-flash-preview-lite-06-17"),
+            0.5
+        );
+        assert_eq!(
+            config.audio_input_price_per_million("gemini-2.5-flash"),
+            1.0
+        );
+        assert_eq!(
+            config.audio_input_price_per_million("gemini-2.0-flash"),
+            0.7
+        );
+        assert_eq!(
+            config.audio_input_price_per_million("gpt-4o-audio-preview"),
+            0.0
+        );
     }
 }

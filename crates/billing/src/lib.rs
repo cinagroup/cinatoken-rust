@@ -14,8 +14,8 @@ pub use expression::{
 };
 pub use flat::{
     compute_flat_quota, compute_flat_quota_from_snapshot,
-    compute_flat_quota_with_fixed_price_multiplier, estimate_flat_pre_consumed_quota,
-    FlatBillingMode, FlatPricingSnapshot, FlatQuotaResult, FlatUsage,
+    compute_flat_quota_with_other_ratio_product, estimate_flat_pre_consumed_quota, FlatBillingMode,
+    FlatPricingSnapshot, FlatQuotaResult, FlatUsage,
 };
 pub use pricing::PricingConfig;
 pub use tiered::{

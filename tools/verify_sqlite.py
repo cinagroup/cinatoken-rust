@@ -415,7 +415,7 @@ def verify_flat_billing_intent_guard(conn: sqlite3.Connection) -> None:
 
     immutable_mutations = (
         "billing_snapshot_json = '{\"changed\":true}'",
-        "expr_hash = 'flat-v1:changed'",
+        "expr_hash = 'flat-v2:changed'",
         "billing_kind = 'tiered_expr'",
         "pre_consumed_quota = pre_consumed_quota + 1",
         "model_name = 'changed-model'",

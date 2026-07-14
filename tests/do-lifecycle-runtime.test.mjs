@@ -1829,7 +1829,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
       final_quota: 0,
       request_accounted: 0,
     });
-    expect(state.reservation.expr_hash).toMatch(/^flat-v1:[a-f0-9]{64}$/);
+    expect(state.reservation.expr_hash).toMatch(/^flat-v2:[a-f0-9]{64}$/);
     expect(state.reservation.snapshot_bytes).toBeGreaterThan(0);
     expect(state.log).toMatchObject({
       quota: 0,
@@ -2060,11 +2060,11 @@ describe("Rust Durable Object lifecycle contracts", () => {
       final_quota: state.log.quota,
       request_accounted: 1,
     });
-    expect(state.reservation.expr_hash).toMatch(/^flat-v1:[a-f0-9]{64}$/);
+    expect(state.reservation.expr_hash).toMatch(/^flat-v2:[a-f0-9]{64}$/);
     expect(state.reservation.snapshot_bytes).toBeGreaterThan(0);
     expect(state.log).toMatchObject({
       billingPending: false,
-      usageSource: "request_contract",
+      usageSource: "request_estimate",
       flatBillingMode: "fixed_price",
     });
     await expect(providerState()).resolves.toMatchObject({

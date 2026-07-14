@@ -9851,6 +9851,8 @@ async fn record_relay_audit(
         "unavailable_parse_failure"
     } else if audit.usage_locally_estimated {
         "local_estimate"
+    } else if request_contract_usage && endpoint_path.starts_with("audio/") {
+        "request_estimate"
     } else if request_contract_usage {
         "request_contract"
     } else {
@@ -10332,7 +10334,7 @@ async fn record_relay_audit(
             })
         } else if upstream_status < 400 && usage_present {
             let result = compute_flat_quota_from_snapshot(
-                &flat_usage_from_summary(usage, endpoint_path),
+                &flat_usage_from_summary(usage, endpoint_path, preflight.estimated_prompt_tokens),
                 &preflight.snapshot,
             );
             let final_quota = result.quota;
@@ -10550,7 +10552,9 @@ fn apply_flat_billing_audit(other: &mut Value, result: &FlatQuotaResult) {
             "completion_ratio": result.completion_ratio,
             "group_ratio": result.group_ratio,
             "cache_ratio": result.cache_ratio,
-            "fixed_price_multiplier": result.fixed_price_multiplier,
+            "image_price_ratio": result.image_price_ratio,
+            "other_ratio_product": result.other_ratio_product,
+            "audio_input_price_per_million": result.audio_input_price_per_million,
         }),
     );
 }
@@ -10693,7 +10697,7 @@ pub(crate) struct ActualGroupBillingSmokeEvidence {
 
 const TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY: &str = "max_candidate_group";
 const TIERED_BILLING_SELECTED_GROUP_STRATEGY: &str = "selected_group";
-const FLAT_BILLING_CONTRACT_PREFIX: &str = "flat-v1:";
+const FLAT_BILLING_CONTRACT_PREFIX: &str = "flat-v2:";
 
 #[derive(Clone)]
 struct TieredBillingPreflight {
@@ -11261,15 +11265,17 @@ async fn prepare_flat_billing_group_plan(
         BTreeMap::new();
     let mut reserved_quota = 0;
     for (group, channel_type) in candidates {
-        let multiplier =
-            fixed_price_request_multiplier(endpoint_path, channel_type, Some(request_body));
+        let other_ratio_product =
+            request_other_ratio_product(endpoint_path, channel_type, model, Some(request_body));
+        let image_price_ratio = request_image_price_ratio(endpoint_path, model, Some(request_body));
         let snapshot = FlatPricingSnapshot::from_config(
             model,
             &group,
             &config,
-            multiplier,
+            other_ratio_product,
             pre_consumed_token_floor,
-        );
+        )
+        .with_image_price_ratio(image_price_ratio);
         snapshot
             .validate()
             .map_err(|err| worker::Error::RustError(err.to_string()))?;
@@ -12024,7 +12030,11 @@ fn tiered_billing_settlement(
     })
 }
 
-fn flat_usage_from_summary(usage: &UsageSummary, endpoint_path: &str) -> FlatUsage {
+fn flat_usage_from_summary(
+    usage: &UsageSummary,
+    endpoint_path: &str,
+    estimated_prompt_tokens: i64,
+) -> FlatUsage {
     let mut flat = FlatUsage {
         prompt_tokens: usage.prompt_tokens as i64,
         completion_tokens: usage.completion_tokens as i64,
@@ -12034,18 +12044,28 @@ fn flat_usage_from_summary(usage: &UsageSummary, endpoint_path: &str) -> FlatUsa
         cache_creation_5m_tokens: usage.claude_cache_creation_5m_tokens as i64,
         cache_creation_1h_tokens: usage.claude_cache_creation_1h_tokens as i64,
         image_tokens: usage.image_input_tokens as i64,
+        audio_input_tokens: usage.audio_input_tokens as i64,
         is_anthropic_usage_semantic: usage.is_anthropic_usage_semantic,
     };
     if endpoint_path == "images/generations" && flat.total_tokens <= 0 {
         flat.prompt_tokens = 1;
         flat.total_tokens = 1;
+    } else if matches!(
+        endpoint_path,
+        "audio/speech" | "audio/transcriptions" | "audio/translations"
+    ) && flat.total_tokens <= 0
+        && estimated_prompt_tokens > 0
+    {
+        flat.prompt_tokens = estimated_prompt_tokens;
+        flat.total_tokens = estimated_prompt_tokens;
     }
     flat
 }
 
-fn fixed_price_request_multiplier(
+fn request_other_ratio_product(
     endpoint_path: &str,
     channel_type: i32,
+    model: &str,
     request_body: Option<&Value>,
 ) -> f64 {
     if endpoint_path != "images/generations" {
@@ -12054,15 +12074,54 @@ fn fixed_price_request_multiplier(
     let Some(body) = request_body else {
         return 1.0;
     };
-    let image_count = if channel_type == CHANNEL_TYPE_SILICONFLOW {
-        body.get("batch_size")
-            .and_then(Value::as_u64)
-            .filter(|value| *value != 0)
-            .or_else(|| body.get("n").and_then(Value::as_u64))
-    } else {
-        body.get("n").and_then(Value::as_u64)
+    let image_count = body
+        .get("n")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            (channel_type == CHANNEL_TYPE_ALI)
+                .then(|| body.pointer("/parameters/n").and_then(Value::as_u64))
+                .flatten()
+        })
+        .unwrap_or(1)
+        .max(1) as f64;
+    let prompt_extend = channel_type == CHANNEL_TYPE_ALI
+        && model.contains("z-image")
+        && body
+            .pointer("/parameters/prompt_extend")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    image_count * if prompt_extend { 2.0 } else { 1.0 }
+}
+
+fn request_image_price_ratio(
+    endpoint_path: &str,
+    model: &str,
+    request_body: Option<&Value>,
+) -> f64 {
+    if endpoint_path != "images/generations" || !model.starts_with("dall-e") {
+        return 1.0;
+    }
+    let Some(body) = request_body else {
+        return 1.0;
     };
-    image_count.unwrap_or(1).max(1) as f64
+    let size = body.get("size").and_then(Value::as_str).unwrap_or_default();
+    let size_ratio = match size {
+        "256x256" => 0.4,
+        "512x512" => 0.45,
+        "1024x1792" | "1792x1024" => 2.0,
+        _ => 1.0,
+    };
+    let quality_ratio =
+        if model == "dall-e-3" && body.get("quality").and_then(Value::as_str) == Some("hd") {
+            if matches!(size, "1024x1792" | "1792x1024") {
+                1.5
+            } else {
+                2.0
+            }
+        } else {
+            1.0
+        };
+    size_ratio * quality_ratio
 }
 
 fn option_flag_enabled(raw: Option<&str>) -> bool {
@@ -18324,7 +18383,7 @@ mod tests {
             "gpt-test",
             "chat/completions",
             "flat",
-            "flat-v1:contract-a",
+            "flat-v2:contract-a",
             "sha256:request-a",
         )
         .unwrap();
@@ -18334,7 +18393,7 @@ mod tests {
             "gpt-test",
             "chat/completions",
             "flat",
-            "flat-v1:contract-a",
+            "flat-v2:contract-a",
             "sha256:request-a",
         )
         .unwrap();
@@ -18344,7 +18403,7 @@ mod tests {
             "gpt-test",
             "chat/completions",
             "flat",
-            "flat-v1:contract-b",
+            "flat-v2:contract-b",
             "sha256:request-a",
         )
         .unwrap();
@@ -18382,12 +18441,12 @@ mod tests {
             "chat/completions",
             false
         ));
-        let normalized = flat_usage_from_summary(&usage, "images/generations");
+        let normalized = flat_usage_from_summary(&usage, "images/generations", 0);
         assert_eq!(normalized.prompt_tokens, 1);
         assert_eq!(normalized.total_tokens, 1);
-        let audio = flat_usage_from_summary(&usage, "audio/speech");
-        assert_eq!(audio.prompt_tokens, 0);
-        assert_eq!(audio.total_tokens, 0);
+        let audio = flat_usage_from_summary(&usage, "audio/speech", 240);
+        assert_eq!(audio.prompt_tokens, 240);
+        assert_eq!(audio.total_tokens, 240);
     }
 
     #[test]
@@ -18414,39 +18473,59 @@ mod tests {
     }
 
     #[test]
-    fn image_fixed_price_multiplier_uses_provider_effective_count() {
+    fn image_request_ratios_match_go_request_contract() {
         let siliconflow = json!({"n": 2, "batch_size": 4});
         assert_eq!(
-            fixed_price_request_multiplier(
+            request_other_ratio_product(
                 "images/generations",
                 CHANNEL_TYPE_SILICONFLOW,
-                Some(&siliconflow)
-            ),
-            4.0
-        );
-        assert_eq!(
-            fixed_price_request_multiplier(
-                "images/generations",
-                CHANNEL_TYPE_XAI,
+                "flux-test",
                 Some(&siliconflow)
             ),
             2.0
         );
         assert_eq!(
-            fixed_price_request_multiplier(
+            request_other_ratio_product(
+                "images/generations",
+                CHANNEL_TYPE_XAI,
+                "grok-image",
+                Some(&siliconflow)
+            ),
+            2.0
+        );
+        assert_eq!(
+            request_other_ratio_product(
                 "chat/completions",
                 CHANNEL_TYPE_SILICONFLOW,
+                "flux-test",
                 Some(&siliconflow)
             ),
             1.0
         );
         assert_eq!(
-            fixed_price_request_multiplier(
+            request_other_ratio_product(
                 "images/generations",
-                CHANNEL_TYPE_SILICONFLOW,
-                Some(&json!({"batch_size": 0}))
+                CHANNEL_TYPE_ALI,
+                "z-image-turbo",
+                Some(&json!({"parameters": {"n": 3, "prompt_extend": true}}))
             ),
-            1.0
+            6.0
+        );
+        assert_eq!(
+            request_image_price_ratio(
+                "images/generations",
+                "dall-e-3",
+                Some(&json!({"size": "1024x1792", "quality": "hd"}))
+            ),
+            3.0
+        );
+        assert_eq!(
+            request_image_price_ratio(
+                "images/generations",
+                "dall-e-2",
+                Some(&json!({"size": "256x256"}))
+            ),
+            0.4
         );
     }
 

@@ -334,8 +334,11 @@ The Task v2 ownership hierarchy is strict:
 4. Providers are observations, not authority. A transport failure schedules
    capped exponential backoff with deterministic task/generation jitter; the
    eighth consecutive retryable failure quarantines by default. Quarantine has
-   no financial side effect. Immediate deterministic-poison classification and
-   a reviewed, auditable release/requeue operation remain production blockers.
+   no financial side effect. Unsupported providers, invalid provider task
+   identity, and deterministically invalid credentials quarantine immediately;
+   network/upstream/missing-item failures still use the threshold. Migration
+   0037 provides the reviewed local release/requeue shape, while remote and
+   provider evidence remain production blockers.
 
 The scheduler gate is subordinate to all three lease prerequisites: Worker
 lease gate true, D1 authority true, and D1 enforcement true. Rollout is
@@ -344,3 +347,54 @@ isolated scheduler canary, independent evidence review, then a new verified
 staging candidate. Rollback disables scheduler and DO wake-ups before touching
 lease authority, retains additive schema/state, and reconciles quarantine
 before Go/VPS resumes. Go/VPS remains authoritative; production is **NO-GO**.
+
+## Audited Poll Recovery Ownership
+
+Migration `0037_task_poll_recovery.sql` adds the recovery authority that the
+0036 scheduler depends on. The scheduler may be runtime-tested while its
+staging flag is false, but `task_poll_scheduler_cutover_ready` must remain
+false until `task_poll_recovery_cutover_ready` is true. Both recovery env vars
+are committed false:
+
+```text
+TASK_POLL_RECOVERY_ENABLED=false
+TASK_POLL_RECOVERY_STAGING_VERIFIED=false
+```
+
+Recovery is an operator command, not a terminal provider or billing decision.
+Queue and preview require root and return no-store metadata. Apply additionally
+requires fresh step-up, an exact preview token, explicit requeue confirmation,
+a bounded idempotency key, an approved reason, and an evidence reference. The
+API returns `task_reference` plus `public_task_id_sha256`; a Midjourney provider
+ID is not returned.
+
+The D1 insert is the final fence. It atomically writes an immutable recovery
+event and root audit while triggers verify the private provider identity,
+generation, write revision, quarantine timestamp/reason, empty owner, zero
+lease expiry, nonterminal state, and a valid hard-timeout window. All digest
+and token columns require lowercase hex. A unique entity/revision index limits
+each revision to one recovery event. Exact partial indexes include only open,
+provider-identified quarantine rows.
+
+Queue and preview publish `hard_timeout_at`, `timeout_eligible`, and a recovery
+margin of at least 60 seconds and at least one poll lease. Apply returns `409`
+for stale/conflicting operator state and blocks expired or near-timeout rows.
+D1, audit-batch, or canonical readback uncertainty returns `503`. Identical
+idempotent replay converges to canonical event readback.
+
+The first successful Task requeue may best-effort arm TaskRunner after commit.
+That is a latency hint only: an arm error cannot undo the recovery and cron
+continues to discover the D1-due row. Midjourney remains cron-owned.
+
+The verified local SQLite baseline is 37 migrations, 35 tables, 241 checked
+incremental columns, and 42 key indexes. Workerd must cover step-up, apply,
+duplicate, stale preview, timeout margin, immutable audit, and best-effort
+rearm behavior. Provider operation uniqueness/native idempotency, a deadline
+covering the complete submit operation, remote D1/staging/provider/TaskRunner
+hot paths, WFP namespace upload/readback, paid canary, and signed rollback are
+still hard blockers.
+
+Rollback order is recovery off, scheduler and TaskRunner off, lease env
+authority off, D1 authority off, then D1 enforcement off. Drain leases and
+reconcile accepted provider work. Every quarantine must be resolved, held out,
+or explicitly excluded before Go/VPS resumes. Production remains **NO-GO**.

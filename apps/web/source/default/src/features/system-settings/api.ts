@@ -18,13 +18,6 @@ For commercial licensing, please contact support@cinagroup.com
 */
 import { api } from '@/lib/api'
 import {
-  type TaskSubmitReconciliationApplyRequest,
-  type TaskSubmitReconciliationApplyResponse,
-  type TaskSubmitReconciliationDecision,
-  type TaskSubmitReconciliationPreviewResponse,
-  type TaskSubmitReconciliationQueueResponse,
-} from './integrations/task-submit-reconciliation'
-import {
   buildQuotaCoordinatorReconciliationRequest,
   type CanonicalPositiveI64String,
   type QuotaCoordinatorReconciliationResponse,
@@ -38,6 +31,21 @@ import {
   type RealtimeBillingReconciliationQueueResponse,
   type RealtimeBillingLedgerResponse,
 } from './integrations/realtime-billing-ledger'
+import {
+  type TaskPollRecoveryApplyRequest,
+  type TaskPollRecoveryApplyResponse,
+  type TaskPollRecoveryDecision,
+  type TaskPollRecoveryEntityKind,
+  type TaskPollRecoveryPreviewResponse,
+  type TaskPollRecoveryQueueResponse,
+} from './integrations/task-poll-recovery'
+import {
+  type TaskSubmitReconciliationApplyRequest,
+  type TaskSubmitReconciliationApplyResponse,
+  type TaskSubmitReconciliationDecision,
+  type TaskSubmitReconciliationPreviewResponse,
+  type TaskSubmitReconciliationQueueResponse,
+} from './integrations/task-submit-reconciliation'
 import {
   buildWfpTenantPlanRequest,
   type WfpTenantPlanFormInput,
@@ -141,9 +149,7 @@ export async function previewRealtimeBillingReconciliation(
   return res.data
 }
 
-export async function getRealtimeBillingReconciliationQueue(
-  cursor?: string
-) {
+export async function getRealtimeBillingReconciliationQueue(cursor?: string) {
   const res = await api.get<RealtimeBillingReconciliationQueueResponse>(
     '/api/platform/realtime-billing/reconciliations',
     {
@@ -173,6 +179,43 @@ export async function getTaskSubmitReconciliationQueue(cursor?: string) {
       disableDuplicate: true,
       params: { limit: 50, ...(cursor ? { cursor } : {}) },
     }
+  )
+  return res.data
+}
+
+export async function getTaskPollRecoveryQueue(cursor?: string) {
+  const res = await api.get<TaskPollRecoveryQueueResponse>(
+    '/api/platform/task-poll/quarantines',
+    {
+      disableDuplicate: true,
+      params: { limit: 50, ...(cursor ? { cursor } : {}) },
+    }
+  )
+  return res.data
+}
+
+export async function previewTaskPollRecovery(
+  entityKind: TaskPollRecoveryEntityKind,
+  entityId: number,
+  decision: TaskPollRecoveryDecision
+) {
+  const res = await api.post<TaskPollRecoveryPreviewResponse>(
+    `/api/platform/task-poll/quarantines/${encodeURIComponent(entityKind)}/${encodeURIComponent(String(entityId))}/preview`,
+    decision,
+    { disableDuplicate: true }
+  )
+  return res.data
+}
+
+export async function applyTaskPollRecovery(
+  entityKind: TaskPollRecoveryEntityKind,
+  entityId: number,
+  request: TaskPollRecoveryApplyRequest
+) {
+  const res = await api.post<TaskPollRecoveryApplyResponse>(
+    `/api/platform/task-poll/quarantines/${encodeURIComponent(entityKind)}/${encodeURIComponent(String(entityId))}/apply`,
+    request,
+    { disableDuplicate: true }
   )
   return res.data
 }

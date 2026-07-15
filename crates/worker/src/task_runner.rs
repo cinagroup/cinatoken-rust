@@ -892,6 +892,16 @@ pub(crate) fn is_task_runner_cutover_ready(
 /// Best-effort post-submit alarm arming. A failure must not fail the public
 /// submit response because cron remains the correctness path.
 pub(crate) async fn arm_task_runner_after_submit(env: &Env, task_id: &str) {
+    arm_task_runner(env, task_id, "submit").await;
+}
+
+/// Best-effort post-recovery alarm arming. Recovery is already committed to D1
+/// before this runs, so cron remains the authoritative fallback on any error.
+pub(crate) async fn arm_task_runner_after_recovery(env: &Env, task_id: &str) {
+    arm_task_runner(env, task_id, "recovery").await;
+}
+
+async fn arm_task_runner(env: &Env, task_id: &str, source: &str) {
     if !task_runner_env_flag(env, TASK_RUNNER_DO_ENABLED_ENV)
         || !task_poll_lease_enabled(env)
         || !task_poll_scheduler_enabled(env)
@@ -900,27 +910,33 @@ pub(crate) async fn arm_task_runner_after_submit(env: &Env, task_id: &str) {
     }
     let task_id = sanitize_task_runner_task_id(task_id);
     if task_id == "unknown" {
-        worker::console_warn!("TaskRunner arm skipped: invalid public task id");
+        worker::console_warn!("TaskRunner {source} arm skipped: invalid public task id");
         return;
     }
     let namespace = match env.durable_object(TASK_RUNNER_BINDING) {
         Ok(namespace) => namespace,
         Err(err) => {
-            worker::console_warn!("TaskRunner arm skipped: binding unavailable: {}", err);
+            worker::console_warn!(
+                "TaskRunner {source} arm skipped: binding unavailable: {}",
+                err
+            );
             return;
         }
     };
     let object_id = match namespace.id_from_name(&task_runner_instance_name(&task_id)) {
         Ok(object_id) => object_id,
         Err(err) => {
-            worker::console_warn!("TaskRunner arm skipped: invalid object id: {}", err);
+            worker::console_warn!(
+                "TaskRunner {source} arm skipped: invalid object id: {}",
+                err
+            );
             return;
         }
     };
     let stub = match object_id.get_stub() {
         Ok(stub) => stub,
         Err(err) => {
-            worker::console_warn!("TaskRunner arm skipped: stub unavailable: {}", err);
+            worker::console_warn!("TaskRunner {source} arm skipped: stub unavailable: {}", err);
             return;
         }
     };
@@ -928,13 +944,17 @@ pub(crate) async fn arm_task_runner_after_submit(env: &Env, task_id: &str) {
     let response = match stub.fetch_with_str(&url).await {
         Ok(response) => response,
         Err(err) => {
-            worker::console_warn!("TaskRunner arm failed for task {}: {}", task_id, err);
+            worker::console_warn!(
+                "TaskRunner {source} arm failed for task {}: {}",
+                task_id,
+                err
+            );
             return;
         }
     };
     if response.status_code() != 200 {
         worker::console_warn!(
-            "TaskRunner arm failed for task {} with status {}",
+            "TaskRunner {source} arm failed for task {} with status {}",
             task_id,
             response.status_code()
         );

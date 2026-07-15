@@ -5240,9 +5240,11 @@ Staging verification must then prove:
    across restart; failure eight quarantines without another due time;
    validated-response reset does not reset lifetime attempts;
 4. threshold quarantine on failure eight, no later poll, no automatic release,
-   and no quota/billing/audit terminal side effect; promotion remains blocked
-   until immediate deterministic-poison and audited root-only release/requeue
-   workflows are implemented and pass their negative/positive matrices;
+   and no quota/billing/audit terminal side effect; unsupported provider,
+   invalid provider task identity, and deterministically invalid credential
+   must quarantine immediately, while network/upstream/missing-item failures
+   retain threshold backoff; the 0037 audited release/requeue workflow must pass
+   its negative/positive matrix;
 5. one provider operation/apply during cron/DO and poll/timeout races, stale
    generation rejection, canonical readback after ambiguous D1 writes, and cron
    correctness while the DO accelerator is unavailable;
@@ -5255,7 +5257,127 @@ Keep `TASK_POLL_SCHEDULER_STAGING_VERIFIED=false` during collection. A later
 candidate may change it only after independent approval. No such evidence is
 claimed by this document; production remains **NO-GO**.
 
-The local focused suite currently proves 705 Worker unit tests, 41 Workerd
+The local focused suite currently proves 709 Worker unit tests, 42 Workerd
 lifecycle tests, all three release WASM builds, and the executable 0036 SQLite
 expand/default/CAS checks. These results are necessary but are not remote or
 staging evidence.
+
+## 0037 Audited Task Poll Recovery Verification Contract
+
+This is a required verification contract until a dated command block below
+records a clean candidate run. It must not be read as remote or staging PASS
+evidence.
+
+```powershell
+python tools/verify_sqlite.py
+# PASS: 37 migrations, 35 tables, 241 incremental columns, 42 key indexes
+
+bun run check:task-poll-scheduler-config
+cargo test -p cinatoken-worker --lib
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run check:do-lifecycle-runtime
+bun run check
+```
+
+Current local evidence on 2026-07-15:
+
+```text
+python tools/verify_sqlite.py
+# PASS; 37 migrations, 35 tables, 241 incremental columns, 42 key indexes
+
+bun run check:task-poll-scheduler-config
+# PASS; 4/4 tests and 28 assertions
+
+cargo test -p cinatoken-worker --lib
+# PASS; 709/709; six existing dead-code warnings
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS; cinatoken-worker standalone WASM target check
+
+bun run check:do-lifecycle-runtime
+# PASS; release main/tenant/outbound Rust/Wasm builds and 42/42 Workerd tests
+
+bun run check:web:readiness
+# PASS; 70/70 tests across 10 files
+
+bun run check:web
+# PASS; TypeScript project build and production frontend bundle
+
+bun run check:web:bundle
+# PASS; 459 built files and 37,433,576 bytes scanned with zero findings
+
+bunx prettier --check <changed system-settings files>
+# PASS; all changed recovery/readiness frontend files use Prettier style
+```
+
+The full `bun run check` is not newly claimed by this evidence block. Full
+`bun run check:web:quality` reached and passed ESLint, then reported four
+pre-existing Prettier findings in unrelated Realtime/Task-submit files; the
+changed recovery/readiness files pass the targeted Prettier check. These are
+local results only. Production remains **NO-GO**.
+
+SQLite verification must prove:
+
+1. 0034 -> 0035 -> 0036 -> 0037 order and inert recovery defaults;
+2. immutable update/delete guards and atomic event-triggered requeue;
+3. lowercase-hex checks for resolution, evidence, preview, and decision fields;
+4. one recovery per `(entity_kind, entity_id,
+   expected_poll_write_revision)`;
+5. exact partial Task/Midjourney quarantine-index predicates;
+6. generation, write revision, quarantine timestamp/reason, provider identity,
+   empty owner/lease, nonterminal, and hard-timeout trigger guards;
+7. no business-row mutation from schema application and no financial mutation
+   from quarantine/recovery itself.
+
+Workerd must cover root authorization, fresh step-up, applied recovery,
+identical duplicate convergence, conflicting idempotency, stale preview,
+immutable audit, timeout-margin rejection, 409 stale/conflict responses, 503
+D1/audit/readback responses, and first-Task best-effort rearm with cron fallback.
+Queue and preview assertions must include `hard_timeout_at`,
+`timeout_eligible`, and a margin at least 60 seconds and at least the poll lease.
+They must expose `task_reference` plus a 64-character SHA-256 and never the
+original Midjourney provider ID.
+
+Capability verification must keep
+`TASK_POLL_RECOVERY_ENABLED=false` and
+`TASK_POLL_RECOVERY_STAGING_VERIFIED=false` in committed default, staging, and
+production config. Scheduler cutover must remain false unless recovery cutover
+is true. Local compiled/schema/runtime booleans are not evidence that D1,
+provider, alarms, or billing behaved correctly.
+
+Rollback verification disables recovery, then scheduler and TaskRunner, then
+lease env authority, D1 authority, and D1 enforcement. It drains leases,
+reconciles accepted provider work, and proves every quarantine is resolved,
+held, or excluded before Go/VPS resumes.
+
+Provider-operation uniqueness/native idempotency, whole-submit deadlines,
+remote D1/staging/provider/TaskRunner hot paths, WFP namespace upload/readback,
+paid WFP canary, invoice/load/alert evidence, credential rotation, and signed
+rollback remain hard blockers. Production remains **NO-GO**.
+
+## cinaVibeSDK Architecture Source Audit (2026-07-15)
+
+The local source review established the following evidence boundaries:
+
+- `worker/services/deployer/deploy.ts` sends dispatch deployments through the
+  namespace path, while `worker/index.ts` serves preview traffic through
+  `DISPATCHER.get(appName).fetch(request)`. This is internal binding traffic,
+  not a public loop.
+- `worker/agents/core/websocket.ts` starts generation from an unawaited Promise
+  and persists `shouldBeGenerating`; `codingAgent.ts` can restore Agent state,
+  but those facts do not prove automatic in-flight work recovery.
+- `worker/agents/think/ThinkAgent.ts` keeps `thoughtSignatures` in an in-memory
+  map. `worker/agents/core/state.ts` also permits an encrypted OAuth blob in
+  Agent state that `codingAgent.ts` returns on connect. cinatoken-rust must not
+  copy either pattern for correctness or client-returnable secrets.
+- `worker/agents/inferutils/infer.ts` owns exponential retries and fallback
+  switching in one application loop. cinatoken-rust must likewise designate
+  one retry owner and add model permission, refund/re-reserve, and audit checks
+  before any cross-model fallback.
+
+The review is consistent with Cloudflare's Workers best practices, Durable
+Object best practices and alarm semantics, and D1 transactional batch
+behavior. It supports the D1/cron correctness spine, DO-as-accelerator, internal
+dispatch Worker, and outbound credential-owner architecture. It does not prove
+remote WFP upload/readback, paid egress, or TaskRunner recovery. Production
+remains **NO-GO**.

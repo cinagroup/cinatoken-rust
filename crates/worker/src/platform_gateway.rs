@@ -100,11 +100,16 @@ use crate::task_orchestration::{
     task_poller_config_from_env, task_timeout_sweep_compiled, TASK_POLL_LEASE_ENABLED_ENV,
     TASK_POLL_SCHEDULER_ENABLED_ENV,
 };
+use crate::task_poll_recovery::{
+    task_poll_recovery_compiled, task_poll_recovery_enabled,
+    TASK_POLL_RECOVERY_STAGING_VERIFIED_ENV,
+};
 use crate::task_repository::{
     task_billing_intent_contract_compiled, task_poll_lease_contract_compiled,
     task_poll_scheduler_contract_compiled, task_refund_cas_batch_compiled,
     task_refund_replay_contract_compiled, TaskPollLeaseRuntimeStatus,
-    TaskPollSchedulerRuntimeStatus, TASK_POLL_LEASE_CONTRACT_VERSION,
+    TaskPollRecoveryRuntimeStatus, TaskPollSchedulerRuntimeStatus,
+    TASK_POLL_LEASE_CONTRACT_VERSION, TASK_POLL_RECOVERY_CONTRACT_VERSION,
     TASK_POLL_SCHEDULER_CONTRACT_VERSION,
 };
 use crate::task_runner::{
@@ -167,7 +172,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0036_task_poll_schedule.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0037_task_poll_recovery.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -189,7 +194,7 @@ const RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS: &[&str] = &[
     "realtime_flat_billing_parity",
 ];
 const TASK_V2_CUTOVER_GUARDS: &[&str] = &[
-    "migration_0035_applied",
+    "migration_0037_applied",
     "pre_provider_reservation",
     "submit_unknown_fail_closed",
     "operator_reconciliation_evidence",
@@ -197,6 +202,7 @@ const TASK_V2_CUTOVER_GUARDS: &[&str] = &[
     "atomic_terminal_financial_transition",
     "shared_poll_lease",
     "poll_lease_old_writer_enforcement",
+    "audited_poll_quarantine_recovery",
     "staging_fault_replay",
 ];
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
@@ -236,6 +242,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0034_task_poll_lease.sql",
     "0035_task_poll_lease_enforce.sql",
     "0036_task_poll_schedule.sql",
+    "0037_task_poll_recovery.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -541,6 +548,13 @@ struct PlatformCapabilities {
     task_poll_scheduler_runtime_ready: bool,
     task_poll_scheduler_staging_verified: bool,
     task_poll_scheduler_cutover_ready: bool,
+    task_poll_recovery_contract_version: u32,
+    task_poll_recovery_compiled: bool,
+    task_poll_recovery_schema_ready: bool,
+    task_poll_recovery_enabled: bool,
+    task_poll_recovery_runtime_ready: bool,
+    task_poll_recovery_staging_verified: bool,
+    task_poll_recovery_cutover_ready: bool,
     task_submit_reconciliation_compiled: bool,
     task_submit_reconciliation_enabled: bool,
     task_submit_reconciliation_ready: bool,
@@ -710,37 +724,49 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
 
     let d1_migration_status = load_d1_migration_status(&env).await;
     let d1_migration_ready = d1_migration_status.ready();
-    let (task_v2_object_schema_ready, task_poll_lease_status, task_poll_scheduler_status) =
-        match env.d1("DB") {
-            Ok(db) => (
-                crate::task_repository::task_billing_intent_schema_ready(&db)
-                    .await
-                    .unwrap_or(false),
-                crate::task_repository::task_poll_lease_runtime_status(&db)
-                    .await
-                    .unwrap_or(TaskPollLeaseRuntimeStatus {
-                        schema_ready: false,
-                        authority_enabled: false,
-                        enforcement_enabled: false,
-                    }),
-                crate::task_repository::task_poll_scheduler_runtime_status(&db)
-                    .await
-                    .unwrap_or(TaskPollSchedulerRuntimeStatus {
-                        schema_ready: false,
-                    }),
-            ),
-            Err(_) => (
-                false,
-                TaskPollLeaseRuntimeStatus {
+    let (
+        task_v2_object_schema_ready,
+        task_poll_lease_status,
+        task_poll_scheduler_status,
+        task_poll_recovery_status,
+    ) = match env.d1("DB") {
+        Ok(db) => (
+            crate::task_repository::task_billing_intent_schema_ready(&db)
+                .await
+                .unwrap_or(false),
+            crate::task_repository::task_poll_lease_runtime_status(&db)
+                .await
+                .unwrap_or(TaskPollLeaseRuntimeStatus {
                     schema_ready: false,
                     authority_enabled: false,
                     enforcement_enabled: false,
-                },
-                TaskPollSchedulerRuntimeStatus {
+                }),
+            crate::task_repository::task_poll_scheduler_runtime_status(&db)
+                .await
+                .unwrap_or(TaskPollSchedulerRuntimeStatus {
                     schema_ready: false,
-                },
-            ),
-        };
+                }),
+            crate::task_repository::task_poll_recovery_runtime_status(&db)
+                .await
+                .unwrap_or(TaskPollRecoveryRuntimeStatus {
+                    schema_ready: false,
+                }),
+        ),
+        Err(_) => (
+            false,
+            TaskPollLeaseRuntimeStatus {
+                schema_ready: false,
+                authority_enabled: false,
+                enforcement_enabled: false,
+            },
+            TaskPollSchedulerRuntimeStatus {
+                schema_ready: false,
+            },
+            TaskPollRecoveryRuntimeStatus {
+                schema_ready: false,
+            },
+        ),
+    };
     let ai_gateway_id = runtime_value(&env, AI_GATEWAY_ID_ENV);
     let cloudflare_account_id = runtime_value(&env, CLOUDFLARE_ACCOUNT_ID_ENV);
     let cloudflare_ai_gateway_token = secret_or_var(
@@ -1204,9 +1230,22 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         && task_poll_lease_enforcement_enabled;
     let task_poll_scheduler_staging_verified =
         env_flag(&env, TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV);
+    let task_poll_recovery_contract_version = TASK_POLL_RECOVERY_CONTRACT_VERSION;
+    let task_poll_recovery_compiled = task_poll_recovery_compiled();
+    let task_poll_recovery_schema_ready = task_poll_recovery_status.schema_ready;
+    let task_poll_recovery_enabled = task_poll_recovery_enabled(&env);
+    let task_poll_recovery_runtime_ready = task_poll_recovery_compiled
+        && task_poll_recovery_schema_ready
+        && task_poll_recovery_enabled
+        && task_poll_scheduler_runtime_ready;
+    let task_poll_recovery_staging_verified =
+        env_flag(&env, TASK_POLL_RECOVERY_STAGING_VERIFIED_ENV);
+    let task_poll_recovery_cutover_ready =
+        task_poll_recovery_runtime_ready && task_poll_recovery_staging_verified;
     let task_poll_scheduler_cutover_ready = task_poll_scheduler_runtime_ready
         && task_poll_lease_cutover_ready
-        && task_poll_scheduler_staging_verified;
+        && task_poll_scheduler_staging_verified
+        && task_poll_recovery_cutover_ready;
     let task_runner_do_available = env.durable_object(TASK_RUNNER_BINDING).is_ok();
     let task_runner_do_enabled = env_flag(&env, TASK_RUNNER_DO_ENABLED_ENV);
     let task_runner_do_foundation_compiled = task_runner_do_foundation_compiled();
@@ -1233,17 +1272,20 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_poll_scheduler_cutover_ready,
         task_runner_staging_replay_verified,
     );
-    let task_v2_contract_version = 3;
+    let task_v2_contract_version = 4;
     let task_v2_ownership_compiled = task_billing_intent_contract_compiled()
         && task_poll_lease_compiled
-        && task_poll_scheduler_compiled;
+        && task_poll_scheduler_compiled
+        && task_poll_recovery_compiled;
     let task_v2_schema_ready = task_v2_object_schema_ready
         && task_poll_lease_schema_ready
-        && task_poll_scheduler_schema_ready;
+        && task_poll_scheduler_schema_ready
+        && task_poll_recovery_schema_ready;
     let task_v2_runtime_ready = task_v2_ownership_compiled
         && task_v2_schema_ready
         && task_poll_lease_runtime_ready
-        && task_poll_scheduler_runtime_ready;
+        && task_poll_scheduler_runtime_ready
+        && task_poll_recovery_runtime_ready;
     let task_submit_reconciliation_compiled = task_submit_reconciliation_compiled();
     let task_submit_reconciliation_enabled = task_submit_reconciliation_enabled(&env);
     let task_submit_reconciliation_ready = task_submit_reconciliation_compiled
@@ -1501,6 +1543,13 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_poll_scheduler_runtime_ready,
         task_poll_scheduler_staging_verified,
         task_poll_scheduler_cutover_ready,
+        task_poll_recovery_contract_version,
+        task_poll_recovery_compiled,
+        task_poll_recovery_schema_ready,
+        task_poll_recovery_enabled,
+        task_poll_recovery_runtime_ready,
+        task_poll_recovery_staging_verified,
+        task_poll_recovery_cutover_ready,
         task_submit_reconciliation_compiled,
         task_submit_reconciliation_enabled,
         task_submit_reconciliation_ready,
@@ -4230,7 +4279,7 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(EXPECTED_D1_MIGRATION, "0036_task_poll_schedule.sql");
+        assert_eq!(EXPECTED_D1_MIGRATION, "0037_task_poll_recovery.sql");
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")

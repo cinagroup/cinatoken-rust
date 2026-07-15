@@ -927,8 +927,9 @@ changes:
 
 This section overrides older migration-count and Task poll-ownership statements
 only for the current candidate. Historical command output and evidence above
-must remain unchanged. Current D1 head is migration 0035, and both 0034 and
-0035 must be present before any task polling authority is enabled.
+must remain unchanged. The lease base is 0034/0035 and the current D1 head is
+0037. Migrations 0034 -> 0035 -> 0036 -> 0037 must be present before scheduler
+or recovery cutover can be considered.
 
 ### Required non-secret configuration
 
@@ -1030,13 +1031,16 @@ until broader submit/poll fault injection and financial gates pass.
 
 ### Rollback
 
-1. Set `TASK_POLL_LEASE_ENABLED=false` and disable TaskRunner arming.
-2. Set D1 `authority_enabled=0` and verify claims stop.
-3. Set D1 `enforcement_enabled=0`.
-4. Wait for or drain live leases with owner+generation checks; reconcile every
+1. Set `TASK_POLL_RECOVERY_ENABLED=false`.
+2. Set `TASK_POLL_SCHEDULER_ENABLED=false`, disable TaskRunner arming, then set
+   `TASK_POLL_LEASE_ENABLED=false`.
+3. Set D1 `authority_enabled=0` and verify claims stop.
+4. Set D1 `enforcement_enabled=0`.
+5. Wait for or drain live leases with owner+generation checks; reconcile every
    in-flight provider operation before re-polling.
-5. Roll traffic back only to a 0033-compatible Worker. Preserve 0034/0035 and
-   never decrement generations or restore a 0031-era writer.
+6. Reconcile or explicitly hold every quarantine before Go/VPS resumes. Roll
+   traffic back only to a 0033-compatible Worker. Preserve 0034-0037 and never
+   decrement generations or restore a 0031-era writer.
 
 The local 0036 candidate supplies persisted schedule/backoff/quarantine schema,
 but no remote application, runtime proof, or deployment is recorded.
@@ -1066,7 +1070,8 @@ It is a static check only.
 1. Reject scheduler enablement unless the applied D1 ledger contains 0034,
    0035, and 0036 in order and exact schema readback passes.
 2. Reject scheduler provider I/O unless `TASK_POLL_LEASE_ENABLED=true`, D1
-   `authority_enabled=1`, and D1 `enforcement_enabled=1`.
+   `authority_enabled=1`, and D1 `enforcement_enabled=1`. Reject scheduler
+   cutover unless task poll recovery cutover is also ready.
 3. Keep Go/VPS authoritative and production scheduler values false. For an
    approved staging drill, exclude an isolated cohort from legacy polling and
    drain accepted operations before changing any authority.
@@ -1086,8 +1091,76 @@ It is a static check only.
 | Independently reviewed staging candidate | true | true | true | true | true |
 | Current production decision | false | false | false | false | false |
 
-Rollback starts with scheduler false and TaskRunner false. Reconcile in-flight
-provider operations and quarantine before disabling lease authority or
-returning rows to Go/VPS. Preserve 0036 schema and persisted state. Current
-production decision is **NO-GO**; this checklist claims no remote evidence or
-deployment.
+Rollback starts with recovery false, then scheduler and TaskRunner false.
+Reconcile in-flight provider operations and quarantine before disabling lease
+authority or returning rows to Go/VPS. Preserve 0036/0037 schema and persisted
+state. Current production decision is **NO-GO**; this checklist claims no
+remote evidence or deployment.
+
+## Task Poll Recovery Configuration
+
+The following non-secret vars must be explicit in top-level, staging, and
+production configuration:
+
+| Variable | Committed value | Contract |
+| --- | --- | --- |
+| `TASK_POLL_RECOVERY_ENABLED` | `false` | Root recovery mutation gate; false keeps preview/apply runtime-inert |
+| `TASK_POLL_RECOVERY_STAGING_VERIFIED` | `false` | Independently reviewed staging-evidence marker; never authority by itself |
+
+Recovery runtime also requires the 0037 schema and scheduler runtime. Recovery
+cutover requires runtime plus the recovery staging marker. Scheduler cutover
+must require recovery cutover, so a scheduler candidate cannot self-approve
+while recovery remains unverified.
+
+### 0037 object and capability readback
+
+1. Require the exact ordered migration ledger and the verified local schema
+   report: 37 migrations, 35 tables, 241 checked incremental columns, and 42
+   key indexes. Treat remote D1 as a separate proof.
+2. Read back `task_poll_recovery_events`, its immutable update/delete guards,
+   Task/Midjourney insert guards and apply triggers, lowercase-hex CHECK
+   clauses, and the unique
+   `idx_task_poll_recovery_events_revision` index.
+3. Compare exact SQL for `idx_tasks_poll_quarantine_queue` and
+   `idx_midjourneys_poll_quarantine_queue`. Both must be partial indexes over
+   nonterminal, provider-identified rows with `poll_quarantined_at > 0`.
+4. Archive capability keys for recovery contract version, compiled,
+   schema-ready, enabled, runtime-ready, staging-verified, and cutover-ready,
+   plus scheduler cutover. Post-migration and post-disabled-deploy values must
+   remain false except compiled/schema-ready.
+5. Confirm queue/preview are root-only and no-store; apply also requires fresh
+   step-up. Responses may expose `task_reference`, SHA-256, timeout metadata,
+   and redacted quarantine facts, but not the original Midjourney provider ID,
+   owner token, credentials, or frozen payload.
+6. Confirm stale/conflicting state maps to 409 while D1, audit-batch, and
+   canonical readback uncertainty map to 503. Near-timeout apply must fail
+   closed using a margin at least 60 seconds and at least one poll lease.
+
+### Ordered recovery activation
+
+1. Apply 0037 with recovery, scheduler, lease env, and TaskRunner disabled.
+2. Deploy the 0037-aware candidate disabled and verify no provider I/O or
+   recovery mutation.
+3. Drain old writers and isolate the canary cohort. Enable D1 authority, D1
+   enforcement, lease env, and scheduler runtime in that order while both
+   staging markers remain false.
+4. Enable recovery only for isolated staging. Prove step-up, apply, duplicate,
+   stale preview, timeout, immutable audit, exact 409/503 behavior, and first
+   Task best-effort rearm with cron fallback.
+5. Review recovery evidence independently and set its staging marker only in a
+   new candidate. Only after recovery cutover is true may scheduler evidence be
+   reviewed for a separate verified candidate.
+6. Canary TaskRunner last. Its rearm is a latency hint; D1/cron remains the
+   correctness path.
+
+The cinaVibeSDK comparison does not change secret ownership. Its preview path
+uses namespace upload plus the internal `DISPATCHER.get(script).fetch()`
+binding. In this system the dispatch Worker owns host-owner-script authority,
+header sanitization, and HMAC identity; only the outbound Worker owns egress
+credentials. OAuth blobs and AI credentials must never enter client-returnable
+Agent state. AI Gateway and application routing must designate one retry owner.
+
+Provider-operation uniqueness/native idempotency, a complete submit-operation
+deadline, remote D1/staging/provider/TaskRunner hot paths, WFP namespace
+upload/readback, paid canary, invoice/load/alert evidence, credential rotation,
+and signed rollback remain hard blockers. Production remains **NO-GO**.

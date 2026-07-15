@@ -29,6 +29,8 @@ pub(crate) const TASK_POLL_LEASE_MIGRATION: &str = "0035_task_poll_lease_enforce
 pub(crate) const TASK_POLL_LEASE_CONTRACT_VERSION: u32 = 1;
 pub(crate) const TASK_POLL_SCHEDULER_MIGRATION: &str = "0036_task_poll_schedule.sql";
 pub(crate) const TASK_POLL_SCHEDULER_CONTRACT_VERSION: u32 = 1;
+pub(crate) const TASK_POLL_RECOVERY_MIGRATION: &str = "0037_task_poll_recovery.sql";
+pub(crate) const TASK_POLL_RECOVERY_CONTRACT_VERSION: u32 = 2;
 pub(crate) const TASK_BILLING_INTENT_LEASE_SECONDS: i64 = 900;
 const TASK_BILLING_INTENT_SWEEP_MAX_LIMIT: i64 = 64;
 const TASK_BILLING_INTENT_SWEEP_SELECT: &str = r#"
@@ -63,12 +65,82 @@ pub struct TaskPollSchedulerRuntimeStatus {
     pub schema_ready: bool,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+pub struct TaskPollRecoveryRuntimeStatus {
+    pub schema_ready: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskPollFailureOutcome {
     pub recorded: bool,
     pub quarantined: bool,
     pub consecutive_failures: i64,
     pub next_poll_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct TaskPollQuarantineRow {
+    pub entity_kind: String,
+    pub entity_id: i64,
+    pub public_task_id: String,
+    pub platform: String,
+    pub channel_id: i64,
+    pub status: String,
+    pub submit_time: i64,
+    pub poll_owner: String,
+    pub poll_generation: i64,
+    pub poll_lease_expires_at: i64,
+    pub poll_write_revision: i64,
+    pub poll_attempt_count: i64,
+    pub poll_consecutive_failures: i64,
+    pub poll_last_error_code: String,
+    pub poll_quarantined_at: i64,
+    pub poll_quarantine_reason: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TaskPollRecoveryEvent<'a> {
+    pub resolution_key: &'a str,
+    pub entity_kind: &'a str,
+    pub entity_id: i64,
+    pub public_task_id: &'a str,
+    pub expected_poll_generation: i64,
+    pub expected_poll_write_revision: i64,
+    pub expected_quarantined_at: i64,
+    pub expected_hard_timeout_at: i64,
+    pub expected_quarantine_reason: &'a str,
+    pub reason: &'a str,
+    pub evidence_reference: &'a str,
+    pub evidence_sha256: &'a str,
+    pub preview_token: &'a str,
+    pub decision_sha256: &'a str,
+    pub operator_id: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskPollRecoveryMutationOutcome {
+    Applied,
+    Duplicate,
+}
+
+#[derive(Debug)]
+pub enum TaskPollRecoveryMutationError {
+    Conflict,
+    Unavailable(worker::Error),
+}
+
+impl From<worker::Error> for TaskPollRecoveryMutationError {
+    fn from(error: worker::Error) -> Self {
+        Self::Unavailable(error)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct TaskPollRecoveryAppliedEvent {
+    pub entity_kind: String,
+    pub entity_id: i64,
+    pub created_at: i64,
 }
 
 /// Create an unguessable, bounded owner token for one cron or Durable Object
@@ -1024,6 +1096,23 @@ pub(crate) fn task_poll_scheduler_contract_compiled() -> bool {
         && migration.contains("idx_midjourneys_poll_schedule_due")
 }
 
+pub(crate) fn task_poll_recovery_contract_compiled() -> bool {
+    let migration = include_str!("../../../migrations/d1/0037_task_poll_recovery.sql");
+    TASK_POLL_RECOVERY_MIGRATION == "0037_task_poll_recovery.sql"
+        && TASK_POLL_RECOVERY_CONTRACT_VERSION == 2
+        && migration.contains("CREATE TABLE task_poll_recovery_events")
+        && migration.contains("task_poll_recovery_task_guard")
+        && migration.contains("task_poll_recovery_midjourney_guard")
+        && migration.contains("task_poll_recovery_task_apply")
+        && migration.contains("task_poll_recovery_midjourney_apply")
+        && migration.contains("task_poll_recovery_event_update_guard")
+        && migration.contains("task_poll_recovery_event_delete_guard")
+        && migration.contains("idx_tasks_poll_quarantine_queue")
+        && migration.contains("idx_midjourneys_poll_quarantine_queue")
+        && migration.contains("idx_task_poll_recovery_events_revision")
+        && migration.contains("NOT GLOB '*[^0-9a-f]*'")
+}
+
 pub async fn task_poll_lease_runtime_status(
     db: &D1Database,
 ) -> worker::Result<TaskPollLeaseRuntimeStatus> {
@@ -1423,6 +1512,399 @@ pub async fn task_poll_scheduler_runtime_status(
             && indexes_ready
             && cursors_ready,
     })
+}
+
+pub async fn task_poll_recovery_runtime_status(
+    db: &D1Database,
+) -> worker::Result<TaskPollRecoveryRuntimeStatus> {
+    #[derive(Debug, Deserialize)]
+    struct ObjectRow {
+        object_type: String,
+        name: String,
+        sql: String,
+    }
+    #[derive(Debug, Deserialize)]
+    struct ColumnRow {
+        name: String,
+        column_type: String,
+        not_null: i64,
+    }
+
+    let objects = db
+        .prepare(
+            r#"
+            SELECT type AS object_type, name, COALESCE(sql, '') AS sql
+            FROM sqlite_master
+            WHERE name IN (
+              'task_poll_recovery_events',
+              'idx_task_poll_recovery_events_entity',
+              'idx_task_poll_recovery_events_revision',
+              'idx_tasks_poll_quarantine_queue',
+              'idx_midjourneys_poll_quarantine_queue',
+              'task_poll_recovery_event_update_guard',
+              'task_poll_recovery_event_delete_guard',
+              'task_poll_recovery_task_guard',
+              'task_poll_recovery_midjourney_guard',
+              'task_poll_recovery_task_apply',
+              'task_poll_recovery_midjourney_apply'
+            )
+            "#,
+        )
+        .all()
+        .await?
+        .results::<ObjectRow>()?;
+    let expected_objects = [
+        ("table", "task_poll_recovery_events"),
+        ("index", "idx_task_poll_recovery_events_entity"),
+        ("index", "idx_task_poll_recovery_events_revision"),
+        ("index", "idx_tasks_poll_quarantine_queue"),
+        ("index", "idx_midjourneys_poll_quarantine_queue"),
+        ("trigger", "task_poll_recovery_event_update_guard"),
+        ("trigger", "task_poll_recovery_event_delete_guard"),
+        ("trigger", "task_poll_recovery_task_guard"),
+        ("trigger", "task_poll_recovery_midjourney_guard"),
+        ("trigger", "task_poll_recovery_task_apply"),
+        ("trigger", "task_poll_recovery_midjourney_apply"),
+    ];
+    let objects_ready = objects.len() == expected_objects.len()
+        && expected_objects.iter().all(|(object_type, name)| {
+            objects
+                .iter()
+                .any(|row| row.object_type == *object_type && row.name == *name)
+        });
+    if !objects_ready {
+        return Ok(TaskPollRecoveryRuntimeStatus {
+            schema_ready: false,
+        });
+    }
+
+    let columns = db
+        .prepare(
+            r#"
+            SELECT name, type AS column_type, "notnull" AS not_null
+            FROM pragma_table_info('task_poll_recovery_events')
+            "#,
+        )
+        .all()
+        .await?
+        .results::<ColumnRow>()?;
+    let required_columns = [
+        ("resolution_key", "TEXT"),
+        ("entity_kind", "TEXT"),
+        ("entity_id", "INTEGER"),
+        ("public_task_id", "TEXT"),
+        ("expected_poll_generation", "INTEGER"),
+        ("expected_poll_write_revision", "INTEGER"),
+        ("expected_quarantined_at", "INTEGER"),
+        ("expected_hard_timeout_at", "INTEGER"),
+        ("expected_quarantine_reason", "TEXT"),
+        ("action", "TEXT"),
+        ("reason", "TEXT"),
+        ("evidence_reference", "TEXT"),
+        ("evidence_sha256", "TEXT"),
+        ("preview_token", "TEXT"),
+        ("decision_sha256", "TEXT"),
+        ("operator_id", "INTEGER"),
+        ("created_at", "INTEGER"),
+    ];
+    let columns_ready = required_columns.iter().all(|(name, column_type)| {
+        columns.iter().any(|row| {
+            row.name == *name
+                && row.column_type.eq_ignore_ascii_case(column_type)
+                && row.not_null == 1
+        })
+    });
+    let object_sql = |name: &str| {
+        objects
+            .iter()
+            .find(|row| row.name == name)
+            .map(|row| row.sql.to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    let guards_ready = [
+        "task_poll_recovery_task_guard",
+        "task_poll_recovery_midjourney_guard",
+    ]
+    .iter()
+    .all(|name| {
+        let sql = object_sql(name);
+        sql.contains("poll_owner = ''")
+            && sql.contains("poll_lease_expires_at = 0")
+            && sql.contains("poll_generation = new.expected_poll_generation")
+            && sql.contains("poll_write_revision = new.expected_poll_write_revision")
+            && sql.contains("expected_hard_timeout_at")
+            && sql.contains("raise(abort")
+    });
+    let apply_ready = [
+        "task_poll_recovery_task_apply",
+        "task_poll_recovery_midjourney_apply",
+    ]
+    .iter()
+    .all(|name| {
+        let sql = object_sql(name);
+        sql.contains("next_poll_at = new.created_at")
+            && sql.contains("poll_consecutive_failures = 0")
+            && sql.contains("poll_quarantined_at = 0")
+            && sql.contains("poll_write_revision = poll_write_revision + 1")
+    });
+    let immutable_ready = [
+        "task_poll_recovery_event_update_guard",
+        "task_poll_recovery_event_delete_guard",
+    ]
+    .iter()
+    .all(|name| object_sql(name).contains("events are immutable"));
+    let digest_constraints_ready = object_sql("task_poll_recovery_events")
+        .matches("not glob '*[^0-9a-f]*'")
+        .count()
+        >= 4;
+    let indexes_ready = object_sql("idx_task_poll_recovery_events_revision")
+        .contains("entity_kind, entity_id, expected_poll_write_revision")
+        && [
+            "idx_tasks_poll_quarantine_queue",
+            "idx_midjourneys_poll_quarantine_queue",
+        ]
+        .iter()
+        .all(|name| {
+            let sql = object_sql(name);
+            sql.contains("poll_quarantined_at, id")
+                && sql.contains("poll_quarantined_at > 0")
+                && sql.contains("status not in ('success', 'failure')")
+        });
+
+    Ok(TaskPollRecoveryRuntimeStatus {
+        schema_ready: task_poll_recovery_contract_compiled()
+            && columns_ready
+            && guards_ready
+            && apply_ready
+            && immutable_ready
+            && digest_constraints_ready
+            && indexes_ready,
+    })
+}
+
+pub async fn list_task_poll_quarantines(
+    db: &D1Database,
+    after_quarantined_at: i64,
+    after_entity_kind: &str,
+    after_entity_id: i64,
+    limit: i64,
+) -> worker::Result<Vec<TaskPollQuarantineRow>> {
+    let after_quarantined_at = after_quarantined_at.max(0).to_string();
+    let after_entity_id = after_entity_id.max(0).to_string();
+    let limit = limit.clamp(1, 51).to_string();
+    let args = [
+        D1Type::Text(&after_quarantined_at),
+        D1Type::Text(after_entity_kind),
+        D1Type::Text(&after_entity_id),
+        D1Type::Text(&limit),
+    ];
+    db.prepare(
+        r#"
+        SELECT entity_kind, entity_id, public_task_id, platform, channel_id,
+               status, submit_time, poll_owner, poll_generation, poll_lease_expires_at,
+               poll_write_revision, poll_attempt_count,
+               poll_consecutive_failures, poll_last_error_code,
+               poll_quarantined_at, poll_quarantine_reason
+        FROM (
+          SELECT 'task' AS entity_kind, id AS entity_id,
+                 task_id AS public_task_id, platform, channel_id, status, submit_time,
+                 poll_owner, poll_generation, poll_lease_expires_at,
+                 poll_write_revision, poll_attempt_count,
+                 poll_consecutive_failures, poll_last_error_code,
+                 poll_quarantined_at, poll_quarantine_reason
+          FROM tasks
+          WHERE poll_quarantined_at > 0
+            AND status NOT IN ('SUCCESS', 'FAILURE')
+            AND upstream_task_id != ''
+          UNION ALL
+          SELECT 'midjourney' AS entity_kind, id AS entity_id,
+                 mj_id AS public_task_id, 'midjourney' AS platform,
+                 channel_id, status, submit_time, poll_owner, poll_generation,
+                 poll_lease_expires_at, poll_write_revision,
+                 poll_attempt_count, poll_consecutive_failures,
+                 poll_last_error_code, poll_quarantined_at,
+                 poll_quarantine_reason
+          FROM midjourneys
+          WHERE poll_quarantined_at > 0
+            AND status NOT IN ('SUCCESS', 'FAILURE')
+            AND mj_id != ''
+        ) quarantines
+        WHERE poll_quarantined_at > CAST(?1 AS INTEGER)
+           OR (
+             poll_quarantined_at = CAST(?1 AS INTEGER)
+             AND entity_kind > ?2
+           )
+           OR (
+             poll_quarantined_at = CAST(?1 AS INTEGER)
+             AND entity_kind = ?2
+             AND entity_id > CAST(?3 AS INTEGER)
+           )
+        ORDER BY poll_quarantined_at ASC, entity_kind ASC, entity_id ASC
+        LIMIT CAST(?4 AS INTEGER)
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<TaskPollQuarantineRow>()
+}
+
+pub async fn find_task_poll_quarantine(
+    db: &D1Database,
+    entity_kind: &str,
+    entity_id: i64,
+) -> worker::Result<Option<TaskPollQuarantineRow>> {
+    let entity_id = entity_id.to_string();
+    let args = D1Type::Text(&entity_id);
+    let sql = match entity_kind {
+        "task" => {
+            r#"
+            SELECT 'task' AS entity_kind, id AS entity_id,
+                   task_id AS public_task_id, platform, channel_id, status, submit_time,
+                   poll_owner, poll_generation, poll_lease_expires_at,
+                   poll_write_revision, poll_attempt_count,
+                   poll_consecutive_failures, poll_last_error_code,
+                   poll_quarantined_at, poll_quarantine_reason
+            FROM tasks
+            WHERE id = CAST(?1 AS INTEGER)
+            "#
+        }
+        "midjourney" => {
+            r#"
+            SELECT 'midjourney' AS entity_kind, id AS entity_id,
+                   mj_id AS public_task_id, 'midjourney' AS platform,
+                   channel_id, status, submit_time, poll_owner, poll_generation,
+                   poll_lease_expires_at, poll_write_revision,
+                   poll_attempt_count, poll_consecutive_failures,
+                   poll_last_error_code, poll_quarantined_at,
+                   poll_quarantine_reason
+            FROM midjourneys
+            WHERE id = CAST(?1 AS INTEGER)
+            "#
+        }
+        _ => return Ok(None),
+    };
+    db.prepare(sql)
+        .bind_refs(&args)?
+        .first::<TaskPollQuarantineRow>(None)
+        .await
+}
+
+fn task_poll_recovery_event_statement(
+    db: &D1Database,
+    event: &TaskPollRecoveryEvent<'_>,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let entity_id = event.entity_id.to_string();
+    let expected_generation = event.expected_poll_generation.to_string();
+    let expected_revision = event.expected_poll_write_revision.to_string();
+    let expected_quarantined_at = event.expected_quarantined_at.to_string();
+    let expected_hard_timeout_at = event.expected_hard_timeout_at.to_string();
+    let operator_id = event.operator_id.to_string();
+    let created_at = event.created_at.to_string();
+    let args = [
+        D1Type::Text(event.resolution_key),
+        D1Type::Text(event.entity_kind),
+        D1Type::Text(&entity_id),
+        D1Type::Text(event.public_task_id),
+        D1Type::Text(&expected_generation),
+        D1Type::Text(&expected_revision),
+        D1Type::Text(&expected_quarantined_at),
+        D1Type::Text(&expected_hard_timeout_at),
+        D1Type::Text(event.expected_quarantine_reason),
+        D1Type::Text(event.reason),
+        D1Type::Text(event.evidence_reference),
+        D1Type::Text(event.evidence_sha256),
+        D1Type::Text(event.preview_token),
+        D1Type::Text(event.decision_sha256),
+        D1Type::Text(&operator_id),
+        D1Type::Text(&created_at),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO task_poll_recovery_events (
+          resolution_key, entity_kind, entity_id, public_task_id,
+          expected_poll_generation, expected_poll_write_revision,
+          expected_quarantined_at, expected_hard_timeout_at,
+          expected_quarantine_reason,
+          action, reason, evidence_reference, evidence_sha256,
+          preview_token, decision_sha256, operator_id, created_at
+        ) VALUES (
+          ?1, ?2, CAST(?3 AS INTEGER), ?4, CAST(?5 AS INTEGER),
+          CAST(?6 AS INTEGER), CAST(?7 AS INTEGER), CAST(?8 AS INTEGER), ?9,
+          'requeue', ?10, ?11, ?12, ?13, ?14,
+          CAST(?15 AS INTEGER), CAST(?16 AS INTEGER)
+        )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+pub async fn find_task_poll_recovery_event(
+    db: &D1Database,
+    resolution_key: &str,
+) -> worker::Result<Option<TaskPollRecoveryAppliedEvent>> {
+    let args = D1Type::Text(resolution_key);
+    db.prepare(
+        r#"
+            SELECT entity_kind, entity_id, created_at
+            FROM task_poll_recovery_events
+            WHERE resolution_key = ?1
+            "#,
+    )
+    .bind_refs(&args)?
+    .first::<TaskPollRecoveryAppliedEvent>(None)
+    .await
+}
+
+pub async fn apply_task_poll_recovery(
+    db: &D1Database,
+    event: &TaskPollRecoveryEvent<'_>,
+    admin_audit: worker::D1PreparedStatement,
+) -> Result<TaskPollRecoveryMutationOutcome, TaskPollRecoveryMutationError> {
+    let insert = task_poll_recovery_event_statement(db, event)?;
+    match db.batch(vec![insert, admin_audit]).await {
+        Ok(results) if results.len() == 2 => Ok(TaskPollRecoveryMutationOutcome::Applied),
+        Ok(_) => Err(TaskPollRecoveryMutationError::Unavailable(
+            worker::Error::RustError(
+                "task poll recovery batch returned incomplete results".to_string(),
+            ),
+        )),
+        Err(err) => match find_task_poll_recovery_event(db, event.resolution_key).await {
+            Ok(Some(applied))
+                if applied.entity_kind == event.entity_kind
+                    && applied.entity_id == event.entity_id =>
+            {
+                Ok(TaskPollRecoveryMutationOutcome::Duplicate)
+            }
+            Ok(Some(_)) => Err(TaskPollRecoveryMutationError::Conflict),
+            Ok(None) => match find_task_poll_quarantine(db, event.entity_kind, event.entity_id)
+                .await
+            {
+                Ok(Some(row)) if task_poll_recovery_row_matches_event(&row, event) => {
+                    Err(TaskPollRecoveryMutationError::Unavailable(err))
+                }
+                Ok(_) => Err(TaskPollRecoveryMutationError::Conflict),
+                Err(readback_err) => Err(TaskPollRecoveryMutationError::Unavailable(readback_err)),
+            },
+            Err(readback_err) => Err(TaskPollRecoveryMutationError::Unavailable(readback_err)),
+        },
+    }
+}
+
+fn task_poll_recovery_row_matches_event(
+    row: &TaskPollQuarantineRow,
+    event: &TaskPollRecoveryEvent<'_>,
+) -> bool {
+    row.entity_kind == event.entity_kind
+        && row.entity_id == event.entity_id
+        && row.public_task_id == event.public_task_id
+        && row.poll_generation == event.expected_poll_generation
+        && row.poll_write_revision == event.expected_poll_write_revision
+        && row.poll_quarantined_at == event.expected_quarantined_at
+        && row.poll_quarantine_reason == event.expected_quarantine_reason
+        && row.poll_owner.is_empty()
+        && row.poll_lease_expires_at == 0
+        && !matches!(row.status.as_str(), "SUCCESS" | "FAILURE")
 }
 
 /// The fields needed to create a task row. Columns not listed take their

@@ -39,6 +39,7 @@ mod relay_billing_smoke;
 // 4.2). Foundation ahead of the task orchestration that consumes it; the module
 // allows dead_code internally until then.
 mod task_billing_reconcile;
+mod task_poll_recovery;
 mod task_repository;
 // Worker-side task polling I/O (executes the pure poll requests + threads bytes
 // into the parser/settle-apply). Foundation ahead of its routes/trigger.
@@ -209,6 +210,26 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             |req, ctx| async move {
                 let reconciliation_id = ctx.param("reconciliation_id").cloned();
                 task_billing_reconcile::apply(req, ctx.env, reconciliation_id).await
+            },
+        )
+        .get_async(
+            "/api/platform/task-poll/quarantines",
+            |req, ctx| async move { task_poll_recovery::list(req, ctx.env).await },
+        )
+        .post_async(
+            "/api/platform/task-poll/quarantines/:entity_kind/:entity_id/preview",
+            |req, ctx| async move {
+                let entity_kind = ctx.param("entity_kind").cloned();
+                let entity_id = ctx.param("entity_id").cloned();
+                task_poll_recovery::preview(req, ctx.env, entity_kind, entity_id).await
+            },
+        )
+        .post_async(
+            "/api/platform/task-poll/quarantines/:entity_kind/:entity_id/apply",
+            |req, ctx| async move {
+                let entity_kind = ctx.param("entity_kind").cloned();
+                let entity_id = ctx.param("entity_id").cloned();
+                task_poll_recovery::apply(req, ctx.env, entity_kind, entity_id).await
             },
         )
         .get_async(

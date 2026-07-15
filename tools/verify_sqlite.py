@@ -39,6 +39,7 @@ REQUIRED_TABLES = [
     "task_billing_reconciliation_events",
     "task_poll_lease_control",
     "task_poll_family_cursors",
+    "task_poll_recovery_events",
 ]
 
 REQUIRED_COLUMNS = {
@@ -83,6 +84,25 @@ REQUIRED_COLUMNS = {
         "round_high_watermark",
         "scan_generation",
         "updated_at",
+    },
+    "task_poll_recovery_events": {
+        "resolution_key",
+        "entity_kind",
+        "entity_id",
+        "public_task_id",
+        "expected_poll_generation",
+        "expected_poll_write_revision",
+        "expected_quarantined_at",
+        "expected_hard_timeout_at",
+        "expected_quarantine_reason",
+        "action",
+        "reason",
+        "evidence_reference",
+        "evidence_sha256",
+        "preview_token",
+        "decision_sha256",
+        "operator_id",
+        "created_at",
     },
     "abilities": {"tag"},
     "logs": {"billing_finalization_event_id"},
@@ -299,10 +319,12 @@ REQUIRED_INDEXES = {
     "tasks": {
         "idx_tasks_poll_lease_due": False,
         "idx_tasks_poll_schedule_due": False,
+        "idx_tasks_poll_quarantine_queue": False,
     },
     "midjourneys": {
         "idx_midjourneys_poll_lease_due": False,
         "idx_midjourneys_poll_schedule_due": False,
+        "idx_midjourneys_poll_quarantine_queue": False,
     },
     "abilities": {"uq_abilities_group_model_channel": True},
     "logs": {"idx_logs_billing_finalization_event_id": True},
@@ -352,6 +374,10 @@ REQUIRED_INDEXES = {
     "task_billing_reconciliation_events": {
         "idx_task_billing_reconciliation_event_identity": True,
     },
+    "task_poll_recovery_events": {
+        "idx_task_poll_recovery_events_entity": False,
+        "idx_task_poll_recovery_events_revision": True,
+    },
 }
 
 
@@ -391,6 +417,8 @@ def main() -> int:
     task_poll_lease_rollout_verified = False
     task_poll_schedule_verified = False
     task_poll_schedule_rollout_verified = False
+    task_poll_recovery_verified = False
+    task_poll_recovery_rollout_verified = False
     if not args.schema:
         verify_realtime_lease_migration_guard(schema_paths)
         lease_guard_verified = True
@@ -404,6 +432,8 @@ def main() -> int:
         task_poll_lease_rollout_verified = True
         verify_task_poll_schedule_rollout(schema_paths)
         task_poll_schedule_rollout_verified = True
+        verify_task_poll_recovery_rollout(schema_paths)
+        task_poll_recovery_rollout_verified = True
 
     conn = sqlite3.connect(":memory:")
     for schema_path in schema_paths:
@@ -423,6 +453,8 @@ def main() -> int:
         task_poll_lease_verified = True
         verify_task_poll_schedule(conn)
         task_poll_schedule_verified = True
+        verify_task_poll_recovery(conn)
+        task_poll_recovery_verified = True
 
     missing = [
         table
@@ -482,6 +514,10 @@ def main() -> int:
         message += " + 0036 persisted fair task polling"
     if task_poll_schedule_rollout_verified:
         message += " + 0036 default-inert scheduler rollout"
+    if task_poll_recovery_verified:
+        message += " + 0037 audited task poll recovery"
+    if task_poll_recovery_rollout_verified:
+        message += " + 0037 default-inert recovery rollout"
 
     if args.seed:
         for value in args.seed:
@@ -1646,6 +1682,204 @@ def verify_task_poll_schedule(conn: sqlite3.Connection) -> None:
     )
 
 
+def verify_task_poll_recovery(conn: sqlite3.Connection) -> None:
+    required_objects = {
+        "table": ("task_poll_recovery_events",),
+        "index": (
+            "idx_task_poll_recovery_events_entity",
+            "idx_task_poll_recovery_events_revision",
+            "idx_tasks_poll_quarantine_queue",
+            "idx_midjourneys_poll_quarantine_queue",
+        ),
+        "trigger": (
+            "task_poll_recovery_event_update_guard",
+            "task_poll_recovery_event_delete_guard",
+            "task_poll_recovery_task_guard",
+            "task_poll_recovery_midjourney_guard",
+            "task_poll_recovery_task_apply",
+            "task_poll_recovery_midjourney_apply",
+        ),
+    }
+    for object_type, names in required_objects.items():
+        for name in names:
+            if sqlite_object_sql(conn, object_type, name) is None:
+                raise SystemExit(f"0037 task poll recovery object missing: {name}")
+
+    before = conn.execute(
+        "SELECT status, progress, quota, poll_generation, poll_write_revision, "
+        "poll_quarantined_at, poll_quarantine_reason "
+        "FROM tasks WHERE id = 360002"
+    ).fetchone()
+    if before != (
+        "IN_PROGRESS",
+        "1%",
+        0,
+        0,
+        0,
+        90,
+        "provider_poll_failed",
+    ):
+        raise SystemExit(f"0037 task recovery fixture is invalid: {before}")
+
+    task_event = (
+        "a" * 64,
+        "task",
+        360002,
+        "0036-task-suno",
+        0,
+        0,
+        90,
+        301,
+        "provider_poll_failed",
+        "requeue",
+        "provider_incident_resolved",
+        "incident:INC-360002",
+        "b" * 64,
+        "c" * 64,
+        "d" * 64,
+        1,
+        200,
+    )
+    insert_sql = (
+        "INSERT INTO task_poll_recovery_events ("
+        "resolution_key, entity_kind, entity_id, public_task_id, "
+        "expected_poll_generation, expected_poll_write_revision, "
+        "expected_quarantined_at, expected_hard_timeout_at, "
+        "expected_quarantine_reason, action, reason, "
+        "evidence_reference, evidence_sha256, preview_token, decision_sha256, "
+        "operator_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    conn.execute(insert_sql, task_event)
+    recovered = conn.execute(
+        "SELECT status, progress, quota, next_poll_at, poll_consecutive_failures, "
+        "poll_last_error_code, poll_quarantined_at, poll_quarantine_reason, "
+        "poll_write_revision FROM tasks WHERE id = 360002"
+    ).fetchone()
+    if recovered != ("IN_PROGRESS", "1%", 0, 200, 0, "", 0, "", 1):
+        raise SystemExit(f"0037 task recovery mutation is invalid: {recovered}")
+
+    expect_integrity_error(
+        lambda: conn.execute(insert_sql, task_event),
+        "0037 duplicate resolution must not requeue twice",
+    )
+    if conn.execute(
+        "SELECT poll_write_revision FROM tasks WHERE id = 360002"
+    ).fetchone() != (1,):
+        raise SystemExit("0037 duplicate recovery changed task revision")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE task_poll_recovery_events SET reason = 'operator_retry_approved' "
+            "WHERE resolution_key = ?",
+            ("a" * 64,),
+        ),
+        "0037 recovery events must reject updates",
+        "task poll recovery events are immutable",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM task_poll_recovery_events WHERE resolution_key = ?",
+            ("a" * 64,),
+        ),
+        "0037 recovery events must reject deletes",
+        "task poll recovery events are immutable",
+    )
+
+    conn.execute(
+        "UPDATE midjourneys SET poll_write_revision = 4, poll_quarantined_at = 100, "
+        "poll_quarantine_reason = 'provider_unsupported' WHERE id = 360003"
+    )
+    stale_midjourney_event = (
+        "e" * 64,
+        "midjourney",
+        360003,
+        "0036-mj",
+        0,
+        3,
+        100,
+        3601,
+        "provider_unsupported",
+        "requeue",
+        "provider_configuration_corrected",
+        "change:CFG-360003",
+        "f" * 64,
+        "1" * 64,
+        "2" * 64,
+        1,
+        201,
+    )
+    expect_integrity_error(
+        lambda: conn.execute(insert_sql, stale_midjourney_event),
+        "0037 stale Midjourney preview must fail closed",
+        "midjourney poll recovery preview is stale",
+    )
+    valid_midjourney_event = list(stale_midjourney_event)
+    valid_midjourney_event[0] = "3" * 64
+    valid_midjourney_event[5] = 4
+    conn.execute(insert_sql, tuple(valid_midjourney_event))
+    recovered_midjourney = conn.execute(
+        "SELECT status, progress, next_poll_at, poll_consecutive_failures, "
+        "poll_last_error_code, poll_quarantined_at, poll_quarantine_reason, "
+        "poll_write_revision FROM midjourneys WHERE id = 360003"
+    ).fetchone()
+    if recovered_midjourney != ("IN_PROGRESS", "1%", 201, 0, "", 0, "", 5):
+        raise SystemExit(
+            f"0037 Midjourney recovery mutation is invalid: {recovered_midjourney}"
+        )
+
+    if conn.execute("SELECT COUNT(*) FROM task_poll_recovery_events").fetchone() != (2,):
+        raise SystemExit("0037 recovery event count is invalid")
+
+    expect_integrity_error(
+        lambda: conn.execute(insert_sql, ("A" * 64,) + task_event[1:]),
+        "0037 recovery digests must be lowercase hex",
+    )
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, task_id, upstream_task_id, platform, status, progress, submit_time, "
+        "poll_quarantined_at, poll_quarantine_reason) VALUES "
+        "(370039, '0037-expired-task', 'provider-expired', 'sora', "
+        "'IN_PROGRESS', '1%', 100, 150, 'provider_poll_failed')"
+    )
+    expired_event = list(task_event)
+    expired_event[0] = "4" * 64
+    expired_event[2] = 370039
+    expired_event[3] = "0037-expired-task"
+    expired_event[6] = 150
+    expired_event[7] = 160
+    expect_integrity_error(
+        lambda: conn.execute(insert_sql, tuple(expired_event)),
+        "0037 recovery must reject an expired hard-timeout boundary",
+        "task poll recovery preview is stale",
+    )
+    task_plan = " ".join(
+        str(column)
+        for row in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM tasks "
+            "WHERE poll_quarantined_at > 0 "
+            "AND status NOT IN ('SUCCESS', 'FAILURE') "
+            "AND upstream_task_id != '' ORDER BY poll_quarantined_at, id"
+        ).fetchall()
+        for column in row
+    )
+    midjourney_plan = " ".join(
+        str(column)
+        for row in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM midjourneys "
+            "WHERE poll_quarantined_at > 0 "
+            "AND status NOT IN ('SUCCESS', 'FAILURE') "
+            "AND mj_id != '' ORDER BY poll_quarantined_at, id"
+        ).fetchall()
+        for column in row
+    )
+    if "idx_tasks_poll_quarantine_queue" not in task_plan:
+        raise SystemExit(f"0037 task quarantine query missed partial index: {task_plan}")
+    if "idx_midjourneys_poll_quarantine_queue" not in midjourney_plan:
+        raise SystemExit(
+            "0037 Midjourney quarantine query missed partial index: "
+            f"{midjourney_plan}"
+        )
+
+
 def expect_integrity_error(
     action,
     failure_message: str,
@@ -2168,6 +2402,102 @@ def verify_task_poll_schedule_rollout(schema_paths: list[Path]) -> None:
         raise SystemExit(
             "0036 default-inert scheduler broke a 0035-compatible Midjourney writer"
         )
+
+
+def verify_task_poll_recovery_rollout(schema_paths: list[Path]) -> None:
+    recovery_path = next(
+        (path for path in schema_paths if path.name == "0037_task_poll_recovery.sql"),
+        None,
+    )
+    schedule_path = next(
+        (path for path in schema_paths if path.name == "0036_task_poll_schedule.sql"),
+        None,
+    )
+    if recovery_path is None or schedule_path is None:
+        raise SystemExit("0036/0037 task poll recovery rollout migrations not found")
+    if schema_paths.index(schedule_path) >= schema_paths.index(recovery_path):
+        raise SystemExit("0036 scheduler must precede 0037 task poll recovery")
+
+    recovery_sql = recovery_path.read_text(encoding="utf-8")
+    if "if not exists" in recovery_sql.lower():
+        raise SystemExit("0037 critical recovery objects must fail on duplicate DDL")
+    required_fragments = (
+        "CREATE TABLE task_poll_recovery_events",
+        "CREATE INDEX idx_task_poll_recovery_events_entity",
+        "CREATE UNIQUE INDEX idx_task_poll_recovery_events_revision",
+        "CREATE INDEX idx_tasks_poll_quarantine_queue",
+        "CREATE INDEX idx_midjourneys_poll_quarantine_queue",
+        "CREATE TRIGGER task_poll_recovery_event_update_guard",
+        "CREATE TRIGGER task_poll_recovery_event_delete_guard",
+        "CREATE TRIGGER task_poll_recovery_task_guard",
+        "CREATE TRIGGER task_poll_recovery_midjourney_guard",
+        "CREATE TRIGGER task_poll_recovery_task_apply",
+        "CREATE TRIGGER task_poll_recovery_midjourney_apply",
+        "poll_owner = ''",
+        "poll_lease_expires_at = 0",
+        "poll_generation = NEW.expected_poll_generation",
+        "poll_write_revision = NEW.expected_poll_write_revision",
+        "poll_write_revision = poll_write_revision + 1",
+        "expected_hard_timeout_at",
+    )
+    for fragment in required_fragments:
+        if fragment not in recovery_sql:
+            raise SystemExit(f"0037 recovery rollout contract missing: {fragment}")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == recovery_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, task_id, upstream_task_id, platform, status, progress, submit_time, "
+        "poll_quarantined_at, poll_quarantine_reason) "
+        "VALUES (370037, '0037-rollout-task', 'provider-0037', 'sora', "
+        "'IN_PROGRESS', '17%', 10, 20, 'provider_poll_failed')"
+    )
+    conn.execute(
+        "INSERT INTO midjourneys "
+        "(id, mj_id, status, progress, submit_time, poll_quarantined_at, "
+        "poll_quarantine_reason) VALUES "
+        "(370038, '0037-rollout-mj', 'IN_PROGRESS', '18%', 11, 21, "
+        "'provider_item_missing')"
+    )
+    before = (
+        conn.execute(
+            "SELECT task_id, upstream_task_id, platform, status, progress, "
+            "poll_quarantined_at, poll_quarantine_reason "
+            "FROM tasks WHERE id = 370037"
+        ).fetchone(),
+        conn.execute(
+            "SELECT mj_id, status, progress, poll_quarantined_at, "
+            "poll_quarantine_reason FROM midjourneys WHERE id = 370038"
+        ).fetchone(),
+    )
+    conn.executescript(recovery_sql)
+    after = (
+        conn.execute(
+            "SELECT task_id, upstream_task_id, platform, status, progress, "
+            "poll_quarantined_at, poll_quarantine_reason "
+            "FROM tasks WHERE id = 370037"
+        ).fetchone(),
+        conn.execute(
+            "SELECT mj_id, status, progress, poll_quarantined_at, "
+            "poll_quarantine_reason FROM midjourneys WHERE id = 370038"
+        ).fetchone(),
+    )
+    if after != before:
+        raise SystemExit(f"0037 recovery migration changed business data: {after}")
+    if conn.execute("SELECT COUNT(*) FROM task_poll_recovery_events").fetchone() != (0,):
+        raise SystemExit("0037 recovery migration must not synthesize events")
+    if conn.execute(
+        "UPDATE tasks SET next_poll_at = 30 WHERE id = 370037"
+    ).rowcount != 1:
+        raise SystemExit("0037 recovery rollout broke a 0036-compatible task writer")
+    if conn.execute(
+        "UPDATE midjourneys SET next_poll_at = 31 WHERE id = 370038"
+    ).rowcount != 1:
+        raise SystemExit("0037 recovery rollout broke a 0036-compatible Midjourney writer")
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

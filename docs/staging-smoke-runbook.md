@@ -2020,8 +2020,8 @@ been changed.
 | Backoff | Inject eight retryable failures and repeat after restart | Failures 1-7 schedule deterministic identity/generation jitter within 15-18, 30-33, 60-63, 120-123, 240-243, 480-483, and 900 seconds with no early poll; failure 8 quarantines and schedules no retry |
 | Reset | Return a validated nonterminal provider response after failures | Consecutive failures/error clear; lifetime attempt count remains monotonic |
 | Threshold poison | Reach the eighth consecutive retryable failure | Row is quarantined and receives no later provider poll |
-| Immediate poison blocker | Inject malformed identity/family mismatch | Promotion remains blocked until a stable redacted immediate-quarantine classifier exists and proves no terminal/billing mutation |
-| Manual release blocker | Repair cause and attempt reviewed release | Promotion remains blocked until a root-only, fresh-verification, revision/idempotency-bound audit workflow atomically clears quarantine, resets consecutive failure state, and sets a future due time |
+| Immediate poison | Inject unsupported provider, invalid provider task identity, and deterministically invalid credential; separately inject network, invalid upstream response, and missing batch item | Deterministic poison quarantines on the first failure; transient/ambiguous failures retain threshold backoff; neither path causes terminal/billing mutation |
+| Audited release | Repair the cause and use root queue/preview/apply | Fresh step-up, current revision, preview, confirmation, reason/evidence, and idempotency are required; event+audit+requeue commit atomically and identical replay converges |
 | Cron/DO race | Wake the same video row by cron and TaskRunner | One D1 lease winner and one provider operation/apply |
 | DO outage | Disable/fail alarm path | Cron still discovers D1-due video work; DO state is not required for correctness |
 | Stale apply | Let generation N expire before response and claim N+1 | N cannot mutate schedule, lifecycle, counters, refund, or billing |
@@ -2034,8 +2034,8 @@ billing/refund/audit deltas, and alerts. Never store credentials or raw provider
 payloads. Keep both staging-verification flags false during collection. A new
 immutable candidate may set a flag true only after independent review.
 
-The immediate-poison and manual-release rows are deliberate blocking tests, not
-claims that the current local candidate implements those operations.
+The immediate-poison and audited-release rows are promotion tests for the local
+0037 implementation. Passing them locally is not remote staging evidence.
 
 ### Scheduler rollback drill
 
@@ -2050,3 +2050,68 @@ claims that the current local candidate implements those operations.
    0033-compatible Worker.
 6. Do not resume Go/VPS over quarantined rows until each is reconciled, because
    the legacy poller does not honor 0036 quarantine.
+
+## 0037 Task Poll Recovery Staging Smoke
+
+This phase is required before scheduler staging verification can become true.
+It is an execution template, not evidence that a remote D1 or Worker has been
+changed.
+
+### Preconditions and schema readback
+
+1. Keep `TASK_POLL_RECOVERY_ENABLED=false`,
+   `TASK_POLL_RECOVERY_STAGING_VERIFIED=false`,
+   `TASK_POLL_SCHEDULER_STAGING_VERIFIED=false`, and TaskRunner false while
+   applying 0037. Go/VPS remains authoritative outside the isolated cohort.
+2. Require the ordered ledger 0034 -> 0035 -> 0036 -> 0037 and exact verified
+   local output: 37 migrations, 35 tables, 241 checked incremental columns, and
+   42 key indexes. Record remote D1 separately.
+3. Read back immutable update/delete triggers, both entity guards, both apply
+   triggers, lowercase-hex CHECK clauses, the unique entity/revision index, and
+   exact SQL for `idx_tasks_poll_quarantine_queue` and
+   `idx_midjourneys_poll_quarantine_queue`.
+4. Compare business row counts and deterministic hashes before/after 0037.
+   The migration may add objects only; it must not clear or reclassify a
+   quarantine.
+5. Deploy disabled. Require recovery compiled/schema true but enabled/runtime,
+   staging, recovery cutover, and scheduler cutover false.
+
+### API and atomicity cases
+
+| Case | Required result |
+| --- | --- |
+| Authorization | List/preview reject non-root; apply rejects non-root and stale/missing step-up; every response is no-store |
+| Redaction | Queue/preview expose `task_reference` and a 64-char SHA-256; original Midjourney provider ID, owner token, credentials, and frozen payloads are absent |
+| Timeout | Queue/preview expose `hard_timeout_at`, `timeout_eligible`, and a margin at least 60 seconds and at least one poll lease; expired/near-timeout apply is 409 |
+| Apply | One root/step-up request writes immutable event plus root audit and atomically resets failure/quarantine fields, increments revision, and makes the row due |
+| Duplicate | Identical idempotent replay returns canonical duplicate readback with no second event, audit, revision, provider call, or rearm |
+| Stale preview | Change generation, revision, quarantine facts, lease, terminal state, provider identity, or timeout after preview; apply returns 409 and changes nothing |
+| DB uniqueness | A second resolution for the same entity/revision fails even with a different API idempotency key |
+| Unavailable | Inject D1/batch/audit/readback failure; return 503, never 409, and reconcile canonical D1 before retry |
+| TaskRunner rearm | First Task apply may arm once after D1 commit; arm failure does not fail recovery and cron discovers the due row; Midjourney never arms the video DO |
+| Immutability | Event update/delete fail; lowercase/uppercase/non-hex and wrong-length digest/token inserts fail |
+
+Workerd must cover step-up, apply, duplicate, stale preview, audit, timeout, and
+rearm fallback. Repeat the positive and negative cases after isolate restart and
+with cron/TaskRunner races. Reconcile provider operation counts, D1 revisions,
+billing, request/channel counters, root audit, logs, and alerts.
+
+### Promotion and rollback
+
+1. Run the recovery canary with
+   `TASK_POLL_RECOVERY_STAGING_VERIFIED=false`. Archive an immutable redacted
+   packet and review it independently.
+2. Only a new candidate may set recovery staging verification true. Confirm
+   recovery cutover becomes ready before any candidate can report scheduler
+   cutover ready.
+3. Roll back by disabling recovery first, then scheduler and TaskRunner, then
+   lease env authority, D1 authority, and D1 enforcement. Drain leases and
+   reconcile accepted provider operations.
+4. Before Go/VPS resumes, resolve each quarantine, retain it under an explicit
+   hold, or exclude it from legacy polling. Do not bulk-clear quarantine or
+   delete 0037 events/indexes.
+
+Provider-operation uniqueness/native idempotency, complete submit-operation
+deadlines, remote D1/staging/provider/TaskRunner hot paths, WFP namespace
+upload/readback, paid WFP canary, load/alert evidence, and signed rollback
+remain hard blockers. Production remains **NO-GO**.

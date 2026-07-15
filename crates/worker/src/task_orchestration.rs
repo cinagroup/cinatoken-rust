@@ -2183,6 +2183,40 @@ pub struct TaskPollApplyOutcome {
     pub terminal: bool,
 }
 
+struct TaskPollAttemptError {
+    source: worker::Error,
+    error_code: &'static str,
+    immediate_quarantine: bool,
+}
+
+impl TaskPollAttemptError {
+    fn poison(source: worker::Error, error_code: &'static str) -> Self {
+        Self {
+            source,
+            error_code,
+            immediate_quarantine: true,
+        }
+    }
+}
+
+impl From<worker::Error> for TaskPollAttemptError {
+    fn from(source: worker::Error) -> Self {
+        Self {
+            source,
+            error_code: "provider_poll_failed",
+            immediate_quarantine: false,
+        }
+    }
+}
+
+fn task_poll_failure_limit(configured_limit: i64, immediate_quarantine: bool) -> i64 {
+    if immediate_quarantine {
+        1
+    } else {
+        configured_limit
+    }
+}
+
 pub async fn poll_one_task(
     db: &D1Database,
     task: &TaskRow,
@@ -2233,7 +2267,7 @@ pub async fn poll_one_task(
     };
     let id = task.upstream_task_id.as_str();
 
-    let poll_result = async {
+    let poll_result: Result<Option<TaskPollApplyOutcome>, TaskPollAttemptError> = async {
         let request = match provider {
             VideoProvider::Sora => poll_request::sora(channel_base_url, channel_key, id),
             VideoProvider::Vidu => poll_request::vidu(channel_base_url, channel_key, id),
@@ -2241,13 +2275,25 @@ pub async fn poll_one_task(
             VideoProvider::Doubao => poll_request::doubao(channel_base_url, channel_key, id),
             VideoProvider::Hailuo => poll_request::hailuo(channel_base_url, channel_key, id),
             VideoProvider::Gemini => {
-                poll_request::gemini(channel_base_url, channel_key, id, gemini_version)
-                    .map_err(worker::Error::RustError)?
+                poll_request::gemini(channel_base_url, channel_key, id, gemini_version).map_err(
+                    |message| {
+                        TaskPollAttemptError::poison(
+                            worker::Error::RustError(format!(
+                                "build Gemini poll request: {message}"
+                            )),
+                            "provider_task_identity_invalid",
+                        )
+                    },
+                )?
             }
             VideoProvider::Kling => {
                 let is_new_api_relay = channel_key.starts_with("sk-");
-                let token = kling::create_jwt_token(channel_key, claim_now)
-                    .map_err(worker::Error::RustError)?;
+                let token = kling::create_jwt_token(channel_key, claim_now).map_err(|message| {
+                    TaskPollAttemptError::poison(
+                        worker::Error::RustError(format!("build Kling poll credential: {message}")),
+                        "provider_credential_invalid",
+                    )
+                })?;
                 poll_request::kling(channel_base_url, &token, &task.action, id, is_new_api_relay)
             }
             VideoProvider::Jimeng => {
@@ -2265,7 +2311,14 @@ pub async fn poll_one_task(
                     body,
                     claim_now,
                 )
-                .map_err(worker::Error::RustError)?
+                .map_err(|message| {
+                    TaskPollAttemptError::poison(
+                        worker::Error::RustError(format!(
+                            "build Jimeng poll credential: {message}"
+                        )),
+                        "provider_credential_invalid",
+                    )
+                })?
             }
             VideoProvider::Vertex => {
                 // Vertex needs an async GCP token exchange + the operation-name-based
@@ -2281,7 +2334,8 @@ pub async fn poll_one_task(
                     retry_base_seconds,
                 )
                 .await
-                .map(Some);
+                .map(Some)
+                .map_err(TaskPollAttemptError::from);
             }
         };
 
@@ -2326,7 +2380,7 @@ pub async fn poll_one_task(
             let _ = release_task_poll_lease(db, task.id, &lease).await;
             Ok(None)
         }
-        Err(err) => {
+        Err(failure) => {
             let failure_now = task_poll_now_unix_seconds().max(claim_now);
             let _ = record_task_poll_failure(
                 db,
@@ -2335,11 +2389,11 @@ pub async fn poll_one_task(
                 failure_now,
                 retry_base_seconds,
                 retry_max_seconds,
-                max_consecutive_failures,
-                "provider_poll_failed",
+                task_poll_failure_limit(max_consecutive_failures, failure.immediate_quarantine),
+                failure.error_code,
             )
             .await;
-            Err(err)
+            Err(failure.source)
         }
     }
 }
@@ -2420,6 +2474,26 @@ pub async fn poll_unfinished_tasks(
                 continue;
             }
         };
+        if VideoProvider::from_channel_type(channel.kind as i64).is_none() {
+            let failure_now = task_poll_now_unix_seconds().max(now);
+            if let Some(lease) =
+                claim_task_poll_lease(db, task, &owner, failure_now, poll_lease_seconds).await?
+            {
+                let _ = advance_task_poll_family_cursor(db, "video", task.id, failure_now).await?;
+                let _ = record_task_poll_failure(
+                    db,
+                    task,
+                    &lease,
+                    failure_now,
+                    retry_base_seconds,
+                    retry_max_seconds,
+                    1,
+                    "provider_unsupported",
+                )
+                .await;
+            }
+            continue;
+        }
         let outcome = poll_one_task(
             db,
             task,
@@ -3996,6 +4070,13 @@ mod tests {
         assert_eq!(task_poll_family_query_limit(0), 1);
         assert_eq!(task_poll_family_query_limit(4), 4);
         assert_eq!(task_poll_family_query_limit(100), 8);
+    }
+
+    #[test]
+    fn deterministic_poll_poison_bypasses_retry_threshold() {
+        assert_eq!(task_poll_failure_limit(8, false), 8);
+        assert_eq!(task_poll_failure_limit(8, true), 1);
+        assert_eq!(task_poll_failure_limit(64, true), 1);
     }
 
     #[test]

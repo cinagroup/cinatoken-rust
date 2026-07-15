@@ -857,8 +857,47 @@ Local runtime now includes minute-slot family rotation, eight-row family caps,
 finite high-watermark cursor rounds, claim-only cursor advance, deterministic
 jittered capped backoff, success reset, threshold quarantine, generation-fenced
 Alarm rearm, and bounded/redacted video response persistence. Immediate poison
-classification, audited manual release/requeue, provider-operation
-uniqueness/idempotency lookup, whole-operation deadlines, remote fault
-injection, invoice reconciliation, alert/load evidence, credential rotation,
-and signed rollback still block Task v2 and production. Go/VPS remains
-authoritative and production remains **NO-GO**.
+classification and audited manual release/requeue now exist locally through
+0037. Provider-operation uniqueness/idempotency lookup, whole-operation
+deadlines, remote fault injection, invoice reconciliation, alert/load evidence,
+credential rotation, and signed rollback still block Task v2 and production.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-15 Audited Task Poll Recovery Status
+
+The current local D1 head is `0037_task_poll_recovery.sql`. It creates an
+immutable recovery event ledger, one-event-per-entity/revision uniqueness,
+lowercase-hex digest/token constraints, and exact partial quarantine indexes
+for Task and Midjourney. D1 triggers repeat the generation, write revision,
+quarantine timestamp/reason, provider identity, empty lease, nonterminal, and
+hard-timeout predicates in the same transaction as requeue.
+
+The root-only, no-store API exposes `task_reference` and SHA-256 instead of the
+original Midjourney provider ID. Preview/apply include hard timeout,
+`timeout_eligible`, and a recovery margin at least 60 seconds and at least one
+poll lease. Apply requires fresh step-up, confirmation, approved reason,
+evidence, preview token, and idempotency. Stale/conflicting state returns 409;
+D1, audit, or canonical readback uncertainty returns 503. Identical replay
+converges. The first successful Task apply may best-effort arm TaskRunner after
+D1 commit, while cron remains authoritative.
+
+Unsupported providers, invalid provider task identity, and deterministically
+invalid credentials now quarantine immediately. Network failure, invalid
+upstream response, and missing batch items remain threshold-backed retries.
+Both recovery vars remain false, and scheduler cutover additionally requires
+recovery cutover readiness.
+
+The verified local schema report is 37 migrations, 35 tables, 241 checked
+incremental columns, and 42 key indexes. The clean release Workerd suite passes
+42/42; its recovery scenario covers root/step-up, apply, duplicate convergence,
+stale preview, immutable audit, timeout-margin rejection, and default-off DO
+fallback. Remote D1/staging/provider and enabled TaskRunner rearm evidence is
+not claimed.
+
+Provider-operation uniqueness/native idempotency, whole-submit operation
+deadlines, WFP namespace upload/readback, paid WFP canary, invoice/load/alert
+evidence, credential rotation, and signed rollback remain hard blockers.
+Rollback is recovery off -> scheduler/TaskRunner off -> lease env off -> D1
+authority off -> D1 enforcement off, followed by lease/provider reconciliation
+and quarantine disposition before Go/VPS resumes. Production remains
+**NO-GO**.

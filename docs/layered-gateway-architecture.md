@@ -1034,10 +1034,82 @@ Retryable observation failures use capped exponential backoff plus deterministic
 task/generation jitter persisted in D1. Validated responses clear consecutive
 failure state; the configured threshold quarantines exhausted retries.
 Quarantine is an operational hold, not a terminal provider or financial
-decision. Immediate poison classification and audited release/requeue are
-explicitly still outside the implemented local boundary.
+decision. Unsupported providers, invalid provider task identity, and
+deterministically invalid provider credentials now enter quarantine
+immediately; network failures, invalid upstream responses, and missing batch
+items still use threshold backoff. Audited release/requeue is a local 0037
+control plane, not production authority.
 
 The scheduler runtime is subordinate to 0034/0035 authority and enforcement.
 All scheduler flags remain false in committed default, staging, and production
 configuration. Go/VPS remains authoritative, no remote or deployment evidence
 is asserted, and production is **NO-GO**.
+
+## 2026-07-15 Poll Recovery And cinaVibeSDK Audit Correction
+
+Migration 0037 completes the local control-plane shape around the scheduler:
+
+```text
+root queue/preview
+  -> task_reference + provider-ID SHA-256 only
+  -> fresh step-up + revision-bound preview + idempotency key
+  -> D1 batch: immutable event + root audit
+  -> trigger guard: generation/revision/quarantine/no lease/hard timeout
+  -> atomic due requeue
+  -> optional best-effort TaskRunner arm for the first Task apply
+  -> cron and D1 remain authoritative
+```
+
+The database, not the API process, owns the final race decision. Lowercase-hex
+CHECK constraints protect every digest/token field; a unique
+entity/revision index prevents two recovery events for one revision; exact
+partial indexes bound the open quarantine queue. Stale or conflicting operator
+state is `409`. D1, batch/audit, or canonical readback uncertainty is `503`.
+Queue and preview include hard-timeout eligibility with a recovery margin at
+least as large as the poll lease and never less than 60 seconds. Apply fails
+closed at or inside that margin.
+
+The cinaVibeSDK review corrects four architectural assumptions:
+
+1. **WFP is internal dispatch.** Sandbox deployment uploads to a dispatch
+   namespace, and preview serving calls `DISPATCHER.get(script).fetch()` through
+   the binding. This is not a public Worker-to-Worker loop. cinatoken-rust keeps
+   the same internal transport shape while adding a platform dispatch Worker
+   that owns host-owner-script mapping, request/response header sanitization,
+   and HMAC identity. A separate outbound Worker owns egress and the smallest
+   possible provider credential set.
+2. **Hibernation preserves data, not an executing Promise.** cinaVibeSDK can
+   persist Agent state and socket attachment metadata, but an unawaited
+   generation Promise and `shouldBeGenerating=true` do not prove automatic
+   task recovery after eviction. Its `thoughtSignatures` map is in memory and
+   can disappear. OAuth blobs and AI credentials must not be placed in a state
+   object that the Agent may send back to a client. cinatoken-rust therefore
+   keeps D1/cron as the correctness spine and uses DO alarms only for wake-up
+   acceleration.
+3. **Alarms are duplicate-capable accelerators.** Cloudflare guarantees Durable
+   Object alarms at least once and retries failed handlers. A TaskRunner alarm
+   must re-read D1 and tolerate duplicate/replacement execution; the first
+   recovery apply may best-effort rearm it, but an arm failure cannot roll back
+   D1 or suppress cron.
+4. **One layer owns retries.** AI Gateway routing and application routing must
+   not both independently retry the same attempt. Cross-model fallback remains
+   central and default-off, re-checks model permission, refunds or re-reserves
+   the frozen billing contract as required, and records auditable terminal
+   evidence. cinaVibeSDK's model fallback is a source pattern, not an
+   unconditional policy import.
+
+These boundaries align with Cloudflare's guidance to use bindings for internal
+service communication and to await or explicitly defer Promises, with Durable
+Object alarm semantics, and with D1 batch rollback behavior:
+
+- [Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/)
+- [Durable Objects best practices](https://developers.cloudflare.com/durable-objects/best-practices/)
+- [Durable Object alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)
+- [D1 `batch()`](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)
+
+The verified local schema baseline is 37 migrations, 35 tables, 241 checked
+incremental columns, and 42 key indexes after the hard-timeout column and three
+audit-driven indexes. That baseline and Workerd recovery
+cases do not satisfy remote D1, provider, TaskRunner hot-path, WFP namespace
+upload/readback, or paid-canary evidence. Scheduler cutover must remain false
+until recovery cutover is ready, and production remains **NO-GO**.

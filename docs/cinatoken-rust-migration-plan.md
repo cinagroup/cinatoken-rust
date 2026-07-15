@@ -13177,9 +13177,12 @@ Defaults do not enable Rust polling and are not staging or deployment evidence.
   of scheduling another retry. A validated provider response resets
   consecutive-failure/error state; lifetime attempt count does not reset.
 - The eighth consecutive retryable failure quarantines the row without refund,
-  settlement, or terminal transition. It is never auto-released. Immediate
-  deterministic-poison classification and an audited root-only release/requeue
-  workflow remain unimplemented production blockers.
+  settlement, or terminal transition. Deterministic poison now bypasses that
+  threshold for unsupported providers, invalid provider task identity, and
+  deterministically invalid provider credentials. Network errors, invalid
+  upstream responses, and missing batch items still use persisted threshold
+  backoff. Release/requeue is implemented locally by the audited 0037 control
+  plane described in 22.216; remote evidence remains blocking.
 - A family cursor freezes the maximum row ID for a finite round. Candidate
   reads never advance it; only a successful D1 lease claim advances it, with a
   generation/high-watermark CAS. Empty remainder advances to the frozen tail,
@@ -13212,11 +13215,12 @@ Defaults do not enable Rust polling and are not staging or deployment evidence.
 There is no production activation wave in the current plan. Production keeps
 all five scheduler values at their committed defaults and remains **NO-GO**.
 
-Local focused evidence for this increment is 705/705 Worker unit tests, 41/41
+Local focused evidence for the current tree is 709/709 Worker unit tests, 42/42
 Workerd lifecycle tests, release builds of the platform/WFP tenant/WFP outbound
-Workers, WASM compilation, and the executable 36-migration SQLite rollout and
-state-machine verifier. It is local evidence only; it does not close staging,
-remote D1, provider, invoice, load, alert, or rollback requirements.
+Workers, frontend build and 70/70 readiness tests, and the executable
+37-migration SQLite rollout/state-machine verifier. It is local evidence only;
+it does not close staging, remote D1, provider, invoice, load, alert, or
+rollback requirements.
 
 ### Scheduler rollback
 
@@ -13232,3 +13236,105 @@ remote D1, provider, invoice, load, alert, or rollback requirements.
    does not honor 0036 quarantine. Never drop 0036, reset generations/counters,
    rewind cursors speculatively, or clear quarantine merely to make rollback
    proceed.
+
+### 22.216 2026-07-15 Audited Task Poll Recovery And cinaVibeSDK Review
+
+This is a new current-head increment. It does not rewrite the historical
+0034-0036 plan or any earlier evidence. Migration
+`0037_task_poll_recovery.sql` adds a default-inert, root-operated recovery
+boundary for quarantined Task and Midjourney polling. Production remains
+**NO-GO**.
+
+The local contract is fail-closed:
+
+- Recovery events are immutable. The D1 event insert and requeue update are
+  one atomic operation guarded by entity ID, private provider task identity,
+  poll generation, write revision, quarantine timestamp/reason, empty owner,
+  zero lease expiry, nonterminal status, and hard-timeout eligibility.
+- `resolution_key`, evidence SHA-256, preview token, and decision SHA-256 must
+  be exactly 64 lowercase hex characters. A unique index on
+  `(entity_kind, entity_id, expected_poll_write_revision)` permits at most one
+  recovery for a revision, independently of API idempotency.
+- Exact partial indexes
+  `idx_tasks_poll_quarantine_queue` and
+  `idx_midjourneys_poll_quarantine_queue` are both keyed by
+  `(poll_quarantined_at, id)`. Their predicates are respectively
+  `poll_quarantined_at > 0 AND status NOT IN ('SUCCESS', 'FAILURE') AND
+  upstream_task_id != ''` and `poll_quarantined_at > 0 AND status NOT IN
+  ('SUCCESS', 'FAILURE') AND mj_id != ''`. They are not generic status indexes,
+  and a broader logically convenient substitute fails readback.
+- Queue and preview are root-only and no-store. Apply additionally requires a
+  fresh step-up, an exact preview token, explicit confirmation, a bounded
+  idempotency key, an approved reason, and an evidence reference. The API
+  exposes `task_reference` plus SHA-256, never the original Midjourney provider
+  ID.
+- Queue and preview expose `hard_timeout_at`, `timeout_eligible`, and
+  `timeout_recovery_margin_seconds`. The margin is at least 60 seconds and at
+  least the configured poll lease. Apply rejects expired or near-timeout rows;
+  the D1 trigger repeats the timeout and revision guard at commit time.
+- A stale preview, closed quarantine, identity conflict, or conflicting
+  duplicate is `409`. D1, audit-batch, or canonical readback uncertainty is
+  `503`; it must not be mislabeled as an operator conflict.
+- The first successful Task requeue may best-effort arm `TaskRunner` after the
+  D1 commit. Arm failure cannot undo recovery. D1 due/lease/quarantine state
+  and cron remain authoritative; the DO is only a latency accelerator.
+
+The verified local SQLite acceptance line is 37 contiguous migrations, 35
+tables, 241 checked incremental columns, and 42 key indexes. The audit-driven
+hard-timeout column and three exact recovery indexes supersede the pre-audit
+240/39 estimate. Workerd coverage
+must include root step-up, applied recovery, identical duplicate convergence,
+stale preview rejection, audit persistence, timeout-margin rejection, and
+TaskRunner rearm failure with cron convergence. Local output is not remote D1
+or staging evidence.
+
+The cinaVibeSDK source audit narrows what is reused:
+
+- Its WFP path is internal dispatch, not a public HTTP loop: sandbox deployment
+  uploads a script to the dispatch namespace, and preview serving calls
+  `DISPATCHER.get(script).fetch(request)` through a binding.
+- Agent WebSocket hibernation can preserve framework state and attachments,
+  but an unawaited generation Promise plus a persisted
+  `shouldBeGenerating` intent does not prove automatic work resumption.
+  In-memory `thoughtSignatures` are lost across hibernation. OAuth blobs and AI
+  credentials must not be stored in any state that can be returned to a
+  client.
+- cinatoken-rust therefore keeps D1 plus cron as the correctness spine. A WFP
+  dispatch Worker owns the host-owner-script mapping, header sanitization, and
+  HMAC caller identity; a separate outbound Worker alone owns provider egress
+  and least-privilege credentials.
+- AI Gateway and application fallback have one retry owner. Any cross-model
+  fallback must re-check model permission, refund or re-reserve the frozen
+  financial contract, and write terminal audit evidence. cinaVibeSDK behavior
+  is a reviewed input, not a blanket compatibility target.
+
+Rollout order is fixed and may not be compressed:
+
+| Wave | Action | Required proof / stop condition |
+| --- | --- | --- |
+| S0 freeze | Keep Go/VPS authoritative; recovery, scheduler, lease env, TaskRunner, and all staging-proof flags false | Stop on an unknown writer or overlapping cohort |
+| S1 backup | Capture D1 restore point, ordered ledger, active versions, family/quarantine counts, and provider-operation inventory | Stop on missing restore proof, duplicate provider identity, or unresolved accepted work |
+| S2 expand | Apply 0034 -> 0035 -> 0036 -> 0037 with D1 controls zero and all env gates false | Require exact 0037 objects, partial-index SQL, verified 37/35/241/42 local baseline, and unchanged business hashes |
+| S3 disabled deploy | Deploy the 0037-aware candidate at 100 percent with all Task poll mutation gates false | Capabilities must remain runtime/cutover false; any Rust provider I/O aborts |
+| S4 drain | Remove the isolated cohort from Go/legacy polling and drain old cron, alarms, leases, and provider calls | Do not continue while ownership or quarantine disposition is ambiguous |
+| S5 lease and scheduler runtime | Enable D1 authority, D1 enforcement, lease env, then scheduler runtime for the isolated cohort; keep both scheduler/recovery staging flags false | Prove family fairness, timeout races, poison classification, backoff, and cron correctness |
+| S6 recovery canary | Enable `TASK_POLL_RECOVERY_ENABLED=true` only in isolated staging | Prove root/step-up, apply, duplicate, stale, timeout, audit, readback, redaction, and first-Task rearm cases |
+| S7 recovery review | Archive and independently review recovery evidence, then ship a new candidate with `TASK_POLL_RECOVERY_STAGING_VERIFIED=true` | Recovery cutover must be true before scheduler cutover can become true |
+| S8 scheduler review | Review scheduler evidence and only then ship a new scheduler-verified candidate | `task_poll_scheduler_cutover_ready` must require recovery cutover readiness |
+| S9 TaskRunner canary | Enable the video DO for isolated work and repeat cron/DO/recovery races | DO failure may add latency only; Suno and Midjourney remain cron-owned |
+| S10 decision | Reconcile provider invoices, D1 rows, billing, audit, alerts, load, and rollback evidence | No production activation wave exists until every hard blocker is closed |
+
+Rollback begins in the reverse authority order: set
+`TASK_POLL_RECOVERY_ENABLED=false`, then
+`TASK_POLL_SCHEDULER_ENABLED=false` and disable TaskRunner, then disable the
+lease env authority, D1 authority, and D1 enforcement. Drain fenced leases and
+reconcile accepted provider operations. Before any Go/VPS poller resumes,
+every quarantined row must be resolved, retained under an explicit hold, or
+excluded from the legacy poller; never bulk-clear quarantine as a rollback
+shortcut.
+
+Provider-operation uniqueness/native idempotency, a deadline spanning the
+entire submit operation, remote D1 and staging evidence, real provider and
+TaskRunner hot-path proof, WFP namespace upload/readback, and a paid WFP canary
+remain hard blockers. These are independent of the local recovery control
+plane, so production remains **NO-GO**.

@@ -621,6 +621,13 @@ export type PlatformCapabilities = {
   task_poll_scheduler_runtime_ready: boolean
   task_poll_scheduler_staging_verified: boolean
   task_poll_scheduler_cutover_ready: boolean
+  task_poll_recovery_contract_version: number
+  task_poll_recovery_compiled: boolean
+  task_poll_recovery_schema_ready: boolean
+  task_poll_recovery_enabled: boolean
+  task_poll_recovery_runtime_ready: boolean
+  task_poll_recovery_staging_verified: boolean
+  task_poll_recovery_cutover_ready: boolean
   task_poller_retry_base_seconds: number
   task_poller_retry_max_seconds: number
   task_poller_max_consecutive_failures: number

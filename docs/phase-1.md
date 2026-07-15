@@ -1452,9 +1452,13 @@ cap, no poll before D1 `next_poll_at`, deterministic jittered delay ranges of
 15-18/30-33/60-63/120-123/240-243/480-483/900 seconds, failure reset after a
 validated response, and threshold quarantine instead of another retry on
 failure eight. Immediate-poison classification and audited manual release are
-still implementation blockers. Staging must also prove no financial side effect
-from quarantine, stale-generation rejection, and cron operation when the DO
-fast path is unavailable. The
+now implemented locally: unsupported provider, invalid provider task identity,
+and deterministically invalid provider credential quarantine immediately, and
+0037 supplies root/step-up preview/apply with immutable audit and idempotent
+requeue. Network, invalid upstream response, and missing-item failures still
+follow threshold backoff. Staging must also prove no financial side effect from
+quarantine, stale-generation rejection, and cron operation when the DO fast
+path is unavailable. The
 staging-verification flag stays false while this evidence is collected and may
 change only in a later reviewed candidate.
 
@@ -1462,3 +1466,35 @@ Rollback order is scheduler off, TaskRunner off, in-flight reconciliation,
 then lease env off -> D1 authority off -> D1 enforcement off if the whole Rust
 ownership path is being withdrawn. Keep 0036 and all scheduling metadata in
 place. Reconcile quarantined rows before returning them to Go/VPS.
+
+## 2026-07-15 Phase 1 Task Poll Recovery Gate
+
+- D1 head advances to `0037_task_poll_recovery.sql`. The verified local schema
+  report is 37 migrations, 35 tables, 241 checked incremental columns, and 42
+  key indexes. Remote D1 must be verified independently.
+- Recovery events are immutable and one-per-entity/revision. Lowercase-hex
+  checks cover resolution, evidence, preview, and decision digests. Exact
+  partial indexes contain only open, provider-identified quarantine rows.
+- Root queue/preview and root plus fresh-step-up apply expose
+  `task_reference`, SHA-256, hard timeout, timeout eligibility, and a
+  lease-sized margin. They do not return the original Midjourney provider ID.
+- Apply atomically guards generation, revision, quarantine facts, empty lease,
+  nonterminal state, and timeout headroom. Stale/conflicting state is `409`;
+  D1, audit, or readback uncertainty is `503`.
+- The first Task apply may best-effort rearm TaskRunner after D1 commit. Cron
+  remains the authority, and rearm failure cannot fail or reverse recovery.
+- `TASK_POLL_RECOVERY_ENABLED=false` and
+  `TASK_POLL_RECOVERY_STAGING_VERIFIED=false` remain the committed values.
+  Scheduler cutover is blocked until recovery cutover is ready.
+
+Phase 1 staging order is 0034 -> 0035 -> 0036 -> 0037, disabled deploy, old
+writer/cohort drain, D1 authority, D1 enforcement, lease env, scheduler runtime,
+recovery canary, independent recovery review, scheduler review, then optional
+video TaskRunner canary. There is no production activation wave.
+
+Rollback turns recovery off first, then scheduler and TaskRunner, then lease
+env and D1 authority/enforcement. Reconcile accepted operations and every
+quarantined row before Go/VPS resumes. Provider-operation uniqueness/native
+idempotency, whole-submit deadlines, remote D1/staging/provider/TaskRunner hot
+paths, WFP namespace upload/readback, paid canary, and signed G1-G8 evidence
+remain hard blockers. Production is **NO-GO**.

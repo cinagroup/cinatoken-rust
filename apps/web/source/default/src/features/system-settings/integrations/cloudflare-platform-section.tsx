@@ -38,6 +38,7 @@ import {
 } from './cloudflare-platform-readiness'
 import { QuotaCoordinatorReconciliationPanel } from './quota-coordinator-reconciliation-panel'
 import { RealtimeBillingLedgerPanel } from './realtime-billing-ledger-panel'
+import { TaskPollRecoveryPanel } from './task-poll-recovery-panel'
 import { TaskSubmitReconciliationPanel } from './task-submit-reconciliation-panel'
 import { WfpTenantPlanPanel } from './wfp-tenant-plan-panel'
 
@@ -145,6 +146,19 @@ export function CloudflarePlatformSection() {
 
         {capabilities ? (
           <>
+            <TaskPollRecoveryPanel
+              previewEnabled={
+                capabilities.task_poll_recovery_contract_version > 0 &&
+                capabilities.task_poll_recovery_compiled &&
+                capabilities.task_poll_recovery_schema_ready
+              }
+              runtimeReady={capabilities.task_poll_recovery_runtime_ready}
+              mutationEnabled={
+                capabilities.task_poll_recovery_enabled &&
+                capabilities.task_poll_recovery_runtime_ready
+              }
+            />
+
             <div className='grid gap-4 lg:grid-cols-2 xl:grid-cols-4'>
               {buildCapabilityGroups(capabilities, t).map((group) => (
                 <CapabilityGroupCard key={group.title} group={group} />
@@ -2384,13 +2398,24 @@ function TaskPollSchedulerPanel({
     capabilities.task_poll_scheduler_runtime_ready
   const stagingReady =
     runtimeReady && capabilities.task_poll_scheduler_staging_verified
+  const recoveryCutoverReady =
+    capabilities.task_poll_recovery_contract_version > 0 &&
+    capabilities.task_poll_recovery_compiled &&
+    capabilities.task_poll_recovery_schema_ready &&
+    capabilities.task_poll_recovery_enabled &&
+    capabilities.task_poll_recovery_runtime_ready &&
+    capabilities.task_poll_recovery_staging_verified &&
+    capabilities.task_poll_recovery_cutover_ready
   const cutoverReady =
-    stagingReady && capabilities.task_poll_scheduler_cutover_ready
+    stagingReady &&
+    capabilities.task_poll_scheduler_cutover_ready &&
+    recoveryCutoverReady
   const statuses = [
     { label: t('Schema'), ready: schemaReady },
     { label: t('Env'), ready: environmentReady },
     { label: t('Runtime'), ready: runtimeReady },
     { label: t('Staging'), ready: stagingReady },
+    { label: t('Recovery'), ready: recoveryCutoverReady },
     { label: t('Cutover'), ready: cutoverReady },
   ]
   const metrics = [
@@ -2419,7 +2444,7 @@ function TaskPollSchedulerPanel({
           <p className='text-sm font-medium'>{t('Task poll scheduler')}</p>
           <p className='text-muted-foreground text-xs'>
             {t(
-              'Production scheduler state and bounded retry policy for asynchronous task polling.'
+              'Production scheduler state and bounded retry policy for asynchronous task polling. Cutover fails closed until quarantine recovery is ready.'
             )}
           </p>
         </div>
@@ -2435,7 +2460,7 @@ function TaskPollSchedulerPanel({
             : t('Contract missing')}
         </StatusBadge>
       </div>
-      <dl className='mt-3 grid grid-cols-2 gap-x-4 gap-y-3 border-t pt-3 sm:grid-cols-4 xl:grid-cols-8'>
+      <dl className='mt-3 grid grid-cols-2 gap-x-4 gap-y-3 border-t pt-3 sm:grid-cols-4 xl:grid-cols-9'>
         {statuses.map((status) => (
           <div key={status.label} className='min-w-0 space-y-1'>
             <dt className='text-muted-foreground text-xs'>{status.label}</dt>

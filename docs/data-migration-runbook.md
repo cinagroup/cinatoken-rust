@@ -583,7 +583,8 @@ create video TaskRunner state.
 
 ### Rollback and reconciliation
 
-1. Disable env authority and TaskRunner arming.
+1. Disable recovery, scheduler, env authority, and TaskRunner arming in that
+   order.
 2. Disable D1 authority.
 3. Disable D1 enforcement.
 4. Wait for lease expiry or clear only with matching owner and generation.
@@ -593,10 +594,10 @@ create video TaskRunner state.
    generations; never downgrade or reset them to make an old poller fit.
 
 Data migration approval does not close scheduling design. Migration 0036 now
-provides the local persisted shape, but runtime fairness/backoff/quarantine,
-provider-operation uniqueness/idempotency lookup, remote whole-operation
-deadline/abort evidence, and fault injection remain required before customer
-cutover.
+provides the local persisted shape and runtime fairness/backoff/quarantine is
+implemented locally. Provider-operation uniqueness/idempotency lookup, remote
+whole-operation deadline/abort evidence, fault injection, and the 0037 recovery
+campaign remain required before customer cutover.
 
 ## 0036 Schedule-State Migration Runbook
 
@@ -648,10 +649,83 @@ due if the scheduler were enabled. Therefore:
 
 ### Rollback and retention
 
-Disable scheduler and DO wake-ups first, reconcile accepted provider work, and
-wait for lease fencing before resuming another poller. Do not down-migrate 0036,
+Disable recovery first, then scheduler and DO wake-ups, reconcile accepted
+provider work, and wait for lease fencing before resuming another poller. Do
+not down-migrate 0036,
 zero lifetime attempts/failures, clear quarantine in bulk, delete cursor rows,
 or overwrite due times from an old snapshot. Scheduler-only rollback may use a
 0035-aware Worker with 0036 retained. Full lease rollback follows env off -> D1
 authority off -> D1 enforcement off -> lease drain -> 0033-compatible Worker.
 Reconcile every quarantine before Go/VPS sees the row.
+
+## 0037 Recovery-Event Migration Runbook
+
+0037 is additive and default-inert. It adds recovery objects around existing
+0036 quarantine state; it does not repair, clear, or reclassify an existing
+row. Apply it with recovery, scheduler, lease env authority, and TaskRunner
+disabled.
+
+### Preflight
+
+1. Verify the target D1 identity, restore point, ordered 0034/0035/0036 ledger,
+   active writers, and candidate/config/migration hashes.
+2. Inventory Task and Midjourney quarantines by redacted entity ID, family,
+   generation, revision, timestamp, reason, timeout eligibility, and provider
+   identity hash. Do not export provider IDs or credentials.
+3. Identify duplicate provider operations, near/expired hard timeouts, active
+   leases, unresolved accepted submits, and rows that a legacy Go poller would
+   process if quarantine were ignored. Any ambiguity is a stop condition.
+4. Record business row counts and deterministic hashes. The verified local
+   schema acceptance is 37 migrations, 35 tables, 241 checked incremental
+   columns, and 42 key indexes; remote readback is independent evidence.
+
+### Apply and validate
+
+1. Apply 0037 once. Do not hand-run its statements or rewrite the migration
+   ledger.
+2. Read back `task_poll_recovery_events`, the entity lookup index, unique
+   entity/revision index, both exact partial quarantine indexes, and all six
+   immutable/guard/apply triggers.
+3. Verify all four digest/token columns reject wrong length, uppercase, and
+   non-hex values. Verify update/delete of a recovery event fails.
+4. Verify both indexes use `(poll_quarantined_at, id)`. The Task predicate must
+   be exactly `poll_quarantined_at > 0 AND status NOT IN ('SUCCESS', 'FAILURE')
+   AND upstream_task_id != ''`; the Midjourney predicate must replace only the
+   final identity clause with `mj_id != ''`. Reject a broad, different-key, or
+   non-partial replacement.
+5. Recompute business hashes and counts. Existing status, progress, provider
+   identity, schedule, quarantine, quota, reservation, and cursor state must be
+   unchanged.
+
+### Active-row disposition
+
+Do not bulk-requeue existing quarantines after migration. For an isolated row:
+
+1. repair or verify the external cause and collect a bounded evidence
+   reference;
+2. require root queue/preview, fresh step-up apply, exact preview and revision,
+   confirmation, approved reason, and unique idempotency key;
+3. require enough hard-timeout headroom: more than the greater of 60 seconds
+   and the poll lease;
+4. commit one immutable event plus root audit and requeue atomically;
+5. reconcile canonical readback before retrying any 503 or ambiguous response;
+6. treat a 409 as stale/conflicting state requiring a fresh preview, never as a
+   reason to force the row;
+7. let TaskRunner rearm only best-effort after a first Task apply; cron must
+   discover the row when the DO path fails.
+
+### Rollback
+
+1. Set recovery false, then scheduler and TaskRunner false, then lease env
+   authority false.
+2. Disable D1 authority and D1 enforcement only after new work has stopped.
+3. Drain fenced leases and reconcile provider, billing, request/channel, audit,
+   event, and invoice state. Keep 0037 and immutable events in place.
+4. Before Go/VPS resumes, resolve each quarantine, retain it under an approved
+   hold, or exclude it from legacy polling. Never delete an event, reset a
+   revision/generation, or clear quarantine in bulk to fit the old poller.
+
+Provider-operation uniqueness/native idempotency, whole-submit operation
+deadlines, remote D1/staging/provider/TaskRunner hot-path proof, WFP namespace
+upload/readback, paid canary, alerts/load, and signed rollback remain hard
+blockers. Production remains **NO-GO**.

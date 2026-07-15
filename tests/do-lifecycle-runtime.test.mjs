@@ -1276,16 +1276,23 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 36,
-        d1_expected_migration: "0036_task_poll_schedule.sql",
+        d1_migration_applied_count: 37,
+        d1_expected_migration: "0037_task_poll_recovery.sql",
         d1_migration_ready: true,
         task_poll_scheduler_contract_version: 1,
         task_poll_scheduler_compiled: true,
         task_poll_scheduler_schema_ready: true,
-        task_poll_scheduler_enabled: false,
+        task_poll_scheduler_enabled: true,
         task_poll_scheduler_runtime_ready: false,
         task_poll_scheduler_staging_verified: false,
         task_poll_scheduler_cutover_ready: false,
+        task_poll_recovery_contract_version: 2,
+        task_poll_recovery_compiled: true,
+        task_poll_recovery_schema_ready: true,
+        task_poll_recovery_enabled: true,
+        task_poll_recovery_runtime_ready: false,
+        task_poll_recovery_staging_verified: false,
+        task_poll_recovery_cutover_ready: false,
         task_poller_retry_base_seconds: 15,
         task_poller_retry_max_seconds: 900,
         task_poller_max_consecutive_failures: 8,
@@ -1347,6 +1354,251 @@ describe("Rust Durable Object lifecycle contracts", () => {
       "queue_v2_generation",
       "staging_race_replay",
     ]);
+  }, 30_000);
+
+  it("requeues a quarantined task with step-up, stale-preview fencing, and idempotent audit", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const { cookie, password } = await setupAndLoginBillingRoot();
+    const recoveryNow = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO tasks (
+         id, task_id, upstream_task_id, platform, status, progress, submit_time,
+         channel_id, poll_generation, poll_write_revision, poll_attempt_count,
+         poll_consecutive_failures, poll_last_error_code, poll_quarantined_at,
+         poll_quarantine_reason
+       ) VALUES (
+         370101, 'task_runtime_recovery', 'provider-runtime-recovery', 'sora',
+         'IN_PROGRESS', '25%', ?1, 17, 3, 5, 9, 8,
+         'provider_poll_failed', ?2, 'provider_poll_failed'
+       )`,
+    )
+      .bind(recoveryNow, recoveryNow - 60)
+      .run();
+    await env.DB.prepare(
+      `UPDATE task_poll_lease_control
+       SET authority_enabled = 1, enforcement_enabled = 1, updated_at = 1800000001
+       WHERE id = 1`,
+    ).run();
+
+    const queueResponse = await SELF.fetch(
+      "https://cinatoken.test/api/platform/task-poll/quarantines?limit=20",
+      { headers: { cookie } },
+    );
+    expect(queueResponse.status).toBe(200);
+    expect(queueResponse.headers.get("cache-control")).toBe("no-store");
+    const queue = await queueResponse.json();
+    expect(queue).toMatchObject({
+      success: true,
+      data: {
+        contract_version: 2,
+        count: 1,
+        records: [
+          {
+            entity_kind: "task",
+            entity_id: 370101,
+            task_reference: "task_runtime_recovery",
+            platform: "sora",
+            channel_id: 17,
+            poll_generation: 3,
+            poll_write_revision: 5,
+            poll_attempt_count: 9,
+            poll_consecutive_failures: 8,
+            poll_quarantine_reason: "provider_poll_failed",
+            hard_timeout_at: recoveryNow + 86_400,
+            timeout_eligible: true,
+            timeout_recovery_margin_seconds: 120,
+          },
+        ],
+      },
+    });
+    expect(queue.data.records[0].public_task_id_sha256).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
+    expect(JSON.stringify(queue)).not.toContain("provider-runtime-recovery");
+
+    const decision = {
+      reason: "provider_incident_resolved",
+      evidence_reference: "incident:INC-370101",
+    };
+    const baseUrl =
+      "https://cinatoken.test/api/platform/task-poll/quarantines/task/370101";
+    const previewResponse = await SELF.fetch(`${baseUrl}/preview`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(decision),
+    });
+    expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json();
+    expect(preview).toMatchObject({
+      success: true,
+      data: {
+        entity_kind: "task",
+        entity_id: 370101,
+        poll_generation: 3,
+        poll_write_revision: 5,
+        poll_quarantined_at: recoveryNow - 60,
+        poll_quarantine_reason: "provider_poll_failed",
+        hard_timeout_at: recoveryNow + 86_400,
+        timeout_eligible: true,
+        timeout_recovery_margin_seconds: 120,
+        reason: "provider_incident_resolved",
+      },
+    });
+    expect(preview.data.preview_token).toMatch(/^[a-f0-9]{64}$/u);
+    const applyBody = {
+      ...decision,
+      preview_token: preview.data.preview_token,
+      idempotency_key: "runtime-requeue-370101",
+      confirm_requeue: true,
+    };
+    const unverified = await SELF.fetch(`${baseUrl}/apply`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(applyBody),
+    });
+    expect(unverified.status).toBe(403);
+
+    const verified = await SELF.fetch("https://cinatoken.test/api/verify", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ method: "password", password }),
+    });
+    expect(verified.status).toBe(200);
+
+    const applied = await SELF.fetch(`${baseUrl}/apply`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(applyBody),
+    });
+    const appliedPayload = await applied.json();
+    expect(applied.status, JSON.stringify(appliedPayload)).toBe(200);
+    expect(appliedPayload).toMatchObject({
+      success: true,
+      data: {
+        entity_kind: "task",
+        entity_id: 370101,
+        action: "requeue",
+        status: "applied",
+      },
+    });
+    expect(appliedPayload.data.scheduled_at).toBeGreaterThan(0);
+
+    const duplicate = await SELF.fetch(`${baseUrl}/apply`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(applyBody),
+    });
+    expect(duplicate.status).toBe(200);
+    await expect(duplicate.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        status: "duplicate",
+        scheduled_at: appliedPayload.data.scheduled_at,
+      },
+    });
+
+    const recovered = await env.DB.prepare(
+      `SELECT status, progress, next_poll_at, poll_write_revision,
+              poll_consecutive_failures, poll_last_error_code,
+              poll_quarantined_at, poll_quarantine_reason
+       FROM tasks WHERE id = 370101`,
+    ).first();
+    expect(recovered).toMatchObject({
+      status: "IN_PROGRESS",
+      progress: "25%",
+      next_poll_at: appliedPayload.data.scheduled_at,
+      poll_write_revision: 6,
+      poll_consecutive_failures: 0,
+      poll_last_error_code: "",
+      poll_quarantined_at: 0,
+      poll_quarantine_reason: "",
+    });
+    const eventCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM task_poll_recovery_events",
+    ).first();
+    expect(Number(eventCount?.count ?? 0)).toBe(1);
+    const auditCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM logs
+       WHERE type = 3 AND other LIKE '%task_poll.quarantine_requeued%'`,
+    ).first();
+    expect(Number(auditCount?.count ?? 0)).toBe(1);
+
+    await env.DB.prepare(
+      `INSERT INTO tasks (
+         id, task_id, upstream_task_id, platform, status, progress, submit_time,
+         poll_generation, poll_write_revision, poll_quarantined_at,
+         poll_quarantine_reason
+       ) VALUES (
+         370102, 'task_runtime_stale', 'provider-runtime-stale', 'sora',
+         'IN_PROGRESS', '10%', ?1, 4, 7, ?2, 'provider_poll_failed'
+       )`,
+    )
+      .bind(recoveryNow, recoveryNow - 30)
+      .run();
+    const staleBaseUrl =
+      "https://cinatoken.test/api/platform/task-poll/quarantines/task/370102";
+    const stalePreview = await SELF.fetch(`${staleBaseUrl}/preview`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(decision),
+    });
+    const stalePreviewPayload = await stalePreview.json();
+    await env.DB.prepare(
+      "UPDATE tasks SET poll_write_revision = 8 WHERE id = 370102",
+    ).run();
+    const staleApply = await SELF.fetch(`${staleBaseUrl}/apply`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        ...decision,
+        preview_token: stalePreviewPayload.data.preview_token,
+        idempotency_key: "runtime-requeue-370102",
+        confirm_requeue: true,
+      }),
+    });
+    expect(staleApply.status).toBe(409);
+    const staleState = await env.DB.prepare(
+      `SELECT poll_write_revision, poll_quarantined_at
+       FROM tasks WHERE id = 370102`,
+    ).first();
+    expect(staleState).toMatchObject({
+      poll_write_revision: 8,
+      poll_quarantined_at: recoveryNow - 30,
+    });
+
+    await env.DB.prepare(
+      `INSERT INTO tasks (
+         id, task_id, upstream_task_id, platform, status, progress, submit_time,
+         poll_generation, poll_write_revision, poll_quarantined_at,
+         poll_quarantine_reason
+       ) VALUES (
+         370103, 'task_runtime_expiring', 'provider-runtime-expiring', 'sora',
+         'IN_PROGRESS', '10%', ?1, 1, 1, ?2, 'provider_poll_failed'
+       )`,
+    )
+      .bind(recoveryNow - 86_350, recoveryNow - 20)
+      .run();
+    const expiringBaseUrl =
+      "https://cinatoken.test/api/platform/task-poll/quarantines/task/370103";
+    const expiringPreview = await SELF.fetch(`${expiringBaseUrl}/preview`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(decision),
+    });
+    expect(expiringPreview.status).toBe(200);
+    const expiringPreviewPayload = await expiringPreview.json();
+    expect(expiringPreviewPayload.data.timeout_eligible).toBe(false);
+    const expiringApply = await SELF.fetch(`${expiringBaseUrl}/apply`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        ...decision,
+        preview_token: expiringPreviewPayload.data.preview_token,
+        idempotency_key: "runtime-requeue-370103",
+        confirm_requeue: true,
+      }),
+    });
+    expect(expiringApply.status).toBe(409);
   }, 30_000);
 
   it("reconciles a stable D1 quota projection without exposing token identity", async () => {

@@ -136,9 +136,10 @@ required for G1-G8 decisions.
 | Exposed token | Must be revoked/rotated; must not be used | Security blocker until replacement credential and rotation evidence exist |
 
 Current 2026-07-15 schema evidence supersedes the migration-count rows above:
-the config audit and SQLite replay pass for 31 contiguous migrations through
-`0031_task_billing_intents.sql`, 31 tables, 167 checked incremental columns,
-and 30 key indexes. Migration 0030 rejects mutation of frozen HTTP reservation
+the current candidate expects 37 contiguous migrations through
+`0037_task_poll_recovery.sql`, 35 tables, 241 checked incremental columns, and
+42 key indexes. The audit-driven hard-timeout field and three recovery indexes
+supersede the pre-audit 240/39 estimate. Migration 0030 rejects mutation of frozen HTTP reservation
 identity and financial-contract fields; 0031 adds the fail-closed Task submit
 and financial state machine. The prior 20/20 local
 Wrangler apply remains historical and
@@ -152,10 +153,10 @@ no-double-charge evidence remains a production blocker.
 | --- | --- | --- | --- |
 | G0 | Route, provider, table, secret, config inventory | Partial | Canonical route inventory (`docs/source-route-inventory.md`), provider/channel mapping (`docs/source-provider-channel-matrix.md`), and deployment env inventory (Environment And Config Inventory below) landed 2026-06-25. Remaining: real production per-table row counts and a redacted secret-name inventory from the production `options` table. |
 | G1 | Cloudflare binding/config checklist | Partial | Local D1 config/full-chain checks pass, but staging IDs are not authenticated evidence. Revoke/rotate the exposed token, authenticate Wrangler with a replacement credential, verify the account/resources, deploy staging, and archive generated types, status, logs, and traces. |
-| G2 | Table migration matrix | Partial | Local migrations 0001-0031 replay successfully and require 31 tables, 167 incremental key columns, and 30 key indexes. Migration 0029 preserves tiered-writer defaults and rejects empty flat snapshots; 0030 rejects later mutation of frozen HTTP financial contracts; 0031 guards Task reserve, submit-unknown, attach, settle, and refund transitions. Remaining: reconcile active Realtime and ordinary-HTTP reservations before guarded transitions, apply all 31 to remote staging with every recovery/finalization/reconciliation mutation gate off, then run real source export/import/verify with row counts, hashes, and rollback evidence. |
+| G2 | Table migration matrix | Partial | Current local replay passes migrations 0001-0037 with 35 tables, 241 checked incremental columns, and 42 key indexes. Migrations 0034/0035 fence Task poll ownership, 0036 persists due/backoff/quarantine/cursors, and 0037 adds immutable, one-per-revision audited recovery with exact partial quarantine indexes. Remaining: reconcile active reservations and quarantines, apply all 37 to remote staging with every mutation gate off, then run source export/import/verify with row counts, hashes, and rollback evidence. |
 | G3 | Relay route and provider matrices | Partial | Route inventory, provider/channel mapping, and channel-selection algorithm captured (`docs/source-route-inventory.md`, `docs/source-provider-channel-matrix.md`, `docs/source-channel-selection-parity.md`). Weighted selection is wired into the retry loop with a Worker CSPRNG-backed bounded RNG and deterministic tests. Remaining: staging weighted-random/affinity/cross-group-retry evidence, retry/auto-ban/recovery parity (`docs/source-retry-autoban-parity.md`), and a redacted G3 report from `docs/route-provider-parity-runbook.md`. |
 | G4 | Billing matrix | Partial | Tiered expression fixtures and flat intent/admission are locally implemented. Flat terminal decimal rounding, option-map replacement, site/user unset-model admission, frozen Queue/D1 settlement, D1 contract immutability, and a hash-bound Go-generated flat manifest pass local tests. Remaining: provider actual-image/count, image-edit/free-model runtime and usage-source semantics; remote direct/Gateway/WFP/provider-invoice shadow settlement and signed delta report. |
-| G5 | Admin/frontend route, auth/session, operator CRUD, cache, and audit matrix | Partial | Auth/session and core operator CRUD have landed, and session-guard authorization now re-fetches current D1 user role/status/group, rejects non-enabled or soft-deleted users before admin/root decisions, and enforces `users.session_epoch` all-devices revocation for stale Rust cookies. The tracked React/Bun workspace now passes type/build, Prettier, and strict ESLint with a zero-debt no-regression baseline enforced during `bun run check`; the built frontend bundle is scanned for high-confidence secret/token leakage; an executable bundle-size ratchet budget is enforced; `/api/status` + `/api/setup` match the frontend contract; and the broadened frontend route audit baseline is down to 0 missing calls / 0 visible-admin / 0 operations-debt / 0 payment-debt / 0 capability-hidden-product gaps across 223 Worker-facing frontend calls. Subscription funding preferences now fail closed to wallet-only until runtime parity exists. Remaining: remote D1 migration application through `0031`, deployed browser smoke, Passkey real-authenticator/import/replay/session-isolation evidence, real EMAIL/WeChat Server smoke, custom OAuth staging replay/access-policy smoke, session revocation replay evidence, and provider/deployment replay/reconciliation evidence. See `docs/migration-progress-audit-2026-07-02.md`. |
+| G5 | Admin/frontend route, auth/session, operator CRUD, cache, and audit matrix | Partial | Auth/session and core operator CRUD have landed, and session-guard authorization now re-fetches current D1 user role/status/group, rejects non-enabled or soft-deleted users before admin/root decisions, and enforces `users.session_epoch` all-devices revocation for stale Rust cookies. The tracked React/Bun workspace now passes type/build, Prettier, and strict ESLint with a zero-debt no-regression baseline enforced during `bun run check`; the built frontend bundle is scanned for high-confidence secret/token leakage; an executable bundle-size ratchet budget is enforced; `/api/status` + `/api/setup` match the frontend contract; and the broadened frontend route audit baseline is down to 0 missing calls / 0 visible-admin / 0 operations-debt / 0 payment-debt / 0 capability-hidden-product gaps across 223 Worker-facing frontend calls. Subscription funding preferences now fail closed to wallet-only until runtime parity exists. Remaining: remote D1 migration application through `0037`, deployed root/step-up recovery browser smoke, Passkey real-authenticator/import/replay/session-isolation evidence, real EMAIL/WeChat Server smoke, custom OAuth staging replay/access-policy smoke, session revocation replay evidence, and provider/deployment replay/reconciliation evidence. See `docs/migration-progress-audit-2026-07-02.md`. |
 | G6 | Observability/security matrix | Partial | SSRF-validated video proxy fetches now fail closed on redirects, browser-session guards now use live D1 role/status/group/session_epoch before privilege checks, and fixed/custom OAuth state is bound to the initiating browser before token exchange. Remaining: prove logs, traces, alerts, WAF/rate limits, redaction, deployed session-revocation smoke, custom OAuth replay/access-policy/origin smoke, and runbooks. |
 | G7 | Canary matrix, rollback runbook, performance/capacity/cost report | Planned | Rehearse rollback, produce redacted performance/cost report, and run internal-token canary. |
 | G8 | Cutover evidence checklist | Planned | Capture final export, DNS/route plan, freeze window, owner sign-off, and approved 1x/2x/5x cost forecast. |
@@ -710,24 +711,44 @@ previous migration counts recorded above.
 | Suno family | Separate bounded Task query and channel batch; cron-only | Prove submit never arms video TaskRunner; partial/missing batch release and replay | Partial |
 | Midjourney family | Separate table, batch poll, and claimed one-hour timeout | Poll/timeout race, partial response, refund/invoice reconciliation | Partial |
 | 0036 scheduler schema | Local additive due/backoff/quarantine columns, two due indexes, five seeded cursors; all env gates false | Remote ordered ledger/object readback and unchanged business-row proof | Local only |
-| Fair scheduling | D1 schema exists; runtime evidence absent | Independent family cursor advance/wrap, no early poll, bounded work, no starvation | Blocked |
-| Retry policy | Configured 15-second base, 900-second cap, eight-failure threshold | Exact sequence, overflow cap, success reset, restart persistence, no retry storm | Blocked |
-| Poison quarantine | D1 fields and filtered due indexes exist | Threshold and immediate-poison cases, no provider re-poll, no financial side effect, reviewed manual release | Blocked |
-| DO acceleration boundary | Video TaskRunner binding exists and defaults off | DO obeys D1 due/quarantine/lease state; cron continues during alarm/DO outage | Blocked |
+| Fair scheduling | Local minute-slot rotation, finite high-watermark rounds, claim-only cursor advance, and eight-row cap are implemented | Independent deployed cursor advance/wrap, no early poll, bounded work, no starvation | Local only |
+| Retry policy | Local 15-second base, 900-second cap, deterministic jitter, success reset, and eight-failure threshold are implemented | Exact deployed sequence, restart persistence, provider classification, and no retry storm | Local only |
+| Poison quarantine | Threshold quarantine plus immediate quarantine for unsupported provider, invalid provider task identity, and deterministically invalid credential are implemented; network/upstream/missing-item failures remain threshold-backed | Deployed positive/negative classification, no provider re-poll, no financial side effect, alerts, and retention | Local only |
+| 0037 recovery schema | Immutable event, lowercase-hex checks, unique entity/revision index, and exact Task/Midjourney partial quarantine indexes | Remote ledger/object SQL readback, unchanged business hashes, trigger and immutability negatives | Local only |
+| Recovery API | Root/no-store list+preview; fresh-step-up apply; task reference + hash redaction; timeout margin; idempotent readback; 409 conflict vs 503 unavailable separation | Deployed root/session/step-up, apply/duplicate/stale/timeout/audit/readback/failure matrix | Local only |
+| Recovery cutover dependency | Both recovery vars default false; scheduler cutover requires recovery cutover ready | Independent recovery evidence review and new immutable verified candidate before scheduler verification | Blocked |
+| DO acceleration boundary | Video TaskRunner binding exists and defaults off; first Task recovery apply may best-effort rearm after D1 commit | DO obeys D1 due/quarantine/lease state; arm failure adds latency only; cron continues during alarm/DO outage | Local only |
 | Provider operation identity | Local task and lease identity exist | Provider-native idempotency or deterministic lookup and uniqueness for every family | Blocked |
+| Submit operation deadline | Poll fetch is lease-bounded, but a complete submit operation deadline is not proven | One deadline over auth/build/submit/read/parse/attach for every provider family | Blocked |
 | Fault campaign | Focused local schema/CAS tests | Remote failure injection at claim/provider/apply/refund, alerts, load, rollback | Blocked |
 
-Required activation sequence: apply 0034 -> 0035 -> 0036 inertly, deploy with
-lease/scheduler/TaskRunner disabled, drain all old cron/DO/provider work,
-enable D1 lease authority, enable D1 lease enforcement, enable Worker lease
-authority, then run an isolated scheduler canary while scheduler staging
-verification remains false. Review evidence before a new verified staging
-candidate; only then may video TaskRunner be canaried.
+Required activation sequence: apply 0034 -> 0035 -> 0036 -> 0037 inertly,
+deploy with recovery/lease/scheduler/TaskRunner disabled, drain all old
+cron/DO/provider work, enable D1 lease authority, enable D1 lease enforcement,
+enable Worker lease authority, then run isolated scheduler runtime and recovery
+canaries while both staging-verification flags remain false. Recovery evidence
+must be reviewed in a new candidate before scheduler cutover may become ready.
+Review scheduler evidence separately; only then may video TaskRunner be
+canaried.
 
-Rollback disables scheduler and TaskRunner first. Preserve and reconcile
+Rollback disables recovery first, then scheduler and TaskRunner. Preserve and reconcile
 in-flight provider operations, due/backoff/quarantine fields, and cursor state.
 For full ownership rollback, disable lease env authority, D1 authority, and D1
 enforcement in that order before lease drain and a 0033-compatible Worker.
 Reconcile quarantined rows before Go/VPS resumes. Any other sequence is a
 G4/G5/G7 abort. No remote or deployment evidence is recorded here; production
 remains **NO-GO**.
+
+## 2026-07-15 cinaVibeSDK Architecture Audit Matrix
+
+| Audited boundary | Correct interpretation | cinatoken-rust production gate |
+| --- | --- | --- |
+| WFP data path | Namespace upload plus `DISPATCHER.get(script).fetch()` binding traffic; not a public loop | Dispatch Worker owns host-owner-script mapping, sanitization, and HMAC identity; outbound Worker alone owns egress credentials |
+| Agent hibernation | Persisted state/attachment survives, but an unawaited Promise and `shouldBeGenerating` do not prove work resumes | D1/cron correctness spine is mandatory; DO alarm is acceleration only |
+| Transient and secret state | In-memory `thoughtSignatures` can disappear; OAuth blobs/AI credentials must not enter client-returnable state | Persist only redacted durable facts; keep credentials in least-privilege bindings/secrets |
+| AI Gateway fallback | Model retry/fallback is an application policy, not evidence that multiple retry owners are safe | Exactly one retry owner; cross-model permission check, refund/re-reserve, and terminal audit required |
+
+The audit follows Cloudflare Workers binding/Promise guidance, Durable Object
+alarm semantics, and D1 batch rollback behavior. It does not close remote WFP
+namespace upload/readback or paid-canary evidence. Production remains
+**NO-GO**.

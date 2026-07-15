@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
 use cinatoken_billing::{
-    compute_flat_quota_from_snapshot, estimate_flat_pre_consumed_quota, FlatBillingMode,
-    FlatPricingSnapshot, FlatUsage, ImageGenerationPriceClass, PricingConfig,
+    compute_flat_quota_from_snapshot, estimate_flat_pre_consumed_quota,
+    free_model_runtime_decision, FlatBillingMode, FlatPricingSnapshot, FlatUsage,
+    ImageGenerationPriceClass, PricingConfig,
 };
 use serde::Deserialize;
 
@@ -357,10 +358,8 @@ fn rust_flat_admission_and_preconsume_match_go_manifest() {
             case.name
         );
 
-        let go_free_model = !input.enable_free_model_pre_consume
-            && (snapshot.group_ratio == 0.0
-                || snapshot.model_price == Some(0.0)
-                || (snapshot.mode == FlatBillingMode::PerToken && snapshot.model_ratio == 0.0));
+        let go_free_model =
+            free_model_runtime_decision(&snapshot, input.enable_free_model_pre_consume).free_model;
         assert_eq!(
             go_free_model, expected.free_model,
             "free-model policy for {}",

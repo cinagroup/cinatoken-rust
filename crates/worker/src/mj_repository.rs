@@ -27,6 +27,7 @@ pub struct NewMidjourney<'a> {
     pub status: &'a str,
     pub progress: &'a str,
     pub submit_time: i64,
+    pub properties: &'a str,
 }
 
 /// A Midjourney row read back for the batch poll (the subset the settle/merge
@@ -38,6 +39,8 @@ pub struct MjRow {
     pub user_id: i64,
     pub mj_id: String,
     pub channel_id: i64,
+    #[serde(default)]
+    pub token_id: i64,
     pub quota: i64,
     pub status: String,
     pub progress: String,
@@ -59,7 +62,7 @@ fn is_terminal(status: &str) -> bool {
     status == "SUCCESS" || status == "FAILURE"
 }
 
-/// Insert a submitted Midjourney task (Go `Midjourney.Insert`).
+/// Insert a submitted Midjourney task and account the successful submit once.
 pub async fn insert_midjourney(db: &D1Database, mj: &NewMidjourney<'_>) -> worker::Result<()> {
     // D1's Worker binding exposes integer parameters as i32. Midjourney
     // submit_time is millisecond precision in Go, so bind it as text and let
@@ -77,19 +80,73 @@ pub async fn insert_midjourney(db: &D1Database, mj: &NewMidjourney<'_>) -> worke
         D1Type::Text(mj.status),
         D1Type::Text(mj.progress),
         D1Type::Text(submit_time.as_str()),
+        D1Type::Text(mj.properties),
     ];
-    db.prepare(
-        r#"
+    let insert = db
+        .prepare(
+            r#"
         INSERT INTO midjourneys
           (code, user_id, action, mj_id, prompt, prompt_en, channel_id, quota,
-           status, progress, submit_time)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+           status, progress, submit_time, properties)
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+        WHERE EXISTS (SELECT 1 FROM users WHERE id = ?2)
+          AND EXISTS (SELECT 1 FROM channels WHERE id = ?7)
         "#,
-    )
-    .bind_refs(&args)?
-    .run()
-    .await
-    .map(|_| ())
+        )
+        .bind_refs(&args)?;
+    let user_args = [
+        D1Type::Integer(d1_i32(mj.quota)),
+        D1Type::Integer(d1_i32(mj.user_id)),
+        D1Type::Text(mj.mj_id),
+    ];
+    let account_user = db
+        .prepare(
+            r#"
+            UPDATE users
+            SET used_quota = used_quota + ?1,
+                request_count = request_count + 1
+            WHERE id = ?2
+              AND EXISTS (SELECT 1 FROM midjourneys WHERE mj_id = ?3)
+            "#,
+        )
+        .bind_refs(&user_args)?;
+    let channel_args = [
+        D1Type::Integer(d1_i32(mj.quota)),
+        D1Type::Integer(d1_i32(mj.channel_id)),
+        D1Type::Text(mj.mj_id),
+    ];
+    let account_channel = db
+        .prepare(
+            r#"
+            UPDATE channels
+            SET used_quota = used_quota + ?1
+            WHERE id = ?2
+              AND EXISTS (SELECT 1 FROM midjourneys WHERE mj_id = ?3)
+            "#,
+        )
+        .bind_refs(&channel_args)?;
+    let results = db
+        .batch(vec![insert, account_user, account_channel])
+        .await?;
+    for (index, label) in [
+        "midjourney insert",
+        "midjourney user accounting",
+        "midjourney channel accounting",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let changes = results
+            .get(index)
+            .ok_or_else(|| worker::Error::RustError(format!("missing {label} result")))?
+            .meta()?
+            .and_then(|meta| meta.changes)
+            .unwrap_or(0);
+        if changes != 1 {
+            return Err(worker::Error::RustError(format!("{label} did not apply")));
+        }
+    }
+    Ok(())
 }
 
 /// Load unfinished Midjourney rows for the batch poll: those not in a terminal
@@ -101,8 +158,11 @@ pub async fn find_unfinished_midjourneys(
     let arg = D1Type::Integer(d1_i32(limit));
     db.prepare(
         r#"
-        SELECT id, code, user_id, mj_id, channel_id, quota, status, progress,
-               submit_time
+        SELECT id, code, user_id, mj_id, channel_id,
+               CASE WHEN json_valid(properties)
+                    THEN COALESCE(json_extract(properties, '$.token_id'), 0)
+                    ELSE 0 END AS token_id,
+               quota, status, progress, submit_time
         FROM midjourneys
         WHERE status NOT IN ('SUCCESS', 'FAILURE')
           AND mj_id != ''
@@ -159,7 +219,14 @@ pub async fn apply_midjourney_poll_result(
 
     let is_failure = result.status == "FAILURE" || !result.fail_reason.is_empty();
     if won && is_failure && !is_terminal(&row.status) {
-        crate::d1_repositories::increase_user_quota(db, row.user_id, row.quota).await?;
+        crate::d1_repositories::refund_reserved_relay_quota(
+            db,
+            row.user_id,
+            row.token_id,
+            row.quota,
+            result.finish_time.saturating_div(1_000),
+        )
+        .await?;
     }
     Ok(won)
 }

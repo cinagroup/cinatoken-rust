@@ -237,14 +237,15 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'relay-billing-owner-generation-compiled': 'Relay billing owner generation',
   'quota-coordinator-foundation': 'QuotaCoordinator foundation',
   'quota-coordinator-relay-observer': 'QuotaCoordinator relay observer',
-  'realtime-implementation': 'Realtime',
+  'realtime-implementation':
+    'Realtime: client hibernation restores; provider bridge fails closed/refunds after DO eviction',
   'realtime-billing-reconciliation-implementation':
     'Realtime billing reconciliation',
   'task-runner-implementation': 'TaskRunner',
   'ai-gateway-runtime': 'AI Gateway',
   'ai-gateway-fallback-runtime': 'AI Gateway fallback',
   'wfp-tenant-runtime': 'WFP tenant',
-  'realtime-runtime': 'Realtime',
+  'realtime-runtime': 'Realtime fail-closed runtime (no provider restore)',
   'realtime-billing-reconciliation-runtime': 'Realtime billing reconciliation',
   'task-runner-runtime': 'TaskRunner',
   'quota-coordinator-binding': 'QuotaCoordinator binding',
@@ -258,7 +259,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'ai-gateway-fallback-replay': 'AI Gateway fallback replay',
   'wfp-tenant-smoke': 'WFP tenant smoke',
   'wfp-relay-authority-smoke': 'WFP relay authority smoke',
-  'realtime-smoke': 'Realtime smoke',
+  'realtime-smoke':
+    'Realtime client restore and provider eviction refund smoke',
   'realtime-billing-reconciliation-staging-proof':
     'Realtime billing reconciliation proof',
   'task-runner-replay': 'TaskRunner replay',
@@ -276,7 +278,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'quota-coordinator-write-authority': 'QuotaCoordinator write authority',
   'quota-coordinator-cutover': 'QuotaCoordinator cutover',
   'ai-gateway-fallback-cutover': 'AI Gateway fallback',
-  'realtime-v1-cutover': 'Realtime v1',
+  'realtime-v1-cutover': 'Realtime v1 fail-closed cutover',
   'realtime-billing-reconciliation-cutover': 'Realtime billing reconciliation',
 } satisfies Record<PlatformReadinessSignalId, string>
 
@@ -550,6 +552,7 @@ export function buildPlatformReadinessSummary(
     readySignal(
       'realtime-runtime',
       allReady(
+        realtimeImplementation,
         capabilities.d1_migration_ready,
         capabilities.realtime_sessions_do_available,
         capabilities.realtime_session_gateway_enabled,

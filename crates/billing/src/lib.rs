@@ -15,9 +15,10 @@ pub use expression::{
 };
 pub use flat::{
     compute_flat_quota, compute_flat_quota_from_snapshot,
-    compute_flat_quota_with_other_ratio_product, estimate_flat_pre_consumed_quota, FlatBillingMode,
-    FlatPricingSnapshot, FlatQuotaResult, FlatUsage, ImageGenerationPriceClass,
-    ToolSurchargePrices,
+    compute_flat_quota_with_other_ratio_product, estimate_flat_pre_consumed_quota,
+    free_model_runtime_decision, FlatBillingMode, FlatPricingSnapshot, FlatQuotaResult, FlatUsage,
+    FreeModelRuntimeDecision, FreeModelRuntimeReason, ImageGenerationPriceClass,
+    ToolSurchargePrices, FREE_MODEL_RUNTIME_POLICY_VERSION,
 };
 pub use openrouter::{
     infer_openrouter_cache_write_tokens, OpenRouterCacheWriteInference, OpenRouterCacheWriteInput,

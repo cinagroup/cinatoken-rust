@@ -7627,7 +7627,7 @@ pub(crate) async fn authenticate(
     Ok(row)
 }
 
-async fn authenticate_for_model_list(
+pub(crate) async fn authenticate_for_model_list(
     db: &D1Database,
     env: &Env,
     api_key: &str,

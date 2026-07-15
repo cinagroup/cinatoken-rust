@@ -20,6 +20,10 @@ use base64::{
     Engine as _,
 };
 use cinatoken_auth::USER_STATUS_ENABLED;
+use cinatoken_billing::{
+    free_model_runtime_decision, FlatBillingMode, FlatPricingSnapshot, FreeModelRuntimeDecision,
+    PricingConfig,
+};
 use cinatoken_ssrf::SsrfPolicy;
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::{
@@ -442,49 +446,130 @@ pub async fn submit_task(
     })
 }
 
-/// Compute the base per-call quota for a task model — a port of Go
-/// `ModelPriceHelperPerCall`: `model_price * quota_per_unit * group_ratio`.
-/// Returns `Ok(None)` when the model has no configured price (unbilled). Loads
-/// the pricing options in one D1 round-trip, mirroring the relay's flat-billing
-/// load.
-pub async fn compute_task_base_quota(
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskBillingPlan {
+    pub base_quota: i64,
+    pub snapshot: FlatPricingSnapshot,
+    pub free_model_runtime_policy: FreeModelRuntimeDecision,
+}
+
+fn task_option_flag(raw: Option<&str>, default: bool) -> bool {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return default;
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "t" | "true" => true,
+        "0" | "f" | "false" => false,
+        _ => default,
+    }
+}
+
+fn task_free_model_preconsume_enabled(
+    flat_value: Option<&str>,
+    legacy_object: Option<&str>,
+) -> bool {
+    if flat_value.is_some() {
+        return task_option_flag(flat_value, true);
+    }
+    legacy_object
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.trim()).ok())
+        .and_then(|value| {
+            value
+                .get("enable_free_model_pre_consume")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(true)
+}
+
+/// Go `ModelPriceHelperPerCall` arithmetic over frozen pricing facts. Fixed
+/// models use their per-call USD price; ratio models reserve half of one model
+/// ratio unit. Both paths apply the request-time effective group ratio.
+pub fn task_base_quota_from_snapshot(snapshot: &FlatPricingSnapshot) -> i64 {
+    let quota = match snapshot.mode {
+        FlatBillingMode::FixedPrice => {
+            snapshot.model_price.unwrap_or(0.0) * snapshot.quota_per_unit * snapshot.group_ratio
+        }
+        FlatBillingMode::PerToken => {
+            snapshot.model_ratio / 2.0 * snapshot.quota_per_unit * snapshot.group_ratio
+        }
+    };
+    quota as i64
+}
+
+/// Resolve and freeze the per-call billing contract for a task model. `None`
+/// means Go would reject the model as unconfigured; callers must return a 4xx
+/// and must never silently turn that state into a zero-priced task.
+pub async fn compute_task_billing_plan(
     db: &D1Database,
     model: &str,
-    group: &str,
-) -> worker::Result<Option<i64>> {
+    user_group: &str,
+    using_group: &str,
+    accept_unset_ratio_model: bool,
+) -> worker::Result<Option<TaskBillingPlan>> {
     let keys = [
         "ModelRatio",
         "CompletionRatio",
         "ModelPrice",
         "CacheRatio",
         "QuotaPerUnit",
+        crate::d1_repositories::GROUP_GROUP_RATIO_OPTION_KEY,
+        crate::d1_repositories::LEGACY_GROUP_GROUP_RATIO_OPTION_KEY,
         crate::d1_repositories::GROUP_RATIO_OPTION_KEY,
+        crate::d1_repositories::LEGACY_GROUP_RATIO_OPTION_KEY,
         "CreateCacheRatio",
         "ImageRatio",
         "AudioRatio",
         "AudioCompletionRatio",
+        "SelfUseModeEnabled",
+        "quota_setting.enable_free_model_pre_consume",
+        "quota_setting",
     ];
     let values = crate::d1_repositories::option_values(db, &keys).await?;
-    let config = cinatoken_billing::PricingConfig::new()
+    let mut config = PricingConfig::new()
         .with_json_maps(
             values[0].as_deref(),
             values[1].as_deref(),
             values[2].as_deref(),
             values[3].as_deref(),
-            values[5].as_deref(), // group ratio
+            None,
             values[4].as_deref(), // quota per unit
         )
         .with_subcategory_maps(
-            values[6].as_deref(),
-            values[7].as_deref(),
-            values[8].as_deref(),
             values[9].as_deref(),
+            values[10].as_deref(),
+            values[11].as_deref(),
+            values[12].as_deref(),
+        )
+        .with_self_use_mode(
+            accept_unset_ratio_model || task_option_flag(values[13].as_deref(), false),
         );
-    let Some(price) = config.model_price(model) else {
+    if !config.admits_model(model) {
         return Ok(None);
-    };
-    let group_ratio = crate::d1_repositories::group_ratio_for_group(db, group).await?;
-    Ok(Some((price * config.quota_per_unit * group_ratio) as i64))
+    }
+
+    let groups = [using_group.to_string()];
+    let ratios = crate::d1_repositories::resolve_effective_group_ratios_from_options(
+        user_group,
+        &groups,
+        values[5].as_deref(),
+        values[6].as_deref(),
+        values[7].as_deref(),
+        values[8].as_deref(),
+    )?;
+    config.group_ratios.insert(
+        using_group.to_string(),
+        ratios.get(using_group).copied().unwrap_or(1.0),
+    );
+    let snapshot = FlatPricingSnapshot::from_config(model, using_group, &config, 1.0, 0);
+    let enable_free_model_pre_consume =
+        task_free_model_preconsume_enabled(values[14].as_deref(), values[15].as_deref());
+    let free_model_runtime_policy =
+        free_model_runtime_decision(&snapshot, enable_free_model_pre_consume);
+    Ok(Some(TaskBillingPlan {
+        base_quota: task_base_quota_from_snapshot(&snapshot),
+        snapshot,
+        free_model_runtime_policy,
+    }))
 }
 
 /// The resolved auth/channel/billing context for a task submit — what the route
@@ -504,7 +589,7 @@ pub struct TaskSubmitContext<'a> {
     pub origin_model: &'a str,
     pub action: &'a str,
     pub origin_task_id: &'a str,
-    pub base_quota: i64,
+    pub billing_plan: &'a TaskBillingPlan,
     pub now: i64,
     /// Configured Gemini API version (e.g. `v1beta`); only used by Gemini.
     pub gemini_version: &'a str,
@@ -541,9 +626,12 @@ pub async fn relay_task_submit(
         .unwrap_or_default(),
         _ => Vec::new(),
     };
-    let quota = apply_other_ratios(ctx.base_quota, &ratios);
+    let quota = apply_other_ratios(ctx.billing_plan.base_quota, &ratios);
+    let free_model = ctx.billing_plan.free_model_runtime_policy.free_model;
 
-    reserve_relay_quota(db, ctx.user_id, ctx.token_id, quota, ctx.now).await?;
+    if !free_model {
+        reserve_relay_quota(db, ctx.user_id, ctx.token_id, quota, ctx.now).await?;
+    }
 
     let submit_outcome = match submit_task(
         ctx.provider,
@@ -563,8 +651,10 @@ pub async fn relay_task_submit(
         Ok(outcome) => outcome,
         Err(err) => {
             // Best-effort refund of the reserve before surfacing the failure.
-            let _ =
-                refund_reserved_relay_quota(db, ctx.user_id, ctx.token_id, quota, ctx.now).await;
+            if !free_model {
+                let _ = refund_reserved_relay_quota(db, ctx.user_id, ctx.token_id, quota, ctx.now)
+                    .await;
+            }
             return Err(err);
         }
     };
@@ -578,6 +668,13 @@ pub async fn relay_task_submit(
     let task_properties = serde_json::json!({
         "upstream_model_name": ctx.upstream_model,
         "origin_model_name": ctx.origin_model,
+        "task_billing_contract": {
+            "contract_version": "task-flat-v1",
+            "snapshot": &ctx.billing_plan.snapshot,
+            "free_model_runtime_policy": ctx.billing_plan.free_model_runtime_policy,
+            "applied_other_ratios": ratios,
+            "reserved_quota": quota,
+        },
     })
     .to_string();
     let new_task = NewTask {
@@ -598,7 +695,18 @@ pub async fn relay_task_submit(
         properties: &task_properties,
         data: &task_data,
     };
-    insert_task(db, &new_task).await?;
+    if let Err(insert_err) = insert_task(db, &new_task).await {
+        if !free_model {
+            refund_reserved_relay_quota(db, ctx.user_id, ctx.token_id, quota, ctx.now)
+                .await
+                .map_err(|refund_err| {
+                    worker::Error::RustError(format!(
+                        "persist submitted task failed: {insert_err}; reserve refund failed: {refund_err}"
+                    ))
+                })?;
+        }
+        return Err(insert_err);
+    }
 
     Ok(public_task_id)
 }
@@ -717,7 +825,7 @@ fn jimeng_official_fetch_task_id(body_bytes: &[u8]) -> Result<String, String> {
 /// HTTP entry for a video task submit — the route handler that produces the
 /// [`TaskSubmitContext`] and drives [`relay_task_submit`]: authenticate the key,
 /// parse the request, select a task channel for the model, price the base model
-/// ([`compute_task_base_quota`]), and submit. Returns `{"task_id": "task_..."}`.
+/// ([`compute_task_billing_plan`]), and submit. Returns `{"task_id": "task_..."}`.
 ///
 /// Simplifications pending runtime tuning against Go: channel model-mapping and
 /// several non-Kling provider action special cases are still future slices, and
@@ -736,16 +844,23 @@ async fn handle_parsed_task_submit_with_response(
     let Some(api_key) = crate::relay::extract_api_key(req) else {
         return crate::json_with_status(&serde_json::json!({"error": "missing api key"}), 401);
     };
-    let Some(auth) = crate::d1_repositories::authenticate_token(&db, &api_key).await? else {
-        return crate::json_with_status(&serde_json::json!({"error": "invalid api key"}), 401);
-    };
-
     let model = task_req.model.clone();
+    let client_ip = crate::relay::client_ip(req);
+    let auth =
+        match crate::relay::authenticate(&db, &env, &api_key, &model, client_ip.as_deref()).await {
+            Ok(auth) => auth,
+            Err(response) => return response,
+        };
+    let using_group = if auth.effective_group() == "auto" {
+        auth.user_group.clone()
+    } else {
+        auth.effective_group().to_string()
+    };
 
     let channels = crate::d1_repositories::select_relay_channels(
         &db,
         &model,
-        &auth.user_group,
+        &using_group,
         VIDEO_CHANNEL_TYPES,
     )
     .await?;
@@ -762,9 +877,20 @@ async fn handle_parsed_task_submit_with_response(
         );
     };
 
-    let base_quota = compute_task_base_quota(&db, &model, &auth.user_group)
-        .await?
-        .unwrap_or(0);
+    let Some(billing_plan) = compute_task_billing_plan(
+        &db,
+        &model,
+        &auth.user_group,
+        &using_group,
+        auth.accepts_unset_ratio_model(),
+    )
+    .await?
+    else {
+        return crate::json_with_status(
+            &serde_json::json!({"error": format!("model {model} has no billing configuration")}),
+            400,
+        );
+    };
 
     let channel_base_url = channel.base_url.as_deref().unwrap_or_default();
     let gemini_version = env
@@ -785,13 +911,13 @@ async fn handle_parsed_task_submit_with_response(
         user_id: auth.user_id,
         token_id: auth.token_id,
         username: &auth.username,
-        group: &auth.token_group,
+        group: &using_group,
         platform: &platform,
         upstream_model: &model,
         origin_model: &model,
         action,
         origin_task_id: "",
-        base_quota,
+        billing_plan: &billing_plan,
         now,
         gemini_version: &gemini_version,
         vertex_region: &vertex_region,
@@ -935,9 +1061,14 @@ pub async fn handle_openai_video_remix(
     let Some(api_key) = crate::relay::extract_api_key(&req) else {
         return task_error_response("unauthorized", "missing api key", 401);
     };
-    let Some(auth) = crate::d1_repositories::authenticate_token(&db, &api_key).await? else {
-        return task_error_response("unauthorized", "invalid api key", 401);
-    };
+    let client_ip = crate::relay::client_ip(&req);
+    let auth =
+        match crate::relay::authenticate_for_model_list(&db, &env, &api_key, client_ip.as_deref())
+            .await
+        {
+            Ok(auth) => auth,
+            Err(response) => return response,
+        };
     let Some(video_id) = video_id
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
@@ -975,6 +1106,16 @@ pub async fn handle_openai_video_remix(
     if model.trim().is_empty() {
         return task_error_response("invalid_request", "origin task model is missing", 400);
     }
+    let auth =
+        match crate::relay::authenticate(&db, &env, &api_key, &model, client_ip.as_deref()).await {
+            Ok(auth) => auth,
+            Err(response) => return response,
+        };
+    let using_group = if auth.effective_group() == "auto" {
+        auth.user_group.clone()
+    } else {
+        auth.effective_group().to_string()
+    };
 
     let Some(channel) =
         crate::d1_repositories::find_enabled_relay_channel_by_id(&db, origin.channel_id).await?
@@ -1000,10 +1141,25 @@ pub async fn handle_openai_video_remix(
         );
     }
 
-    let base_quota = compute_task_base_quota(&db, &model, &auth.user_group)
-        .await?
-        .unwrap_or(0);
-    let remix_quota = apply_other_ratios(base_quota, &remix_billing_ratios_from_origin(&origin));
+    let Some(mut billing_plan) = compute_task_billing_plan(
+        &db,
+        &model,
+        &auth.user_group,
+        &using_group,
+        auth.accepts_unset_ratio_model(),
+    )
+    .await?
+    else {
+        return task_error_response(
+            "model_price_error",
+            &format!("model {model} has no billing configuration"),
+            400,
+        );
+    };
+    billing_plan.base_quota = apply_other_ratios(
+        billing_plan.base_quota,
+        &remix_billing_ratios_from_origin(&origin),
+    );
 
     let channel_base_url = channel.base_url.as_deref().unwrap_or_default();
     let gemini_version = env
@@ -1023,13 +1179,13 @@ pub async fn handle_openai_video_remix(
         user_id: auth.user_id,
         token_id: auth.token_id,
         username: &auth.username,
-        group: &auth.token_group,
+        group: &using_group,
         platform: &platform,
         upstream_model: &model,
         origin_model: &model,
         action: TASK_ACTION_REMIX,
         origin_task_id: &origin_upstream_task_id,
-        base_quota: remix_quota,
+        billing_plan: &billing_plan,
         now,
         gemini_version: &gemini_version,
         vertex_region: &vertex_region,
@@ -1065,10 +1221,6 @@ pub async fn handle_suno_submit(
     let Some(api_key) = crate::relay::extract_api_key(&req) else {
         return crate::json_with_status(&serde_json::json!({"error": "missing api key"}), 401);
     };
-    let Some(auth) = crate::d1_repositories::authenticate_token(&db, &api_key).await? else {
-        return crate::json_with_status(&serde_json::json!({"error": "invalid api key"}), 401);
-    };
-
     let body_bytes = req.bytes().await?;
     let task_req: TaskSubmitReq = serde_json::from_slice(&body_bytes).unwrap_or_default();
     let model = if task_req.model.is_empty() {
@@ -1076,10 +1228,21 @@ pub async fn handle_suno_submit(
     } else {
         task_req.model.clone()
     };
+    let client_ip = crate::relay::client_ip(&req);
+    let auth =
+        match crate::relay::authenticate(&db, &env, &api_key, &model, client_ip.as_deref()).await {
+            Ok(auth) => auth,
+            Err(response) => return response,
+        };
+    let using_group = if auth.effective_group() == "auto" {
+        auth.user_group.clone()
+    } else {
+        auth.effective_group().to_string()
+    };
 
     // Suno channels are channel type 36 (SunoAPI).
     let channels =
-        crate::d1_repositories::select_relay_channels(&db, &model, &auth.user_group, &[36]).await?;
+        crate::d1_repositories::select_relay_channels(&db, &model, &using_group, &[36]).await?;
     let Some(channel) = channels.into_iter().next() else {
         return crate::json_with_status(
             &serde_json::json!({"error": "no available suno channel for model"}),
@@ -1087,10 +1250,25 @@ pub async fn handle_suno_submit(
         );
     };
 
-    let base_quota = compute_task_base_quota(&db, &model, &auth.user_group)
-        .await?
-        .unwrap_or(0);
-    reserve_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now).await?;
+    let Some(billing_plan) = compute_task_billing_plan(
+        &db,
+        &model,
+        &auth.user_group,
+        &using_group,
+        auth.accepts_unset_ratio_model(),
+    )
+    .await?
+    else {
+        return crate::json_with_status(
+            &serde_json::json!({"error": format!("model {model} has no billing configuration")}),
+            400,
+        );
+    };
+    let base_quota = billing_plan.base_quota;
+    let free_model = billing_plan.free_model_runtime_policy.free_model;
+    if !free_model {
+        reserve_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now).await?;
+    }
 
     let base_url = channel.base_url.as_deref().unwrap_or_default();
     let request = PollRequest {
@@ -1110,15 +1288,25 @@ pub async fn handle_suno_submit(
         Ok(response) => match suno::parse_submit_response(&response) {
             Ok(id) => id,
             Err(err) => {
-                let _ =
-                    refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
-                        .await;
+                if !free_model {
+                    let _ = refund_reserved_relay_quota(
+                        &db,
+                        auth.user_id,
+                        auth.token_id,
+                        base_quota,
+                        now,
+                    )
+                    .await;
+                }
                 return crate::json_with_status(&serde_json::json!({"error": err}), 500);
             }
         },
         Err(err) => {
-            let _ = refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
-                .await;
+            if !free_model {
+                let _ =
+                    refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
+                        .await;
+            }
             return crate::json_with_status(&serde_json::json!({"error": err.to_string()}), 500);
         }
     };
@@ -1127,6 +1315,12 @@ pub async fn handle_suno_submit(
     let task_properties = serde_json::json!({
         "upstream_model_name": model,
         "origin_model_name": model,
+        "task_billing_contract": {
+            "contract_version": "task-flat-v1",
+            "snapshot": &billing_plan.snapshot,
+            "free_model_runtime_policy": billing_plan.free_model_runtime_policy,
+            "reserved_quota": base_quota,
+        },
     })
     .to_string();
     let new_task = NewTask {
@@ -1135,7 +1329,7 @@ pub async fn handle_suno_submit(
         platform: "suno",
         user_id: auth.user_id,
         username: &auth.username,
-        group: &auth.token_group,
+        group: &using_group,
         channel_id: channel.id,
         token_id: auth.token_id,
         quota: base_quota,
@@ -1147,7 +1341,18 @@ pub async fn handle_suno_submit(
         properties: &task_properties,
         data: "{}",
     };
-    insert_task(&db, &new_task).await?;
+    if let Err(insert_err) = insert_task(&db, &new_task).await {
+        if !free_model {
+            refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
+                .await
+                .map_err(|refund_err| {
+                    worker::Error::RustError(format!(
+                        "persist submitted Suno task failed: {insert_err}; reserve refund failed: {refund_err}"
+                    ))
+                })?;
+        }
+        return Err(insert_err);
+    }
     crate::task_runner::arm_task_runner_after_submit(&env, &public_task_id).await;
 
     crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
@@ -1171,10 +1376,6 @@ pub async fn handle_mj_submit(
     let Some(api_key) = crate::relay::extract_api_key(&req) else {
         return crate::json_with_status(&serde_json::json!({"error": "missing api key"}), 401);
     };
-    let Some(auth) = crate::d1_repositories::authenticate_token(&db, &api_key).await? else {
-        return crate::json_with_status(&serde_json::json!({"error": "invalid api key"}), 401);
-    };
-
     let body_bytes = req.bytes().await?;
     let body_value: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap_or_default();
     let prompt = body_value
@@ -1182,11 +1383,21 @@ pub async fn handle_mj_submit(
         .and_then(|value| value.as_str())
         .unwrap_or_default();
     let model = cover_task_action_to_model_name("mj", action);
+    let client_ip = crate::relay::client_ip(&req);
+    let auth =
+        match crate::relay::authenticate(&db, &env, &api_key, &model, client_ip.as_deref()).await {
+            Ok(auth) => auth,
+            Err(response) => return response,
+        };
+    let using_group = if auth.effective_group() == "auto" {
+        auth.user_group.clone()
+    } else {
+        auth.effective_group().to_string()
+    };
 
     // Midjourney channels are type 2 (Midjourney) or 5 (MidjourneyPlus).
     let channels =
-        crate::d1_repositories::select_relay_channels(&db, &model, &auth.user_group, &[2, 5])
-            .await?;
+        crate::d1_repositories::select_relay_channels(&db, &model, &using_group, &[2, 5]).await?;
     let Some(channel) = channels.into_iter().next() else {
         return crate::json_with_status(
             &serde_json::json!({"error": "no available midjourney channel for model"}),
@@ -1194,10 +1405,28 @@ pub async fn handle_mj_submit(
         );
     };
 
-    let base_quota = compute_task_base_quota(&db, &model, &auth.user_group)
-        .await?
-        .unwrap_or(0);
-    reserve_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now).await?;
+    let Some(billing_plan) = compute_task_billing_plan(
+        &db,
+        &model,
+        &auth.user_group,
+        &using_group,
+        auth.accepts_unset_ratio_model(),
+    )
+    .await?
+    else {
+        return crate::json_with_status(
+            &serde_json::json!({
+                "code": 4,
+                "description": format!("model {model} has no billing configuration")
+            }),
+            400,
+        );
+    };
+    let base_quota = billing_plan.base_quota;
+    let free_model = billing_plan.free_model_runtime_policy.free_model;
+    if !free_model {
+        reserve_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now).await?;
+    }
 
     let base_url = channel.base_url.as_deref().unwrap_or_default();
     let request = PollRequest {
@@ -1214,9 +1443,16 @@ pub async fn handle_mj_submit(
         Ok(response) => match midjourney::parse_submit_response(&response) {
             Ok(id) => id,
             Err(err) => {
-                let _ =
-                    refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
-                        .await;
+                if !free_model {
+                    let _ = refund_reserved_relay_quota(
+                        &db,
+                        auth.user_id,
+                        auth.token_id,
+                        base_quota,
+                        now,
+                    )
+                    .await;
+                }
                 return crate::json_with_status(
                     &serde_json::json!({"code": 4, "description": err}),
                     400,
@@ -1224,8 +1460,11 @@ pub async fn handle_mj_submit(
             }
         },
         Err(err) => {
-            let _ = refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
-                .await;
+            if !free_model {
+                let _ =
+                    refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
+                        .await;
+            }
             return crate::json_with_status(
                 &serde_json::json!({"code": 4, "description": err.to_string()}),
                 500,
@@ -1233,6 +1472,18 @@ pub async fn handle_mj_submit(
         }
     };
 
+    let mj_properties = serde_json::json!({
+        "token_id": auth.token_id,
+        "group": using_group,
+        "origin_model_name": model,
+        "task_billing_contract": {
+            "contract_version": "task-flat-v1",
+            "snapshot": &billing_plan.snapshot,
+            "free_model_runtime_policy": billing_plan.free_model_runtime_policy,
+            "reserved_quota": base_quota,
+        },
+    })
+    .to_string();
     let new_mj = crate::mj_repository::NewMidjourney {
         code: 1,
         user_id: auth.user_id,
@@ -1248,8 +1499,20 @@ pub async fn handle_mj_submit(
         // and duration rendering expect that unit. The shared task pipeline
         // keeps second timestamps, so only the mj subsystem multiplies here.
         submit_time: now.saturating_mul(1000),
+        properties: &mj_properties,
     };
-    crate::mj_repository::insert_midjourney(&db, &new_mj).await?;
+    if let Err(insert_err) = crate::mj_repository::insert_midjourney(&db, &new_mj).await {
+        if !free_model {
+            refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
+                .await
+                .map_err(|refund_err| {
+                    worker::Error::RustError(format!(
+                        "persist submitted Midjourney task failed: {insert_err}; reserve refund failed: {refund_err}"
+                    ))
+                })?;
+        }
+        return Err(insert_err);
+    }
 
     crate::json_with_status(
         &serde_json::json!({"code": 1, "description": "submit success", "result": mj_id}),
@@ -2374,6 +2637,7 @@ async fn proxy_video_content_url(url: &str) -> worker::Result<Response> {
 /// Shared auth for the fetch endpoints (same token auth as task submit).
 async fn authenticate_fetch(
     req: &Request,
+    env: &Env,
     db: &worker::D1Database,
 ) -> worker::Result<std::result::Result<cinatoken_storage::AuthenticatedToken, Response>> {
     let Some(api_key) = crate::relay::extract_api_key(req) else {
@@ -2383,13 +2647,10 @@ async fn authenticate_fetch(
             401,
         )?));
     };
-    match crate::d1_repositories::authenticate_token(db, &api_key).await? {
-        Some(auth) => Ok(Ok(auth)),
-        None => Ok(Err(task_error_response(
-            "unauthorized",
-            "invalid api key",
-            401,
-        )?)),
+    let client_ip = crate::relay::client_ip(req);
+    match crate::relay::authenticate_for_model_list(db, env, &api_key, client_ip.as_deref()).await {
+        Ok(auth) => Ok(Ok(auth)),
+        Err(response) => Ok(Err(response?)),
     }
 }
 
@@ -2455,18 +2716,10 @@ async fn authenticate_video_content_user_id(
             "missing api key or session",
         )?));
     };
-    match crate::d1_repositories::authenticate_token(db, &api_key).await? {
-        Some(auth) if auth.user_status == USER_STATUS_ENABLED => Ok(Ok(auth.user_id)),
-        Some(_) => Ok(Err(video_proxy_error(
-            403,
-            "permission_error",
-            "user is disabled",
-        )?)),
-        None => Ok(Err(video_proxy_error(
-            401,
-            "authentication_error",
-            "invalid api key",
-        )?)),
+    let client_ip = crate::relay::client_ip(req);
+    match crate::relay::authenticate_for_model_list(db, env, &api_key, client_ip.as_deref()).await {
+        Ok(auth) => Ok(Ok(auth.user_id)),
+        Err(response) => Ok(Err(response?)),
     }
 }
 
@@ -2482,7 +2735,7 @@ pub async fn handle_task_fetch_by_id(
     task_id: Option<&String>,
 ) -> worker::Result<Response> {
     let db = env.d1("DB")?;
-    let auth = match authenticate_fetch(&req, &db).await? {
+    let auth = match authenticate_fetch(&req, &env, &db).await? {
         Ok(auth) => auth,
         Err(response) => return Ok(response),
     };
@@ -2511,7 +2764,7 @@ pub async fn handle_openai_video_fetch_by_id(
     task_id: Option<&String>,
 ) -> worker::Result<Response> {
     let db = env.d1("DB")?;
-    let auth = match authenticate_fetch(&req, &db).await? {
+    let auth = match authenticate_fetch(&req, &env, &db).await? {
         Ok(auth) => auth,
         Err(response) => return Ok(response),
     };
@@ -2571,7 +2824,7 @@ pub async fn handle_openai_video_content_by_id(
 /// task ids; unknown ids are simply absent from the result.
 pub async fn handle_task_fetch_batch(mut req: Request, env: Env) -> worker::Result<Response> {
     let db = env.d1("DB")?;
-    let auth = match authenticate_fetch(&req, &db).await? {
+    let auth = match authenticate_fetch(&req, &env, &db).await? {
         Ok(auth) => auth,
         Err(response) => return Ok(response),
     };
@@ -2653,7 +2906,7 @@ pub async fn handle_mj_task_fetch(
     mj_id: Option<&String>,
 ) -> worker::Result<Response> {
     let db = env.d1("DB")?;
-    let auth = match authenticate_fetch(&req, &db).await? {
+    let auth = match authenticate_fetch(&req, &env, &db).await? {
         Ok(auth) => auth,
         Err(response) => return Ok(response),
     };
@@ -2682,7 +2935,7 @@ pub async fn handle_mj_task_list_by_condition(
     env: Env,
 ) -> worker::Result<Response> {
     let db = env.d1("DB")?;
-    let auth = match authenticate_fetch(&req, &db).await? {
+    let auth = match authenticate_fetch(&req, &env, &db).await? {
         Ok(auth) => auth,
         Err(response) => return Ok(response),
     };
@@ -2715,6 +2968,48 @@ pub async fn handle_mj_task_list_by_condition(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_per_call_quota_covers_fixed_and_ratio_pricing() {
+        let mut fixed_config = PricingConfig::new();
+        fixed_config
+            .model_prices
+            .insert("task-fixed".to_string(), 0.02);
+        fixed_config.group_ratios.insert("vip".to_string(), 1.5);
+        let fixed = FlatPricingSnapshot::from_config("task-fixed", "vip", &fixed_config, 1.0, 0);
+        assert_eq!(fixed.mode, FlatBillingMode::FixedPrice);
+        assert_eq!(task_base_quota_from_snapshot(&fixed), 15_000);
+
+        let mut ratio_config = PricingConfig::new();
+        ratio_config
+            .model_ratios
+            .insert("task-ratio".to_string(), 0.8);
+        ratio_config.group_ratios.insert("vip".to_string(), 1.5);
+        let ratio = FlatPricingSnapshot::from_config("task-ratio", "vip", &ratio_config, 1.0, 0);
+        assert_eq!(ratio.mode, FlatBillingMode::PerToken);
+        assert_eq!(task_base_quota_from_snapshot(&ratio), 300_000);
+    }
+
+    #[test]
+    fn task_free_model_policy_keeps_setting_default_strict() {
+        let mut config = PricingConfig::new();
+        config.model_ratios.insert("task-free".to_string(), 0.0);
+        let snapshot = FlatPricingSnapshot::from_config("task-free", "default", &config, 1.0, 0);
+
+        assert!(free_model_runtime_decision(&snapshot, false).free_model);
+        assert!(!free_model_runtime_decision(&snapshot, true).free_model);
+        assert!(task_option_flag(None, true));
+        assert!(task_option_flag(Some("invalid"), true));
+        assert!(!task_option_flag(Some("false"), true));
+        assert!(!task_free_model_preconsume_enabled(
+            None,
+            Some(r#"{"enable_free_model_pre_consume":false}"#),
+        ));
+        assert!(task_free_model_preconsume_enabled(
+            Some("true"),
+            Some(r#"{"enable_free_model_pre_consume":false}"#),
+        ));
+    }
 
     fn task_row() -> crate::task_repository::TaskDtoRow {
         crate::task_repository::TaskDtoRow {

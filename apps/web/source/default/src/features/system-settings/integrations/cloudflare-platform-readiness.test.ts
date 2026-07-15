@@ -193,14 +193,15 @@ describe('Cloudflare platform readiness headline', () => {
         'Relay billing owner generation',
       'quota-coordinator-foundation': 'QuotaCoordinator foundation',
       'quota-coordinator-relay-observer': 'QuotaCoordinator relay observer',
-      'realtime-implementation': 'Realtime',
+      'realtime-implementation':
+        'Realtime: client hibernation restores; provider bridge fails closed/refunds after DO eviction',
       'realtime-billing-reconciliation-implementation':
         'Realtime billing reconciliation',
       'task-runner-implementation': 'TaskRunner',
       'ai-gateway-runtime': 'AI Gateway',
       'ai-gateway-fallback-runtime': 'AI Gateway fallback',
       'wfp-tenant-runtime': 'WFP tenant',
-      'realtime-runtime': 'Realtime',
+      'realtime-runtime': 'Realtime fail-closed runtime (no provider restore)',
       'realtime-billing-reconciliation-runtime':
         'Realtime billing reconciliation',
       'task-runner-runtime': 'TaskRunner',
@@ -216,7 +217,8 @@ describe('Cloudflare platform readiness headline', () => {
       'ai-gateway-fallback-replay': 'AI Gateway fallback replay',
       'wfp-tenant-smoke': 'WFP tenant smoke',
       'wfp-relay-authority-smoke': 'WFP relay authority smoke',
-      'realtime-smoke': 'Realtime smoke',
+      'realtime-smoke':
+        'Realtime client restore and provider eviction refund smoke',
       'realtime-billing-reconciliation-staging-proof':
         'Realtime billing reconciliation proof',
       'task-runner-replay': 'TaskRunner replay',
@@ -236,7 +238,7 @@ describe('Cloudflare platform readiness headline', () => {
         'Relay billing owner generation',
       'quota-coordinator-write-authority': 'QuotaCoordinator write authority',
       'quota-coordinator-cutover': 'QuotaCoordinator cutover',
-      'realtime-v1-cutover': 'Realtime v1',
+      'realtime-v1-cutover': 'Realtime v1 fail-closed cutover',
       'realtime-billing-reconciliation-cutover':
         'Realtime billing reconciliation',
     })
@@ -660,6 +662,61 @@ describe('Cloudflare platform readiness headline', () => {
       getStage(summary, 'implementation').signals.find(
         (signal) => signal.id === 'realtime-implementation'
       )?.status,
+      'blocked'
+    )
+  })
+
+  test('does not report Realtime runtime ready without client restore and provider eviction fail-closed contracts', () => {
+    const configuredOnly = buildPlatformReadinessSummary(
+      makeCapabilities({
+        d1_migration_ready: true,
+        realtime_sessions_do_available: true,
+        realtime_session_gateway_enabled: true,
+        realtime_session_v1_enabled: true,
+        realtime_session_billing_settlement_write_enabled: true,
+      })
+    )
+    const failClosedRuntime = buildPlatformReadinessSummary(
+      makeCapabilities({
+        d1_migration_ready: true,
+        realtime_sessions_do_available: true,
+        realtime_session_gateway_enabled: true,
+        realtime_session_v1_enabled: true,
+        realtime_session_billing_settlement_write_enabled: true,
+        do_websocket_hibernation_compiled: true,
+        realtime_session_auth_boundary_compiled: true,
+        realtime_session_metrics_persisted_compiled: true,
+        realtime_session_control_no_echo_compiled: true,
+        realtime_session_platform_header_boundary_compiled: true,
+        realtime_session_platform_admin_auth_compiled: true,
+        realtime_session_upstream_bridge_hibernation_fail_closed_compiled: true,
+        realtime_session_upstream_bridge_compiled: true,
+        realtime_session_billing_settlement_compiled: true,
+        realtime_session_billing_settlement_batch_compiled: true,
+      })
+    )
+
+    assert.equal(
+      getSignalStatus(configuredOnly, 'configuration', 'realtime-runtime'),
+      'blocked'
+    )
+    assert.equal(
+      getSignalStatus(failClosedRuntime, 'configuration', 'realtime-runtime'),
+      'ready'
+    )
+  })
+
+  test('does not infer live WFP runtime from dispatch binding discovery alone', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        wfp_dispatch_binding_available: true,
+        wfp_dispatch_enabled: false,
+        wfp_internal_dispatch_enabled: false,
+      })
+    )
+
+    assert.equal(
+      getSignalStatus(summary, 'configuration', 'wfp-tenant-runtime'),
       'blocked'
     )
   })

@@ -313,6 +313,12 @@ settlement parity.
 
 ### 3. WFP Rust Tenant Scripts
 
+> **Authoritative safety note:** Historical migration-plan sections 22.64-22.66
+> are superseded deployment experiments, not operator instructions. Current WFP
+> tenants receive no Cloudflare bearer or tenant runtime token. Use migration
+> plan sections 22.162 and 22.212 for the outbound credential and external
+> Durable Object binding contract.
+
 cinaVibeSDK pattern:
 
 - User app subdomains are isolated behind a dispatch namespace.
@@ -1069,3 +1075,63 @@ actual-serving-model accounting remain centralized in cinatoken-rust.
 Remote 0028, two-person approval policy, evidence retention, provider invoice
 correlation, D1/concurrent-operator faults, alerts, rollback, and staging
 readback remain required. Production remains **NO-GO**.
+
+## 2026-07-15 Task, Free-Model, And External DO Audit Alignment
+
+This increment updates the production mapping only. It does not claim that the
+corresponding code paths, tests, migrations, Cloudflare bindings, or remote
+evidence passed in this documentation change.
+
+### Task P0 ownership
+
+The central Rust Worker must own Task authentication, pricing, reserve,
+compensation, and accounting before a TaskRunner DO, Queue, Workflow, provider,
+or WFP transport participates:
+
+- Task routes require full token/user status, expiry, exhaustion, model, and IP
+  checks. Raw-token lookup is not an admission boundary.
+- Fixed per-call quota is `ModelPrice * QuotaPerUnit * group_ratio`; the Go
+  ratio fallback is `ModelRatio / 2 * QuotaPerUnit * group_ratio`. Missing or
+  invalid pricing rejects the request before provider I/O instead of becoming
+  zero quota.
+- If the provider accepts a submit and D1 cannot persist the owned task and its
+  accounting, the reservation requires durable compensation and reconciliation.
+- A successful submit increments user request count and selected-channel usage
+  exactly once, including legitimate zero-quota Task work. Polling and terminal
+  settlement do not count the request again.
+
+This keeps the deterministic TaskRunner DO as a polling coordinator rather than
+an authentication or financial authority. The task row and billing reservation
+must remain recoverably linked in D1 before asynchronous ownership is considered
+production-ready.
+
+### Free-model boundary
+
+Go's free-model decision is not a blanket zero-price override. With
+`quota_setting.enable_free_model_pre_consume=false`, flat fixed-price zero,
+flat per-token ratio zero, or an effective zero group ratio skips base
+pre-consume and wallet admission; tiered billing uses only the zero-group-ratio
+case. Token status, expiry, exhaustion, model, and IP policy remain strict, and
+terminal tool/search/audio additions may still charge. Successful operations
+still count, with Task counted once at successful submit.
+
+The Cloudflare target still lacks complete subscription-versus-wallet funding
+source integration for this delayed admission decision, and Realtime still
+needs flat/free-model settlement parity. Those are explicit production blockers,
+not reasons to treat zero-base-price traffic as fully migrated.
+
+### WFP external binding invariant
+
+The production main script is `cinatoken-rust-api`; the production outbound
+Worker's external `WFP_AUTHORITY_REPLAY.script_name` must match that exact value,
+not `cinatoken-rust-api-production`. The release gate
+`bun run check:wfp:external-binding-config` must structurally load the main and
+outbound Wrangler TOML, compare default/staging/production script targets and
+the `WfpAuthorityReplay` class, and fail closed on drift.
+
+That static contract does not prove deployment. Production still requires
+authenticated external-binding readback, exact dispatch namespace outbound
+service/environment/context attachment, live replay behavior, bearer-free
+tenant binding inventory, provider and billing reconciliation, fault evidence,
+credential rotation, and rollback rehearsal. Go/VPS remains authoritative and
+production remains **NO-GO**.

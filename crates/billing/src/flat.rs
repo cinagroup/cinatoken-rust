@@ -207,6 +207,68 @@ pub enum FlatBillingMode {
     PerToken,
 }
 
+pub const FREE_MODEL_RUNTIME_POLICY_VERSION: u16 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FreeModelRuntimeReason {
+    PreConsumeEnabled,
+    GroupRatioZero,
+    ModelPriceZero,
+    ModelRatioZero,
+    NonZeroBasePrice,
+}
+
+impl FreeModelRuntimeReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PreConsumeEnabled => "pre_consume_enabled",
+            Self::GroupRatioZero => "group_ratio_zero",
+            Self::ModelPriceZero => "model_price_zero",
+            Self::ModelRatioZero => "model_ratio_zero",
+            Self::NonZeroBasePrice => "non_zero_base_price",
+        }
+    }
+}
+
+/// Frozen Go-compatible decision for `EnableFreeModelPreConsume`.
+///
+/// A free-model decision skips only the base wallet reservation. Terminal
+/// accounting must still retain request counting and independently priced
+/// tool/media charges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreeModelRuntimeDecision {
+    pub policy_version: u16,
+    pub enable_free_model_pre_consume: bool,
+    pub free_model: bool,
+    pub reason: FreeModelRuntimeReason,
+    pub charge_additive_at_settlement: bool,
+}
+
+pub fn free_model_runtime_decision(
+    snapshot: &FlatPricingSnapshot,
+    enable_free_model_pre_consume: bool,
+) -> FreeModelRuntimeDecision {
+    let (free_model, reason) = if enable_free_model_pre_consume {
+        (false, FreeModelRuntimeReason::PreConsumeEnabled)
+    } else if snapshot.group_ratio == 0.0 {
+        (true, FreeModelRuntimeReason::GroupRatioZero)
+    } else if snapshot.mode == FlatBillingMode::FixedPrice && snapshot.model_price == Some(0.0) {
+        (true, FreeModelRuntimeReason::ModelPriceZero)
+    } else if snapshot.mode == FlatBillingMode::PerToken && snapshot.model_ratio == 0.0 {
+        (true, FreeModelRuntimeReason::ModelRatioZero)
+    } else {
+        (false, FreeModelRuntimeReason::NonZeroBasePrice)
+    };
+    FreeModelRuntimeDecision {
+        policy_version: FREE_MODEL_RUNTIME_POLICY_VERSION,
+        enable_free_model_pre_consume,
+        free_model,
+        reason,
+        charge_additive_at_settlement: true,
+    }
+}
+
 /// Fully resolved, request-time pricing facts for one serving group/channel
 /// candidate. Persisting this snapshot prevents mutable D1 options from
 /// changing the financial contract while an upstream request is in flight.

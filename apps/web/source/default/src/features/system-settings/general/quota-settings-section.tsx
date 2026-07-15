@@ -225,10 +225,12 @@ export function QuotaSettingsSection({
                 render={({ field }) => (
                   <SettingsSwitchItem>
                     <SettingsSwitchContent>
-                      <FormLabel>{t('Pre-Consume for Free Models')}</FormLabel>
+                      <FormLabel>
+                        {t('Require Base Balance for Free Models')}
+                      </FormLabel>
                       <FormDescription>
                         {t(
-                          'When enabled, zero-cost models also pre-consume quota before final settlement.'
+                          'Controls base balance admission and base quota reservation for zero-base-cost models. Tool and audio add-ons are still charged from final usage when applicable.'
                         )}
                       </FormDescription>
                     </SettingsSwitchContent>

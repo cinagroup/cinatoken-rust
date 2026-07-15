@@ -71,7 +71,7 @@ AI_GATEWAY_COLLECT_LOG = "true"
 [[env.production.durable_objects.bindings]]
 name = "WFP_AUTHORITY_REPLAY"
 class_name = "WfpAuthorityReplay"
-script_name = "cinatoken-rust-api-production"
+script_name = "cinatoken-rust-api"
 
 # This secret belongs only to the outbound Worker. It must never be attached to
 # a WFP tenant script or reused as the namespace deployment credential.

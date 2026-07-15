@@ -4432,6 +4432,14 @@ Remaining migration gaps:
 
 ### 22.64 2026-07-05 WFP Tenant Script Control Plane
 
+> **SUPERSEDED - DO NOT USE AS DEPLOYMENT INSTRUCTIONS.** Sections 22.64-22.66
+> are retained only as historical implementation notes. Their tenant-runtime
+> Cloudflare bearer and Worker-side deploy model is retired. The authoritative
+> security and deployment contract is section 22.162 plus section 22.212: tenant
+> Workers receive no Cloudflare bearer, `cinatoken-wfp-outbound` alone owns the
+> outbound AI credential, and every environment-specific external Durable
+> Object binding must target the exact deployed main Worker script.
+
 This increment continues the cinaVibeSDK-inspired Cloudflare platform layer by
 adding the missing operator path between "dispatch gateway exists" and "tenant
 worker is actually present in the dispatch namespace".
@@ -4528,6 +4536,10 @@ Remaining migration gaps:
   namespace, and scoped API token in staging.
 
 ### 22.66 2026-07-05 WFP Rust/Wasm Artifact Deploy Uploader
+
+> **SUPERSEDED SECURITY MODEL.** The uploader behavior below records an earlier
+> experiment and must not be used to provision a tenant runtime token. Follow
+> sections 22.162 and 22.212; retired tenant-token flags must remain rejected.
 
 This increment wires the missing packaging/deployment leg for the WFP Rust
 tenant runtime without putting build artifacts or secrets into the main Worker.
@@ -12808,3 +12820,74 @@ Go/VPS remains authoritative and production remains **NO-GO** until the async
 state machine, synchronous and asynchronous staging reconciliation, remaining
 flat blockers, credential rotation, rollback rehearsal, and signed G1-G8
 approval are complete.
+
+### 22.212 2026-07-15 Task, Free-Model, And WFP Production Audit Delta
+
+This is an audit increment, not a completion or deployment-evidence claim. It
+records the minimum production contract exposed by the current Go/Rust and
+cinaVibeSDK comparison. No newly passing test, deployed migration, Cloudflare
+readback, provider trace, or remote billing evidence is asserted here.
+
+Task P0 production contract:
+
+- Every Task entry path must use the same complete token boundary as paid HTTP
+  relay: token status, expiry, exhaustion, user state, model permission, and IP
+  restriction are checked before channel selection, reserve, or provider I/O.
+  Possession of a raw token is not sufficient authentication.
+- Pricing must fail closed. A configured fixed price uses
+  `ModelPrice * QuotaPerUnit * group_ratio`; otherwise the Go per-call ratio
+  fallback uses `ModelRatio / 2 * QuotaPerUnit * group_ratio`. A model with no
+  valid fixed or ratio configuration is rejected before provider submission;
+  missing configuration must never silently become zero quota.
+- Provider acceptance followed by D1 task/accounting failure requires an
+  explicit compensation path for the owned reservation, with durable audit
+  identity and retry/reconciliation coverage. A successful upstream submit may
+  not become an unowned, permanently charged task because the local insert
+  failed.
+- One successful Task submission increments the user's successful request count
+  and the selected channel's usage accounting exactly once, including a valid
+  zero-quota submission. Polling, duplicate delivery, terminal settlement, and
+  compensation must not double count it. The task row, user accounting, channel
+  accounting, and reservation identity therefore need one idempotent D1
+  ownership contract.
+
+Exact Go `FreeModel` semantics:
+
+- The decision is pricing-mode specific and must be frozen per serving group.
+  When `quota_setting.enable_free_model_pre_consume=false`, a flat fixed-price
+  model is free when its model price is zero, a flat per-token model is free
+  when its model ratio is zero, and either flat mode is free when the effective
+  group ratio is zero. Tiered-expression billing has no model-price/model-ratio
+  shortcut; only an effective zero group ratio enters this free path.
+- `FreeModel` means skipping base pre-consume and wallet admission. It does not
+  disable token status, expiry, exhaustion, model, or IP policy, and it does not
+  force terminal quota to zero. Independent tool, search, audio, or other
+  additive post-consume terms can still charge.
+- Successful HTTP, audio, Realtime, and Task operations retain their normal
+  successful-request accounting even when base quota is zero. Task counts once
+  at successful submit.
+- The remaining boundary is material: delayed wallet admission must be joined
+  to subscription-versus-wallet funding-source selection, and Realtime still
+  needs flat/free-model policy and settlement parity. Until those paths share a
+  versioned frozen decision and atomic accounting, the
+  `free_model_runtime_policy` production blocker remains open.
+
+WFP external Durable Object binding contract:
+
+- Production's main Worker script is exactly `cinatoken-rust-api`. Therefore
+  `cinatoken-wfp-outbound` production's external
+  `WFP_AUTHORITY_REPLAY.script_name` must also be exactly
+  `cinatoken-rust-api`, not `cinatoken-rust-api-production`. Environment labels
+  do not create a different production script name.
+- This invariant must be guarded by a structured TOML audit, not a text search.
+  `bun run check:wfp:external-binding-config` must compare the main Worker's
+  default/staging/production script names with each outbound external binding,
+  and fail on script or `WfpAuthorityReplay` class drift before deployment.
+- The static audit is necessary but not remote proof. Authenticated deployment
+  readback, exact namespace/service/environment/context attachment, replay-DO
+  behavior, bearer-free tenant bindings, provider/billing correlation, fault
+  replay, credential rotation, and rollback evidence remain required.
+
+Go/VPS remains authoritative. Task P0, the FreeModel subscription/Realtime
+boundary, WFP remote attachment evidence, and the existing signed G1-G8 gates
+keep production **NO-GO**.

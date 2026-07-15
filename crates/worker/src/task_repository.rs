@@ -108,8 +108,9 @@ impl TaskRow {
     }
 }
 
-/// Insert a new task (Go `Task.Insert`). The unique `task_id` enforces that a
-/// given public task is created once.
+/// Insert a new task and account its successful submit exactly once. The task,
+/// user request/used-quota totals, and channel used quota share one D1 batch;
+/// every accounting UPDATE is conditional on the inserted task identity.
 pub async fn insert_task(db: &D1Database, task: &NewTask<'_>) -> worker::Result<()> {
     // Persist the reserving token id in private_data (Go `TaskPrivateData`), so
     // the poller can refund the token on failure. Keep the upstream id there as
@@ -138,19 +139,72 @@ pub async fn insert_task(db: &D1Database, task: &NewTask<'_>) -> worker::Result<
         D1Type::Text(&private_data),
         D1Type::Text(task.data),
     ];
-    db.prepare(
-        r#"
+    let insert = db
+        .prepare(
+            r#"
         INSERT INTO tasks
           (task_id, upstream_task_id, platform, user_id, username, "group",
            channel_id, quota, action, status, submit_time, created_at, updated_at,
            properties, private_data, data)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
+        WHERE EXISTS (SELECT 1 FROM users WHERE id = ?4)
+          AND EXISTS (SELECT 1 FROM channels WHERE id = ?7)
         "#,
-    )
-    .bind_refs(&args)?
-    .run()
-    .await
-    .map(|_| ())
+        )
+        .bind_refs(&args)?;
+    let account_args = [
+        D1Type::Integer(d1_i32(task.quota)),
+        D1Type::Integer(d1_i32(task.user_id)),
+        D1Type::Text(task.task_id),
+    ];
+    let account_user = db
+        .prepare(
+            r#"
+            UPDATE users
+            SET used_quota = used_quota + ?1,
+                request_count = request_count + 1
+            WHERE id = ?2
+              AND EXISTS (SELECT 1 FROM tasks WHERE task_id = ?3)
+            "#,
+        )
+        .bind_refs(&account_args)?;
+    let channel_args = [
+        D1Type::Integer(d1_i32(task.quota)),
+        D1Type::Integer(d1_i32(task.channel_id)),
+        D1Type::Text(task.task_id),
+    ];
+    let account_channel = db
+        .prepare(
+            r#"
+            UPDATE channels
+            SET used_quota = used_quota + ?1
+            WHERE id = ?2
+              AND EXISTS (SELECT 1 FROM tasks WHERE task_id = ?3)
+            "#,
+        )
+        .bind_refs(&channel_args)?;
+    let results = db
+        .batch(vec![insert, account_user, account_channel])
+        .await?;
+    for (index, label) in [
+        "task insert",
+        "task user accounting",
+        "task channel accounting",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let changes = results
+            .get(index)
+            .ok_or_else(|| worker::Error::RustError(format!("missing {label} result")))?
+            .meta()?
+            .and_then(|meta| meta.changes)
+            .unwrap_or(0);
+        if changes != 1 {
+            return Err(worker::Error::RustError(format!("{label} did not apply")));
+        }
+    }
+    Ok(())
 }
 
 /// Load unfinished tasks for the poller — rows not yet in a terminal status that

@@ -182,13 +182,8 @@ export function CloudflarePlatformSection() {
             />
 
             <TaskSubmitReconciliationPanel
-              runtimeReady={
-                capabilities.task_v2_schema_ready &&
-                capabilities.task_submit_reconciliation_compiled
-              }
-              mutationEnabled={
-                capabilities.task_submit_reconciliation_ready
-              }
+              runtimeReady={capabilities.task_submit_reconciliation_ready}
+              mutationEnabled={capabilities.task_submit_reconciliation_ready}
             />
 
             <WfpTenantPlanPanel
@@ -1567,6 +1562,113 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Task poll lease contract'),
+          description: t(
+            'Generation-fenced owner, expiry, and applied-generation checks are compiled for shared cron and TaskRunner polling (contract v{{version}}).',
+            { version: capabilities.task_poll_lease_contract_version }
+          ),
+          ready:
+            capabilities.task_poll_lease_contract_version > 0 &&
+            capabilities.task_poll_lease_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Task poll lease schema'),
+          description: t(
+            'The object-level D1 probe validates task and Midjourney lease columns, indexes, control state, and enforcement triggers.'
+          ),
+          ready: capabilities.task_poll_lease_schema_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Not ready'),
+          missingVariant: capabilities.task_poll_lease_compiled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Task poll Worker gate'),
+          description: t(
+            'TASK_POLL_LEASE_ENABLED authorizes this Worker version to claim shared poll leases.'
+          ),
+          ready: capabilities.task_poll_lease_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Disabled'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('Task poll D1 authority'),
+          description: t(
+            'The D1 control row grants lease-claim authority independently from the Worker environment gate.'
+          ),
+          ready: capabilities.task_poll_lease_authority_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Disabled'),
+          missingVariant: capabilities.task_poll_lease_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Task poll D1 enforcement'),
+          description: t(
+            'D1 lifecycle guards reject legacy unfenced task and Midjourney polling writes after cutover.'
+          ),
+          ready: capabilities.task_poll_lease_enforcement_enabled,
+          readyLabel: t('Enforced'),
+          missingLabel: t('Compatibility mode'),
+          missingVariant: capabilities.task_poll_lease_authority_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Task poll lease runtime'),
+          description: t(
+            'Requires the compiled contract, validated D1 objects, Worker gate, and D1 authority before provider polling can claim leases.'
+          ),
+          ready: capabilities.task_poll_lease_runtime_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Blocked'),
+          missingVariant:
+            capabilities.task_poll_lease_enabled ||
+            capabilities.task_poll_lease_authority_enabled
+              ? 'warning'
+              : 'neutral',
+        },
+        {
+          label: t('Task poll lease staging proof'),
+          description: t(
+            'Requires archived cron/TaskRunner races, expiry takeover, stale-result rejection, and rollback evidence.'
+          ),
+          ready: capabilities.task_poll_lease_staging_verified,
+          readyLabel: t('Verified'),
+          missingLabel: t('Required'),
+          missingVariant: capabilities.task_poll_lease_runtime_ready
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Task poll lease cutover'),
+          description: t(
+            'Requires runtime authority, D1 legacy-writer enforcement, and staging proof before shared polling is cutover-ready.'
+          ),
+          ready: capabilities.task_poll_lease_cutover_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Blocked'),
+          missingVariant: capabilities.task_poll_lease_runtime_ready
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Task poll lease window'),
+          description: t(
+            'TASK_POLL_LEASE_SECONDS bounds ownership and stale-result acceptance for each provider poll.'
+          ),
+          ready: capabilities.task_poller_poll_lease_seconds > 0,
+          readyLabel: t('{{seconds}} seconds', {
+            seconds: capabilities.task_poller_poll_lease_seconds,
+          }),
+          missingLabel: t('Invalid'),
+        },
+        {
           label: t('TaskRunner Durable Object'),
           description: t(
             'Binds one optional alarm-capable Durable Object per task for the future sub-minute fast path.'
@@ -1628,7 +1730,7 @@ function buildCapabilityGroups(
         {
           label: t('TaskRunner poll path'),
           description: t(
-            'Alarm firing can reuse the shared provider poll and CAS settlement path, while cron remains the fallback authority.'
+            'Alarm firing and cron reuse the shared provider poll path; the generation-fenced lease selects one current writer.'
           ),
           ready: capabilities.task_runner_poll_path_compiled,
           readyLabel: t('Compiled'),
@@ -1701,7 +1803,7 @@ function buildCapabilityGroups(
         {
           label: t('TaskRunner cutover readiness'),
           description: t(
-            'Requires the Durable Object binding and gate, compiled submit, poll, storage-error retry and status paths, plus verified staging replay.'
+            'Requires the Durable Object binding and gate, generation-fenced poll lease cutover, compiled submit, poll, storage-error retry and status paths, plus verified staging replay.'
           ),
           ready: capabilities.task_runner_cutover_ready,
           readyLabel: t('Ready'),
@@ -2390,6 +2492,22 @@ function TaskRunnerStatusProbePanel(props: {
             <ProbeField
               label={t('Stored task')}
               value={durable.task_id ?? t('No record')}
+            />
+            <ProbeField
+              label={t('Schedule generation')}
+              value={
+                durable.schedule_generation === null
+                  ? t('No record')
+                  : String(durable.schedule_generation)
+              }
+            />
+            <ProbeField
+              label={t('Poll generation')}
+              value={
+                durable.poll_generation === null
+                  ? t('Not claimed')
+                  : String(durable.poll_generation)
+              }
             />
             <ProbeField
               label={t('Alarm delay')}

@@ -9,13 +9,13 @@
 #![allow(dead_code)]
 
 use crate::task_repository::{
-    apply_poll_result, apply_task_timeout, attach_task_billing_intent,
-    find_timed_out_unfinished_tasks, find_unfinished_tasks, generate_task_id,
-    mark_task_billing_intent_submit_unknown,
+    apply_poll_result, apply_task_timeout, attach_task_billing_intent, claim_task_poll_lease,
+    find_timed_out_unfinished_tasks, find_unfinished_suno_tasks, find_unfinished_tasks,
+    generate_task_id, generate_task_poll_owner, mark_task_billing_intent_submit_unknown,
     mark_task_billing_intent_submit_unknown_with_provider_task_id,
     mark_task_billing_intent_submitting, reject_and_refund_task_billing_intent,
-    reserve_task_billing_intent, NewTask, TaskBillingIntentAttachOutcome, TaskBillingIntentRecord,
-    TaskRow, TASK_BILLING_INTENT_LEASE_SECONDS,
+    release_task_poll_lease, reserve_task_billing_intent, NewTask, TaskBillingIntentAttachOutcome,
+    TaskBillingIntentRecord, TaskPollLease, TaskRow, TASK_BILLING_INTENT_LEASE_SECONDS,
 };
 use base64::{
     engine::general_purpose::{
@@ -38,10 +38,13 @@ use cinatoken_tasks::taskcommon::decode_local_task_id;
 use cinatoken_tasks::{
     apply_other_ratios, cover_task_action_to_model_name, TaskInfo, TaskStatus, TaskSubmitReq,
 };
+use futures_util::future::{select, Either};
 use std::collections::HashMap;
+use std::time::Duration;
 use wasm_bindgen::JsValue;
 use worker::{
-    D1Database, Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect, Response,
+    AbortController, D1Database, Delay, Env, Fetch, Headers, Method, Request, RequestInit,
+    RequestRedirect, Response,
 };
 
 const VIDEO_CONTENT_DATA_URL_MAX_BYTES: usize = 25 * 1024 * 1024;
@@ -51,17 +54,25 @@ const TASK_ACTION_TEXT_GENERATE: &str = "textGenerate";
 const TASK_ACTION_REMIX: &str = "remixGenerate";
 pub(crate) const TASK_QUERY_LIMIT_ENV: &str = "TASK_QUERY_LIMIT";
 pub(crate) const TASK_TIMEOUT_MINUTES_ENV: &str = "TASK_TIMEOUT_MINUTES";
+pub(crate) const TASK_POLL_LEASE_SECONDS_ENV: &str = "TASK_POLL_LEASE_SECONDS";
+pub(crate) const TASK_POLL_LEASE_ENABLED_ENV: &str = "TASK_POLL_LEASE_ENABLED";
 pub(crate) const DEFAULT_TASK_QUERY_LIMIT: i64 = 100;
 pub(crate) const DEFAULT_TASK_TIMEOUT_MINUTES: i64 = 1_440;
+pub(crate) const DEFAULT_TASK_POLL_LEASE_SECONDS: i64 = 120;
 pub(crate) const TASK_TIMEOUT_SWEEP_LIMIT: i64 = 100;
 const MAX_TASK_QUERY_LIMIT: i64 = 1_000;
 const MAX_TASK_TIMEOUT_MINUTES: i64 = 30 * 24 * 60;
+const MIN_TASK_POLL_LEASE_SECONDS: i64 = 30;
+const MAX_TASK_POLL_LEASE_SECONDS: i64 = 900;
+const TASK_PROVIDER_POLL_MAX_TIMEOUT_SECONDS: i64 = 90;
+const TASK_PROVIDER_POLL_LEASE_SAFETY_SECONDS: i64 = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaskPollerConfig {
     pub query_limit: i64,
     pub timeout_minutes: i64,
     pub timeout_sweep_limit: i64,
+    pub poll_lease_seconds: i64,
 }
 
 pub(crate) fn task_poller_config_from_env(env: &Env) -> TaskPollerConfig {
@@ -83,7 +94,49 @@ pub(crate) fn task_poller_config_from_env(env: &Env) -> TaskPollerConfig {
             MAX_TASK_TIMEOUT_MINUTES,
         ),
         timeout_sweep_limit: TASK_TIMEOUT_SWEEP_LIMIT,
+        poll_lease_seconds: task_poll_lease_seconds_from_env(env),
     }
+}
+
+pub(crate) fn task_poll_lease_seconds_from_env(env: &Env) -> i64 {
+    parse_task_i64_env(
+        env.var(TASK_POLL_LEASE_SECONDS_ENV)
+            .ok()
+            .map(|value| value.to_string()),
+        DEFAULT_TASK_POLL_LEASE_SECONDS,
+        MIN_TASK_POLL_LEASE_SECONDS,
+        MAX_TASK_POLL_LEASE_SECONDS,
+    )
+}
+
+pub(crate) fn task_poll_lease_enabled(env: &Env) -> bool {
+    env.var(TASK_POLL_LEASE_ENABLED_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.to_string().trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+pub(crate) fn task_poll_provider_timeout_seconds(lease_seconds: i64) -> u64 {
+    lease_seconds
+        .saturating_sub(TASK_PROVIDER_POLL_LEASE_SAFETY_SECONDS)
+        .clamp(1, TASK_PROVIDER_POLL_MAX_TIMEOUT_SECONDS) as u64
+}
+
+fn task_poll_provider_timeout_until(expires_at: i64, now: i64) -> Option<u64> {
+    let remaining_seconds = expires_at.saturating_sub(now);
+    if remaining_seconds <= TASK_PROVIDER_POLL_LEASE_SAFETY_SECONDS {
+        return None;
+    }
+    Some(task_poll_provider_timeout_seconds(remaining_seconds))
+}
+
+fn task_poll_now_unix_seconds() -> i64 {
+    (js_sys::Date::now() / 1_000.0).floor() as i64
 }
 
 pub(crate) fn task_timeout_sweep_compiled() -> bool {
@@ -311,6 +364,7 @@ pub fn build_submit_http_request(
 async fn acquire_vertex_token(
     service_account_json: &str,
     now: i64,
+    timeout_seconds: Option<u64>,
 ) -> worker::Result<(String, String)> {
     let sa: vertex::ServiceAccount = serde_json::from_str(service_account_json)
         .map_err(|err| worker::Error::RustError(format!("parse service account: {err}")))?;
@@ -325,7 +379,12 @@ async fn acquire_vertex_token(
         )],
         body: Some(vertex::token_exchange_body(&jwt)),
     };
-    let response = execute_poll_request(&request).await?;
+    let response = match timeout_seconds {
+        Some(timeout_seconds) => {
+            execute_poll_request_with_timeout(&request, timeout_seconds).await?
+        }
+        None => execute_poll_request(&request).await?,
+    };
     let token = vertex::parse_token_response(&response).map_err(worker::Error::RustError)?;
     Ok((token, sa.project_id))
 }
@@ -340,7 +399,7 @@ async fn submit_vertex_task(
     model: &str,
     now: i64,
 ) -> worker::Result<String> {
-    let (token, project_id) = acquire_vertex_token(service_account_json, now).await?;
+    let (token, project_id) = acquire_vertex_token(service_account_json, now, None).await?;
     let url = vertex::build_predict_url(base_url, "v1", &project_id, region, model);
     let payload = gemini::convert_to_request_payload(req).map_err(worker::Error::RustError)?;
     let body = serde_json::to_string(&payload)?;
@@ -363,15 +422,26 @@ async fn submit_vertex_task(
 async fn poll_vertex_task(
     db: &D1Database,
     task: &TaskRow,
+    lease: &TaskPollLease,
     base_url: &str,
     service_account_json: &str,
+    timeout_seconds: u64,
     now: i64,
 ) -> worker::Result<TaskPollApplyOutcome> {
+    let deadline_ms = js_sys::Date::now() + timeout_seconds.max(1) as f64 * 1_000.0;
     let operation_name =
         decode_local_task_id(&task.upstream_task_id).map_err(worker::Error::RustError)?;
     let url =
         vertex::build_fetch_url(base_url, &operation_name).map_err(worker::Error::RustError)?;
-    let (token, _project_id) = acquire_vertex_token(service_account_json, now).await?;
+    let (token, _project_id) =
+        acquire_vertex_token(service_account_json, now, Some(timeout_seconds)).await?;
+    let remaining_ms = deadline_ms - js_sys::Date::now();
+    if remaining_ms <= 0.0 {
+        return Err(worker::Error::RustError(
+            "task provider poll timed out".to_string(),
+        ));
+    }
+    let remaining_seconds = ((remaining_ms / 1_000.0).floor() as u64).max(1);
     let request = PollRequest {
         method: HttpMethod::Post,
         url,
@@ -381,21 +451,32 @@ async fn poll_vertex_task(
         ],
         body: Some(serde_json::json!({ "operationName": operation_name }).to_string()),
     };
-    let response = execute_poll_request(&request).await?;
+    let response = execute_poll_request_with_timeout(&request, remaining_seconds).await?;
     let info = vertex::parse_task_result(&response).map_err(worker::Error::RustError)?;
-    let finish_time = if info.status.is_terminal() { now } else { 0 };
+    let applied_at = task_poll_now_unix_seconds().max(now);
+    let finish_time = if info.status.is_terminal() {
+        applied_at
+    } else {
+        0
+    };
     let result_data = String::from_utf8_lossy(&response);
     let terminal = info.status.is_terminal();
     let cas_won = apply_poll_result(
         db,
         task,
+        lease,
         &info,
         Some(result_data.as_ref()),
         finish_time,
-        now,
+        applied_at,
     )
     .await?;
-    Ok(TaskPollApplyOutcome { cas_won, terminal })
+    Ok(TaskPollApplyOutcome {
+        lease_claimed: true,
+        poll_generation: Some(lease.generation),
+        cas_won,
+        terminal,
+    })
 }
 
 pub struct SubmitTaskOutcome {
@@ -1583,8 +1664,6 @@ pub async fn handle_suno_submit(
             return Err(insert_err);
         }
     }
-    crate::task_runner::arm_task_runner_after_submit(&env, &public_task_id).await;
-
     crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
 }
 
@@ -1883,6 +1962,45 @@ pub async fn execute_poll_request(request: &PollRequest) -> worker::Result<Vec<u
     Ok(execute_provider_request(request).await?.body)
 }
 
+async fn execute_poll_request_with_timeout(
+    request: &PollRequest,
+    timeout_seconds: u64,
+) -> worker::Result<Vec<u8>> {
+    let mut headers = Headers::new();
+    for (name, value) in &request.headers {
+        headers.set(name, value)?;
+    }
+    let mut init = RequestInit::new();
+    init.with_method(match request.method {
+        HttpMethod::Get => Method::Get,
+        HttpMethod::Post => Method::Post,
+    })
+    .with_headers(headers)
+    .with_redirect(RequestRedirect::Error);
+    if let Some(body) = request.body.as_ref() {
+        init.with_body(Some(JsValue::from_str(body)));
+    }
+    let outbound = Request::new_with_init(&request.url, &init)?;
+    let controller = AbortController::default();
+    let signal = controller.signal();
+    let fetch = async move {
+        let mut response = Fetch::Request(outbound).send_with_signal(&signal).await?;
+        response.text().await.map(|body| body.into_bytes())
+    };
+    let delay = Delay::from(Duration::from_secs(timeout_seconds.max(1)));
+    futures_util::pin_mut!(fetch);
+    futures_util::pin_mut!(delay);
+    match select(fetch, delay).await {
+        Either::Left((result, _)) => result,
+        Either::Right(((), _)) => {
+            controller.abort();
+            Err(worker::Error::RustError(
+                "task provider poll timed out".to_string(),
+            ))
+        }
+    }
+}
+
 /// Execute a poll request and parse it with the given provider's parser — the
 /// fetch-then-parse half of one poll cycle. The settle-apply half is
 /// [`crate::task_repository::apply_poll_result`], which the caller invokes with
@@ -1890,8 +2008,9 @@ pub async fn execute_poll_request(request: &PollRequest) -> worker::Result<Vec<u
 pub async fn poll_task(
     provider: VideoProvider,
     request: &PollRequest,
+    timeout_seconds: u64,
 ) -> worker::Result<(TaskInfo, Vec<u8>)> {
-    let body = execute_poll_request(request).await?;
+    let body = execute_poll_request_with_timeout(request, timeout_seconds).await?;
     let info = provider
         .parse_task_result(&body)
         .map_err(|message| worker::Error::RustError(format!("parse task result: {message}")))?;
@@ -1912,6 +2031,8 @@ pub async fn poll_task(
 /// field per provider is confirmed by a staging poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskPollApplyOutcome {
+    pub lease_claimed: bool,
+    pub poll_generation: Option<i64>,
     pub cas_won: bool,
     pub terminal: bool,
 }
@@ -1923,69 +2044,130 @@ pub async fn poll_one_task(
     channel_key: &str,
     channel_base_url: &str,
     gemini_version: &str,
+    poll_owner: &str,
+    poll_lease_seconds: i64,
     now: i64,
 ) -> worker::Result<Option<TaskPollApplyOutcome>> {
     let Some(provider) = VideoProvider::from_channel_type(channel_type as i64) else {
         return Ok(None);
     };
+    let claim_now = task_poll_now_unix_seconds().max(now);
+    let Some(lease) =
+        claim_task_poll_lease(db, task, poll_owner, claim_now, poll_lease_seconds).await?
+    else {
+        return Ok(Some(TaskPollApplyOutcome {
+            lease_claimed: false,
+            poll_generation: None,
+            cas_won: false,
+            terminal: false,
+        }));
+    };
+    let Some(provider_timeout_seconds) = task_poll_provider_timeout_until(
+        lease.expires_at,
+        task_poll_now_unix_seconds().max(claim_now),
+    ) else {
+        let _ = release_task_poll_lease(db, task.id, &lease).await;
+        return Err(worker::Error::RustError(
+            "task poll lease has no provider budget".to_string(),
+        ));
+    };
     let id = task.upstream_task_id.as_str();
 
-    let request = match provider {
-        VideoProvider::Sora => poll_request::sora(channel_base_url, channel_key, id),
-        VideoProvider::Vidu => poll_request::vidu(channel_base_url, channel_key, id),
-        VideoProvider::Ali => poll_request::ali(channel_base_url, channel_key, id),
-        VideoProvider::Doubao => poll_request::doubao(channel_base_url, channel_key, id),
-        VideoProvider::Hailuo => poll_request::hailuo(channel_base_url, channel_key, id),
-        VideoProvider::Gemini => {
-            poll_request::gemini(channel_base_url, channel_key, id, gemini_version)
+    let poll_result = async {
+        let request = match provider {
+            VideoProvider::Sora => poll_request::sora(channel_base_url, channel_key, id),
+            VideoProvider::Vidu => poll_request::vidu(channel_base_url, channel_key, id),
+            VideoProvider::Ali => poll_request::ali(channel_base_url, channel_key, id),
+            VideoProvider::Doubao => poll_request::doubao(channel_base_url, channel_key, id),
+            VideoProvider::Hailuo => poll_request::hailuo(channel_base_url, channel_key, id),
+            VideoProvider::Gemini => {
+                poll_request::gemini(channel_base_url, channel_key, id, gemini_version)
+                    .map_err(worker::Error::RustError)?
+            }
+            VideoProvider::Kling => {
+                let is_new_api_relay = channel_key.starts_with("sk-");
+                let token = kling::create_jwt_token(channel_key, claim_now)
+                    .map_err(worker::Error::RustError)?;
+                poll_request::kling(channel_base_url, &token, &task.action, id, is_new_api_relay)
+            }
+            VideoProvider::Jimeng => {
+                // Jimeng polls with a POST carrying a fixed req_key + the task id,
+                // SigV4-signed (or Bearer for a relay key).
+                let body = serde_json::to_vec(&serde_json::json!({
+                    "req_key": "jimeng_vgfm_t2v_l20",
+                    "task_id": id,
+                }))
+                .map_err(|err| worker::Error::RustError(err.to_string()))?;
+                build_jimeng_request(
+                    channel_base_url,
+                    channel_key,
+                    "CVSync2AsyncGetResult",
+                    body,
+                    claim_now,
+                )
                 .map_err(worker::Error::RustError)?
-        }
-        VideoProvider::Kling => {
-            let is_new_api_relay = channel_key.starts_with("sk-");
-            let token =
-                kling::create_jwt_token(channel_key, now).map_err(worker::Error::RustError)?;
-            poll_request::kling(channel_base_url, &token, &task.action, id, is_new_api_relay)
-        }
-        VideoProvider::Jimeng => {
-            // Jimeng polls with a POST carrying a fixed req_key + the task id,
-            // SigV4-signed (or Bearer for a relay key).
-            let body = serde_json::to_vec(&serde_json::json!({
-                "req_key": "jimeng_vgfm_t2v_l20",
-                "task_id": id,
-            }))
-            .map_err(|err| worker::Error::RustError(err.to_string()))?;
-            build_jimeng_request(
-                channel_base_url,
-                channel_key,
-                "CVSync2AsyncGetResult",
-                body,
-                now,
-            )
-            .map_err(worker::Error::RustError)?
-        }
-        VideoProvider::Vertex => {
-            // Vertex needs an async GCP token exchange + the operation-name-based
-            // fetch URL, so it runs its own poll cycle.
-            return poll_vertex_task(db, task, channel_base_url, channel_key, now)
+            }
+            VideoProvider::Vertex => {
+                // Vertex needs an async GCP token exchange + the operation-name-based
+                // fetch URL, so it runs its own poll cycle.
+                return poll_vertex_task(
+                    db,
+                    task,
+                    &lease,
+                    channel_base_url,
+                    channel_key,
+                    provider_timeout_seconds,
+                    claim_now,
+                )
                 .await
                 .map(Some);
-        }
-    };
+            }
+        };
 
-    let (info, body) = poll_task(provider, &request).await?;
-    let finish_time = if info.status.is_terminal() { now } else { 0 };
-    let result_data = String::from_utf8_lossy(&body);
-    let terminal = info.status.is_terminal();
-    let cas_won = apply_poll_result(
-        db,
-        task,
-        &info,
-        Some(result_data.as_ref()),
-        finish_time,
-        now,
-    )
-    .await?;
-    Ok(Some(TaskPollApplyOutcome { cas_won, terminal }))
+        let (info, body) = poll_task(provider, &request, provider_timeout_seconds).await?;
+        let applied_at = task_poll_now_unix_seconds().max(claim_now);
+        let finish_time = if info.status.is_terminal() {
+            applied_at
+        } else {
+            0
+        };
+        let result_data = String::from_utf8_lossy(&body);
+        let terminal = info.status.is_terminal();
+        let cas_won = apply_poll_result(
+            db,
+            task,
+            &lease,
+            &info,
+            Some(result_data.as_ref()),
+            finish_time,
+            applied_at,
+        )
+        .await?;
+        Ok(Some(TaskPollApplyOutcome {
+            lease_claimed: true,
+            poll_generation: Some(lease.generation),
+            cas_won,
+            terminal,
+        }))
+    }
+    .await;
+
+    match poll_result {
+        Ok(Some(outcome)) => {
+            if !outcome.cas_won {
+                let _ = release_task_poll_lease(db, task.id, &lease).await;
+            }
+            Ok(Some(outcome))
+        }
+        Ok(None) => {
+            let _ = release_task_poll_lease(db, task.id, &lease).await;
+            Ok(None)
+        }
+        Err(err) => {
+            let _ = release_task_poll_lease(db, task.id, &lease).await;
+            Err(err)
+        }
+    }
 }
 
 /// Drive one batch of the poller: load up to `limit` unfinished tasks, look up
@@ -1997,17 +2179,29 @@ pub async fn sweep_timed_out_tasks(
     db: &D1Database,
     now: i64,
     timeout_minutes: i64,
+    poll_lease_seconds: i64,
     limit: i64,
 ) -> worker::Result<u32> {
     if timeout_minutes <= 0 {
         return Ok(0);
     }
     let cutoff = now.saturating_sub(timeout_minutes.saturating_mul(60));
-    let tasks = find_timed_out_unfinished_tasks(db, cutoff, limit).await?;
+    let tasks = find_timed_out_unfinished_tasks(db, cutoff, now, limit).await?;
+    let owner = generate_task_poll_owner("cron-task-timeout")?;
     let mut settled = 0u32;
     for task in &tasks {
-        if let Ok(true) = apply_task_timeout(db, task, timeout_minutes, now).await {
-            settled += 1;
+        let claim_now = task_poll_now_unix_seconds().max(now);
+        let Some(lease) =
+            claim_task_poll_lease(db, task, &owner, claim_now, poll_lease_seconds).await?
+        else {
+            continue;
+        };
+        let applied_at = task_poll_now_unix_seconds().max(claim_now);
+        match apply_task_timeout(db, task, &lease, timeout_minutes, applied_at).await {
+            Ok(true) => settled += 1,
+            Ok(false) | Err(_) => {
+                let _ = release_task_poll_lease(db, task.id, &lease).await;
+            }
         }
     }
     Ok(settled)
@@ -2017,9 +2211,11 @@ pub async fn poll_unfinished_tasks(
     db: &D1Database,
     gemini_version: &str,
     now: i64,
+    poll_lease_seconds: i64,
     limit: i64,
 ) -> worker::Result<u32> {
-    let tasks = find_unfinished_tasks(db, limit).await?;
+    let tasks = find_unfinished_tasks(db, now, limit).await?;
+    let owner = generate_task_poll_owner("cron-video")?;
     let mut settled = 0u32;
     for task in &tasks {
         let channel = match crate::d1_repositories::find_channel_by_id(db, task.channel_id).await {
@@ -2033,12 +2229,15 @@ pub async fn poll_unfinished_tasks(
             &channel.key,
             &channel.base_url,
             gemini_version,
-            now,
+            &owner,
+            poll_lease_seconds,
+            task_poll_now_unix_seconds().max(now),
         )
         .await;
         if let Ok(Some(TaskPollApplyOutcome {
             cas_won: true,
             terminal: true,
+            ..
         })) = outcome
         {
             settled += 1;
@@ -2056,9 +2255,11 @@ pub async fn poll_unfinished_tasks(
 pub async fn poll_unfinished_suno_tasks(
     db: &D1Database,
     now: i64,
+    poll_lease_seconds: i64,
     limit: i64,
 ) -> worker::Result<u32> {
-    let tasks = find_unfinished_tasks(db, limit).await?;
+    let tasks = find_unfinished_suno_tasks(db, now, limit).await?;
+    let owner = generate_task_poll_owner("cron-suno")?;
     let mut by_channel: HashMap<i64, Vec<&TaskRow>> = HashMap::new();
     for task in &tasks {
         if task.platform == "suno" && !task.upstream_task_id.is_empty() {
@@ -2072,9 +2273,21 @@ pub async fn poll_unfinished_suno_tasks(
             Ok(Some(channel)) => channel,
             _ => continue,
         };
-        let ids: Vec<&str> = channel_tasks
+        let mut claimed = Vec::with_capacity(channel_tasks.len());
+        let claim_now = task_poll_now_unix_seconds().max(now);
+        for task in channel_tasks {
+            if let Some(lease) =
+                claim_task_poll_lease(db, task, &owner, claim_now, poll_lease_seconds).await?
+            {
+                claimed.push((task, lease));
+            }
+        }
+        if claimed.is_empty() {
+            continue;
+        }
+        let ids: Vec<&str> = claimed
             .iter()
-            .map(|task| task.upstream_task_id.as_str())
+            .map(|(task, _)| task.upstream_task_id.as_str())
             .collect();
         let request = PollRequest {
             method: HttpMethod::Post,
@@ -2089,36 +2302,68 @@ pub async fn poll_unfinished_suno_tasks(
             body: Some(serde_json::json!({ "ids": ids }).to_string()),
         };
 
-        let Ok(response) = execute_poll_request(&request).await else {
+        let earliest_expiry = claimed
+            .iter()
+            .map(|(_, lease)| lease.expires_at)
+            .min()
+            .unwrap_or(claim_now);
+        let Some(provider_timeout_seconds) = task_poll_provider_timeout_until(
+            earliest_expiry,
+            task_poll_now_unix_seconds().max(claim_now),
+        ) else {
+            for (task, lease) in &claimed {
+                let _ = release_task_poll_lease(db, task.id, lease).await;
+            }
+            continue;
+        };
+        let Ok(response) =
+            execute_poll_request_with_timeout(&request, provider_timeout_seconds).await
+        else {
+            for (task, lease) in &claimed {
+                let _ = release_task_poll_lease(db, task.id, lease).await;
+            }
             continue;
         };
         let parsed: suno::TaskResponse<Vec<suno::SunoDataResponse>> =
             match serde_json::from_slice(&response) {
                 Ok(parsed) => parsed,
-                Err(_) => continue,
+                Err(_) => {
+                    for (task, lease) in &claimed {
+                        let _ = release_task_poll_lease(db, task.id, lease).await;
+                    }
+                    continue;
+                }
             };
         if !parsed.is_success() {
+            for (task, lease) in &claimed {
+                let _ = release_task_poll_lease(db, task.id, lease).await;
+            }
             continue;
         }
 
         for item in &parsed.data {
-            let Some(task) = channel_tasks
+            let Some((task, lease)) = claimed
                 .iter()
-                .find(|task| task.upstream_task_id == item.task_id)
+                .find(|(task, _)| task.upstream_task_id == item.task_id)
             else {
                 continue;
             };
+            let applied_at = task_poll_now_unix_seconds().max(claim_now);
             if let Ok(true) = crate::task_repository::apply_suno_poll_result(
                 db,
                 task,
+                lease,
                 &item.status,
                 &item.fail_reason,
-                now,
+                applied_at,
             )
             .await
             {
                 settled += 1;
             }
+        }
+        for (task, lease) in &claimed {
+            let _ = release_task_poll_lease(db, task.id, lease).await;
         }
     }
     Ok(settled)
@@ -2134,11 +2379,16 @@ pub async fn poll_unfinished_suno_tasks(
 pub async fn poll_unfinished_midjourney_tasks(
     db: &D1Database,
     now: i64,
+    poll_lease_seconds: i64,
     limit: i64,
 ) -> worker::Result<u32> {
-    use crate::mj_repository::{apply_midjourney_poll_result, MjPollResult, MjRow};
+    use crate::mj_repository::{
+        apply_midjourney_poll_result, claim_midjourney_poll_lease, release_midjourney_poll_lease,
+        MjPollResult, MjRow,
+    };
 
-    let rows = crate::mj_repository::find_unfinished_midjourneys(db, limit).await?;
+    let rows = crate::mj_repository::find_unfinished_midjourneys(db, now, limit).await?;
+    let owner = generate_task_poll_owner("cron-midjourney")?;
     let mut by_channel: HashMap<i64, Vec<&MjRow>> = HashMap::new();
     for row in &rows {
         by_channel.entry(row.channel_id).or_default().push(row);
@@ -2150,7 +2400,19 @@ pub async fn poll_unfinished_midjourney_tasks(
             Ok(Some(channel)) => channel,
             _ => continue,
         };
-        let ids: Vec<&str> = channel_rows.iter().map(|row| row.mj_id.as_str()).collect();
+        let mut claimed = Vec::with_capacity(channel_rows.len());
+        let claim_now = task_poll_now_unix_seconds().max(now);
+        for row in channel_rows {
+            if let Some(lease) =
+                claim_midjourney_poll_lease(db, row, &owner, claim_now, poll_lease_seconds).await?
+            {
+                claimed.push((row, lease));
+            }
+        }
+        if claimed.is_empty() {
+            continue;
+        }
+        let ids: Vec<&str> = claimed.iter().map(|(row, _)| row.mj_id.as_str()).collect();
         let request = PollRequest {
             method: HttpMethod::Post,
             url: format!("{}/mj/task/list-by-condition", channel.base_url),
@@ -2161,21 +2423,49 @@ pub async fn poll_unfinished_midjourney_tasks(
             body: Some(serde_json::json!({ "ids": ids }).to_string()),
         };
 
-        let Ok(response) = execute_poll_request(&request).await else {
+        let earliest_expiry = claimed
+            .iter()
+            .map(|(_, lease)| lease.expires_at)
+            .min()
+            .unwrap_or(claim_now);
+        let Some(provider_timeout_seconds) = task_poll_provider_timeout_until(
+            earliest_expiry,
+            task_poll_now_unix_seconds().max(claim_now),
+        ) else {
+            for (row, lease) in &claimed {
+                let _ = release_midjourney_poll_lease(db, row.id, lease).await;
+            }
+            continue;
+        };
+        let Ok(response) =
+            execute_poll_request_with_timeout(&request, provider_timeout_seconds).await
+        else {
+            for (row, lease) in &claimed {
+                let _ = release_midjourney_poll_lease(db, row.id, lease).await;
+            }
             continue;
         };
         let items: Vec<midjourney::MidjourneyDto> = match serde_json::from_slice(&response) {
             Ok(items) => items,
-            Err(_) => continue,
+            Err(_) => {
+                for (row, lease) in &claimed {
+                    let _ = release_midjourney_poll_lease(db, row.id, lease).await;
+                }
+                continue;
+            }
         };
 
         for item in &items {
-            let Some(row) = channel_rows.iter().find(|row| row.mj_id == item.mj_id) else {
+            let Some((row, lease)) = claimed.iter().find(|(row, _)| row.mj_id == item.mj_id) else {
                 continue;
             };
+            let applied_at = task_poll_now_unix_seconds().max(claim_now);
             // Over an hour unfinished and not at 100% -> force failure (Go guard).
-            let timed_out =
-                crate::mj_repository::midjourney_is_timed_out(row.submit_time, &row.progress, now);
+            let timed_out = crate::mj_repository::midjourney_is_timed_out(
+                row.submit_time,
+                &row.progress,
+                applied_at,
+            );
             let status = if timed_out {
                 "FAILURE"
             } else {
@@ -2187,7 +2477,7 @@ pub async fn poll_unfinished_midjourney_tasks(
                 item.fail_reason.as_str()
             };
             let finish_time = if status == "SUCCESS" || status == "FAILURE" {
-                now.saturating_mul(1_000)
+                applied_at.saturating_mul(1_000)
             } else {
                 0
             };
@@ -2199,9 +2489,14 @@ pub async fn poll_unfinished_midjourney_tasks(
                 video_url: &item.video_url,
                 finish_time,
             };
-            if let Ok(true) = apply_midjourney_poll_result(db, row, &result).await {
+            if let Ok(true) =
+                apply_midjourney_poll_result(db, row, lease, &result, applied_at).await
+            {
                 settled += 1;
             }
+        }
+        for (row, lease) in &claimed {
+            let _ = release_midjourney_poll_lease(db, row.id, lease).await;
         }
     }
     Ok(settled)
@@ -3448,6 +3743,12 @@ mod tests {
             parse_task_i64_env(Some("nope".to_string()), 1_440, 0, 43_200),
             1_440
         );
+        assert_eq!(task_poll_provider_timeout_seconds(30), 15);
+        assert_eq!(task_poll_provider_timeout_seconds(120), 90);
+        assert_eq!(task_poll_provider_timeout_seconds(900), 90);
+        assert_eq!(task_poll_provider_timeout_until(130, 100), Some(15));
+        assert_eq!(task_poll_provider_timeout_until(115, 100), None);
+        assert_eq!(task_poll_provider_timeout_until(220, 100), Some(90));
     }
 
     #[test]

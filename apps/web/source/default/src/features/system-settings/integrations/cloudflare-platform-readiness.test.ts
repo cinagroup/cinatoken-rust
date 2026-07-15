@@ -174,6 +174,15 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   task_v2_staging_verified: false,
   task_v2_cutover_ready: false,
   task_v2_cutover_guards: [],
+  task_poll_lease_contract_version: 0,
+  task_poll_lease_compiled: false,
+  task_poll_lease_schema_ready: false,
+  task_poll_lease_enabled: false,
+  task_poll_lease_authority_enabled: false,
+  task_poll_lease_enforcement_enabled: false,
+  task_poll_lease_runtime_ready: false,
+  task_poll_lease_staging_verified: false,
+  task_poll_lease_cutover_ready: false,
   task_submit_reconciliation_compiled: false,
   task_submit_reconciliation_enabled: false,
   task_submit_reconciliation_ready: false,
@@ -218,8 +227,8 @@ describe('Cloudflare platform readiness headline', () => {
       'realtime-billing-reconciliation-implementation':
         'Realtime billing reconciliation',
       'task-runner-implementation': 'TaskRunner',
-      'task-submit-reconciliation-implementation':
-        'Task submit reconciliation',
+      'task-poll-lease-implementation': 'Task poll generation-fenced lease',
+      'task-submit-reconciliation-implementation': 'Task submit reconciliation',
       'ai-gateway-runtime': 'AI Gateway',
       'ai-gateway-fallback-runtime': 'AI Gateway fallback',
       'wfp-tenant-runtime': 'WFP tenant',
@@ -227,6 +236,7 @@ describe('Cloudflare platform readiness headline', () => {
       'realtime-billing-reconciliation-runtime':
         'Realtime billing reconciliation',
       'task-runner-runtime': 'TaskRunner',
+      'task-poll-lease-runtime': 'Task poll generation-fenced lease',
       'task-submit-reconciliation-runtime': 'Task submit reconciliation',
       'quota-coordinator-binding': 'QuotaCoordinator binding',
       'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
@@ -245,6 +255,7 @@ describe('Cloudflare platform readiness headline', () => {
       'realtime-billing-reconciliation-staging-proof':
         'Realtime billing reconciliation proof',
       'task-runner-replay': 'TaskRunner replay',
+      'task-poll-lease-staging-proof': 'Task poll lease race proof',
       'task-submit-reconciliation-staging-proof':
         'Task submit reconciliation proof',
       'quota-coordinator-staging-bake': 'QuotaCoordinator staging bake',
@@ -257,6 +268,7 @@ describe('Cloudflare platform readiness headline', () => {
         'Relay billing owner race proof',
       'ai-gateway-fallback-cutover': 'AI Gateway fallback',
       'task-runner-cutover': 'TaskRunner',
+      'task-poll-lease-cutover': 'Task poll generation-fenced lease',
       'task-submit-reconciliation-cutover': 'Task submit reconciliation',
       'relay-billing-recovery-cutover': 'Relay billing recovery',
       'relay-flat-billing-intent-cutover': 'Relay flat billing intent',
@@ -357,6 +369,8 @@ describe('Cloudflare platform readiness headline', () => {
         task_v2_contract_version: 1,
         task_v2_ownership_compiled: true,
         task_v2_cutover_guards: ['submit-unknown-fail-closed'],
+        task_poll_lease_contract_version: 1,
+        task_poll_lease_compiled: true,
         task_submit_reconciliation_compiled: true,
       })
     )
@@ -778,6 +792,7 @@ describe('Cloudflare platform readiness headline', () => {
         'ready-to-verify',
         'blocked',
         'ready-to-verify',
+        'blocked',
         'blocked',
         'blocked',
         'blocked',
@@ -1296,6 +1311,15 @@ describe('Cloudflare platform readiness headline', () => {
         task_v2_staging_verified: true,
         task_v2_cutover_ready: true,
         task_v2_cutover_guards: ['staging-fault-replay'],
+        task_poll_lease_contract_version: 1,
+        task_poll_lease_compiled: true,
+        task_poll_lease_schema_ready: true,
+        task_poll_lease_enabled: true,
+        task_poll_lease_authority_enabled: true,
+        task_poll_lease_enforcement_enabled: true,
+        task_poll_lease_runtime_ready: true,
+        task_poll_lease_staging_verified: true,
+        task_poll_lease_cutover_ready: true,
         task_submit_reconciliation_compiled: true,
         task_submit_reconciliation_enabled: true,
         task_submit_reconciliation_ready: true,
@@ -1330,7 +1354,97 @@ describe('Cloudflare platform readiness headline', () => {
 
     assert.equal(getStage(blocked, 'cutover').complete, false)
     assert.equal(getStage(ready, 'cutover').complete, true)
-    assert.equal(getStage(ready, 'cutover').readyCount, 10)
+    assert.equal(getStage(ready, 'cutover').readyCount, 11)
+  })
+
+  test('keeps task poll lease split across all four production stages', () => {
+    const beforeEnforcement = buildPlatformReadinessSummary(
+      makeCapabilities({
+        task_poll_lease_contract_version: 1,
+        task_poll_lease_compiled: true,
+        task_poll_lease_schema_ready: true,
+        task_poll_lease_enabled: true,
+        task_poll_lease_authority_enabled: true,
+        task_poll_lease_runtime_ready: true,
+        task_poll_lease_staging_verified: true,
+      })
+    )
+
+    assert.equal(
+      getSignalStatus(
+        beforeEnforcement,
+        'implementation',
+        'task-poll-lease-implementation'
+      ),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(
+        beforeEnforcement,
+        'configuration',
+        'task-poll-lease-runtime'
+      ),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(
+        beforeEnforcement,
+        'smoke',
+        'task-poll-lease-staging-proof'
+      ),
+      'verified'
+    )
+    assert.equal(
+      getSignalStatus(beforeEnforcement, 'cutover', 'task-poll-lease-cutover'),
+      'blocked'
+    )
+
+    const enforced = buildPlatformReadinessSummary(
+      makeCapabilities({
+        task_poll_lease_contract_version: 1,
+        task_poll_lease_compiled: true,
+        task_poll_lease_schema_ready: true,
+        task_poll_lease_enabled: true,
+        task_poll_lease_authority_enabled: true,
+        task_poll_lease_enforcement_enabled: true,
+        task_poll_lease_runtime_ready: true,
+        task_poll_lease_staging_verified: true,
+        task_poll_lease_cutover_ready: true,
+      })
+    )
+    assert.equal(
+      getSignalStatus(enforced, 'cutover', 'task-poll-lease-cutover'),
+      'ready'
+    )
+  })
+
+  test('keeps task submit reconciliation independent from poll lease readiness', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        task_submit_reconciliation_compiled: true,
+        task_submit_reconciliation_enabled: true,
+        task_submit_reconciliation_ready: true,
+        task_submit_reconciliation_staging_verified: true,
+        task_submit_reconciliation_cutover_ready: true,
+      })
+    )
+
+    assert.equal(
+      getSignalStatus(
+        summary,
+        'configuration',
+        'task-submit-reconciliation-runtime'
+      ),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(summary, 'cutover', 'task-submit-reconciliation-cutover'),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(summary, 'configuration', 'task-poll-lease-runtime'),
+      'blocked'
+    )
   })
 
   test('keeps Realtime billing reconciliation split across all four production stages', () => {

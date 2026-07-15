@@ -96,10 +96,13 @@ use crate::task_billing_reconcile::{
     task_submit_reconciliation_compiled, task_submit_reconciliation_enabled,
     TASK_SUBMIT_RECONCILIATION_STAGING_VERIFIED_ENV,
 };
-use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
+use crate::task_orchestration::{
+    task_poller_config_from_env, task_timeout_sweep_compiled, TASK_POLL_LEASE_ENABLED_ENV,
+};
 use crate::task_repository::{
-    task_billing_intent_contract_compiled, task_refund_cas_batch_compiled,
-    task_refund_replay_contract_compiled,
+    task_billing_intent_contract_compiled, task_poll_lease_contract_compiled,
+    task_refund_cas_batch_compiled, task_refund_replay_contract_compiled,
+    TaskPollLeaseRuntimeStatus, TASK_POLL_LEASE_CONTRACT_VERSION,
 };
 use crate::task_runner::{
     fetch_task_runner_status, is_task_runner_cutover_ready, task_runner_alarm_contract_compiled,
@@ -161,7 +164,8 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0033_task_submit_reconciliation_enforce.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0035_task_poll_lease_enforce.sql";
+pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
     "migration_0026_applied",
     "legacy_workers_drained",
@@ -181,13 +185,14 @@ const RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS: &[&str] = &[
     "realtime_flat_billing_parity",
 ];
 const TASK_V2_CUTOVER_GUARDS: &[&str] = &[
-    "migration_0032_applied",
+    "migration_0035_applied",
     "pre_provider_reservation",
     "submit_unknown_fail_closed",
     "operator_reconciliation_evidence",
     "atomic_task_attachment",
     "atomic_terminal_financial_transition",
     "shared_poll_lease",
+    "poll_lease_old_writer_enforcement",
     "staging_fault_replay",
 ];
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
@@ -224,6 +229,8 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0031_task_billing_intents.sql",
     "0032_task_submit_reconciliation.sql",
     "0033_task_submit_reconciliation_enforce.sql",
+    "0034_task_poll_lease.sql",
+    "0035_task_poll_lease_enforce.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -513,6 +520,15 @@ struct PlatformCapabilities {
     task_v2_staging_verified: bool,
     task_v2_cutover_ready: bool,
     task_v2_cutover_guards: Vec<&'static str>,
+    task_poll_lease_contract_version: u32,
+    task_poll_lease_compiled: bool,
+    task_poll_lease_schema_ready: bool,
+    task_poll_lease_enabled: bool,
+    task_poll_lease_authority_enabled: bool,
+    task_poll_lease_enforcement_enabled: bool,
+    task_poll_lease_runtime_ready: bool,
+    task_poll_lease_staging_verified: bool,
+    task_poll_lease_cutover_ready: bool,
     task_submit_reconciliation_compiled: bool,
     task_submit_reconciliation_enabled: bool,
     task_submit_reconciliation_ready: bool,
@@ -539,6 +555,7 @@ struct PlatformCapabilities {
     task_poller_query_limit: i64,
     task_poller_timeout_minutes: i64,
     task_poller_timeout_sweep_limit: i64,
+    task_poller_poll_lease_seconds: i64,
 }
 
 const REALTIME_BILLING_RECOVERY_STATUS_LIMIT: i64 = 50;
@@ -678,15 +695,27 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
 
     let d1_migration_status = load_d1_migration_status(&env).await;
     let d1_migration_ready = d1_migration_status.ready();
-    let task_v2_object_schema_ready = if d1_migration_ready {
-        match env.d1("DB") {
-            Ok(db) => crate::task_repository::task_billing_intent_schema_ready(&db)
+    let (task_v2_object_schema_ready, task_poll_lease_status) = match env.d1("DB") {
+        Ok(db) => (
+            crate::task_repository::task_billing_intent_schema_ready(&db)
                 .await
                 .unwrap_or(false),
-            Err(_) => false,
-        }
-    } else {
-        false
+            crate::task_repository::task_poll_lease_runtime_status(&db)
+                .await
+                .unwrap_or(TaskPollLeaseRuntimeStatus {
+                    schema_ready: false,
+                    authority_enabled: false,
+                    enforcement_enabled: false,
+                }),
+        ),
+        Err(_) => (
+            false,
+            TaskPollLeaseRuntimeStatus {
+                schema_ready: false,
+                authority_enabled: false,
+                enforcement_enabled: false,
+            },
+        ),
     };
     let ai_gateway_id = runtime_value(&env, AI_GATEWAY_ID_ENV);
     let cloudflare_account_id = runtime_value(&env, CLOUDFLARE_ACCOUNT_ID_ENV);
@@ -1124,6 +1153,22 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let task_poller_timeout_sweep_compiled = task_timeout_sweep_compiled();
     let task_poller_refund_batch_compiled = task_refund_cas_batch_compiled();
     let task_poller_refund_replay_contract_compiled = task_refund_replay_contract_compiled();
+    let task_poll_lease_contract_version = TASK_POLL_LEASE_CONTRACT_VERSION;
+    let task_poll_lease_compiled = task_poll_lease_contract_compiled();
+    let task_poll_lease_schema_ready = task_poll_lease_status.schema_ready;
+    let task_poll_lease_enabled = env_flag(&env, TASK_POLL_LEASE_ENABLED_ENV);
+    let task_poll_lease_authority_enabled =
+        task_poll_lease_schema_ready && task_poll_lease_status.authority_enabled;
+    let task_poll_lease_enforcement_enabled =
+        task_poll_lease_schema_ready && task_poll_lease_status.enforcement_enabled;
+    let task_poll_lease_runtime_ready = task_poll_lease_compiled
+        && task_poll_lease_schema_ready
+        && task_poll_lease_enabled
+        && task_poll_lease_authority_enabled;
+    let task_poll_lease_staging_verified = env_flag(&env, TASK_POLL_LEASE_STAGING_VERIFIED_ENV);
+    let task_poll_lease_cutover_ready = task_poll_lease_runtime_ready
+        && task_poll_lease_enforcement_enabled
+        && task_poll_lease_staging_verified;
     let task_runner_do_available = env.durable_object(TASK_RUNNER_BINDING).is_ok();
     let task_runner_do_enabled = env_flag(&env, TASK_RUNNER_DO_ENABLED_ENV);
     let task_runner_do_foundation_compiled = task_runner_do_foundation_compiled();
@@ -1146,23 +1191,25 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_runner_submit_path_compiled,
         task_runner_poll_path_compiled,
         task_runner_status_probe_compiled,
+        task_poll_lease_cutover_ready,
         task_runner_staging_replay_verified,
     );
-    let task_v2_contract_version = 1;
-    let task_v2_ownership_compiled = task_billing_intent_contract_compiled();
-    let task_v2_schema_ready = d1_migration_ready && task_v2_object_schema_ready;
+    let task_v2_contract_version = 2;
+    let task_v2_ownership_compiled =
+        task_billing_intent_contract_compiled() && task_poll_lease_compiled;
+    let task_v2_schema_ready = task_v2_object_schema_ready && task_poll_lease_schema_ready;
     let task_v2_runtime_ready = task_v2_ownership_compiled && task_v2_schema_ready;
     let task_submit_reconciliation_compiled = task_submit_reconciliation_compiled();
     let task_submit_reconciliation_enabled = task_submit_reconciliation_enabled(&env);
     let task_submit_reconciliation_ready = task_submit_reconciliation_compiled
         && task_submit_reconciliation_enabled
-        && task_v2_schema_ready;
+        && task_v2_object_schema_ready;
     let task_submit_reconciliation_staging_verified =
         env_flag(&env, TASK_SUBMIT_RECONCILIATION_STAGING_VERIFIED_ENV);
     let task_submit_reconciliation_cutover_ready =
         task_submit_reconciliation_ready && task_submit_reconciliation_staging_verified;
-    // Fault-injection staging evidence and a shared D1 poll lease are still
-    // required before TaskRunner/cron may be treated as production ownership.
+    // Task-v2 still needs end-to-end submit/poll fault injection even after the
+    // shared poll lease itself becomes cutover-ready.
     let task_v2_staging_verified = false;
     let task_v2_cutover_ready = false;
     let subscription_funding_source_compiled = false;
@@ -1393,6 +1440,15 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_v2_staging_verified,
         task_v2_cutover_ready,
         task_v2_cutover_guards: TASK_V2_CUTOVER_GUARDS.to_vec(),
+        task_poll_lease_contract_version,
+        task_poll_lease_compiled,
+        task_poll_lease_schema_ready,
+        task_poll_lease_enabled,
+        task_poll_lease_authority_enabled,
+        task_poll_lease_enforcement_enabled,
+        task_poll_lease_runtime_ready,
+        task_poll_lease_staging_verified,
+        task_poll_lease_cutover_ready,
         task_submit_reconciliation_compiled,
         task_submit_reconciliation_enabled,
         task_submit_reconciliation_ready,
@@ -1419,6 +1475,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_poller_query_limit: task_poller_config.query_limit,
         task_poller_timeout_minutes: task_poller_config.timeout_minutes,
         task_poller_timeout_sweep_limit: task_poller_config.timeout_sweep_limit,
+        task_poller_poll_lease_seconds: task_poller_config.poll_lease_seconds,
     };
 
     envelope_ok_response(&capabilities)
@@ -3977,10 +4034,11 @@ mod tests {
         assert!(guards.contains(&"fast_path_horizon"));
         assert!(guards.contains(&"submit_path_armed"));
         assert!(guards.contains(&"cron_sweeper_fallback"));
-        assert!(guards.contains(&"no_double_poll_cas"));
+        assert!(guards.contains(&"generation_fenced_poll_lease"));
+        assert!(guards.contains(&"poll_lease_cutover"));
         assert!(guards.contains(&"status_probe"));
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, true, true, true, true, false
+            true, true, true, true, true, true, true, true, true, false, true
         ));
     }
 
@@ -4115,10 +4173,7 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(
-            EXPECTED_D1_MIGRATION,
-            "0033_task_submit_reconciliation_enforce.sql"
-        );
+        assert_eq!(EXPECTED_D1_MIGRATION, "0035_task_poll_lease_enforce.sql");
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")

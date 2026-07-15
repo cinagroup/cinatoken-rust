@@ -693,3 +693,29 @@ other production gate.
 5. If a billing expression implementation changes, first read
    `C:\cinagroup\cinatoken\pkg\billingexpr\expr.md` and add Go/Rust parity
    evidence before updating production status.
+
+## 2026-07-15 Current-Head Task Poll Ownership Matrix
+
+This matrix is a current-head overlay. It does not alter historical evidence or
+previous migration counts recorded above.
+
+| Control | Current local state | Production acceptance | Status |
+| --- | --- | --- | --- |
+| 0034 expand schema | Task/Midjourney owner, generation, expiry, applied generation, revision, due indexes, control row | Remote ledger and exact object-shape readback; both control flags zero after migration | Local only |
+| 0035 enforcement schema | Shape guards active; lifecycle old-writer guards installed and default off | Drain proof, unfenced-write rejection after enforcement, fenced-write success, compatible rollback proof | Local only |
+| Runtime authority | Worker env flag and D1 authority are both required | No provider I/O when either is false; staged activation in the documented order | Unverified remotely |
+| Stale-result fence | Owner + generation + strictly unexpired lease required at apply | Cron/DO/timeout races, expiry takeover, ambiguous D1 response, duplicate replay | Local only |
+| Provider deadline | Poll HTTP deadline is `min(90, lease - 15)` seconds | Abort/read timeout, lease-expiry rejection, Vertex whole-operation timing, batch headroom | Partial |
+| Video family | Separate bounded non-Suno Task query; cron plus video TaskRunner | Duplicate alarm, replacement schedule, eviction, replay, cron fallback | Partial |
+| Suno family | Separate bounded Task query and channel batch; cron-only | Prove submit never arms video TaskRunner; partial/missing batch release and replay | Partial |
+| Midjourney family | Separate table, batch poll, and claimed one-hour timeout | Poll/timeout race, partial response, refund/invoice reconciliation | Partial |
+| Fair scheduling | ID-ordered bounded scans only | Persisted `next_poll_at`, family-fair cursor/pagination, poison backoff | Blocked |
+| Provider operation identity | Local task and lease identity exist | Provider-native idempotency or deterministic lookup and uniqueness for every family | Blocked |
+| Fault campaign | Focused local schema/CAS tests | Remote failure injection at claim/provider/apply/refund, alerts, load, rollback | Blocked |
+
+Required activation sequence: migrate inertly, deploy env-disabled, drain all
+old cron/DO/provider work, enable D1 authority, enable D1 enforcement, enable
+Worker env authority, run cron canaries, review evidence, then canary the video
+TaskRunner. Rollback reverses env authority, D1 authority, and D1 enforcement
+before lease drain and a 0033-compatible Worker rollback. Any other sequence is
+a G4/G5/G7 abort. Production remains **NO-GO**.

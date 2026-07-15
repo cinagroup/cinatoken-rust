@@ -13,6 +13,8 @@ use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
 use serde::{Deserialize, Serialize};
 use worker::{D1Database, D1Type};
 
+use crate::task_repository::{generate_task_poll_owner, TaskPollLease};
+
 pub(crate) const MIDJOURNEY_TIMEOUT_SECONDS: i64 = 3_600;
 const MIDJOURNEY_MILLIS_THRESHOLD: i64 = 10_000_000_000;
 const MIDJOURNEY_TIMEOUT_SWEEP_MAX_LIMIT: i64 = 64;
@@ -65,6 +67,11 @@ pub struct MjRow {
     pub status: String,
     pub progress: String,
     pub submit_time: i64,
+    pub poll_owner: String,
+    pub poll_generation: i64,
+    pub poll_lease_expires_at: i64,
+    pub poll_applied_generation: i64,
+    pub poll_write_revision: i64,
 }
 
 /// The poll-result fields merged onto a Midjourney row (from the upstream
@@ -456,9 +463,11 @@ pub async fn attach_midjourney_billing_reconciliation(
 /// status that carry an upstream `mj_id`. Bounded by `limit`, ordered by id.
 pub async fn find_unfinished_midjourneys(
     db: &D1Database,
+    now: i64,
     limit: i64,
 ) -> worker::Result<Vec<MjRow>> {
-    let arg = D1Type::Integer(d1_i32(limit));
+    let now = now.to_string();
+    let args = [D1Type::Text(&now), D1Type::Integer(d1_i32(limit))];
     db.prepare(
         r#"
         SELECT id, code, user_id, mj_id, channel_id,
@@ -468,18 +477,194 @@ pub async fn find_unfinished_midjourneys(
                CASE WHEN json_valid(properties)
                     THEN COALESCE(json_extract(properties, '$.billing_reservation_key'), '')
                     ELSE '' END AS billing_reservation_key,
-               quota, status, progress, submit_time
+               quota, status, progress, submit_time, poll_owner,
+               poll_generation, poll_lease_expires_at,
+               poll_applied_generation, poll_write_revision
         FROM midjourneys
         WHERE status NOT IN ('SUCCESS', 'FAILURE')
           AND mj_id != ''
+          AND poll_lease_expires_at <= CAST(?1 AS INTEGER)
         ORDER BY id ASC
-        LIMIT ?1
+        LIMIT ?2
         "#,
     )
-    .bind_refs(&arg)?
+    .bind_refs(&args)?
     .all()
     .await?
     .results::<MjRow>()
+}
+
+pub async fn claim_midjourney_poll_lease(
+    db: &D1Database,
+    row: &MjRow,
+    owner: &str,
+    now: i64,
+    lease_seconds: i64,
+) -> worker::Result<Option<TaskPollLease>> {
+    if owner.is_empty() || owner.len() > 96 || lease_seconds <= 0 {
+        return Err(worker::Error::RustError(
+            "midjourney poll lease claim is invalid".to_string(),
+        ));
+    }
+    let generation = row.poll_generation.checked_add(1).ok_or_else(|| {
+        worker::Error::RustError("midjourney poll generation exhausted".to_string())
+    })?;
+    let expires_at = now.checked_add(lease_seconds).ok_or_else(|| {
+        worker::Error::RustError("midjourney poll lease expiry overflow".to_string())
+    })?;
+    let expires_at_text = expires_at.to_string();
+    let id = row.id.to_string();
+    let expected_generation = row.poll_generation.to_string();
+    let now_text = now.to_string();
+    let args = [
+        D1Type::Text(owner),
+        D1Type::Text(&expires_at_text),
+        D1Type::Text(&id),
+        D1Type::Text(row.status.as_str()),
+        D1Type::Text(&expected_generation),
+        D1Type::Text(&now_text),
+    ];
+    let lease = TaskPollLease {
+        owner: owner.to_string(),
+        generation,
+        expires_at,
+    };
+    let result = db
+        .prepare(
+            r#"
+            UPDATE midjourneys
+            SET poll_owner = ?1,
+                poll_generation = poll_generation + 1,
+                poll_lease_expires_at = CAST(?2 AS INTEGER)
+            WHERE id = CAST(?3 AS INTEGER)
+              AND status = ?4
+              AND poll_generation = CAST(?5 AS INTEGER)
+              AND poll_lease_expires_at <= CAST(?6 AS INTEGER)
+              AND status NOT IN ('SUCCESS', 'FAILURE')
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            if midjourney_poll_lease_claim_committed(db, row, &lease)
+                .await
+                .unwrap_or(false)
+            {
+                return Ok(Some(lease));
+            }
+            return Err(err);
+        }
+    };
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) != 1 {
+        return Ok(None);
+    }
+    Ok(Some(lease))
+}
+
+pub async fn release_midjourney_poll_lease(
+    db: &D1Database,
+    row_id: i64,
+    lease: &TaskPollLease,
+) -> worker::Result<bool> {
+    let row_id = row_id.to_string();
+    let generation = lease.generation.to_string();
+    let args = [
+        D1Type::Text(&row_id),
+        D1Type::Text(lease.owner.as_str()),
+        D1Type::Text(&generation),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE midjourneys
+            SET poll_owner = '', poll_lease_expires_at = 0
+            WHERE id = CAST(?1 AS INTEGER)
+              AND poll_owner = ?2
+              AND poll_generation = CAST(?3 AS INTEGER)
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+async fn midjourney_poll_lease_is_current(
+    db: &D1Database,
+    row: &MjRow,
+    lease: &TaskPollLease,
+    applied_at: i64,
+) -> worker::Result<bool> {
+    #[derive(Debug, Deserialize)]
+    struct CountRow {
+        count: i64,
+    }
+    let id = row.id.to_string();
+    let generation = lease.generation.to_string();
+    let applied_at_text = applied_at.to_string();
+    let args = [
+        D1Type::Text(&id),
+        D1Type::Text(lease.owner.as_str()),
+        D1Type::Text(&generation),
+        D1Type::Text(&applied_at_text),
+    ];
+    let current = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM midjourneys
+            WHERE id = CAST(?1 AS INTEGER)
+              AND status NOT IN ('SUCCESS', 'FAILURE')
+              AND poll_owner = ?2
+              AND poll_generation = CAST(?3 AS INTEGER)
+              AND poll_lease_expires_at > CAST(?4 AS INTEGER)
+              AND poll_lease_expires_at > unixepoch()
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(current.map(|row| row.count == 1).unwrap_or(false))
+}
+
+async fn midjourney_poll_lease_claim_committed(
+    db: &D1Database,
+    row: &MjRow,
+    lease: &TaskPollLease,
+) -> worker::Result<bool> {
+    #[derive(Debug, Deserialize)]
+    struct CountRow {
+        count: i64,
+    }
+    let id = row.id.to_string();
+    let generation = lease.generation.to_string();
+    let expires_at = lease.expires_at.to_string();
+    let args = [
+        D1Type::Text(&id),
+        D1Type::Text(row.status.as_str()),
+        D1Type::Text(lease.owner.as_str()),
+        D1Type::Text(&generation),
+        D1Type::Text(&expires_at),
+    ];
+    let current = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM midjourneys
+            WHERE id = CAST(?1 AS INTEGER)
+              AND status = ?2
+              AND poll_owner = ?3
+              AND poll_generation = CAST(?4 AS INTEGER)
+              AND poll_lease_expires_at = CAST(?5 AS INTEGER)
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(current.map(|row| row.count == 1).unwrap_or(false))
 }
 
 /// Recover Midjourney rows that exceeded Go's one-hour timeout without relying
@@ -488,6 +673,7 @@ pub async fn find_unfinished_midjourneys(
 pub async fn sweep_timed_out_midjourneys(
     db: &D1Database,
     now: i64,
+    lease_seconds: i64,
     limit: i64,
 ) -> worker::Result<u32> {
     let cutoff_seconds = now.saturating_sub(MIDJOURNEY_TIMEOUT_SECONDS);
@@ -495,9 +681,11 @@ pub async fn sweep_timed_out_midjourneys(
     let limit = limit.clamp(1, MIDJOURNEY_TIMEOUT_SWEEP_MAX_LIMIT);
     let cutoff_seconds = cutoff_seconds.to_string();
     let cutoff_millis = cutoff_millis.to_string();
+    let now_text = now.to_string();
     let args = [
         D1Type::Text(&cutoff_millis),
         D1Type::Text(&cutoff_seconds),
+        D1Type::Text(&now_text),
         D1Type::Integer(d1_i32(limit)),
     ];
     let rows = db
@@ -510,17 +698,20 @@ pub async fn sweep_timed_out_midjourneys(
                    CASE WHEN json_valid(properties)
                         THEN COALESCE(json_extract(properties, '$.billing_reservation_key'), '')
                         ELSE '' END AS billing_reservation_key,
-                   quota, status, progress, submit_time
+                   quota, status, progress, submit_time, poll_owner,
+                   poll_generation, poll_lease_expires_at,
+                   poll_applied_generation, poll_write_revision
             FROM midjourneys
             WHERE status NOT IN ('SUCCESS', 'FAILURE')
               AND mj_id != ''
               AND progress != '100%'
+              AND poll_lease_expires_at <= CAST(?3 AS INTEGER)
               AND (
                 (submit_time >= 10000000000 AND submit_time < CAST(?1 AS INTEGER)) OR
                 (submit_time < 10000000000 AND submit_time < CAST(?2 AS INTEGER))
               )
             ORDER BY submit_time ASC, id ASC
-            LIMIT ?3
+            LIMIT ?4
             "#,
         )
         .bind_refs(&args)?
@@ -528,9 +719,14 @@ pub async fn sweep_timed_out_midjourneys(
         .await?
         .results::<MjRow>()?;
 
+    let owner = generate_task_poll_owner("cron-mj-timeout")?;
     let mut settled = 0u32;
     let finish_time = now.saturating_mul(1_000);
     for row in rows {
+        let Some(lease) = claim_midjourney_poll_lease(db, &row, &owner, now, lease_seconds).await?
+        else {
+            continue;
+        };
         let result = MjPollResult {
             status: "FAILURE",
             progress: &row.progress,
@@ -539,14 +735,19 @@ pub async fn sweep_timed_out_midjourneys(
             video_url: "",
             finish_time,
         };
-        match apply_midjourney_poll_result(db, &row, &result).await {
+        match apply_midjourney_poll_result(db, &row, &lease, &result, now).await {
             Ok(true) => settled += 1,
-            Ok(false) => {}
-            Err(err) => worker::console_error!(
-                "midjourney timeout recovery failed for {}: {}",
-                row.mj_id,
-                err
-            ),
+            Ok(false) => {
+                let _ = release_midjourney_poll_lease(db, row.id, &lease).await;
+            }
+            Err(err) => {
+                let _ = release_midjourney_poll_lease(db, row.id, &lease).await;
+                worker::console_error!(
+                    "midjourney timeout recovery failed for {}: {}",
+                    row.mj_id,
+                    err
+                );
+            }
         }
     }
     Ok(settled)
@@ -565,7 +766,9 @@ pub async fn sweep_timed_out_midjourneys(
 pub async fn apply_midjourney_poll_result(
     db: &D1Database,
     row: &MjRow,
+    lease: &TaskPollLease,
     result: &MjPollResult<'_>,
+    applied_at: i64,
 ) -> worker::Result<bool> {
     // Same D1 i32 binding limitation as submit_time: upstream Midjourney
     // finishTime is millisecond precision.
@@ -575,6 +778,8 @@ pub async fn apply_midjourney_poll_result(
     } else {
         "FAILURE"
     };
+    let generation = lease.generation.to_string();
+    let applied_at_text = applied_at.to_string();
     let args = [
         D1Type::Text(effective_status),
         D1Type::Text(result.progress),
@@ -583,14 +788,24 @@ pub async fn apply_midjourney_poll_result(
         D1Type::Text(result.video_url),
         D1Type::Text(finish_time.as_str()),
         D1Type::Integer(d1_i32(row.id)),
+        D1Type::Text(lease.owner.as_str()),
+        D1Type::Text(&generation),
+        D1Type::Text(&applied_at_text),
     ];
     let update = db
         .prepare(
             r#"
             UPDATE midjourneys
             SET status = ?1, progress = ?2, fail_reason = ?3, image_url = ?4,
-                video_url = ?5, finish_time = ?6
+                video_url = ?5, finish_time = ?6,
+                poll_owner = '', poll_lease_expires_at = 0,
+                poll_applied_generation = CAST(?9 AS INTEGER),
+                poll_write_revision = poll_write_revision + 1
             WHERE id = ?7 AND status NOT IN ('SUCCESS', 'FAILURE')
+              AND poll_owner = ?8
+              AND poll_generation = CAST(?9 AS INTEGER)
+              AND poll_lease_expires_at > CAST(?10 AS INTEGER)
+              AND poll_lease_expires_at > unixepoch()
             "#,
         )
         .bind_refs(&args)?;
@@ -654,7 +869,7 @@ pub async fn apply_midjourney_poll_result(
             )
             .bind_refs(&terminal_args)?
         };
-        let results = db
+        let results = match db
             .batch(vec![
                 update,
                 crate::task_repository::assert_task_billing_previous_statement_statement(
@@ -667,7 +882,16 @@ pub async fn apply_midjourney_poll_result(
                     reservation_key,
                 )?,
             ])
-            .await?;
+            .await
+        {
+            Ok(results) => results,
+            Err(err) => {
+                if !midjourney_poll_lease_is_current(db, row, lease, applied_at).await? {
+                    return Ok(false);
+                }
+                return Err(err);
+            }
+        };
         let won = results
             .first()
             .ok_or_else(|| worker::Error::RustError("missing midjourney CAS result".into()))?
@@ -729,7 +953,15 @@ pub async fn apply_midjourney_poll_result(
             crate::task_repository::assert_task_billing_previous_statement_statement(db, "")?,
         );
     }
-    let results = db.batch(statements).await?;
+    let results = match db.batch(statements).await {
+        Ok(results) => results,
+        Err(err) => {
+            if !midjourney_poll_lease_is_current(db, row, lease, applied_at).await? {
+                return Ok(false);
+            }
+            return Err(err);
+        }
+    };
     Ok(results
         .first()
         .ok_or_else(|| worker::Error::RustError("missing midjourney CAS result".into()))?

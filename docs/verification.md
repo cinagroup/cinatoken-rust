@@ -5122,3 +5122,84 @@ the provider family as a whole. Ali native asynchronous submit/poll,
 actual-count replacement, remote failure/refund reconciliation, provider
 invoice comparison, and SiliconFlow/xAI edit semantics remain blocking.
 Production remains **NO-GO**.
+
+## Generation-Fenced Task Polling Verification Plan (2026-07-15)
+
+This is a current-head verification plan, not historical PASS evidence. Do not
+change earlier command output or migration counts when executing it.
+
+### Local gates
+
+```powershell
+python tools/verify_sqlite.py
+cargo fmt --all -- --check
+cargo test -p cinatoken-worker --lib
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run check:web:readiness
+bun run check:task-runner:alarm-replay-contract
+bun run check:task-runner:alarm-replay-plan
+bun run check:do-lifecycle-runtime
+bun run check
+```
+
+The SQLite proof must verify 0034/0035 apply in order, both control defaults are
+zero, one claimant wins, a loser cannot poll/apply, expiry permits a higher
+generation, the old generation cannot apply, applied generation cannot exceed
+claim generation, write revisions advance exactly once, old lifecycle writes
+fail only after enforcement, and disabling enforcement restores
+0033-compatible rollback behavior.
+
+### Remote D1 and capability proof
+
+Archive redacted output for the exact migration ledger and object-level probes.
+Required capability transitions are:
+
+| Checkpoint | schema | env enabled | D1 authority | enforcement | runtime | staging | cutover |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| After migration | true | false | false | false | false | false | false |
+| After DB authority | true | false | true | false | false | false | false |
+| After DB enforcement | true | false | true | true | false | false | false |
+| Cron canary | true | true | true | true | true | false | false |
+| Reviewed staging candidate | true | true | true | true | true | true | true |
+
+Also record `task_poller_poll_lease_seconds`, TaskRunner
+`schedule_generation`, and applied `poll_generation`. A capability response is
+not evidence that provider, D1, billing, or alarms behaved correctly.
+
+### Required race and failure cases
+
+1. Two scheduled invocations select the same video row. Exactly one claim and
+   provider poll may start for that generation.
+2. Cron and TaskRunner race the same video row. One wins; the loser reports
+   lease busy and preserves cron fallback.
+3. Provider poll races Task timeout. Timeout must claim; only one terminal D1
+   and financial transition may win.
+4. Midjourney batch poll races its one-hour timeout. Both require a lease and
+   exactly one terminal/refund batch wins.
+5. Let generation N expire, claim N+1, then return N. N must be rejected even
+   if its provider result is terminal.
+6. Inject an ambiguous D1 response after claim commit. Canonical readback must
+   recover ownership without creating generation N+1.
+7. Time out provider fetch, fail abort, and fail lease release. No result may
+   apply after expiry; later takeover must succeed.
+8. Return partial Suno/Midjourney batches and malformed/duplicate/unrequested
+   items. Missing items release or expire safely and cannot cross-apply.
+9. Replace a TaskRunner schedule while an alarm polls. The stale
+   `schedule_generation` must not overwrite or rearm the replacement record.
+10. Re-run identical terminal responses, alarms, and cron windows. Billing,
+    request counts, refund, settlement, and audit remain exactly once.
+
+Run each case for video, Suno, and Midjourney where applicable. Confirm Suno
+submission never arms the video TaskRunner. Measure provider auth,
+request-build, D1 claim-loop, fetch/body, parse, and apply time against the
+lease. Vertex auth plus fetch share one deadline; prove that deadline and abort
+behavior remotely before promotion.
+
+### Acceptance and blockers
+
+Do not set `TASK_POLL_LEASE_STAGING_VERIFIED=true` in the same candidate used
+to collect evidence. Review first, then ship a new immutable candidate.
+Persisted `next_poll_at`, fair pagination, poison backoff, provider-operation
+uniqueness/idempotency lookup, whole-operation deadline proof, provider invoice
+reconciliation, load/alert evidence, credential rotation, and rollback remain
+required. Task v2 and production stay **NO-GO**.

@@ -37,9 +37,31 @@ REQUIRED_TABLES = [
     "relay_billing_finalization_incidents",
     "task_billing_intents",
     "task_billing_reconciliation_events",
+    "task_poll_lease_control",
 ]
 
 REQUIRED_COLUMNS = {
+    "tasks": {
+        "poll_owner",
+        "poll_generation",
+        "poll_lease_expires_at",
+        "poll_applied_generation",
+        "poll_write_revision",
+    },
+    "midjourneys": {
+        "poll_owner",
+        "poll_generation",
+        "poll_lease_expires_at",
+        "poll_applied_generation",
+        "poll_write_revision",
+    },
+    "task_poll_lease_control": {
+        "id",
+        "contract_version",
+        "authority_enabled",
+        "enforcement_enabled",
+        "updated_at",
+    },
     "abilities": {"tag"},
     "logs": {"billing_finalization_event_id"},
     "topups": {"credited", "payment_provider"},
@@ -252,6 +274,8 @@ REQUIRED_COLUMNS = {
 }
 
 REQUIRED_INDEXES = {
+    "tasks": {"idx_tasks_poll_lease_due": False},
+    "midjourneys": {"idx_midjourneys_poll_lease_due": False},
     "abilities": {"uq_abilities_group_model_channel": True},
     "logs": {"idx_logs_billing_finalization_event_id": True},
     "prefill_groups": {"uk_prefill_name": True},
@@ -335,6 +359,8 @@ def main() -> int:
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
     task_submit_reconciliation_rollout_verified = False
+    task_poll_lease_verified = False
+    task_poll_lease_rollout_verified = False
     if not args.schema:
         verify_realtime_lease_migration_guard(schema_paths)
         lease_guard_verified = True
@@ -344,6 +370,8 @@ def main() -> int:
         relay_owner_guard_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
+        verify_task_poll_lease_rollout(schema_paths)
+        task_poll_lease_rollout_verified = True
 
     conn = sqlite3.connect(":memory:")
     for schema_path in schema_paths:
@@ -359,6 +387,8 @@ def main() -> int:
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
         task_submit_reconciliation_verified = True
+        verify_task_poll_lease(conn)
+        task_poll_lease_verified = True
 
     missing = [
         table
@@ -410,6 +440,10 @@ def main() -> int:
         message += " + 0032/0033 task submit reconciliation"
     if task_submit_reconciliation_rollout_verified:
         message += " + 0032 expand/0033 enforce rollout"
+    if task_poll_lease_verified:
+        message += " + 0034/0035 generation-fenced task polling"
+    if task_poll_lease_rollout_verified:
+        message += " + 0034 expand/0035 enforce rollout"
 
     if args.seed:
         for value in args.seed:
@@ -1216,6 +1250,236 @@ def verify_task_submit_reconciliation(conn: sqlite3.Connection) -> None:
         "task billing reconciliation event is immutable",
     )
 
+def verify_task_poll_lease(conn: sqlite3.Connection) -> None:
+    for trigger in (
+        "task_poll_lease_shape_guard",
+        "midjourney_poll_lease_shape_guard",
+        "task_poll_write_revision_guard",
+        "midjourney_poll_write_revision_guard",
+    ):
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0035 task poll lease trigger missing: {trigger}")
+
+    control = conn.execute(
+        "SELECT id, contract_version, authority_enabled, enforcement_enabled, updated_at "
+        "FROM task_poll_lease_control WHERE id = 1"
+    ).fetchone()
+    if control != (1, 1, 0, 0, 0):
+        raise SystemExit(f"0034 task poll control row must default inert: {control}")
+
+    index_contracts = {
+        "idx_tasks_poll_lease_due": (
+            "on tasks(poll_lease_expires_at, id)",
+            "where status not in ('success', 'failure') and upstream_task_id != ''",
+        ),
+        "idx_midjourneys_poll_lease_due": (
+            "on midjourneys(poll_lease_expires_at, id)",
+            "where status not in ('success', 'failure') and mj_id != ''",
+        ),
+    }
+    for index, fragments in index_contracts.items():
+        sql = sqlite_object_sql(conn, "index", index)
+        normalized = " ".join(sql.lower().split()) if sql else ""
+        if not sql or any(fragment not in normalized for fragment in fragments):
+            raise SystemExit(f"0034 task poll lease index contract invalid: {index}")
+
+    conn.execute(
+        """
+        INSERT INTO tasks (
+          id, task_id, upstream_task_id, platform, status, progress, submit_time
+        ) VALUES (350001, 'poll-lease-task', 'provider-task', 'sora',
+                  'IN_PROGRESS', '10%', 100)
+        """
+    )
+    legacy_write = conn.execute(
+        "UPDATE tasks SET progress = '11%' WHERE id = 350001"
+    ).rowcount
+    if legacy_write != 1:
+        raise SystemExit("0034 default-off enforcement blocked a legacy task writer")
+    first_claim = conn.execute(
+        """
+        UPDATE tasks
+        SET poll_owner = 'cron:a', poll_generation = poll_generation + 1,
+            poll_lease_expires_at = 120
+        WHERE id = 350001 AND poll_generation = 0
+          AND poll_lease_expires_at <= 10
+        """
+    ).rowcount
+    second_claim = conn.execute(
+        """
+        UPDATE tasks
+        SET poll_owner = 'runner:b', poll_generation = poll_generation + 1,
+            poll_lease_expires_at = 120
+        WHERE id = 350001 AND poll_generation = 0
+          AND poll_lease_expires_at <= 10
+        """
+    ).rowcount
+    if (first_claim, second_claim) != (1, 0):
+        raise SystemExit(
+            f"0034 concurrent task poll claim mismatch: {(first_claim, second_claim)}"
+        )
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE tasks SET poll_lease_expires_at = 121 "
+            "WHERE id = 350001 AND poll_owner = 'cron:a' AND poll_generation = 1"
+        ),
+        "0035 must reject extending a task lease without a new generation",
+        "invalid task poll lease transition",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE tasks SET poll_generation = 0 WHERE id = 350001"
+        ),
+        "0035 must reject decreasing the task poll generation",
+        "invalid task poll lease transition",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE tasks SET poll_owner = '' WHERE id = 350001"
+        ),
+        "0035 must reject clearing a task owner without clearing its lease",
+        "invalid task poll lease transition",
+    )
+
+    expired_apply = conn.execute(
+        """
+        UPDATE tasks
+        SET progress = '15%', poll_owner = '', poll_lease_expires_at = 0,
+            poll_applied_generation = 1,
+            poll_write_revision = poll_write_revision + 1
+        WHERE id = 350001 AND poll_owner = 'cron:a' AND poll_generation = 1
+          AND poll_lease_expires_at > 130
+        """
+    ).rowcount
+    first_apply = conn.execute(
+        """
+        UPDATE tasks
+        SET progress = '20%', poll_owner = '', poll_lease_expires_at = 0,
+            poll_applied_generation = 1,
+            poll_write_revision = poll_write_revision + 1
+        WHERE id = 350001 AND poll_owner = 'cron:a' AND poll_generation = 1
+          AND poll_lease_expires_at > 20
+        """
+    ).rowcount
+    takeover = conn.execute(
+        """
+        UPDATE tasks
+        SET poll_owner = 'runner:b', poll_generation = poll_generation + 1,
+            poll_lease_expires_at = 240
+        WHERE id = 350001 AND poll_generation = 1
+          AND poll_lease_expires_at <= 20
+        """
+    ).rowcount
+    stale_apply = conn.execute(
+        """
+        UPDATE tasks
+        SET progress = '15%', poll_owner = '', poll_lease_expires_at = 0,
+            poll_applied_generation = 1,
+            poll_write_revision = poll_write_revision + 1
+        WHERE id = 350001 AND poll_owner = 'cron:a' AND poll_generation = 1
+        """
+    ).rowcount
+    if (expired_apply, first_apply, takeover, stale_apply) != (0, 1, 1, 0):
+        raise SystemExit(
+            "0034 task poll generation fencing failed: "
+            f"{(expired_apply, first_apply, takeover, stale_apply)}"
+        )
+
+    conn.execute(
+        "UPDATE task_poll_lease_control SET authority_enabled = 1, "
+        "enforcement_enabled = 1, updated_at = 30 "
+        "WHERE id = 1"
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE tasks SET status = 'SUCCESS', progress = '100%' "
+            "WHERE id = 350001"
+        ),
+        "0035 must reject a task lifecycle write without a revision advance",
+        "task poll write revision required",
+    )
+    fenced_apply = conn.execute(
+        """
+        UPDATE tasks
+        SET status = 'SUCCESS', progress = '100%', finish_time = 40,
+            poll_owner = '', poll_lease_expires_at = 0,
+            poll_applied_generation = 2,
+            poll_write_revision = poll_write_revision + 1
+        WHERE id = 350001 AND poll_owner = 'runner:b' AND poll_generation = 2
+        """
+    ).rowcount
+    final = conn.execute(
+        """
+        SELECT status, progress, poll_generation, poll_applied_generation,
+               poll_write_revision, poll_owner, poll_lease_expires_at
+        FROM tasks WHERE id = 350001
+        """
+    ).fetchone()
+    if fenced_apply != 1 or final != ("SUCCESS", "100%", 2, 2, 2, "", 0):
+        raise SystemExit(f"0035 fenced task apply mismatch: {final}")
+
+    conn.execute(
+        """
+        INSERT INTO midjourneys (
+          id, mj_id, status, progress, submit_time
+        ) VALUES (350002, 'poll-lease-mj', 'IN_PROGRESS', '5%', 100)
+        """
+    )
+    conn.execute(
+        """
+        UPDATE midjourneys
+        SET poll_owner = 'cron:mj', poll_generation = 1,
+            poll_lease_expires_at = 120
+        WHERE id = 350002
+        """
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE midjourneys SET poll_lease_expires_at = 121 "
+            "WHERE id = 350002 AND poll_owner = 'cron:mj' AND poll_generation = 1"
+        ),
+        "0035 must reject extending a Midjourney lease without a new generation",
+        "invalid midjourney poll lease transition",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE midjourneys SET poll_applied_generation = 2 WHERE id = 350002"
+        ),
+        "0035 must reject a Midjourney applied generation ahead of its claim",
+        "invalid midjourney poll lease transition",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE midjourneys SET progress = '9%' WHERE id = 350002"
+        ),
+        "0035 must reject a Midjourney lifecycle write without a revision advance",
+        "midjourney poll write revision required",
+    )
+    mj_apply = conn.execute(
+        """
+        UPDATE midjourneys
+        SET progress = '10%', poll_owner = '', poll_lease_expires_at = 0,
+            poll_applied_generation = 1,
+            poll_write_revision = poll_write_revision + 1
+        WHERE id = 350002 AND poll_owner = 'cron:mj' AND poll_generation = 1
+        """
+    ).rowcount
+    if mj_apply != 1:
+        raise SystemExit("0035 fenced Midjourney apply did not win")
+
+    conn.execute(
+        "UPDATE task_poll_lease_control SET authority_enabled = 0, "
+        "enforcement_enabled = 0, updated_at = 50 "
+        "WHERE id = 1"
+    )
+    rollback_write = conn.execute(
+        "UPDATE midjourneys SET progress = '11%' WHERE id = 350002"
+    ).rowcount
+    if rollback_write != 1:
+        raise SystemExit("0035 rollback switch did not restore legacy writer compatibility")
+
+
 def expect_integrity_error(
     action,
     failure_message: str,
@@ -1519,6 +1783,116 @@ def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:
     )
 
 
+def verify_task_poll_lease_rollout(schema_paths: list[Path]) -> None:
+    expand_path = next(
+        (path for path in schema_paths if path.name == "0034_task_poll_lease.sql"),
+        None,
+    )
+    enforce_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0035_task_poll_lease_enforce.sql"
+        ),
+        None,
+    )
+    if expand_path is None or enforce_path is None:
+        raise SystemExit("0034/0035 task poll lease rollout migrations not found")
+    if schema_paths.index(expand_path) >= schema_paths.index(enforce_path):
+        raise SystemExit("0034 task poll lease expand migration must precede 0035 enforce")
+
+    expand_sql = expand_path.read_text(encoding="utf-8")
+    enforce_sql = enforce_path.read_text(encoding="utf-8")
+    if "if not exists" in expand_sql.lower() or "if not exists" in enforce_sql.lower():
+        raise SystemExit("0034/0035 critical task poll objects must fail on duplicate DDL")
+
+    required_expand_fragments = (
+        "ADD COLUMN poll_owner",
+        "ADD COLUMN poll_generation",
+        "ADD COLUMN poll_lease_expires_at",
+        "ADD COLUMN poll_applied_generation",
+        "ADD COLUMN poll_write_revision",
+        "CREATE TABLE task_poll_lease_control",
+        "CREATE INDEX idx_tasks_poll_lease_due",
+        "CREATE INDEX idx_midjourneys_poll_lease_due",
+    )
+    for fragment in required_expand_fragments:
+        if fragment not in expand_sql:
+            raise SystemExit(f"0034 task poll lease expand contract missing: {fragment}")
+
+    required_enforce_objects = (
+        "task_poll_lease_shape_guard",
+        "midjourney_poll_lease_shape_guard",
+        "task_poll_write_revision_guard",
+        "midjourney_poll_write_revision_guard",
+    )
+    for trigger in required_enforce_objects:
+        if f"CREATE TRIGGER {trigger}" not in enforce_sql:
+            raise SystemExit(f"0035 task poll lease enforcement missing: {trigger}")
+    normalized_enforce_sql = " ".join(enforce_sql.lower().split())
+    renewal_guard = (
+        "new.poll_lease_expires_at > old.poll_lease_expires_at "
+        "and new.poll_generation <= old.poll_generation"
+    )
+    if normalized_enforce_sql.count(renewal_guard) < 2:
+        raise SystemExit(
+            "0035 task and Midjourney shape guards must reject generationless lease renewal"
+        )
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == expand_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    conn.executescript(expand_sql)
+    control = conn.execute(
+        "SELECT contract_version, authority_enabled, enforcement_enabled, updated_at "
+        "FROM task_poll_lease_control WHERE id = 1"
+    ).fetchone()
+    if control != (1, 0, 0, 0):
+        raise SystemExit(f"0034 task poll lease expand must remain inert: {control}")
+    if any(trigger_exists(conn, trigger) for trigger in required_enforce_objects):
+        raise SystemExit("0034 expand migration unexpectedly installed 0035 triggers")
+
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, task_id, upstream_task_id, platform, status, progress, submit_time) "
+        "VALUES (340034, '0034-rollout-task', 'provider-0034', 'sora', "
+        "'IN_PROGRESS', '1%', 1)"
+    )
+    if conn.execute(
+        "UPDATE tasks SET progress = '2%' WHERE id = 340034"
+    ).rowcount != 1:
+        raise SystemExit("0034 expand migration broke legacy task lifecycle writes")
+
+    conn.executescript(enforce_sql)
+    control_after_enforce = conn.execute(
+        "SELECT authority_enabled, enforcement_enabled "
+        "FROM task_poll_lease_control WHERE id = 1"
+    ).fetchone()
+    if control_after_enforce != (0, 0):
+        raise SystemExit(
+            f"0035 enforcement migration must remain default off: {control_after_enforce}"
+        )
+    if conn.execute(
+        "UPDATE tasks SET progress = '3%' WHERE id = 340034"
+    ).rowcount != 1:
+        raise SystemExit("0035 default-off enforcement blocked a legacy task writer")
+
+    for trigger in required_enforce_objects:
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0035 rollout trigger missing after apply: {trigger}")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE tasks SET poll_owner = 'invalid-owner' WHERE id = 340034"
+        ),
+        "0035 shape guard must stay active while lifecycle enforcement is off",
+        "invalid task poll lease transition",
+    )
+
+
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {
         row[1]
@@ -1531,6 +1905,16 @@ def table_indexes(conn: sqlite3.Connection, table: str) -> dict[str, bool]:
         row[1]: bool(row[2])
         for row in conn.execute(f'PRAGMA index_list("{table}")').fetchall()
     }
+
+
+def sqlite_object_sql(
+    conn: sqlite3.Connection, object_type: str, name: str
+) -> str | None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
+        (object_type, name),
+    ).fetchone()
+    return row[0] if row else None
 
 
 if __name__ == "__main__":

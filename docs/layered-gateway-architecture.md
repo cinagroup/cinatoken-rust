@@ -957,3 +957,45 @@ root apply requires fresh step-up and commits financial state plus audit in one
 D1 batch. `RealtimeSession`, WFP tenant, and WFP outbound cannot execute this
 operator action. `REALTIME_BILLING_RECONCILIATION_ENABLED=false` keeps the
 control plane mutation-disabled until isolated staging approval.
+
+## 2026-07-15 Shared Task Polling Authority Boundary
+
+This current-head overlay adds generation-fenced task polling without changing
+the historical architecture evidence above. D1 is the shared authority for
+Task and Midjourney poll ownership. Cron and `TaskRunner` are competing
+dispatchers, never independent writers: each must claim a row before provider
+I/O, and every result or timeout apply must present the same owner and
+generation while the lease is unexpired.
+
+The ownership layers are intentionally separate:
+
+1. D1 stores the lease, generation, applied generation, write revision, and
+   the default-off authority/enforcement control row.
+2. The root scheduled Worker owns bounded video, Suno, Midjourney, and timeout
+   scans. Video, Suno, and Midjourney use separate normal candidate windows.
+3. `TaskRunner` is a video-only low-latency fast path. Its DO
+   `schedule_generation` rejects a stale alarm writeback, while the D1
+   `poll_generation` rejects stale task mutation. Suno must not be armed into
+   this video path.
+   Cloudflare documents Durable Object alarms as at-least-once and
+   automatically retried, so duplicate-alarm handling is a required runtime
+   contract, not an exceptional edge case; see the
+   [Alarms API](https://developers.cloudflare.com/durable-objects/api/alarms/).
+4. Providers remain external state machines. A lease does not prove provider
+   operation uniqueness and cannot prevent a second read-only poll after
+   expiry; it prevents a stale response from winning D1 state or billing.
+5. Billing remains in the Task terminal D1 batch. Neither the DO nor a provider
+   response is financial authority by itself.
+
+Migrations 0034/0035 are an expand-and-enforce contract. They default to no D1
+authority and no old-writer enforcement. Production order is migrate, deploy
+with env authority off, drain old cron/alarm/provider work, enable D1
+authority, enable D1 enforcement, then enable Worker env authority. Rollback
+reverses runtime authority first: env off, D1 authority off, D1 enforcement
+off, drain leases, then use only a 0033-compatible Worker.
+
+The poll HTTP deadline is bounded below lease expiry with a 15-second safety
+margin and a 90-second ceiling. The D1 expiry predicate, not the abort signal,
+is the final fence. Whole-operation Vertex authentication timing, persisted
+`next_poll_at`, fair backoff, provider-operation uniqueness, and deployed
+fault injection remain production blockers.

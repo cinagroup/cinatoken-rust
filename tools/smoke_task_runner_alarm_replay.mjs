@@ -84,6 +84,9 @@ function buildPlan(options) {
     expectedCapabilities: {
       requiredTrue: requiredCapabilityTrueFields(),
       requiredGuards: requiredCutoverGuards(),
+      taskPollLeaseContractVersion: 1,
+      taskPollLeaseSecondsRange: [30, 900],
+      taskPollLeaseRuntimeAndEnforcementRequiredWhenTaskRunnerEnabled: true,
       cutoverReadyMustRemainFalse: !options.allowCutoverReady,
       stagingReplayVerifiedMustRemainFalse: !options.allowStagingReplayVerified,
       gateExpectation: options.expectGateEnabled
@@ -95,16 +98,18 @@ function buildPlan(options) {
     expectations: statusExpectations(options),
     stagingReplaySteps: [
       "Use an isolated staging Worker/D1 database and a low-risk task row or submit flow.",
-      "Enable TASK_RUNNER_DO_ENABLED only in staging and keep cron enabled as the fallback authority.",
+      "Apply D1 migrations 0034/0035, drain legacy pollers, then enable D1 poll authority and enforcement.",
+      "Enable TASK_POLL_LEASE_ENABLED only in staging and confirm task_poll_lease_runtime_ready=true with enforcement enabled.",
+      "Enable TASK_RUNNER_DO_ENABLED in isolated staging while lease staging_verified/cutover_ready are still false; keep cron enabled as a competing fenced poller.",
       "Submit or seed one shared task with an upstream task id, then let the submit path arm the per-task Durable Object.",
       "Wait at least the configured alarm delay, then run this probe against /api/platform/task-runner/:task_id/status.",
       "Archive capabilities, DO status, task row, quota/refund row, and cron replay snapshots.",
-      "Disable TASK_RUNNER_DO_ENABLED again and prove the same task family still settles through cron.",
+      "Disable TASK_RUNNER_DO_ENABLED, then TASK_POLL_LEASE_ENABLED, and prove the same task family still settles through the intended rollback path.",
     ],
     notes: [
       "This smoke tool is read-only; it never calls the internal /arm or /delete Durable Object endpoints.",
       "Live mode requires --confirm-live and admin authentication because the status probe is admin-only.",
-      "The probe validates only metadata fields: alarm timing, poll outcome, reason label, and CAS ownership.",
+      "The probe validates lease authority metadata plus alarm timing, schedule generation, poll generation, outcome, and CAS ownership.",
       "Do not mark TASK_RUNNER_STAGING_REPLAY_VERIFIED=true until the archived staging replay proves no double settlement.",
     ],
   };
@@ -297,6 +302,20 @@ function summarizeCapabilities(data) {
     task_runner_staging_replay_verified: data.task_runner_staging_replay_verified === true,
     task_runner_cutover_ready: data.task_runner_cutover_ready === true,
     task_runner_cutover_guards: arrayOfStrings(data.task_runner_cutover_guards),
+    task_poll_lease_contract_version: Number.isFinite(data.task_poll_lease_contract_version)
+      ? data.task_poll_lease_contract_version
+      : 0,
+    task_poll_lease_compiled: data.task_poll_lease_compiled === true,
+    task_poll_lease_schema_ready: data.task_poll_lease_schema_ready === true,
+    task_poll_lease_enabled: data.task_poll_lease_enabled === true,
+    task_poll_lease_authority_enabled: data.task_poll_lease_authority_enabled === true,
+    task_poll_lease_enforcement_enabled: data.task_poll_lease_enforcement_enabled === true,
+    task_poll_lease_runtime_ready: data.task_poll_lease_runtime_ready === true,
+    task_poll_lease_staging_verified: data.task_poll_lease_staging_verified === true,
+    task_poll_lease_cutover_ready: data.task_poll_lease_cutover_ready === true,
+    task_poller_poll_lease_seconds: Number.isFinite(data.task_poller_poll_lease_seconds)
+      ? data.task_poller_poll_lease_seconds
+      : 0,
   };
 }
 
@@ -317,6 +336,33 @@ function validateCapabilities(capabilities, options) {
   ) {
     throw new Error("platform capabilities task_runner_max_alarm_fires must be between 1 and 240");
   }
+  if (capabilities.task_poll_lease_contract_version !== 1) {
+    throw new Error("platform capabilities task_poll_lease_contract_version must be 1");
+  }
+  if (
+    capabilities.task_poller_poll_lease_seconds < 30 ||
+    capabilities.task_poller_poll_lease_seconds > 900
+  ) {
+    throw new Error("platform capabilities task_poller_poll_lease_seconds must be between 30 and 900");
+  }
+  const expectedLeaseRuntime =
+    capabilities.task_poll_lease_compiled &&
+    capabilities.task_poll_lease_schema_ready &&
+    capabilities.task_poll_lease_enabled &&
+    capabilities.task_poll_lease_authority_enabled;
+  if (capabilities.task_poll_lease_runtime_ready !== expectedLeaseRuntime) {
+    throw new Error("platform capabilities task_poll_lease_runtime_ready is inconsistent");
+  }
+  const expectedLeaseCutover =
+    expectedLeaseRuntime &&
+    capabilities.task_poll_lease_enforcement_enabled &&
+    capabilities.task_poll_lease_staging_verified;
+  if (capabilities.task_poll_lease_cutover_ready !== expectedLeaseCutover) {
+    throw new Error("platform capabilities task_poll_lease_cutover_ready is inconsistent");
+  }
+  if (capabilities.task_runner_cutover_ready && !capabilities.task_poll_lease_cutover_ready) {
+    throw new Error("TaskRunner cutover cannot precede task poll lease cutover");
+  }
   if (!options.allowCutoverReady && capabilities.task_runner_cutover_ready !== false) {
     throw new Error("TaskRunner cutover readiness must remain false until staging replay is archived");
   }
@@ -325,6 +371,12 @@ function validateCapabilities(capabilities, options) {
   }
   if (options.expectGateEnabled && capabilities.task_runner_do_enabled !== true) {
     throw new Error("TASK_RUNNER_DO_ENABLED was expected to be true");
+  }
+  if (options.expectGateEnabled && capabilities.task_poll_lease_runtime_ready !== true) {
+    throw new Error("TASK_RUNNER_DO_ENABLED requires task_poll_lease_runtime_ready=true");
+  }
+  if (options.expectGateEnabled && capabilities.task_poll_lease_enforcement_enabled !== true) {
+    throw new Error("TASK_RUNNER_DO_ENABLED requires task_poll_lease_enforcement_enabled=true");
   }
   if (options.expectGateDisabled && capabilities.task_runner_do_enabled !== false) {
     throw new Error("TASK_RUNNER_DO_ENABLED was expected to be false");
@@ -340,6 +392,7 @@ function summarizeStatus(data) {
     durable_task_id: stringOrNull(durable.task_id),
     status: stringOrNull(durable.status),
     replay_evidence: stringOrNull(durable.replay_evidence),
+    schedule_generation: numberOrNull(durable.schedule_generation),
     alarm_scheduled_at_ms: numberOrNull(durable.alarm_scheduled_at_ms),
     alarm_delay_ms: numberOrNull(durable.alarm_delay_ms),
     alarm_fired_at_ms: numberOrNull(durable.alarm_fired_at_ms),
@@ -350,6 +403,7 @@ function summarizeStatus(data) {
     poll_reason: stringOrNull(durable.poll_reason),
     poll_cas_won: typeof durable.poll_cas_won === "boolean" ? durable.poll_cas_won : null,
     poll_terminal: typeof durable.poll_terminal === "boolean" ? durable.poll_terminal : null,
+    poll_generation: numberOrNull(durable.poll_generation),
     last_rearmed_at_ms: numberOrNull(durable.last_rearmed_at_ms),
     last_rearm_delay_ms: numberOrNull(durable.last_rearm_delay_ms),
     rearm_count: Number.isFinite(durable.rearm_count) ? durable.rearm_count : 0,
@@ -391,6 +445,12 @@ function validateStatus(status, options) {
     throw new Error(
       `TaskRunner replay_evidence ${status.replay_evidence} did not match expected ${options.expectReplayEvidence}`,
     );
+  }
+  if (status.status !== null && (status.schedule_generation === null || status.schedule_generation < 1)) {
+    throw new Error("TaskRunner status must expose a positive schedule_generation");
+  }
+  if (status.poll_cas_won === true && (status.poll_generation === null || status.poll_generation < 1)) {
+    throw new Error("TaskRunner successful poll CAS must expose a positive poll_generation");
   }
   validateRecurringState(status);
 }
@@ -444,6 +504,8 @@ function requiredCapabilityTrueFields() {
     "task_runner_submit_path_compiled",
     "task_runner_poll_path_compiled",
     "task_runner_status_probe_compiled",
+    "task_poll_lease_compiled",
+    "task_poll_lease_schema_ready",
   ];
 }
 
@@ -459,7 +521,8 @@ function requiredCutoverGuards() {
     "fast_path_horizon",
     "submit_path_armed",
     "cron_sweeper_fallback",
-    "no_double_poll_cas",
+    "generation_fenced_poll_lease",
+    "poll_lease_cutover",
     "status_probe",
     "staging_alarm_replay",
   ];
@@ -492,27 +555,55 @@ function runSelfTest() {
     dryRun: true,
     json: true,
   };
+  const baselineCapabilities = {
+    task_runner_do_available: true,
+    task_runner_do_enabled: false,
+    task_runner_do_foundation_compiled: true,
+    task_runner_alarm_contract_compiled: true,
+    task_runner_rearm_contract_compiled: true,
+    task_runner_storage_error_retry_contract_compiled: true,
+    task_runner_max_alarm_fires: 20,
+    task_runner_submit_path_compiled: true,
+    task_runner_poll_path_compiled: true,
+    task_runner_status_probe_compiled: true,
+    task_runner_staging_replay_verified: false,
+    task_runner_cutover_ready: false,
+    task_runner_cutover_guards: requiredCutoverGuards(),
+    task_poll_lease_contract_version: 1,
+    task_poll_lease_compiled: true,
+    task_poll_lease_schema_ready: true,
+    task_poll_lease_enabled: false,
+    task_poll_lease_authority_enabled: false,
+    task_poll_lease_enforcement_enabled: false,
+    task_poll_lease_runtime_ready: false,
+    task_poll_lease_staging_verified: false,
+    task_poll_lease_cutover_ready: false,
+    task_poller_poll_lease_seconds: 120,
+  };
+  const stagingProofCapabilities = {
+    ...baselineCapabilities,
+    task_runner_do_enabled: true,
+    task_poll_lease_enabled: true,
+    task_poll_lease_authority_enabled: true,
+    task_poll_lease_enforcement_enabled: true,
+    task_poll_lease_runtime_ready: true,
+  };
+  const stagingProofOptions = {
+    ...options,
+    expectGateEnabled: true,
+    expectGateDisabled: false,
+  };
   const plan = buildPlan(options);
   if (JSON.stringify(plan).includes(options.adminCookie)) {
     throw new Error("self-test leaked admin cookie in dry-run plan");
   }
   validateCapabilities(
-    summarizeCapabilities({
-      task_runner_do_available: true,
-      task_runner_do_enabled: false,
-      task_runner_do_foundation_compiled: true,
-      task_runner_alarm_contract_compiled: true,
-      task_runner_rearm_contract_compiled: true,
-      task_runner_storage_error_retry_contract_compiled: true,
-      task_runner_max_alarm_fires: 20,
-      task_runner_submit_path_compiled: true,
-      task_runner_poll_path_compiled: true,
-      task_runner_status_probe_compiled: true,
-      task_runner_staging_replay_verified: false,
-      task_runner_cutover_ready: false,
-      task_runner_cutover_guards: requiredCutoverGuards(),
-    }),
+    summarizeCapabilities(baselineCapabilities),
     options,
+  );
+  validateCapabilities(
+    summarizeCapabilities(stagingProofCapabilities),
+    stagingProofOptions,
   );
   validateStatus(
     summarizeStatus({
@@ -523,11 +614,13 @@ function runSelfTest() {
         task_id: "task_smoke",
         status: "poll_applied",
         replay_evidence: "first_apply",
+        schedule_generation: 2,
         alarm_fired_count: 1,
         poll_status: "applied",
         poll_reason: "terminal_cas_applied",
         poll_cas_won: true,
         poll_terminal: true,
+        poll_generation: 4,
         rearm_count: 0,
         consecutive_failures: 0,
         max_alarm_fires: 20,
@@ -544,12 +637,14 @@ function runSelfTest() {
         task_id: "task_smoke",
         status: "poll_progressed",
         replay_evidence: "progress_applied",
+        schedule_generation: 3,
         alarm_scheduled_at_ms: 30_000,
         alarm_fired_count: 1,
         poll_status: "progressed",
         poll_reason: "progress_cas_applied",
         poll_cas_won: true,
         poll_terminal: false,
+        poll_generation: 5,
         last_rearmed_at_ms: 15_000,
         last_rearm_delay_ms: 15_000,
         rearm_count: 1,
@@ -563,23 +658,23 @@ function runSelfTest() {
       () =>
         validateCapabilities(
           summarizeCapabilities({
-            task_runner_do_available: true,
-            task_runner_do_enabled: false,
-            task_runner_do_foundation_compiled: true,
-            task_runner_alarm_contract_compiled: true,
-            task_runner_rearm_contract_compiled: true,
-            task_runner_storage_error_retry_contract_compiled: true,
-            task_runner_max_alarm_fires: 20,
-            task_runner_submit_path_compiled: true,
-            task_runner_poll_path_compiled: true,
+            ...baselineCapabilities,
             task_runner_status_probe_compiled: false,
-            task_runner_staging_replay_verified: false,
-            task_runner_cutover_ready: false,
-            task_runner_cutover_guards: requiredCutoverGuards(),
           }),
           options,
         ),
       "task_runner_status_probe_compiled",
+    ),
+    expectFailure(
+      () =>
+        validateCapabilities(
+          summarizeCapabilities({
+            ...stagingProofCapabilities,
+            task_poll_lease_enforcement_enabled: false,
+          }),
+          stagingProofOptions,
+        ),
+      "task_poll_lease_enforcement_enabled=true",
     ),
     expectFailure(
       () =>
@@ -590,6 +685,7 @@ function runSelfTest() {
             durable_object_status: {
               compiled: true,
               status: "poll_failed",
+              schedule_generation: 1,
               replay_evidence: "poll_failed",
               poll_status: "failed",
             },
@@ -608,8 +704,10 @@ function runSelfTest() {
               compiled: true,
               status: "poll_applied",
               replay_evidence: "second_replay_noop",
+              schedule_generation: 2,
               poll_status: "applied",
               poll_cas_won: true,
+              poll_generation: 4,
             },
           }),
           options,
@@ -624,6 +722,7 @@ function runSelfTest() {
     cases: [
       { name: "dry-run-redacts-cookie", ok: true },
       { name: "capability-contract", ok: true },
+      { name: "staging-proof-gate-contract", ok: true },
       { name: "status-contract", ok: true },
       { name: "nonterminal-rearm-contract", ok: true },
       ...failures,
@@ -648,7 +747,8 @@ function evidenceReminder() {
   return [
     "Archive the JSON output from this probe with the matching task row and quota/refund snapshots.",
     "Capture a second replay that proves the CAS no-ops after the first settlement.",
-    "Capture rollback evidence with TASK_RUNNER_DO_ENABLED=false and cron still settling the task family.",
+    "Capture a competing cron/DO poll showing one lease generation wins and the stale result is rejected.",
+    "Capture rollback evidence with TASK_RUNNER_DO_ENABLED=false, then TASK_POLL_LEASE_ENABLED=false, before changing D1 authority or enforcement.",
   ];
 }
 

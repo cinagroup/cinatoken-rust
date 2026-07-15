@@ -1873,3 +1873,116 @@ Any guessed provider outcome, missing immutable event, attach-contract leak,
 unexplained quota delta, duplicate provider/task mutation, partial batch,
 rollback to an incompatible writer, or enabled flag left behind is an immediate
 G2/G4/G5/G7 abort. Production remains **NO-GO**.
+
+## Phase 4j: Generation-Fenced Task Polling Cutover Drill
+
+This current-head phase overrides older migration counts only for a new
+0035-based candidate. Do not edit or relabel historical staging evidence. Run
+only after credential rotation, a staging D1 backup, named billing/SRE
+reviewers, and an inventory of every Go cron, Worker scheduled version,
+TaskRunner instance, alarm, and provider task writer. Go/VPS remains
+authoritative throughout the drill.
+
+### A. Expand with no authority
+
+1. Keep `TASK_POLL_LEASE_ENABLED=false`,
+   `TASK_POLL_LEASE_STAGING_VERIFIED=false`, and
+   `TASK_RUNNER_DO_ENABLED=false`.
+2. Apply 0034 and 0035. Archive remote migration hashes and exact object
+   readback for both tables, five columns per table, two indexes, four guards,
+   and the singleton contract-version-1 control row.
+3. Require both DB controls to be zero. The 0035 shape guards are active, but
+   old-writer lifecycle enforcement must remain off.
+4. Deploy the candidate to 100 percent. Require poll lease contract 1,
+   compiled=true, schema-ready=true, env-enabled=false, D1-authority=false,
+   enforcement=false, runtime=false, staging=false, and cutover=false.
+5. Trigger scheduled handlers and probe TaskRunner. No video, Suno,
+   Midjourney, or timeout provider/lifecycle poll mutation may occur.
+
+Abort on a partial object set, a nonzero control, provider I/O, task lifecycle
+write, raw credential in evidence, or a capability that claims runtime/cutover.
+
+### B. Drain old writers
+
+1. Stop Go task pollers, legacy Worker task polling, TaskRunner arming, and new
+   async-task admission for the isolated scope.
+2. Wait for old scheduled invocations, alarms, provider requests, and D1
+   batches to finish. Wait at least the maximum configured lease plus provider
+   and observability margin.
+3. Query nonterminal Task and Midjourney rows. Archive only redacted row IDs,
+   owner hashes, generations, expiries, status, and writer-version evidence.
+4. Prove no 0033-style writer is still changing status/progress. Do not clear a
+   live lease by row ID alone.
+
+Abort if writer ownership is unknown, an old writer resumes, or an unresolved
+provider operation cannot be reconciled.
+
+### C. Activate DB controls before env authority
+
+1. Set only `authority_enabled=1`; read it back from D1 and capabilities.
+   Runtime must remain false and no provider I/O may start.
+2. Set `enforcement_enabled=1`; read it back. Run one isolated unfenced
+   lifecycle update and require the write-revision guard to abort it.
+3. Run one fenced fixture under a transaction and require owner, generation,
+   expiry, applied generation, revision, task state, and billing state to
+   converge exactly once.
+
+A zero-row control update is an abort until canonical readback proves the
+desired state. Never enable enforcement before the old-writer drain.
+
+### D. Cron family canaries
+
+1. Enable `TASK_POLL_LEASE_ENABLED=true` for an isolated staging candidate.
+   Keep TaskRunner disabled and the staging-proof flag false.
+2. Submit one video, one Suno, and one Midjourney fixture. Verify normal
+   candidate windows are family-specific, and Suno does not arm TaskRunner.
+3. For each family, verify claim precedes provider I/O, `poll_generation`
+   advances once, apply requires an unexpired lease, and terminal billing is
+   exactly once.
+4. Race two cron invocations. Race provider poll against Task timeout and
+   Midjourney timeout. Timeout must claim; it may never bypass the lease.
+5. Expire generation N, claim N+1, then deliver N. Require N to lose without
+   state, billing, count, or audit mutation.
+6. Inject claim commit ambiguity, provider network error, fetch timeout, abort
+   error, release error, malformed response, duplicate item, and partial Suno
+   and Midjourney batches. Reconcile every row and provider request.
+7. Measure claim-loop, auth, fetch/body, parse, and D1 apply latency. Provider
+   I/O receives at most `min(90, remaining lease - 15)`; Vertex OAuth and fetch
+   share that deadline, and batch claim time is deducted before fetch. Require
+   measured whole-operation headroom and verified abort behavior.
+
+Any stale apply, second terminal financial mutation, family crossover,
+unclaimed timeout, provider call after env/DB authority removal, or unexplained
+invoice delta is a G4/G5/G7 abort.
+
+### E. Video TaskRunner canary
+
+1. Enable TaskRunner only after cron canaries pass. Use isolated video tasks.
+2. Race TaskRunner with cron. Exactly one D1 poll generation may own provider
+   I/O; the loser reports lease busy and cron remains a fallback.
+3. Replace an armed schedule during an alarm poll. The old
+   `schedule_generation` must not overwrite or rearm the replacement.
+4. Exercise duplicate alarms, storage failure, eviction/restart, provider
+   timeout, failure backoff, terminal stop, and maximum-alarm fallback.
+5. Attempt Suno submit and require no TaskRunner arm or status record.
+
+TaskRunner success is fast-path evidence only. It cannot make Task v2 ready.
+
+### F. Evidence review and rollback rehearsal
+
+1. Disable env authority first, then D1 authority, then D1 enforcement.
+2. Prove claims stop, drain active leases, reconcile in-flight provider work,
+   and roll traffic back to a 0033-compatible candidate without schema
+   downgrade or generation decrement.
+3. Re-enable in the production order and repeat one canary per family.
+4. Archive candidate/migration hashes, capability snapshots, redacted race
+   traces, provider/invoice deltas, alerts, timing distributions, rollback
+   timestamps, and named approvals. Never archive provider keys or raw payloads.
+5. Keep `TASK_POLL_LEASE_STAGING_VERIFIED=false` while evidence is reviewed.
+   Set it only in a new candidate after billing, security, privacy, and SRE
+   approval.
+
+Even a passing drill does not close persisted `next_poll_at`, fair pagination,
+poison backoff, provider-operation uniqueness/idempotency lookup, complete
+fault injection, or broader Task v2 financial parity. Production remains
+**NO-GO**.

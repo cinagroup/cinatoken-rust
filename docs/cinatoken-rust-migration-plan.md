@@ -13057,3 +13057,91 @@ evidence is absent. Shared generation-fenced polling, fair persisted retry,
 checked 64-bit D1 financial bindings, FreeModel/subscription parity,
 provider-native idempotency/lookup, credential rotation, and G1-G8 approval keep
 Go/VPS authoritative and production **NO-GO**.
+
+## 2026-07-15 Current-Head Generation-Fenced Polling Plan
+
+This section is the current-head plan for Task polling and supersedes only
+older statements that shared polling ownership is absent. Historical local and
+remote evidence, including earlier migration counts, must remain unchanged.
+The current candidate introduces migrations 0034 and 0035, but it does not
+authorize production polling by applying those files.
+
+### Target state
+
+D1 is the single shared Task/Midjourney poll ownership authority. Cron and the
+video `TaskRunner` may race to claim, but only one owner/generation may poll and
+apply while its lease is live. Timeout settlement must claim the same way as a
+provider poll. A new generation may take over only after expiry, and an old
+response then fails the owner/generation/expiry predicate without changing
+progress, terminal state, refund, settlement, or counters.
+
+Normal work is split by family:
+
+- video: non-Suno `tasks`, bounded cron plus optional video TaskRunner;
+- Suno: Suno-only `tasks`, bounded channel batches, cron only;
+- Midjourney: `midjourneys`, bounded channel batches and an independent
+  one-hour timeout sweep.
+
+The generic Task timeout sweep can cover video and Suno because they share the
+table, but every row is still claimed individually. Family separation prevents
+the normal Suno batch from consuming the video candidate window and prevents
+Suno from entering a video-specific DO path. It does not yet provide persisted
+fairness.
+
+### Expand, deploy, drain, enforce
+
+| Wave | Action | Required proof | Abort condition |
+| --- | --- | --- | --- |
+| P0 backup | Capture D1 backup/Time Travel point, exact ledger/object shape, active versions and pollers | Restorable point and redacted inventory | Wrong DB, missing backup, unknown writer |
+| P1 expand | Apply 0034/0035 with both DB controls at zero | Columns/indexes/triggers/control row exact; no provider I/O | Any control flag on or partial object set |
+| P2 compatible deploy | Deploy 0035-aware Worker at 100 percent with `TASK_POLL_LEASE_ENABLED=false`, staging flag false, TaskRunner false | Capabilities compiled/schema true but runtime/cutover false | New poll claim or provider request |
+| P3 drain | Stop Go/legacy Worker pollers, cron ownership, TaskRunner arm/alarm work, and in-flight provider calls | No old writer; no live old lease after maximum lease plus margin | New old-format lifecycle write |
+| P4 DB authority | Set `authority_enabled=1` only | Canonical DB/capability readback; runtime still false | Provider I/O while env is false |
+| P5 enforcement | Set `enforcement_enabled=1` | Old unfenced lifecycle write rejected; fenced fixture succeeds | Compatibility writer still mutates |
+| P6 cron canary | Set Worker env authority true for isolated tokens/tasks | One claim, one provider poll, one fenced apply; family and timeout races pass | Duplicate bill/write or stale apply |
+| P7 evidence | Run D1 ambiguity, timeout, partial batch, provider, invoice, alert, and rollback drills | Signed redacted packet; staging flag still false during review | Missing boundary or unexplained delta |
+| P8 reviewed candidate | Ship staging flag true only after review | Poll lease cutover true; Task v2 still independently gated | Manual flag without evidence |
+| P9 video DO | Enable TaskRunner only for isolated video work | Schedule-generation replacement, duplicate alarm, eviction, replay, cron fallback | Suno arm or lost task/refund |
+
+Migration inertness has one important nuance. The 0035 shape guards are active
+immediately and reject malformed new lease transitions, but old-writer
+lifecycle enforcement remains disabled. Because a 0033-compatible writer does
+not mutate the new lease columns, it remains rollback-compatible after the DB
+controls are turned off.
+
+### Lease budget
+
+`TASK_POLL_LEASE_SECONDS` defaults to 120 and is constrained to 30-900. The
+provider I/O deadline is at most `min(90, remaining lease - 15)` with a
+one-second floor. Claim happens before provider I/O; timeout settlement also
+claims. Vertex OAuth token exchange and task fetch share one deadline, while
+batch claim time is deducted before Suno or Midjourney fetch. All applies
+require the lease to be later than both the fresh apply timestamp and D1
+`unixepoch()`, so a slow or ambiguous provider response cannot win after
+expiry. Release is an optimization, not correctness. Production acceptance
+still requires measured claim/auth/fetch/parse/apply headroom and abort proof.
+Migration 0035 rejects expiry extension without a generation advance. Lease
+renewal is intentionally absent; do not add it without a separate fencing and
+replay review.
+
+### Rollback plan
+
+1. Disable Worker env authority and TaskRunner arming first.
+2. Disable D1 authority and prove no new generation can be claimed.
+3. Disable D1 enforcement.
+4. Wait for all leases to expire or drain them only with matching owner and
+   generation. Reconcile unresolved provider operations before re-polling.
+5. Roll traffic back only to a 0033-compatible Worker while keeping 0034/0035
+   schema in place. Never downgrade D1 or restore a 0031-era writer.
+
+### Unclosed production work
+
+Generation fencing is necessary but insufficient. The migration remains
+blocked by persisted `next_poll_at`, fair per-family pagination/cursors,
+poison-task exponential backoff and dead-letter policy, provider-operation
+uniqueness and native idempotency or deterministic lookup, duplicate submit
+reconciliation, whole-operation deadlines, remote D1 ambiguity injection,
+provider timeout/partial response campaigns, invoice reconciliation,
+load/capacity/alert evidence, checked 64-bit financial bindings, FreeModel and
+subscription parity, credential rotation, and signed rollback approval.
+Go/VPS remains authoritative and production remains **NO-GO**.

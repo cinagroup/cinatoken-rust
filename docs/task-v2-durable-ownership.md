@@ -189,3 +189,127 @@ terminal refund/settle idempotency,
 immutable contracts, event-required operator resolution, atomic refund,
 immutable reconciliation events, and illegal transitions. These are local proofs only;
 they do not replace remote D1, provider, Queue, browser, or invoice evidence.
+
+## 2026-07-15 Current-Head Generation-Fenced Polling Overlay
+
+This section supersedes only earlier statements that the shared poll lease is
+not implemented. It does not rewrite the historical evidence above. Migrations
+`0034_task_poll_lease.sql` and `0035_task_poll_lease_enforce.sql` provide a
+local, default-inert ownership substrate for cron, the video `TaskRunner`
+Durable Object, Suno polling, Midjourney polling, and timeout settlement.
+Production remains **NO-GO** until the staged evidence and open gates below are
+closed.
+
+### Durable contract
+
+Each Task or Midjourney claim writes a cryptographically generated owner, an
+incremented `poll_generation`, and a bounded `poll_lease_expires_at`. Applying
+progress, success, failure, refund, or timeout requires the same owner and
+generation, a lease that is still strictly unexpired at apply time, and an
+incremented `poll_write_revision`. A successful apply records
+`poll_applied_generation` and clears the owner and expiry. A late response from
+an expired or superseded generation therefore cannot mutate task or billing
+state.
+
+Migration defaults are deliberately inert:
+
+- `0034` adds the columns, due indexes, and the singleton control row with both
+  `authority_enabled=0` and `enforcement_enabled=0`;
+- `0035` installs shape guards immediately, but those guards only constrain
+  invalid transitions of the new lease fields. A 0033-compatible writer that
+  does not touch those fields remains compatible while enforcement is off;
+- the old-writer lifecycle guards are installed but do not reject legacy
+  status/progress writes until `enforcement_enabled=1`;
+- the scheduled poller and `TaskRunner` require both D1 authority and
+  `TASK_POLL_LEASE_ENABLED=true`. Either authority being false keeps provider
+  polling inert.
+
+Capability interpretation is exact: `task_poll_lease_runtime_ready` means
+compiled + schema-ready + Worker env authority + D1 authority.
+`task_poll_lease_cutover_ready` additionally requires D1 old-writer
+enforcement and reviewed staging evidence. Task v2 remains contract version 2
+and its staging/cutover gates remain false until the broader fault campaign is
+approved.
+Operators must archive all lease fields from the capability response:
+`task_poll_lease_contract_version`, `task_poll_lease_compiled`,
+`task_poll_lease_schema_ready`, `task_poll_lease_enabled`,
+`task_poll_lease_authority_enabled`,
+`task_poll_lease_enforcement_enabled`, `task_poll_lease_runtime_ready`,
+`task_poll_lease_staging_verified`, `task_poll_lease_cutover_ready`, and
+`task_poller_poll_lease_seconds`.
+
+### Family and timeout boundaries
+
+Normal candidate selection is separated into three bounded families:
+
+- video uses `tasks.platform != 'suno'` and may use cron or the video-only
+  `TaskRunner` fast path;
+- Suno uses `tasks.platform = 'suno'`, groups by channel, and is cron-only;
+  Suno submission must not arm the video `TaskRunner`;
+- Midjourney uses the `midjourneys` table and its own channel-batched cron
+  poller and one-hour timeout sweep.
+
+The generic Task timeout sweep may inspect both video and Suno rows, but it
+must claim the same fenced lease before writing failure/refund. Midjourney
+timeout does the same. Timeout is not an ownership bypass.
+
+`TASK_POLL_LEASE_SECONDS` defaults to 120 and is clamped to 30-900 seconds.
+The provider I/O budget is at most `min(90, remaining_lease - 15)`, with a
+one-second floor. Vertex OAuth token exchange and task fetch share that one
+deadline; channel-batch claim time is deducted before Suno or Midjourney fetch.
+Provider timeout aborts the active fetch and releases the lease on a best-effort
+basis; expiry remains the final recovery mechanism. The strict D1 apply
+predicate checks both the fresh apply timestamp and D1 `unixepoch()`, so it is
+the safety boundary even if abort, release, or a Worker clock is ambiguous.
+Migration 0035 also rejects any lease-expiry extension that does not advance
+the generation; this contract has no in-place renewal path.
+Staging must still measure the complete claim/auth/fetch/parse/apply budget.
+
+### Production activation order
+
+1. Back up staging or production D1 and archive the exact migration ledger,
+   object shape, candidate commit, Wrangler version, and capability snapshot.
+2. Apply 0034 and 0035. Read back all columns, indexes, triggers, and the
+   singleton control row. Both control flags must still be zero.
+3. Deploy the 0035-aware Worker at 100 percent with
+   `TASK_POLL_LEASE_ENABLED=false`, `TASK_POLL_LEASE_STAGING_VERIFIED=false`,
+   and `TASK_RUNNER_DO_ENABLED=false`. Prove task polling is inert.
+4. Stop legacy Go/Worker task polling, old cron ownership, TaskRunner arming,
+   and in-flight alarm/provider work. Wait at least the maximum configured
+   lease plus provider/network margin, then prove no old task lifecycle writer
+   remains.
+5. Set D1 `authority_enabled=1` and read it back. Env authority is still false,
+   so no provider poll may start.
+6. Set D1 `enforcement_enabled=1` and read it back. Prove a 0033-style
+   lifecycle write is rejected while a fenced write succeeds.
+7. Enable `TASK_POLL_LEASE_ENABLED=true` only on the isolated candidate. Keep
+   `TASK_RUNNER_DO_ENABLED=false`; start cron family canaries first.
+8. Run duplicate cron, cron-versus-timeout, stale-generation, expiry takeover,
+   D1 ambiguity, provider timeout, partial batch, and invoice reconciliation
+   tests. Only after reviewed evidence may
+   `TASK_POLL_LEASE_STAGING_VERIFIED=true` be shipped in a new candidate.
+9. Enable the video `TaskRunner` only after cron evidence passes, then exercise
+   duplicate alarms, replacement schedules, eviction, replay, and cron
+   fallback. Suno and Midjourney remain on their separate cron paths.
+
+### Rollback order
+
+1. Set `TASK_POLL_LEASE_ENABLED=false` first and disable TaskRunner arming.
+2. Set D1 `authority_enabled=0`; verify no new claim can be admitted.
+3. Set D1 `enforcement_enabled=0`; only now may a compatible old lifecycle
+   writer resume.
+4. Wait for or deliberately drain every active lease, recording owner hashes,
+   generations, expiries, and unresolved provider operations without secrets.
+5. Roll traffic back only to a 0033-compatible Worker. Never roll back to a
+   0031-era writer, downgrade D1, decrement a generation, or clear a lease
+   without matching its owner and generation.
+
+### Still-blocking work
+
+The lease closes stale local result application, not the whole production
+problem. Cutover remains blocked by persisted `next_poll_at`, family-fair
+pagination, poison-row backoff, provider-operation uniqueness or native
+idempotency/lookup, duplicate-submit reconciliation, a complete provider
+operation deadline, remote D1 ambiguity and fault injection at every boundary,
+provider invoice reconciliation, alert/load evidence, credential rotation,
+and signed rollback approval.

@@ -15,8 +15,10 @@ use worker::{
 };
 
 use crate::d1_repositories::find_channel_by_id;
-use crate::task_orchestration::poll_one_task;
-use crate::task_repository::find_task_by_task_id;
+use crate::task_orchestration::{
+    poll_one_task, task_poll_lease_enabled, task_poll_lease_seconds_from_env,
+};
+use crate::task_repository::{find_task_by_task_id, generate_task_poll_owner};
 
 pub const TASK_RUNNER_BINDING: &str = "TASK_RUNNER";
 pub const TASK_RUNNER_DO_ENABLED_ENV: &str = "TASK_RUNNER_DO_ENABLED";
@@ -31,6 +33,7 @@ pub const TASK_RUNNER_RECORD_KEY: &str = "task_runner_record_v1";
 pub const TASK_RUNNER_STATUS_PROBE_ROUTE: &str = "/api/platform/task-runner/:task_id/status";
 const TASK_RUNNER_INSTANCE_PREFIX: &str = "task:";
 const TASK_RUNNER_STATUS_URL: &str = "https://task-runner/status";
+const MAX_TASK_RUNNER_RECORD_BYTES: usize = 8 * 1024;
 
 const TASK_RUNNER_CUTOVER_GUARDS: &[&str] = &[
     "task_runner_binding",
@@ -43,7 +46,8 @@ const TASK_RUNNER_CUTOVER_GUARDS: &[&str] = &[
     "fast_path_horizon",
     "submit_path_armed",
     "cron_sweeper_fallback",
-    "no_double_poll_cas",
+    "generation_fenced_poll_lease",
+    "poll_lease_cutover",
     "status_probe",
     "staging_alarm_replay",
 ];
@@ -51,6 +55,8 @@ const TASK_RUNNER_CUTOVER_GUARDS: &[&str] = &[
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TaskRunnerRecord {
     task_id: String,
+    #[serde(default)]
+    schedule_generation: u64,
     armed_at_ms: i64,
     alarm_delay_ms: i64,
     #[serde(default)]
@@ -69,6 +75,8 @@ struct TaskRunnerRecord {
     poll_cas_won: Option<bool>,
     #[serde(default)]
     poll_terminal: Option<bool>,
+    #[serde(default)]
+    poll_generation: Option<i64>,
     #[serde(default)]
     last_rearmed_at_ms: Option<i64>,
     #[serde(default)]
@@ -141,6 +149,7 @@ enum TaskRunnerReplayEvidence {
 struct TaskRunnerStatusResponse {
     compiled: bool,
     task_id: Option<String>,
+    schedule_generation: Option<u64>,
     status: Option<TaskRunnerStatus>,
     replay_evidence: TaskRunnerReplayEvidence,
     alarm_scheduled_at_ms: Option<i64>,
@@ -153,6 +162,7 @@ struct TaskRunnerStatusResponse {
     poll_reason: Option<String>,
     poll_cas_won: Option<bool>,
     poll_terminal: Option<bool>,
+    poll_generation: Option<i64>,
     last_rearmed_at_ms: Option<i64>,
     last_rearm_delay_ms: Option<i64>,
     rearm_count: u32,
@@ -190,6 +200,7 @@ impl DurableObject for TaskRunner {
                 let response = TaskRunnerStatusResponse {
                     compiled: task_runner_rearm_contract_compiled(),
                     task_id: record.as_ref().map(|record| record.task_id.clone()),
+                    schedule_generation: record.as_ref().map(|record| record.schedule_generation),
                     status: record.as_ref().map(|record| record.status),
                     replay_evidence,
                     alarm_scheduled_at_ms,
@@ -211,6 +222,7 @@ impl DurableObject for TaskRunner {
                         .and_then(|record| record.poll_reason.clone()),
                     poll_cas_won: record.as_ref().and_then(|record| record.poll_cas_won),
                     poll_terminal: record.as_ref().and_then(|record| record.poll_terminal),
+                    poll_generation: record.as_ref().and_then(|record| record.poll_generation),
                     last_rearmed_at_ms: record
                         .as_ref()
                         .and_then(|record| record.last_rearmed_at_ms),
@@ -239,8 +251,16 @@ impl DurableObject for TaskRunner {
                 let task_id = task_id_query_value(&url)?;
                 let delay_ms =
                     task_runner_alarm_delay_ms(query_i64(&url, "delay_ms").unwrap_or_default());
+                let schedule_generation = self
+                    .load_record()
+                    .await?
+                    .map(|record| record.schedule_generation)
+                    .unwrap_or_default()
+                    .checked_add(1)
+                    .ok_or_else(|| Error::RustError("TaskRunner schedule exhausted".to_string()))?;
                 let record = TaskRunnerRecord {
                     task_id,
+                    schedule_generation,
                     armed_at_ms: now_ms(),
                     alarm_delay_ms: delay_ms,
                     alarm_fired_at_ms: None,
@@ -251,6 +271,7 @@ impl DurableObject for TaskRunner {
                     poll_reason: None,
                     poll_cas_won: None,
                     poll_terminal: None,
+                    poll_generation: None,
                     last_rearmed_at_ms: None,
                     last_rearm_delay_ms: None,
                     rearm_count: 0,
@@ -271,6 +292,7 @@ impl DurableObject for TaskRunner {
                     "ok": true,
                     "task_id": record.task_id,
                     "alarm_delay_ms": record.alarm_delay_ms,
+                    "schedule_generation": record.schedule_generation,
                     "instance": task_runner_instance_name(&record.task_id),
                 }))
             }
@@ -296,12 +318,19 @@ impl DurableObject for TaskRunner {
             .await?;
 
         let poll_outcome = self.poll_once(&record.task_id).await;
+        let Some(current) = self.load_record().await? else {
+            return Response::ok("task runner alarm superseded: record deleted");
+        };
+        if current.schedule_generation != record.schedule_generation {
+            return Response::ok("task runner alarm superseded by newer schedule");
+        }
         record.poll_attempted_at_ms = Some(poll_outcome.attempted_at_ms);
         record.poll_completed_at_ms = Some(now_ms());
         record.poll_status = Some(poll_outcome.status);
         record.poll_reason = Some(poll_outcome.reason);
         record.poll_cas_won = poll_outcome.cas_won;
         record.poll_terminal = poll_outcome.terminal;
+        record.poll_generation = poll_outcome.poll_generation;
         record.status = match poll_outcome.status {
             TaskRunnerPollStatus::Skipped => TaskRunnerStatus::PollSkipped,
             TaskRunnerPollStatus::Noop => TaskRunnerStatus::PollNoop,
@@ -340,16 +369,18 @@ impl DurableObject for TaskRunner {
         } else {
             record.cron_fallback_reason = None;
         }
-        self.state
-            .storage()
-            .put(TASK_RUNNER_RECORD_KEY, record)
-            .await?;
         if let Some(delay_ms) = rearm.delay_ms {
             self.state
                 .storage()
                 .set_alarm(Duration::from_millis(delay_ms as u64))
                 .await?;
         }
+        store_task_runner_record_if_generation(
+            self.state.storage(),
+            record.schedule_generation,
+            &record,
+        )
+        .await?;
         Response::ok("task runner alarm poll recorded")
     }
 }
@@ -364,6 +395,15 @@ impl TaskRunner {
         if !task_runner_env_flag(&self.env, TASK_RUNNER_DO_ENABLED_ENV) {
             return TaskRunnerPollOutcome::skipped(attempted_at_ms, "gate_disabled");
         }
+        if !task_poll_lease_enabled(&self.env) {
+            return TaskRunnerPollOutcome::noop(
+                attempted_at_ms,
+                false,
+                "poll_authority_disabled",
+                TaskRunnerRearmMode::Regular,
+                Some(false),
+            );
+        }
 
         let db = match self.env.d1("DB") {
             Ok(db) => db,
@@ -374,6 +414,30 @@ impl TaskRunner {
                 );
             }
         };
+        match crate::task_repository::task_poll_lease_runtime_status(&db).await {
+            Ok(status) if status.schema_ready && status.authority_enabled => {}
+            Ok(status) if status.schema_ready => {
+                return TaskRunnerPollOutcome::noop(
+                    attempted_at_ms,
+                    false,
+                    "poll_authority_disabled",
+                    TaskRunnerRearmMode::Regular,
+                    Some(false),
+                );
+            }
+            Ok(_) => {
+                return TaskRunnerPollOutcome::failed(
+                    attempted_at_ms,
+                    "poll_lease_schema_not_ready",
+                );
+            }
+            Err(err) => {
+                return TaskRunnerPollOutcome::failed(
+                    attempted_at_ms,
+                    &format!("poll_lease_schema_check_failed:{err}"),
+                );
+            }
+        }
 
         let task = match find_task_by_task_id(&db, task_id).await {
             Ok(Some(task)) => task,
@@ -409,6 +473,15 @@ impl TaskRunner {
             .var("GEMINI_VERSION")
             .map(|value| value.to_string())
             .unwrap_or_else(|_| "v1beta".to_string());
+        let poll_owner = match generate_task_poll_owner("task-runner") {
+            Ok(owner) => owner,
+            Err(err) => {
+                return TaskRunnerPollOutcome::failed(
+                    attempted_at_ms,
+                    &format!("poll_owner_generation_failed:{err}"),
+                );
+            }
+        };
         match poll_one_task(
             &db,
             &task,
@@ -416,16 +489,25 @@ impl TaskRunner {
             &channel.key,
             &channel.base_url,
             &gemini_version,
+            &poll_owner,
+            task_poll_lease_seconds_from_env(&self.env),
             now_unix_seconds(),
         )
         .await
         {
             Ok(Some(outcome)) if outcome.cas_won && outcome.terminal => {
-                TaskRunnerPollOutcome::applied(attempted_at_ms)
+                TaskRunnerPollOutcome::applied(attempted_at_ms, outcome.poll_generation)
             }
             Ok(Some(outcome)) if outcome.cas_won => {
-                TaskRunnerPollOutcome::progressed(attempted_at_ms)
+                TaskRunnerPollOutcome::progressed(attempted_at_ms, outcome.poll_generation)
             }
+            Ok(Some(outcome)) if !outcome.lease_claimed => TaskRunnerPollOutcome::noop(
+                attempted_at_ms,
+                false,
+                "poll_lease_busy",
+                TaskRunnerRearmMode::Regular,
+                Some(false),
+            ),
             Ok(Some(_)) => match find_task_by_task_id(&db, task_id).await {
                 Ok(Some(current)) if current.status().is_terminal() => TaskRunnerPollOutcome::noop(
                     attempted_at_ms,
@@ -476,12 +558,54 @@ async fn load_optional_task_runner_record(
         })
 }
 
+async fn store_task_runner_record_if_generation(
+    mut storage: Storage,
+    expected_generation: u64,
+    record: &TaskRunnerRecord,
+) -> WorkerResult<()> {
+    let encoded = serde_json::to_vec(record)
+        .map_err(|err| Error::RustError(format!("failed to encode TaskRunner record: {err}")))?;
+    if encoded.len() > MAX_TASK_RUNNER_RECORD_BYTES {
+        return Err(Error::RustError(
+            "TaskRunner record exceeds storage limit".to_string(),
+        ));
+    }
+    let mut record_bytes = [0_u8; MAX_TASK_RUNNER_RECORD_BYTES];
+    record_bytes[..encoded.len()].copy_from_slice(&encoded);
+    let record_len = encoded.len();
+    storage
+        .transaction(move |mut transaction| async move {
+            let values = transaction
+                .get_multiple(vec![TASK_RUNNER_RECORD_KEY])
+                .await?;
+            let key = JsValue::from_str(TASK_RUNNER_RECORD_KEY);
+            let current = values.get(&key);
+            if current.is_undefined() {
+                return Ok(());
+            }
+            let current: TaskRunnerRecord =
+                serde_wasm_bindgen::from_value(current).map_err(|err| {
+                    Error::RustError(format!("failed to decode TaskRunner record: {err}"))
+                })?;
+            if current.schedule_generation != expected_generation {
+                return Ok(());
+            }
+            let next: TaskRunnerRecord = serde_json::from_slice(&record_bytes[..record_len])
+                .map_err(|err| {
+                    Error::RustError(format!("failed to decode next TaskRunner record: {err}"))
+                })?;
+            transaction.put(TASK_RUNNER_RECORD_KEY, next).await
+        })
+        .await
+}
+
 struct TaskRunnerPollOutcome {
     attempted_at_ms: i64,
     status: TaskRunnerPollStatus,
     reason: String,
     cas_won: Option<bool>,
     terminal: Option<bool>,
+    poll_generation: Option<i64>,
     rearm: TaskRunnerRearmMode,
 }
 
@@ -493,6 +617,7 @@ impl TaskRunnerPollOutcome {
             reason: reason.to_string(),
             cas_won: None,
             terminal: None,
+            poll_generation: None,
             rearm: TaskRunnerRearmMode::Stop,
         }
     }
@@ -510,28 +635,31 @@ impl TaskRunnerPollOutcome {
             reason: reason.to_string(),
             cas_won: Some(cas_won),
             terminal,
+            poll_generation: None,
             rearm,
         }
     }
 
-    fn progressed(attempted_at_ms: i64) -> Self {
+    fn progressed(attempted_at_ms: i64, poll_generation: Option<i64>) -> Self {
         Self {
             attempted_at_ms,
             status: TaskRunnerPollStatus::Progressed,
             reason: "progress_cas_applied".to_string(),
             cas_won: Some(true),
             terminal: Some(false),
+            poll_generation,
             rearm: TaskRunnerRearmMode::Regular,
         }
     }
 
-    fn applied(attempted_at_ms: i64) -> Self {
+    fn applied(attempted_at_ms: i64, poll_generation: Option<i64>) -> Self {
         Self {
             attempted_at_ms,
             status: TaskRunnerPollStatus::Applied,
             reason: "terminal_cas_applied".to_string(),
             cas_won: Some(true),
             terminal: Some(true),
+            poll_generation,
             rearm: TaskRunnerRearmMode::Stop,
         }
     }
@@ -543,6 +671,7 @@ impl TaskRunnerPollOutcome {
             reason: truncate_poll_reason(reason),
             cas_won: None,
             terminal: None,
+            poll_generation: None,
             rearm: TaskRunnerRearmMode::Backoff,
         }
     }
@@ -587,15 +716,16 @@ pub(crate) fn task_runner_poll_path_compiled() -> bool {
         )
         .cas_won
             == Some(false)
-        && TaskRunnerPollOutcome::progressed(100).status == TaskRunnerPollStatus::Progressed
-        && TaskRunnerPollOutcome::applied(100).cas_won == Some(true)
+        && TaskRunnerPollOutcome::progressed(100, Some(1)).status
+            == TaskRunnerPollStatus::Progressed
+        && TaskRunnerPollOutcome::applied(100, Some(1)).cas_won == Some(true)
 }
 
 pub(crate) fn task_runner_rearm_contract_compiled() -> bool {
     task_runner_poll_path_compiled()
-        && TaskRunnerPollOutcome::progressed(100).rearm == TaskRunnerRearmMode::Regular
+        && TaskRunnerPollOutcome::progressed(100, Some(1)).rearm == TaskRunnerRearmMode::Regular
         && TaskRunnerPollOutcome::failed(100, "transient").rearm == TaskRunnerRearmMode::Backoff
-        && TaskRunnerPollOutcome::applied(100).rearm == TaskRunnerRearmMode::Stop
+        && TaskRunnerPollOutcome::applied(100, Some(1)).rearm == TaskRunnerRearmMode::Stop
         && task_runner_failure_backoff_ms(TASK_RUNNER_DEFAULT_ALARM_DELAY_MS, 1) == 15_000
         && task_runner_failure_backoff_ms(TASK_RUNNER_DEFAULT_ALARM_DELAY_MS, 2) == 30_000
         && task_runner_failure_backoff_ms(TASK_RUNNER_DEFAULT_ALARM_DELAY_MS, 10) == 60_000
@@ -625,6 +755,7 @@ pub(crate) fn is_task_runner_cutover_ready(
     submit_path_compiled: bool,
     poll_path_compiled: bool,
     status_probe_compiled: bool,
+    poll_lease_cutover_ready: bool,
     staging_replay_verified: bool,
 ) -> bool {
     binding_available
@@ -636,6 +767,7 @@ pub(crate) fn is_task_runner_cutover_ready(
         && submit_path_compiled
         && poll_path_compiled
         && status_probe_compiled
+        && poll_lease_cutover_ready
         && staging_replay_verified
 }
 
@@ -1001,12 +1133,12 @@ mod tests {
         assert_eq!(noop.cas_won, Some(false));
         assert_eq!(noop.rearm, TaskRunnerRearmMode::Regular);
 
-        let progressed = TaskRunnerPollOutcome::progressed(100);
+        let progressed = TaskRunnerPollOutcome::progressed(100, Some(7));
         assert_eq!(progressed.status, TaskRunnerPollStatus::Progressed);
         assert_eq!(progressed.terminal, Some(false));
         assert_eq!(progressed.rearm, TaskRunnerRearmMode::Regular);
 
-        let applied = TaskRunnerPollOutcome::applied(100);
+        let applied = TaskRunnerPollOutcome::applied(100, Some(8));
         assert_eq!(applied.status, TaskRunnerPollStatus::Applied);
         assert_eq!(applied.cas_won, Some(true));
         assert_eq!(applied.terminal, Some(true));
@@ -1066,6 +1198,7 @@ mod tests {
 
         let mut record = TaskRunnerRecord {
             task_id: "task_abc".to_string(),
+            schedule_generation: 1,
             armed_at_ms: 100,
             alarm_delay_ms: TASK_RUNNER_DEFAULT_ALARM_DELAY_MS,
             alarm_fired_at_ms: None,
@@ -1076,6 +1209,7 @@ mod tests {
             poll_reason: None,
             poll_cas_won: None,
             poll_terminal: None,
+            poll_generation: None,
             last_rearmed_at_ms: None,
             last_rearm_delay_ms: None,
             rearm_count: 0,
@@ -1143,21 +1277,21 @@ mod tests {
     #[test]
     fn task_runner_cutover_waits_for_poll_path_and_staging_replay() {
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, true, true, false, true, true
+            true, true, true, true, true, true, true, false, true, true, true
         ));
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, true, true, true, false, true
+            true, true, true, true, true, true, true, true, false, true, true
         ));
         assert!(is_task_runner_cutover_ready(
-            true, true, true, true, true, true, true, true, true, true
+            true, true, true, true, true, true, true, true, true, true, true
         ));
-        for false_gate in 0..10 {
-            let mut flags = [true; 10];
+        for false_gate in 0..11 {
+            let mut flags = [true; 11];
             flags[false_gate] = false;
             assert!(
                 !is_task_runner_cutover_ready(
                     flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
-                    flags[8], flags[9],
+                    flags[8], flags[9], flags[10],
                 ),
                 "expected TaskRunner cutover to wait on gate index {false_gate}"
             );

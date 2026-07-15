@@ -818,3 +818,31 @@ Provider-native idempotency/lookup, frozen-contract retention policy, remote
 invoice reconciliation, shared poll lease, fair retry, checked 64-bit D1
 binding, FreeModel/subscription parity, credential rotation, and rollback remain
 open. Go/VPS stays authoritative and production remains **NO-GO**.
+
+## 2026-07-15 Generation-Fenced Task Polling Status
+
+This current-head note supersedes only the earlier statement that a shared poll
+lease is absent. Migrations 0034/0035 and the Rust Worker now provide a local
+generation-fenced D1 poll lease for Task and Midjourney rows. Cron, video
+`TaskRunner`, normal provider polling, and both Task/Midjourney timeout paths
+must claim before provider or terminal I/O; stale, superseded, or expired
+generations cannot apply lifecycle or billing mutations.
+
+The migration remains inert for production use: D1 authority and old-writer
+enforcement both default off, Worker env authority defaults off, and staging
+proof is absent. Normal video, Suno, and Midjourney polling have separate
+bounded candidate windows. Suno is cron-only and must not enter the video
+TaskRunner. Provider HTTP polling is bounded below lease expiry, but current
+Vertex authentication occurs outside that fetch deadline.
+
+Status: **gated local substrate**, not production ready. Deployment must follow
+migrate -> deploy disabled -> drain old pollers/alarms -> D1 authority -> D1
+enforcement -> env authority -> cron canary -> reviewed staging proof -> video
+TaskRunner canary. Rollback is env off -> D1 authority off -> D1 enforcement
+off -> drain leases -> 0033-compatible Worker only.
+
+Persisted `next_poll_at`, family-fair pagination, poison-row backoff,
+provider-operation uniqueness/idempotency lookup, whole-operation deadlines,
+remote D1/provider fault injection, invoice reconciliation, alert/load
+evidence, credential rotation, and signed rollback still block Task v2 and
+production. Go/VPS remains authoritative and production remains **NO-GO**.

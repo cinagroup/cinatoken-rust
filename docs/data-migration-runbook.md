@@ -525,3 +525,74 @@ Smoke cases linked:
 Go/no-go decision:
 Approvers:
 ```
+
+## 2026-07-15 Task Poll Lease Schema And Active-Row Runbook
+
+This current-head overlay applies to migrations 0034/0035 and does not alter
+historical import reports. These migrations change ownership metadata, not the
+source business payload. Existing `tasks` and `midjourneys` rows receive empty
+owner, generation zero, expiry zero, applied generation zero, and write
+revision zero through column defaults.
+
+### Pre-migration inventory
+
+Record separately for video, Suno, and Midjourney:
+
+- terminal and nonterminal row counts;
+- rows with missing upstream task IDs;
+- rows older than each timeout boundary;
+- duplicate provider operation/task IDs within and across users/channels;
+- active Go/Worker/TaskRunner writers and their versions;
+- unresolved submit-unknown and provider-accepted operations;
+- D1 backup/Time Travel point, migration ledger, and deterministic sample
+  hashes before schema expansion.
+
+Duplicate provider operation identity is a report-and-block condition. The
+lease schema does not add provider-operation uniqueness and must not silently
+deduplicate or choose a winner.
+
+### Schema application
+
+1. Keep Go/VPS authoritative and all Rust task poll authority off.
+2. Apply 0034 and 0035. Do not modify the singleton control defaults.
+3. Verify every pre-existing row has a valid zero-generation/no-owner shape;
+   verify terminal status, progress, provider ID, quota, reservation linkage,
+   and row counts are unchanged.
+4. Verify the two due indexes and four triggers by object name and SQL shape.
+5. Verify 0033-compatible lifecycle writes still work while enforcement is
+   zero, and malformed lease transitions fail under the active shape guards.
+6. Re-run deterministic hashes excluding only the newly added ownership
+   columns, then record those columns separately.
+
+Wrangler may apply all pending migrations. Archive the remote ledger after the
+command; do not infer 0035 presence from a local file or deployment commit.
+
+### Active-row cutover
+
+Do not copy a transient in-memory poll owner from Go into D1. Active imported
+rows begin unclaimed. Before Rust receives authority, stop old polling and
+TaskRunner arming, wait for in-flight provider work, and reconcile every
+accepted provider operation. Then enable D1 authority, D1 enforcement, and env
+authority in that order. Timeout settlement also claims and therefore must not
+run during the overlap window.
+
+Normal video, Suno, and Midjourney scans are separate, but imported rows still
+need family classification validation. Reject or quarantine an empty/unknown
+platform that would enter the wrong video/Suno query. Suno rows must never
+create video TaskRunner state.
+
+### Rollback and reconciliation
+
+1. Disable env authority and TaskRunner arming.
+2. Disable D1 authority.
+3. Disable D1 enforcement.
+4. Wait for lease expiry or clear only with matching owner and generation.
+5. Reconcile local Task/Midjourney state, provider console/API state, wallet,
+   token, channel, request counts, audits, and invoice deltas.
+6. Resume only a 0033-compatible writer. Keep 0034/0035 schema and all
+   generations; never downgrade or reset them to make an old poller fit.
+
+Data migration approval does not close scheduling design. Persisted
+`next_poll_at`, fair family pagination, poison backoff, provider-operation
+uniqueness/idempotency lookup, remote whole-operation deadline/abort evidence,
+and fault injection remain required before customer cutover.

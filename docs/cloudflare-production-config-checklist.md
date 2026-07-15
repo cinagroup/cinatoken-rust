@@ -635,7 +635,7 @@ The task pipeline (`/v1/video/generations`, `/suno/submit/:action`,
 | Channel keys | Provider-specific: bearer key (sora/doubao/ali/hailuo/suno), `Token` (vidu), `mj-api-secret` (mj), `accessKey\|secretKey` (kling JWT / jimeng SigV4), or the **service-account JSON** (vertex). |
 | Pricing | Task billing models are `suno_<action>`, `mj_<action>`, or the video model name. Missing fixed and ratio configuration fails closed before provider I/O. |
 
-| Capability probe | `/api/platform/capabilities` must show the Task poller/TaskRunner compiled fields, `task_v2_contract_version=1`, `task_v2_ownership_compiled=true`, `task_v2_schema_ready=true`, and `task_v2_runtime_ready=true`, while `task_v2_staging_verified=false`, `task_v2_cutover_ready=false`, and `task_runner_cutover_ready=false` before async task canary. `task_runner_cutover_ready` is only the fast path and cannot replace Task v2 financial readiness. Run `python tools/verify_sqlite.py`, `bun run check:task-refund-batch`, `bun run check:task-runner:alarm-replay-contract`, `bun run check:task-runner:alarm-replay-plan`, and `bun run check:do-lifecycle-runtime` locally and attach their output before staging D1 replay. |
+| Capability probe | `/api/platform/capabilities` must show the Task poller/TaskRunner compiled fields, `task_v2_contract_version=2`, `task_v2_ownership_compiled=true`, `task_v2_schema_ready=true`, and `task_v2_runtime_ready=true`, while `task_v2_staging_verified=false`, `task_v2_cutover_ready=false`, and `task_runner_cutover_ready=false` before async task canary. `task_runner_cutover_ready` is only the fast path and cannot replace Task v2 financial readiness. Run `python tools/verify_sqlite.py`, `bun run check:task-refund-batch`, `bun run check:task-runner:alarm-replay-contract`, `bun run check:task-runner:alarm-replay-plan`, and `bun run check:do-lifecycle-runtime` locally and attach their output before staging D1 replay. |
 
 ### QuotaCoordinator shadow observer
 
@@ -922,3 +922,123 @@ changes:
   with secrets redacted;
 - logs/traces evidence;
 - known deviations.
+
+## 2026-07-15 Current-Head Task Poll Lease Checklist
+
+This section overrides older migration-count and Task poll-ownership statements
+only for the current candidate. Historical command output and evidence above
+must remain unchanged. Current D1 head is migration 0035, and both 0034 and
+0035 must be present before any task polling authority is enabled.
+
+### Required non-secret configuration
+
+| Variable | Required baseline | Meaning |
+| --- | --- | --- |
+| `TASK_POLL_LEASE_SECONDS` | `120` initially; code clamps 30-900 | D1 ownership lease. Provider HTTP poll is limited to `min(90, lease - 15)` seconds. |
+| `TASK_POLL_LEASE_ENABLED` | `false` through migration, deployment, and drain | Worker-side provider-poll authority. It is necessary but not sufficient; D1 authority must also be on. |
+| `TASK_POLL_LEASE_STAGING_VERIFIED` | `false` until reviewed remote evidence | Evidence assertion only. It must not be used to start polling. |
+| `TASK_RUNNER_DO_ENABLED` | `false` until cron canary passes | Video-only DO fast path. It must not arm Suno or replace cron fallback. |
+| `TASK_QUERY_LIMIT` | conservative bounded value, initially `100` | Applied independently to normal video, Suno, and Midjourney candidate windows. It does not provide persisted fairness. |
+
+No secret belongs in these variables. Provider credentials remain Wrangler
+secrets or protected bindings and must never appear in capability output,
+migration SQL, smoke logs, or evidence bundles.
+
+### Migration and object readback
+
+After applying migrations, verify all of the following before deployment:
+
+- `tasks` and `midjourneys` each contain `poll_owner`, `poll_generation`,
+  `poll_lease_expires_at`, `poll_applied_generation`, and
+  `poll_write_revision` with the expected defaults;
+- due indexes are exactly `idx_tasks_poll_lease_due` and
+  `idx_midjourneys_poll_lease_due` with expiry then ID ordering and terminal
+  predicates;
+- both shape guards and both write-revision guards exist;
+- `task_poll_lease_control` has exactly the singleton contract-version-1 row,
+  with `authority_enabled=0` and `enforcement_enabled=0`;
+- `/api/platform/capabilities` reports contract version 1, compiled true, and
+  schema ready true, while enabled, D1 authority, enforcement, runtime,
+  staging-verified, and cutover remain false.
+
+The exact capability keys to archive are
+`task_poll_lease_contract_version`, `task_poll_lease_compiled`,
+`task_poll_lease_schema_ready`, `task_poll_lease_enabled`,
+`task_poll_lease_authority_enabled`,
+`task_poll_lease_enforcement_enabled`, `task_poll_lease_runtime_ready`,
+`task_poll_lease_staging_verified`, `task_poll_lease_cutover_ready`, and
+`task_poller_poll_lease_seconds`. Object-level schema readiness does not replace
+the separately archived exact remote migration ledger.
+
+Wrangler applies pending migrations as a set; operators must not assume that
+0035 being in the repository means remote D1 has it. Archive remote ledger and
+object-shape readback independently.
+
+### Ordered production change
+
+1. Back up D1 and record the candidate, migration hashes, active Worker
+   versions, cron routes, DO flags, and old poller inventory.
+2. Apply 0034/0035 with both control flags left at zero.
+3. Deploy the new Worker to 100 percent with task lease env authority and
+   TaskRunner disabled. Verify no task provider request is emitted.
+4. Stop and drain Go pollers, old Worker scheduled handlers, TaskRunner arms,
+   alarms, and in-flight provider polls. Wait beyond the maximum lease and
+   provider margin; query until no live owner remains from an old writer.
+5. Enable D1 authority only and read back capabilities. Runtime must remain
+   false because env authority is still off.
+6. Enable D1 enforcement and prove an unfenced lifecycle update is rejected.
+7. Enable `TASK_POLL_LEASE_ENABLED=true` for an isolated cron canary. Do not
+   enable TaskRunner yet.
+8. Run and archive family, race, timeout, D1 failure, provider, invoice,
+   alert, and rollback evidence. Ship the staging-proof flag only in a new
+   reviewed candidate.
+9. Enable TaskRunner for isolated video tasks, then prove duplicate alarm,
+   schedule replacement, eviction, replay, and cron fallback behavior.
+
+Use separate, reviewed statements for D1 activation so each transition has a
+readback point:
+
+```sql
+UPDATE task_poll_lease_control
+SET authority_enabled = 1, updated_at = unixepoch()
+WHERE id = 1 AND contract_version = 1 AND authority_enabled = 0;
+
+UPDATE task_poll_lease_control
+SET enforcement_enabled = 1, updated_at = unixepoch()
+WHERE id = 1 AND contract_version = 1
+  AND authority_enabled = 1 AND enforcement_enabled = 0;
+```
+
+A zero-row result is a failed change, not a harmless retry, until canonical
+readback proves the intended state.
+
+### Capability gates
+
+| Phase | enabled | D1 authority | enforcement | runtime | staging | cutover |
+| --- | --- | --- | --- | --- | --- | --- |
+| Post-migration | false | false | false | false | false | false |
+| Post-deploy/drain | false | false | false | false | false | false |
+| DB authority | false | true | false | false | false | false |
+| DB enforcement | false | true | true | false | false | false |
+| Isolated cron canary | true | true | true | true | false | false |
+| Reviewed staging candidate | true | true | true | true | true | true |
+
+`task_runner_cutover_ready` must additionally require the DO binding, DO env
+gate, alarm/storage/rearm/submit/poll/status contracts, generation-fenced poll
+lease cutover, and reviewed alarm replay. `task_v2_cutover_ready` remains false
+until broader submit/poll fault injection and financial gates pass.
+
+### Rollback
+
+1. Set `TASK_POLL_LEASE_ENABLED=false` and disable TaskRunner arming.
+2. Set D1 `authority_enabled=0` and verify claims stop.
+3. Set D1 `enforcement_enabled=0`.
+4. Wait for or drain live leases with owner+generation checks; reconcile every
+   in-flight provider operation before re-polling.
+5. Roll traffic back only to a 0033-compatible Worker. Preserve 0034/0035 and
+   never decrement generations or restore a 0031-era writer.
+
+The release remains blocked by missing persisted `next_poll_at`, fair family
+pagination and poison backoff, provider-operation uniqueness/idempotency
+lookup, remote whole-operation timing and abort proof, fault injection, invoice
+reconciliation, load/alert evidence, and approved rollback rehearsal.

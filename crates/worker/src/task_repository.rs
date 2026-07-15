@@ -25,6 +25,8 @@ pub(crate) const LEGACY_TASK_TIMEOUT_CUTOFF_UNIX: i64 = 1_740_182_400;
 pub(crate) const TASK_BILLING_INTENT_MIGRATION: &str = "0031_task_billing_intents.sql";
 pub(crate) const TASK_SUBMIT_RECONCILIATION_MIGRATION: &str =
     "0033_task_submit_reconciliation_enforce.sql";
+pub(crate) const TASK_POLL_LEASE_MIGRATION: &str = "0035_task_poll_lease_enforce.sql";
+pub(crate) const TASK_POLL_LEASE_CONTRACT_VERSION: u32 = 1;
 pub(crate) const TASK_BILLING_INTENT_LEASE_SECONDS: i64 = 900;
 const TASK_BILLING_INTENT_SWEEP_MAX_LIMIT: i64 = 64;
 const TASK_BILLING_INTENT_SWEEP_SELECT: &str = r#"
@@ -39,6 +41,50 @@ const TASK_BILLING_INTENT_SWEEP_SELECT: &str = r#"
 const LEGACY_TASK_TIMEOUT_REASON: &str = "任务超时（旧系统遗留任务，不进行退款，请联系管理员）";
 const TASK_REFUND_MARKER_PATH: &str = "$.task_refund_marker";
 const TASK_REFUND_DONE_AT_PATH: &str = "$.task_refund_done_at";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskPollLease {
+    pub owner: String,
+    pub generation: i64,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+pub struct TaskPollLeaseRuntimeStatus {
+    pub schema_ready: bool,
+    pub authority_enabled: bool,
+    pub enforcement_enabled: bool,
+}
+
+/// Create an unguessable, bounded owner token for one cron or Durable Object
+/// poll attempt. The owner kind is operator-visible but contains no task or
+/// provider credentials.
+pub fn generate_task_poll_owner(owner_kind: &str) -> worker::Result<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let owner_kind = owner_kind.trim();
+    if owner_kind.is_empty()
+        || owner_kind.len() > 32
+        || !owner_kind
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(worker::Error::RustError(
+            "task poll owner kind is invalid".to_string(),
+        ));
+    }
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|err| {
+        worker::Error::RustError(format!("task poll owner generation failed: {err}"))
+    })?;
+    let mut owner = String::with_capacity(owner_kind.len() + 1 + bytes.len() * 2);
+    owner.push_str(owner_kind);
+    owner.push(':');
+    for byte in bytes {
+        owner.push(HEX[(byte >> 4) as usize] as char);
+        owner.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(owner)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct TaskBillingIntentRecord<'a> {
@@ -940,6 +986,240 @@ pub(crate) fn task_billing_intent_contract_compiled() -> bool {
             == "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 }
 
+pub(crate) fn task_poll_lease_contract_compiled() -> bool {
+    let expand = include_str!("../../../migrations/d1/0034_task_poll_lease.sql");
+    let enforce = include_str!("../../../migrations/d1/0035_task_poll_lease_enforce.sql");
+    TASK_POLL_LEASE_MIGRATION == "0035_task_poll_lease_enforce.sql"
+        && TASK_POLL_LEASE_CONTRACT_VERSION == 1
+        && expand.contains("ADD COLUMN poll_generation")
+        && expand.contains("ADD COLUMN poll_write_revision")
+        && enforce.contains("task_poll_write_revision_guard")
+        && enforce.contains("midjourney_poll_write_revision_guard")
+}
+
+pub async fn task_poll_lease_runtime_status(
+    db: &D1Database,
+) -> worker::Result<TaskPollLeaseRuntimeStatus> {
+    #[derive(Debug, Deserialize)]
+    struct SchemaObjectRow {
+        object_type: String,
+        name: String,
+        sql: String,
+    }
+    #[derive(Debug, Deserialize)]
+    struct ColumnShapeRow {
+        table_name: String,
+        name: String,
+        column_type: String,
+        not_null: i64,
+        default_value: Option<String>,
+    }
+    #[derive(Debug, Deserialize)]
+    struct IndexColumnRow {
+        index_name: String,
+        sequence: i64,
+        name: String,
+    }
+    #[derive(Debug, Deserialize)]
+    struct ControlRow {
+        contract_version: i64,
+        authority_enabled: i64,
+        enforcement_enabled: i64,
+    }
+    let objects = db
+        .prepare(
+            r#"
+            SELECT type AS object_type, name, COALESCE(sql, '') AS sql
+            FROM sqlite_master
+            WHERE name IN (
+              'task_poll_lease_control',
+              'idx_tasks_poll_lease_due',
+              'idx_midjourneys_poll_lease_due',
+              'task_poll_lease_shape_guard',
+              'midjourney_poll_lease_shape_guard',
+              'task_poll_write_revision_guard',
+              'midjourney_poll_write_revision_guard'
+            )
+            "#,
+        )
+        .all()
+        .await?
+        .results::<SchemaObjectRow>()?;
+    let expected_objects = [
+        ("table", "task_poll_lease_control"),
+        ("index", "idx_tasks_poll_lease_due"),
+        ("index", "idx_midjourneys_poll_lease_due"),
+        ("trigger", "task_poll_lease_shape_guard"),
+        ("trigger", "midjourney_poll_lease_shape_guard"),
+        ("trigger", "task_poll_write_revision_guard"),
+        ("trigger", "midjourney_poll_write_revision_guard"),
+    ];
+    let object_set_ready = objects.len() == expected_objects.len()
+        && expected_objects.iter().all(|(object_type, name)| {
+            objects
+                .iter()
+                .any(|row| row.object_type == *object_type && row.name == *name)
+        });
+    if !object_set_ready {
+        return Ok(TaskPollLeaseRuntimeStatus {
+            schema_ready: false,
+            authority_enabled: false,
+            enforcement_enabled: false,
+        });
+    }
+
+    let columns = db
+        .prepare(
+            r#"
+            SELECT 'tasks' AS table_name, name, type AS column_type,
+                   "notnull" AS not_null, dflt_value AS default_value
+            FROM pragma_table_info('tasks')
+            WHERE name LIKE 'poll_%'
+            UNION ALL
+            SELECT 'midjourneys' AS table_name, name, type AS column_type,
+                   "notnull" AS not_null, dflt_value AS default_value
+            FROM pragma_table_info('midjourneys')
+            WHERE name LIKE 'poll_%'
+            UNION ALL
+            SELECT 'task_poll_lease_control' AS table_name, name,
+                   type AS column_type, "notnull" AS not_null,
+                   dflt_value AS default_value
+            FROM pragma_table_info('task_poll_lease_control')
+            "#,
+        )
+        .all()
+        .await?
+        .results::<ColumnShapeRow>()?;
+    let poll_columns = [
+        ("poll_owner", "TEXT", "''"),
+        ("poll_generation", "INTEGER", "0"),
+        ("poll_lease_expires_at", "INTEGER", "0"),
+        ("poll_applied_generation", "INTEGER", "0"),
+        ("poll_write_revision", "INTEGER", "0"),
+    ];
+    let poll_column_shape_ready = ["tasks", "midjourneys"].iter().all(|table| {
+        poll_columns
+            .iter()
+            .all(|(name, column_type, default_value)| {
+                columns.iter().any(|row| {
+                    row.table_name == *table
+                        && row.name == *name
+                        && row.column_type.eq_ignore_ascii_case(column_type)
+                        && row.not_null == 1
+                        && row.default_value.as_deref() == Some(*default_value)
+                })
+            })
+    });
+    let control_columns_ready = [
+        ("contract_version", "1"),
+        ("authority_enabled", "0"),
+        ("enforcement_enabled", "0"),
+        ("updated_at", "0"),
+    ]
+    .iter()
+    .all(|(name, default_value)| {
+        columns.iter().any(|row| {
+            row.table_name == "task_poll_lease_control"
+                && row.name == *name
+                && row.column_type.eq_ignore_ascii_case("INTEGER")
+                && row.not_null == 1
+                && row.default_value.as_deref() == Some(*default_value)
+        })
+    });
+
+    let index_columns = db
+        .prepare(
+            r#"
+            SELECT 'idx_tasks_poll_lease_due' AS index_name,
+                   seqno AS sequence, name
+            FROM pragma_index_info('idx_tasks_poll_lease_due')
+            UNION ALL
+            SELECT 'idx_midjourneys_poll_lease_due' AS index_name,
+                   seqno AS sequence, name
+            FROM pragma_index_info('idx_midjourneys_poll_lease_due')
+            "#,
+        )
+        .all()
+        .await?
+        .results::<IndexColumnRow>()?;
+    let index_shape_ready = [
+        ("idx_tasks_poll_lease_due", 0, "poll_lease_expires_at"),
+        ("idx_tasks_poll_lease_due", 1, "id"),
+        ("idx_midjourneys_poll_lease_due", 0, "poll_lease_expires_at"),
+        ("idx_midjourneys_poll_lease_due", 1, "id"),
+    ]
+    .iter()
+    .all(|(index_name, sequence, name)| {
+        index_columns.iter().any(|row| {
+            row.index_name == *index_name && row.sequence == *sequence && row.name == *name
+        })
+    });
+    let object_sql = |name: &str| {
+        objects
+            .iter()
+            .find(|row| row.name == name)
+            .map(|row| row.sql.to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    let task_index_sql = object_sql("idx_tasks_poll_lease_due");
+    let midjourney_index_sql = object_sql("idx_midjourneys_poll_lease_due");
+    let trigger_sql_ready = [
+        "task_poll_lease_shape_guard",
+        "midjourney_poll_lease_shape_guard",
+    ]
+    .iter()
+    .all(|name| {
+        let sql = object_sql(name);
+        sql.contains("new.poll_generation < old.poll_generation")
+            && sql.contains("new.poll_applied_generation < old.poll_applied_generation")
+            && sql.contains("new.poll_applied_generation > new.poll_generation")
+            && sql.contains("new.poll_lease_expires_at > old.poll_lease_expires_at")
+            && sql.contains("new.poll_generation <= old.poll_generation")
+    }) && [
+        "task_poll_write_revision_guard",
+        "midjourney_poll_write_revision_guard",
+    ]
+    .iter()
+    .all(|name| {
+        let sql = object_sql(name);
+        sql.contains("task_poll_lease_control")
+            && sql.contains("new.poll_write_revision != old.poll_write_revision + 1")
+    });
+
+    let control = db
+        .prepare(
+            r#"
+            SELECT contract_version, authority_enabled, enforcement_enabled
+            FROM task_poll_lease_control
+            WHERE id = 1
+            "#,
+        )
+        .first::<ControlRow>(None)
+        .await?;
+    let schema_ready = poll_column_shape_ready
+        && control_columns_ready
+        && index_shape_ready
+        && task_index_sql.contains("status not in ('success', 'failure')")
+        && task_index_sql.contains("upstream_task_id != ''")
+        && midjourney_index_sql.contains("status not in ('success', 'failure')")
+        && midjourney_index_sql.contains("mj_id != ''")
+        && trigger_sql_ready
+        && control
+            .as_ref()
+            .is_some_and(|row| row.contract_version == TASK_POLL_LEASE_CONTRACT_VERSION as i64);
+    Ok(TaskPollLeaseRuntimeStatus {
+        schema_ready,
+        authority_enabled: schema_ready
+            && control
+                .as_ref()
+                .is_some_and(|row| row.authority_enabled == 1),
+        enforcement_enabled: schema_ready
+            && control
+                .as_ref()
+                .is_some_and(|row| row.enforcement_enabled == 1),
+    })
+}
+
 /// The fields needed to create a task row. Columns not listed take their
 /// `0001_core.sql` defaults.
 pub struct NewTask<'a> {
@@ -995,6 +1275,11 @@ pub struct TaskRow {
     pub progress: String,
     pub finish_time: i64,
     pub submit_time: i64,
+    pub poll_owner: String,
+    pub poll_generation: i64,
+    pub poll_lease_expires_at: i64,
+    pub poll_applied_generation: i64,
+    pub poll_write_revision: i64,
 }
 
 impl TaskRow {
@@ -1262,8 +1547,13 @@ pub async fn attach_task_billing_intent(
 /// Load unfinished tasks for the poller — rows not yet in a terminal status that
 /// carry an upstream id to poll (Go's "未完成的任务" selection). Bounded by
 /// `limit` and ordered by id so a batch is deterministic.
-pub async fn find_unfinished_tasks(db: &D1Database, limit: i64) -> worker::Result<Vec<TaskRow>> {
-    let arg = D1Type::Integer(d1_i32(limit));
+pub async fn find_unfinished_tasks(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<Vec<TaskRow>> {
+    let now = now.to_string();
+    let args = [D1Type::Text(&now), D1Type::Integer(d1_i32(limit))];
     db.prepare(
         r#"
         SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
@@ -1274,15 +1564,52 @@ pub async fn find_unfinished_tasks(db: &D1Database, limit: i64) -> worker::Resul
                     THEN COALESCE(json_extract(private_data, '$.billing_reservation_key'), '')
                     ELSE '' END AS billing_reservation_key,
                quota, action, status, fail_reason, progress, finish_time,
-               submit_time
+               submit_time, poll_owner, poll_generation, poll_lease_expires_at,
+               poll_applied_generation, poll_write_revision
         FROM tasks
         WHERE status NOT IN ('SUCCESS', 'FAILURE')
           AND upstream_task_id != ''
+          AND platform != 'suno'
+          AND poll_lease_expires_at <= CAST(?1 AS INTEGER)
         ORDER BY id ASC
-        LIMIT ?1
+        LIMIT ?2
         "#,
     )
-    .bind_refs(&arg)?
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<TaskRow>()
+}
+
+pub async fn find_unfinished_suno_tasks(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<Vec<TaskRow>> {
+    let now = now.to_string();
+    let args = [D1Type::Text(&now), D1Type::Integer(d1_i32(limit))];
+    db.prepare(
+        r#"
+        SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
+               CASE WHEN json_valid(private_data)
+                    THEN COALESCE(json_extract(private_data, '$.token_id'), 0)
+                    ELSE 0 END AS token_id,
+               CASE WHEN json_valid(private_data)
+                    THEN COALESCE(json_extract(private_data, '$.billing_reservation_key'), '')
+                    ELSE '' END AS billing_reservation_key,
+               quota, action, status, fail_reason, progress, finish_time,
+               submit_time, poll_owner, poll_generation, poll_lease_expires_at,
+               poll_applied_generation, poll_write_revision
+        FROM tasks
+        WHERE status NOT IN ('SUCCESS', 'FAILURE')
+          AND upstream_task_id != ''
+          AND platform = 'suno'
+          AND poll_lease_expires_at <= CAST(?1 AS INTEGER)
+        ORDER BY id ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind_refs(&args)?
     .all()
     .await?
     .results::<TaskRow>()
@@ -1295,10 +1622,14 @@ pub async fn find_unfinished_tasks(db: &D1Database, limit: i64) -> worker::Resul
 pub async fn find_timed_out_unfinished_tasks(
     db: &D1Database,
     cutoff_unix: i64,
+    now: i64,
     limit: i64,
 ) -> worker::Result<Vec<TaskRow>> {
+    let cutoff_unix = cutoff_unix.to_string();
+    let now = now.to_string();
     let args = [
-        D1Type::Integer(d1_i32(cutoff_unix)),
+        D1Type::Text(&cutoff_unix),
+        D1Type::Text(&now),
         D1Type::Integer(d1_i32(limit)),
     ];
     db.prepare(
@@ -1311,13 +1642,15 @@ pub async fn find_timed_out_unfinished_tasks(
                     THEN COALESCE(json_extract(private_data, '$.billing_reservation_key'), '')
                     ELSE '' END AS billing_reservation_key,
                quota, action, status, fail_reason, progress, finish_time,
-               submit_time
+               submit_time, poll_owner, poll_generation, poll_lease_expires_at,
+               poll_applied_generation, poll_write_revision
         FROM tasks
         WHERE progress != '100%'
           AND status NOT IN ('SUCCESS', 'FAILURE')
-          AND submit_time < ?1
+          AND submit_time < CAST(?1 AS INTEGER)
+          AND poll_lease_expires_at <= CAST(?2 AS INTEGER)
         ORDER BY submit_time ASC
-        LIMIT ?2
+        LIMIT ?3
         "#,
     )
     .bind_refs(&args)?
@@ -1342,7 +1675,8 @@ pub async fn find_task_by_task_id(
                     THEN COALESCE(json_extract(private_data, '$.billing_reservation_key'), '')
                     ELSE '' END AS billing_reservation_key,
                quota, action, status, fail_reason, progress, finish_time,
-               submit_time
+               submit_time, poll_owner, poll_generation, poll_lease_expires_at,
+               poll_applied_generation, poll_write_revision
         FROM tasks
         WHERE task_id = ?1
         LIMIT 1
@@ -1351,6 +1685,181 @@ pub async fn find_task_by_task_id(
     .bind_refs(&arg)?
     .first::<TaskRow>(None)
     .await
+}
+
+pub async fn claim_task_poll_lease(
+    db: &D1Database,
+    task: &TaskRow,
+    owner: &str,
+    now: i64,
+    lease_seconds: i64,
+) -> worker::Result<Option<TaskPollLease>> {
+    if owner.is_empty() || owner.len() > 96 || lease_seconds <= 0 {
+        return Err(worker::Error::RustError(
+            "task poll lease claim is invalid".to_string(),
+        ));
+    }
+    let generation = task
+        .poll_generation
+        .checked_add(1)
+        .ok_or_else(|| worker::Error::RustError("task poll generation exhausted".to_string()))?;
+    let expires_at = now
+        .checked_add(lease_seconds)
+        .ok_or_else(|| worker::Error::RustError("task poll lease expiry overflow".to_string()))?;
+    let expires_at_text = expires_at.to_string();
+    let id = task.id.to_string();
+    let expected_generation = task.poll_generation.to_string();
+    let now_text = now.to_string();
+    let args = [
+        D1Type::Text(owner),
+        D1Type::Text(&expires_at_text),
+        D1Type::Text(&id),
+        D1Type::Text(task.status.as_str()),
+        D1Type::Text(&expected_generation),
+        D1Type::Text(&now_text),
+    ];
+    let lease = TaskPollLease {
+        owner: owner.to_string(),
+        generation,
+        expires_at,
+    };
+    let result = db
+        .prepare(
+            r#"
+            UPDATE tasks
+            SET poll_owner = ?1,
+                poll_generation = poll_generation + 1,
+                poll_lease_expires_at = CAST(?2 AS INTEGER)
+            WHERE id = CAST(?3 AS INTEGER)
+              AND status = ?4
+              AND poll_generation = CAST(?5 AS INTEGER)
+              AND poll_lease_expires_at <= CAST(?6 AS INTEGER)
+              AND status NOT IN ('SUCCESS', 'FAILURE')
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            if task_poll_lease_claim_committed(db, task, &lease)
+                .await
+                .unwrap_or(false)
+            {
+                return Ok(Some(lease));
+            }
+            return Err(err);
+        }
+    };
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) != 1 {
+        return Ok(None);
+    }
+    Ok(Some(lease))
+}
+
+pub async fn release_task_poll_lease(
+    db: &D1Database,
+    task_id: i64,
+    lease: &TaskPollLease,
+) -> worker::Result<bool> {
+    let task_id = task_id.to_string();
+    let generation = lease.generation.to_string();
+    let args = [
+        D1Type::Text(&task_id),
+        D1Type::Text(lease.owner.as_str()),
+        D1Type::Text(&generation),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE tasks
+            SET poll_owner = '', poll_lease_expires_at = 0
+            WHERE id = CAST(?1 AS INTEGER)
+              AND poll_owner = ?2
+              AND poll_generation = CAST(?3 AS INTEGER)
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+async fn task_poll_lease_is_current(
+    db: &D1Database,
+    task: &TaskRow,
+    lease: &TaskPollLease,
+    applied_at: i64,
+) -> worker::Result<bool> {
+    #[derive(Debug, Deserialize)]
+    struct CountRow {
+        count: i64,
+    }
+    let id = task.id.to_string();
+    let generation = lease.generation.to_string();
+    let applied_at = applied_at.to_string();
+    let args = [
+        D1Type::Text(&id),
+        D1Type::Text(task.status.as_str()),
+        D1Type::Text(lease.owner.as_str()),
+        D1Type::Text(&generation),
+        D1Type::Text(&applied_at),
+    ];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM tasks
+            WHERE id = CAST(?1 AS INTEGER)
+              AND status = ?2
+              AND poll_owner = ?3
+              AND poll_generation = CAST(?4 AS INTEGER)
+              AND poll_lease_expires_at > CAST(?5 AS INTEGER)
+              AND poll_lease_expires_at > unixepoch()
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 1).unwrap_or(false))
+}
+
+async fn task_poll_lease_claim_committed(
+    db: &D1Database,
+    task: &TaskRow,
+    lease: &TaskPollLease,
+) -> worker::Result<bool> {
+    #[derive(Debug, Deserialize)]
+    struct CountRow {
+        count: i64,
+    }
+    let id = task.id.to_string();
+    let generation = lease.generation.to_string();
+    let expires_at = lease.expires_at.to_string();
+    let args = [
+        D1Type::Text(&id),
+        D1Type::Text(task.status.as_str()),
+        D1Type::Text(lease.owner.as_str()),
+        D1Type::Text(&generation),
+        D1Type::Text(&expires_at),
+    ];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM tasks
+            WHERE id = CAST(?1 AS INTEGER)
+              AND status = ?2
+              AND poll_owner = ?3
+              AND poll_generation = CAST(?4 AS INTEGER)
+              AND poll_lease_expires_at = CAST(?5 AS INTEGER)
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 1).unwrap_or(false))
 }
 
 /// Conditional status transition guarded by the current status — a faithful
@@ -1364,6 +1873,7 @@ pub async fn find_task_by_task_id(
 pub async fn update_task_status_cas(
     db: &D1Database,
     id: i64,
+    lease: &TaskPollLease,
     from: TaskStatus,
     to: TaskStatus,
     fail_reason: &str,
@@ -1376,6 +1886,7 @@ pub async fn update_task_status_cas(
     let result = update_task_status_cas_statement(
         db,
         id,
+        lease,
         from,
         to,
         fail_reason,
@@ -1394,6 +1905,7 @@ pub async fn update_task_status_cas(
 fn update_task_status_cas_statement(
     db: &D1Database,
     id: i64,
+    lease: &TaskPollLease,
     from: TaskStatus,
     to: TaskStatus,
     fail_reason: &str,
@@ -1405,6 +1917,7 @@ fn update_task_status_cas_statement(
 ) -> worker::Result<worker::D1PreparedStatement> {
     let should_update_data = if result_data.is_some() { 1 } else { 0 };
     let result_data = result_data.unwrap_or("");
+    let generation = lease.generation.to_string();
     let args = [
         D1Type::Text(to.as_str()),
         D1Type::Text(fail_reason),
@@ -1416,6 +1929,8 @@ fn update_task_status_cas_statement(
         D1Type::Integer(d1_i32(updated_at)),
         D1Type::Integer(d1_i32(id)),
         D1Type::Text(from.as_str()),
+        D1Type::Text(lease.owner.as_str()),
+        D1Type::Text(&generation),
     ];
     // `json_set` merges the result URL into private_data (Go
     // `Task.PrivateData.ResultURL`) without clobbering the reserving token_id
@@ -1431,8 +1946,15 @@ fn update_task_status_cas_statement(
                     ?4
                 ),
                 data = CASE WHEN ?6 = 1 THEN ?5 ELSE data END,
-                finish_time = ?7, updated_at = ?8
+                finish_time = ?7, updated_at = ?8,
+                poll_owner = '', poll_lease_expires_at = 0,
+                poll_applied_generation = CAST(?12 AS INTEGER),
+                poll_write_revision = poll_write_revision + 1
             WHERE id = ?9 AND status = ?10
+              AND poll_owner = ?11
+              AND poll_generation = CAST(?12 AS INTEGER)
+              AND poll_lease_expires_at > ?8
+              AND poll_lease_expires_at > unixepoch()
             "#,
     )
     .bind_refs(&args)
@@ -1441,6 +1963,7 @@ fn update_task_status_cas_statement(
 fn update_task_status_cas_with_refund_marker_statement(
     db: &D1Database,
     id: i64,
+    lease: &TaskPollLease,
     from: TaskStatus,
     to: TaskStatus,
     fail_reason: &str,
@@ -1453,6 +1976,7 @@ fn update_task_status_cas_with_refund_marker_statement(
 ) -> worker::Result<worker::D1PreparedStatement> {
     let should_update_data = if result_data.is_some() { 1 } else { 0 };
     let result_data = result_data.unwrap_or("");
+    let generation = lease.generation.to_string();
     let args = [
         D1Type::Text(to.as_str()),
         D1Type::Text(fail_reason),
@@ -1465,6 +1989,8 @@ fn update_task_status_cas_with_refund_marker_statement(
         D1Type::Integer(d1_i32(id)),
         D1Type::Text(from.as_str()),
         D1Type::Text(refund_marker),
+        D1Type::Text(lease.owner.as_str()),
+        D1Type::Text(&generation),
     ];
     db.prepare(
         r#"
@@ -1480,8 +2006,15 @@ fn update_task_status_cas_with_refund_marker_statement(
                 NULL
             ),
             data = CASE WHEN ?6 = 1 THEN ?5 ELSE data END,
-            finish_time = ?7, updated_at = ?8
+            finish_time = ?7, updated_at = ?8,
+            poll_owner = '', poll_lease_expires_at = 0,
+            poll_applied_generation = CAST(?13 AS INTEGER),
+            poll_write_revision = poll_write_revision + 1
         WHERE id = ?9 AND status = ?10
+          AND poll_owner = ?12
+          AND poll_generation = CAST(?13 AS INTEGER)
+          AND poll_lease_expires_at > ?8
+          AND poll_lease_expires_at > unixepoch()
         "#,
     )
     .bind_refs(&args)
@@ -1739,6 +2272,7 @@ pub(crate) fn task_batch_changed(
 async fn update_task_status_cas_and_refund_batch(
     db: &D1Database,
     task: &TaskRow,
+    lease: &TaskPollLease,
     from: TaskStatus,
     to: TaskStatus,
     fail_reason: &str,
@@ -1755,6 +2289,7 @@ async fn update_task_status_cas_and_refund_batch(
             update_task_status_cas_statement(
                 db,
                 task.id,
+                lease,
                 from,
                 to,
                 fail_reason,
@@ -1768,7 +2303,15 @@ async fn update_task_status_cas_and_refund_batch(
             refund_attached_task_billing_intent_statement(db, task, to, updated_at, refund_kind)?,
             assert_task_billing_previous_statement_statement(db, reservation_key)?,
         ];
-        let results = db.batch(statements).await?;
+        let results = match db.batch(statements).await {
+            Ok(results) => results,
+            Err(err) => {
+                if !task_poll_lease_is_current(db, task, lease, updated_at).await? {
+                    return Ok(false);
+                }
+                return Err(err);
+            }
+        };
         return Ok(task_batch_changed(&results, 0)? && task_batch_changed(&results, 2)?);
     }
 
@@ -1777,6 +2320,7 @@ async fn update_task_status_cas_and_refund_batch(
         return update_task_status_cas(
             db,
             task.id,
+            lease,
             from,
             to,
             fail_reason,
@@ -1794,6 +2338,7 @@ async fn update_task_status_cas_and_refund_batch(
         update_task_status_cas_with_refund_marker_statement(
             db,
             task.id,
+            lease,
             from,
             to,
             fail_reason,
@@ -1834,7 +2379,15 @@ async fn update_task_status_cas_and_refund_batch(
         reservation_key,
     )?);
 
-    let results = db.batch(statements).await?;
+    let results = match db.batch(statements).await {
+        Ok(results) => results,
+        Err(err) => {
+            if !task_poll_lease_is_current(db, task, lease, updated_at).await? {
+                return Ok(false);
+            }
+            return Err(err);
+        }
+    };
     let won = task_batch_changed(&results, 0)?;
     if won && !task_batch_changed(&results, done_statement_index)? {
         return Err(worker::Error::RustError(
@@ -1847,6 +2400,7 @@ async fn update_task_status_cas_and_refund_batch(
 async fn update_task_status_cas_and_settle_intent_batch(
     db: &D1Database,
     task: &TaskRow,
+    lease: &TaskPollLease,
     from: TaskStatus,
     to: TaskStatus,
     fail_reason: &str,
@@ -1861,6 +2415,7 @@ async fn update_task_status_cas_and_settle_intent_batch(
         return update_task_status_cas(
             db,
             task.id,
+            lease,
             from,
             to,
             fail_reason,
@@ -1872,11 +2427,12 @@ async fn update_task_status_cas_and_settle_intent_batch(
         )
         .await;
     }
-    let results = db
+    let results = match db
         .batch(vec![
             update_task_status_cas_statement(
                 db,
                 task.id,
+                lease,
                 from,
                 to,
                 fail_reason,
@@ -1890,7 +2446,16 @@ async fn update_task_status_cas_and_settle_intent_batch(
             settle_attached_task_billing_intent_statement(db, task, from, to, updated_at)?,
             assert_task_billing_previous_statement_statement(db, reservation_key)?,
         ])
-        .await?;
+        .await
+    {
+        Ok(results) => results,
+        Err(err) => {
+            if !task_poll_lease_is_current(db, task, lease, updated_at).await? {
+                return Ok(false);
+            }
+            return Err(err);
+        }
+    };
     Ok(task_batch_changed(&results, 0)? && task_batch_changed(&results, 2)?)
 }
 
@@ -2121,6 +2686,7 @@ fn suno_poll_target_status(
 pub async fn apply_task_timeout(
     db: &D1Database,
     task: &TaskRow,
+    lease: &TaskPollLease,
     timeout_minutes: i64,
     now: i64,
 ) -> worker::Result<bool> {
@@ -2131,6 +2697,7 @@ pub async fn apply_task_timeout(
         return update_task_status_cas_and_refund_batch(
             db,
             task,
+            lease,
             from,
             TaskStatus::Failure,
             &reason,
@@ -2146,6 +2713,7 @@ pub async fn apply_task_timeout(
     let won = update_task_status_cas(
         db,
         task.id,
+        lease,
         from,
         TaskStatus::Failure,
         &reason,
@@ -2173,6 +2741,7 @@ pub async fn apply_task_timeout(
 pub async fn apply_poll_result(
     db: &D1Database,
     task: &TaskRow,
+    lease: &TaskPollLease,
     info: &TaskInfo,
     result_data: Option<&str>,
     finish_time: i64,
@@ -2186,6 +2755,7 @@ pub async fn apply_poll_result(
             return update_task_status_cas_and_refund_batch(
                 db,
                 task,
+                lease,
                 from,
                 info.status,
                 &info.reason,
@@ -2202,6 +2772,7 @@ pub async fn apply_poll_result(
             return update_task_status_cas_and_settle_intent_batch(
                 db,
                 task,
+                lease,
                 from,
                 info.status,
                 &info.reason,
@@ -2218,6 +2789,7 @@ pub async fn apply_poll_result(
     let won = update_task_status_cas(
         db,
         task.id,
+        lease,
         from,
         info.status,
         &info.reason,
@@ -2244,6 +2816,7 @@ pub async fn apply_poll_result(
 pub async fn apply_suno_poll_result(
     db: &D1Database,
     task: &TaskRow,
+    lease: &TaskPollLease,
     item_status: &str,
     item_fail_reason: &str,
     now: i64,
@@ -2254,7 +2827,7 @@ pub async fn apply_suno_poll_result(
     let progress = if is_failure || to == TaskStatus::Success {
         "100%"
     } else {
-        ""
+        task.progress.as_str()
     };
     let finish_time = if is_failure || to.is_terminal() {
         now
@@ -2269,6 +2842,7 @@ pub async fn apply_suno_poll_result(
         return update_task_status_cas_and_refund_batch(
             db,
             task,
+            lease,
             from,
             to,
             item_fail_reason,
@@ -2289,6 +2863,7 @@ pub async fn apply_suno_poll_result(
         return update_task_status_cas_and_settle_intent_batch(
             db,
             task,
+            lease,
             from,
             to,
             item_fail_reason,
@@ -2304,6 +2879,7 @@ pub async fn apply_suno_poll_result(
     let won = update_task_status_cas(
         db,
         task.id,
+        lease,
         from,
         to,
         item_fail_reason,

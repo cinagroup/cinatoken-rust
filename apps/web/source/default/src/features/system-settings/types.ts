@@ -605,6 +605,15 @@ export type PlatformCapabilities = {
   task_v2_staging_verified: boolean
   task_v2_cutover_ready: boolean
   task_v2_cutover_guards: string[]
+  task_poll_lease_contract_version: number
+  task_poll_lease_compiled: boolean
+  task_poll_lease_schema_ready: boolean
+  task_poll_lease_enabled: boolean
+  task_poll_lease_authority_enabled: boolean
+  task_poll_lease_enforcement_enabled: boolean
+  task_poll_lease_runtime_ready: boolean
+  task_poll_lease_staging_verified: boolean
+  task_poll_lease_cutover_ready: boolean
   task_submit_reconciliation_compiled: boolean
   task_submit_reconciliation_enabled: boolean
   task_submit_reconciliation_ready: boolean
@@ -631,11 +640,13 @@ export type PlatformCapabilities = {
   task_poller_query_limit: number
   task_poller_timeout_minutes: number
   task_poller_timeout_sweep_limit: number
+  task_poller_poll_lease_seconds: number
 }
 
 export type TaskRunnerDurableObjectStatus = {
   compiled: boolean
   task_id: string | null
+  schedule_generation: number | null
   status:
     | 'armed'
     | 'alarm_fired'
@@ -668,6 +679,7 @@ export type TaskRunnerDurableObjectStatus = {
   poll_reason: string | null
   poll_cas_won: boolean | null
   poll_terminal: boolean | null
+  poll_generation: number | null
   last_rearmed_at_ms: number | null
   last_rearm_delay_ms: number | null
   rearm_count: number

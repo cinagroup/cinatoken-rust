@@ -1398,3 +1398,40 @@ fault/invoice/browser evidence, shared poll ownership, fair retry, checked i64
 D1 bindings, FreeModel/subscription parity, credential rotation, rollback, and
 G1-G8 approval remain open. Go/VPS remains authoritative and Cloudflare stays
 **NO-GO**.
+
+## 2026-07-15 Phase 1 Task Poll Lease Increment
+
+This current-head overlay closes the local implementation item for shared
+generation-fenced polling. It does not promote Phase 1 or replace any earlier
+evidence. Migrations 0034/0035 add default-inert Task and Midjourney lease
+state, D1 authority/enforcement controls, due indexes, shape guards, and
+old-writer lifecycle guards. The Worker publishes contract version 1 plus
+schema, env authority, D1 authority, enforcement, runtime, staging, cutover,
+and lease-duration capabilities.
+
+Implemented local behavior:
+
+- cron, the video `TaskRunner`, Task timeout, Suno batch poll, Midjourney batch
+  poll, and Midjourney timeout claim before mutation;
+- result apply requires owner, generation, and a strictly unexpired lease;
+- ambiguous claim errors perform canonical readback, and failed/no-op paths
+  release best-effort while expiry remains the recovery boundary;
+- normal video, Suno, and Midjourney candidate windows are separate;
+- Suno is not armed into the video `TaskRunner`;
+- provider HTTP poll timeout is capped at 90 seconds and keeps 15 seconds of
+  configured lease headroom.
+
+Phase 1 production rollout is fixed: apply migrations with both DB flags off;
+deploy the new Worker with env authority and TaskRunner off; drain every old
+poller, alarm, and provider call; enable D1 authority; enable D1 enforcement;
+enable env authority for cron canaries; review staging evidence; then canary
+the video TaskRunner. Rollback is env authority off, D1 authority off, D1
+enforcement off, active-lease drain, and rollback only to a 0033-compatible
+Worker.
+
+Remaining Phase 1 blockers are persisted `next_poll_at`, fair family cursors
+and poison backoff, provider-operation uniqueness/idempotency lookup, full
+Vertex/auth-plus-fetch deadline enforcement, remote D1/provider fault
+injection, duplicate alarm/cron/timeout replay, invoice and quota
+reconciliation, load/alert evidence, credential rotation, rollback rehearsal,
+and G1-G8 approval. Production remains **NO-GO**.

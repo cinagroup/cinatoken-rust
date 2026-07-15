@@ -1276,8 +1276,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 33,
-        d1_expected_migration: "0033_task_submit_reconciliation_enforce.sql",
+        d1_migration_applied_count: 35,
+        d1_expected_migration: "0035_task_poll_lease_enforce.sql",
         d1_migration_ready: true,
         relay_billing_prebind_owner_generation_contract_version: 1,
         relay_billing_prebind_owner_generation_compiled: true,

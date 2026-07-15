@@ -1622,10 +1622,35 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         }
     }
     let poller_config = task_orchestration::task_poller_config_from_env(&env);
+    if !task_orchestration::task_poll_lease_enabled(&env) {
+        worker::console_log!("task poller skipped: TASK_POLL_LEASE_ENABLED is disabled");
+        return;
+    }
+    let poll_lease_status = match task_repository::task_poll_lease_runtime_status(&db).await {
+        Ok(status) if status.schema_ready && status.authority_enabled => status,
+        Ok(status) if status.schema_ready => {
+            worker::console_warn!("task poller skipped: D1 task poll authority is disabled");
+            return;
+        }
+        Ok(_) => {
+            worker::console_error!("task poller refused: migrations 0034 and 0035 are not applied");
+            return;
+        }
+        Err(err) => {
+            worker::console_error!("task poller lease schema check failed: {err}");
+            return;
+        }
+    };
+    if !poll_lease_status.enforcement_enabled {
+        worker::console_warn!(
+            "task poller lease old-writer enforcement is disabled; cutover remains blocked"
+        );
+    }
     match task_orchestration::sweep_timed_out_tasks(
         &db,
         now,
         poller_config.timeout_minutes,
+        poller_config.poll_lease_seconds,
         poller_config.timeout_sweep_limit,
     )
     .await
@@ -1637,6 +1662,7 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         &db,
         &gemini_version,
         now,
+        poller_config.poll_lease_seconds,
         poller_config.query_limit,
     )
     .await
@@ -1644,19 +1670,35 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         Ok(settled) => worker::console_log!("task poller: settled {settled} video task(s)"),
         Err(err) => worker::console_error!("task poller: video batch failed: {err}"),
     }
-    match task_orchestration::poll_unfinished_suno_tasks(&db, now, poller_config.query_limit).await
+    match task_orchestration::poll_unfinished_suno_tasks(
+        &db,
+        now,
+        poller_config.poll_lease_seconds,
+        poller_config.query_limit,
+    )
+    .await
     {
         Ok(settled) => worker::console_log!("task poller: settled {settled} suno task(s)"),
         Err(err) => worker::console_error!("task poller: suno batch failed: {err}"),
     }
-    match mj_repository::sweep_timed_out_midjourneys(&db, now, poller_config.timeout_sweep_limit)
-        .await
+    match mj_repository::sweep_timed_out_midjourneys(
+        &db,
+        now,
+        poller_config.poll_lease_seconds,
+        poller_config.timeout_sweep_limit,
+    )
+    .await
     {
         Ok(settled) => worker::console_log!("task poller: timed out {settled} mj task(s)"),
         Err(err) => worker::console_error!("task poller: mj timeout sweep failed: {err}"),
     }
-    match task_orchestration::poll_unfinished_midjourney_tasks(&db, now, poller_config.query_limit)
-        .await
+    match task_orchestration::poll_unfinished_midjourney_tasks(
+        &db,
+        now,
+        poller_config.poll_lease_seconds,
+        poller_config.query_limit,
+    )
+    .await
     {
         Ok(settled) => worker::console_log!("task poller: settled {settled} mj task(s)"),
         Err(err) => worker::console_error!("task poller: mj batch failed: {err}"),

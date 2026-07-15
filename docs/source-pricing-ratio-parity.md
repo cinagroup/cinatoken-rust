@@ -1,13 +1,14 @@
 # Source Pricing And Ratio Resolution Parity (G4, non-tiered)
 
-Date: 2026-07-14
+Date: 2026-07-15
 
 Status: canonical, source-derived specification of the **non-tiered (legacy
 ratio/price) billing path** — the default for most models, distinct from the
 tiered expression engine in `docs/source-billing-expr-parity.md`. The core
-ratio/price path, frozen ledger intent, and unknown-model admission policy are
-implemented locally. Provider-specific multipliers and source-generated golden
-evidence remain cutover blockers.
+ratio/price path, frozen ledger intent, unknown-model admission policy, and
+immutable Go-generated flat manifest are implemented locally. Remaining
+provider actual-count semantics and deployed reconciliation are cutover
+blockers.
 
 ## Source Of Truth
 
@@ -67,8 +68,8 @@ quota = round(billable * modelRatio * groupRatio)
 
 The compound output-audio term is intentional and follows Go
 `service/quota.go`; `audioCompletionRatio` is not a replacement for
-`audioRatio`. TTS response-duration/byte-fallback synthesis and the route
-conditions that select this dedicated formula remain unimplemented in Rust.
+`audioRatio`. Rust schema v4 freezes the route decision and ratios, and bounded
+TTS response duration/byte-fallback settlement is implemented locally.
 
 ## Resolution Edge Cases (match exactly)
 
@@ -188,8 +189,9 @@ gaps vs Go (the actual remaining work):
   `OtherRatios` are frozen in schema v2. Schema v3 additionally freezes
   `tool_price_setting.prices` and charges bounded Responses/Claude web search,
   Responses file search, and one GPT Image 1 generation call before applying
-  `OtherRatios` and one final decimal round. Remaining formula gaps are listed
-  below.
+  `OtherRatios` and one final decimal round. Schema v4 freezes audio-detail
+  routing/ratios and OpenRouter cache-write inference eligibility. Remaining
+  formula gaps are listed below.
 
 Remaining checklist:
 
@@ -202,16 +204,24 @@ Remaining checklist:
    token/channel read-through lifecycle. Keep mutation invalidation and cache
    schema versioning covered whenever another admission field is added.
 4. Per-token settlement arithmetic with the full sub-category ratio set,
-   request-time `OtherRatios`, and bounded flat tool surcharges — DONE locally.
-   Mutable tool prices are request-frozen and response facts are capped; audit
-   metadata records the selected facts and prices. Still pending: OpenRouter
-   cost-based cache-write inference, TTS audio-detail arithmetic, provider
-   actual-image/count replacements, and tiered-path tool-surcharge parity.
+   request-time `OtherRatios`, bounded flat tool surcharges, OpenRouter
+   cost-based cache-write inference, and TTS audio-detail arithmetic — DONE
+   locally. Mutable prices and eligibility are request-frozen; response facts
+   are bounded and audited. Still pending: provider actual-image/count
+   replacements and tiered-path tool-surcharge parity.
 5. Implement the free-model rule and `EnableFreeModelPreConsume`.
-6. Add an immutable Go-generated flat manifest covering per-call, per-token,
-   every sub-category, site/user unknown-model admission, free models, and group
-   ratio 0/fractional/large. Existing Go expression and default-table fixtures
-   do not satisfy this cutover requirement.
+6. Immutable Go-generated flat manifest — DONE locally 2026-07-15. The Bun
+   generator temporarily injects two tests into the source packages, executes
+   the real Go terminal formula and admission helper, and removes the temporary
+   files in `finally`. The committed schema-1 artifact is bound to Go commit
+   `73652508abc5`, eight billing source-file hashes, the generator-script hash,
+   both generator-template hashes, and manifest SHA-256
+   `76784eba4dc518ac7eb491542d6451196fef44e1610403c08c666377d79f6a60`.
+   Rust replays 10 terminal cases plus 8 admission/pre-consume cases, including
+   per-call, per-token, cache read/write, image, Gemini audio, audio details,
+   tool surcharges, free models, unset-model policy, and zero/fractional/large
+   group cases. Artifact verification is `bun run check:billing-flat-manifest`;
+   source regeneration is `bun run generate:billing-flat-manifest`.
 
 ## Wire-In
 

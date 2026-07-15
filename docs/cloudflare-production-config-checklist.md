@@ -784,11 +784,12 @@ armed only when:
 - Staging proof cannot override source parity. Cutover additionally requires
   `relay_flat_billing_go_parity_ready=true`; this remains hard false until
   provider actual-image/count replacement, image-edit/Ali response semantics,
-  free-model policy, remaining provider usage sources, and an immutable
-  Go-generated flat manifest are implemented and verified. TTS binary/audio
-  detail and OpenRouter cost inference are locally closed but still require
-  deployed direct/Gateway/WFP, Queue/D1, provider-invoice, abort, and rollback
-  evidence; local parity is not sufficient for cutover.
+  free-model policy, and remaining provider usage sources are implemented and
+  verified. The immutable Go flat manifest, TTS binary/audio detail, and
+  OpenRouter cost inference are locally closed but still require approved
+  cutover-commit regeneration and deployed direct/Gateway/WFP, Queue/D1,
+  provider-invoice, abort, and rollback evidence; local parity is not
+  sufficient for cutover.
 - Ordinary upstream failure and zero-usage refund must leave request count and
   channel usage unchanged. Successful billable usage owns one terminal request
   mutation through the reservation ledger.

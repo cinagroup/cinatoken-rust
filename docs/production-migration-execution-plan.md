@@ -1208,14 +1208,15 @@ not staging evidence and does not change the production **NO-GO** decision.
 1. Keep Go/VPS authoritative and rotate the exposed Cloudflare credential.
    Preserve separate least-privilege deploy and readback identities; never put
    their values in the evidence packet.
-2. Generate an immutable flat-pricing manifest from Go baseline
-   `73652508abc5`. Cover fixed and per-token models, every usage sub-category,
-   site/user unknown-model policy, zero/free values, all enabled providers, and
-   the exact final integer quota. Sign and version the fixture with source hash.
-3. Close the remaining provider formulas in Rust: per-token audio,
-   image size/quality/actual count and Ali `prompt_extend`, actual tool-call
-   surcharge, provider `OtherRatios`, and usage-source rules. Keep
-   `relay_flat_billing_go_parity_ready` hard false until the manifest is exact.
+2. DONE locally: generate the schema-1 immutable flat-pricing manifest from Go
+   baseline `73652508abc5`; bind source/generator/template hashes, 10 terminal
+   cases, 8 admission/pre-consume cases, and the exact final integer quota.
+   Regenerate and sign it again at the approved cutover commit.
+3. Close the remaining provider formulas in Rust: provider actual image count,
+   multipart image-edit/Ali response semantics, free-model runtime policy,
+   provider `OtherRatios`, and remaining usage-source rules. Keep
+   `relay_flat_billing_go_parity_ready` hard false until those gaps and remote
+   reconciliation are exact.
 4. Apply migrations through 0030 in isolated staging with all Queue, recovery,
    reconciliation, and staging-proof gates false. Archive exact-set readback,
    then prove direct D1 attempts to mutate every protected financial field are

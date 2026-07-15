@@ -4857,7 +4857,48 @@ Verified behavior:
   session.
 
 This is local E3 evidence. Full deployed browser journeys, provider
-actual-count/image-edit parity, the immutable Go flat manifest, remote
-Queue/D1/DLQ and provider invoice reconciliation, fault/load/alert evidence,
-credential rotation, rollback, and G1-G8 approval remain blocking. Production
-remains **NO-GO**.
+actual-count/image-edit parity, remote Queue/D1/DLQ and provider invoice
+reconciliation, fault/load/alert evidence, credential rotation, rollback, and
+G1-G8 approval remain blocking. Production remains **NO-GO**.
+
+## Immutable Go Flat Billing Manifest Verification (2026-07-15)
+
+```powershell
+bun tools/generate_go_flat_billing_manifest.mjs `
+  --source C:\cinagroup\cinatoken `
+  --go-proxy "https://goproxy.cn,direct" `
+  --json
+# PASS; source commit 73652508abc5, 10 terminal cases, 8 admission cases,
+# manifest SHA-256 76784eba4dc518ac7eb491542d6451196fef44e1610403c08c666377d79f6a60
+
+bun run check:billing-flat-manifest
+# PASS; canonical payload digest and both required case families verified
+
+cargo test -p cinatoken-billing --test flat_go_manifest
+# PASS; 3/3 (identity/uniqueness, terminal formula, admission/pre-consume)
+
+bun run check:web:readiness
+# PASS; 52/52
+```
+
+Verified behavior:
+
+- Generation executes the real Go source package functions rather than a copied
+  Rust or JavaScript formula. Source commit, eight billing source files, the
+  generator script, and both injected test templates are hash-bound to the
+  artifact.
+- Temporary Go test files are collision-checked and removed on success or
+  failure. Post-generation source status contains only the pre-existing
+  `controller/nul` entry.
+- Rust matches all Go terminal quotas and admission/pre-consume decisions over
+  token/fixed, media/cache/audio/tool, DALL-E multiplier, unknown-model,
+  free-model, and group-ratio cases.
+- The ordinary artifact check is offline and deterministic; the optional
+  source regeneration path may use an explicitly selected Go proxy, while Go
+  module integrity remains verified by the configured checksum database.
+
+This is local E3 evidence. It closes only the immutable Go flat-manifest item.
+Provider actual-count/image-edit parity, free-model runtime policy, deployed
+browser journeys, remote Queue/D1/DLQ/provider reconciliation, credential
+rotation, rollback, and G1-G8 approval remain blocking. Production remains
+**NO-GO**.

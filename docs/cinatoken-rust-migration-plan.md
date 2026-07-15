@@ -12524,3 +12524,47 @@ Settings/Content readback, tenant smoke, Queue/D1/DLQ, provider-invoice,
 load/alert, credential-rotation, rollback, or signed G1-G8 evidence was produced
 by this local increment. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+### 22.208 2026-07-15 Flat V4 And Immutable Go Manifest Contract
+
+This section records the current flat-billing baseline after 22.207. The source
+`pkg/billingexpr/expr.md` was reread before the audit. Provider-original usage
+and AST opt-in normalization remain authoritative for tiered expressions; the
+OpenRouter inference below is flat-only.
+
+Implemented and verified locally:
+
+- `FlatPricingSnapshot` schema v4 and `flat-v4:<sha256>` freeze audio ratios,
+  the audio-detail route decision, and OpenRouter cache-write inference
+  eligibility. TTS response settlement derives bounded container/PCM duration
+  or the Go byte fallback. Eligible OpenRouter Anthropic usage reconstructs a
+  missing cache-write aggregate from provider cost without altering tiered
+  usage.
+- A schema-1 Go flat manifest executes the real source
+  `calculateTextQuotaSummary`, `calculateAudioQuota`, and `ModelPriceHelper`
+  paths at commit `73652508abc5`. The artifact binds eight billing source files,
+  the generator script, both generator templates, 10 terminal cases, 8
+  admission/pre-consume cases,
+  and canonical SHA-256
+  `76784eba4dc518ac7eb491542d6451196fef44e1610403c08c666377d79f6a60`.
+- The generator copies collision-checked temporary tests into the Go checkout,
+  runs only the named tests, and removes the files in `finally`. The committed
+  artifact can be verified offline with
+  `bun run check:billing-flat-manifest`; full regeneration is explicit and
+  records the exact source commit and file hashes.
+- Rust replays every manifest case through the same frozen snapshot,
+  settlement, admission, and pre-consume functions used by the Worker. Coverage
+  includes per-token/fixed, cache read/write, image, Gemini audio, audio detail,
+  tool surcharge, DALL-E request multiplier, unknown-model admission, free
+  models, and zero/fractional/large group ratios.
+- Focused evidence passes manifest integrity, Rust replay 3/3, billing baseline
+  101 unit plus 10 expression parity tests, and frontend readiness 52/52. The
+  Go checkout returns to its original status after generation.
+
+This closes the previously open immutable Go flat-manifest item. It does not
+authorize cutover. Provider actual-image/count replacement, multipart
+image-edit settlement, complete free-model runtime policy, browser journeys,
+remote migration/Queue/D1/DLQ/provider-invoice reconciliation, abort/idle
+faults, load/alerts, credential rotation, rollback, and signed G1-G8 approval
+remain mandatory. `relay_flat_billing_go_parity_ready` stays hard false,
+Go/VPS remains authoritative, and production remains **NO-GO**.

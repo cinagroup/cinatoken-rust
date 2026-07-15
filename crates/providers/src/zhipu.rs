@@ -136,6 +136,7 @@ fn apply_image_request(body: &mut Value) {
     for field in [
         "model",
         "prompt",
+        "n",
         "quality",
         "size",
         "watermark_enabled",
@@ -288,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn image_transform_keeps_only_current_official_fields() {
+    fn image_transform_preserves_source_request_fields() {
         let mut body = json!({
             "model": "glm-image",
             "prompt": "a diagram",
@@ -307,6 +308,7 @@ mod tests {
             json!({
                 "model": "glm-image",
                 "prompt": "a diagram",
+                "n": 2,
                 "quality": "hd",
                 "size": "1280x1280",
                 "watermark_enabled": true,

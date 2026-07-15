@@ -1231,3 +1231,39 @@ Production remains **NO-GO**.
   policy completion, browser journeys, remote Queue/D1/provider reconciliation,
   credential rotation, rollback, and signed G1-G8 approval remain open.
   Production remains **NO-GO**.
+
+## 2026-07-15 Multipart Image Edit Flat Settlement Increment
+
+- The Go source audit at commit `73652508abc5` confirms that ordinary
+  OpenAI-compatible, SiliconFlow, and xAI fixed-price image requests settle
+  from request `n`; only Ali/Bailian replaces a positive request count with
+  upstream `usage.image_count` or a non-empty converted response `data` count.
+- Bounded multipart `/v1/images/edits` preparation now extracts only
+  `model`, `n`, `size`, and `quality` into a separate flat-pricing body. The
+  original multipart bytes, including image and mask files, are still
+  forwarded unchanged.
+- The separate body is intentional: flat snapshots now receive the same
+  request-count and DALL-E size/quality facts as Go, while `tiered_expr` keeps
+  Go's multipart limitation and sees only the existing minimal model context.
+  This avoids silently making `param("n")` billable after migration.
+- Successful image edits without token usage now use the same one-token
+  request contract as image generations and settle the frozen flat intent.
+  Provider/HTTP/JSON failures continue down the reservation refund path.
+- Zhipu v4 image generation now forwards request `n`, matching the Go type-26
+  pass-through contract and preventing a request-count charge from diverging
+  from the actual upstream generation count.
+- No snapshot schema or digest changed: the request facts are resolved before
+  the existing schema-v4 snapshot is serialized, so `flat-v4` replay and drain
+  requirements remain intact.
+- `/api/platform/capabilities` now exposes stable flat-parity blocker IDs, and
+  the Cloudflare Platform panel renders their translated names instead of a
+  generic `Parity blocked` badge. A contradictory backend response that claims
+  parity while retaining blockers remains fail-closed in the frontend.
+- Local evidence passes the complete root `bun run check` gate, Rust formatting,
+  all 681 Worker library tests, and all 52 frontend readiness tests,
+  including binary multipart extraction, expression isolation, DALL-E edit
+  ratios, request `n`, and usage-less edit settlement.
+- Ali native image submit/poll and response actual-count replacement remain
+  open. That adapter requires bounded asynchronous orchestration and remote
+  provider evidence; SiliconFlow/xAI image edits remain unsupported and must
+  continue to fail before reserve. Production remains **NO-GO**.

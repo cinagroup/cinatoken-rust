@@ -4902,3 +4902,54 @@ Provider actual-count/image-edit parity, free-model runtime policy, deployed
 browser journeys, remote Queue/D1/DLQ/provider reconciliation, credential
 rotation, rollback, and G1-G8 approval remain blocking. Production remains
 **NO-GO**.
+
+## Multipart Image Edit Flat Settlement Verification (2026-07-15)
+
+```powershell
+cargo fmt --all -- --check
+# PASS
+
+cargo test -p cinatoken-worker --lib
+# PASS; 681/681
+
+bun run check:web:readiness
+# PASS; 52/52
+
+cargo test -p cinatoken-providers zhipu
+# PASS
+
+bun run check
+# PASS; frontend build/audits, route and Cloudflare contracts, workspace tests,
+# and main/tenant/outbound wasm32 checks
+```
+
+Verified behavior:
+
+- Multipart image edits keep the upload bytes untouched while a bounded,
+  pricing-only projection captures `model`, positive integer `n`, `size`, and
+  `quality` for the existing flat-v4 snapshot.
+- The tiered-expression `RequestInput` remains model-only for multipart, so
+  this change does not grant `param("n")` visibility that Go does not have.
+- DALL-E edit size/quality uses the same source ratios as generation, and
+  fixed-price edit count uses request `n`. A successful edit with no provider
+  token usage receives the Go-compatible one-token request contract instead
+  of refunding its reservation.
+- Image response array length does not replace request `n` for ordinary
+  OpenAI-compatible providers. Source audit confirms that response-count
+  replacement belongs only to Ali/Bailian and ignores zero, falling back to
+  the request count.
+- Zhipu v4 preserves request `n` in the outbound image payload, matching the
+  Go type-26 pass-through adapter and the frozen request-count billing fact.
+- The flat snapshot remains schema v4 and the contract prefix remains
+  `flat-v4:`; no in-flight reservation migration or replay-format change was
+  introduced.
+- Platform capabilities publish stable blockers for Ali actual count,
+  free-model runtime policy, and provider usage-source parity. The frontend
+  renders those blockers by name and refuses a contradictory `ready=true`
+  response while the blocker list is non-empty.
+
+This closes local OpenAI-compatible multipart image-edit flat settlement, not
+the provider family as a whole. Ali native asynchronous submit/poll,
+actual-count replacement, remote failure/refund reconciliation, provider
+invoice comparison, and SiliconFlow/xAI edit semantics remain blocking.
+Production remains **NO-GO**.

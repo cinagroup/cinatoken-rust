@@ -91,6 +91,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_flat_billing_intent_schema_ready'
   | 'relay_flat_billing_intent_runtime_ready'
   | 'relay_flat_billing_go_parity_ready'
+  | 'relay_flat_billing_go_parity_blockers'
   | 'relay_flat_billing_intent_staging_verified'
   | 'relay_flat_billing_intent_cutover_ready'
   | 'relay_billing_prebind_owner_generation_compiled'
@@ -386,14 +387,37 @@ export function getFlatBillingIntentReadiness(
     runtime,
     capabilities.relay_flat_billing_intent_staging_verified
   )
-  const parity = capabilities.relay_flat_billing_go_parity_ready
+  const parity = allReady(
+    capabilities.relay_flat_billing_go_parity_ready,
+    capabilities.relay_flat_billing_go_parity_blockers.length === 0
+  )
   const cutover = allReady(
     staging,
     parity,
     capabilities.relay_flat_billing_intent_cutover_ready
   )
 
-  return { implementation, runtime, staging, parity, cutover }
+  return {
+    implementation,
+    runtime,
+    staging,
+    parity,
+    parityBlockers: capabilities.relay_flat_billing_go_parity_blockers,
+    cutover,
+  }
+}
+
+export function getFlatBillingParityBlockerLabel(blocker: string) {
+  switch (blocker) {
+    case 'ali_actual_image_count':
+      return 'Ali actual image count'
+    case 'free_model_runtime_policy':
+      return 'Free-model runtime policy'
+    case 'provider_usage_source_parity':
+      return 'Provider usage-source parity'
+    default:
+      return blocker
+  }
 }
 
 export function buildPlatformReadinessSummary(

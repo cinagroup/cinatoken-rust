@@ -496,6 +496,7 @@ export type PlatformCapabilities = {
   relay_flat_billing_intent_schema_ready: boolean
   relay_flat_billing_intent_runtime_ready: boolean
   relay_flat_billing_go_parity_ready: boolean
+  relay_flat_billing_go_parity_blockers: string[]
   relay_flat_billing_intent_staging_verified: boolean
   relay_flat_billing_intent_cutover_ready: boolean
   relay_billing_reservation_lease_seconds: number

@@ -29,6 +29,7 @@ import { SettingsSection } from '../components/settings-section'
 import type { PlatformCapabilities, TaskRunnerStatusProbe } from '../types'
 import {
   buildPlatformReadinessSummary,
+  getFlatBillingParityBlockerLabel,
   getFlatBillingIntentReadiness,
   getPlatformReadinessSignalLabel,
   getQuotaCoordinatorReadiness,
@@ -388,6 +389,9 @@ function buildCapabilityGroups(
     capabilities.quota_coordinator_cutover_guards.join(', ') || t('No guards')
   const quotaCoordinator = getQuotaCoordinatorReadiness(capabilities)
   const flatBillingIntent = getFlatBillingIntentReadiness(capabilities)
+  const flatBillingParityBlockers = flatBillingIntent.parityBlockers
+    .map((blocker) => t(getFlatBillingParityBlockerLabel(blocker)))
+    .join(', ')
 
   return [
     {
@@ -618,12 +622,23 @@ function buildCapabilityGroups(
         },
         {
           label: t('Go pricing parity'),
-          description: t(
-            'Requires decimal finalization, unset-ratio policy, and complete provider pricing multipliers.'
-          ),
+          description:
+            flatBillingIntent.parityBlockers.length > 0
+              ? t('Remaining blockers ({{count}}): {{blockers}}.', {
+                  count: flatBillingIntent.parityBlockers.length,
+                  blockers: flatBillingParityBlockers,
+                })
+              : t(
+                  'Requires decimal finalization, unset-ratio policy, and complete provider pricing multipliers.'
+                ),
           ready: flatBillingIntent.parity,
           readyLabel: t('Verified'),
-          missingLabel: t('Parity blocked'),
+          missingLabel:
+            flatBillingIntent.parityBlockers.length > 0
+              ? t('{{count}} blockers', {
+                  count: flatBillingIntent.parityBlockers.length,
+                })
+              : t('Parity blocked'),
           missingVariant: 'warning',
         },
         {

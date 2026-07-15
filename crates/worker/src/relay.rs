@@ -435,7 +435,7 @@ impl RelayEndpoint {
             | RelayProviderKind::OpenAiCompatible
             | RelayProviderKind::SiliconFlowOpenAi => match self.upstream_path.as_str() {
                 "embeddings" => EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES,
-                "images/generations" => IMAGE_JSON_RESPONSE_LIMIT_BYTES,
+                "images/generations" | "images/edits" => IMAGE_JSON_RESPONSE_LIMIT_BYTES,
                 "rerank" => RERANK_JSON_RESPONSE_LIMIT_BYTES,
                 "audio/speech" => AUDIO_SPEECH_RESPONSE_LIMIT_BYTES,
                 _ => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
@@ -2414,6 +2414,7 @@ async fn relay_endpoint_with_auth(
     };
     let request_body = prepared_request.body;
     let mut billing_request_input = prepared_request.billing_request_input;
+    let flat_pricing_request_body = prepared_request.flat_pricing_request_body;
     let extra_prompt_tokens = prepared_request.extra_prompt_tokens;
 
     // Multipart/raw bodies do not support streaming or model-mapping rewrites;
@@ -2607,6 +2608,7 @@ async fn relay_endpoint_with_auth(
         &attempt_plan,
         &endpoint.upstream_path,
         json_body.as_ref().unwrap_or(&Value::Null),
+        &flat_pricing_request_body,
         &billing_request_input,
         endpoint.uses_openai_chat_format(),
         extra_prompt_tokens,
@@ -3214,6 +3216,16 @@ async fn relay_endpoint_with_auth(
                     Some(unique_group_count(&fallback_billing_groups));
                 let mut fallback_billing_request_input = billing_request_input.clone();
                 fallback_billing_request_input.body = Some(fallback_request_body.clone());
+                let mut fallback_flat_pricing_request_body = if json_body.is_some() {
+                    fallback_request_body.clone()
+                } else {
+                    flat_pricing_request_body.clone()
+                };
+                apply_model_attempt_body(
+                    &mut fallback_flat_pricing_request_body,
+                    fallback_model,
+                    None,
+                );
                 let mut fallback_group_plan = match prepare_relay_billing_group_plan(
                     &db,
                     fallback_model,
@@ -3222,6 +3234,7 @@ async fn relay_endpoint_with_auth(
                     &fallback_attempt_plan,
                     &endpoint.upstream_path,
                     &fallback_request_body,
+                    &fallback_flat_pricing_request_body,
                     &fallback_billing_request_input,
                     endpoint.uses_openai_chat_format(),
                     extra_prompt_tokens,
@@ -5310,6 +5323,10 @@ impl RelayRequestBody {
 struct PreparedRelayRequest {
     body: RelayRequestBody,
     billing_request_input: RequestInput,
+    /// Request facts used only by flat pricing. Multipart image edits need
+    /// `n`/`size`/`quality` here, while Go-compatible tiered expressions must
+    /// continue to see the original minimal multipart request context.
+    flat_pricing_request_body: Value,
     extra_prompt_tokens: i64,
 }
 
@@ -5381,6 +5398,7 @@ async fn prepare_json_relay_request(
 
     Ok(Ok(PreparedRelayRequest {
         billing_request_input: billing_request_input(req, &request_body),
+        flat_pricing_request_body: request_body.clone(),
         body: RelayRequestBody::Json(request_body),
         extra_prompt_tokens: 0,
     }))
@@ -5468,14 +5486,13 @@ async fn prepare_multipart_relay_request(
     // multipart we pass the model through so the channel/billing lookups
     // work, but text-prompt estimation will be empty (acceptable: STT
     // billing is per-duration, not per-text-token).
-    let synthetic_body = match endpoint_multipart_model(&bytes, &content_type) {
-        Some(model) => json!({ "model": model }),
-        None => Value::Object(serde_json::Map::new()),
-    };
+    let (synthetic_body, flat_pricing_request_body) =
+        multipart_billing_request_bodies(endpoint, &bytes, &content_type);
     let extra_prompt_tokens = multipart_extra_prompt_tokens(endpoint, &bytes, &content_type);
 
     Ok(Ok(PreparedRelayRequest {
         billing_request_input: billing_request_input(req, &synthetic_body),
+        flat_pricing_request_body,
         body: RelayRequestBody::Raw {
             bytes,
             content_type,
@@ -5486,6 +5503,34 @@ async fn prepare_multipart_relay_request(
 
 fn endpoint_multipart_model(bytes: &[u8], content_type: &str) -> Option<String> {
     cinatoken_relay::extract_multipart_field(bytes, content_type, "model")
+}
+
+fn multipart_billing_request_bodies(
+    endpoint: &RelayEndpoint,
+    bytes: &[u8],
+    content_type: &str,
+) -> (Value, Value) {
+    let mut body = serde_json::Map::new();
+    if let Some(model) = endpoint_multipart_model(bytes, content_type) {
+        body.insert("model".to_string(), Value::String(model));
+    }
+    let expression_body = Value::Object(body.clone());
+    if endpoint.upstream_path != "images/edits" {
+        return (expression_body.clone(), expression_body);
+    }
+
+    if let Some(n) = cinatoken_relay::extract_multipart_field(bytes, content_type, "n")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    {
+        body.insert("n".to_string(), Value::from(n));
+    }
+    for field in ["size", "quality"] {
+        if let Some(value) = cinatoken_relay::extract_multipart_field(bytes, content_type, field) {
+            body.insert(field.to_string(), Value::String(value));
+        }
+    }
+    (expression_body, Value::Object(body))
 }
 
 fn multipart_extra_prompt_tokens(
@@ -10128,7 +10173,7 @@ async fn record_relay_audit(
     let use_time = now.saturating_sub(audit.started_at);
     let reported_usage_present =
         usage_summary_is_present(usage, audit.missing_usage_estimate_enabled);
-    // Image-generation APIs commonly return a successful URL without token
+    // Image APIs commonly return a successful URL without token
     // usage. Treat that response as billable by request contract while keeping
     // the real zero-token vector for tiered expressions and fixed-price audit.
     let request_contract_usage =
@@ -10873,7 +10918,11 @@ fn usage_summary_is_present(usage: &UsageSummary, estimate_enabled: bool) -> boo
 fn usage_less_request_contract_applies(endpoint_path: &str, reported_usage_present: bool) -> bool {
     matches!(
         endpoint_path,
-        "images/generations" | "audio/speech" | "audio/transcriptions" | "audio/translations"
+        "images/generations"
+            | "images/edits"
+            | "audio/speech"
+            | "audio/transcriptions"
+            | "audio/translations"
     ) && !reported_usage_present
 }
 
@@ -11486,6 +11535,7 @@ async fn prepare_relay_billing_group_plan(
     attempts: &[RelayAttemptPlan],
     endpoint_path: &str,
     request_body: &Value,
+    flat_pricing_request_body: &Value,
     request: &RequestInput,
     is_openai_chat: bool,
     extra_prompt_tokens: i64,
@@ -11517,7 +11567,7 @@ async fn prepare_relay_billing_group_plan(
         accept_unset_ratio_model,
         attempts,
         endpoint_path,
-        request_body,
+        flat_pricing_request_body,
         is_openai_chat,
         extra_prompt_tokens,
     )
@@ -12546,7 +12596,7 @@ fn flat_usage_from_summary(
         }),
         is_anthropic_usage_semantic: usage.is_anthropic_usage_semantic,
     };
-    if endpoint_path == "images/generations" && flat.total_tokens <= 0 {
+    if matches!(endpoint_path, "images/generations" | "images/edits") && flat.total_tokens <= 0 {
         flat.prompt_tokens = 1;
         flat.total_tokens = 1;
     } else if matches!(
@@ -12582,7 +12632,7 @@ fn request_other_ratio_product(
     model: &str,
     request_body: Option<&Value>,
 ) -> f64 {
-    if endpoint_path != "images/generations" {
+    if !matches!(endpoint_path, "images/generations" | "images/edits") {
         return 1.0;
     }
     let Some(body) = request_body else {
@@ -12612,7 +12662,9 @@ fn request_image_price_ratio(
     model: &str,
     request_body: Option<&Value>,
 ) -> f64 {
-    if endpoint_path != "images/generations" || !model.starts_with("dall-e") {
+    if !matches!(endpoint_path, "images/generations" | "images/edits")
+        || !model.starts_with("dall-e")
+    {
         return 1.0;
     }
     let Some(body) = request_body else {
@@ -15035,6 +15087,65 @@ mod tests {
     }
 
     #[test]
+    fn multipart_image_edit_freezes_flat_facts_without_expanding_tiered_input() {
+        let mut endpoint = endpoint(false, None);
+        endpoint.route = ProviderRelayRoute::ImageEdits;
+        endpoint.upstream_path = "images/edits".to_string();
+        endpoint.request_body_mode = RelayRequestBodyMode::MultipartForm;
+        let boundary = "image-edit-boundary";
+        let mut body = Vec::new();
+        for (name, value) in [
+            ("model", "dall-e-3"),
+            ("prompt", "make it blue"),
+            ("n", "2"),
+            ("size", "1024x1792"),
+            ("quality", "hd"),
+        ] {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+            );
+            body.extend_from_slice(value.as_bytes());
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\n",
+        );
+        body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
+        body.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x00, 0xff]);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let (tiered_body, flat_body) =
+            multipart_billing_request_bodies(&endpoint, &body, &content_type);
+        assert_eq!(tiered_body, json!({"model": "dall-e-3"}));
+        assert_eq!(
+            flat_body,
+            json!({
+                "model": "dall-e-3",
+                "n": 2,
+                "size": "1024x1792",
+                "quality": "hd"
+            })
+        );
+        assert_eq!(
+            request_other_ratio_product(
+                "images/edits",
+                CHANNEL_TYPE_OPENAI,
+                "dall-e-3",
+                Some(&flat_body)
+            ),
+            2.0
+        );
+        assert_eq!(
+            request_image_price_ratio("images/edits", "dall-e-3", Some(&flat_body)),
+            3.0
+        );
+    }
+
+    #[test]
     fn anthropic_messages_endpoint_allows_streaming() {
         let endpoint = RelayEndpoint {
             display_name: "Anthropic messages",
@@ -16045,6 +16156,12 @@ mod tests {
         );
 
         endpoint.upstream_path = "images/generations".to_string();
+        assert_eq!(
+            config.max_bytes_for(&endpoint),
+            IMAGE_JSON_RESPONSE_LIMIT_BYTES
+        );
+
+        endpoint.upstream_path = "images/edits".to_string();
         assert_eq!(
             config.max_bytes_for(&endpoint),
             IMAGE_JSON_RESPONSE_LIMIT_BYTES
@@ -18988,6 +19105,7 @@ mod tests {
             "chat/completions",
             false
         ));
+        assert!(usage_less_request_contract_applies("images/edits", false));
         let normalized = flat_usage_from_summary(
             &usage,
             "images/generations",
@@ -18997,6 +19115,15 @@ mod tests {
         );
         assert_eq!(normalized.prompt_tokens, 1);
         assert_eq!(normalized.total_tokens, 1);
+        let edit = flat_usage_from_summary(
+            &usage,
+            "images/edits",
+            "image-model",
+            &RequestInput::default(),
+            0,
+        );
+        assert_eq!(edit.prompt_tokens, 1);
+        assert_eq!(edit.total_tokens, 1);
         let audio = flat_usage_from_summary(
             &usage,
             "audio/speech",
@@ -19207,6 +19334,15 @@ mod tests {
         );
         assert_eq!(
             request_other_ratio_product(
+                "images/edits",
+                CHANNEL_TYPE_OPENAI,
+                "dall-e-3",
+                Some(&siliconflow)
+            ),
+            2.0
+        );
+        assert_eq!(
+            request_other_ratio_product(
                 "images/generations",
                 CHANNEL_TYPE_XAI,
                 "grok-image",
@@ -19247,6 +19383,14 @@ mod tests {
                 Some(&json!({"size": "256x256"}))
             ),
             0.4
+        );
+        assert_eq!(
+            request_image_price_ratio(
+                "images/edits",
+                "dall-e-3",
+                Some(&json!({"size": "1024x1792", "quality": "hd"}))
+            ),
+            3.0
         );
     }
 

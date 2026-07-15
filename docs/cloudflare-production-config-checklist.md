@@ -783,13 +783,27 @@ armed only when:
   before provider egress. Never log or persist the raw identity.
 - Staging proof cannot override source parity. Cutover additionally requires
   `relay_flat_billing_go_parity_ready=true`; this remains hard false until
-  provider actual-image/count replacement, image-edit/Ali response semantics,
+  Ali actual-image/count replacement, native asynchronous submit/poll,
   free-model policy, and remaining provider usage sources are implemented and
-  verified. The immutable Go flat manifest, TTS binary/audio detail, and
-  OpenRouter cost inference are locally closed but still require approved
-  cutover-commit regeneration and deployed direct/Gateway/WFP, Queue/D1,
-  provider-invoice, abort, and rollback evidence; local parity is not
-  sufficient for cutover.
+  verified. Generic OpenAI-compatible multipart image-edit flat settlement,
+  the immutable Go flat manifest, TTS binary/audio detail, and OpenRouter cost
+  inference are locally closed but still require approved cutover-commit
+  regeneration and deployed direct/Gateway/WFP, Queue/D1, provider-invoice,
+  abort, and rollback evidence; local parity is not sufficient for cutover.
+- Multipart image-edit staging evidence must prove that flat pricing receives
+  request `n`, `size`, and `quality`, while tiered expressions do not gain new
+  multipart parameter visibility. Archive success-without-usage, malformed
+  success, provider/HTTP failure, duplicate identity, binary image/mask, body
+  limit, count zero/default, and DALL-E size/quality cases.
+- `/api/platform/capabilities` must expose a reviewed, non-empty blocker list
+  whenever `relay_flat_billing_go_parity_ready=false`; the frontend must render
+  the same blocker IDs by name. A true parity bit with any remaining blocker
+  must stay fail-closed.
+- Ali native image capability remains false until asynchronous submit/poll is
+  owned by a bounded Queue or Workflow path with idempotent task identity,
+  terminal timeout/refund, duplicate-delivery replay, count provenance, and
+  provider-invoice reconciliation. A long polling loop inside one request is
+  not production evidence.
 - Ordinary upstream failure and zero-usage refund must leave request count and
   channel usage unchanged. Successful billable usage owns one terminal request
   mutation through the reservation ledger.

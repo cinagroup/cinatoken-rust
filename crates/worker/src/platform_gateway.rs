@@ -167,6 +167,11 @@ const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
     "queue_v2_generation",
     "staging_race_replay",
 ];
+const RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS: &[&str] = &[
+    "ali_actual_image_count",
+    "free_model_runtime_policy",
+    "provider_usage_source_parity",
+];
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0001_core.sql",
     "0002_admin_tables.sql",
@@ -378,6 +383,7 @@ struct PlatformCapabilities {
     relay_flat_billing_intent_schema_ready: bool,
     relay_flat_billing_intent_runtime_ready: bool,
     relay_flat_billing_go_parity_ready: bool,
+    relay_flat_billing_go_parity_blockers: Vec<&'static str>,
     relay_flat_billing_intent_staging_verified: bool,
     relay_flat_billing_intent_cutover_ready: bool,
     relay_billing_reservation_lease_seconds: i64,
@@ -814,9 +820,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let relay_flat_billing_intent_runtime_ready = relay_flat_billing_intent_compiled
         && relay_flat_billing_intent_schema_ready
         && relay_billing_finalization_runtime_ready;
-    // Intent durability, decimal finalization, and unset-model admission are
-    // implemented. Audio usage, image size/quality/actual-count, tool fees,
-    // provider OtherRatios, and immutable golden evidence still block cutover.
+    // Keep this fail-closed until every structured parity blocker is removed.
+    // Staging and cutover evidence remain separate gates below.
     let relay_flat_billing_go_parity_ready = false;
     let relay_flat_billing_intent_staging_verified =
         env_flag(&env, RELAY_FLAT_BILLING_INTENT_STAGING_VERIFIED_ENV);
@@ -1201,6 +1206,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_flat_billing_intent_schema_ready,
         relay_flat_billing_intent_runtime_ready,
         relay_flat_billing_go_parity_ready,
+        relay_flat_billing_go_parity_blockers: RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS.to_vec(),
         relay_flat_billing_intent_staging_verified,
         relay_flat_billing_intent_cutover_ready,
         relay_billing_reservation_lease_seconds,
@@ -3586,6 +3592,18 @@ mod tests {
         assert!(relay_ai_gateway_cutover_guards().contains(&"channel_opted_in"));
         assert!(relay_ai_gateway_cutover_guards().contains(&"direct_provider_fallback"));
         assert!(relay_ai_gateway_cutover_guards().contains(&"billing_settlement_invariant"));
+    }
+
+    #[test]
+    fn flat_billing_parity_blockers_are_structured_and_operator_visible() {
+        assert_eq!(
+            RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS,
+            [
+                "ali_actual_image_count",
+                "free_model_runtime_policy",
+                "provider_usage_source_parity",
+            ]
+        );
     }
 
     #[test]

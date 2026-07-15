@@ -20,6 +20,8 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import {
   buildPlatformReadinessSummary,
+  getFlatBillingIntentReadiness,
+  getFlatBillingParityBlockerLabel,
   getPlatformReadinessSignalLabel,
   type PlatformReadinessCapabilities,
   type PlatformReadinessStageId,
@@ -38,6 +40,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_flat_billing_intent_schema_ready: false,
   relay_flat_billing_intent_runtime_ready: false,
   relay_flat_billing_go_parity_ready: false,
+  relay_flat_billing_go_parity_blockers: [],
   relay_flat_billing_intent_staging_verified: false,
   relay_flat_billing_intent_cutover_ready: false,
   relay_billing_prebind_owner_generation_compiled: false,
@@ -1064,6 +1067,10 @@ describe('Cloudflare platform readiness headline', () => {
         relay_flat_billing_intent_schema_ready: true,
         relay_flat_billing_intent_runtime_ready: true,
         relay_flat_billing_go_parity_ready: false,
+        relay_flat_billing_go_parity_blockers: [
+          'ali_actual_image_count',
+          'free_model_runtime_policy',
+        ],
         relay_flat_billing_intent_staging_verified: true,
         relay_flat_billing_intent_cutover_ready: false,
       })
@@ -1129,6 +1136,25 @@ describe('Cloudflare platform readiness headline', () => {
         'relay-flat-billing-intent-cutover'
       ),
       'blocked'
+    )
+
+    const inconsistentBackend = getFlatBillingIntentReadiness(
+      makeCapabilities({
+        relay_flat_billing_go_parity_ready: true,
+        relay_flat_billing_go_parity_blockers: ['ali_actual_image_count'],
+      })
+    )
+    assert.equal(inconsistentBackend.parity, false)
+    assert.deepEqual(inconsistentBackend.parityBlockers, [
+      'ali_actual_image_count',
+    ])
+    assert.equal(
+      getFlatBillingParityBlockerLabel('ali_actual_image_count'),
+      'Ali actual image count'
+    )
+    assert.equal(
+      getFlatBillingParityBlockerLabel('future_blocker'),
+      'future_blocker'
     )
   })
 

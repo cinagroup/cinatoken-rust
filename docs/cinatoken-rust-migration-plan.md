@@ -12568,3 +12568,66 @@ remote migration/Queue/D1/DLQ/provider-invoice reconciliation, abort/idle
 faults, load/alerts, credential rotation, rollback, and signed G1-G8 approval
 remain mandatory. `relay_flat_billing_go_parity_ready` stays hard false,
 Go/VPS remains authoritative, and production remains **NO-GO**.
+
+### 22.209 2026-07-15 Multipart Image Edit Pricing Boundary
+
+This increment narrows the image blocker recorded in 22.208. The source audit
+was repeated at Go commit `73652508abc5` after rereading
+`pkg/billingexpr/expr.md`.
+
+Source truth and implemented boundary:
+
+- Go normalizes missing or zero image `n` to one. Fixed-price image billing
+  excludes `n` from `ImagePriceRatio`, then applies request `n` as an
+  `OtherRatio` at terminal settlement. DALL-E size/quality remains a separate
+  request-time multiplier.
+- Ordinary OpenAI-compatible, SiliconFlow, and xAI responses do not replace
+  billing count from response array length. Only Ali/Bailian replaces `n` with
+  positive `usage.image_count`, otherwise with a non-empty converted `data`
+  count; zero falls back to the original request count.
+- Rust multipart image edits now build two bounded billing views. The existing
+  expression view retains only `model`. A flat-only view adds parsed
+  `n`, `size`, and `quality`, then resolves those facts into each candidate's
+  immutable schema-v4 snapshot before reserve.
+- Upload files and form fields still use byte-for-byte bounded forwarding.
+  No provider payload rewrite, file duplication, snapshot schema change, or D1
+  migration was introduced.
+- Successful usage-less edits now satisfy the same request-priced billing
+  contract as generations. HTTP/provider/malformed-response failures retain
+  refund behavior through the existing idempotent reservation finalization.
+- The Go type-26 Zhipu adapter passes `dto.ImageRequest` through unchanged, so
+  request `n` reaches the provider. The Rust Zhipu image projection now keeps
+  `n` as well, eliminating a charge-for-many/request-one divergence.
+- Unit coverage proves binary multipart extraction, tiered isolation, request
+  count, DALL-E rectangular HD multiplier, one-token usage normalization, and
+  unchanged `flat-v4` compatibility.
+- Backend capabilities now expose three stable local parity blockers:
+  `ali_actual_image_count`, `free_model_runtime_policy`, and
+  `provider_usage_source_parity`. The frontend displays translated blocker
+  names and treats a non-empty list as fail-closed even if a future backend
+  accidentally reports the aggregate parity bit as true.
+- The complete root `bun run check` gate, formatting, all 681 Worker library
+  tests, and all 52 frontend readiness tests pass.
+
+Production architecture decision for the remaining Ali gap:
+
+- Do not emulate Go's synchronous in-request polling inside a long-lived
+  Worker invocation. Add an explicit Ali native image adapter with bounded
+  submit state, Queue or Workflow orchestration for polling, idempotent task
+  identity, retry horizon, terminal timeout/refund, and frozen flat snapshot
+  ownership.
+- On successful completion, freeze the first positive source in this order:
+  provider `usage.image_count`, converted non-empty image count, request `n`.
+  Record count value and provenance without persisting image content or
+  credentials.
+- Keep Ali generation/edit capability false until submit, poll, cancellation,
+  duplicate delivery, zero-result success, provider error, timeout, invoice
+  reconciliation, and rollback are proven in staging. Keep SiliconFlow/xAI
+  edits false unless dedicated source-compatible multipart adapters are built.
+
+This closes the generic OpenAI-compatible image-edit flat settlement item only.
+Ali actual-count orchestration, free-model runtime policy, deployed browser
+journeys, remote Queue/D1/DLQ/provider evidence, fault/load/alerts, credential
+rotation, rollback, and signed G1-G8 approval remain mandatory.
+`relay_flat_billing_go_parity_ready` stays hard false, Go/VPS remains
+authoritative, and production remains **NO-GO**.

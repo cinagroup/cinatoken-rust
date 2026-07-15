@@ -13136,12 +13136,99 @@ replay review.
 
 ### Unclosed production work
 
-Generation fencing is necessary but insufficient. The migration remains
-blocked by persisted `next_poll_at`, fair per-family pagination/cursors,
-poison-task exponential backoff and dead-letter policy, provider-operation
-uniqueness and native idempotency or deterministic lookup, duplicate submit
-reconciliation, whole-operation deadlines, remote D1 ambiguity injection,
-provider timeout/partial response campaigns, invoice reconciliation,
-load/capacity/alert evidence, checked 64-bit financial bindings, FreeModel and
-subscription parity, credential rotation, and signed rollback approval.
-Go/VPS remains authoritative and production remains **NO-GO**.
+Generation fencing is necessary but insufficient. Migration 0036 now provides
+the local persisted scheduling shape, but its scheduler runtime, staging
+behavior, remote migration state, and rollback evidence are unverified.
+Provider-operation uniqueness and native idempotency or deterministic lookup,
+duplicate submit reconciliation, whole-operation deadlines, remote D1
+ambiguity injection, provider timeout/partial response campaigns, invoice
+reconciliation, load/capacity/alert evidence, checked 64-bit financial
+bindings, FreeModel and subscription parity, credential rotation, and signed
+rollback approval remain open. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
+## 2026-07-15 Persisted Task Poll Scheduler Rollout
+
+Migration `0036_task_poll_schedule.sql` is an additive, inert expand migration
+on top of 0034/0035. It adds `next_poll_at`, lifetime attempt count,
+consecutive-failure state, last-attempt/error metadata, and quarantine metadata
+to both `tasks` and `midjourneys`; adds due indexes ordered by
+`(next_poll_at, id)`; and seeds five D1 cursor rows: `video`, `suno`,
+`midjourney`, `task_timeout`, and `midjourney_timeout`. Each cursor persists a
+frozen round high-watermark in addition to its last claimed row and generation.
+Defaults do not enable Rust polling and are not staging or deployment evidence.
+
+### Scheduling contract
+
+- D1 is authoritative for due time, family cursor, lease ownership, lifecycle
+  state, and terminal billing. Cron and `TaskRunner` DO alarms may wake work
+  sooner, but must re-read D1 and may not bypass `next_poll_at`, quarantine, or
+  the 0034/0035 owner+generation+expiry fence.
+- `TASK_POLL_SCHEDULER_ENABLED` must fail closed unless
+  `TASK_POLL_LEASE_ENABLED=true`, D1 `authority_enabled=1`, and D1
+  `enforcement_enabled=1`. A staging-verification flag is evidence metadata,
+  never an authority bypass.
+- On consecutive retryable poll failures, persist an overflow-safe delay of
+  `min(retry_max, retry_base * 2^(failures - 1) + deterministic_jitter)`. The
+  jitter is derived from task identity and poll generation, ranges from zero to
+  one quarter of the base, and never exceeds the cap. With committed defaults,
+  failures one through seven schedule within 15-18, 30-33, 60-63, 120-123,
+  240-243, 480-483, and exactly 900 seconds. Failure eight quarantines instead
+  of scheduling another retry. A validated provider response resets
+  consecutive-failure/error state; lifetime attempt count does not reset.
+- The eighth consecutive retryable failure quarantines the row without refund,
+  settlement, or terminal transition. It is never auto-released. Immediate
+  deterministic-poison classification and an audited root-only release/requeue
+  workflow remain unimplemented production blockers.
+- A family cursor freezes the maximum row ID for a finite round. Candidate
+  reads never advance it; only a successful D1 lease claim advances it, with a
+  generation/high-watermark CAS. Empty remainder advances to the frozen tail,
+  after which a new round admits later arrivals.
+- Normal provider polling rotates one family per scheduled minute slot in the
+  order video, Suno, Midjourney and caps the selected family at eight rows.
+  Both timeout families run first without provider I/O. This prevents a busy
+  video family from consuming every invocation; TaskRunner remains a video-only
+  optional accelerator.
+- Stored video provider JSON removes `bytesBase64Encoded`, truncates inline
+  `video` content to the Go-compatible 256-character prefix, and replaces any
+  response still larger than 64 KiB with length plus SHA-256 metadata.
+- TaskRunner records Alarm-fired/rearm state only through schedule-generation
+  conditional storage and restores a newer generation's Alarm if replacement
+  occurs during rearm. D1 due/quarantine/lease checks remain authoritative.
+
+### Ordered rollout
+
+| Wave | Required action | Promotion proof | Stop/rollback trigger |
+| --- | --- | --- | --- |
+| S0 authority | Keep Go/VPS authoritative; all scheduler, lease, TaskRunner, and staging-verification gates false | Writer inventory and isolated canary cohort plan | Unknown writer or overlapping cohort |
+| S1 backup | Capture restorable D1 point, migration ledger, active rows, five-family counts, and provider-operation inventory | Redacted, reviewed baseline | Wrong DB, no restore point, unresolved accepted operation |
+| S2 expand | Apply 0034, then 0035, then 0036; leave both D1 controls and all env gates false | Exact columns, two due indexes, five cursor rows, zero/default backfill, unchanged business hashes | Partial ledger, non-default controls, changed status/quota/provider identity |
+| S3 compatible deploy | Deploy a 0036-aware candidate with scheduler/lease/TaskRunner gates false | No Rust provider I/O; Go/VPS still owns production | Any Rust poll or schedule mutation |
+| S4 lease prerequisite | In isolated staging only, remove the cohort from old polling, drain calls/leases, then enable D1 authority, D1 enforcement, and Worker lease authority in that order | 0034/0035 race suite passes; scheduler still false | Old writer mutation, stale apply, duplicate financial change |
+| S5 scheduler canary | Enable scheduler only for the isolated cohort; keep `TASK_POLL_SCHEDULER_STAGING_VERIFIED=false` | Three-slot rotation, eight-row bound, finite high-watermark rounds, deterministic jitter/cap, success reset, quarantine, cron/DO race, timeout, D1 ambiguity, and rollback drills | Early poll, starvation, duplicate provider call/apply, auto-unquarantine, billing from quarantine |
+| S6 review | Archive immutable candidate/config/migration hashes and redacted evidence; review independently | Named billing, security, privacy, and SRE approvals | Missing trace, unexplained provider/invoice or D1 delta |
+| S7 verified staging candidate | Only a new candidate may set the scheduler staging flag true | Repeated clean bake at agreed load and alert thresholds | Same-build self-attestation or stale evidence |
+
+There is no production activation wave in the current plan. Production keeps
+all five scheduler values at their committed defaults and remains **NO-GO**.
+
+Local focused evidence for this increment is 705/705 Worker unit tests, 41/41
+Workerd lifecycle tests, release builds of the platform/WFP tenant/WFP outbound
+Workers, WASM compilation, and the executable 36-migration SQLite rollout and
+state-machine verifier. It is local evidence only; it does not close staging,
+remote D1, provider, invoice, load, alert, or rollback requirements.
+
+### Scheduler rollback
+
+1. Set `TASK_POLL_SCHEDULER_ENABLED=false` and disable TaskRunner arming first.
+2. Prove Rust starts no new provider poll; preserve and reconcile every
+   already-accepted provider operation and live lease.
+3. For scheduler-only rollback, return to a 0035-aware Worker while retaining
+   0036 schema and all due, attempt, failure, quarantine, and cursor state.
+4. For full ownership rollback, additionally set lease env authority false,
+   D1 authority false, then D1 enforcement false; drain leases before a
+   0033-compatible Worker resumes.
+5. Reconcile quarantined rows before Go/VPS resumes because the legacy poller
+   does not honor 0036 quarantine. Never drop 0036, reset generations/counters,
+   rewind cursors speculatively, or clear quarantine merely to make rollback
+   proceed.

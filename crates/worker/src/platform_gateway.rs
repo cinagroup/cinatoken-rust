@@ -98,11 +98,14 @@ use crate::task_billing_reconcile::{
 };
 use crate::task_orchestration::{
     task_poller_config_from_env, task_timeout_sweep_compiled, TASK_POLL_LEASE_ENABLED_ENV,
+    TASK_POLL_SCHEDULER_ENABLED_ENV,
 };
 use crate::task_repository::{
     task_billing_intent_contract_compiled, task_poll_lease_contract_compiled,
-    task_refund_cas_batch_compiled, task_refund_replay_contract_compiled,
-    TaskPollLeaseRuntimeStatus, TASK_POLL_LEASE_CONTRACT_VERSION,
+    task_poll_scheduler_contract_compiled, task_refund_cas_batch_compiled,
+    task_refund_replay_contract_compiled, TaskPollLeaseRuntimeStatus,
+    TaskPollSchedulerRuntimeStatus, TASK_POLL_LEASE_CONTRACT_VERSION,
+    TASK_POLL_SCHEDULER_CONTRACT_VERSION,
 };
 use crate::task_runner::{
     fetch_task_runner_status, is_task_runner_cutover_ready, task_runner_alarm_contract_compiled,
@@ -164,8 +167,9 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0035_task_poll_lease_enforce.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0036_task_poll_schedule.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
+pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
     "migration_0026_applied",
     "legacy_workers_drained",
@@ -231,6 +235,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0033_task_submit_reconciliation_enforce.sql",
     "0034_task_poll_lease.sql",
     "0035_task_poll_lease_enforce.sql",
+    "0036_task_poll_schedule.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -529,6 +534,13 @@ struct PlatformCapabilities {
     task_poll_lease_runtime_ready: bool,
     task_poll_lease_staging_verified: bool,
     task_poll_lease_cutover_ready: bool,
+    task_poll_scheduler_contract_version: u32,
+    task_poll_scheduler_compiled: bool,
+    task_poll_scheduler_schema_ready: bool,
+    task_poll_scheduler_enabled: bool,
+    task_poll_scheduler_runtime_ready: bool,
+    task_poll_scheduler_staging_verified: bool,
+    task_poll_scheduler_cutover_ready: bool,
     task_submit_reconciliation_compiled: bool,
     task_submit_reconciliation_enabled: bool,
     task_submit_reconciliation_ready: bool,
@@ -556,6 +568,9 @@ struct PlatformCapabilities {
     task_poller_timeout_minutes: i64,
     task_poller_timeout_sweep_limit: i64,
     task_poller_poll_lease_seconds: i64,
+    task_poller_retry_base_seconds: i64,
+    task_poller_retry_max_seconds: i64,
+    task_poller_max_consecutive_failures: i64,
 }
 
 const REALTIME_BILLING_RECOVERY_STATUS_LIMIT: i64 = 50;
@@ -695,28 +710,37 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
 
     let d1_migration_status = load_d1_migration_status(&env).await;
     let d1_migration_ready = d1_migration_status.ready();
-    let (task_v2_object_schema_ready, task_poll_lease_status) = match env.d1("DB") {
-        Ok(db) => (
-            crate::task_repository::task_billing_intent_schema_ready(&db)
-                .await
-                .unwrap_or(false),
-            crate::task_repository::task_poll_lease_runtime_status(&db)
-                .await
-                .unwrap_or(TaskPollLeaseRuntimeStatus {
+    let (task_v2_object_schema_ready, task_poll_lease_status, task_poll_scheduler_status) =
+        match env.d1("DB") {
+            Ok(db) => (
+                crate::task_repository::task_billing_intent_schema_ready(&db)
+                    .await
+                    .unwrap_or(false),
+                crate::task_repository::task_poll_lease_runtime_status(&db)
+                    .await
+                    .unwrap_or(TaskPollLeaseRuntimeStatus {
+                        schema_ready: false,
+                        authority_enabled: false,
+                        enforcement_enabled: false,
+                    }),
+                crate::task_repository::task_poll_scheduler_runtime_status(&db)
+                    .await
+                    .unwrap_or(TaskPollSchedulerRuntimeStatus {
+                        schema_ready: false,
+                    }),
+            ),
+            Err(_) => (
+                false,
+                TaskPollLeaseRuntimeStatus {
                     schema_ready: false,
                     authority_enabled: false,
                     enforcement_enabled: false,
-                }),
-        ),
-        Err(_) => (
-            false,
-            TaskPollLeaseRuntimeStatus {
-                schema_ready: false,
-                authority_enabled: false,
-                enforcement_enabled: false,
-            },
-        ),
-    };
+                },
+                TaskPollSchedulerRuntimeStatus {
+                    schema_ready: false,
+                },
+            ),
+        };
     let ai_gateway_id = runtime_value(&env, AI_GATEWAY_ID_ENV);
     let cloudflare_account_id = runtime_value(&env, CLOUDFLARE_ACCOUNT_ID_ENV);
     let cloudflare_ai_gateway_token = secret_or_var(
@@ -1169,6 +1193,20 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let task_poll_lease_cutover_ready = task_poll_lease_runtime_ready
         && task_poll_lease_enforcement_enabled
         && task_poll_lease_staging_verified;
+    let task_poll_scheduler_contract_version = TASK_POLL_SCHEDULER_CONTRACT_VERSION;
+    let task_poll_scheduler_compiled = task_poll_scheduler_contract_compiled();
+    let task_poll_scheduler_schema_ready = task_poll_scheduler_status.schema_ready;
+    let task_poll_scheduler_enabled = env_flag(&env, TASK_POLL_SCHEDULER_ENABLED_ENV);
+    let task_poll_scheduler_runtime_ready = task_poll_scheduler_compiled
+        && task_poll_scheduler_schema_ready
+        && task_poll_scheduler_enabled
+        && task_poll_lease_runtime_ready
+        && task_poll_lease_enforcement_enabled;
+    let task_poll_scheduler_staging_verified =
+        env_flag(&env, TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV);
+    let task_poll_scheduler_cutover_ready = task_poll_scheduler_runtime_ready
+        && task_poll_lease_cutover_ready
+        && task_poll_scheduler_staging_verified;
     let task_runner_do_available = env.durable_object(TASK_RUNNER_BINDING).is_ok();
     let task_runner_do_enabled = env_flag(&env, TASK_RUNNER_DO_ENABLED_ENV);
     let task_runner_do_foundation_compiled = task_runner_do_foundation_compiled();
@@ -1192,13 +1230,20 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_runner_poll_path_compiled,
         task_runner_status_probe_compiled,
         task_poll_lease_cutover_ready,
+        task_poll_scheduler_cutover_ready,
         task_runner_staging_replay_verified,
     );
-    let task_v2_contract_version = 2;
-    let task_v2_ownership_compiled =
-        task_billing_intent_contract_compiled() && task_poll_lease_compiled;
-    let task_v2_schema_ready = task_v2_object_schema_ready && task_poll_lease_schema_ready;
-    let task_v2_runtime_ready = task_v2_ownership_compiled && task_v2_schema_ready;
+    let task_v2_contract_version = 3;
+    let task_v2_ownership_compiled = task_billing_intent_contract_compiled()
+        && task_poll_lease_compiled
+        && task_poll_scheduler_compiled;
+    let task_v2_schema_ready = task_v2_object_schema_ready
+        && task_poll_lease_schema_ready
+        && task_poll_scheduler_schema_ready;
+    let task_v2_runtime_ready = task_v2_ownership_compiled
+        && task_v2_schema_ready
+        && task_poll_lease_runtime_ready
+        && task_poll_scheduler_runtime_ready;
     let task_submit_reconciliation_compiled = task_submit_reconciliation_compiled();
     let task_submit_reconciliation_enabled = task_submit_reconciliation_enabled(&env);
     let task_submit_reconciliation_ready = task_submit_reconciliation_compiled
@@ -1449,6 +1494,13 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_poll_lease_runtime_ready,
         task_poll_lease_staging_verified,
         task_poll_lease_cutover_ready,
+        task_poll_scheduler_contract_version,
+        task_poll_scheduler_compiled,
+        task_poll_scheduler_schema_ready,
+        task_poll_scheduler_enabled,
+        task_poll_scheduler_runtime_ready,
+        task_poll_scheduler_staging_verified,
+        task_poll_scheduler_cutover_ready,
         task_submit_reconciliation_compiled,
         task_submit_reconciliation_enabled,
         task_submit_reconciliation_ready,
@@ -1476,6 +1528,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_poller_timeout_minutes: task_poller_config.timeout_minutes,
         task_poller_timeout_sweep_limit: task_poller_config.timeout_sweep_limit,
         task_poller_poll_lease_seconds: task_poller_config.poll_lease_seconds,
+        task_poller_retry_base_seconds: task_poller_config.retry_base_seconds,
+        task_poller_retry_max_seconds: task_poller_config.retry_max_seconds,
+        task_poller_max_consecutive_failures: task_poller_config.max_consecutive_failures,
     };
 
     envelope_ok_response(&capabilities)
@@ -4036,9 +4091,11 @@ mod tests {
         assert!(guards.contains(&"cron_sweeper_fallback"));
         assert!(guards.contains(&"generation_fenced_poll_lease"));
         assert!(guards.contains(&"poll_lease_cutover"));
+        assert!(guards.contains(&"persisted_poll_schedule"));
+        assert!(guards.contains(&"poll_scheduler_cutover"));
         assert!(guards.contains(&"status_probe"));
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, true, true, true, true, false, true
+            true, true, true, true, true, true, true, true, true, false, true, true
         ));
     }
 
@@ -4173,7 +4230,7 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(EXPECTED_D1_MIGRATION, "0035_task_poll_lease_enforce.sql");
+        assert_eq!(EXPECTED_D1_MIGRATION, "0036_task_poll_schedule.sql");
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")

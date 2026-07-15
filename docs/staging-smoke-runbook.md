@@ -1982,7 +1982,71 @@ TaskRunner success is fast-path evidence only. It cannot make Task v2 ready.
    Set it only in a new candidate after billing, security, privacy, and SRE
    approval.
 
-Even a passing drill does not close persisted `next_poll_at`, fair pagination,
-poison backoff, provider-operation uniqueness/idempotency lookup, complete
-fault injection, or broader Task v2 financial parity. Production remains
-**NO-GO**.
+Even a passing lease drill does not prove the 0036 scheduler. The persisted
+schema now exists locally, but provider-operation uniqueness/idempotency
+lookup, complete fault injection, and broader Task v2 financial parity remain
+open. Production remains **NO-GO**.
+
+## 0036 Scheduler Staging Smoke
+
+This is an execution template, not evidence that staging or any remote D1 has
+been changed.
+
+### Preconditions
+
+1. Record candidate/config/migration hashes and prove the remote ledger, if a
+   remote drill is authorized, contains 0034 -> 0035 -> 0036 in that order.
+2. Prove D1 has the exact 0036 columns, both filtered due indexes, and exactly
+   the five zeroed family cursors. Compare business-row hashes and counts to
+   the pre-migration baseline.
+3. Keep `TASK_POLL_SCHEDULER_ENABLED=false`,
+   `TASK_POLL_SCHEDULER_STAGING_VERIFIED=false`, and TaskRunner false. Prove no
+   Rust provider I/O. Go/VPS remains authoritative outside the isolated cohort.
+4. Remove named canary rows from legacy polling and reconcile accepted provider
+   operations. Because existing rows default to `next_poll_at=0`, schedule only
+   the bounded canary set and hold or exclude every other active row before
+   enabling the scheduler.
+5. Complete the 0034/0035 lease drill, then enable D1 authority, D1 enforcement,
+   and Worker lease authority in that order. The scheduler must fail closed if
+   any lease prerequisite is later removed.
+
+### Required cases
+
+| Case | Action | Required result |
+| --- | --- | --- |
+| Due boundary | Set rows before, at, and after D1 time | Only due, unquarantined, nonterminal rows become candidates |
+| Family fairness | Seed more than one bounded page in every family and run at least six consecutive minute slots | Video/Suno/Midjourney rotate one per slot with at most eight candidates; timeout sweeps run first; every cursor freezes a finite high-watermark round and advances only after claim |
+| Restart persistence | Restart/redeploy between attempts | Due time, failure count, quarantine, and cursor resume from D1 |
+| Backoff | Inject eight retryable failures and repeat after restart | Failures 1-7 schedule deterministic identity/generation jitter within 15-18, 30-33, 60-63, 120-123, 240-243, 480-483, and 900 seconds with no early poll; failure 8 quarantines and schedules no retry |
+| Reset | Return a validated nonterminal provider response after failures | Consecutive failures/error clear; lifetime attempt count remains monotonic |
+| Threshold poison | Reach the eighth consecutive retryable failure | Row is quarantined and receives no later provider poll |
+| Immediate poison blocker | Inject malformed identity/family mismatch | Promotion remains blocked until a stable redacted immediate-quarantine classifier exists and proves no terminal/billing mutation |
+| Manual release blocker | Repair cause and attempt reviewed release | Promotion remains blocked until a root-only, fresh-verification, revision/idempotency-bound audit workflow atomically clears quarantine, resets consecutive failure state, and sets a future due time |
+| Cron/DO race | Wake the same video row by cron and TaskRunner | One D1 lease winner and one provider operation/apply |
+| DO outage | Disable/fail alarm path | Cron still discovers D1-due video work; DO state is not required for correctness |
+| Stale apply | Let generation N expire before response and claim N+1 | N cannot mutate schedule, lifecycle, counters, refund, or billing |
+| D1 ambiguity | Inject ambiguous cursor/schedule/claim response | Canonical readback; repeat is safe; no speculative cursor jump |
+| Timeout families | Race normal poll with both timeout families | Lease-fenced single terminal/refund outcome; cursor families stay separate |
+
+For every case archive redacted D1 before/after rows, cursor transitions,
+owner/generation, provider request count/operation ID, timing, TaskRunner status,
+billing/refund/audit deltas, and alerts. Never store credentials or raw provider
+payloads. Keep both staging-verification flags false during collection. A new
+immutable candidate may set a flag true only after independent review.
+
+The immediate-poison and manual-release rows are deliberate blocking tests, not
+claims that the current local candidate implements those operations.
+
+### Scheduler rollback drill
+
+1. Turn scheduler and TaskRunner off; prove no new Rust provider poll begins.
+2. Let or deliberately drain live leases and reconcile every accepted provider
+   operation before any legacy poller can see the row.
+3. Re-run D1/provider/billing/audit counts, including every quarantined row.
+4. Demonstrate scheduler-only rollback to a 0035-aware Worker without dropping
+   0036 or clearing due/backoff/quarantine/cursor state.
+5. Demonstrate full ownership rollback only by additionally disabling lease
+   env authority, D1 authority, then D1 enforcement before returning to a
+   0033-compatible Worker.
+6. Do not resume Go/VPS over quarantined rows until each is reconciled, because
+   the legacy poller does not honor 0036 quarantine.

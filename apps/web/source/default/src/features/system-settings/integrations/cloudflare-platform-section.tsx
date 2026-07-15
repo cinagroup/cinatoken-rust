@@ -151,6 +151,8 @@ export function CloudflarePlatformSection() {
               ))}
             </div>
 
+            <TaskPollSchedulerPanel capabilities={capabilities} />
+
             <TaskRunnerStatusProbePanel
               capabilities={capabilities}
               error={taskRunnerStatusQuery.error}
@@ -2361,6 +2363,107 @@ function buildCapabilityGroups(
       ],
     },
   ]
+}
+
+function TaskPollSchedulerPanel({
+  capabilities,
+}: {
+  capabilities: PlatformCapabilities
+}) {
+  const { t } = useTranslation()
+  const implementationReady =
+    capabilities.task_poll_scheduler_contract_version > 0 &&
+    capabilities.task_poll_scheduler_compiled
+  const schemaReady =
+    implementationReady && capabilities.task_poll_scheduler_schema_ready
+  const environmentReady =
+    implementationReady && capabilities.task_poll_scheduler_enabled
+  const runtimeReady =
+    schemaReady &&
+    environmentReady &&
+    capabilities.task_poll_scheduler_runtime_ready
+  const stagingReady =
+    runtimeReady && capabilities.task_poll_scheduler_staging_verified
+  const cutoverReady =
+    stagingReady && capabilities.task_poll_scheduler_cutover_ready
+  const statuses = [
+    { label: t('Schema'), ready: schemaReady },
+    { label: t('Env'), ready: environmentReady },
+    { label: t('Runtime'), ready: runtimeReady },
+    { label: t('Staging'), ready: stagingReady },
+    { label: t('Cutover'), ready: cutoverReady },
+  ]
+  const metrics = [
+    {
+      label: t('Retry base'),
+      value: t('{{seconds}} seconds', {
+        seconds: capabilities.task_poller_retry_base_seconds,
+      }),
+    },
+    {
+      label: t('Retry max'),
+      value: t('{{seconds}} seconds', {
+        seconds: capabilities.task_poller_retry_max_seconds,
+      }),
+    },
+    {
+      label: t('Max failures'),
+      value: capabilities.task_poller_max_consecutive_failures,
+    },
+  ]
+
+  return (
+    <div className='rounded-lg border p-4'>
+      <div className='flex flex-wrap items-center justify-between gap-3'>
+        <div className='space-y-1'>
+          <p className='text-sm font-medium'>{t('Task poll scheduler')}</p>
+          <p className='text-muted-foreground text-xs'>
+            {t(
+              'Production scheduler state and bounded retry policy for asynchronous task polling.'
+            )}
+          </p>
+        </div>
+        <StatusBadge
+          variant={implementationReady ? 'success' : 'warning'}
+          copyable={false}
+          className='shrink-0'
+        >
+          {implementationReady
+            ? t('Contract v{{version}}', {
+                version: capabilities.task_poll_scheduler_contract_version,
+              })
+            : t('Contract missing')}
+        </StatusBadge>
+      </div>
+      <dl className='mt-3 grid grid-cols-2 gap-x-4 gap-y-3 border-t pt-3 sm:grid-cols-4 xl:grid-cols-8'>
+        {statuses.map((status) => (
+          <div key={status.label} className='min-w-0 space-y-1'>
+            <dt className='text-muted-foreground text-xs'>{status.label}</dt>
+            <dd>
+              <StatusBadge
+                type='text'
+                variant={status.ready ? 'success' : 'warning'}
+                copyable={false}
+              >
+                {status.ready ? t('Ready') : t('Blocked')}
+              </StatusBadge>
+            </dd>
+          </div>
+        ))}
+        {metrics.map((metric) => (
+          <div key={metric.label} className='min-w-0 space-y-1'>
+            <dt className='text-muted-foreground text-xs'>{metric.label}</dt>
+            <dd
+              className='truncate text-sm font-medium'
+              title={String(metric.value)}
+            >
+              {metric.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  )
 }
 
 function TaskRunnerStatusProbePanel(props: {

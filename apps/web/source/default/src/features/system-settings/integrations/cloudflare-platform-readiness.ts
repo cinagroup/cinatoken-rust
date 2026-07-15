@@ -37,6 +37,7 @@ export type PlatformReadinessSignalId =
   | 'realtime-billing-reconciliation-implementation'
   | 'task-runner-implementation'
   | 'task-poll-lease-implementation'
+  | 'task-poll-scheduler-implementation'
   | 'task-submit-reconciliation-implementation'
   | 'ai-gateway-runtime'
   | 'ai-gateway-fallback-runtime'
@@ -45,6 +46,7 @@ export type PlatformReadinessSignalId =
   | 'realtime-billing-reconciliation-runtime'
   | 'task-runner-runtime'
   | 'task-poll-lease-runtime'
+  | 'task-poll-scheduler-runtime'
   | 'task-submit-reconciliation-runtime'
   | 'quota-coordinator-binding'
   | 'quota-coordinator-shadow-runtime'
@@ -60,6 +62,7 @@ export type PlatformReadinessSignalId =
   | 'realtime-billing-reconciliation-staging-proof'
   | 'task-runner-replay'
   | 'task-poll-lease-staging-proof'
+  | 'task-poll-scheduler-staging-proof'
   | 'task-submit-reconciliation-staging-proof'
   | 'quota-coordinator-staging-bake'
   | 'relay-billing-stream-error-smoke'
@@ -69,6 +72,7 @@ export type PlatformReadinessSignalId =
   | 'relay-billing-owner-generation-staging-proof'
   | 'task-runner-cutover'
   | 'task-poll-lease-cutover'
+  | 'task-poll-scheduler-cutover'
   | 'task-submit-reconciliation-cutover'
   | 'relay-billing-recovery-cutover'
   | 'relay-flat-billing-intent-cutover'
@@ -242,6 +246,13 @@ export type PlatformReadinessCapabilities = Pick<
   | 'task_poll_lease_runtime_ready'
   | 'task_poll_lease_staging_verified'
   | 'task_poll_lease_cutover_ready'
+  | 'task_poll_scheduler_contract_version'
+  | 'task_poll_scheduler_compiled'
+  | 'task_poll_scheduler_schema_ready'
+  | 'task_poll_scheduler_enabled'
+  | 'task_poll_scheduler_runtime_ready'
+  | 'task_poll_scheduler_staging_verified'
+  | 'task_poll_scheduler_cutover_ready'
   | 'task_submit_reconciliation_compiled'
   | 'task_submit_reconciliation_enabled'
   | 'task_submit_reconciliation_ready'
@@ -280,6 +291,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
     'Realtime billing reconciliation',
   'task-runner-implementation': 'TaskRunner',
   'task-poll-lease-implementation': 'Task poll generation-fenced lease',
+  'task-poll-scheduler-implementation': 'Task poll scheduler',
   'task-submit-reconciliation-implementation': 'Task submit reconciliation',
   'ai-gateway-runtime': 'AI Gateway',
   'ai-gateway-fallback-runtime': 'AI Gateway fallback',
@@ -288,6 +300,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'realtime-billing-reconciliation-runtime': 'Realtime billing reconciliation',
   'task-runner-runtime': 'TaskRunner',
   'task-poll-lease-runtime': 'Task poll generation-fenced lease',
+  'task-poll-scheduler-runtime': 'Task poll scheduler',
   'task-submit-reconciliation-runtime': 'Task submit reconciliation',
   'quota-coordinator-binding': 'QuotaCoordinator binding',
   'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
@@ -306,6 +319,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
     'Realtime billing reconciliation proof',
   'task-runner-replay': 'TaskRunner replay',
   'task-poll-lease-staging-proof': 'Task poll lease race proof',
+  'task-poll-scheduler-staging-proof': 'Task poll scheduler proof',
   'task-submit-reconciliation-staging-proof':
     'Task submit reconciliation proof',
   'quota-coordinator-staging-bake': 'QuotaCoordinator staging bake',
@@ -317,6 +331,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
     'Relay billing owner race proof',
   'task-runner-cutover': 'TaskRunner',
   'task-poll-lease-cutover': 'Task poll generation-fenced lease',
+  'task-poll-scheduler-cutover': 'Task poll scheduler',
   'task-submit-reconciliation-cutover': 'Task submit reconciliation',
   'relay-billing-recovery-cutover': 'Relay billing recovery',
   'relay-flat-billing-intent-cutover': 'Relay flat billing intent',
@@ -568,6 +583,28 @@ export function buildPlatformReadinessSummary(
     capabilities.task_poll_lease_authority_enabled,
     capabilities.task_poll_lease_runtime_ready
   )
+  const taskPollSchedulerImplementation = allReady(
+    capabilities.task_poll_scheduler_contract_version > 0,
+    capabilities.task_poll_scheduler_compiled
+  )
+  const taskPollSchedulerRuntime = allReady(
+    taskPollSchedulerImplementation,
+    capabilities.task_poll_scheduler_schema_ready,
+    capabilities.task_poll_scheduler_enabled,
+    capabilities.task_poll_scheduler_runtime_ready
+  )
+  const taskPollSchedulerStaging = allReady(
+    taskPollSchedulerRuntime,
+    capabilities.task_poll_scheduler_staging_verified
+  )
+  const taskPollSchedulerCutover = allReady(
+    taskPollSchedulerStaging,
+    capabilities.task_poll_scheduler_cutover_ready
+  )
+  const taskV2Cutover = allReady(
+    capabilities.task_v2_cutover_ready,
+    taskPollSchedulerCutover
+  )
 
   const implementation = createReadyStage('implementation', [
     readySignal(
@@ -597,6 +634,10 @@ export function buildPlatformReadinessSummary(
     ),
     readySignal('task-runner-implementation', taskRunnerImplementation),
     readySignal('task-poll-lease-implementation', taskPollLeaseImplementation),
+    readySignal(
+      'task-poll-scheduler-implementation',
+      taskPollSchedulerImplementation
+    ),
     readySignal(
       'task-submit-reconciliation-implementation',
       capabilities.task_submit_reconciliation_compiled
@@ -642,10 +683,12 @@ export function buildPlatformReadinessSummary(
         capabilities.task_runner_do_enabled,
         capabilities.task_v2_schema_ready,
         capabilities.task_v2_runtime_ready,
-        taskPollLeaseRuntime
+        taskPollLeaseRuntime,
+        taskPollSchedulerRuntime
       )
     ),
     readySignal('task-poll-lease-runtime', taskPollLeaseRuntime),
+    readySignal('task-poll-scheduler-runtime', taskPollSchedulerRuntime),
     readySignal(
       'task-submit-reconciliation-runtime',
       capabilities.task_submit_reconciliation_ready
@@ -731,6 +774,11 @@ export function buildPlatformReadinessSummary(
       capabilities.task_poll_lease_staging_verified
     ),
     verificationSignal(
+      'task-poll-scheduler-staging-proof',
+      taskPollSchedulerRuntime,
+      capabilities.task_poll_scheduler_staging_verified
+    ),
+    verificationSignal(
       'task-submit-reconciliation-staging-proof',
       capabilities.task_submit_reconciliation_ready,
       capabilities.task_submit_reconciliation_staging_verified
@@ -785,8 +833,9 @@ export function buildPlatformReadinessSummary(
       'task-runner-cutover',
       allReady(
         capabilities.task_runner_cutover_ready,
-        capabilities.task_v2_cutover_ready,
-        capabilities.task_poll_lease_cutover_ready
+        taskV2Cutover,
+        capabilities.task_poll_lease_cutover_ready,
+        taskPollSchedulerCutover
       )
     ),
     readySignal(
@@ -796,6 +845,7 @@ export function buildPlatformReadinessSummary(
         capabilities.task_poll_lease_cutover_ready
       )
     ),
+    readySignal('task-poll-scheduler-cutover', taskPollSchedulerCutover),
     readySignal(
       'task-submit-reconciliation-cutover',
       capabilities.task_submit_reconciliation_cutover_ready

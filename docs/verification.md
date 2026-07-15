@@ -5199,7 +5199,63 @@ behavior remotely before promotion.
 
 Do not set `TASK_POLL_LEASE_STAGING_VERIFIED=true` in the same candidate used
 to collect evidence. Review first, then ship a new immutable candidate.
-Persisted `next_poll_at`, fair pagination, poison backoff, provider-operation
-uniqueness/idempotency lookup, whole-operation deadline proof, provider invoice
-reconciliation, load/alert evidence, credential rotation, and rollback remain
-required. Task v2 and production stay **NO-GO**.
+Migration 0036 now supplies local persisted scheduler schema, but runtime and
+remote proof, provider-operation uniqueness/idempotency lookup,
+whole-operation deadline proof, provider invoice reconciliation, load/alert
+evidence, credential rotation, and rollback remain required. Task v2 and
+production stay **NO-GO**.
+
+## 0036 Scheduler Verification Contract
+
+Static verification must include:
+
+```text
+bun run check:task-poll-lease-config
+bun run check:task-poll-scheduler-config
+bun run check:d1:migration-config
+bun run verify:sqlite
+bun run check
+```
+
+The configuration test must parse all three Wrangler var maps and require the
+five committed scheduler defaults. The total `check` script must run lease
+config validation before scheduler config validation. Passing these commands
+does not assert remote migration or deployment.
+
+Schema verification must prove 0034 -> 0035 -> 0036 order, seven schedule
+columns on each table with inert defaults/checks, two filtered due indexes,
+and exactly five zeroed cursor rows. It must prove pre-migration business hashes
+and counts are unchanged and that the 0034/0035 authority/enforcement controls
+remain off during schema-only validation.
+
+Staging verification must then prove:
+
+1. no scheduler provider I/O when scheduler, lease env, D1 authority, or D1
+   enforcement is false;
+2. no candidate before D1 `next_poll_at`; finite frozen high-watermark rounds;
+   claim-only cursor advance; and video/Suno/Midjourney minute-slot rotation with
+   an eight-row family cap while both timeout sweeps remain independent;
+3. deterministic identity/generation jitter within 15-18, 30-33, 60-63,
+   120-123, 240-243, 480-483, and 900 seconds for failures one through seven
+   across restart; failure eight quarantines without another due time;
+   validated-response reset does not reset lifetime attempts;
+4. threshold quarantine on failure eight, no later poll, no automatic release,
+   and no quota/billing/audit terminal side effect; promotion remains blocked
+   until immediate deterministic-poison and audited root-only release/requeue
+   workflows are implemented and pass their negative/positive matrices;
+5. one provider operation/apply during cron/DO and poll/timeout races, stale
+   generation rejection, canonical readback after ambiguous D1 writes, and cron
+   correctness while the DO accelerator is unavailable;
+6. scheduler-only rollback with 0036 retained, plus full lease rollback in the
+   documented order and quarantine reconciliation before Go/VPS resumes.
+
+Archive candidate/config/migration hashes, redacted D1 transitions, provider
+operation counts, invoice/quota/audit deltas, timings, alerts, and named review.
+Keep `TASK_POLL_SCHEDULER_STAGING_VERIFIED=false` during collection. A later
+candidate may change it only after independent approval. No such evidence is
+claimed by this document; production remains **NO-GO**.
+
+The local focused suite currently proves 705 Worker unit tests, 41 Workerd
+lifecycle tests, all three release WASM builds, and the executable 0036 SQLite
+expand/default/CAS checks. These results are necessary but are not remote or
+staging evidence.

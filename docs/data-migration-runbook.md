@@ -592,7 +592,66 @@ create video TaskRunner state.
 6. Resume only a 0033-compatible writer. Keep 0034/0035 schema and all
    generations; never downgrade or reset them to make an old poller fit.
 
-Data migration approval does not close scheduling design. Persisted
-`next_poll_at`, fair family pagination, poison backoff, provider-operation
-uniqueness/idempotency lookup, remote whole-operation deadline/abort evidence,
-and fault injection remain required before customer cutover.
+Data migration approval does not close scheduling design. Migration 0036 now
+provides the local persisted shape, but runtime fairness/backoff/quarantine,
+provider-operation uniqueness/idempotency lookup, remote whole-operation
+deadline/abort evidence, and fault injection remain required before customer
+cutover.
+
+## 0036 Schedule-State Migration Runbook
+
+0036 is an additive expand after 0034/0035. It does not authorize a poller.
+Keep Go/VPS authoritative and all Rust scheduler/lease/TaskRunner gates false
+while applying and validating it.
+
+### Preflight and apply
+
+1. Confirm the target database identity and a restorable point. Archive the
+   ordered migration ledger, active writer inventory, terminal/nonterminal
+   counts by family, duplicate provider operation IDs, and deterministic hashes
+   of business columns.
+2. Stop if 0034/0035 are absent, out of order, partially applied, or their
+   singleton control row is not `(authority_enabled=0,
+   enforcement_enabled=0)` for a schema-only rollout.
+3. Apply 0036 once. Do not edit its migration ledger row, re-run individual
+   `ALTER TABLE` statements, or treat a local file as remote proof.
+4. Verify both tables gained exactly the seven schedule columns; verify
+   `idx_tasks_poll_schedule_due`, `idx_midjourneys_poll_schedule_due`, and the
+   five exact `task_poll_family_cursors` keys.
+5. For pre-existing rows, require numeric schedule fields to be zero and error
+   and quarantine reasons empty immediately after migration. Recompute hashes
+   excluding only the new fields and require unchanged status, progress,
+   provider identity, reservation, quota, timestamps, and row counts.
+
+`poll_attempt_count=0` is a cutover baseline, not reconstructed historical
+truth. Cursor generation zero is a seed, not fairness evidence.
+
+### Active-row scheduling
+
+Every eligible pre-existing row has `next_poll_at=0` and would be immediately
+due if the scheduler were enabled. Therefore:
+
+1. Inventory and classify all nonterminal rows into video, Suno, Midjourney,
+   Task timeout, and Midjourney timeout views. Block unknown/ambiguous family or
+   duplicate provider identity; do not guess.
+2. Reconcile provider-accepted operations and identify deterministic poison.
+   Quarantine poison with a stable redacted reason, without terminal or
+   financial mutation.
+3. Select a bounded staging canary, remove it from legacy polling, and assign
+   reviewed due times in small readback-verified batches. Hold or exclude all
+   other active rows so zero defaults cannot create a poll storm.
+4. Advance a family cursor only as part of a successfully persisted bounded
+   scan checkpoint. On ambiguous response, read D1 canonically; never jump or
+   rewind a cursor speculatively.
+5. Only after 0034/0035 lease authority and enforcement are active and verified
+   may the isolated scheduler gate be enabled.
+
+### Rollback and retention
+
+Disable scheduler and DO wake-ups first, reconcile accepted provider work, and
+wait for lease fencing before resuming another poller. Do not down-migrate 0036,
+zero lifetime attempts/failures, clear quarantine in bulk, delete cursor rows,
+or overwrite due times from an old snapshot. Scheduler-only rollback may use a
+0035-aware Worker with 0036 retained. Full lease rollback follows env off -> D1
+authority off -> D1 enforcement off -> lease drain -> 0033-compatible Worker.
+Reconcile every quarantine before Go/VPS sees the row.

@@ -9,13 +9,15 @@
 #![allow(dead_code)]
 
 use crate::task_repository::{
-    apply_poll_result, apply_task_timeout, attach_task_billing_intent, claim_task_poll_lease,
+    advance_task_poll_family_cursor, apply_poll_result, apply_task_timeout,
+    attach_task_billing_intent, claim_task_poll_lease, claim_task_timeout_poll_lease,
     find_timed_out_unfinished_tasks, find_unfinished_suno_tasks, find_unfinished_tasks,
     generate_task_id, generate_task_poll_owner, mark_task_billing_intent_submit_unknown,
     mark_task_billing_intent_submit_unknown_with_provider_task_id,
-    mark_task_billing_intent_submitting, reject_and_refund_task_billing_intent,
-    release_task_poll_lease, reserve_task_billing_intent, NewTask, TaskBillingIntentAttachOutcome,
-    TaskBillingIntentRecord, TaskPollLease, TaskRow, TASK_BILLING_INTENT_LEASE_SECONDS,
+    mark_task_billing_intent_submitting, record_task_poll_failure,
+    reject_and_refund_task_billing_intent, release_task_poll_lease, reserve_task_billing_intent,
+    NewTask, TaskBillingIntentAttachOutcome, TaskBillingIntentRecord, TaskPollLease, TaskRow,
+    TASK_BILLING_INTENT_LEASE_SECONDS,
 };
 use base64::{
     engine::general_purpose::{
@@ -39,6 +41,7 @@ use cinatoken_tasks::{
     apply_other_ratios, cover_task_action_to_model_name, TaskInfo, TaskStatus, TaskSubmitReq,
 };
 use futures_util::future::{select, Either};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::Duration;
 use wasm_bindgen::JsValue;
@@ -56,16 +59,48 @@ pub(crate) const TASK_QUERY_LIMIT_ENV: &str = "TASK_QUERY_LIMIT";
 pub(crate) const TASK_TIMEOUT_MINUTES_ENV: &str = "TASK_TIMEOUT_MINUTES";
 pub(crate) const TASK_POLL_LEASE_SECONDS_ENV: &str = "TASK_POLL_LEASE_SECONDS";
 pub(crate) const TASK_POLL_LEASE_ENABLED_ENV: &str = "TASK_POLL_LEASE_ENABLED";
+pub(crate) const TASK_POLL_SCHEDULER_ENABLED_ENV: &str = "TASK_POLL_SCHEDULER_ENABLED";
+pub(crate) const TASK_POLL_RETRY_BASE_SECONDS_ENV: &str = "TASK_POLL_RETRY_BASE_SECONDS";
+pub(crate) const TASK_POLL_RETRY_MAX_SECONDS_ENV: &str = "TASK_POLL_RETRY_MAX_SECONDS";
+pub(crate) const TASK_POLL_MAX_CONSECUTIVE_FAILURES_ENV: &str =
+    "TASK_POLL_MAX_CONSECUTIVE_FAILURES";
 pub(crate) const DEFAULT_TASK_QUERY_LIMIT: i64 = 100;
 pub(crate) const DEFAULT_TASK_TIMEOUT_MINUTES: i64 = 1_440;
 pub(crate) const DEFAULT_TASK_POLL_LEASE_SECONDS: i64 = 120;
+pub(crate) const DEFAULT_TASK_POLL_RETRY_BASE_SECONDS: i64 = 15;
+pub(crate) const DEFAULT_TASK_POLL_RETRY_MAX_SECONDS: i64 = 900;
+pub(crate) const DEFAULT_TASK_POLL_MAX_CONSECUTIVE_FAILURES: i64 = 8;
 pub(crate) const TASK_TIMEOUT_SWEEP_LIMIT: i64 = 100;
 const MAX_TASK_QUERY_LIMIT: i64 = 1_000;
 const MAX_TASK_TIMEOUT_MINUTES: i64 = 30 * 24 * 60;
 const MIN_TASK_POLL_LEASE_SECONDS: i64 = 30;
 const MAX_TASK_POLL_LEASE_SECONDS: i64 = 900;
+const MAX_TASK_POLL_RETRY_SECONDS: i64 = 86_400;
+const MAX_TASK_POLL_CONSECUTIVE_FAILURES: i64 = 100;
 const TASK_PROVIDER_POLL_MAX_TIMEOUT_SECONDS: i64 = 90;
 const TASK_PROVIDER_POLL_LEASE_SAFETY_SECONDS: i64 = 15;
+pub(crate) const TASK_POLL_FAMILY_QUERY_LIMIT: i64 = 8;
+const TASK_POLL_STORED_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+const TASK_POLL_STORED_VIDEO_PREFIX_CHARS: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskPollFamily {
+    Video,
+    Suno,
+    Midjourney,
+}
+
+pub(crate) fn task_poll_family_for_slot(now: i64) -> TaskPollFamily {
+    match now.saturating_div(60).rem_euclid(3) {
+        0 => TaskPollFamily::Video,
+        1 => TaskPollFamily::Suno,
+        _ => TaskPollFamily::Midjourney,
+    }
+}
+
+pub(crate) fn task_poll_family_query_limit(query_limit: i64) -> i64 {
+    query_limit.clamp(1, TASK_POLL_FAMILY_QUERY_LIMIT)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaskPollerConfig {
@@ -73,9 +108,30 @@ pub(crate) struct TaskPollerConfig {
     pub timeout_minutes: i64,
     pub timeout_sweep_limit: i64,
     pub poll_lease_seconds: i64,
+    pub scheduler_enabled: bool,
+    pub retry_base_seconds: i64,
+    pub retry_max_seconds: i64,
+    pub max_consecutive_failures: i64,
 }
 
 pub(crate) fn task_poller_config_from_env(env: &Env) -> TaskPollerConfig {
+    let retry_base_seconds = parse_task_i64_env(
+        env.var(TASK_POLL_RETRY_BASE_SECONDS_ENV)
+            .ok()
+            .map(|value| value.to_string()),
+        DEFAULT_TASK_POLL_RETRY_BASE_SECONDS,
+        1,
+        MAX_TASK_POLL_RETRY_SECONDS,
+    );
+    let retry_max_seconds = parse_task_i64_env(
+        env.var(TASK_POLL_RETRY_MAX_SECONDS_ENV)
+            .ok()
+            .map(|value| value.to_string()),
+        DEFAULT_TASK_POLL_RETRY_MAX_SECONDS,
+        retry_base_seconds,
+        MAX_TASK_POLL_RETRY_SECONDS,
+    )
+    .max(retry_base_seconds);
     TaskPollerConfig {
         query_limit: parse_task_i64_env(
             env.var(TASK_QUERY_LIMIT_ENV)
@@ -95,6 +151,17 @@ pub(crate) fn task_poller_config_from_env(env: &Env) -> TaskPollerConfig {
         ),
         timeout_sweep_limit: TASK_TIMEOUT_SWEEP_LIMIT,
         poll_lease_seconds: task_poll_lease_seconds_from_env(env),
+        scheduler_enabled: task_poll_scheduler_enabled(env),
+        retry_base_seconds,
+        retry_max_seconds,
+        max_consecutive_failures: parse_task_i64_env(
+            env.var(TASK_POLL_MAX_CONSECUTIVE_FAILURES_ENV)
+                .ok()
+                .map(|value| value.to_string()),
+            DEFAULT_TASK_POLL_MAX_CONSECUTIVE_FAILURES,
+            1,
+            MAX_TASK_POLL_CONSECUTIVE_FAILURES,
+        ),
     }
 }
 
@@ -119,6 +186,82 @@ pub(crate) fn task_poll_lease_enabled(env: &Env) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+pub(crate) fn task_poll_scheduler_enabled(env: &Env) -> bool {
+    env.var(TASK_POLL_SCHEDULER_ENABLED_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.to_string().trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+pub(crate) fn task_poll_next_at(now: i64, retry_base_seconds: i64) -> i64 {
+    now.saturating_add(retry_base_seconds.max(1))
+}
+
+fn truncate_task_poll_video_value(value: &str) -> String {
+    if value.chars().count() <= TASK_POLL_STORED_VIDEO_PREFIX_CHARS {
+        return value.to_string();
+    }
+    let prefix: String = value
+        .chars()
+        .take(TASK_POLL_STORED_VIDEO_PREFIX_CHARS)
+        .collect();
+    format!("{prefix}...")
+}
+
+fn redact_task_poll_response_body(body: &[u8]) -> String {
+    let mut value = match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(value) => value,
+        Err(_) if body.len() <= TASK_POLL_STORED_RESPONSE_MAX_BYTES => {
+            return String::from_utf8_lossy(body).into_owned();
+        }
+        Err(_) => return task_poll_response_overflow_metadata(body),
+    };
+    if let Some(response) = value
+        .get_mut("response")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        response.remove("bytesBase64Encoded");
+        if let Some(video) = response
+            .get_mut("video")
+            .and_then(|value| value.as_str())
+            .map(truncate_task_poll_video_value)
+        {
+            response.insert("video".to_string(), serde_json::Value::String(video));
+        }
+        if let Some(videos) = response
+            .get_mut("videos")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for video in videos {
+                if let Some(video) = video.as_object_mut() {
+                    video.remove("bytesBase64Encoded");
+                }
+            }
+        }
+    }
+    match serde_json::to_string(&value) {
+        Ok(encoded) if encoded.len() <= TASK_POLL_STORED_RESPONSE_MAX_BYTES => encoded,
+        _ => task_poll_response_overflow_metadata(body),
+    }
+}
+
+fn task_poll_response_overflow_metadata(body: &[u8]) -> String {
+    let digest = Sha256::digest(body);
+    let digest_hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    serde_json::json!({
+        "redacted": true,
+        "reason": "provider_response_too_large",
+        "original_bytes": body.len(),
+        "sha256": digest_hex,
+    })
+    .to_string()
 }
 
 pub(crate) fn task_poll_provider_timeout_seconds(lease_seconds: i64) -> u64 {
@@ -427,6 +570,7 @@ async fn poll_vertex_task(
     service_account_json: &str,
     timeout_seconds: u64,
     now: i64,
+    retry_base_seconds: i64,
 ) -> worker::Result<TaskPollApplyOutcome> {
     let deadline_ms = js_sys::Date::now() + timeout_seconds.max(1) as f64 * 1_000.0;
     let operation_name =
@@ -459,16 +603,18 @@ async fn poll_vertex_task(
     } else {
         0
     };
-    let result_data = String::from_utf8_lossy(&response);
+    let result_data = redact_task_poll_response_body(&response);
     let terminal = info.status.is_terminal();
+    let next_poll_at = task_poll_next_at(applied_at, retry_base_seconds);
     let cas_won = apply_poll_result(
         db,
         task,
         lease,
         &info,
-        Some(result_data.as_ref()),
+        Some(result_data.as_str()),
         finish_time,
         applied_at,
+        next_poll_at,
     )
     .await?;
     Ok(TaskPollApplyOutcome {
@@ -2046,6 +2192,9 @@ pub async fn poll_one_task(
     gemini_version: &str,
     poll_owner: &str,
     poll_lease_seconds: i64,
+    retry_base_seconds: i64,
+    retry_max_seconds: i64,
+    max_consecutive_failures: i64,
     now: i64,
 ) -> worker::Result<Option<TaskPollApplyOutcome>> {
     let Some(provider) = VideoProvider::from_channel_type(channel_type as i64) else {
@@ -2066,7 +2215,18 @@ pub async fn poll_one_task(
         lease.expires_at,
         task_poll_now_unix_seconds().max(claim_now),
     ) else {
-        let _ = release_task_poll_lease(db, task.id, &lease).await;
+        let failure_now = task_poll_now_unix_seconds().max(claim_now);
+        let _ = record_task_poll_failure(
+            db,
+            task,
+            &lease,
+            failure_now,
+            retry_base_seconds,
+            retry_max_seconds,
+            max_consecutive_failures,
+            "lease_budget_exhausted",
+        )
+        .await;
         return Err(worker::Error::RustError(
             "task poll lease has no provider budget".to_string(),
         ));
@@ -2118,6 +2278,7 @@ pub async fn poll_one_task(
                     channel_key,
                     provider_timeout_seconds,
                     claim_now,
+                    retry_base_seconds,
                 )
                 .await
                 .map(Some);
@@ -2131,16 +2292,18 @@ pub async fn poll_one_task(
         } else {
             0
         };
-        let result_data = String::from_utf8_lossy(&body);
+        let result_data = redact_task_poll_response_body(&body);
         let terminal = info.status.is_terminal();
+        let next_poll_at = task_poll_next_at(applied_at, retry_base_seconds);
         let cas_won = apply_poll_result(
             db,
             task,
             &lease,
             &info,
-            Some(result_data.as_ref()),
+            Some(result_data.as_str()),
             finish_time,
             applied_at,
+            next_poll_at,
         )
         .await?;
         Ok(Some(TaskPollApplyOutcome {
@@ -2164,7 +2327,18 @@ pub async fn poll_one_task(
             Ok(None)
         }
         Err(err) => {
-            let _ = release_task_poll_lease(db, task.id, &lease).await;
+            let failure_now = task_poll_now_unix_seconds().max(claim_now);
+            let _ = record_task_poll_failure(
+                db,
+                task,
+                &lease,
+                failure_now,
+                retry_base_seconds,
+                retry_max_seconds,
+                max_consecutive_failures,
+                "provider_poll_failed",
+            )
+            .await;
             Err(err)
         }
     }
@@ -2192,10 +2366,11 @@ pub async fn sweep_timed_out_tasks(
     for task in &tasks {
         let claim_now = task_poll_now_unix_seconds().max(now);
         let Some(lease) =
-            claim_task_poll_lease(db, task, &owner, claim_now, poll_lease_seconds).await?
+            claim_task_timeout_poll_lease(db, task, &owner, claim_now, poll_lease_seconds).await?
         else {
             continue;
         };
+        let _ = advance_task_poll_family_cursor(db, "task_timeout", task.id, claim_now).await?;
         let applied_at = task_poll_now_unix_seconds().max(claim_now);
         match apply_task_timeout(db, task, &lease, timeout_minutes, applied_at).await {
             Ok(true) => settled += 1,
@@ -2212,6 +2387,9 @@ pub async fn poll_unfinished_tasks(
     gemini_version: &str,
     now: i64,
     poll_lease_seconds: i64,
+    retry_base_seconds: i64,
+    retry_max_seconds: i64,
+    max_consecutive_failures: i64,
     limit: i64,
 ) -> worker::Result<u32> {
     let tasks = find_unfinished_tasks(db, now, limit).await?;
@@ -2220,7 +2398,27 @@ pub async fn poll_unfinished_tasks(
     for task in &tasks {
         let channel = match crate::d1_repositories::find_channel_by_id(db, task.channel_id).await {
             Ok(Some(channel)) => channel,
-            _ => continue,
+            _ => {
+                let failure_now = task_poll_now_unix_seconds().max(now);
+                if let Some(lease) =
+                    claim_task_poll_lease(db, task, &owner, failure_now, poll_lease_seconds).await?
+                {
+                    let _ =
+                        advance_task_poll_family_cursor(db, "video", task.id, failure_now).await?;
+                    let _ = record_task_poll_failure(
+                        db,
+                        task,
+                        &lease,
+                        failure_now,
+                        retry_base_seconds,
+                        retry_max_seconds,
+                        max_consecutive_failures,
+                        "channel_unavailable",
+                    )
+                    .await;
+                }
+                continue;
+            }
         };
         let outcome = poll_one_task(
             db,
@@ -2231,16 +2429,25 @@ pub async fn poll_unfinished_tasks(
             gemini_version,
             &owner,
             poll_lease_seconds,
+            retry_base_seconds,
+            retry_max_seconds,
+            max_consecutive_failures,
             task_poll_now_unix_seconds().max(now),
         )
         .await;
-        if let Ok(Some(TaskPollApplyOutcome {
-            cas_won: true,
-            terminal: true,
-            ..
-        })) = outcome
-        {
-            settled += 1;
+        if let Ok(Some(outcome)) = outcome {
+            if outcome.lease_claimed {
+                let _ = advance_task_poll_family_cursor(
+                    db,
+                    "video",
+                    task.id,
+                    task_poll_now_unix_seconds().max(now),
+                )
+                .await?;
+            }
+            if outcome.cas_won && outcome.terminal {
+                settled += 1;
+            }
         }
     }
     Ok(settled)
@@ -2256,6 +2463,9 @@ pub async fn poll_unfinished_suno_tasks(
     db: &D1Database,
     now: i64,
     poll_lease_seconds: i64,
+    retry_base_seconds: i64,
+    retry_max_seconds: i64,
+    max_consecutive_failures: i64,
     limit: i64,
 ) -> worker::Result<u32> {
     let tasks = find_unfinished_suno_tasks(db, now, limit).await?;
@@ -2271,7 +2481,30 @@ pub async fn poll_unfinished_suno_tasks(
     for (channel_id, channel_tasks) in by_channel {
         let channel = match crate::d1_repositories::find_channel_by_id(db, channel_id).await {
             Ok(Some(channel)) => channel,
-            _ => continue,
+            _ => {
+                let failure_now = task_poll_now_unix_seconds().max(now);
+                for task in channel_tasks {
+                    if let Some(lease) =
+                        claim_task_poll_lease(db, task, &owner, failure_now, poll_lease_seconds)
+                            .await?
+                    {
+                        let _ = advance_task_poll_family_cursor(db, "suno", task.id, failure_now)
+                            .await?;
+                        let _ = record_task_poll_failure(
+                            db,
+                            task,
+                            &lease,
+                            failure_now,
+                            retry_base_seconds,
+                            retry_max_seconds,
+                            max_consecutive_failures,
+                            "channel_unavailable",
+                        )
+                        .await;
+                    }
+                }
+                continue;
+            }
         };
         let mut claimed = Vec::with_capacity(channel_tasks.len());
         let claim_now = task_poll_now_unix_seconds().max(now);
@@ -2279,6 +2512,7 @@ pub async fn poll_unfinished_suno_tasks(
             if let Some(lease) =
                 claim_task_poll_lease(db, task, &owner, claim_now, poll_lease_seconds).await?
             {
+                let _ = advance_task_poll_family_cursor(db, "suno", task.id, claim_now).await?;
                 claimed.push((task, lease));
             }
         }
@@ -2312,7 +2546,18 @@ pub async fn poll_unfinished_suno_tasks(
             task_poll_now_unix_seconds().max(claim_now),
         ) else {
             for (task, lease) in &claimed {
-                let _ = release_task_poll_lease(db, task.id, lease).await;
+                let failure_now = task_poll_now_unix_seconds().max(claim_now);
+                let _ = record_task_poll_failure(
+                    db,
+                    task,
+                    lease,
+                    failure_now,
+                    retry_base_seconds,
+                    retry_max_seconds,
+                    max_consecutive_failures,
+                    "lease_budget_exhausted",
+                )
+                .await;
             }
             continue;
         };
@@ -2320,7 +2565,18 @@ pub async fn poll_unfinished_suno_tasks(
             execute_poll_request_with_timeout(&request, provider_timeout_seconds).await
         else {
             for (task, lease) in &claimed {
-                let _ = release_task_poll_lease(db, task.id, lease).await;
+                let failure_now = task_poll_now_unix_seconds().max(claim_now);
+                let _ = record_task_poll_failure(
+                    db,
+                    task,
+                    lease,
+                    failure_now,
+                    retry_base_seconds,
+                    retry_max_seconds,
+                    max_consecutive_failures,
+                    "provider_poll_failed",
+                )
+                .await;
             }
             continue;
         };
@@ -2329,14 +2585,36 @@ pub async fn poll_unfinished_suno_tasks(
                 Ok(parsed) => parsed,
                 Err(_) => {
                     for (task, lease) in &claimed {
-                        let _ = release_task_poll_lease(db, task.id, lease).await;
+                        let failure_now = task_poll_now_unix_seconds().max(claim_now);
+                        let _ = record_task_poll_failure(
+                            db,
+                            task,
+                            lease,
+                            failure_now,
+                            retry_base_seconds,
+                            retry_max_seconds,
+                            max_consecutive_failures,
+                            "provider_response_invalid",
+                        )
+                        .await;
                     }
                     continue;
                 }
             };
         if !parsed.is_success() {
             for (task, lease) in &claimed {
-                let _ = release_task_poll_lease(db, task.id, lease).await;
+                let failure_now = task_poll_now_unix_seconds().max(claim_now);
+                let _ = record_task_poll_failure(
+                    db,
+                    task,
+                    lease,
+                    failure_now,
+                    retry_base_seconds,
+                    retry_max_seconds,
+                    max_consecutive_failures,
+                    "provider_poll_rejected",
+                )
+                .await;
             }
             continue;
         }
@@ -2349,6 +2627,7 @@ pub async fn poll_unfinished_suno_tasks(
                 continue;
             };
             let applied_at = task_poll_now_unix_seconds().max(claim_now);
+            let next_poll_at = task_poll_next_at(applied_at, retry_base_seconds);
             if let Ok(true) = crate::task_repository::apply_suno_poll_result(
                 db,
                 task,
@@ -2356,6 +2635,7 @@ pub async fn poll_unfinished_suno_tasks(
                 &item.status,
                 &item.fail_reason,
                 applied_at,
+                next_poll_at,
             )
             .await
             {
@@ -2363,7 +2643,26 @@ pub async fn poll_unfinished_suno_tasks(
             }
         }
         for (task, lease) in &claimed {
-            let _ = release_task_poll_lease(db, task.id, lease).await;
+            if !parsed
+                .data
+                .iter()
+                .any(|item| item.task_id == task.upstream_task_id)
+            {
+                let failure_now = task_poll_now_unix_seconds().max(claim_now);
+                let _ = record_task_poll_failure(
+                    db,
+                    task,
+                    lease,
+                    failure_now,
+                    retry_base_seconds,
+                    retry_max_seconds,
+                    max_consecutive_failures,
+                    "provider_item_missing",
+                )
+                .await;
+            } else {
+                let _ = release_task_poll_lease(db, task.id, lease).await;
+            }
         }
     }
     Ok(settled)
@@ -2380,11 +2679,14 @@ pub async fn poll_unfinished_midjourney_tasks(
     db: &D1Database,
     now: i64,
     poll_lease_seconds: i64,
+    retry_base_seconds: i64,
+    retry_max_seconds: i64,
+    max_consecutive_failures: i64,
     limit: i64,
 ) -> worker::Result<u32> {
     use crate::mj_repository::{
-        apply_midjourney_poll_result, claim_midjourney_poll_lease, release_midjourney_poll_lease,
-        MjPollResult, MjRow,
+        apply_midjourney_poll_result, claim_midjourney_poll_lease, record_midjourney_poll_failure,
+        release_midjourney_poll_lease, MjPollResult, MjRow,
     };
 
     let rows = crate::mj_repository::find_unfinished_midjourneys(db, now, limit).await?;
@@ -2398,7 +2700,36 @@ pub async fn poll_unfinished_midjourney_tasks(
     for (channel_id, channel_rows) in by_channel {
         let channel = match crate::d1_repositories::find_channel_by_id(db, channel_id).await {
             Ok(Some(channel)) => channel,
-            _ => continue,
+            _ => {
+                let failure_now = task_poll_now_unix_seconds().max(now);
+                for row in channel_rows {
+                    if let Some(lease) = claim_midjourney_poll_lease(
+                        db,
+                        row,
+                        &owner,
+                        failure_now,
+                        poll_lease_seconds,
+                    )
+                    .await?
+                    {
+                        let _ =
+                            advance_task_poll_family_cursor(db, "midjourney", row.id, failure_now)
+                                .await?;
+                        let _ = record_midjourney_poll_failure(
+                            db,
+                            row,
+                            &lease,
+                            failure_now,
+                            retry_base_seconds,
+                            retry_max_seconds,
+                            max_consecutive_failures,
+                            "channel_unavailable",
+                        )
+                        .await;
+                    }
+                }
+                continue;
+            }
         };
         let mut claimed = Vec::with_capacity(channel_rows.len());
         let claim_now = task_poll_now_unix_seconds().max(now);
@@ -2406,6 +2737,8 @@ pub async fn poll_unfinished_midjourney_tasks(
             if let Some(lease) =
                 claim_midjourney_poll_lease(db, row, &owner, claim_now, poll_lease_seconds).await?
             {
+                let _ =
+                    advance_task_poll_family_cursor(db, "midjourney", row.id, claim_now).await?;
                 claimed.push((row, lease));
             }
         }
@@ -2433,7 +2766,18 @@ pub async fn poll_unfinished_midjourney_tasks(
             task_poll_now_unix_seconds().max(claim_now),
         ) else {
             for (row, lease) in &claimed {
-                let _ = release_midjourney_poll_lease(db, row.id, lease).await;
+                let failure_now = task_poll_now_unix_seconds().max(claim_now);
+                let _ = record_midjourney_poll_failure(
+                    db,
+                    row,
+                    lease,
+                    failure_now,
+                    retry_base_seconds,
+                    retry_max_seconds,
+                    max_consecutive_failures,
+                    "lease_budget_exhausted",
+                )
+                .await;
             }
             continue;
         };
@@ -2441,7 +2785,18 @@ pub async fn poll_unfinished_midjourney_tasks(
             execute_poll_request_with_timeout(&request, provider_timeout_seconds).await
         else {
             for (row, lease) in &claimed {
-                let _ = release_midjourney_poll_lease(db, row.id, lease).await;
+                let failure_now = task_poll_now_unix_seconds().max(claim_now);
+                let _ = record_midjourney_poll_failure(
+                    db,
+                    row,
+                    lease,
+                    failure_now,
+                    retry_base_seconds,
+                    retry_max_seconds,
+                    max_consecutive_failures,
+                    "provider_poll_failed",
+                )
+                .await;
             }
             continue;
         };
@@ -2449,7 +2804,18 @@ pub async fn poll_unfinished_midjourney_tasks(
             Ok(items) => items,
             Err(_) => {
                 for (row, lease) in &claimed {
-                    let _ = release_midjourney_poll_lease(db, row.id, lease).await;
+                    let failure_now = task_poll_now_unix_seconds().max(claim_now);
+                    let _ = record_midjourney_poll_failure(
+                        db,
+                        row,
+                        lease,
+                        failure_now,
+                        retry_base_seconds,
+                        retry_max_seconds,
+                        max_consecutive_failures,
+                        "provider_response_invalid",
+                    )
+                    .await;
                 }
                 continue;
             }
@@ -2489,14 +2855,31 @@ pub async fn poll_unfinished_midjourney_tasks(
                 video_url: &item.video_url,
                 finish_time,
             };
+            let next_poll_at = task_poll_next_at(applied_at, retry_base_seconds);
             if let Ok(true) =
-                apply_midjourney_poll_result(db, row, lease, &result, applied_at).await
+                apply_midjourney_poll_result(db, row, lease, &result, applied_at, next_poll_at)
+                    .await
             {
                 settled += 1;
             }
         }
         for (row, lease) in &claimed {
-            let _ = release_midjourney_poll_lease(db, row.id, lease).await;
+            if !items.iter().any(|item| item.mj_id == row.mj_id) {
+                let failure_now = task_poll_now_unix_seconds().max(claim_now);
+                let _ = record_midjourney_poll_failure(
+                    db,
+                    row,
+                    lease,
+                    failure_now,
+                    retry_base_seconds,
+                    retry_max_seconds,
+                    max_consecutive_failures,
+                    "provider_item_missing",
+                )
+                .await;
+            } else {
+                let _ = release_midjourney_poll_lease(db, row.id, lease).await;
+            }
         }
     }
     Ok(settled)
@@ -3605,6 +3988,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn task_poll_family_slots_rotate_and_cap_each_invocation() {
+        assert_eq!(task_poll_family_for_slot(0), TaskPollFamily::Video);
+        assert_eq!(task_poll_family_for_slot(60), TaskPollFamily::Suno);
+        assert_eq!(task_poll_family_for_slot(120), TaskPollFamily::Midjourney);
+        assert_eq!(task_poll_family_for_slot(180), TaskPollFamily::Video);
+        assert_eq!(task_poll_family_query_limit(0), 1);
+        assert_eq!(task_poll_family_query_limit(4), 4);
+        assert_eq!(task_poll_family_query_limit(100), 8);
+    }
+
+    #[test]
+    fn task_poll_response_redacts_video_bytes_and_bounds_storage() {
+        let body = serde_json::json!({
+            "response": {
+                "bytesBase64Encoded": "secret",
+                "video": "a".repeat(300),
+                "videos": [{"bytesBase64Encoded": "secret", "uri": "https://cdn.example/v.mp4"}],
+                "status": "done"
+            }
+        })
+        .to_string();
+        let redacted = redact_task_poll_response_body(body.as_bytes());
+        let value: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+        let response = value
+            .get("response")
+            .and_then(serde_json::Value::as_object)
+            .unwrap();
+        assert!(!response.contains_key("bytesBase64Encoded"));
+        assert_eq!(response.get("video").unwrap().as_str().unwrap().len(), 259);
+        assert!(!response["videos"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("bytesBase64Encoded"));
+        assert_eq!(response["status"], "done");
+
+        let oversized = vec![b'x'; TASK_POLL_STORED_RESPONSE_MAX_BYTES + 1];
+        let metadata: serde_json::Value =
+            serde_json::from_str(&redact_task_poll_response_body(&oversized)).unwrap();
+        assert_eq!(metadata["redacted"], true);
+        assert_eq!(metadata["reason"], "provider_response_too_large");
+        assert_eq!(metadata["original_bytes"], oversized.len());
+        assert_eq!(metadata["sha256"].as_str().unwrap().len(), 64);
+    }
+
+    #[test]
     fn task_per_call_quota_covers_fixed_and_ratio_pricing() {
         let mut fixed_config = PricingConfig::new();
         fixed_config
@@ -3749,6 +4177,10 @@ mod tests {
         assert_eq!(task_poll_provider_timeout_until(130, 100), Some(15));
         assert_eq!(task_poll_provider_timeout_until(115, 100), None);
         assert_eq!(task_poll_provider_timeout_until(220, 100), Some(90));
+        assert_eq!(task_poll_next_at(100, 15), 115);
+        assert_eq!(DEFAULT_TASK_POLL_RETRY_BASE_SECONDS, 15);
+        assert_eq!(DEFAULT_TASK_POLL_RETRY_MAX_SECONDS, 900);
+        assert_eq!(DEFAULT_TASK_POLL_MAX_CONSECUTIVE_FAILURES, 8);
     }
 
     #[test]

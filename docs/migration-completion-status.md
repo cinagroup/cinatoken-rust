@@ -841,8 +841,24 @@ enforcement -> env authority -> cron canary -> reviewed staging proof -> video
 TaskRunner canary. Rollback is env off -> D1 authority off -> D1 enforcement
 off -> drain leases -> 0033-compatible Worker only.
 
-Persisted `next_poll_at`, family-fair pagination, poison-row backoff,
-provider-operation uniqueness/idempotency lookup, whole-operation deadlines,
-remote D1/provider fault injection, invoice reconciliation, alert/load
-evidence, credential rotation, and signed rollback still block Task v2 and
-production. Go/VPS remains authoritative and production remains **NO-GO**.
+Migration 0036 is now present as an unpromoted local expand candidate. It adds
+persisted due time, attempt/failure/error/quarantine metadata, filtered due
+indexes, and five seeded family cursors with inert defaults. The committed
+default/staging/production scheduler gates remain false. This repository state
+is not proof that any remote D1 applied 0036 or that a Worker was deployed.
+
+Status: **gated local scheduling substrate**. Scheduler activation depends on
+the 0034/0035 lease being present, authoritative, enforced, drained of old
+writers, and race/rollback verified. D1 is the scheduling and lifecycle
+authority; a TaskRunner DO may only accelerate video wake-up and must obey D1
+due/quarantine/lease state.
+
+Local runtime now includes minute-slot family rotation, eight-row family caps,
+finite high-watermark cursor rounds, claim-only cursor advance, deterministic
+jittered capped backoff, success reset, threshold quarantine, generation-fenced
+Alarm rearm, and bounded/redacted video response persistence. Immediate poison
+classification, audited manual release/requeue, provider-operation
+uniqueness/idempotency lookup, whole-operation deadlines, remote fault
+injection, invoice reconciliation, alert/load evidence, credential rotation,
+and signed rollback still block Task v2 and production. Go/VPS remains
+authoritative and production remains **NO-GO**.

@@ -1429,9 +1429,36 @@ the video TaskRunner. Rollback is env authority off, D1 authority off, D1
 enforcement off, active-lease drain, and rollback only to a 0033-compatible
 Worker.
 
-Remaining Phase 1 blockers are persisted `next_poll_at`, fair family cursors
-and poison backoff, provider-operation uniqueness/idempotency lookup, full
+Migration 0036 now supplies the local persisted `next_poll_at`, five-family
+cursor, failure/backoff, and quarantine schema. It does not supply staging or
+remote evidence. Remaining Phase 1 blockers include runtime proof of that
+policy, provider-operation uniqueness/idempotency lookup, full
 Vertex/auth-plus-fetch deadline enforcement, remote D1/provider fault
 injection, duplicate alarm/cron/timeout replay, invoice and quota
 reconciliation, load/alert evidence, credential rotation, rollback rehearsal,
 and G1-G8 approval. Production remains **NO-GO**.
+
+## Phase 1 Scheduler Gate
+
+The committed default/staging/production contract is scheduler disabled,
+15-second retry base, 900-second retry cap, eight consecutive failures before
+quarantine, and staging verification false. Phase 1 may not enable the
+scheduler until migrations 0034/0035/0036 are present in order and the 0034/0035
+lease has passed drain, authority, enforcement, race, and rollback checks.
+
+Staging must then prove five independent finite high-watermark cursor families,
+claim-only cursor advance, one normal family per minute slot with an eight-row
+cap, no poll before D1 `next_poll_at`, deterministic jittered delay ranges of
+15-18/30-33/60-63/120-123/240-243/480-483/900 seconds, failure reset after a
+validated response, and threshold quarantine instead of another retry on
+failure eight. Immediate-poison classification and audited manual release are
+still implementation blockers. Staging must also prove no financial side effect
+from quarantine, stale-generation rejection, and cron operation when the DO
+fast path is unavailable. The
+staging-verification flag stays false while this evidence is collected and may
+change only in a later reviewed candidate.
+
+Rollback order is scheduler off, TaskRunner off, in-flight reconciliation,
+then lease env off -> D1 authority off -> D1 enforcement off if the whole Rust
+ownership path is being withdrawn. Keep 0036 and all scheduling metadata in
+place. Reconcile quarantined rows before returning them to Go/VPS.

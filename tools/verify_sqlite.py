@@ -38,6 +38,7 @@ REQUIRED_TABLES = [
     "task_billing_intents",
     "task_billing_reconciliation_events",
     "task_poll_lease_control",
+    "task_poll_family_cursors",
 ]
 
 REQUIRED_COLUMNS = {
@@ -47,6 +48,13 @@ REQUIRED_COLUMNS = {
         "poll_lease_expires_at",
         "poll_applied_generation",
         "poll_write_revision",
+        "next_poll_at",
+        "poll_attempt_count",
+        "poll_consecutive_failures",
+        "poll_last_attempt_at",
+        "poll_last_error_code",
+        "poll_quarantined_at",
+        "poll_quarantine_reason",
     },
     "midjourneys": {
         "poll_owner",
@@ -54,12 +62,26 @@ REQUIRED_COLUMNS = {
         "poll_lease_expires_at",
         "poll_applied_generation",
         "poll_write_revision",
+        "next_poll_at",
+        "poll_attempt_count",
+        "poll_consecutive_failures",
+        "poll_last_attempt_at",
+        "poll_last_error_code",
+        "poll_quarantined_at",
+        "poll_quarantine_reason",
     },
     "task_poll_lease_control": {
         "id",
         "contract_version",
         "authority_enabled",
         "enforcement_enabled",
+        "updated_at",
+    },
+    "task_poll_family_cursors": {
+        "family",
+        "last_row_id",
+        "round_high_watermark",
+        "scan_generation",
         "updated_at",
     },
     "abilities": {"tag"},
@@ -274,8 +296,14 @@ REQUIRED_COLUMNS = {
 }
 
 REQUIRED_INDEXES = {
-    "tasks": {"idx_tasks_poll_lease_due": False},
-    "midjourneys": {"idx_midjourneys_poll_lease_due": False},
+    "tasks": {
+        "idx_tasks_poll_lease_due": False,
+        "idx_tasks_poll_schedule_due": False,
+    },
+    "midjourneys": {
+        "idx_midjourneys_poll_lease_due": False,
+        "idx_midjourneys_poll_schedule_due": False,
+    },
     "abilities": {"uq_abilities_group_model_channel": True},
     "logs": {"idx_logs_billing_finalization_event_id": True},
     "prefill_groups": {"uk_prefill_name": True},
@@ -361,6 +389,8 @@ def main() -> int:
     task_submit_reconciliation_rollout_verified = False
     task_poll_lease_verified = False
     task_poll_lease_rollout_verified = False
+    task_poll_schedule_verified = False
+    task_poll_schedule_rollout_verified = False
     if not args.schema:
         verify_realtime_lease_migration_guard(schema_paths)
         lease_guard_verified = True
@@ -372,6 +402,8 @@ def main() -> int:
         task_submit_reconciliation_rollout_verified = True
         verify_task_poll_lease_rollout(schema_paths)
         task_poll_lease_rollout_verified = True
+        verify_task_poll_schedule_rollout(schema_paths)
+        task_poll_schedule_rollout_verified = True
 
     conn = sqlite3.connect(":memory:")
     for schema_path in schema_paths:
@@ -389,6 +421,8 @@ def main() -> int:
         task_submit_reconciliation_verified = True
         verify_task_poll_lease(conn)
         task_poll_lease_verified = True
+        verify_task_poll_schedule(conn)
+        task_poll_schedule_verified = True
 
     missing = [
         table
@@ -444,6 +478,10 @@ def main() -> int:
         message += " + 0034/0035 generation-fenced task polling"
     if task_poll_lease_rollout_verified:
         message += " + 0034 expand/0035 enforce rollout"
+    if task_poll_schedule_verified:
+        message += " + 0036 persisted fair task polling"
+    if task_poll_schedule_rollout_verified:
+        message += " + 0036 default-inert scheduler rollout"
 
     if args.seed:
         for value in args.seed:
@@ -1480,6 +1518,134 @@ def verify_task_poll_lease(conn: sqlite3.Connection) -> None:
         raise SystemExit("0035 rollback switch did not restore legacy writer compatibility")
 
 
+def verify_task_poll_schedule(conn: sqlite3.Connection) -> None:
+    expected_families = [
+        "midjourney",
+        "midjourney_timeout",
+        "suno",
+        "task_timeout",
+        "video",
+    ]
+    cursors = conn.execute(
+        "SELECT family, last_row_id, round_high_watermark, scan_generation, updated_at "
+        "FROM task_poll_family_cursors ORDER BY family"
+    ).fetchall()
+    expected_cursors = [(family, 0, 0, 0, 0) for family in expected_families]
+    if cursors != expected_cursors:
+        raise SystemExit(f"0036 family cursors must default inert: {cursors}")
+
+    index_contracts = {
+        "idx_tasks_poll_schedule_due": (
+            "on tasks(next_poll_at, id)",
+            "status not in ('success', 'failure')",
+            "upstream_task_id != ''",
+            "poll_quarantined_at = 0",
+        ),
+        "idx_midjourneys_poll_schedule_due": (
+            "on midjourneys(next_poll_at, id)",
+            "status not in ('success', 'failure')",
+            "mj_id != ''",
+            "poll_quarantined_at = 0",
+        ),
+    }
+    for index, fragments in index_contracts.items():
+        sql = sqlite_object_sql(conn, "index", index)
+        normalized = " ".join(sql.lower().split()) if sql else ""
+        if not sql or any(fragment not in normalized for fragment in fragments):
+            raise SystemExit(f"0036 task poll schedule index contract invalid: {index}")
+
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, task_id, upstream_task_id, platform, status, progress, submit_time) "
+        "VALUES (360001, '0036-task-video', 'provider-video', 'sora', "
+        "'IN_PROGRESS', '1%', 1)"
+    )
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, task_id, upstream_task_id, platform, status, progress, submit_time) "
+        "VALUES (360002, '0036-task-suno', 'provider-suno', 'suno', "
+        "'IN_PROGRESS', '1%', 1)"
+    )
+    conn.execute(
+        "INSERT INTO midjourneys (id, mj_id, status, progress, submit_time) "
+        "VALUES (360003, '0036-mj', 'IN_PROGRESS', '1%', 1)"
+    )
+    schedule_columns = (
+        "next_poll_at, poll_attempt_count, poll_consecutive_failures, "
+        "poll_last_attempt_at, poll_last_error_code, poll_quarantined_at, "
+        "poll_quarantine_reason"
+    )
+    for table, row_id in (("tasks", 360001), ("midjourneys", 360003)):
+        defaults = conn.execute(
+            f"SELECT {schedule_columns} FROM {table} WHERE id = ?", (row_id,)
+        ).fetchone()
+        if defaults != (0, 0, 0, 0, "", 0, ""):
+            raise SystemExit(f"0036 {table} schedule defaults are not inert: {defaults}")
+
+    due = conn.execute(
+        "SELECT id FROM tasks WHERE status NOT IN ('SUCCESS', 'FAILURE') "
+        "AND upstream_task_id != '' AND next_poll_at <= 100 "
+        "AND poll_quarantined_at = 0 AND poll_lease_expires_at <= 100 "
+        "ORDER BY id"
+    ).fetchall()
+    if (360001,) not in due or (360002,) not in due:
+        raise SystemExit(f"0036 due query omitted default-due tasks: {due}")
+    conn.execute(
+        "UPDATE tasks SET next_poll_at = 200 WHERE id = 360001"
+    )
+    conn.execute(
+        "UPDATE tasks SET poll_quarantined_at = 90, "
+        "poll_quarantine_reason = 'provider_poll_failed' WHERE id = 360002"
+    )
+    blocked = conn.execute(
+        "SELECT id FROM tasks WHERE id IN (360001, 360002) "
+        "AND status NOT IN ('SUCCESS', 'FAILURE') AND next_poll_at <= 100 "
+        "AND poll_quarantined_at = 0"
+    ).fetchall()
+    if blocked:
+        raise SystemExit(f"0036 due/quarantine filter admitted blocked rows: {blocked}")
+
+    reset = conn.execute(
+        "UPDATE task_poll_family_cursors SET last_row_id = 0, "
+        "round_high_watermark = 360001, scan_generation = scan_generation + 1, "
+        "updated_at = 100 WHERE family = 'video' AND last_row_id = 0 "
+        "AND round_high_watermark = 0 AND scan_generation = 0"
+    ).rowcount
+    advanced = conn.execute(
+        "UPDATE task_poll_family_cursors SET last_row_id = 360001, updated_at = 101 "
+        "WHERE family = 'video' AND scan_generation = 1 "
+        "AND round_high_watermark = 360001 AND last_row_id < 360001"
+    ).rowcount
+    stale = conn.execute(
+        "UPDATE task_poll_family_cursors SET last_row_id = 1 "
+        "WHERE family = 'video' AND scan_generation = 0"
+    ).rowcount
+    if (reset, advanced, stale) != (1, 1, 0):
+        raise SystemExit(
+            f"0036 finite-round cursor CAS mismatch: {(reset, advanced, stale)}"
+        )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE task_poll_family_cursors SET last_row_id = 360002 "
+            "WHERE family = 'video'"
+        ),
+        "0036 cursor must reject progress beyond its high-watermark",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "INSERT INTO task_poll_family_cursors (family) VALUES ('unknown')"
+        ),
+        "0036 cursor must reject an unknown poll family",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE midjourneys SET poll_last_error_code = ? WHERE id = 360003",
+            ("x" * 65,),
+        ),
+        "0036 schedule error codes must remain bounded",
+    )
+
+
 def expect_integrity_error(
     action,
     failure_message: str,
@@ -1891,6 +2057,117 @@ def verify_task_poll_lease_rollout(schema_paths: list[Path]) -> None:
         "0035 shape guard must stay active while lifecycle enforcement is off",
         "invalid task poll lease transition",
     )
+
+
+def verify_task_poll_schedule_rollout(schema_paths: list[Path]) -> None:
+    schedule_path = next(
+        (path for path in schema_paths if path.name == "0036_task_poll_schedule.sql"),
+        None,
+    )
+    enforce_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0035_task_poll_lease_enforce.sql"
+        ),
+        None,
+    )
+    if schedule_path is None or enforce_path is None:
+        raise SystemExit("0035/0036 task poll scheduler rollout migrations not found")
+    if schema_paths.index(enforce_path) >= schema_paths.index(schedule_path):
+        raise SystemExit("0035 task poll lease enforcement must precede 0036 scheduler")
+
+    schedule_sql = schedule_path.read_text(encoding="utf-8")
+    if "if not exists" in schedule_sql.lower():
+        raise SystemExit("0036 critical scheduler objects must fail on duplicate DDL")
+    required_fragments = (
+        "ADD COLUMN next_poll_at",
+        "ADD COLUMN poll_attempt_count",
+        "ADD COLUMN poll_consecutive_failures",
+        "ADD COLUMN poll_last_attempt_at",
+        "ADD COLUMN poll_last_error_code",
+        "ADD COLUMN poll_quarantined_at",
+        "ADD COLUMN poll_quarantine_reason",
+        "CREATE INDEX idx_tasks_poll_schedule_due",
+        "CREATE INDEX idx_midjourneys_poll_schedule_due",
+        "CREATE TABLE task_poll_family_cursors",
+        "round_high_watermark",
+        "CHECK (round_high_watermark >= last_row_id)",
+    )
+    for fragment in required_fragments:
+        if fragment not in schedule_sql:
+            raise SystemExit(f"0036 scheduler rollout contract missing: {fragment}")
+    for family in (
+        "video",
+        "suno",
+        "midjourney",
+        "task_timeout",
+        "midjourney_timeout",
+    ):
+        if f"('{family}')" not in schedule_sql:
+            raise SystemExit(f"0036 scheduler cursor seed missing: {family}")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == schedule_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, task_id, upstream_task_id, platform, status, progress, submit_time) "
+        "VALUES (360036, '0036-rollout-task', 'provider-0036', 'sora', "
+        "'IN_PROGRESS', '7%', 10)"
+    )
+    conn.execute(
+        "INSERT INTO midjourneys (id, mj_id, status, progress, submit_time) "
+        "VALUES (360037, '0036-rollout-mj', 'IN_PROGRESS', '8%', 11)"
+    )
+    before = (
+        conn.execute(
+            "SELECT task_id, upstream_task_id, platform, status, progress, submit_time "
+            "FROM tasks WHERE id = 360036"
+        ).fetchone(),
+        conn.execute(
+            "SELECT mj_id, status, progress, submit_time "
+            "FROM midjourneys WHERE id = 360037"
+        ).fetchone(),
+    )
+    conn.executescript(schedule_sql)
+    after = (
+        conn.execute(
+            "SELECT task_id, upstream_task_id, platform, status, progress, submit_time "
+            "FROM tasks WHERE id = 360036"
+        ).fetchone(),
+        conn.execute(
+            "SELECT mj_id, status, progress, submit_time "
+            "FROM midjourneys WHERE id = 360037"
+        ).fetchone(),
+    )
+    if after != before:
+        raise SystemExit(f"0036 scheduler migration changed business data: {after}")
+    defaults = conn.execute(
+        "SELECT next_poll_at, poll_attempt_count, poll_consecutive_failures, "
+        "poll_last_attempt_at, poll_last_error_code, poll_quarantined_at, "
+        "poll_quarantine_reason FROM tasks WHERE id = 360036"
+    ).fetchone()
+    if defaults != (0, 0, 0, 0, "", 0, ""):
+        raise SystemExit(f"0036 rollout backfill is not default-inert: {defaults}")
+    cursor_count = conn.execute(
+        "SELECT COUNT(*) FROM task_poll_family_cursors WHERE last_row_id = 0 "
+        "AND round_high_watermark = 0 AND scan_generation = 0 AND updated_at = 0"
+    ).fetchone()[0]
+    if cursor_count != 5:
+        raise SystemExit(f"0036 rollout did not seed five inert cursors: {cursor_count}")
+    if conn.execute(
+        "UPDATE tasks SET progress = '9%' WHERE id = 360036"
+    ).rowcount != 1:
+        raise SystemExit("0036 default-inert scheduler broke a 0035-compatible task writer")
+    if conn.execute(
+        "UPDATE midjourneys SET progress = '10%' WHERE id = 360037"
+    ).rowcount != 1:
+        raise SystemExit(
+            "0036 default-inert scheduler broke a 0035-compatible Midjourney writer"
+        )
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

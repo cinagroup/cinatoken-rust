@@ -709,13 +709,25 @@ previous migration counts recorded above.
 | Video family | Separate bounded non-Suno Task query; cron plus video TaskRunner | Duplicate alarm, replacement schedule, eviction, replay, cron fallback | Partial |
 | Suno family | Separate bounded Task query and channel batch; cron-only | Prove submit never arms video TaskRunner; partial/missing batch release and replay | Partial |
 | Midjourney family | Separate table, batch poll, and claimed one-hour timeout | Poll/timeout race, partial response, refund/invoice reconciliation | Partial |
-| Fair scheduling | ID-ordered bounded scans only | Persisted `next_poll_at`, family-fair cursor/pagination, poison backoff | Blocked |
+| 0036 scheduler schema | Local additive due/backoff/quarantine columns, two due indexes, five seeded cursors; all env gates false | Remote ordered ledger/object readback and unchanged business-row proof | Local only |
+| Fair scheduling | D1 schema exists; runtime evidence absent | Independent family cursor advance/wrap, no early poll, bounded work, no starvation | Blocked |
+| Retry policy | Configured 15-second base, 900-second cap, eight-failure threshold | Exact sequence, overflow cap, success reset, restart persistence, no retry storm | Blocked |
+| Poison quarantine | D1 fields and filtered due indexes exist | Threshold and immediate-poison cases, no provider re-poll, no financial side effect, reviewed manual release | Blocked |
+| DO acceleration boundary | Video TaskRunner binding exists and defaults off | DO obeys D1 due/quarantine/lease state; cron continues during alarm/DO outage | Blocked |
 | Provider operation identity | Local task and lease identity exist | Provider-native idempotency or deterministic lookup and uniqueness for every family | Blocked |
 | Fault campaign | Focused local schema/CAS tests | Remote failure injection at claim/provider/apply/refund, alerts, load, rollback | Blocked |
 
-Required activation sequence: migrate inertly, deploy env-disabled, drain all
-old cron/DO/provider work, enable D1 authority, enable D1 enforcement, enable
-Worker env authority, run cron canaries, review evidence, then canary the video
-TaskRunner. Rollback reverses env authority, D1 authority, and D1 enforcement
-before lease drain and a 0033-compatible Worker rollback. Any other sequence is
-a G4/G5/G7 abort. Production remains **NO-GO**.
+Required activation sequence: apply 0034 -> 0035 -> 0036 inertly, deploy with
+lease/scheduler/TaskRunner disabled, drain all old cron/DO/provider work,
+enable D1 lease authority, enable D1 lease enforcement, enable Worker lease
+authority, then run an isolated scheduler canary while scheduler staging
+verification remains false. Review evidence before a new verified staging
+candidate; only then may video TaskRunner be canaried.
+
+Rollback disables scheduler and TaskRunner first. Preserve and reconcile
+in-flight provider operations, due/backoff/quarantine fields, and cursor state.
+For full ownership rollback, disable lease env authority, D1 authority, and D1
+enforcement in that order before lease drain and a 0033-compatible Worker.
+Reconcile quarantined rows before Go/VPS resumes. Any other sequence is a
+G4/G5/G7 abort. No remote or deployment evidence is recorded here; production
+remains **NO-GO**.

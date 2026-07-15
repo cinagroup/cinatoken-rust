@@ -307,9 +307,40 @@ Staging must still measure the complete claim/auth/fetch/parse/apply budget.
 ### Still-blocking work
 
 The lease closes stale local result application, not the whole production
-problem. Cutover remains blocked by persisted `next_poll_at`, family-fair
-pagination, poison-row backoff, provider-operation uniqueness or native
-idempotency/lookup, duplicate-submit reconciliation, a complete provider
-operation deadline, remote D1 ambiguity and fault injection at every boundary,
-provider invoice reconciliation, alert/load evidence, credential rotation,
-and signed rollback approval.
+problem. Migration 0036 supplies the local persisted scheduler shape, but no
+staging, remote D1, deployment, provider, or rollback evidence is claimed.
+Provider-operation uniqueness or native idempotency/lookup, duplicate-submit
+reconciliation, a complete provider operation deadline, remote D1 ambiguity
+and fault injection at every boundary, provider invoice reconciliation,
+alert/load evidence, credential rotation, and signed rollback approval remain
+blocking.
+
+## Persisted Scheduler Ownership
+
+The Task v2 ownership hierarchy is strict:
+
+1. D1 0036 fields own due time, retry state, poison quarantine, and the five
+   family cursors. D1 0034/0035 fields own poll admission and stale-result
+   fencing. D1 terminal batches remain the only lifecycle/billing authority.
+2. The scheduled Worker runs both timeout sweeps first, then rotates exactly one
+   normal family per minute slot: video, Suno, Midjourney. The selected family
+   is capped at eight candidates. Each cursor freezes a round high-watermark and
+   advances only after a successful lease claim; ambiguity may repeat work but
+   may never authorize provider I/O before `next_poll_at`.
+3. `TaskRunner` is an optional video wake-up accelerator. Its alarm and
+   `schedule_generation` cannot make a row due, clear quarantine, update a
+   family cursor, or replace D1 `poll_generation`. Suno and Midjourney remain
+   outside the video DO path.
+4. Providers are observations, not authority. A transport failure schedules
+   capped exponential backoff with deterministic task/generation jitter; the
+   eighth consecutive retryable failure quarantines by default. Quarantine has
+   no financial side effect. Immediate deterministic-poison classification and
+   a reviewed, auditable release/requeue operation remain production blockers.
+
+The scheduler gate is subordinate to all three lease prerequisites: Worker
+lease gate true, D1 authority true, and D1 enforcement true. Rollout is
+0034 -> 0035 -> 0036, disabled compatible deploy, old-writer drain, lease proof,
+isolated scheduler canary, independent evidence review, then a new verified
+staging candidate. Rollback disables scheduler and DO wake-ups before touching
+lease authority, retains additive schema/state, and reconciles quarantine
+before Go/VPS resumes. Go/VPS remains authoritative; production is **NO-GO**.

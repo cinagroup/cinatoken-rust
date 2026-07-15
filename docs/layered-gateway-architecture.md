@@ -996,6 +996,48 @@ off, drain leases, then use only a 0033-compatible Worker.
 
 The poll HTTP deadline is bounded below lease expiry with a 15-second safety
 margin and a 90-second ceiling. The D1 expiry predicate, not the abort signal,
-is the final fence. Whole-operation Vertex authentication timing, persisted
-`next_poll_at`, fair backoff, provider-operation uniqueness, and deployed
-fault injection remain production blockers.
+is the final fence. Whole-operation Vertex authentication timing,
+provider-operation uniqueness, deployed fault injection, and persisted
+scheduler runtime evidence remain production blockers.
+
+## 2026-07-15 Persisted Scheduler Authority Boundary
+
+Migration 0036 extends, but does not replace, the 0034/0035 boundary:
+
+```text
+Cron or video TaskRunner alarm
+  -> read D1 family cursor and due, unquarantined candidates
+  -> claim D1 owner + generation + expiry lease
+  -> provider I/O
+  -> fenced D1 lifecycle/schedule update
+  -> terminal D1 billing batch, or persisted next due/backoff/quarantine
+```
+
+D1 is authoritative at every arrow that affects correctness. It owns
+`next_poll_at`, retry/quarantine metadata, the five family cursors, lease
+generation, lifecycle state, and billing. A Durable Object alarm owns only a
+best-effort video wake-up time and local schedule generation. It cannot make a
+row due, bypass quarantine, advance a global cursor, settle billing, or apply a
+provider result without the D1 lease. Loss or duplication of DO state may add
+latency or a redundant wake-up; cron plus D1 must still converge correctly.
+
+Fairness is both between and within families. Both timeout scanners run first.
+Normal provider work selects one family per minute slot in a repeating video,
+Suno, Midjourney order and caps it at eight rows. Within a family, D1 freezes a
+round high-watermark; candidate reads do not move the cursor, and only a
+successful lease claim can advance it with the same generation/high-watermark.
+Later row IDs wait for the next finite round. Cursor state never grants
+ownership. A crash or ambiguous write may repeat a page, while the lease and
+fenced apply prevent duplicate state or financial effects.
+
+Retryable observation failures use capped exponential backoff plus deterministic
+task/generation jitter persisted in D1. Validated responses clear consecutive
+failure state; the configured threshold quarantines exhausted retries.
+Quarantine is an operational hold, not a terminal provider or financial
+decision. Immediate poison classification and audited release/requeue are
+explicitly still outside the implemented local boundary.
+
+The scheduler runtime is subordinate to 0034/0035 authority and enforcement.
+All scheduler flags remain false in committed default, staging, and production
+configuration. Go/VPS remains authoritative, no remote or deployment evidence
+is asserted, and production is **NO-GO**.

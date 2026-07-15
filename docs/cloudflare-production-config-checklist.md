@@ -1038,7 +1038,56 @@ until broader submit/poll fault injection and financial gates pass.
 5. Roll traffic back only to a 0033-compatible Worker. Preserve 0034/0035 and
    never decrement generations or restore a 0031-era writer.
 
-The release remains blocked by missing persisted `next_poll_at`, fair family
-pagination and poison backoff, provider-operation uniqueness/idempotency
-lookup, remote whole-operation timing and abort proof, fault injection, invoice
-reconciliation, load/alert evidence, and approved rollback rehearsal.
+The local 0036 candidate supplies persisted schedule/backoff/quarantine schema,
+but no remote application, runtime proof, or deployment is recorded.
+Provider-operation uniqueness/idempotency lookup, remote whole-operation timing
+and abort proof, fault injection, invoice reconciliation, load/alert evidence,
+and approved rollback rehearsal remain blocking.
+
+## Task Poll Scheduler Configuration
+
+The following non-secret string vars must be explicit in top-level, staging,
+and production config:
+
+| Variable | Committed value | Contract |
+| --- | --- | --- |
+| `TASK_POLL_SCHEDULER_ENABLED` | `false` | Master runtime gate; false means no scheduler-owned provider I/O or schedule mutation |
+| `TASK_POLL_RETRY_BASE_SECONDS` | `15` | Exponential base; deterministic task/generation jitter may add 0-3 seconds before the cap |
+| `TASK_POLL_RETRY_MAX_SECONDS` | `900` | Saturating exponential-backoff ceiling |
+| `TASK_POLL_MAX_CONSECUTIVE_FAILURES` | `8` | Default threshold that moves a retrying row into quarantine |
+| `TASK_POLL_SCHEDULER_STAGING_VERIFIED` | `false` | Reviewed-evidence marker, not runtime authority |
+
+`bun run check:task-poll-scheduler-config` parses TOML and validates all three
+environments, positive integer/range constraints, and `bun run check` wiring.
+It is a static check only.
+
+### Dependency and activation checks
+
+1. Reject scheduler enablement unless the applied D1 ledger contains 0034,
+   0035, and 0036 in order and exact schema readback passes.
+2. Reject scheduler provider I/O unless `TASK_POLL_LEASE_ENABLED=true`, D1
+   `authority_enabled=1`, and D1 `enforcement_enabled=1`.
+3. Keep Go/VPS authoritative and production scheduler values false. For an
+   approved staging drill, exclude an isolated cohort from legacy polling and
+   drain accepted operations before changing any authority.
+4. Enable scheduler in staging while
+   `TASK_POLL_SCHEDULER_STAGING_VERIFIED=false`; collect and independently
+   review due/fairness/backoff/quarantine/race/rollback evidence.
+5. Only a later immutable staging candidate may set the verification marker
+   true. It must not be copied to production by inheritance; Wrangler vars are
+   environment-specific.
+
+| Checkpoint | Lease env | D1 authority | D1 enforcement | Scheduler | Scheduler verified |
+| --- | --- | --- | --- | --- | --- |
+| Committed/default | false | false | false | false | false |
+| Schema-only deploy | false | false | false | false | false |
+| Lease staging prerequisite | true | true | true | false | false |
+| Isolated scheduler canary | true | true | true | true | false |
+| Independently reviewed staging candidate | true | true | true | true | true |
+| Current production decision | false | false | false | false | false |
+
+Rollback starts with scheduler false and TaskRunner false. Reconcile in-flight
+provider operations and quarantine before disabling lease authority or
+returning rows to Go/VPS. Preserve 0036 schema and persisted state. Current
+production decision is **NO-GO**; this checklist claims no remote evidence or
+deployment.

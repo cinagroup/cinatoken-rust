@@ -13,7 +13,10 @@ use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
 use serde::{Deserialize, Serialize};
 use worker::{D1Database, D1Type};
 
-use crate::task_repository::{generate_task_poll_owner, TaskPollLease};
+use crate::task_repository::{
+    advance_task_poll_family_cursor, begin_task_poll_family_round, generate_task_poll_owner,
+    task_poll_retry_delay_seconds_with_jitter, TaskPollFailureOutcome, TaskPollLease,
+};
 
 pub(crate) const MIDJOURNEY_TIMEOUT_SECONDS: i64 = 3_600;
 const MIDJOURNEY_MILLIS_THRESHOLD: i64 = 10_000_000_000;
@@ -72,7 +75,29 @@ pub struct MjRow {
     pub poll_lease_expires_at: i64,
     pub poll_applied_generation: i64,
     pub poll_write_revision: i64,
+    pub next_poll_at: i64,
+    pub poll_attempt_count: i64,
+    pub poll_consecutive_failures: i64,
+    pub poll_last_attempt_at: i64,
+    pub poll_last_error_code: String,
+    pub poll_quarantined_at: i64,
+    pub poll_quarantine_reason: String,
 }
+
+const MJ_POLL_ROW_COLUMNS: &str = r#"
+    id, code, user_id, mj_id, channel_id,
+    CASE WHEN json_valid(properties)
+         THEN COALESCE(json_extract(properties, '$.token_id'), 0)
+         ELSE 0 END AS token_id,
+    CASE WHEN json_valid(properties)
+         THEN COALESCE(json_extract(properties, '$.billing_reservation_key'), '')
+         ELSE '' END AS billing_reservation_key,
+    quota, status, progress, submit_time, poll_owner, poll_generation,
+    poll_lease_expires_at, poll_applied_generation, poll_write_revision,
+    next_poll_at, poll_attempt_count, poll_consecutive_failures,
+    poll_last_attempt_at, poll_last_error_code, poll_quarantined_at,
+    poll_quarantine_reason
+"#;
 
 /// The poll-result fields merged onto a Midjourney row (from the upstream
 /// `MidjourneyDto`).
@@ -461,37 +486,68 @@ pub async fn attach_midjourney_billing_reconciliation(
 
 /// Load unfinished Midjourney rows for the batch poll: those not in a terminal
 /// status that carry an upstream `mj_id`. Bounded by `limit`, ordered by id.
+#[derive(Debug, Deserialize)]
+struct MidjourneyPollMaxRow {
+    max_row_id: i64,
+}
+
+async fn load_midjourney_poll_max_row_id(db: &D1Database) -> worker::Result<i64> {
+    Ok(db
+        .prepare("SELECT COALESCE(MAX(id), 0) AS max_row_id FROM midjourneys")
+        .first::<MidjourneyPollMaxRow>(None)
+        .await?
+        .map(|row| row.max_row_id)
+        .unwrap_or_default())
+}
+
 pub async fn find_unfinished_midjourneys(
     db: &D1Database,
     now: i64,
     limit: i64,
 ) -> worker::Result<Vec<MjRow>> {
-    let now = now.to_string();
-    let args = [D1Type::Text(&now), D1Type::Integer(d1_i32(limit))];
-    db.prepare(
+    if limit <= 0 {
+        return Ok(Vec::new());
+    }
+    let max_row_id = load_midjourney_poll_max_row_id(db).await?;
+    let cursor = begin_task_poll_family_round(db, "midjourney", max_row_id, now).await?;
+    if cursor.round_high_watermark <= 0 {
+        return Ok(Vec::new());
+    }
+    let now_text = now.to_string();
+    let cursor_text = cursor.last_row_id.to_string();
+    let high_watermark_text = cursor.round_high_watermark.to_string();
+    let args = [
+        D1Type::Text(&now_text),
+        D1Type::Text(&cursor_text),
+        D1Type::Text(&high_watermark_text),
+        D1Type::Integer(d1_i32(limit)),
+    ];
+    let sql = format!(
         r#"
-        SELECT id, code, user_id, mj_id, channel_id,
-               CASE WHEN json_valid(properties)
-                    THEN COALESCE(json_extract(properties, '$.token_id'), 0)
-                    ELSE 0 END AS token_id,
-               CASE WHEN json_valid(properties)
-                    THEN COALESCE(json_extract(properties, '$.billing_reservation_key'), '')
-                    ELSE '' END AS billing_reservation_key,
-               quota, status, progress, submit_time, poll_owner,
-               poll_generation, poll_lease_expires_at,
-               poll_applied_generation, poll_write_revision
+        SELECT {MJ_POLL_ROW_COLUMNS}
         FROM midjourneys
         WHERE status NOT IN ('SUCCESS', 'FAILURE')
           AND mj_id != ''
+          AND next_poll_at <= CAST(?1 AS INTEGER)
+          AND poll_quarantined_at = 0
           AND poll_lease_expires_at <= CAST(?1 AS INTEGER)
+          AND id > CAST(?2 AS INTEGER)
+          AND id <= CAST(?3 AS INTEGER)
         ORDER BY id ASC
-        LIMIT ?2
+        LIMIT ?4
         "#,
-    )
-    .bind_refs(&args)?
-    .all()
-    .await?
-    .results::<MjRow>()
+    );
+    let rows = db
+        .prepare(&sql)
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<MjRow>()?;
+    if rows.is_empty() {
+        let _ = advance_task_poll_family_cursor(db, "midjourney", cursor.round_high_watermark, now)
+            .await?;
+    }
+    Ok(rows)
 }
 
 pub async fn claim_midjourney_poll_lease(
@@ -500,6 +556,27 @@ pub async fn claim_midjourney_poll_lease(
     owner: &str,
     now: i64,
     lease_seconds: i64,
+) -> worker::Result<Option<TaskPollLease>> {
+    claim_midjourney_poll_lease_inner(db, row, owner, now, lease_seconds, true).await
+}
+
+pub async fn claim_midjourney_timeout_poll_lease(
+    db: &D1Database,
+    row: &MjRow,
+    owner: &str,
+    now: i64,
+    lease_seconds: i64,
+) -> worker::Result<Option<TaskPollLease>> {
+    claim_midjourney_poll_lease_inner(db, row, owner, now, lease_seconds, false).await
+}
+
+async fn claim_midjourney_poll_lease_inner(
+    db: &D1Database,
+    row: &MjRow,
+    owner: &str,
+    now: i64,
+    lease_seconds: i64,
+    require_schedule_due: bool,
 ) -> worker::Result<Option<TaskPollLease>> {
     if owner.is_empty() || owner.len() > 96 || lease_seconds <= 0 {
         return Err(worker::Error::RustError(
@@ -530,19 +607,27 @@ pub async fn claim_midjourney_poll_lease(
         expires_at,
     };
     let result = db
-        .prepare(
+        .prepare(&format!(
             r#"
             UPDATE midjourneys
             SET poll_owner = ?1,
                 poll_generation = poll_generation + 1,
-                poll_lease_expires_at = CAST(?2 AS INTEGER)
+                poll_lease_expires_at = CAST(?2 AS INTEGER),
+                poll_attempt_count = poll_attempt_count + 1,
+                poll_last_attempt_at = CAST(?6 AS INTEGER)
             WHERE id = CAST(?3 AS INTEGER)
               AND status = ?4
               AND poll_generation = CAST(?5 AS INTEGER)
               AND poll_lease_expires_at <= CAST(?6 AS INTEGER)
               AND status NOT IN ('SUCCESS', 'FAILURE')
+              {}
             "#,
-        )
+            if require_schedule_due {
+                "AND next_poll_at <= CAST(?6 AS INTEGER) AND poll_quarantined_at = 0"
+            } else {
+                ""
+            }
+        ))
         .bind_refs(&args)?
         .run()
         .await;
@@ -590,6 +675,93 @@ pub async fn release_midjourney_poll_lease(
         .run()
         .await?;
     Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+pub async fn record_midjourney_poll_failure(
+    db: &D1Database,
+    row: &MjRow,
+    lease: &TaskPollLease,
+    now: i64,
+    retry_base_seconds: i64,
+    retry_max_seconds: i64,
+    max_consecutive_failures: i64,
+    error_code: &str,
+) -> worker::Result<TaskPollFailureOutcome> {
+    let valid_error_code = !error_code.is_empty()
+        && error_code.len() <= 64
+        && error_code.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
+        });
+    if !valid_error_code
+        || retry_base_seconds <= 0
+        || retry_max_seconds < retry_base_seconds
+        || max_consecutive_failures <= 0
+    {
+        return Err(worker::Error::RustError(
+            "midjourney poll failure policy is invalid".to_string(),
+        ));
+    }
+    let consecutive_failures = row.poll_consecutive_failures.saturating_add(1);
+    let quarantined = consecutive_failures >= max_consecutive_failures;
+    let next_poll_at = if quarantined {
+        0
+    } else {
+        now.saturating_add(task_poll_retry_delay_seconds_with_jitter(
+            retry_base_seconds,
+            retry_max_seconds,
+            consecutive_failures,
+            row.mj_id.as_str(),
+            lease.generation,
+        ))
+    };
+    let id = row.id.to_string();
+    let generation = lease.generation.to_string();
+    let now_text = now.to_string();
+    let failures_text = consecutive_failures.to_string();
+    let next_poll_at_text = next_poll_at.to_string();
+    let quarantined_at_text = if quarantined { now } else { 0 }.to_string();
+    let quarantine_reason = if quarantined { error_code } else { "" };
+    let args = [
+        D1Type::Text(&failures_text),
+        D1Type::Text(error_code),
+        D1Type::Text(&next_poll_at_text),
+        D1Type::Text(&quarantined_at_text),
+        D1Type::Text(quarantine_reason),
+        D1Type::Text(&generation),
+        D1Type::Text(&id),
+        D1Type::Text(lease.owner.as_str()),
+        D1Type::Text(&now_text),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE midjourneys
+            SET poll_consecutive_failures = CAST(?1 AS INTEGER),
+                poll_last_error_code = ?2,
+                next_poll_at = CAST(?3 AS INTEGER),
+                poll_quarantined_at = CAST(?4 AS INTEGER),
+                poll_quarantine_reason = ?5,
+                poll_owner = '', poll_lease_expires_at = 0,
+                poll_applied_generation = CAST(?6 AS INTEGER),
+                poll_write_revision = poll_write_revision + 1
+            WHERE id = CAST(?7 AS INTEGER)
+              AND poll_owner = ?8
+              AND poll_generation = CAST(?6 AS INTEGER)
+              AND poll_lease_expires_at > CAST(?9 AS INTEGER)
+              AND poll_lease_expires_at > unixepoch()
+              AND status NOT IN ('SUCCESS', 'FAILURE')
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let recorded = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1;
+    Ok(TaskPollFailureOutcome {
+        recorded,
+        quarantined: recorded && quarantined,
+        consecutive_failures: if recorded { consecutive_failures } else { 0 },
+        next_poll_at: if recorded { next_poll_at } else { 0 },
+    })
 }
 
 async fn midjourney_poll_lease_is_current(
@@ -679,28 +851,27 @@ pub async fn sweep_timed_out_midjourneys(
     let cutoff_seconds = now.saturating_sub(MIDJOURNEY_TIMEOUT_SECONDS);
     let cutoff_millis = cutoff_seconds.saturating_mul(1_000);
     let limit = limit.clamp(1, MIDJOURNEY_TIMEOUT_SWEEP_MAX_LIMIT);
+    let max_row_id = load_midjourney_poll_max_row_id(db).await?;
+    let cursor = begin_task_poll_family_round(db, "midjourney_timeout", max_row_id, now).await?;
+    if cursor.round_high_watermark <= 0 {
+        return Ok(0);
+    }
     let cutoff_seconds = cutoff_seconds.to_string();
     let cutoff_millis = cutoff_millis.to_string();
     let now_text = now.to_string();
+    let cursor_text = cursor.last_row_id.to_string();
+    let high_watermark_text = cursor.round_high_watermark.to_string();
     let args = [
         D1Type::Text(&cutoff_millis),
         D1Type::Text(&cutoff_seconds),
         D1Type::Text(&now_text),
+        D1Type::Text(&cursor_text),
+        D1Type::Text(&high_watermark_text),
         D1Type::Integer(d1_i32(limit)),
     ];
-    let rows = db
-        .prepare(
-            r#"
-            SELECT id, code, user_id, mj_id, channel_id,
-                   CASE WHEN json_valid(properties)
-                        THEN COALESCE(json_extract(properties, '$.token_id'), 0)
-                        ELSE 0 END AS token_id,
-                   CASE WHEN json_valid(properties)
-                        THEN COALESCE(json_extract(properties, '$.billing_reservation_key'), '')
-                        ELSE '' END AS billing_reservation_key,
-                   quota, status, progress, submit_time, poll_owner,
-                   poll_generation, poll_lease_expires_at,
-                   poll_applied_generation, poll_write_revision
+    let sql = format!(
+        r#"
+            SELECT {MJ_POLL_ROW_COLUMNS}
             FROM midjourneys
             WHERE status NOT IN ('SUCCESS', 'FAILURE')
               AND mj_id != ''
@@ -710,23 +881,38 @@ pub async fn sweep_timed_out_midjourneys(
                 (submit_time >= 10000000000 AND submit_time < CAST(?1 AS INTEGER)) OR
                 (submit_time < 10000000000 AND submit_time < CAST(?2 AS INTEGER))
               )
-            ORDER BY submit_time ASC, id ASC
-            LIMIT ?4
+              AND id > CAST(?4 AS INTEGER)
+              AND id <= CAST(?5 AS INTEGER)
+            ORDER BY id ASC
+            LIMIT ?6
             "#,
-        )
+    );
+    let rows = db
+        .prepare(&sql)
         .bind_refs(&args)?
         .all()
         .await?
         .results::<MjRow>()?;
+    if rows.is_empty() {
+        let _ = advance_task_poll_family_cursor(
+            db,
+            "midjourney_timeout",
+            cursor.round_high_watermark,
+            now,
+        )
+        .await?;
+    }
 
     let owner = generate_task_poll_owner("cron-mj-timeout")?;
     let mut settled = 0u32;
     let finish_time = now.saturating_mul(1_000);
     for row in rows {
-        let Some(lease) = claim_midjourney_poll_lease(db, &row, &owner, now, lease_seconds).await?
+        let Some(lease) =
+            claim_midjourney_timeout_poll_lease(db, &row, &owner, now, lease_seconds).await?
         else {
             continue;
         };
+        let _ = advance_task_poll_family_cursor(db, "midjourney_timeout", row.id, now).await?;
         let result = MjPollResult {
             status: "FAILURE",
             progress: &row.progress,
@@ -735,7 +921,7 @@ pub async fn sweep_timed_out_midjourneys(
             video_url: "",
             finish_time,
         };
-        match apply_midjourney_poll_result(db, &row, &lease, &result, now).await {
+        match apply_midjourney_poll_result(db, &row, &lease, &result, now, 0).await {
             Ok(true) => settled += 1,
             Ok(false) => {
                 let _ = release_midjourney_poll_lease(db, row.id, &lease).await;
@@ -769,6 +955,7 @@ pub async fn apply_midjourney_poll_result(
     lease: &TaskPollLease,
     result: &MjPollResult<'_>,
     applied_at: i64,
+    next_poll_at: i64,
 ) -> worker::Result<bool> {
     // Same D1 i32 binding limitation as submit_time: upstream Midjourney
     // finishTime is millisecond precision.
@@ -780,6 +967,7 @@ pub async fn apply_midjourney_poll_result(
     };
     let generation = lease.generation.to_string();
     let applied_at_text = applied_at.to_string();
+    let next_poll_at_text = next_poll_at.to_string();
     let args = [
         D1Type::Text(effective_status),
         D1Type::Text(result.progress),
@@ -791,6 +979,7 @@ pub async fn apply_midjourney_poll_result(
         D1Type::Text(lease.owner.as_str()),
         D1Type::Text(&generation),
         D1Type::Text(&applied_at_text),
+        D1Type::Text(&next_poll_at_text),
     ];
     let update = db
         .prepare(
@@ -800,7 +989,15 @@ pub async fn apply_midjourney_poll_result(
                 video_url = ?5, finish_time = ?6,
                 poll_owner = '', poll_lease_expires_at = 0,
                 poll_applied_generation = CAST(?9 AS INTEGER),
-                poll_write_revision = poll_write_revision + 1
+                poll_write_revision = poll_write_revision + 1,
+                next_poll_at = CASE
+                    WHEN ?1 IN ('SUCCESS', 'FAILURE') THEN 0
+                    ELSE CAST(?11 AS INTEGER)
+                END,
+                poll_consecutive_failures = 0,
+                poll_last_error_code = '',
+                poll_quarantined_at = 0,
+                poll_quarantine_reason = ''
             WHERE id = ?7 AND status NOT IN ('SUCCESS', 'FAILURE')
               AND poll_owner = ?8
               AND poll_generation = CAST(?9 AS INTEGER)

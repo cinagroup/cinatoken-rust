@@ -218,8 +218,8 @@ pub async fn attach_midjourney_billing_intent(
                 AND user_id = ?2
                 AND channel_id = ?7
                 AND quota = ?8
-                AND status IN ('reserved', 'recovery_required')
-                AND submit_state IN ('submitting', 'submit_unknown')
+                AND status = 'reserved'
+                AND submit_state = 'submitting'
             )
             "#,
         )
@@ -251,8 +251,9 @@ pub async fn attach_midjourney_billing_intent(
               AND user_id = ?4
               AND channel_id = ?5
               AND quota = ?6
-              AND status IN ('reserved', 'recovery_required')
-              AND submit_state IN ('submitting', 'submit_unknown')
+              AND status = 'reserved'
+              AND submit_state = 'submitting'
+              AND request_accounted = 0
               AND EXISTS (
                 SELECT 1 FROM midjourneys
                 WHERE mj_id = ?1
@@ -319,6 +320,135 @@ pub async fn attach_midjourney_billing_intent(
         None => Err(worker::Error::RustError(
             "midjourney billing intent disappeared during attachment".to_string(),
         )),
+    }
+}
+
+/// Attach a provider-confirmed Midjourney task while closing its quarantined
+/// submit reconciliation. The immutable event, task row, financial accounting,
+/// intent resolution, and administrator audit row commit in one D1 batch.
+pub async fn attach_midjourney_billing_reconciliation(
+    db: &D1Database,
+    mj: &NewMidjourney<'_>,
+    event: &crate::task_repository::TaskBillingReconciliationEvent<'_>,
+    admin_audit: worker::D1PreparedStatement,
+) -> worker::Result<crate::task_repository::TaskBillingReconciliationMutationOutcome> {
+    use crate::task_repository::{
+        assert_task_billing_previous_statement_statement, task_batch_changed,
+        task_billing_reconciliation_event_statement, TaskBillingReconciliationMutationOutcome,
+    };
+
+    let event_insert = task_billing_reconciliation_event_statement(db, event)?;
+    let submit_time = mj.submit_time.to_string();
+    let insert_args = [
+        D1Type::Integer(d1_i32(mj.code)),
+        D1Type::Integer(d1_i32(mj.user_id)),
+        D1Type::Text(mj.action),
+        D1Type::Text(mj.mj_id),
+        D1Type::Text(mj.prompt),
+        D1Type::Text(mj.prompt_en),
+        D1Type::Integer(d1_i32(mj.channel_id)),
+        D1Type::Integer(d1_i32(mj.quota)),
+        D1Type::Text(mj.status),
+        D1Type::Text(mj.progress),
+        D1Type::Text(&submit_time),
+        D1Type::Text(mj.properties),
+        D1Type::Text(event.reservation_key),
+        D1Type::Text(event.reconciliation_id),
+        D1Type::Integer(d1_i32(event.expected_revision)),
+    ];
+    let insert = db
+        .prepare(
+            r#"
+            INSERT INTO midjourneys
+              (code, user_id, action, mj_id, prompt, prompt_en, channel_id,
+               quota, status, progress, submit_time, properties)
+            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+            WHERE EXISTS (
+              SELECT 1 FROM task_billing_intents
+              WHERE reservation_key = ?13
+                AND reconciliation_id = ?14
+                AND reconciliation_revision = ?15
+                AND reconciliation_resolution = ''
+                AND task_kind = 'midjourney'
+                AND public_task_id = ?13
+                AND user_id = ?2 AND channel_id = ?7 AND quota = ?8
+                AND status = 'recovery_required'
+                AND submit_state = 'submit_unknown'
+            )
+            "#,
+        )
+        .bind_refs(&insert_args)?;
+    let resolved_at = event.created_at;
+    let update_args = [
+        D1Type::Text(mj.mj_id),
+        D1Type::Integer(d1_i32(resolved_at)),
+        D1Type::Text(event.resolution_key),
+        D1Type::Integer(d1_i32(event.operator_id)),
+        D1Type::Text(event.evidence_sha256),
+        D1Type::Text(event.reason),
+        D1Type::Text(event.reconciliation_id),
+        D1Type::Text(event.reservation_key),
+        D1Type::Integer(d1_i32(event.expected_revision)),
+    ];
+    let update = db
+        .prepare(
+            r#"
+            UPDATE task_billing_intents
+            SET status = 'attached', submit_state = 'submitted',
+                provider_task_id = ?1, request_accounted = 1,
+                attached_at = ?2, updated_at = ?2,
+                owner_generation = owner_generation + 1,
+                reconciliation_revision = reconciliation_revision + 1,
+                reconciliation_resolution = 'attached',
+                reconciliation_resolution_key = ?3,
+                reconciliation_resolved_at = ?2,
+                reconciliation_operator_id = ?4,
+                reconciliation_evidence_sha256 = ?5,
+                reconciliation_reason = ?6,
+                recovery_last_error = ''
+            WHERE reconciliation_id = ?7
+              AND reservation_key = ?8
+              AND reconciliation_revision = ?9
+              AND reconciliation_resolution = ''
+              AND task_kind = 'midjourney'
+              AND status = 'recovery_required'
+              AND submit_state = 'submit_unknown'
+              AND request_accounted = 0
+              AND (provider_task_id = '' OR provider_task_id = ?1)
+              AND EXISTS (
+                SELECT 1 FROM midjourneys
+                WHERE mj_id = ?1
+                  AND midjourneys.user_id = task_billing_intents.user_id
+                  AND json_extract(
+                    CASE WHEN json_valid(properties) THEN properties ELSE '{}' END,
+                    '$.billing_reservation_key'
+                  ) = ?8
+              )
+              AND EXISTS (
+                SELECT 1 FROM task_billing_reconciliation_events
+                WHERE resolution_key = ?3 AND reconciliation_id = ?7
+              )
+            "#,
+        )
+        .bind_refs(&update_args)?;
+    let results = db
+        .batch(vec![
+            event_insert,
+            assert_task_billing_previous_statement_statement(db, event.reservation_key)?,
+            insert,
+            assert_task_billing_previous_statement_statement(db, event.reservation_key)?,
+            update,
+            assert_task_billing_previous_statement_statement(db, event.reservation_key)?,
+            admin_audit,
+        ])
+        .await?;
+    if task_batch_changed(&results, 0)?
+        && task_batch_changed(&results, 2)?
+        && task_batch_changed(&results, 4)?
+    {
+        Ok(TaskBillingReconciliationMutationOutcome::Applied)
+    } else {
+        Ok(TaskBillingReconciliationMutationOutcome::Conflict)
     }
 }
 

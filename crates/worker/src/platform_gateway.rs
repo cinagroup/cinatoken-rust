@@ -92,6 +92,10 @@ use crate::relay::{
 };
 use crate::relay_billing_queue::BILLING_QUEUE_BINDING;
 use crate::relay_billing_smoke::{smoke_compiled, smoke_enabled, smoke_ready};
+use crate::task_billing_reconcile::{
+    task_submit_reconciliation_compiled, task_submit_reconciliation_enabled,
+    TASK_SUBMIT_RECONCILIATION_STAGING_VERIFIED_ENV,
+};
 use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
 use crate::task_repository::{
     task_billing_intent_contract_compiled, task_refund_cas_batch_compiled,
@@ -157,7 +161,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0031_task_billing_intents.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0033_task_submit_reconciliation_enforce.sql";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
     "migration_0026_applied",
     "legacy_workers_drained",
@@ -177,9 +181,10 @@ const RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS: &[&str] = &[
     "realtime_flat_billing_parity",
 ];
 const TASK_V2_CUTOVER_GUARDS: &[&str] = &[
-    "migration_0031_applied",
+    "migration_0032_applied",
     "pre_provider_reservation",
     "submit_unknown_fail_closed",
+    "operator_reconciliation_evidence",
     "atomic_task_attachment",
     "atomic_terminal_financial_transition",
     "shared_poll_lease",
@@ -217,6 +222,8 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0029_flat_billing_intents.sql",
     "0030_billing_contract_immutability.sql",
     "0031_task_billing_intents.sql",
+    "0032_task_submit_reconciliation.sql",
+    "0033_task_submit_reconciliation_enforce.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -506,6 +513,11 @@ struct PlatformCapabilities {
     task_v2_staging_verified: bool,
     task_v2_cutover_ready: bool,
     task_v2_cutover_guards: Vec<&'static str>,
+    task_submit_reconciliation_compiled: bool,
+    task_submit_reconciliation_enabled: bool,
+    task_submit_reconciliation_ready: bool,
+    task_submit_reconciliation_staging_verified: bool,
+    task_submit_reconciliation_cutover_ready: bool,
     task_poller_scheduled_handler_compiled: bool,
     task_poller_timeout_sweep_compiled: bool,
     task_poller_refund_batch_compiled: bool,
@@ -666,6 +678,16 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
 
     let d1_migration_status = load_d1_migration_status(&env).await;
     let d1_migration_ready = d1_migration_status.ready();
+    let task_v2_object_schema_ready = if d1_migration_ready {
+        match env.d1("DB") {
+            Ok(db) => crate::task_repository::task_billing_intent_schema_ready(&db)
+                .await
+                .unwrap_or(false),
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
     let ai_gateway_id = runtime_value(&env, AI_GATEWAY_ID_ENV);
     let cloudflare_account_id = runtime_value(&env, CLOUDFLARE_ACCOUNT_ID_ENV);
     let cloudflare_ai_gateway_token = secret_or_var(
@@ -1128,8 +1150,17 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     );
     let task_v2_contract_version = 1;
     let task_v2_ownership_compiled = task_billing_intent_contract_compiled();
-    let task_v2_schema_ready = d1_migration_ready;
+    let task_v2_schema_ready = d1_migration_ready && task_v2_object_schema_ready;
     let task_v2_runtime_ready = task_v2_ownership_compiled && task_v2_schema_ready;
+    let task_submit_reconciliation_compiled = task_submit_reconciliation_compiled();
+    let task_submit_reconciliation_enabled = task_submit_reconciliation_enabled(&env);
+    let task_submit_reconciliation_ready = task_submit_reconciliation_compiled
+        && task_submit_reconciliation_enabled
+        && task_v2_schema_ready;
+    let task_submit_reconciliation_staging_verified =
+        env_flag(&env, TASK_SUBMIT_RECONCILIATION_STAGING_VERIFIED_ENV);
+    let task_submit_reconciliation_cutover_ready =
+        task_submit_reconciliation_ready && task_submit_reconciliation_staging_verified;
     // Fault-injection staging evidence and a shared D1 poll lease are still
     // required before TaskRunner/cron may be treated as production ownership.
     let task_v2_staging_verified = false;
@@ -1362,6 +1393,11 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_v2_staging_verified,
         task_v2_cutover_ready,
         task_v2_cutover_guards: TASK_V2_CUTOVER_GUARDS.to_vec(),
+        task_submit_reconciliation_compiled,
+        task_submit_reconciliation_enabled,
+        task_submit_reconciliation_ready,
+        task_submit_reconciliation_staging_verified,
+        task_submit_reconciliation_cutover_ready,
         task_poller_scheduled_handler_compiled: true,
         task_poller_timeout_sweep_compiled,
         task_poller_refund_batch_compiled,
@@ -4079,7 +4115,10 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(EXPECTED_D1_MIGRATION, "0031_task_billing_intents.sql");
+        assert_eq!(
+            EXPECTED_D1_MIGRATION,
+            "0033_task_submit_reconciliation_enforce.sql"
+        );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")
@@ -4145,6 +4184,19 @@ mod tests {
         assert!(task_billing_intents.contains("task_billing_intent_refund_guard"));
         assert!(task_billing_intents
             .contains("ON task_billing_intents(task_kind, channel_id, provider_task_id)"));
+        let task_submit_reconciliation =
+            include_str!("../../../migrations/d1/0032_task_submit_reconciliation.sql");
+        assert!(task_submit_reconciliation.contains("attach_contract_json"));
+        assert!(task_submit_reconciliation.contains("task_billing_reconciliation_events"));
+        assert!(task_submit_reconciliation.contains("task_billing_intent_reconciliation_guard"));
+        assert!(
+            task_submit_reconciliation.contains("task_billing_reconciliation_event_delete_guard")
+        );
+        let task_submit_reconciliation_enforce =
+            include_str!("../../../migrations/d1/0033_task_submit_reconciliation_enforce.sql");
+        assert!(task_submit_reconciliation_enforce.contains("attach_contract_json = '{}'"));
+        assert!(task_submit_reconciliation_enforce
+            .contains("DROP TRIGGER task_billing_intent_reconciliation_expand_backfill"));
     }
 
     #[test]

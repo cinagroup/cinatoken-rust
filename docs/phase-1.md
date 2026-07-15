@@ -1365,3 +1365,36 @@ funding on HTTP/Task/Realtime, Realtime flat/free-model parity, remote D1 and
 provider fault replay, invoice reconciliation, browser evidence, credential
 rotation, rollback, monitoring, and signed G1-G8 approval. Go/VPS remains the
 production authority and Cloudflare remains **NO-GO**.
+
+## 2026-07-15 Task Submit Reconciliation Increment
+
+- Added D1 0032 as the rolling-compatible expand phase and 0033 as the final
+  writer contract. The current local head is 0033; after it is applied, a
+  0031-era Worker cannot safely be restored.
+- Every new Task/Midjourney intent freezes an attachment contract and digest
+  before provider I/O. Accepted provider IDs are retained when local attachment
+  is ambiguous. Ordinary attachment cannot consume a quarantined row.
+- Added root-only queue and preview APIs plus a root/fresh-step-up apply API.
+  Preview binds current revision, owner generation, provider/evidence decision,
+  financial facts, and both frozen hashes. Apply requires confirmation and an
+  idempotency key.
+- Resolution writes one immutable evidence event and atomically attaches the
+  provider task or refunds the frozen reserve, updates request/channel
+  accounting, advances the intent, and records the root audit. Identical replay
+  converges; conflicting or stale replay returns 409.
+- Legacy unknown rows without an attachment contract are refund-only. APIs do
+  not expose the frozen payload. Retained Midjourney prompt and Task identity
+  metadata still require a formal production retention/deletion policy.
+- The Cloudflare Platform UI now exposes implementation, runtime, staging, and
+  cutover signals and a bounded operator workbench. Both Task reconciliation
+  flags remain false in all tracked environments.
+- Local D1 verification now covers 33 migrations, 32 tables, 190 incremental
+  columns, 34 indexes, required-event resolution, atomic refund, and immutable
+  event history. Worker host/Wasm and frontend gates remain required.
+
+This increment supplies a controlled local resolution path but does not infer
+provider outcome. Provider-native idempotency/lookup, remote 0032/0033 rollout,
+fault/invoice/browser evidence, shared poll ownership, fair retry, checked i64
+D1 bindings, FreeModel/subscription parity, credential rotation, rollback, and
+G1-G8 approval remain open. Go/VPS remains authoritative and Cloudflare stays
+**NO-GO**.

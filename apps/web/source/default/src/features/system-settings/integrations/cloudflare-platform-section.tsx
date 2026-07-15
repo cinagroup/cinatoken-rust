@@ -38,6 +38,7 @@ import {
 } from './cloudflare-platform-readiness'
 import { QuotaCoordinatorReconciliationPanel } from './quota-coordinator-reconciliation-panel'
 import { RealtimeBillingLedgerPanel } from './realtime-billing-ledger-panel'
+import { TaskSubmitReconciliationPanel } from './task-submit-reconciliation-panel'
 import { WfpTenantPlanPanel } from './wfp-tenant-plan-panel'
 
 type CapabilityRow = {
@@ -177,6 +178,16 @@ export function CloudflarePlatformSection() {
               }
               reconciliationMutationEnabled={
                 capabilities.realtime_session_billing_reconciliation_ready
+              }
+            />
+
+            <TaskSubmitReconciliationPanel
+              runtimeReady={
+                capabilities.task_v2_schema_ready &&
+                capabilities.task_submit_reconciliation_compiled
+              }
+              mutationEnabled={
+                capabilities.task_submit_reconciliation_ready
               }
             />
 
@@ -1633,6 +1644,34 @@ function buildCapabilityGroups(
           readyLabel: t('Compiled'),
           missingLabel: t('Pending'),
           missingVariant: 'neutral',
+        },
+        {
+          label: t('Task submit reconciliation'),
+          description: t(
+            'Uses a frozen attachment contract, immutable evidence event, revision fence, preview token, root authorization, and fresh step-up verification to resolve submit_unknown.'
+          ),
+          ready: capabilities.task_submit_reconciliation_ready,
+          readyLabel: t('Enabled'),
+          missingLabel: capabilities.task_submit_reconciliation_compiled
+            ? t('Disabled')
+            : t('Missing'),
+          missingVariant: capabilities.task_submit_reconciliation_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Task reconciliation staging proof'),
+          description: t(
+            'Requires archived attach, refund, duplicate replay, stale revision, legacy refund-only, and accounting evidence before the operator mutation gate can be treated as cutover-ready.'
+          ),
+          ready: capabilities.task_submit_reconciliation_cutover_ready,
+          readyLabel: t('Verified'),
+          missingLabel: capabilities.task_submit_reconciliation_enabled
+            ? t('Awaiting staging proof')
+            : t('Disabled'),
+          missingVariant: capabilities.task_submit_reconciliation_enabled
+            ? 'warning'
+            : 'neutral',
         },
         {
           label: t('TaskRunner staging replay'),

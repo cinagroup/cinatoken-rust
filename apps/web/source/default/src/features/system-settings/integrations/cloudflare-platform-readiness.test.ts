@@ -174,6 +174,11 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   task_v2_staging_verified: false,
   task_v2_cutover_ready: false,
   task_v2_cutover_guards: [],
+  task_submit_reconciliation_compiled: false,
+  task_submit_reconciliation_enabled: false,
+  task_submit_reconciliation_ready: false,
+  task_submit_reconciliation_staging_verified: false,
+  task_submit_reconciliation_cutover_ready: false,
   task_runner_do_available: false,
   task_runner_do_enabled: false,
   task_runner_do_foundation_compiled: false,
@@ -213,6 +218,8 @@ describe('Cloudflare platform readiness headline', () => {
       'realtime-billing-reconciliation-implementation':
         'Realtime billing reconciliation',
       'task-runner-implementation': 'TaskRunner',
+      'task-submit-reconciliation-implementation':
+        'Task submit reconciliation',
       'ai-gateway-runtime': 'AI Gateway',
       'ai-gateway-fallback-runtime': 'AI Gateway fallback',
       'wfp-tenant-runtime': 'WFP tenant',
@@ -220,6 +227,7 @@ describe('Cloudflare platform readiness headline', () => {
       'realtime-billing-reconciliation-runtime':
         'Realtime billing reconciliation',
       'task-runner-runtime': 'TaskRunner',
+      'task-submit-reconciliation-runtime': 'Task submit reconciliation',
       'quota-coordinator-binding': 'QuotaCoordinator binding',
       'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
       'quota-coordinator-reconciliation': 'QuotaCoordinator reconciliation',
@@ -237,6 +245,8 @@ describe('Cloudflare platform readiness headline', () => {
       'realtime-billing-reconciliation-staging-proof':
         'Realtime billing reconciliation proof',
       'task-runner-replay': 'TaskRunner replay',
+      'task-submit-reconciliation-staging-proof':
+        'Task submit reconciliation proof',
       'quota-coordinator-staging-bake': 'QuotaCoordinator staging bake',
       'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
       'relay-billing-finalization-replay': 'Relay billing finalization replay',
@@ -247,6 +257,7 @@ describe('Cloudflare platform readiness headline', () => {
         'Relay billing owner race proof',
       'ai-gateway-fallback-cutover': 'AI Gateway fallback',
       'task-runner-cutover': 'TaskRunner',
+      'task-submit-reconciliation-cutover': 'Task submit reconciliation',
       'relay-billing-recovery-cutover': 'Relay billing recovery',
       'relay-flat-billing-intent-cutover': 'Relay flat billing intent',
       'relay-billing-owner-generation-cutover':
@@ -346,6 +357,7 @@ describe('Cloudflare platform readiness headline', () => {
         task_v2_contract_version: 1,
         task_v2_ownership_compiled: true,
         task_v2_cutover_guards: ['submit-unknown-fail-closed'],
+        task_submit_reconciliation_compiled: true,
       })
     )
 
@@ -766,6 +778,7 @@ describe('Cloudflare platform readiness headline', () => {
         'ready-to-verify',
         'blocked',
         'ready-to-verify',
+        'blocked',
         'blocked',
         'blocked',
         'blocked',
@@ -1283,6 +1296,11 @@ describe('Cloudflare platform readiness headline', () => {
         task_v2_staging_verified: true,
         task_v2_cutover_ready: true,
         task_v2_cutover_guards: ['staging-fault-replay'],
+        task_submit_reconciliation_compiled: true,
+        task_submit_reconciliation_enabled: true,
+        task_submit_reconciliation_ready: true,
+        task_submit_reconciliation_staging_verified: true,
+        task_submit_reconciliation_cutover_ready: true,
         realtime_session_billing_reconciliation_cutover_ready: true,
         quota_coordinator_contract_version: 1,
         quota_coordinator_do_available: true,
@@ -1312,7 +1330,7 @@ describe('Cloudflare platform readiness headline', () => {
 
     assert.equal(getStage(blocked, 'cutover').complete, false)
     assert.equal(getStage(ready, 'cutover').complete, true)
-    assert.equal(getStage(ready, 'cutover').readyCount, 9)
+    assert.equal(getStage(ready, 'cutover').readyCount, 10)
   })
 
   test('keeps Realtime billing reconciliation split across all four production stages', () => {

@@ -36,12 +36,14 @@ export type PlatformReadinessSignalId =
   | 'realtime-implementation'
   | 'realtime-billing-reconciliation-implementation'
   | 'task-runner-implementation'
+  | 'task-submit-reconciliation-implementation'
   | 'ai-gateway-runtime'
   | 'ai-gateway-fallback-runtime'
   | 'wfp-tenant-runtime'
   | 'realtime-runtime'
   | 'realtime-billing-reconciliation-runtime'
   | 'task-runner-runtime'
+  | 'task-submit-reconciliation-runtime'
   | 'quota-coordinator-binding'
   | 'quota-coordinator-shadow-runtime'
   | 'quota-coordinator-reconciliation'
@@ -55,6 +57,7 @@ export type PlatformReadinessSignalId =
   | 'realtime-smoke'
   | 'realtime-billing-reconciliation-staging-proof'
   | 'task-runner-replay'
+  | 'task-submit-reconciliation-staging-proof'
   | 'quota-coordinator-staging-bake'
   | 'relay-billing-stream-error-smoke'
   | 'relay-billing-finalization-replay'
@@ -62,6 +65,7 @@ export type PlatformReadinessSignalId =
   | 'relay-flat-billing-intent-staging-proof'
   | 'relay-billing-owner-generation-staging-proof'
   | 'task-runner-cutover'
+  | 'task-submit-reconciliation-cutover'
   | 'relay-billing-recovery-cutover'
   | 'relay-flat-billing-intent-cutover'
   | 'relay-billing-owner-generation-cutover'
@@ -225,6 +229,11 @@ export type PlatformReadinessCapabilities = Pick<
   | 'task_v2_staging_verified'
   | 'task_v2_cutover_ready'
   | 'task_v2_cutover_guards'
+  | 'task_submit_reconciliation_compiled'
+  | 'task_submit_reconciliation_enabled'
+  | 'task_submit_reconciliation_ready'
+  | 'task_submit_reconciliation_staging_verified'
+  | 'task_submit_reconciliation_cutover_ready'
   | 'task_runner_do_available'
   | 'task_runner_do_enabled'
   | 'task_runner_do_foundation_compiled'
@@ -257,12 +266,15 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'realtime-billing-reconciliation-implementation':
     'Realtime billing reconciliation',
   'task-runner-implementation': 'TaskRunner',
+  'task-submit-reconciliation-implementation':
+    'Task submit reconciliation',
   'ai-gateway-runtime': 'AI Gateway',
   'ai-gateway-fallback-runtime': 'AI Gateway fallback',
   'wfp-tenant-runtime': 'WFP tenant',
   'realtime-runtime': 'Realtime fail-closed runtime (no provider restore)',
   'realtime-billing-reconciliation-runtime': 'Realtime billing reconciliation',
   'task-runner-runtime': 'TaskRunner',
+  'task-submit-reconciliation-runtime': 'Task submit reconciliation',
   'quota-coordinator-binding': 'QuotaCoordinator binding',
   'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
   'quota-coordinator-reconciliation': 'QuotaCoordinator reconciliation',
@@ -279,6 +291,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'realtime-billing-reconciliation-staging-proof':
     'Realtime billing reconciliation proof',
   'task-runner-replay': 'TaskRunner replay',
+  'task-submit-reconciliation-staging-proof':
+    'Task submit reconciliation proof',
   'quota-coordinator-staging-bake': 'QuotaCoordinator staging bake',
   'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
   'relay-billing-finalization-replay': 'Relay billing finalization replay',
@@ -287,6 +301,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'relay-billing-owner-generation-staging-proof':
     'Relay billing owner race proof',
   'task-runner-cutover': 'TaskRunner',
+  'task-submit-reconciliation-cutover': 'Task submit reconciliation',
   'relay-billing-recovery-cutover': 'Relay billing recovery',
   'relay-flat-billing-intent-cutover': 'Relay flat billing intent',
   'relay-billing-owner-generation-cutover': 'Relay billing owner generation',
@@ -554,6 +569,10 @@ export function buildPlatformReadinessSummary(
       capabilities.realtime_session_billing_reconciliation_compiled
     ),
     readySignal('task-runner-implementation', taskRunnerImplementation),
+    readySignal(
+      'task-submit-reconciliation-implementation',
+      capabilities.task_submit_reconciliation_compiled
+    ),
   ])
 
   const configuration = createReadyStage('configuration', [
@@ -596,6 +615,10 @@ export function buildPlatformReadinessSummary(
         capabilities.task_v2_schema_ready,
         capabilities.task_v2_runtime_ready
       )
+    ),
+    readySignal(
+      'task-submit-reconciliation-runtime',
+      capabilities.task_submit_reconciliation_ready
     ),
     readySignal('quota-coordinator-binding', quotaCoordinator.binding),
     readySignal(
@@ -672,6 +695,11 @@ export function buildPlatformReadinessSummary(
       )
     ),
     verificationSignal(
+      'task-submit-reconciliation-staging-proof',
+      capabilities.task_submit_reconciliation_ready,
+      capabilities.task_submit_reconciliation_staging_verified
+    ),
+    verificationSignal(
       'quota-coordinator-staging-bake',
       quotaCoordinator.shadowRuntime,
       quotaCoordinator.stagingBake
@@ -723,6 +751,10 @@ export function buildPlatformReadinessSummary(
         capabilities.task_runner_cutover_ready,
         capabilities.task_v2_cutover_ready
       )
+    ),
+    readySignal(
+      'task-submit-reconciliation-cutover',
+      capabilities.task_submit_reconciliation_cutover_ready
     ),
     readySignal(
       'relay-billing-recovery-cutover',

@@ -4624,6 +4624,40 @@ classification, remote direct/Gateway/WFP replay, provider invoice correlation,
 credential rotation, alerts, rollback, and G1-G8 approval remain open.
 Production remains **NO-GO**.
 
+## Task Submit Reconciliation Local Verification (2026-07-15)
+
+```powershell
+python tools/verify_sqlite.py
+# PASS; 33 migrations, 32 tables, 190 incremental columns, 34 key indexes
+
+bun run check:d1:migration-config
+# PASS; expected head 0033, exact migration count 33
+
+bun run check:do-lifecycle-runtime
+# PASS; release Wasm build and 41 Durable Object lifecycle tests
+
+bun run check:web
+# PASS; TypeScript and production frontend build
+
+bun run check
+# PASS; 702 Worker unit tests, 59 frontend readiness tests, 41 Workerd
+# lifecycle tests, full workspace tests, route/bundle/config audits, and main,
+# tenant, and outbound wasm32 checks
+```
+
+The schema replay proves that an operator cannot resolve a quarantined intent
+without the matching immutable event, one atomic refund restores the frozen
+wallet/token balances, and reconciliation events cannot be updated or deleted.
+Worker unit tests cover action/reason validation, provider identity validation,
+legacy refund-only handling, and deterministic preview binding. The frontend
+tests cover queue record behavior, provider ID constraints, and readiness-stage
+mapping.
+
+This is local evidence only. Before staging proof, archive the exact candidate
+SHA and redacted output, then follow the 0032/new-Worker/drain/0033 sequence in
+the smoke runbook. No Cloudflare credential or remote deployment was used for
+this increment. Production stays **NO-GO**.
+
 ## Durable Task Billing Ownership Hardening Verification (2026-07-15)
 
 ```powershell

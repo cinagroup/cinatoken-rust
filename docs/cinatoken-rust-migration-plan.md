@@ -13007,3 +13007,53 @@ generation-fenced cron/TaskRunner poll lease, persisted fair retry/backoff,
 checked 64-bit financial D1 binding, full HTTP/Realtime/subscription FreeModel
 parity, remote fault injection, invoice reconciliation, and rollback evidence.
 Go/VPS remains authoritative until the complete signed cutover gates pass.
+
+### 22.215 2026-07-15 Task Submit Reconciliation Control Plane
+
+This increment implements the local, operator-controlled resolution boundary
+for Task submissions whose provider outcome is unknown. It does not supply a
+provider lookup oracle and does not change production authority.
+
+Implementation contract:
+
+- `0032_task_submit_reconciliation.sql` is an expand migration. It adds a
+  frozen attachment contract, public reconciliation identity/revision, an
+  immutable event ledger, resolution audit fields, and a compatibility trigger
+  for a late 0031 writer.
+- `0033_task_submit_reconciliation_enforce.sql` is the contract migration. It
+  removes compatibility and rejects every new intent without a valid non-empty
+  attachment contract. Rollout order is 0032, new Worker, writer verification,
+  Task traffic and old-isolate drain, then 0033. A 0031-era Worker is not a
+  valid rollback target after 0033.
+- Task, Suno, and Midjourney freeze reconstruction facts before provider I/O.
+  If the provider is known to have accepted but the local atomic attach fails,
+  the provider task ID is preserved in quarantine for evidence comparison.
+- Root-only list and preview routes are no-store. Apply requires root, fresh
+  secure verification, the exact revision-bound preview, explicit confirmation,
+  and a bounded idempotency key. Controlled reasons distinguish verified attach
+  from confirmed-not-accepted or approved refund.
+- Event, provider task row or refund, request/channel accounting, intent
+  terminal transition, and root audit commit in one D1 batch. Immutable event
+  guards and canonical readback prevent a stale, duplicate, or ambiguous result
+  from becoming a second financial mutation.
+- The API returns hashes, not the frozen attach payload. Legacy rows lacking
+  reconstruction facts are refund-only. Production still needs an approved
+  retention/deletion/access policy because the frozen Midjourney contract can
+  contain prompt text and the Task contract can contain username/group data.
+- Capabilities and the frontend expose compiled, enabled, ready, staging-proof,
+  and cutover phases independently. Both tracked flags are false by default.
+
+Staging acceptance must cover Task and Midjourney verified attach, manual
+provider-console attach, provider-not-accepted refund, approved customer refund,
+legacy refund-only behavior, stale revision 409, identical replay convergence,
+conflicting idempotency/evidence/preview rejection, exact-once request and quota
+accounting, immutable event history, every D1 batch failure boundary, alerts,
+provider invoice reconciliation, cleanup, and disable-first rollback.
+
+Local evidence is 33-migration SQLite replay, object-level Task schema probing,
+Worker unit/Wasm compilation, frontend tests/build, and migration/config audits.
+Remote migration, provider, browser, Queue/DLQ, invoice, load, and rollback
+evidence is absent. Shared generation-fenced polling, fair persisted retry,
+checked 64-bit D1 financial bindings, FreeModel/subscription parity,
+provider-native idempotency/lookup, credential rotation, and G1-G8 approval keep
+Go/VPS authoritative and production **NO-GO**.

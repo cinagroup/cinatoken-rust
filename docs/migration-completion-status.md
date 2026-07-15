@@ -792,3 +792,29 @@ Local tests are implementation evidence, not cutover evidence. The published
 blocker is now `ali_async_image_task_settlement`; production remains **NO-GO**
 until the asynchronous D1/TaskRunner/Queue state machine and synchronous live
 provider, billing, invoice, failure, and rollback evidence are complete.
+
+## 2026-07-15 Task Submit Reconciliation Status
+
+Task ambiguity recovery is now implemented locally as a root-only control
+plane. D1 migration 0032 adds the frozen attach contract, public reconciliation
+identity, monotonic revision, immutable event ledger, resolution audit fields,
+and an expand-phase compatibility trigger. Migration 0033 removes that bridge
+and enforces non-empty attach contracts for every new Task billing intent. The
+current local schema baseline is 33 migrations, 32 tables, 190 checked
+incremental columns, and 34 key indexes, plus an object-level Task schema probe.
+
+The Worker exposes a no-store queue, deterministic preview, and root plus fresh
+secure-verification apply route. Attach/refund decisions are reason-limited,
+evidence-bound, revision-fenced, idempotent, and committed in one D1 batch with
+the immutable event, accounting mutation, intent transition, and root audit.
+Legacy unknown rows cannot attach and remain refund-only. The Cloudflare
+operations panel provides queue pagination, preview, exact-ID confirmation,
+step-up, apply, and canonical queue refresh. Both runtime and staging-proof
+flags remain false in every tracked environment.
+
+This closes a local operator-control gap, not provider ambiguity itself.
+Provider-native idempotency/lookup, frozen-contract retention policy, remote
+0032/0033 rollout and fault injection, Task/Midjourney provider evidence,
+invoice reconciliation, shared poll lease, fair retry, checked 64-bit D1
+binding, FreeModel/subscription parity, credential rotation, and rollback remain
+open. Go/VPS stays authoritative and production remains **NO-GO**.

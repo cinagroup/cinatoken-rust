@@ -1818,3 +1818,58 @@ Realtime writer/recovery gates false.
 Any raw financial identity leak, client-supplied pricing authority, missing
 audit, unexplained quota delta, second provider charge, partial D1 commit, or
 gate that remains enabled after the drill is an immediate G4/G5/G7 abort.
+
+## Phase 4i: Task Submit Reconciliation Operator Drill
+
+Run only after the exposed credential is rotated, billing and SRE reviewers are
+named, and a dedicated staging D1 backup is archived. Go/VPS remains
+authoritative. Keep Task admission, TaskRunner cutover, and both Task
+reconciliation flags false during schema rollout.
+
+1. Apply 0032 first. Deploy the candidate and require exact 33-migration intent,
+   but do not apply 0033 yet. Prove a 0031-compatible quarantine transition is
+   assigned a reconciliation identity, then prove every new candidate-created
+   Task, Suno, and Midjourney intent has valid billing and attach hashes.
+2. Stop Task submit traffic, wait for all old Worker isolates and in-flight
+   submit calls to drain, and query for invalid/empty new attach contracts.
+   Abort on any row written by an old contract. Apply 0033, redeploy the same
+   candidate, and require 33 exact migrations plus object-level readiness for
+   both Task tables, all required triggers/indexes, and critical columns.
+3. With mutation disabled, require compiled=true, enabled=false, ready=false,
+   staging-verified=false, and cutover=false. Queue and preview must be root-only
+   and no-store; apply must fail closed. Verify queue output contains neither
+   frozen JSON, reservation/user/token/channel/operator/resolution identity nor
+   raw evidence.
+4. Create isolated Task and Midjourney ambiguity fixtures. Exercise verified
+   provider-task attach, manual provider-console attach, provider-confirmed
+   non-acceptance refund, approved customer refund, and a legacy row. Legacy is
+   refund-only. Compare preview hashes against the frozen contracts without
+   exporting the contracts themselves.
+5. After dual approval, enable mutation for one fixture at a time. Require root,
+   fresh secure verification, exact full reconciliation-ID confirmation,
+   explicit apply confirmation, a unique idempotency key, current revision, and
+   provider/evidence values identical to preview.
+6. Race identical retries, changed evidence, changed action/reason/provider ID,
+   stale revision, stale owner generation, and tampered preview. Exactly one
+   transition may win; identical retries converge to canonical readback and all
+   conflicting requests return 409 without a second task, refund, request count,
+   channel count, event, or root audit.
+7. Inject failure after each event/task/refund/intent/accounting/audit statement.
+   The D1 batch must fully roll back. On success, reconcile intent, task or
+   Midjourney row, user/token balances, request counters, immutable event,
+   root audit, provider console/API evidence, and provider invoice.
+8. Verify event update/delete guards, queue removal after terminal readback,
+   bounded retention, prompt/identity access controls, alert delivery, and
+   redacted evidence storage. Disable mutation before rollback or cleanup.
+9. Rehearse rollback only to a 0033-compatible Worker. Never restore a 0031-era
+   writer after 0033. Preserve unresolved rows, stop new Task admission, drain
+   poll ownership, and prove no blind refund or second provider submission.
+10. Keep `TASK_SUBMIT_RECONCILIATION_STAGING_VERIFIED=false` while evidence is
+    reviewed. Set it only in a new candidate after billing, security, privacy,
+    and SRE sign the complete packet. This gate still cannot make Task v2 or
+    production cutover ready by itself.
+
+Any guessed provider outcome, missing immutable event, attach-contract leak,
+unexplained quota delta, duplicate provider/task mutation, partial batch,
+rollback to an incompatible writer, or enabled flag left behind is an immediate
+G2/G4/G5/G7 abort. Production remains **NO-GO**.

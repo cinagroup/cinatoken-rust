@@ -11,10 +11,11 @@
 use crate::task_repository::{
     apply_poll_result, apply_task_timeout, attach_task_billing_intent,
     find_timed_out_unfinished_tasks, find_unfinished_tasks, generate_task_id,
-    mark_task_billing_intent_submit_unknown, mark_task_billing_intent_submitting,
-    reject_and_refund_task_billing_intent, reserve_task_billing_intent, NewTask,
-    TaskBillingIntentAttachOutcome, TaskBillingIntentRecord, TaskRow,
-    TASK_BILLING_INTENT_LEASE_SECONDS,
+    mark_task_billing_intent_submit_unknown,
+    mark_task_billing_intent_submit_unknown_with_provider_task_id,
+    mark_task_billing_intent_submitting, reject_and_refund_task_billing_intent,
+    reserve_task_billing_intent, NewTask, TaskBillingIntentAttachOutcome, TaskBillingIntentRecord,
+    TaskRow, TASK_BILLING_INTENT_LEASE_SECONDS,
 };
 use base64::{
     engine::general_purpose::{
@@ -682,6 +683,23 @@ pub async fn relay_task_submit(
         "reserved_quota": reserved_quota,
     });
     let billing_contract_json = billing_contract.to_string();
+    let task_properties = serde_json::json!({
+        "upstream_model_name": ctx.upstream_model,
+        "origin_model_name": ctx.origin_model,
+        "task_billing_contract": billing_contract,
+    })
+    .to_string();
+    let attach_contract_json = serde_json::json!({
+        "contract_version": "task-attach-v1",
+        "task_kind": "task",
+        "platform": ctx.platform,
+        "username": ctx.username,
+        "group": ctx.group,
+        "action": ctx.action,
+        "properties": task_properties,
+        "data": "{}",
+    })
+    .to_string();
     reserve_task_billing_intent(
         db,
         TaskBillingIntentRecord {
@@ -695,6 +713,7 @@ pub async fn relay_task_submit(
             funding_source: "wallet",
             subscription_id: 0,
             billing_contract_json: &billing_contract_json,
+            attach_contract_json: &attach_contract_json,
             provider_kind: ctx.platform,
             provider_idempotency_key: &public_task_id,
             created_at: ctx.now,
@@ -762,12 +781,6 @@ pub async fn relay_task_submit(
     } else {
         String::from_utf8(submit_outcome.task_data).unwrap_or_else(|_| "{}".to_string())
     };
-    let task_properties = serde_json::json!({
-        "upstream_model_name": ctx.upstream_model,
-        "origin_model_name": ctx.origin_model,
-        "task_billing_contract": billing_contract,
-    })
-    .to_string();
     let new_task = NewTask {
         task_id: &public_task_id,
         upstream_task_id: &submit_outcome.upstream_task_id,
@@ -791,11 +804,12 @@ pub async fn relay_task_submit(
         Ok(TaskBillingIntentAttachOutcome::Applied)
         | Ok(TaskBillingIntentAttachOutcome::MatchingAttached) => {}
         Ok(TaskBillingIntentAttachOutcome::Conflict) => {
-            let _ = mark_task_billing_intent_submit_unknown(
+            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 db,
                 &public_task_id,
                 ctx.now,
                 "provider accepted but local attachment conflicted",
+                &submit_outcome.upstream_task_id,
             )
             .await;
             return Err(worker::Error::RustError(
@@ -803,11 +817,12 @@ pub async fn relay_task_submit(
             ));
         }
         Err(insert_err) => {
-            let _ = mark_task_billing_intent_submit_unknown(
+            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 db,
                 &public_task_id,
                 ctx.now,
                 &format!("provider accepted but local attachment failed: {insert_err}"),
+                &submit_outcome.upstream_task_id,
             )
             .await;
             return Err(insert_err);
@@ -1417,6 +1432,23 @@ pub async fn handle_suno_submit(
         "reserved_quota": reserved_quota,
     });
     let billing_contract_json = billing_contract.to_string();
+    let task_properties = serde_json::json!({
+        "upstream_model_name": model,
+        "origin_model_name": model,
+        "task_billing_contract": billing_contract,
+    })
+    .to_string();
+    let attach_contract_json = serde_json::json!({
+        "contract_version": "task-attach-v1",
+        "task_kind": "task",
+        "platform": "suno",
+        "username": auth.username,
+        "group": using_group,
+        "action": action,
+        "properties": task_properties,
+        "data": "{}",
+    })
+    .to_string();
     reserve_task_billing_intent(
         &db,
         TaskBillingIntentRecord {
@@ -1430,6 +1462,7 @@ pub async fn handle_suno_submit(
             funding_source: "wallet",
             subscription_id: 0,
             billing_contract_json: &billing_contract_json,
+            attach_contract_json: &attach_contract_json,
             provider_kind: "suno",
             provider_idempotency_key: &public_task_id,
             created_at: now,
@@ -1502,12 +1535,6 @@ pub async fn handle_suno_submit(
         }
     };
 
-    let task_properties = serde_json::json!({
-        "upstream_model_name": model,
-        "origin_model_name": model,
-        "task_billing_contract": billing_contract,
-    })
-    .to_string();
     let new_task = NewTask {
         task_id: &public_task_id,
         upstream_task_id: &upstream_task_id,
@@ -1531,11 +1558,12 @@ pub async fn handle_suno_submit(
         Ok(TaskBillingIntentAttachOutcome::Applied)
         | Ok(TaskBillingIntentAttachOutcome::MatchingAttached) => {}
         Ok(TaskBillingIntentAttachOutcome::Conflict) => {
-            let _ = mark_task_billing_intent_submit_unknown(
+            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 &db,
                 &public_task_id,
                 now,
                 "Suno provider accepted but local attachment conflicted",
+                &upstream_task_id,
             )
             .await;
             return crate::json_with_status(
@@ -1544,11 +1572,12 @@ pub async fn handle_suno_submit(
             );
         }
         Err(insert_err) => {
-            let _ = mark_task_billing_intent_submit_unknown(
+            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 &db,
                 &public_task_id,
                 now,
                 &format!("Suno provider accepted but local attachment failed: {insert_err}"),
+                &upstream_task_id,
             )
             .await;
             return Err(insert_err);
@@ -1647,6 +1676,23 @@ pub async fn handle_mj_submit(
         "reserved_quota": reserved_quota,
     });
     let billing_contract_json = billing_contract.to_string();
+    let mj_properties = serde_json::json!({
+        "token_id": auth.token_id,
+        "billing_reservation_key": billing_reservation_key,
+        "group": using_group,
+        "origin_model_name": model,
+        "task_billing_contract": billing_contract,
+    })
+    .to_string();
+    let attach_contract_json = serde_json::json!({
+        "contract_version": "task-attach-v1",
+        "task_kind": "midjourney",
+        "action": action,
+        "prompt": prompt,
+        "prompt_en": prompt,
+        "properties": mj_properties,
+    })
+    .to_string();
     reserve_task_billing_intent(
         &db,
         TaskBillingIntentRecord {
@@ -1660,6 +1706,7 @@ pub async fn handle_mj_submit(
             funding_source: "wallet",
             subscription_id: 0,
             billing_contract_json: &billing_contract_json,
+            attach_contract_json: &attach_contract_json,
             provider_kind: "midjourney",
             provider_idempotency_key: &billing_reservation_key,
             created_at: now,
@@ -1743,14 +1790,6 @@ pub async fn handle_mj_submit(
         }
     };
 
-    let mj_properties = serde_json::json!({
-        "token_id": auth.token_id,
-        "billing_reservation_key": billing_reservation_key,
-        "group": using_group,
-        "origin_model_name": model,
-        "task_billing_contract": billing_contract,
-    })
-    .to_string();
     let new_mj = crate::mj_repository::NewMidjourney {
         code: 1,
         user_id: auth.user_id,
@@ -1773,11 +1812,12 @@ pub async fn handle_mj_submit(
         Ok(TaskBillingIntentAttachOutcome::Applied)
         | Ok(TaskBillingIntentAttachOutcome::MatchingAttached) => {}
         Ok(TaskBillingIntentAttachOutcome::Conflict) => {
-            let _ = mark_task_billing_intent_submit_unknown(
+            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 &db,
                 &billing_reservation_key,
                 now,
                 "Midjourney provider accepted but local attachment conflicted",
+                &mj_id,
             )
             .await;
             return crate::json_with_status(
@@ -1786,11 +1826,12 @@ pub async fn handle_mj_submit(
             );
         }
         Err(insert_err) => {
-            let _ = mark_task_billing_intent_submit_unknown(
+            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 &db,
                 &billing_reservation_key,
                 now,
                 &format!("Midjourney provider accepted but local attachment failed: {insert_err}"),
+                &mj_id,
             )
             .await;
             return Err(insert_err);

@@ -38,6 +38,7 @@ mod relay_billing_smoke;
 // Provider-independent task lifecycle persistence + CAS settlement guard (item
 // 4.2). Foundation ahead of the task orchestration that consumes it; the module
 // allows dead_code internally until then.
+mod task_billing_reconcile;
 mod task_repository;
 // Worker-side task polling I/O (executes the pure poll requests + threads bytes
 // into the parser/settle-apply). Foundation ahead of its routes/trigger.
@@ -190,6 +191,24 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             "/api/platform/quota-coordinator/reconciliation",
             |req, ctx| async move {
                 quota_coordinator::quota_coordinator_reconciliation(req, ctx.env).await
+            },
+        )
+        .get_async(
+            "/api/platform/task-billing/reconciliations",
+            |req, ctx| async move { task_billing_reconcile::list(req, ctx.env).await },
+        )
+        .post_async(
+            "/api/platform/task-billing/reconciliations/:reconciliation_id/preview",
+            |req, ctx| async move {
+                let reconciliation_id = ctx.param("reconciliation_id").cloned();
+                task_billing_reconcile::preview(req, ctx.env, reconciliation_id).await
+            },
+        )
+        .post_async(
+            "/api/platform/task-billing/reconciliations/:reconciliation_id/apply",
+            |req, ctx| async move {
+                let reconciliation_id = ctx.param("reconciliation_id").cloned();
+                task_billing_reconcile::apply(req, ctx.env, reconciliation_id).await
             },
         )
         .get_async(

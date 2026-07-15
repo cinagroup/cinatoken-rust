@@ -23,6 +23,8 @@ use worker::{D1Database, D1Type};
 
 pub(crate) const LEGACY_TASK_TIMEOUT_CUTOFF_UNIX: i64 = 1_740_182_400;
 pub(crate) const TASK_BILLING_INTENT_MIGRATION: &str = "0031_task_billing_intents.sql";
+pub(crate) const TASK_SUBMIT_RECONCILIATION_MIGRATION: &str =
+    "0033_task_submit_reconciliation_enforce.sql";
 pub(crate) const TASK_BILLING_INTENT_LEASE_SECONDS: i64 = 900;
 const TASK_BILLING_INTENT_SWEEP_MAX_LIMIT: i64 = 64;
 const TASK_BILLING_INTENT_SWEEP_SELECT: &str = r#"
@@ -50,6 +52,7 @@ pub struct TaskBillingIntentRecord<'a> {
     pub funding_source: &'a str,
     pub subscription_id: i64,
     pub billing_contract_json: &'a str,
+    pub attach_contract_json: &'a str,
     pub provider_kind: &'a str,
     pub provider_idempotency_key: &'a str,
     pub created_at: i64,
@@ -69,6 +72,8 @@ pub struct TaskBillingIntent {
     pub subscription_id: i64,
     pub billing_contract_json: String,
     pub billing_contract_sha256: String,
+    pub attach_contract_json: String,
+    pub attach_contract_sha256: String,
     pub status: String,
     pub submit_state: String,
     pub provider_kind: String,
@@ -77,6 +82,16 @@ pub struct TaskBillingIntent {
     pub request_accounted: i64,
     pub lease_expires_at: i64,
     pub owner_generation: i64,
+    pub reconciliation_id: String,
+    pub reconciliation_revision: i64,
+    pub reconciliation_resolution: String,
+    pub reconciliation_resolution_key: String,
+    pub reconciliation_resolved_at: i64,
+    pub reconciliation_operator_id: i64,
+    pub reconciliation_evidence_sha256: String,
+    pub reconciliation_reason: String,
+    pub recovery_last_error: String,
+    pub recovery_required_at: i64,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -130,9 +145,54 @@ pub fn generate_task_id() -> String {
 
 const TASK_BILLING_INTENT_COLUMNS: &str = r#"reservation_key, task_kind, public_task_id,
     user_id, token_id, channel_id, quota, funding_source, subscription_id,
-    billing_contract_json, billing_contract_sha256, status, submit_state,
+    billing_contract_json, billing_contract_sha256,
+    attach_contract_json, attach_contract_sha256, status, submit_state,
     provider_kind, provider_idempotency_key, provider_task_id,
-    request_accounted, lease_expires_at, owner_generation, created_at, updated_at"#;
+    request_accounted, lease_expires_at, owner_generation,
+    reconciliation_id, reconciliation_revision, reconciliation_resolution,
+    reconciliation_resolution_key, reconciliation_resolved_at,
+    reconciliation_operator_id, reconciliation_evidence_sha256,
+    reconciliation_reason, recovery_last_error, recovery_required_at,
+    created_at, updated_at"#;
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct TaskBillingReconciliationQueueRow {
+    pub reconciliation_id: String,
+    pub reconciliation_revision: i64,
+    pub task_kind: String,
+    pub public_task_id: String,
+    pub provider_kind: String,
+    pub provider_task_id: String,
+    pub quota: i64,
+    pub funding_source: String,
+    pub recovery_last_error: String,
+    pub recovery_required_at: i64,
+    pub attach_contract_sha256: String,
+    pub attach_available: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TaskBillingReconciliationEvent<'a> {
+    pub resolution_key: &'a str,
+    pub reconciliation_id: &'a str,
+    pub reservation_key: &'a str,
+    pub expected_revision: i64,
+    pub action: &'a str,
+    pub reason: &'a str,
+    pub provider_task_id: &'a str,
+    pub evidence_reference: &'a str,
+    pub evidence_sha256: &'a str,
+    pub preview_token: &'a str,
+    pub decision_sha256: &'a str,
+    pub operator_id: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskBillingReconciliationMutationOutcome {
+    Applied,
+    Conflict,
+}
 
 fn task_billing_contract_sha256(contract_json: &str) -> String {
     let mut hasher = Sha256::new();
@@ -140,10 +200,18 @@ fn task_billing_contract_sha256(contract_json: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn task_reconciliation_id(reservation_key: &str) -> String {
+    task_billing_contract_sha256(&format!(
+        "cinatoken:task-submit-reconciliation:v1:{}",
+        reservation_key.trim()
+    ))
+}
+
 fn validate_task_billing_intent_record(record: &TaskBillingIntentRecord<'_>) -> worker::Result<()> {
     let reservation_key = record.reservation_key.trim();
     let public_task_id = record.public_task_id.trim();
     let contract_json = record.billing_contract_json.trim();
+    let attach_contract_json = record.attach_contract_json.trim();
     if reservation_key.is_empty()
         || reservation_key.len() > 160
         || public_task_id.is_empty()
@@ -158,6 +226,9 @@ fn validate_task_billing_intent_record(record: &TaskBillingIntentRecord<'_>) -> 
         || (record.funding_source == "subscription" && record.subscription_id <= 0)
         || contract_json.len() > 32 * 1024
         || serde_json::from_str::<serde_json::Value>(contract_json).is_err()
+        || attach_contract_json == "{}"
+        || attach_contract_json.len() > 64 * 1024
+        || serde_json::from_str::<serde_json::Value>(attach_contract_json).is_err()
         || record.provider_kind.trim().is_empty()
         || record.provider_kind.trim().len() > 64
         || record.provider_idempotency_key.trim().is_empty()
@@ -183,6 +254,8 @@ pub async fn reserve_task_billing_intent(
     validate_task_billing_intent_record(&record)?;
     let contract_json = record.billing_contract_json.trim();
     let contract_sha256 = task_billing_contract_sha256(contract_json);
+    let attach_contract_json = record.attach_contract_json.trim();
+    let attach_contract_sha256 = task_billing_contract_sha256(attach_contract_json);
     let args = [
         D1Type::Text(record.reservation_key.trim()),
         D1Type::Text(record.task_kind),
@@ -195,6 +268,8 @@ pub async fn reserve_task_billing_intent(
         D1Type::Integer(d1_i32(record.subscription_id)),
         D1Type::Text(contract_json),
         D1Type::Text(&contract_sha256),
+        D1Type::Text(attach_contract_json),
+        D1Type::Text(&attach_contract_sha256),
         D1Type::Text(record.provider_kind.trim()),
         D1Type::Text(record.provider_idempotency_key.trim()),
         D1Type::Integer(d1_i32(record.created_at)),
@@ -207,10 +282,12 @@ pub async fn reserve_task_billing_intent(
               reservation_key, task_kind, public_task_id, user_id, token_id,
               channel_id, quota, funding_source, subscription_id,
               billing_contract_json, billing_contract_sha256,
+              attach_contract_json, attach_contract_sha256,
               provider_kind, provider_idempotency_key,
               created_at, updated_at, lease_expires_at
             ) VALUES (
-              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15
+              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+              ?14, ?15, ?16, ?16, ?17
             )
             "#,
         )
@@ -267,11 +344,37 @@ pub async fn mark_task_billing_intent_submit_unknown(
     now: i64,
     reason: &str,
 ) -> worker::Result<bool> {
+    mark_task_billing_intent_submit_unknown_with_provider_task_id(
+        db,
+        reservation_key,
+        now,
+        reason,
+        "",
+    )
+    .await
+}
+
+pub async fn mark_task_billing_intent_submit_unknown_with_provider_task_id(
+    db: &D1Database,
+    reservation_key: &str,
+    now: i64,
+    reason: &str,
+    provider_task_id: &str,
+) -> worker::Result<bool> {
     let reason = reason.trim().chars().take(256).collect::<String>();
+    let provider_task_id = provider_task_id.trim();
+    if provider_task_id.len() > 256 {
+        return Err(worker::Error::RustError(
+            "task provider identity is invalid".to_string(),
+        ));
+    }
+    let reconciliation_id = task_reconciliation_id(reservation_key);
     let args = [
         D1Type::Integer(d1_i32(now)),
         D1Type::Text(&reason),
         D1Type::Text(reservation_key.trim()),
+        D1Type::Text(provider_task_id),
+        D1Type::Text(&reconciliation_id),
     ];
     let result = db
         .prepare(
@@ -283,11 +386,18 @@ pub async fn mark_task_billing_intent_submit_unknown(
                   WHEN recovery_required_at > 0 THEN recovery_required_at ELSE ?1 END,
                 recovery_attempt_count = recovery_attempt_count + 1,
                 recovery_last_error = ?2,
+                provider_task_id = CASE WHEN ?4 <> '' THEN ?4 ELSE provider_task_id END,
+                reconciliation_id = CASE
+                  WHEN reconciliation_id = '' THEN ?5 ELSE reconciliation_id END,
+                reconciliation_revision = CASE
+                  WHEN reconciliation_revision = 0 THEN 1 ELSE reconciliation_revision END,
                 updated_at = ?1,
                 owner_generation = owner_generation + 1
             WHERE reservation_key = ?3
               AND status = 'reserved'
               AND submit_state = 'submitting'
+              AND (provider_task_id = '' OR provider_task_id = ?4)
+              AND (reconciliation_id = '' OR reconciliation_id = ?5)
             "#,
         )
         .bind_refs(&args)?
@@ -340,6 +450,301 @@ pub async fn find_task_billing_intent(
     .bind_refs(&arg)?
     .first::<TaskBillingIntent>(None)
     .await
+}
+
+pub async fn find_task_billing_reconciliation(
+    db: &D1Database,
+    reconciliation_id: &str,
+) -> worker::Result<Option<TaskBillingIntent>> {
+    let arg = D1Type::Text(reconciliation_id.trim());
+    db.prepare(&format!(
+        "SELECT {TASK_BILLING_INTENT_COLUMNS} FROM task_billing_intents WHERE reconciliation_id = ?1 LIMIT 1"
+    ))
+    .bind_refs(&arg)?
+    .first::<TaskBillingIntent>(None)
+    .await
+}
+
+pub async fn list_task_billing_reconciliations(
+    db: &D1Database,
+    after_required_at: i64,
+    after_reconciliation_id: &str,
+    limit: i64,
+) -> worker::Result<Vec<TaskBillingReconciliationQueueRow>> {
+    let args = [
+        D1Type::Integer(d1_i32(after_required_at)),
+        D1Type::Text(after_reconciliation_id),
+        D1Type::Integer(d1_i32(limit.clamp(1, 50))),
+    ];
+    db.prepare(
+        r#"
+        SELECT reconciliation_id, reconciliation_revision, task_kind,
+               public_task_id, provider_kind, provider_task_id, quota,
+               funding_source, recovery_last_error, recovery_required_at,
+               attach_contract_sha256,
+               CASE WHEN attach_contract_json <> '{}' THEN 1 ELSE 0 END AS attach_available
+        FROM task_billing_intents
+        WHERE status = 'recovery_required'
+          AND submit_state = 'submit_unknown'
+          AND reconciliation_resolution = ''
+          AND reconciliation_id <> ''
+          AND (
+            recovery_required_at > ?1 OR
+            (recovery_required_at = ?1 AND reconciliation_id > ?2)
+          )
+        ORDER BY recovery_required_at ASC, reconciliation_id ASC
+        LIMIT ?3
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<TaskBillingReconciliationQueueRow>()
+}
+
+pub(crate) fn task_billing_reconciliation_event_statement(
+    db: &D1Database,
+    event: &TaskBillingReconciliationEvent<'_>,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        D1Type::Text(event.resolution_key),
+        D1Type::Text(event.reconciliation_id),
+        D1Type::Text(event.reservation_key),
+        D1Type::Integer(d1_i32(event.expected_revision)),
+        D1Type::Text(event.action),
+        D1Type::Text(event.reason),
+        D1Type::Text(event.provider_task_id),
+        D1Type::Text(event.evidence_reference),
+        D1Type::Text(event.evidence_sha256),
+        D1Type::Text(event.preview_token),
+        D1Type::Text(event.decision_sha256),
+        D1Type::Integer(d1_i32(event.operator_id)),
+        D1Type::Integer(d1_i32(event.created_at)),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO task_billing_reconciliation_events (
+          resolution_key, reconciliation_id, reservation_key,
+          reconciliation_revision, action, reason, provider_task_id,
+          evidence_reference, evidence_sha256, preview_token,
+          decision_sha256, operator_id, created_at
+        )
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
+        WHERE EXISTS (
+          SELECT 1 FROM task_billing_intents
+          WHERE reservation_key = ?3
+            AND reconciliation_id = ?2
+            AND reconciliation_revision = ?4
+            AND reconciliation_resolution = ''
+            AND status = 'recovery_required'
+            AND submit_state = 'submit_unknown'
+        )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+pub async fn refund_task_billing_reconciliation(
+    db: &D1Database,
+    event: &TaskBillingReconciliationEvent<'_>,
+    admin_audit: worker::D1PreparedStatement,
+) -> worker::Result<TaskBillingReconciliationMutationOutcome> {
+    let event_insert = task_billing_reconciliation_event_statement(db, event)?;
+    let args = [
+        D1Type::Integer(d1_i32(event.created_at)),
+        D1Type::Text(event.resolution_key),
+        D1Type::Integer(d1_i32(event.operator_id)),
+        D1Type::Text(event.evidence_sha256),
+        D1Type::Text(event.reason),
+        D1Type::Text(event.reconciliation_id),
+        D1Type::Text(event.reservation_key),
+        D1Type::Integer(d1_i32(event.expected_revision)),
+    ];
+    let update = db
+        .prepare(
+            r#"
+            UPDATE task_billing_intents
+            SET status = 'refunded', submit_state = 'rejected',
+                refunded_at = ?1, updated_at = ?1,
+                owner_generation = owner_generation + 1,
+                reconciliation_revision = reconciliation_revision + 1,
+                reconciliation_resolution = 'refunded',
+                reconciliation_resolution_key = ?2,
+                reconciliation_resolved_at = ?1,
+                reconciliation_operator_id = ?3,
+                reconciliation_evidence_sha256 = ?4,
+                reconciliation_reason = ?5,
+                recovery_last_error = ''
+            WHERE reconciliation_id = ?6
+              AND reservation_key = ?7
+              AND reconciliation_revision = ?8
+              AND reconciliation_resolution = ''
+              AND status = 'recovery_required'
+              AND submit_state = 'submit_unknown'
+              AND request_accounted = 0
+              AND NOT EXISTS (
+                SELECT 1 FROM tasks
+                WHERE json_extract(private_data, '$.billing_reservation_key') = ?7
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM midjourneys
+                WHERE json_extract(
+                  CASE WHEN json_valid(properties) THEN properties ELSE '{}' END,
+                  '$.billing_reservation_key'
+                ) = ?7
+              )
+              AND EXISTS (
+                SELECT 1 FROM task_billing_reconciliation_events
+                WHERE resolution_key = ?2 AND reconciliation_id = ?6
+              )
+            "#,
+        )
+        .bind_refs(&args)?;
+    let results = db
+        .batch(vec![
+            event_insert,
+            assert_task_billing_previous_statement_statement(db, event.reservation_key)?,
+            update,
+            assert_task_billing_previous_statement_statement(db, event.reservation_key)?,
+            admin_audit,
+        ])
+        .await?;
+    if task_batch_changed(&results, 0)? && task_batch_changed(&results, 2)? {
+        Ok(TaskBillingReconciliationMutationOutcome::Applied)
+    } else {
+        Ok(TaskBillingReconciliationMutationOutcome::Conflict)
+    }
+}
+
+pub async fn attach_task_billing_reconciliation(
+    db: &D1Database,
+    task: &NewTask<'_>,
+    event: &TaskBillingReconciliationEvent<'_>,
+    admin_audit: worker::D1PreparedStatement,
+) -> worker::Result<TaskBillingReconciliationMutationOutcome> {
+    let event_insert = task_billing_reconciliation_event_statement(db, event)?;
+    let private_data = serde_json::json!({
+        "token_id": task.token_id,
+        "upstream_task_id": task.upstream_task_id,
+        "billing_reservation_key": event.reservation_key,
+    })
+    .to_string();
+    let insert_args = [
+        D1Type::Text(task.task_id),
+        D1Type::Text(task.upstream_task_id),
+        D1Type::Text(task.platform),
+        D1Type::Integer(d1_i32(task.user_id)),
+        D1Type::Text(task.username),
+        D1Type::Text(task.group),
+        D1Type::Integer(d1_i32(task.channel_id)),
+        D1Type::Integer(d1_i32(task.quota)),
+        D1Type::Text(task.action),
+        D1Type::Text(task.status.as_str()),
+        D1Type::Integer(d1_i32(task.submit_time)),
+        D1Type::Integer(d1_i32(task.created_at)),
+        D1Type::Integer(d1_i32(task.updated_at)),
+        D1Type::Text(task.properties),
+        D1Type::Text(&private_data),
+        D1Type::Text(task.data),
+        D1Type::Text(event.reservation_key),
+        D1Type::Text(event.reconciliation_id),
+        D1Type::Integer(d1_i32(event.expected_revision)),
+        D1Type::Integer(d1_i32(task.token_id)),
+    ];
+    let insert = db
+        .prepare(
+            r#"
+            INSERT INTO tasks
+              (task_id, upstream_task_id, platform, user_id, username, "group",
+               channel_id, quota, action, status, submit_time, created_at,
+               updated_at, properties, private_data, data)
+            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                   ?13, ?14, ?15, ?16
+            WHERE EXISTS (
+              SELECT 1 FROM task_billing_intents
+              WHERE reservation_key = ?17
+                AND reconciliation_id = ?18
+                AND reconciliation_revision = ?19
+                AND reconciliation_resolution = ''
+                AND task_kind = 'task'
+                AND public_task_id = ?1
+                AND user_id = ?4 AND token_id = ?20
+                AND channel_id = ?7 AND quota = ?8
+                AND status = 'recovery_required'
+                AND submit_state = 'submit_unknown'
+            )
+            "#,
+        )
+        .bind_refs(&insert_args)?;
+    let update_args = [
+        D1Type::Text(task.upstream_task_id),
+        D1Type::Integer(d1_i32(event.created_at)),
+        D1Type::Text(event.resolution_key),
+        D1Type::Integer(d1_i32(event.operator_id)),
+        D1Type::Text(event.evidence_sha256),
+        D1Type::Text(event.reason),
+        D1Type::Text(event.reconciliation_id),
+        D1Type::Text(event.reservation_key),
+        D1Type::Integer(d1_i32(event.expected_revision)),
+        D1Type::Text(task.task_id),
+    ];
+    let update = db
+        .prepare(
+            r#"
+            UPDATE task_billing_intents
+            SET status = 'attached', submit_state = 'submitted',
+                provider_task_id = ?1, request_accounted = 1,
+                attached_at = ?2, updated_at = ?2,
+                owner_generation = owner_generation + 1,
+                reconciliation_revision = reconciliation_revision + 1,
+                reconciliation_resolution = 'attached',
+                reconciliation_resolution_key = ?3,
+                reconciliation_resolved_at = ?2,
+                reconciliation_operator_id = ?4,
+                reconciliation_evidence_sha256 = ?5,
+                reconciliation_reason = ?6,
+                recovery_last_error = ''
+            WHERE reconciliation_id = ?7
+              AND reservation_key = ?8
+              AND reconciliation_revision = ?9
+              AND reconciliation_resolution = ''
+              AND task_kind = 'task'
+              AND public_task_id = ?10
+              AND status = 'recovery_required'
+              AND submit_state = 'submit_unknown'
+              AND request_accounted = 0
+              AND (provider_task_id = '' OR provider_task_id = ?1)
+              AND EXISTS (
+                SELECT 1 FROM tasks
+                WHERE task_id = ?10 AND upstream_task_id = ?1
+                  AND json_extract(private_data, '$.billing_reservation_key') = ?8
+              )
+              AND EXISTS (
+                SELECT 1 FROM task_billing_reconciliation_events
+                WHERE resolution_key = ?3 AND reconciliation_id = ?7
+              )
+            "#,
+        )
+        .bind_refs(&update_args)?;
+    let results = db
+        .batch(vec![
+            event_insert,
+            assert_task_billing_previous_statement_statement(db, event.reservation_key)?,
+            insert,
+            assert_task_billing_previous_statement_statement(db, event.reservation_key)?,
+            update,
+            assert_task_billing_previous_statement_statement(db, event.reservation_key)?,
+            admin_audit,
+        ])
+        .await?;
+    if task_batch_changed(&results, 0)?
+        && task_batch_changed(&results, 2)?
+        && task_batch_changed(&results, 4)?
+    {
+        Ok(TaskBillingReconciliationMutationOutcome::Applied)
+    } else {
+        Ok(TaskBillingReconciliationMutationOutcome::Conflict)
+    }
 }
 
 /// Refund only a pre-attachment intent. Attached work must transition through
@@ -463,7 +868,19 @@ pub async fn task_billing_intent_schema_ready(db: &D1Database) -> worker::Result
             r#"
             SELECT COUNT(*) AS count
             FROM sqlite_master
-            WHERE (type = 'table' AND name = 'task_billing_intents')
+            WHERE (type = 'table' AND name IN (
+                    'task_billing_intents',
+                    'task_billing_reconciliation_events'
+                  ))
+               OR (type = 'index' AND name IN (
+                 'idx_task_billing_intents_status_lease',
+                 'idx_task_billing_intents_user_status',
+                 'idx_task_billing_intents_provider_task',
+                 'idx_task_billing_intent_reconciliation_id',
+                 'idx_task_billing_intent_reconciliation_resolution_key',
+                 'idx_task_billing_intent_reconciliation_queue',
+                 'idx_task_billing_reconciliation_event_identity'
+               ))
                OR (type = 'trigger' AND name IN (
                  'task_billing_intent_contract_immutable_guard',
                  'task_billing_intent_insert_guard',
@@ -475,17 +892,49 @@ pub async fn task_billing_intent_schema_ready(db: &D1Database) -> worker::Result
                  'task_billing_intent_attach_accounting',
                  'task_billing_intent_terminal_guard',
                  'task_billing_intent_refund_guard',
-                 'task_billing_intent_refund_apply'
+                 'task_billing_intent_refund_apply',
+                 'task_billing_intent_reconciliation_guard',
+                 'task_billing_reconciliation_event_update_guard',
+                 'task_billing_reconciliation_event_delete_guard'
                ))
             "#,
         )
         .first::<SchemaCountRow>(None)
         .await?;
-    Ok(row.map(|row| row.count == 12).unwrap_or(false))
+    if !row.map(|row| row.count == 23).unwrap_or(false) {
+        return Ok(false);
+    }
+    let columns = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count FROM (
+              SELECT name FROM pragma_table_info('task_billing_intents')
+              WHERE name IN (
+                'attach_contract_json', 'attach_contract_sha256',
+                'reconciliation_id', 'reconciliation_revision',
+                'reconciliation_resolution', 'reconciliation_resolution_key',
+                'reconciliation_resolved_at', 'reconciliation_operator_id',
+                'reconciliation_evidence_sha256', 'reconciliation_reason'
+              )
+              UNION ALL
+              SELECT name FROM pragma_table_info('task_billing_reconciliation_events')
+              WHERE name IN (
+                'resolution_key', 'reconciliation_id', 'reservation_key',
+                'reconciliation_revision', 'action', 'reason',
+                'provider_task_id', 'evidence_reference', 'evidence_sha256',
+                'preview_token', 'decision_sha256', 'operator_id', 'created_at'
+              )
+            )
+            "#,
+        )
+        .first::<SchemaCountRow>(None)
+        .await?;
+    Ok(columns.map(|row| row.count == 23).unwrap_or(false))
 }
 
 pub(crate) fn task_billing_intent_contract_compiled() -> bool {
     TASK_BILLING_INTENT_MIGRATION == "0031_task_billing_intents.sql"
+        && TASK_SUBMIT_RECONCILIATION_MIGRATION == "0033_task_submit_reconciliation_enforce.sql"
         && TASK_BILLING_INTENT_LEASE_SECONDS == 900
         && task_billing_contract_sha256("{}")
             == "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
@@ -716,8 +1165,8 @@ pub async fn attach_task_billing_intent(
                 AND token_id = ?18
                 AND channel_id = ?7
                 AND quota = ?8
-                AND status IN ('reserved', 'recovery_required')
-                AND submit_state IN ('submitting', 'submit_unknown')
+                AND status = 'reserved'
+                AND submit_state = 'submitting'
             )
             "#,
         )
@@ -751,8 +1200,9 @@ pub async fn attach_task_billing_intent(
               AND token_id = ?6
               AND channel_id = ?7
               AND quota = ?8
-              AND status IN ('reserved', 'recovery_required')
-              AND submit_state IN ('submitting', 'submit_unknown')
+              AND status = 'reserved'
+              AND submit_state = 'submitting'
+              AND request_accounted = 0
               AND EXISTS (
                 SELECT 1 FROM tasks
                 WHERE task_id = ?4
@@ -1273,7 +1723,10 @@ fn task_refund_quota_i32(quota: i64) -> worker::Result<i32> {
     })
 }
 
-fn task_batch_changed(results: &[worker::D1Result], index: usize) -> worker::Result<bool> {
+pub(crate) fn task_batch_changed(
+    results: &[worker::D1Result],
+    index: usize,
+) -> worker::Result<bool> {
     let Some(result) = results.get(index) else {
         return Err(worker::Error::RustError(format!(
             "missing D1 batch result at index {index}"

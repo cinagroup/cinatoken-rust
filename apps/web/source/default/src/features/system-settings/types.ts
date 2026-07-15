@@ -605,6 +605,11 @@ export type PlatformCapabilities = {
   task_v2_staging_verified: boolean
   task_v2_cutover_ready: boolean
   task_v2_cutover_guards: string[]
+  task_submit_reconciliation_compiled: boolean
+  task_submit_reconciliation_enabled: boolean
+  task_submit_reconciliation_ready: boolean
+  task_submit_reconciliation_staging_verified: boolean
+  task_submit_reconciliation_cutover_ready: boolean
   task_poller_scheduled_handler_compiled: boolean
   task_poller_timeout_sweep_compiled: boolean
   task_poller_refund_batch_compiled: boolean

@@ -418,6 +418,8 @@ captured.
 | `REALTIME_BILLING_ORPHAN_SWEEP_LIMIT` | Bounds candidates handled before the shared task pollers run | Default `32`, accepted `1..64`, invalid values fall back to 32. The defensive maximum preserves D1 query/subrequest headroom for per-candidate guarded batches and the other cron workloads; raise only from measured rows-read/query-count evidence. |
 | `REALTIME_BILLING_RECONCILIATION_ENABLED` | Allows the root step-up 0028 operator workflow to apply a revision-fenced settle/refund decision | Default `false` in default/staging/production. Enable only for an isolated drill after remote 0028 readback, dual-control approval, frozen-expression preview validation, D1 rollback injection, invoice reconciliation, and alert ownership. Disable before traffic rollback. |
 | `REALTIME_BILLING_RECONCILIATION_STAGING_VERIFIED` | Immutable release-evidence assertion used by Realtime reconciliation and v1 cutover capabilities | Default `false` in default/staging/production. It is not a runtime enable switch. Set only in a reviewed candidate after the full operator, concurrency, accounting, invoice, alert, retention, and rollback matrix is archived; code presence, local tests, or enabling mutation cannot satisfy it. |
+| `TASK_SUBMIT_RECONCILIATION_ENABLED` | Allows the root plus fresh-step-up 0032/0033 Task ambiguity workflow to apply an attach/refund decision | Default `false` in default/staging/production. Queue and preview remain read-only; enable mutation only for one isolated fixture after exact 0033 schema and object-shape readback, dual control, provider evidence, accounting snapshots, and rollback injection. Disable immediately after the drill. |
+| `TASK_SUBMIT_RECONCILIATION_STAGING_VERIFIED` | Reviewed release-evidence assertion for Task submit reconciliation cutover | Default `false` in every environment and never used as a runtime switch. Set only in a new reviewed candidate after Task and Midjourney attach/refund, stale-revision, duplicate, tamper, D1 atomicity, privacy, alert, invoice, cleanup, and rollback evidence is archived. |
 
 ### WFP tenant artifact, relay authority, and outbound service
 
@@ -678,11 +680,11 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-    `d1_migration_status_available=true`, applied count `31`, latest/expected
-    `0031_task_billing_intents.sql`, exact set match, and
+    `d1_migration_status_available=true`, applied count `33`, latest/expected
+    `0033_task_submit_reconciliation_enforce.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0031 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0033 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely
@@ -706,13 +708,21 @@ G1 can pass only when:
    settle/refund is idempotent. Prove the channel-independent Midjourney timeout
    sweep and zero-wallet FreeModel Task admission, then show rollback restores
    the prior task traffic owner before any task canary.
+   Apply 0032 with Task reconciliation mutation disabled. Deploy the new Worker
+   while the compatibility trigger protects a late 0031 writer, prove all new
+   rows contain valid frozen attach contracts, then stop Task submit traffic and
+   drain old isolates. Apply 0033 only after that drain. The 0033 contract drops
+   compatibility and intentionally blocks rollback to a 0031-era Worker.
+   Require object-level readback for both Task tables, all reconciliation
+   triggers/indexes, and the critical columns in addition to the migration
+   ledger. Keep both Task reconciliation flags false until the Phase 4i drill.
 9. Upstash staging credentials are configured or the feature is deliberately
    disabled.
 10. No placeholder IDs or development origins remain in staging config.
 11. No secrets are stored in `vars`.
 12. `docs/staging-smoke-runbook.md` Phase 0 and Phase 1 pass.
 
-As of 2026-07-10, only item 1 has local evidence. Items 2-12 require credential
+As of 2026-07-15, only item 1 has local evidence. Items 2-12 require credential
 remediation and authenticated staging work; G1 is still closed.
 
 ## Production Config Gate

@@ -663,6 +663,23 @@ proof, and cutover as independent states. A compiled bit, an applied migration,
 or an operator-set proof variable cannot authorize scheduled recovery or
 production traffic by itself.
 
+## Task Submit Reconciliation Gate (2026-07-15)
+
+| Gate | Required Evidence | Current Status |
+| --- | --- | --- |
+| Implementation | Root queue/preview; fresh-step-up apply; action/reason validation; revision and owner-generation fencing; immutable event; atomic attach/refund/accounting/audit; canonical duplicate readback | Done locally |
+| Schema | Expand migration 0032, contract migration 0033, exact 33-file ledger, 32 tables, 190 checked incremental columns, 34 indexes, and object-level Task tables/triggers/indexes/columns | Done locally; remote absent |
+| Configuration | Both Task reconciliation flags explicit and false in default, staging, and production | Done in tracked config |
+| Privacy | API/audit expose hashes instead of frozen attach JSON; reviewed retention/deletion/access policy for retained prompt and identity metadata | Partial; policy absent |
+| Staging proof | Task and Midjourney attach/refund; provider lookup evidence; legacy refund-only; stale revision; duplicate replay; preview/evidence tamper; exact-once accounting; immutable event; D1 failure injection; alert and invoice reconciliation | Not run |
+| Rollout | 0032, new Worker, writer verification, traffic drain, old-isolate drain, 0033, same-candidate readback; never roll back to a 0031-era writer after 0033 | Planned |
+| Cutover | All prior gates plus provider-native idempotency/lookup, shared poll lease, fair retry, checked i64 binding, FreeModel/subscription parity, rotated credentials, rollback, and G1-G8 approval | NO-GO |
+
+`task_submit_reconciliation_cutover_ready` requires compiled code, runtime
+enablement, exact object-verified schema, and an independently reviewed staging
+proof flag. It does not make `task_v2_cutover_ready` true and cannot replace any
+other production gate.
+
 ## Update Rules
 
 1. Update this file when adding a route, provider, table, binding, or billing

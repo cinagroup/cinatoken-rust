@@ -36,6 +36,7 @@ REQUIRED_TABLES = [
     "relay_billing_recovery_state",
     "relay_billing_finalization_incidents",
     "task_billing_intents",
+    "task_billing_reconciliation_events",
 ]
 
 REQUIRED_COLUMNS = {
@@ -205,6 +206,8 @@ REQUIRED_COLUMNS = {
         "subscription_id",
         "billing_contract_json",
         "billing_contract_sha256",
+        "attach_contract_json",
+        "attach_contract_sha256",
         "status",
         "submit_state",
         "provider_kind",
@@ -222,6 +225,29 @@ REQUIRED_COLUMNS = {
         "settled_at",
         "refunded_at",
         "recovery_required_at",
+        "reconciliation_id",
+        "reconciliation_revision",
+        "reconciliation_resolution",
+        "reconciliation_resolution_key",
+        "reconciliation_resolved_at",
+        "reconciliation_operator_id",
+        "reconciliation_evidence_sha256",
+        "reconciliation_reason",
+    },
+    "task_billing_reconciliation_events": {
+        "resolution_key",
+        "reconciliation_id",
+        "reservation_key",
+        "reconciliation_revision",
+        "action",
+        "reason",
+        "provider_task_id",
+        "evidence_reference",
+        "evidence_sha256",
+        "preview_token",
+        "decision_sha256",
+        "operator_id",
+        "created_at",
     },
 }
 
@@ -267,6 +293,12 @@ REQUIRED_INDEXES = {
         "idx_task_billing_intents_status_lease": False,
         "idx_task_billing_intents_user_status": False,
         "idx_task_billing_intents_provider_task": True,
+        "idx_task_billing_intent_reconciliation_id": True,
+        "idx_task_billing_intent_reconciliation_resolution_key": True,
+        "idx_task_billing_intent_reconciliation_queue": False,
+    },
+    "task_billing_reconciliation_events": {
+        "idx_task_billing_reconciliation_event_identity": True,
     },
 }
 
@@ -301,6 +333,8 @@ def main() -> int:
     relay_owner_guard_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
+    task_submit_reconciliation_verified = False
+    task_submit_reconciliation_rollout_verified = False
     if not args.schema:
         verify_realtime_lease_migration_guard(schema_paths)
         lease_guard_verified = True
@@ -308,6 +342,8 @@ def main() -> int:
         segment_guard_verified = True
         verify_relay_owner_migration_guard(schema_paths)
         relay_owner_guard_verified = True
+        verify_task_submit_reconciliation_rollout(schema_paths)
+        task_submit_reconciliation_rollout_verified = True
 
     conn = sqlite3.connect(":memory:")
     for schema_path in schema_paths:
@@ -321,6 +357,8 @@ def main() -> int:
         flat_intent_guard_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
+        verify_task_submit_reconciliation(conn)
+        task_submit_reconciliation_verified = True
 
     missing = [
         table
@@ -368,6 +406,10 @@ def main() -> int:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
         message += " + 0031 task billing intent state machine"
+    if task_submit_reconciliation_verified:
+        message += " + 0032/0033 task submit reconciliation"
+    if task_submit_reconciliation_rollout_verified:
+        message += " + 0032 expand/0033 enforce rollout"
 
     if args.seed:
         for value in args.seed:
@@ -1036,9 +1078,10 @@ def insert_task_billing_intent(
         INSERT INTO task_billing_intents (
           reservation_key, task_kind, public_task_id, user_id, token_id,
           channel_id, quota, billing_contract_json, billing_contract_sha256,
+          attach_contract_json, attach_contract_sha256,
           provider_kind, provider_idempotency_key, lease_expires_at,
           created_at, updated_at
-        ) VALUES (?, 'task', ?, ?, ?, ?, ?, ?, ?, 'sqlite-provider', ?, ?, ?, ?)
+        ) VALUES (?, 'task', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sqlite-provider', ?, ?, ?, ?)
         """,
         (
             reservation_key,
@@ -1049,6 +1092,8 @@ def insert_task_billing_intent(
             quota,
             '{"funding_source":"wallet"}',
             "a" * 64,
+            '{"contract_version":"task-attach-v1","task_kind":"task"}',
+            "b" * 64,
             f"provider:{reservation_key}",
             created_at + 300,
             created_at,
@@ -1056,6 +1101,120 @@ def insert_task_billing_intent(
         ),
     )
 
+
+def verify_task_submit_reconciliation(conn: sqlite3.Connection) -> None:
+    for trigger in (
+        "task_billing_intent_reconciliation_guard",
+        "task_billing_reconciliation_event_update_guard",
+        "task_billing_reconciliation_event_delete_guard",
+    ):
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0032 task reconciliation trigger missing: {trigger}")
+
+    user_id = 330033
+    token_id = 330033
+    channel_id = 330033
+    conn.execute(
+        "INSERT INTO users (id, username, password, quota, created_at) "
+        "VALUES (?, 'sqlite-0033-user', 'not-used', 1000, 1)",
+        (user_id,),
+    )
+    conn.execute(
+        "INSERT INTO tokens (id, user_id, \"key\", remain_quota, used_quota) "
+        "VALUES (?, ?, 'sqlite-0033-token', 1000, 0)",
+        (token_id, user_id),
+    )
+    conn.execute(
+        "INSERT INTO channels (id, key, name) "
+        "VALUES (?, 'sqlite-0033-channel-key', 'sqlite-0033-channel')",
+        (channel_id,),
+    )
+    insert_task_billing_intent(
+        conn,
+        "0033-reconcile-refund",
+        user_id,
+        token_id,
+        channel_id,
+        quota=75,
+        created_at=2000,
+    )
+    conn.execute(
+        "UPDATE task_billing_intents SET submit_state = 'submitting', updated_at = 2001 "
+        "WHERE reservation_key = '0033-reconcile-refund'"
+    )
+    reconciliation_id = "c" * 64
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'recovery_required', submit_state = 'submit_unknown',
+            reconciliation_id = ?, reconciliation_revision = 1,
+            recovery_required_at = 2002, updated_at = 2002
+        WHERE reservation_key = '0033-reconcile-refund'
+        """,
+        (reconciliation_id,),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE task_billing_intents SET status = 'refunded', "
+            "submit_state = 'rejected', refunded_at = 2003, updated_at = 2003 "
+            "WHERE reservation_key = '0033-reconcile-refund'"
+        ),
+        "0032 must reject reconciliation without an immutable event",
+        "invalid task billing reconciliation transition",
+    )
+    resolution_key = "d" * 64
+    evidence_sha256 = "e" * 64
+    conn.execute(
+        """
+        INSERT INTO task_billing_reconciliation_events (
+          resolution_key, reconciliation_id, reservation_key,
+          reconciliation_revision, action, reason, provider_task_id,
+          evidence_reference, evidence_sha256, preview_token,
+          decision_sha256, operator_id, created_at
+        ) VALUES (?, ?, '0033-reconcile-refund', 1, 'refund',
+                  'provider_confirms_not_accepted', '', 'ticket:0033', ?, ?, ?, 1, 2004)
+        """,
+        (resolution_key, reconciliation_id, evidence_sha256, "f" * 64, "a" * 64),
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'refunded', submit_state = 'rejected', refunded_at = 2004,
+            updated_at = 2004, reconciliation_revision = 2,
+            reconciliation_resolution = 'refunded',
+            reconciliation_resolution_key = ?, reconciliation_resolved_at = 2004,
+            reconciliation_operator_id = 1,
+            reconciliation_evidence_sha256 = ?,
+            reconciliation_reason = 'provider_confirms_not_accepted'
+        WHERE reservation_key = '0033-reconcile-refund'
+        """,
+        (resolution_key, evidence_sha256),
+    )
+    accounting = conn.execute(
+        "SELECT u.quota, t.remain_quota, t.used_quota "
+        "FROM users u JOIN tokens t ON t.user_id = u.id "
+        "WHERE u.id = ? AND t.id = ?",
+        (user_id, token_id),
+    ).fetchone()
+    if accounting != (1000, 1000, 0):
+        raise SystemExit(f"0032 reconciliation refund accounting mismatch: {accounting}")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE task_billing_reconciliation_events SET reason = 'changed' "
+            "WHERE resolution_key = ?",
+            (resolution_key,),
+        ),
+        "0032 reconciliation event must be update-immutable",
+        "task billing reconciliation event is immutable",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM task_billing_reconciliation_events WHERE resolution_key = ?",
+            (resolution_key,),
+        ),
+        "0032 reconciliation event must be delete-immutable",
+        "task billing reconciliation event is immutable",
+    )
 
 def expect_integrity_error(
     action,
@@ -1262,6 +1421,102 @@ def verify_relay_owner_migration_guard(schema_paths: list[Path]) -> None:
             raise SystemExit("0026 migration did not normalize legacy terminal owner")
         return
     raise SystemExit("0026 migration must reject active relay reservations")
+
+
+def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:
+    expand_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0032_task_submit_reconciliation.sql"
+        ),
+        None,
+    )
+    enforce_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0033_task_submit_reconciliation_enforce.sql"
+        ),
+        None,
+    )
+    if expand_path is None or enforce_path is None:
+        raise SystemExit("0032/0033 task reconciliation rollout migrations not found")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == expand_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    conn.execute(
+        "INSERT INTO users (id, username, password, quota, created_at) "
+        "VALUES (320032, 'sqlite-0032-user', 'not-used', 1000, 1)"
+    )
+    conn.execute(
+        "INSERT INTO tokens (id, user_id, \"key\", remain_quota, used_quota) "
+        "VALUES (320032, 320032, 'sqlite-0032-token', 1000, 0)"
+    )
+    conn.execute(
+        "INSERT INTO channels (id, key, name) "
+        "VALUES (320032, 'sqlite-0032-channel-key', 'sqlite-0032-channel')"
+    )
+
+    legacy_insert = """
+        INSERT INTO task_billing_intents (
+          reservation_key, task_kind, public_task_id, user_id, token_id,
+          channel_id, quota, billing_contract_json, billing_contract_sha256,
+          provider_kind, provider_idempotency_key, lease_expires_at,
+          created_at, updated_at
+        ) VALUES (?, 'task', ?, 320032, 320032, 320032, 10,
+                  '{"funding_source":"wallet"}', ?, 'sqlite-provider', ?, 900, 1, 1)
+    """
+
+    def insert_legacy_intent(reservation_key: str) -> None:
+        conn.execute(
+            legacy_insert,
+            (reservation_key, reservation_key, "a" * 64, f"provider:{reservation_key}"),
+        )
+
+    def quarantine(reservation_key: str) -> None:
+        conn.execute(
+            "UPDATE task_billing_intents SET submit_state = 'submitting', updated_at = 2 "
+            "WHERE reservation_key = ?",
+            (reservation_key,),
+        )
+        conn.execute(
+            "UPDATE task_billing_intents "
+            "SET status = 'recovery_required', submit_state = 'submit_unknown', "
+            "recovery_required_at = 3, updated_at = 3 "
+            "WHERE reservation_key = ?",
+            (reservation_key,),
+        )
+
+    insert_legacy_intent("0032-preexisting-unknown")
+    quarantine("0032-preexisting-unknown")
+    conn.executescript(expand_path.read_text(encoding="utf-8"))
+    preexisting = conn.execute(
+        "SELECT length(reconciliation_id), reconciliation_revision, attach_contract_json "
+        "FROM task_billing_intents WHERE reservation_key = '0032-preexisting-unknown'"
+    ).fetchone()
+    if preexisting != (64, 1, "{}"):
+        raise SystemExit(f"0032 did not backfill legacy unknown row safely: {preexisting}")
+
+    insert_legacy_intent("0032-late-old-writer")
+    quarantine("0032-late-old-writer")
+    late_writer = conn.execute(
+        "SELECT length(reconciliation_id), reconciliation_revision, attach_contract_json "
+        "FROM task_billing_intents WHERE reservation_key = '0032-late-old-writer'"
+    ).fetchone()
+    if late_writer != (64, 1, "{}"):
+        raise SystemExit(f"0032 expand trigger did not protect old writer: {late_writer}")
+
+    conn.executescript(enforce_path.read_text(encoding="utf-8"))
+    expect_integrity_error(
+        lambda: insert_legacy_intent("0033-blocked-old-writer"),
+        "0033 must block a writer without a frozen attach contract",
+        "task billing intent admission failed",
+    )
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

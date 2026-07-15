@@ -87,6 +87,62 @@ hold the reserve indefinitely.
 Recovery output must retain only bounded errors and identifiers. Provider keys,
 API tokens, raw request bodies, and media payloads are forbidden in the intent.
 
+## Submit-unknown operator reconciliation
+
+Migrations `0032_task_submit_reconciliation.sql` and
+`0033_task_submit_reconciliation_enforce.sql` add a revision-fenced operator
+workflow for the case where provider acceptance is ambiguous. The public
+contract is deliberately narrow:
+
+- `GET /api/platform/task-billing/reconciliations` is root-only, paginated,
+  `no-store`, and returns redacted ownership facts plus contract hashes;
+- `POST .../:reconciliation_id/preview` is root-only and binds action, reason,
+  provider identity, evidence digest, current revision, owner generation,
+  quota, and both frozen contract hashes into one preview token;
+- `POST .../:reconciliation_id/apply` additionally requires fresh secure
+  verification, the exact preview token, an explicit confirmation, and a
+  bounded idempotency key;
+- attach accepts only provider-verified reasons and a validated provider task
+  ID; refund accepts only provider-not-accepted or approved-refund reasons;
+- event insertion, task attachment or refund, request accounting, intent
+  transition, and root audit are one D1 batch. A stale revision or zero-row
+  conditional mutation aborts the batch;
+- the resolution event is immutable. Identical retries converge on canonical
+  readback, while changed decisions, stale previews, and reused identities
+  conflict instead of applying a second financial mutation.
+
+Rows created before a frozen attach contract exists are explicitly
+`legacy_refund_only`; an operator cannot synthesize a task from missing request
+facts. The APIs never return `attach_contract_json`, raw billing JSON, user,
+token, channel, reservation, operator, or resolution identities. They expose
+only bounded public task/provider facts and SHA-256 digests.
+
+The frozen attach contract currently retains fields needed to reconstruct a
+Task or Midjourney row. This includes Midjourney prompt text and Task
+username/group metadata. It is never emitted by the reconciliation API or
+audit log, but production enablement still requires a reviewed D1 retention,
+deletion, access, and incident-response policy for that content.
+
+## Rolling migration contract
+
+The schema change is expand then enforce, not a one-step deploy:
+
+1. Stop reconciliation mutation and keep both Task reconciliation flags false.
+2. Apply `0032`. Its compatibility trigger initializes reconciliation identity
+   for a still-running 0031 Worker that quarantines an ambiguous submit.
+3. Deploy the new Worker, verify exact object shape, and prove every Task writer
+   stores both frozen contracts before provider I/O.
+4. Drain Task submit traffic and all old Worker isolates. Confirm no new
+   0031-era writer can create an intent.
+5. Apply `0033`, which removes the compatibility trigger and rejects new rows
+   without a valid non-empty attach contract.
+6. Redeploy/read back the same candidate before any isolated operator drill.
+
+After step 5, rollback to a 0031-era Worker is blocked by design. Rollback must
+disable Task admission and reconciliation, preserve unresolved ownership, and
+deploy a 0033-compatible candidate. It must never downgrade the schema or
+blindly refund an ambiguous provider submission.
+
 ## Remaining production gates
 
 `task_v2_cutover_ready` stays false until all of the following are proven:
@@ -95,8 +151,8 @@ API tokens, raw request bodies, and media payloads are forbidden in the intent.
   future Queue/Workflow dispatcher;
 - provider-specific idempotency transmission or a deterministic lookup strategy
   for every enabled task family;
-- automated or operator-assisted `submit_unknown` reconciliation with immutable
-  evidence and no guess-based refund;
+- provider-native idempotency or lookup automation for every task family; the
+  operator workflow exists locally but still needs remote provider evidence;
 - fair task-family pagination, poison-task backoff, and persisted next-attempt;
 - Suno and Midjourney TaskRunner policy parity;
 - provider-terminal versus financial-terminal recovery/outbox coverage where
@@ -130,5 +186,6 @@ The SQLite verifier covers reserve, prepared and rejected refund,
 unknown-submit protection, accepted-task attachment and refund after owner soft
 deletion, active-channel deletion protection, single attachment accounting,
 terminal refund/settle idempotency,
-immutable contracts, and illegal transitions. These are local proofs only;
+immutable contracts, event-required operator resolution, atomic refund,
+immutable reconciliation events, and illegal transitions. These are local proofs only;
 they do not replace remote D1, provider, Queue, browser, or invoice evidence.

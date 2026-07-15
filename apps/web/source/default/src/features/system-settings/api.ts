@@ -18,6 +18,13 @@ For commercial licensing, please contact support@cinagroup.com
 */
 import { api } from '@/lib/api'
 import {
+  type TaskSubmitReconciliationApplyRequest,
+  type TaskSubmitReconciliationApplyResponse,
+  type TaskSubmitReconciliationDecision,
+  type TaskSubmitReconciliationPreviewResponse,
+  type TaskSubmitReconciliationQueueResponse,
+} from './integrations/task-submit-reconciliation'
+import {
   buildQuotaCoordinatorReconciliationRequest,
   type CanonicalPositiveI64String,
   type QuotaCoordinatorReconciliationResponse,
@@ -153,6 +160,41 @@ export async function applyRealtimeBillingReconciliation(
 ) {
   const res = await api.post<RealtimeBillingReconciliationApplyResponse>(
     `/api/platform/realtime-billing/reconciliations/${encodeURIComponent(reconciliationId)}/apply`,
+    request,
+    { disableDuplicate: true }
+  )
+  return res.data
+}
+
+export async function getTaskSubmitReconciliationQueue(cursor?: string) {
+  const res = await api.get<TaskSubmitReconciliationQueueResponse>(
+    '/api/platform/task-billing/reconciliations',
+    {
+      disableDuplicate: true,
+      params: { limit: 50, ...(cursor ? { cursor } : {}) },
+    }
+  )
+  return res.data
+}
+
+export async function previewTaskSubmitReconciliation(
+  reconciliationId: string,
+  decision: TaskSubmitReconciliationDecision
+) {
+  const res = await api.post<TaskSubmitReconciliationPreviewResponse>(
+    `/api/platform/task-billing/reconciliations/${encodeURIComponent(reconciliationId)}/preview`,
+    decision,
+    { disableDuplicate: true }
+  )
+  return res.data
+}
+
+export async function applyTaskSubmitReconciliation(
+  reconciliationId: string,
+  request: TaskSubmitReconciliationApplyRequest
+) {
+  const res = await api.post<TaskSubmitReconciliationApplyResponse>(
+    `/api/platform/task-billing/reconciliations/${encodeURIComponent(reconciliationId)}/apply`,
     request,
     { disableDuplicate: true }
   )

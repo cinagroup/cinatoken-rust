@@ -29,10 +29,10 @@ use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
 };
 use crate::container_scheduler::{
-    container_scheduler_cutover_guards, container_scheduler_cutover_ready,
-    container_scheduler_foundation_compiled, container_scheduler_routing_secret_configured,
-    container_scheduler_runtime_status, CONTAINER_SCHEDULER_ENABLED_ENV,
-    CONTAINER_SCHEDULER_STAGING_VERIFIED_ENV,
+    container_local_contracts, container_scheduler_cutover_guards,
+    container_scheduler_cutover_ready, container_scheduler_foundation_compiled,
+    container_scheduler_routing_secret_configured, container_scheduler_runtime_status,
+    CONTAINER_SCHEDULER_ENABLED_ENV, CONTAINER_SCHEDULER_STAGING_VERIFIED_ENV,
 };
 use crate::quota_coordinator::{
     quota_coordinator_contract_version, quota_coordinator_finalization_observation_compiled,
@@ -874,15 +874,17 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let container_scheduler_enabled = env_flag(&env, CONTAINER_SCHEDULER_ENABLED_ENV);
     let container_scheduler_routing_secret_configured =
         container_scheduler_routing_secret_configured(&env);
-    // These remain false until the isolated TypeScript controller Worker,
-    // native linux/amd64 image, egress proxy, storage protocol, and remote
-    // fault matrix land. A valid local ring must never imply runtime readiness.
+    // Local source contracts are reported separately from deployed bindings,
+    // shared storage, rolling compatibility, and remote fault evidence.
+    let container_local_contracts = container_local_contracts();
     let container_scheduler_controller_service_binding_available = false;
-    let container_scheduler_container_runtime_compiled = false;
-    let container_scheduler_deny_by_default_egress_compiled = false;
+    let container_scheduler_container_runtime_compiled = container_local_contracts.runtime_compiled;
+    let container_scheduler_deny_by_default_egress_compiled =
+        container_local_contracts.deny_by_default_egress_compiled;
     let container_scheduler_shared_storage_contract_compiled = false;
     let container_scheduler_n_minus_one_protocol_compiled = false;
-    let container_scheduler_capacity_rejection_compiled = false;
+    let container_scheduler_capacity_rejection_compiled =
+        container_local_contracts.capacity_rejection_compiled;
     let container_scheduler_remote_fault_matrix_verified = false;
     let container_scheduler_staging_verified =
         env_flag(&env, CONTAINER_SCHEDULER_STAGING_VERIFIED_ENV);

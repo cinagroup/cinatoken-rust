@@ -944,3 +944,26 @@ provider fault/invoice campaigns, WFP namespace/readback, paid egress,
 TaskRunner/provider hot paths, load/alerts, credential rotation, rollback, and
 G1-G8 approval remain open. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-16 Container Controller And Runtime Status
+
+The repository now contains the isolated TypeScript Controller Worker,
+`RelayShardContainer` SQLite Container DO, separate Rust/TypeScript authority
+protocol, and native axum runtime skeleton. Every tracked Controller and edge
+runtime switch remains false; the edge has no Controller service binding.
+Provider execution is absent and the native server returns a stable 501 for
+every non-probe operation.
+
+Focused local evidence covers generated Env types, strict TypeScript, Wrangler
+dry-run bundling, private authority tamper/time/audience/body checks, complete
+shard fencing, current/previous key rotation, a Rust/TypeScript golden vector,
+bounded native HTTP behavior, deny-all egress source, and persisted capacity
+rejection source checks. Controller Workerd concurrency/capacity/eviction,
+bounded terminal-operation retention, binding, shared storage, N/N-1, remote
+faults, staging verification, and cutover stay false.
+
+No Docker engine is installed, no image or Container was started, no secret was
+provisioned, and no remote deployment is claimed. D1/KV/R2 Controller
+operations, provider egress and credential injection, provider idempotency,
+image supply-chain evidence, fault/load/cost evidence, and C1-C5 promotion
+remain open. Go/VPS stays authoritative and production remains **NO-GO**.

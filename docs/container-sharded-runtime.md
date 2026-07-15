@@ -1,6 +1,6 @@
 # Native Container Shard Runtime
 
-Status: foundation only, default-off, production **NO-GO**.
+Status: C1/C2 local substrate, default-off, production **NO-GO**.
 
 This document defines the production architecture for moving selected native
 relay execution from the Worker isolate into sharded cinatoken-rust Linux
@@ -118,7 +118,8 @@ planner, returned by capabilities, used as a DO name, or logged.
 
 ### Controller Worker
 
-The future TypeScript controller Worker will:
+The isolated TypeScript controller Worker now implements these local contracts,
+but has not been deployed or bound to the edge Worker:
 
 - export `RelayShardContainer extends Container` and `ContainerProxy`;
 - expose only a private service-binding entry point;
@@ -203,24 +204,33 @@ version, or name is a fail-closed conflict, not a retry on another shard.
 ## Operation Protocol
 
 An operation crosses the service boundary only after admission is durable. The
-minimum private envelope is:
+authority token is
+`base64url(protected).base64url(claims).base64url(HMAC-SHA256)`. The protected
+header fixes `typ`, `alg=HS256`, and a bounded `kid`; signed claims bind issuer,
+audience, protocol, dispatch ID, method, path, body digest, issue time, and
+expiry. Only the configured current and previous authority key IDs are valid.
+
+The strict JSON operation envelope is:
 
 ```text
 protocol_version
 operation_id
 operation_kind
-input_digest
 owner_generation
-ring_generation
-shard_count
-shard_index
-deadline_at
-request_object_key (optional)
+owner_lease_expires_at
+execution_deadline_at
+provider_operation_id
+admission_sha256
+input { mode, sha256, size, content_type, request_object_key?, object_version? }
+shard { contract_version, ring_generation, shard_count, shard_index, instance_name }
 trace_id
 ```
 
-The envelope is signed by the edge Worker with a separate internal authority
-secret. It contains no provider credential and no complete API key.
+The body is signed by the edge Worker with a separate internal authority secret.
+`dispatch_id` changes per delivery; `operation_id`, `owner_generation`, and the
+stable `provider_operation_id` define replay, ownership, and provider
+idempotency. The body contains no provider credential, raw routing digest, user
+identity, or complete API key.
 
 The execution sequence is:
 
@@ -295,7 +305,7 @@ a write.
 
 ## Delivery Phases
 
-### Phase C0: planner foundation (current)
+### Phase C0: planner foundation (complete locally)
 
 - pure Rust versioned shard planner and fencing tests;
 - fail-closed Wrangler variables in all environments;
@@ -304,7 +314,7 @@ a write.
 
 Exit: local crate, Worker, config, frontend type, and repository gates pass.
 
-### Phase C1: isolated controller Worker
+### Phase C1: isolated controller Worker (local substrate implemented)
 
 - new TypeScript Worker using Bun and `@cloudflare/containers`;
 - `RelayShardContainer extends Container` with SQLite DO migration;
@@ -313,10 +323,12 @@ Exit: local crate, Worker, config, frontend type, and repository gates pass.
 - controller unit/Workerd tests for signatures, fencing, capacity, and storage;
 - independent staging/production Wrangler configs.
 
-Exit: controller deploys to an isolated staging name with no edge binding and
-passes startup, binding, and secret preflight.
+Local generated types, strict TypeScript, protocol/config tests, and a Wrangler
+dry-run bundle pass. Exit still requires isolated staging deployment with no
+edge binding plus startup, binding, secret, SQLite eviction, and concurrent
+capacity evidence.
 
-### Phase C2: native Rust image
+### Phase C2: native Rust image (local skeleton implemented)
 
 - add a fixed native server crate and multi-stage `linux/amd64` Dockerfile;
 - health/readiness endpoints, graceful drain, hard request/deadline bounds;
@@ -324,6 +336,9 @@ passes startup, binding, and secret preflight.
 - provider egress through the controller outbound handler;
 - SBOM, dependency/license scan, image signature/digest pin, and vulnerability
   policy.
+
+The current server executes only `health_probe`; every other valid operation
+returns `execution_not_enabled`. Provider transport and credentials are absent.
 
 Exit: local Docker and remote staging prove cold start, sleep, restart, OOM,
 ephemeral disk, and protocol N/N-1 behavior without financial mutation.
@@ -415,3 +430,28 @@ Rollback changes routing before changing infrastructure:
 The rollback target is the existing Worker/DO/D1 path, not a VPS. VPS remains
 an emergency external recovery option until the Cloudflare migration is fully
 accepted, but it is not part of the steady-state shard protocol.
+
+## 2026-07-16 Local Implementation Evidence
+
+Implemented locally:
+
+- `services/container-controller`: three explicit environment configs,
+  `RelayShardContainer` SQLite migration, signed authority verification,
+  complete shard fence, dispatch replay, owner/idempotency conflicts, persisted
+  capacity-rejection source path, lifecycle state, and deny-all HTTP/HTTPS
+  egress;
+- `cinatoken-container-authority`: bounded Rust signer/verifier and a shared
+  Rust/TypeScript golden vector;
+- `cinatoken-container-runtime`: axum health/readiness/operation server, 64 KiB
+  body limit, strict validation, graceful shutdown, and fail-closed provider
+  execution;
+- Rust 1.78 builder plus distroless non-root runtime Dockerfile, `lite` instance
+  type, eight-instance maximum, staged rollout, and SSH off.
+
+Still absent: edge service binding, routing/authority/provider secrets,
+D1/KV/R2 controller operations, provider allowlists and credential injection,
+bounded terminal-operation retention/compaction, Controller Workerd tests for
+SQLite concurrency/capacity/eviction, N/N-1 protocol, signed image
+digest/SBOM/scan, remote lifecycle/fault evidence, and
+staging/canary/cutover authorization. The local host has no Docker engine, so
+no image or real Container was started.

@@ -1,0 +1,52 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cinatoken-container-controller-production",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-16",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "vars": {
+    "CONTAINER_CONTROLLER_ENABLED": "false",
+    "CONTAINER_EXECUTION_ENABLED": "false",
+    "CONTAINER_PROTOCOL_VERSION": "1",
+    "CONTAINER_RING_GENERATION": "1",
+    "CONTAINER_SHARD_COUNT": "8",
+    "CONTAINER_MAX_IN_FLIGHT_PER_SHARD": "2",
+    "CONTAINER_AUTHORITY_ISSUER": "cinatoken-edge-production",
+    "CONTAINER_AUTHORITY_AUDIENCE": "cinatoken-container-controller-production",
+    "CONTAINER_AUTHORITY_CURRENT_KID": "production-v1",
+    "CONTAINER_AUTHORITY_PREVIOUS_KID": ""
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RELAY_SHARDS",
+        "class_name": "RelayShardContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-relay-shard-container",
+      "new_sqlite_classes": ["RelayShardContainer"]
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "RelayShardContainer",
+      "image": "../../crates/container-runtime/Dockerfile",
+      "image_build_context": "../..",
+      "max_instances": 8,
+      "instance_type": "lite",
+      "rollout_step_percentage": [10, 100],
+      "rollout_active_grace_period": 300,
+      "ssh": {
+        "enabled": false
+      }
+    }
+  ]
+}

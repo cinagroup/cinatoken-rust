@@ -1189,6 +1189,16 @@ The controller Worker must be deployed before adding its private service binding
 to the edge Worker. No environment may add `[[containers]]` to the edge Rust
 Worker; Container ownership belongs to the isolated controller configuration.
 
+The isolated controller has separate local, staging, and production configs.
+All keep `CONTAINER_CONTROLLER_ENABLED=false` and
+`CONTAINER_EXECUTION_ENABLED=false`, protocol/ring generation `1`, eight shards,
+two in-flight operations per shard, `lite` instances, SSH off, and no public
+route, workers.dev, or preview URL. `CONTAINER_AUTHORITY_CURRENT_SECRET` and the
+optional previous secret are provisioned only through Wrangler secret input;
+they must never be placed in vars, committed `.dev.vars`, CLI arguments, logs,
+image layers, or Container environment variables. Routing, Container authority,
+and WFP authority secrets are separate rotation domains.
+
 Capability readback must include operation contract version, compiled/schema
 state, timeout configured/valid/effective values, client-idempotency compiled
 and required values, status-query compilation, local uniqueness, both provider

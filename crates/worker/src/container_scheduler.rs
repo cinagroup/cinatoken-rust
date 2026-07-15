@@ -1,8 +1,8 @@
 //! Default-off capability contract for the native container scheduler.
 //!
-//! The actual Container class lives in a future isolated TypeScript control
-//! Worker. This module only validates the stable Rust shard planner and rollout
-//! gates; it does not claim that a service binding or container image exists.
+//! The isolated TypeScript control Worker and native runtime sources now exist,
+//! but remain default-off and unbound from the edge Worker. This module exposes
+//! local contract evidence without claiming deployed or staging readiness.
 
 use cinatoken_sharding::{
     ShardRing, ShardRoutingKey, CONTAINER_SHARD_CONTRACT_VERSION, CONTAINER_SHARD_INSTANCE_PREFIX,
@@ -77,6 +77,33 @@ pub fn container_scheduler_foundation_compiled() -> bool {
         && plan
             .instance_name
             .starts_with(CONTAINER_SHARD_INSTANCE_PREFIX)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerLocalContracts {
+    pub runtime_compiled: bool,
+    pub deny_by_default_egress_compiled: bool,
+    pub capacity_rejection_compiled: bool,
+}
+
+pub fn container_local_contracts() -> ContainerLocalContracts {
+    let controller = include_str!("../../../services/container-controller/src/index.ts");
+    let controller_config =
+        include_str!("../../../services/container-controller/wrangler.production.jsonc");
+    let runtime = include_str!("../../container-runtime/src/lib.rs");
+    let dockerfile = include_str!("../../container-runtime/Dockerfile");
+    ContainerLocalContracts {
+        runtime_compiled: runtime.contains("/v1/operations")
+            && runtime.contains("execution_not_enabled")
+            && dockerfile.contains("cinatoken-container-runtime"),
+        deny_by_default_egress_compiled: controller.contains("enableInternet = false")
+            && controller.contains("container_egress_denied")
+            && controller.contains("export { ContainerProxy }")
+            && controller_config.contains("\"enabled\": false"),
+        capacity_rejection_compiled: controller.contains("capacity_rejected")
+            && controller.contains("CONTAINER_MAX_IN_FLIGHT_PER_SHARD")
+            && controller.contains("retry-after"),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -185,5 +212,13 @@ mod tests {
         assert!(container_scheduler_cutover_ready(
             true, true, true, true, true, true, true, true, true, true, true, true,
         ));
+    }
+
+    #[test]
+    fn isolated_controller_and_runtime_contracts_are_locally_compiled() {
+        let contracts = container_local_contracts();
+        assert!(contracts.runtime_compiled);
+        assert!(contracts.deny_by_default_egress_compiled);
+        assert!(contracts.capacity_rejection_compiled);
     }
 }

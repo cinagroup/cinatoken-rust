@@ -1,0 +1,14 @@
+{
+  "secret": "0123456789abcdef0123456789abcdef",
+  "kid": "golden-v1",
+  "issuer": "cinatoken-edge-test",
+  "audience": "cinatoken-container-controller-test",
+  "protocol_version": 1,
+  "dispatch_id": "dispatch-golden-1",
+  "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "method": "GET",
+  "path": "/internal/v1/status",
+  "issued_at": 1800000000,
+  "expires_at": 1800000030,
+  "token": "eyJ0eXAiOiJDSU5BVE9LRU4tQ09OVEFJTkVSLUFVVEgiLCJhbGciOiJIUzI1NiIsImtpZCI6ImdvbGRlbi12MSJ9.eyJhdXRob3JpdHlfdmVyc2lvbiI6MSwiaXNzdWVyIjoiY2luYXRva2VuLWVkZ2UtdGVzdCIsImF1ZGllbmNlIjoiY2luYXRva2VuLWNvbnRhaW5lci1jb250cm9sbGVyLXRlc3QiLCJwcm90b2NvbF92ZXJzaW9uIjoxLCJkaXNwYXRjaF9pZCI6ImRpc3BhdGNoLWdvbGRlbi0xIiwiYm9keV9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwibWV0aG9kIjoiR0VUIiwicGF0aCI6Ii9pbnRlcm5hbC92MS9zdGF0dXMiLCJpc3N1ZWRfYXQiOjE4MDAwMDAwMDAsImV4cGlyZXNfYXQiOjE4MDAwMDAwMzB9.hvjJeOJZzJbYFBToariuD0UkJM5aGujuaxUFdNQmAn4"
+}

@@ -13465,3 +13465,37 @@ Workerd 43/43, frontend readiness 70/70, 39 D1 migrations, workspace tests,
 release builds, bundle audits, and all three wasm32 targets through the complete
 `bun run check` gate. No remote Container evidence is claimed, so production
 remains **NO-GO**.
+
+## 22.219 Isolated Container Controller And Native Runtime Substrate (2026-07-16)
+
+This increment advances §21.4 without changing production authority or routing.
+It adopts cinaVibeSDK's Container/DO/config class-name triple, deterministic
+named ownership, lifecycle hooks, and independent staging configuration. It
+rejects that reference's public preview proxy, fixed modulo pool, SSH/arbitrary
+shell, container-local secret files, and ephemeral-disk recovery assumptions.
+
+Delivered local substrate:
+
+1. An isolated TypeScript Controller owns `RelayShardContainer extends
+   Container`, its SQLite migration, deny-all `ContainerProxy`, explicit local,
+   staging, and production configs, generated Env types, and no public route.
+2. A separate HMAC authority supports current/previous `kid`, bounded lifetime,
+   method/path/body binding, complete shard fence, per-delivery dispatch ID,
+   durable owner generation, stable provider operation ID, R2 references, and
+   owner/execution deadlines.
+3. DO SQLite atomically persists dispatch replay, operation ownership, ring and
+   lifecycle state, and capacity rejection before Container startup.
+4. The native axum service supplies health/readiness, a strict 64 KiB operation
+   endpoint, graceful shutdown, and a stable 501 for provider execution. Its
+   Dockerfile uses a Rust 1.78 builder and distroless non-root runtime.
+5. Root gates cover generated-type drift, strict TypeScript, Wrangler dry-run
+   bundling, protocol/config tests, Rust authority/runtime tests, and a shared
+   Rust/TypeScript golden vector.
+
+This is not C1/C2 exit. The edge has no Controller service binding and all
+scheduler/execution/staging switches remain false. D1/KV/R2 Controller
+operations, provider allowlists and credential injection, N/N-1, actual Docker
+build, SBOM/signature/scan, remote fault/load/cost, shadow, canary, and rollback
+evidence remain required. The local host has no Docker engine; no Container was
+started or deployed. Go/VPS remains authoritative and production remains
+**NO-GO**.

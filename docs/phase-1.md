@@ -1543,3 +1543,26 @@ There is no production activation wave. Production remains **NO-GO**.
 Phase C0 validation is local. Controller/image, deny-by-default egress, N/N-1
 rollout, capacity rejection, remote fault injection, staging soak, canary,
 cost, and rollback evidence are all false gates. Production remains **NO-GO**.
+
+## 2026-07-16 Phase 1 Container Controller Gate
+
+- The isolated Controller, SQLite `RelayShardContainer`, deny-all outbound
+  proxy, Rust authority crate, native axum server, and non-root Dockerfile now
+  exist locally. The edge config still owns no Container or Controller binding.
+- The token binds `kid`, issuer, audience, protocol, dispatch, method, path,
+  body digest, and a bounded time window. The operation carries the full shard
+  fence, owner lease/generation, stable provider identity, admission/input
+  digests, bounded R2 version, and execution deadline.
+- DO claim state persists dispatch replay, operation conflicts, ring fence,
+  lifecycle, and capacity rejection before a possible Container call. Provider
+  and billing authority stay outside the DO and Container.
+- Controller and execution flags are false in all Controller configs. Secrets
+  are untracked and separated by domain. The native runtime executes only
+  `health_probe`.
+
+Next is an isolated Controller staging deploy with no edge binding, secret and
+config readback, Workerd/remote SQLite concurrency and eviction, an actual
+linux/amd64 image build/SBOM/sign/scan, Container lifecycle faults, D1/KV/R2
+contracts, provider deny/allow/injection negatives, then N/N-1 rollout. Only
+after those pass may C3 add a disabled edge binding for synthetic shadow work.
+Production remains **NO-GO**.

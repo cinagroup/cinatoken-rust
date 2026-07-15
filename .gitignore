@@ -4,8 +4,11 @@
 /build/
 /crates/*/build/
 /crates/*/.wrangler/
+/services/*/.wrangler/
 /.wrangler/
 /.dev.vars
+/services/container-controller/.dev.vars*
+/services/container-controller/.env*
 /exports/
 *.cinatoken-export.json
 *.log

@@ -746,12 +746,12 @@ remains **NO-GO**.
 | Shard planner | Contract v1, opaque 32-byte key, Jump Consistent Hash, generation fence, stable names | Cross-language golden vectors and reviewed ring change procedure | Local only |
 | Tracked config | Generation 1, eight shards, runtime/staging false in all environments | Exact deployed readback and immutable candidate evidence | Local only |
 | Routing privacy | Planner accepts only an opaque digest | Separate HMAC secret provisioned/rotated; no raw identity or digest in logs/status | Blocked |
-| Controller Worker | Architecture requires isolated TypeScript service | No public route, private binding, signed envelope, SQLite Container DO migration | Not implemented |
-| Native image | Fixed non-root `linux/amd64` Rust service planned | Signed digest, SBOM, scan, fixed entrypoint, startup/readiness and scratch-loss proof | Not implemented |
-| Egress | Deny-by-default policy specified | Exact provider allowlist and trusted credential injection with negative tests | Not implemented |
+| Controller Worker | Isolated TypeScript source, generated Env types, no public route, signed method/path/body authority, SQLite Container DO migration, dispatch replay, and owner/capacity source contracts compile; authority/config tests pass locally | Bounded terminal-operation retention, deployed private binding, secret preflight, and Workerd/remote SQLite capacity, eviction, and concurrency evidence | Local only |
+| Native image | Axum health/readiness/strict operation skeleton plus distroless non-root Dockerfile; non-probe execution is disabled | Signed digest, SBOM, scan, actual linux/amd64 build, startup/readiness and scratch-loss proof | Local only |
+| Egress | `enableInternet=false`, exported `ContainerProxy`, HTTPS interception, and deny-all handler compile locally | Exact provider allowlist and trusted credential injection with negative remote tests | Local only |
 | Data ownership | D1/DO/KV/R2/container responsibilities documented | Binding-level contract tests, D1 Sessions where required, R2 replay and KV-lag tests | Local design only |
 | Rollout | N/N-1 and controller-first sequence specified | Rolling update, long request, image rollback, edge disable, and drain evidence | Blocked |
-| Capacity | 1..1024 logical planner bound | Explicit instance type/max instances/per-shard concurrency and max+1 rejection | Blocked |
+| Capacity | Eight `lite` instances, two in-flight operations per shard, and a persisted stable 503 plus `Retry-After` source path are configured and statically checked | Workerd and remote max+1 race, account limit, overload, and terminal-record retention evidence | Local only |
 | Fault matrix | Required scenarios enumerated | Eviction, alarm duplicate/exhaustion, sleep, OOM, host restart, D1 ambiguity, overload | Blocked |
 | Cutover | Capability has explicit guards and remains false | All guards plus staging soak, canary, billing/provider uniqueness, privacy, cost, approvals | NO-GO |
 

@@ -5483,3 +5483,49 @@ behavior. It supports the D1/cron correctness spine, DO-as-accelerator, internal
 dispatch Worker, and outbound credential-owner architecture. It does not prove
 remote WFP upload/readback, paid egress, or TaskRunner recovery. Production
 remains **NO-GO**.
+
+## Container Controller And Native Runtime Verification (2026-07-16)
+
+Required local commands:
+
+```powershell
+bun run check:container-controller
+cargo test -p cinatoken-container-authority
+cargo test -p cinatoken-container-runtime
+cargo test -p cinatoken-worker --lib container_scheduler
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run check
+```
+
+Current focused evidence:
+
+```text
+bun run check:container-controller
+# PASS: generated types, strict TypeScript, Wrangler dry-run bundle, and local
+# protocol/config tests
+
+cargo test -p cinatoken-container-authority
+# PASS: bounded authority, tamper/binding/time/key negatives, and shared golden
+# vector
+
+cargo test -p cinatoken-container-runtime
+# PASS: 12 validation and HTTP endpoint tests on the stable host toolchain
+```
+
+The dry-run reports only the `RELAY_SHARDS` DO, explicit default-off vars, and
+the Container Dockerfile. `--containers-rollout none` means it does not build
+or start an image. This host has no Docker engine. Rust 1.78 runtime verification
+is also pending because the pre-existing local GNU toolchain was incomplete and
+its repair download stalled; the Dockerfile remains pinned to the declared
+workspace MSRV builder.
+
+The current Bun tests validate protocol and configuration contracts. They do
+not instantiate `RelayShardContainer` under Workerd, so SQLite claim races,
+max+1 capacity rejection, lifecycle callbacks, eviction, and terminal-operation
+retention remain unverified runtime behavior.
+
+Do not promote C1/C2 from local evidence. Docker/Linux build, isolated
+deployment, secret readback, DO eviction/concurrency, lifecycle/OOM, egress,
+R2 replay/KV lag/D1 ambiguity, bounded terminal-operation retention, N/N-1,
+image supply chain, load/cost, and rollback evidence remain mandatory.
+Production remains **NO-GO**.

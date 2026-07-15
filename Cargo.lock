@@ -282,6 +282,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cinatoken-sharding"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cinatoken-ssrf"
 version = "0.1.0"
 dependencies = [
@@ -380,6 +389,7 @@ dependencies = [
  "cinatoken-providers",
  "cinatoken-relay",
  "cinatoken-session",
+ "cinatoken-sharding",
  "cinatoken-ssrf",
  "cinatoken-storage",
  "cinatoken-tasks",

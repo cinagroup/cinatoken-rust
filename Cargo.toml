@@ -13,6 +13,7 @@ members = [
   "crates/providers",
   "crates/relay",
   "crates/session",
+  "crates/sharding",
   "crates/ssrf",
   "crates/storage",
   "crates/tasks",

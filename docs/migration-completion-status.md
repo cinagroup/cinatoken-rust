@@ -460,6 +460,23 @@ fault replay, Queue v2 drain, direct/Gateway/WFP accounting, alerting, rollback,
 and G1-G8 approval remain required. Go/VPS stays authoritative and production
 remains **NO-GO**.
 
+## 2026-07-15 Native Container Shard Foundation Status
+
+The selected Cloudflare target is edge Rust Worker -> private TypeScript
+controller service -> named `RelayShardContainer` DO -> per-shard native Rust
+Container. `docs/container-sharded-runtime.md` is the authoritative architecture
+and rollout contract.
+
+The current repository implements only a pure, versioned shard planner and
+fail-closed capability/configuration surface. Ring generation 1 and eight
+logical shards are valid, but scheduler enablement and staging verification are
+false in every tracked environment. No routing secret, controller binding,
+`[[containers]]` entry, image, native server, or remote evidence exists.
+
+The current completion status is therefore **planner foundation complete,
+Container runtime not started**. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
 ## 2026-07-14 Realtime Usage Reconciliation Status
 
 Migration 0027 adds explicit finalization ownership for a Realtime reservation

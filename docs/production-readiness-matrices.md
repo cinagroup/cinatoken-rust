@@ -739,6 +739,26 @@ Reconcile quarantined rows before Go/VPS resumes. Any other sequence is a
 G4/G5/G7 abort. No remote or deployment evidence is recorded here; production
 remains **NO-GO**.
 
+## 2026-07-15 Native Container Shard Matrix
+
+| Gate | Current local state | Production acceptance | Status |
+| --- | --- | --- | --- |
+| Shard planner | Contract v1, opaque 32-byte key, Jump Consistent Hash, generation fence, stable names | Cross-language golden vectors and reviewed ring change procedure | Local only |
+| Tracked config | Generation 1, eight shards, runtime/staging false in all environments | Exact deployed readback and immutable candidate evidence | Local only |
+| Routing privacy | Planner accepts only an opaque digest | Separate HMAC secret provisioned/rotated; no raw identity or digest in logs/status | Blocked |
+| Controller Worker | Architecture requires isolated TypeScript service | No public route, private binding, signed envelope, SQLite Container DO migration | Not implemented |
+| Native image | Fixed non-root `linux/amd64` Rust service planned | Signed digest, SBOM, scan, fixed entrypoint, startup/readiness and scratch-loss proof | Not implemented |
+| Egress | Deny-by-default policy specified | Exact provider allowlist and trusted credential injection with negative tests | Not implemented |
+| Data ownership | D1/DO/KV/R2/container responsibilities documented | Binding-level contract tests, D1 Sessions where required, R2 replay and KV-lag tests | Local design only |
+| Rollout | N/N-1 and controller-first sequence specified | Rolling update, long request, image rollback, edge disable, and drain evidence | Blocked |
+| Capacity | 1..1024 logical planner bound | Explicit instance type/max instances/per-shard concurrency and max+1 rejection | Blocked |
+| Fault matrix | Required scenarios enumerated | Eviction, alarm duplicate/exhaustion, sleep, OOM, host restart, D1 ambiguity, overload | Blocked |
+| Cutover | Capability has explicit guards and remains false | All guards plus staging soak, canary, billing/provider uniqueness, privacy, cost, approvals | NO-GO |
+
+The Container path is an accelerator behind existing durable admission and
+settlement. It cannot become a second billing authority or replace D1/Cron
+recovery. Production remains **NO-GO**.
+
 ## 2026-07-15 Task Submit Operation Matrix
 
 | Gate | Current local state | Production acceptance | Status |

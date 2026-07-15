@@ -1521,3 +1521,25 @@ drain -> zero-value readback -> 0039 enforce -> isolated required-key client
 canary -> provider fault/lookup/invoice campaign -> independent review. After
 0039, rollback must use a 0039-compatible writer and retain both migrations.
 There is no production activation wave. Production remains **NO-GO**.
+
+## 2026-07-15 Phase 1 Native Container Shard Gate
+
+- `cinatoken-sharding` contract v1 and the four tracked scheduler variables are
+  local routing foundation only. They do not add a Container, controller
+  Worker, service binding, image, or provider path.
+- The eight-shard ring is disabled in default, staging, and production.
+  `CONTAINER_SCHEDULER_ROUTING_SECRET` is intentionally absent from tracked
+  configuration and must be provisioned as a secret in a later phase.
+- Stable shard names exclude ring generation. Every private operation must carry
+  generation, topology, protocol, owner generation, input digest, and deadline;
+  stale work fails before Container startup.
+- D1 remains the business and billing authority. DO SQLite owns shard-local
+  leases/fences, KV is configuration/cache only, R2 owns immutable large
+  payloads/evidence, and Container disk is disposable scratch.
+- The next implementation step is the isolated TypeScript controller Worker,
+  followed by the fixed native image. The controller deploys first with no edge
+  binding and no public route.
+
+Phase C0 validation is local. Controller/image, deny-by-default egress, N/N-1
+rollout, capacity rejection, remote fault injection, staging soak, canary,
+cost, and rollback evidence are all false gates. Production remains **NO-GO**.

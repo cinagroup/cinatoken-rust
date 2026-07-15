@@ -436,6 +436,24 @@ export type PlatformCapabilities = {
   relay_ai_gateway_cross_model_fallback_cutover_guards: string[]
   relay_retry_times: number | null
   channel_affinity_do_available: boolean
+  container_scheduler_contract_version: number
+  container_scheduler_foundation_compiled: boolean
+  container_scheduler_configured: boolean
+  container_scheduler_config_valid: boolean
+  container_scheduler_ring_generation: number
+  container_scheduler_shard_count: number
+  container_scheduler_enabled: boolean
+  container_scheduler_routing_secret_configured: boolean
+  container_scheduler_controller_service_binding_available: boolean
+  container_scheduler_container_runtime_compiled: boolean
+  container_scheduler_deny_by_default_egress_compiled: boolean
+  container_scheduler_shared_storage_contract_compiled: boolean
+  container_scheduler_n_minus_one_protocol_compiled: boolean
+  container_scheduler_capacity_rejection_compiled: boolean
+  container_scheduler_remote_fault_matrix_verified: boolean
+  container_scheduler_staging_verified: boolean
+  container_scheduler_cutover_ready: boolean
+  container_scheduler_cutover_guards: string[]
   quota_coordinator_contract_version: number
   quota_coordinator_do_available: boolean
   quota_coordinator_shadow_enabled: boolean

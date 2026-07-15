@@ -4713,6 +4713,36 @@ bindings, full HTTP/Realtime free-model parity, remote fault/load/rollback
 evidence, credential rotation, and G1-G8 approval remain blocking. Production
 remains **NO-GO**.
 
+## Native Container Shard Foundation Verification (2026-07-15)
+
+```powershell
+cargo test -p cinatoken-sharding
+cargo test -p cinatoken-worker --lib container_scheduler
+bun run check:container-scheduler-config
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run check:web
+bun run check
+```
+
+Current-head local evidence is PASS: `cinatoken-sharding` 5/5, focused Worker
+scheduler tests 3/3, scheduler configuration 4/4, full Worker unit tests
+714/714, Workerd lifecycle tests 43/43, frontend readiness tests 70/70, and
+the complete `bun run check` chain including 39 D1 migrations, workspace tests,
+release builds, bundle audits, and all three wasm32 targets.
+
+The pure planner must prove deterministic owner selection, canonical stable DO
+names, generation fencing without same-topology remapping, bounded low-movement
+N to N+1 expansion, invalid-input rejection, and absence of the opaque routing
+key from serialized plans. Config verification must prove generation 1, eight
+shards, runtime false, staging proof false, no tracked routing secret, and no
+edge `[[containers]]` block in all three environments.
+
+Capability readback must keep controller binding, Container runtime,
+deny-by-default egress, shared-storage runtime contract, N/N-1 protocol,
+capacity rejection, remote fault matrix, staging verification, and final
+cutover false. Local PASS is not remote Container evidence. Production remains
+**NO-GO**.
+
 ## 0038/0039 Recoverable Task Submit Verification Contract
 
 This current-head overlay supersedes only older Task migration counts and

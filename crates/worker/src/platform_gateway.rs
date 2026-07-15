@@ -14,6 +14,7 @@ use cinatoken_providers::ai_gateway::{
     MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS,
 };
 use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
+use cinatoken_sharding::CONTAINER_SHARD_CONTRACT_VERSION;
 use cinatoken_storage::RelayAuditLog;
 use cinatoken_wfp_authority::{OutboundInvocationContext, OUTBOUND_CONTEXT_BINDING};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,12 @@ use worker::{
 
 use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
+};
+use crate::container_scheduler::{
+    container_scheduler_cutover_guards, container_scheduler_cutover_ready,
+    container_scheduler_foundation_compiled, container_scheduler_routing_secret_configured,
+    container_scheduler_runtime_status, CONTAINER_SCHEDULER_ENABLED_ENV,
+    CONTAINER_SCHEDULER_STAGING_VERIFIED_ENV,
 };
 use crate::quota_coordinator::{
     quota_coordinator_contract_version, quota_coordinator_finalization_observation_compiled,
@@ -371,6 +378,24 @@ struct PlatformCapabilities {
     relay_retry_times: Option<u32>,
     channel_affinity_do_available: bool,
     realtime_sessions_do_available: bool,
+    container_scheduler_contract_version: u32,
+    container_scheduler_foundation_compiled: bool,
+    container_scheduler_configured: bool,
+    container_scheduler_config_valid: bool,
+    container_scheduler_ring_generation: u64,
+    container_scheduler_shard_count: u16,
+    container_scheduler_enabled: bool,
+    container_scheduler_routing_secret_configured: bool,
+    container_scheduler_controller_service_binding_available: bool,
+    container_scheduler_container_runtime_compiled: bool,
+    container_scheduler_deny_by_default_egress_compiled: bool,
+    container_scheduler_shared_storage_contract_compiled: bool,
+    container_scheduler_n_minus_one_protocol_compiled: bool,
+    container_scheduler_capacity_rejection_compiled: bool,
+    container_scheduler_remote_fault_matrix_verified: bool,
+    container_scheduler_staging_verified: bool,
+    container_scheduler_cutover_ready: bool,
+    container_scheduler_cutover_guards: Vec<&'static str>,
     quota_coordinator_contract_version: u32,
     quota_coordinator_do_available: bool,
     quota_coordinator_shadow_enabled: bool,
@@ -843,6 +868,38 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             && relay_ai_gateway_messages_cross_model_fallback_staging_verified,
     );
     let realtime_sessions_do_available = env.durable_object("REALTIME_SESSIONS").is_ok();
+    let container_scheduler_status = container_scheduler_runtime_status(&env);
+    let container_scheduler_contract_version = CONTAINER_SHARD_CONTRACT_VERSION;
+    let container_scheduler_foundation_compiled = container_scheduler_foundation_compiled();
+    let container_scheduler_enabled = env_flag(&env, CONTAINER_SCHEDULER_ENABLED_ENV);
+    let container_scheduler_routing_secret_configured =
+        container_scheduler_routing_secret_configured(&env);
+    // These remain false until the isolated TypeScript controller Worker,
+    // native linux/amd64 image, egress proxy, storage protocol, and remote
+    // fault matrix land. A valid local ring must never imply runtime readiness.
+    let container_scheduler_controller_service_binding_available = false;
+    let container_scheduler_container_runtime_compiled = false;
+    let container_scheduler_deny_by_default_egress_compiled = false;
+    let container_scheduler_shared_storage_contract_compiled = false;
+    let container_scheduler_n_minus_one_protocol_compiled = false;
+    let container_scheduler_capacity_rejection_compiled = false;
+    let container_scheduler_remote_fault_matrix_verified = false;
+    let container_scheduler_staging_verified =
+        env_flag(&env, CONTAINER_SCHEDULER_STAGING_VERIFIED_ENV);
+    let container_scheduler_cutover_ready = container_scheduler_cutover_ready(
+        container_scheduler_foundation_compiled,
+        container_scheduler_status.valid,
+        container_scheduler_enabled,
+        container_scheduler_routing_secret_configured,
+        container_scheduler_controller_service_binding_available,
+        container_scheduler_container_runtime_compiled,
+        container_scheduler_deny_by_default_egress_compiled,
+        container_scheduler_shared_storage_contract_compiled,
+        container_scheduler_n_minus_one_protocol_compiled,
+        container_scheduler_capacity_rejection_compiled,
+        container_scheduler_remote_fault_matrix_verified,
+        container_scheduler_staging_verified,
+    );
     let quota_coordinator_contract_version = quota_coordinator_contract_version();
     let quota_coordinator_do_available = env.durable_object(QUOTA_COORD_BINDING).is_ok();
     let quota_coordinator_shadow_enabled = env_flag(&env, QUOTA_COORD_SHADOW_ENABLED_ENV);
@@ -1408,6 +1465,24 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_retry_times: relay_retry_times_from_env(&env),
         channel_affinity_do_available: env.durable_object("CHANNEL_AFFINITY").is_ok(),
         realtime_sessions_do_available,
+        container_scheduler_contract_version,
+        container_scheduler_foundation_compiled,
+        container_scheduler_configured: container_scheduler_status.configured,
+        container_scheduler_config_valid: container_scheduler_status.valid,
+        container_scheduler_ring_generation: container_scheduler_status.ring_generation,
+        container_scheduler_shard_count: container_scheduler_status.shard_count,
+        container_scheduler_enabled,
+        container_scheduler_routing_secret_configured,
+        container_scheduler_controller_service_binding_available,
+        container_scheduler_container_runtime_compiled,
+        container_scheduler_deny_by_default_egress_compiled,
+        container_scheduler_shared_storage_contract_compiled,
+        container_scheduler_n_minus_one_protocol_compiled,
+        container_scheduler_capacity_rejection_compiled,
+        container_scheduler_remote_fault_matrix_verified,
+        container_scheduler_staging_verified,
+        container_scheduler_cutover_ready,
+        container_scheduler_cutover_guards: container_scheduler_cutover_guards(),
         quota_coordinator_contract_version,
         quota_coordinator_do_available,
         quota_coordinator_shadow_enabled,

@@ -1175,6 +1175,20 @@ production configuration:
 | `TASK_SUBMIT_TIMEOUT_SECONDS` | `90` | Integer from 5 through 120; one absolute provider-submit deadline |
 | `TASK_CLIENT_IDEMPOTENCY_REQUIRED` | `false` | Exact boolean string; must become true before Task v2 runtime/cutover readiness |
 
+### Native Container shard foundation
+
+| Variable | Committed value | Validation |
+| --- | --- | --- |
+| `CONTAINER_SCHEDULER_RING_GENERATION` | `1` | Positive integer; every accepted private operation is fenced by this generation |
+| `CONTAINER_SCHEDULER_SHARD_COUNT` | `8` | Integer from 1 through 1024; exact value is shared by edge and controller |
+| `CONTAINER_SCHEDULER_ENABLED` | `false` | Must remain false until controller, image, egress, storage, capacity, and fault gates pass |
+| `CONTAINER_SCHEDULER_STAGING_VERIFIED` | `false` | Remote evidence only; local tests cannot promote it |
+
+`CONTAINER_SCHEDULER_ROUTING_SECRET` is a future secret, not a tracked variable.
+The controller Worker must be deployed before adding its private service binding
+to the edge Worker. No environment may add `[[containers]]` to the edge Rust
+Worker; Container ownership belongs to the isolated controller configuration.
+
 Capability readback must include operation contract version, compiled/schema
 state, timeout configured/valid/effective values, client-idempotency compiled
 and required values, status-query compilation, local uniqueness, both provider

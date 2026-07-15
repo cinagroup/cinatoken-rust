@@ -1,0 +1,49 @@
+import { describe, expect, test } from "bun:test";
+
+const config = Bun.TOML.parse(
+  await Bun.file(new URL("../wrangler.toml", import.meta.url)).text(),
+);
+const packageJson = await Bun.file(
+  new URL("../package.json", import.meta.url),
+).json();
+
+const expected = {
+  CONTAINER_SCHEDULER_RING_GENERATION: "1",
+  CONTAINER_SCHEDULER_SHARD_COUNT: "8",
+  CONTAINER_SCHEDULER_ENABLED: "false",
+  CONTAINER_SCHEDULER_STAGING_VERIFIED: "false",
+};
+
+const environments = [
+  ["top-level", config, config.vars],
+  ["staging", config.env?.staging, config.env?.staging?.vars],
+  ["production", config.env?.production, config.env?.production?.vars],
+];
+
+describe("container scheduler Wrangler foundation", () => {
+  for (const [environment, scope, vars] of environments) {
+    test(`${environment} keeps the ring valid and runtime fail-closed`, () => {
+      expect(vars).toBeDefined();
+      expect(
+        Object.fromEntries(
+          Object.keys(expected).map((name) => [name, vars[name]]),
+        ),
+      ).toEqual(expected);
+      expect(Number(vars.CONTAINER_SCHEDULER_RING_GENERATION)).toBe(1);
+      expect(Number(vars.CONTAINER_SCHEDULER_SHARD_COUNT)).toBe(8);
+      expect(vars.CONTAINER_SCHEDULER_ROUTING_SECRET).toBeUndefined();
+
+      // The planner lands before the isolated controller Worker and image.
+      expect(scope?.containers).toBeUndefined();
+    });
+  }
+
+  test("the full repository gate includes the scheduler config contract", () => {
+    expect(packageJson.scripts["check:container-scheduler-config"]).toBe(
+      "bun test tests/container-scheduler-config.test.mjs",
+    );
+    expect(packageJson.scripts.check).toContain(
+      "bun run check:container-scheduler-config",
+    );
+  });
+});

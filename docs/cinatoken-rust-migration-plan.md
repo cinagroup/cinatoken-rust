@@ -13434,3 +13434,34 @@ and WFP outbound Workers, and frontend readiness passes 70/70. Provider-native
 idempotency and lookup capabilities remain explicitly false, all tracked
 client-required values remain false, and no remote migration/deployment
 evidence is claimed. Production remains **NO-GO**.
+
+## 22.218 Native Container Shard Runtime Foundation (2026-07-15)
+
+The production target is now explicitly defined as edge Rust Worker -> private
+controller service binding -> named `RelayShardContainer` Durable Object ->
+per-shard `linux/amd64` cinatoken-rust Container, with D1/DO SQLite/KV/R2
+ownership kept separate. The detailed decision, source audit, protocol, failure
+matrix, staged rollout, production gates, and rollback sequence live in
+[`container-sharded-runtime.md`](container-sharded-runtime.md).
+
+This increment adds only the default-off routing foundation:
+
+- `cinatoken-sharding` contract v1 consumes an opaque keyed 32-byte routing
+  digest and uses Jump Consistent Hash for bounded, low-movement shard changes;
+- ring generation fences stale work without changing stable DO names;
+- all tracked environments declare generation 1, eight logical shards, runtime
+  disabled, and staging proof false;
+- `/api/platform/capabilities` distinguishes planner/config readiness from the
+  absent controller binding, Container runtime, egress policy, storage protocol,
+  N/N-1 rollout, capacity rejection, remote fault matrix, and staging proof;
+- no `[[containers]]`, controller service binding, routing secret, or image is
+  claimed in this phase.
+
+The cinaVibeSDK review retained deterministic DO ownership and storage layering,
+but rejected fixed-pool modulo routing, arbitrary command/SSH access, KV
+financial authority, and in-memory recovery timers. Local evidence passes the
+planner 5/5, focused scheduler 3/3, scheduler config 4/4, full Worker 714/714,
+Workerd 43/43, frontend readiness 70/70, 39 D1 migrations, workspace tests,
+release builds, bundle audits, and all three wasm32 targets through the complete
+`bun run check` gate. No remote Container evidence is claimed, so production
+remains **NO-GO**.

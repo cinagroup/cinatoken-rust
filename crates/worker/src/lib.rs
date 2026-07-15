@@ -24,6 +24,7 @@ mod affinity;
 mod cache;
 mod cache_invalidation;
 mod channel_upstream_update;
+mod container_scheduler;
 mod d1_repositories;
 // Foundational mutable-flow-state substrate (item 2.1). Its consumers
 // (secure-verification step-up, Turnstile, OAuth/2FA/passkey) land in following

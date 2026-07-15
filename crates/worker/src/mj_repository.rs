@@ -13,6 +13,23 @@ use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
 use serde::{Deserialize, Serialize};
 use worker::{D1Database, D1Type};
 
+pub(crate) const MIDJOURNEY_TIMEOUT_SECONDS: i64 = 3_600;
+const MIDJOURNEY_MILLIS_THRESHOLD: i64 = 10_000_000_000;
+const MIDJOURNEY_TIMEOUT_SWEEP_MAX_LIMIT: i64 = 64;
+
+pub(crate) fn midjourney_submit_time_seconds(submit_time: i64) -> i64 {
+    if submit_time >= MIDJOURNEY_MILLIS_THRESHOLD {
+        submit_time.saturating_div(1_000)
+    } else {
+        submit_time
+    }
+}
+
+pub(crate) fn midjourney_is_timed_out(submit_time: i64, progress: &str, now: i64) -> bool {
+    now.saturating_sub(midjourney_submit_time_seconds(submit_time)) > MIDJOURNEY_TIMEOUT_SECONDS
+        && progress != "100%"
+}
+
 /// The fields stored when a Midjourney task is submitted. Columns not listed take
 /// their `0007_midjourneys.sql` defaults.
 pub struct NewMidjourney<'a> {
@@ -28,6 +45,7 @@ pub struct NewMidjourney<'a> {
     pub progress: &'a str,
     pub submit_time: i64,
     pub properties: &'a str,
+    pub billing_reservation_key: &'a str,
 }
 
 /// A Midjourney row read back for the batch poll (the subset the settle/merge
@@ -41,6 +59,8 @@ pub struct MjRow {
     pub channel_id: i64,
     #[serde(default)]
     pub token_id: i64,
+    #[serde(default)]
+    pub billing_reservation_key: String,
     pub quota: i64,
     pub status: String,
     pub progress: String,
@@ -149,6 +169,159 @@ pub async fn insert_midjourney(db: &D1Database, mj: &NewMidjourney<'_>) -> worke
     Ok(())
 }
 
+/// Atomically attach a provider-accepted Midjourney row to its pre-provider
+/// billing intent. The assertions deliberately turn a zero-row conditional
+/// write into a SQL error so D1 rolls the whole batch back.
+pub async fn attach_midjourney_billing_intent(
+    db: &D1Database,
+    mj: &NewMidjourney<'_>,
+) -> worker::Result<crate::task_repository::TaskBillingIntentAttachOutcome> {
+    use crate::task_repository::{
+        assert_task_billing_previous_statement_statement, find_task_billing_intent,
+        TaskBillingIntentAttachOutcome,
+    };
+
+    let reservation_key = mj.billing_reservation_key.trim();
+    if reservation_key.is_empty() || mj.mj_id.trim().is_empty() {
+        return Err(worker::Error::RustError(
+            "midjourney billing attachment identity is invalid".to_string(),
+        ));
+    }
+    let submit_time = mj.submit_time.to_string();
+    let insert_args = [
+        D1Type::Integer(d1_i32(mj.code)),
+        D1Type::Integer(d1_i32(mj.user_id)),
+        D1Type::Text(mj.action),
+        D1Type::Text(mj.mj_id),
+        D1Type::Text(mj.prompt),
+        D1Type::Text(mj.prompt_en),
+        D1Type::Integer(d1_i32(mj.channel_id)),
+        D1Type::Integer(d1_i32(mj.quota)),
+        D1Type::Text(mj.status),
+        D1Type::Text(mj.progress),
+        D1Type::Text(&submit_time),
+        D1Type::Text(mj.properties),
+        D1Type::Text(reservation_key),
+    ];
+    let insert = db
+        .prepare(
+            r#"
+            INSERT INTO midjourneys
+              (code, user_id, action, mj_id, prompt, prompt_en, channel_id, quota,
+               status, progress, submit_time, properties)
+            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+            WHERE EXISTS (
+              SELECT 1 FROM task_billing_intents
+              WHERE reservation_key = ?13
+                AND task_kind = 'midjourney'
+                AND public_task_id = ?13
+                AND user_id = ?2
+                AND channel_id = ?7
+                AND quota = ?8
+                AND status IN ('reserved', 'recovery_required')
+                AND submit_state IN ('submitting', 'submit_unknown')
+            )
+            "#,
+        )
+        .bind_refs(&insert_args)?;
+    let attached_at = mj.submit_time.saturating_div(1_000);
+    let attach_args = [
+        D1Type::Text(mj.mj_id),
+        D1Type::Integer(d1_i32(attached_at)),
+        D1Type::Text(reservation_key),
+        D1Type::Integer(d1_i32(mj.user_id)),
+        D1Type::Integer(d1_i32(mj.channel_id)),
+        D1Type::Integer(d1_i32(mj.quota)),
+    ];
+    let attach = db
+        .prepare(
+            r#"
+            UPDATE task_billing_intents
+            SET status = 'attached',
+                submit_state = 'submitted',
+                provider_task_id = ?1,
+                request_accounted = 1,
+                attached_at = ?2,
+                updated_at = ?2,
+                owner_generation = owner_generation + 1,
+                recovery_last_error = ''
+            WHERE reservation_key = ?3
+              AND task_kind = 'midjourney'
+              AND public_task_id = ?3
+              AND user_id = ?4
+              AND channel_id = ?5
+              AND quota = ?6
+              AND status IN ('reserved', 'recovery_required')
+              AND submit_state IN ('submitting', 'submit_unknown')
+              AND EXISTS (
+                SELECT 1 FROM midjourneys
+                WHERE mj_id = ?1
+                  AND user_id = ?4
+                  AND json_extract(
+                    CASE WHEN json_valid(properties) THEN properties ELSE '{}' END,
+                    '$.billing_reservation_key'
+                  ) = ?3
+              )
+            "#,
+        )
+        .bind_refs(&attach_args)?;
+    match db
+        .batch(vec![
+            insert,
+            assert_task_billing_previous_statement_statement(db, reservation_key)?,
+            attach,
+            assert_task_billing_previous_statement_statement(db, reservation_key)?,
+        ])
+        .await
+    {
+        Ok(results) => {
+            let insert_changed = results
+                .first()
+                .ok_or_else(|| worker::Error::RustError("missing midjourney insert result".into()))?
+                .meta()?
+                .and_then(|meta| meta.changes)
+                .unwrap_or(0)
+                == 1;
+            let attach_changed = results
+                .get(2)
+                .ok_or_else(|| worker::Error::RustError("missing midjourney attach result".into()))?
+                .meta()?
+                .and_then(|meta| meta.changes)
+                .unwrap_or(0)
+                == 1;
+            if insert_changed && attach_changed {
+                return Ok(TaskBillingIntentAttachOutcome::Applied);
+            }
+        }
+        Err(err) => {
+            if let Some(intent) = find_task_billing_intent(db, reservation_key).await? {
+                if intent.status == "attached"
+                    && intent.submit_state == "submitted"
+                    && intent.provider_task_id == mj.mj_id
+                    && intent.request_accounted == 1
+                {
+                    return Ok(TaskBillingIntentAttachOutcome::MatchingAttached);
+                }
+            }
+            return Err(err);
+        }
+    }
+    match find_task_billing_intent(db, reservation_key).await? {
+        Some(intent)
+            if intent.status == "attached"
+                && intent.submit_state == "submitted"
+                && intent.provider_task_id == mj.mj_id
+                && intent.request_accounted == 1 =>
+        {
+            Ok(TaskBillingIntentAttachOutcome::MatchingAttached)
+        }
+        Some(_) => Ok(TaskBillingIntentAttachOutcome::Conflict),
+        None => Err(worker::Error::RustError(
+            "midjourney billing intent disappeared during attachment".to_string(),
+        )),
+    }
+}
+
 /// Load unfinished Midjourney rows for the batch poll: those not in a terminal
 /// status that carry an upstream `mj_id`. Bounded by `limit`, ordered by id.
 pub async fn find_unfinished_midjourneys(
@@ -162,6 +335,9 @@ pub async fn find_unfinished_midjourneys(
                CASE WHEN json_valid(properties)
                     THEN COALESCE(json_extract(properties, '$.token_id'), 0)
                     ELSE 0 END AS token_id,
+               CASE WHEN json_valid(properties)
+                    THEN COALESCE(json_extract(properties, '$.billing_reservation_key'), '')
+                    ELSE '' END AS billing_reservation_key,
                quota, status, progress, submit_time
         FROM midjourneys
         WHERE status NOT IN ('SUCCESS', 'FAILURE')
@@ -174,6 +350,76 @@ pub async fn find_unfinished_midjourneys(
     .all()
     .await?
     .results::<MjRow>()
+}
+
+/// Recover Midjourney rows that exceeded Go's one-hour timeout without relying
+/// on channel availability or a successful provider poll. The terminal CAS and
+/// owned refund still run through [`apply_midjourney_poll_result`].
+pub async fn sweep_timed_out_midjourneys(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<u32> {
+    let cutoff_seconds = now.saturating_sub(MIDJOURNEY_TIMEOUT_SECONDS);
+    let cutoff_millis = cutoff_seconds.saturating_mul(1_000);
+    let limit = limit.clamp(1, MIDJOURNEY_TIMEOUT_SWEEP_MAX_LIMIT);
+    let cutoff_seconds = cutoff_seconds.to_string();
+    let cutoff_millis = cutoff_millis.to_string();
+    let args = [
+        D1Type::Text(&cutoff_millis),
+        D1Type::Text(&cutoff_seconds),
+        D1Type::Integer(d1_i32(limit)),
+    ];
+    let rows = db
+        .prepare(
+            r#"
+            SELECT id, code, user_id, mj_id, channel_id,
+                   CASE WHEN json_valid(properties)
+                        THEN COALESCE(json_extract(properties, '$.token_id'), 0)
+                        ELSE 0 END AS token_id,
+                   CASE WHEN json_valid(properties)
+                        THEN COALESCE(json_extract(properties, '$.billing_reservation_key'), '')
+                        ELSE '' END AS billing_reservation_key,
+                   quota, status, progress, submit_time
+            FROM midjourneys
+            WHERE status NOT IN ('SUCCESS', 'FAILURE')
+              AND mj_id != ''
+              AND progress != '100%'
+              AND (
+                (submit_time >= 10000000000 AND submit_time < CAST(?1 AS INTEGER)) OR
+                (submit_time < 10000000000 AND submit_time < CAST(?2 AS INTEGER))
+              )
+            ORDER BY submit_time ASC, id ASC
+            LIMIT ?3
+            "#,
+        )
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<MjRow>()?;
+
+    let mut settled = 0u32;
+    let finish_time = now.saturating_mul(1_000);
+    for row in rows {
+        let result = MjPollResult {
+            status: "FAILURE",
+            progress: &row.progress,
+            fail_reason: "upstream task timeout (over 1 hour)",
+            image_url: "",
+            video_url: "",
+            finish_time,
+        };
+        match apply_midjourney_poll_result(db, &row, &result).await {
+            Ok(true) => settled += 1,
+            Ok(false) => {}
+            Err(err) => worker::console_error!(
+                "midjourney timeout recovery failed for {}: {}",
+                row.mj_id,
+                err
+            ),
+        }
+    }
+    Ok(settled)
 }
 
 /// Merge one upstream poll result onto a Midjourney row — the per-item update of
@@ -194,8 +440,13 @@ pub async fn apply_midjourney_poll_result(
     // Same D1 i32 binding limitation as submit_time: upstream Midjourney
     // finishTime is millisecond precision.
     let finish_time = result.finish_time.to_string();
+    let effective_status = if result.fail_reason.is_empty() {
+        result.status
+    } else {
+        "FAILURE"
+    };
     let args = [
-        D1Type::Text(result.status),
+        D1Type::Text(effective_status),
         D1Type::Text(result.progress),
         D1Type::Text(result.fail_reason),
         D1Type::Text(result.image_url),
@@ -212,23 +463,150 @@ pub async fn apply_midjourney_poll_result(
             WHERE id = ?7 AND status NOT IN ('SUCCESS', 'FAILURE')
             "#,
         )
-        .bind_refs(&args)?
-        .run()
-        .await?;
-    let won = update.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1;
+        .bind_refs(&args)?;
 
-    let is_failure = result.status == "FAILURE" || !result.fail_reason.is_empty();
-    if won && is_failure && !is_terminal(&row.status) {
-        crate::d1_repositories::refund_reserved_relay_quota(
-            db,
-            row.user_id,
-            row.token_id,
-            row.quota,
-            result.finish_time.saturating_div(1_000),
-        )
-        .await?;
+    let terminal = is_terminal(effective_status);
+    if !terminal || is_terminal(&row.status) {
+        let applied = update.run().await?;
+        return Ok(applied.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1);
     }
-    Ok(won)
+
+    let reservation_key = row.billing_reservation_key.trim();
+    let financial_time = result.finish_time.saturating_div(1_000).max(1);
+    if !reservation_key.is_empty() {
+        let terminal_args = [
+            D1Type::Integer(d1_i32(financial_time)),
+            D1Type::Text(reservation_key),
+            D1Type::Integer(d1_i32(row.id)),
+            D1Type::Text(effective_status),
+        ];
+        let intent_update = if effective_status == "FAILURE" {
+            db.prepare(
+                r#"
+                UPDATE task_billing_intents
+                SET status = 'refunded', refunded_at = ?1, updated_at = ?1,
+                    owner_generation = owner_generation + 1,
+                    recovery_last_error = 'terminal_midjourney_failure'
+                WHERE reservation_key = ?2
+                  AND task_kind = 'midjourney'
+                  AND status = 'attached'
+                  AND EXISTS (
+                    SELECT 1 FROM midjourneys
+                    WHERE id = ?3 AND status = ?4
+                      AND json_extract(
+                        CASE WHEN json_valid(properties) THEN properties ELSE '{}' END,
+                        '$.billing_reservation_key'
+                      ) = ?2
+                  )
+                "#,
+            )
+            .bind_refs(&terminal_args)?
+        } else {
+            db.prepare(
+                r#"
+                UPDATE task_billing_intents
+                SET status = 'settled', settled_at = ?1, updated_at = ?1,
+                    owner_generation = owner_generation + 1,
+                    recovery_last_error = ''
+                WHERE reservation_key = ?2
+                  AND task_kind = 'midjourney'
+                  AND status = 'attached'
+                  AND request_accounted = 1
+                  AND EXISTS (
+                    SELECT 1 FROM midjourneys
+                    WHERE id = ?3 AND status = ?4
+                      AND json_extract(
+                        CASE WHEN json_valid(properties) THEN properties ELSE '{}' END,
+                        '$.billing_reservation_key'
+                      ) = ?2
+                  )
+                "#,
+            )
+            .bind_refs(&terminal_args)?
+        };
+        let results = db
+            .batch(vec![
+                update,
+                crate::task_repository::assert_task_billing_previous_statement_statement(
+                    db,
+                    reservation_key,
+                )?,
+                intent_update,
+                crate::task_repository::assert_task_billing_previous_statement_statement(
+                    db,
+                    reservation_key,
+                )?,
+            ])
+            .await?;
+        let won = results
+            .first()
+            .ok_or_else(|| worker::Error::RustError("missing midjourney CAS result".into()))?
+            .meta()?
+            .and_then(|meta| meta.changes)
+            .unwrap_or(0)
+            == 1;
+        return Ok(won);
+    }
+
+    if effective_status != "FAILURE" || row.quota == 0 {
+        let applied = update.run().await?;
+        return Ok(applied.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1);
+    }
+
+    // Imported rows retain the legacy wallet source, but their terminal CAS and
+    // credits still share one guarded D1 transaction.
+    let user_args = [
+        D1Type::Integer(d1_i32(row.quota)),
+        D1Type::Integer(d1_i32(row.user_id)),
+        D1Type::Integer(d1_i32(row.id)),
+    ];
+    let credit_user = db
+        .prepare(
+            r#"
+            UPDATE users SET quota = quota + ?1
+            WHERE id = ?2
+              AND EXISTS (SELECT 1 FROM midjourneys WHERE id = ?3 AND status = 'FAILURE')
+            "#,
+        )
+        .bind_refs(&user_args)?;
+    let mut statements = vec![
+        update,
+        crate::task_repository::assert_task_billing_previous_statement_statement(db, "")?,
+        credit_user,
+        crate::task_repository::assert_task_billing_previous_statement_statement(db, "")?,
+    ];
+    if row.token_id > 0 {
+        let token_args = [
+            D1Type::Integer(d1_i32(row.quota)),
+            D1Type::Integer(d1_i32(financial_time)),
+            D1Type::Integer(d1_i32(row.token_id)),
+            D1Type::Integer(d1_i32(row.id)),
+        ];
+        statements.push(
+            db.prepare(
+                r#"
+                UPDATE tokens
+                SET remain_quota = remain_quota + ?1,
+                    used_quota = MAX(used_quota - ?1, 0),
+                    accessed_time = ?2
+                WHERE id = ?3
+                  AND EXISTS (SELECT 1 FROM midjourneys WHERE id = ?4 AND status = 'FAILURE')
+                "#,
+            )
+            .bind_refs(&token_args)?,
+        );
+        statements.push(
+            crate::task_repository::assert_task_billing_previous_statement_statement(db, "")?,
+        );
+    }
+    let results = db.batch(statements).await?;
+    Ok(results
+        .first()
+        .ok_or_else(|| worker::Error::RustError("missing midjourney CAS result".into()))?
+        .meta()?
+        .and_then(|meta| meta.changes)
+        .unwrap_or(0)
+        == 1)
 }
 
 /// A full midjourneys row for the client-facing fetch (Go `dto.MidjourneyDto`
@@ -416,5 +794,19 @@ fn mj_where_clause<'a>(filter: &'a MjListFilter, args: &mut Vec<D1Type<'a>>) -> 
         String::new()
     } else {
         format!(" WHERE {}", conditions.join(" AND "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn midjourney_timeout_supports_legacy_seconds_and_current_millis() {
+        let now = 1_700_003_601;
+        assert!(midjourney_is_timed_out(1_700_000_000, "99%", now));
+        assert!(midjourney_is_timed_out(1_700_000_000_000, "99%", now));
+        assert!(!midjourney_is_timed_out(1_700_000_001_000, "99%", now));
+        assert!(!midjourney_is_timed_out(1_700_000_000_000, "100%", now));
     }
 }

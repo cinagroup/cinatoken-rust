@@ -1276,8 +1276,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 30,
-        d1_expected_migration: "0030_billing_contract_immutability.sql",
+        d1_migration_applied_count: 31,
+        d1_expected_migration: "0031_task_billing_intents.sql",
         d1_migration_ready: true,
         relay_billing_prebind_owner_generation_contract_version: 1,
         relay_billing_prebind_owner_generation_compiled: true,

@@ -7627,6 +7627,41 @@ pub(crate) async fn authenticate(
     Ok(row)
 }
 
+pub(crate) async fn authenticate_for_task(
+    db: &D1Database,
+    env: &Env,
+    api_key: &str,
+    model: &str,
+    client_ip: Option<&str>,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
+    let Some((redis, ttl_seconds)) = relay_read_cache(env)? else {
+        return authenticate_task_from_d1(db, api_key, model, client_ip).await;
+    };
+    let cache_key = RelayCacheKeys::default().token_auth(api_key, model, client_ip);
+
+    match read_cached_authenticated_token(&redis, &cache_key).await {
+        Ok(Some(mut row)) => {
+            let still_exists =
+                crate::d1_repositories::refresh_authenticated_token_quota_state(db, &mut row)
+                    .await
+                    .map_err(worker_error_response)?;
+            if !still_exists {
+                return Err(openai_error_response("invalid API key", 401));
+            }
+            return validate_authenticated_token_for_task(db, row, model, client_ip).await;
+        }
+        Ok(None) => {}
+        Err(err) => worker::console_warn!("failed to read relay auth cache: {}", err),
+    }
+
+    let row = authenticate_task_from_d1(db, api_key, model, client_ip).await?;
+    if let Err(err) = write_cached_authenticated_token(&redis, &cache_key, &row, ttl_seconds).await
+    {
+        worker::console_warn!("failed to write relay auth cache: {}", err);
+    }
+    Ok(row)
+}
+
 pub(crate) async fn authenticate_for_model_list(
     db: &D1Database,
     env: &Env,
@@ -7689,6 +7724,20 @@ async fn authenticate_from_d1(
     validate_authenticated_token(db, row, model, client_ip).await
 }
 
+async fn authenticate_task_from_d1(
+    db: &D1Database,
+    api_key: &str,
+    model: &str,
+    client_ip: Option<&str>,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
+    let row = crate::d1_repositories::authenticate_token(db, api_key)
+        .await
+        .map_err(worker_error_response)?
+        .ok_or_else(|| openai_error_response("invalid API key", 401))?;
+
+    validate_authenticated_token_for_task(db, row, model, client_ip).await
+}
+
 /// Whether `model` is permitted by a token's model-limit setting, mirroring Go
 /// `middleware/distributor.go:60-76` exactly:
 /// - limits disabled → allow (true);
@@ -7713,7 +7762,23 @@ async fn validate_authenticated_token(
     model: &str,
     client_ip: Option<&str>,
 ) -> Result<AuthenticatedToken, worker::Result<Response>> {
-    let row = validate_authenticated_token_base(db, row).await?;
+    let row = validate_authenticated_token_base(db, row, true).await?;
+    if !model_allowed_for_token(row.model_limits_enabled, &row.model_limits, model) {
+        return Err(openai_error_response(
+            format!("model {model} is not allowed for this token"),
+            403,
+        ));
+    }
+    validate_authenticated_token_ip(row, client_ip)
+}
+
+async fn validate_authenticated_token_for_task(
+    db: &D1Database,
+    row: AuthenticatedToken,
+    model: &str,
+    client_ip: Option<&str>,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
+    let row = validate_authenticated_token_base(db, row, false).await?;
     if !model_allowed_for_token(row.model_limits_enabled, &row.model_limits, model) {
         return Err(openai_error_response(
             format!("model {model} is not allowed for this token"),
@@ -7728,13 +7793,14 @@ async fn validate_authenticated_token_for_model_list(
     row: AuthenticatedToken,
     client_ip: Option<&str>,
 ) -> Result<AuthenticatedToken, worker::Result<Response>> {
-    let row = validate_authenticated_token_base(db, row).await?;
+    let row = validate_authenticated_token_base(db, row, true).await?;
     validate_authenticated_token_ip(row, client_ip)
 }
 
 async fn validate_authenticated_token_base(
     db: &D1Database,
     row: AuthenticatedToken,
+    require_user_quota: bool,
 ) -> Result<AuthenticatedToken, worker::Result<Response>> {
     if row.token_status != 1 || row.user_status != 1 {
         return Err(openai_error_response("token or user is disabled", 403));
@@ -7747,7 +7813,7 @@ async fn validate_authenticated_token_base(
         mark_token_status(db, row.token_id, TOKEN_STATUS_EXHAUSTED).await;
         return Err(openai_error_response("token quota is exhausted", 403));
     }
-    if row.user_quota <= 0 {
+    if require_user_quota && row.user_quota <= 0 {
         return Err(openai_error_response("user quota is exhausted", 403));
     }
     Ok(row)

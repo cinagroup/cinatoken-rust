@@ -631,9 +631,9 @@ The task pipeline (`/v1/video/generations`, `/suno/submit/:action`,
 | `VERTEX_REGION` | var, default `us-central1` — Vertex region for `predictLongRunning` (per-channel region edge cases TBD on staging). |
 | Channel types | Each provider is a channel `type`: Ali=17, Gemini=24, MiniMax/Hailuo=35, SunoAPI=36, VertexAi=41, VolcEngine=45, Kling=50, Jimeng=51, Vidu=52, DoubaoVideo=54, Sora=55/OpenAI=1; Midjourney=2/5. A task model with no matching enabled channel returns 503. |
 | Channel keys | Provider-specific: bearer key (sora/doubao/ali/hailuo/suno), `Token` (vidu), `mj-api-secret` (mj), `accessKey\|secretKey` (kling JWT / jimeng SigV4), or the **service-account JSON** (vertex). |
-| Pricing | Task billing models are `suno_<action>`, `mj_<action>`, or the video model name — price them or they bill 0. |
+| Pricing | Task billing models are `suno_<action>`, `mj_<action>`, or the video model name. Missing fixed and ratio configuration fails closed before provider I/O. |
 
-| Capability probe | `/api/platform/capabilities` must show `task_poller_scheduled_handler_compiled=true`, `task_poller_timeout_sweep_compiled=true`, `task_poller_refund_batch_compiled=true`, `task_poller_refund_replay_contract_compiled=true`, `task_poller_timeout_sweep_enabled=true`, `task_runner_do_available=true`, `task_runner_do_foundation_compiled=true`, `task_runner_alarm_contract_compiled=true`, `task_runner_rearm_contract_compiled=true`, `task_runner_storage_error_retry_contract_compiled=true`, `task_runner_submit_path_compiled=true`, `task_runner_poll_path_compiled=true`, `task_runner_status_probe_compiled=true`, `task_runner_staging_replay_verified=false`, `task_runner_cutover_ready=false`, and the expected query/timeout values before async task canary. Run `bun run check:task-refund-batch`, `bun run check:task-runner:alarm-replay-contract`, `bun run check:task-runner:alarm-replay-plan`, and `bun run check:do-lifecycle-runtime` locally and attach their output before staging D1 replay. |
+| Capability probe | `/api/platform/capabilities` must show the Task poller/TaskRunner compiled fields, `task_v2_contract_version=1`, `task_v2_ownership_compiled=true`, `task_v2_schema_ready=true`, and `task_v2_runtime_ready=true`, while `task_v2_staging_verified=false`, `task_v2_cutover_ready=false`, and `task_runner_cutover_ready=false` before async task canary. `task_runner_cutover_ready` is only the fast path and cannot replace Task v2 financial readiness. Run `python tools/verify_sqlite.py`, `bun run check:task-refund-batch`, `bun run check:task-runner:alarm-replay-contract`, `bun run check:task-runner:alarm-replay-plan`, and `bun run check:do-lifecycle-runtime` locally and attach their output before staging D1 replay. |
 
 ### QuotaCoordinator shadow observer
 
@@ -678,11 +678,11 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-    `d1_migration_status_available=true`, applied count `30`, latest/expected
-    `0030_billing_contract_immutability.sql`, exact set match, and
+    `d1_migration_status_available=true`, applied count `31`, latest/expected
+    `0031_task_billing_intents.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0030 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0031 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely
@@ -699,6 +699,13 @@ G1 can pass only when:
    Apply 0030 before admitting new Rust traffic and prove D1 rejects mutation of
    reservation identity, model, endpoint, request/contract hashes, billing kind,
    frozen snapshot, candidate count, strategy, and pre-consumed quota.
+   Apply 0031 with task traffic and TaskRunner disabled. Prove reserve is atomic,
+   structured rejection refunds atomically, `submit_unknown` cannot auto-refund,
+   active intent channels cannot be deleted, soft-deleted owners can receive an
+   exact refund, attachment/accounting is exactly once, and terminal
+   settle/refund is idempotent. Prove the channel-independent Midjourney timeout
+   sweep and zero-wallet FreeModel Task admission, then show rollback restores
+   the prior task traffic owner before any task canary.
 9. Upstash staging credentials are configured or the feature is deliberately
    disabled.
 10. No placeholder IDs or development origins remain in staging config.

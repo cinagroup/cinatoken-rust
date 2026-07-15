@@ -82,6 +82,8 @@ const SUBSCRIPTION_RETURN_PENDING_PATH: &str = "/console/topup?pay=pending";
 const STRIPE_CHECKOUT_SESSIONS_URL: &str = "https://api.stripe.com/v1/checkout/sessions";
 const STRIPE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const STRIPE_RESPONSE_LIMIT_BYTES: usize = 64 * 1024;
+const FUNDING_SOURCE_READY: bool = false;
+const SUPPORTED_FUNDING_SURFACES: &[&str] = &[];
 
 pub async fn public_plans(req: Request, env: Env) -> WorkerResult<Response> {
     let _claims = match require_user_auth(&req, &env).await? {
@@ -110,6 +112,8 @@ pub async fn self_summary(req: Request, env: Env) -> WorkerResult<Response> {
         d1_repositories::list_user_subscriptions(&db, claims.id, false, now).await?;
     Ok(envelope_ok_response(&SelfSubscriptionResponse {
         billing_preference: preference,
+        funding_source_ready: FUNDING_SOURCE_READY,
+        supported_funding_surfaces: SUPPORTED_FUNDING_SURFACES,
         subscriptions: subscription_records(subscriptions),
         all_subscriptions: subscription_records(all_subscriptions),
     })?)
@@ -125,6 +129,12 @@ pub async fn update_preference(mut req: Request, env: Env) -> WorkerResult<Respo
         Err(response) => return Ok(response),
     };
     let preference = normalize_billing_preference(payload.billing_preference.as_deref());
+    if !billing_preference_supported(&preference) {
+        return Ok(envelope_error_response(
+            400,
+            "subscription funding sources are not ready; only wallet_only is supported",
+        ));
+    }
     let db = env.d1("DB")?;
     let setting = d1_repositories::get_user_setting(&db, claims.id).await?;
     let merged = merge_billing_preference(setting.as_deref(), &preference);
@@ -1733,6 +1743,8 @@ struct UserSubscriptionRecord {
 #[derive(Debug, Serialize)]
 struct SelfSubscriptionResponse {
     billing_preference: String,
+    funding_source_ready: bool,
+    supported_funding_surfaces: &'static [&'static str],
     subscriptions: Vec<UserSubscriptionRecord>,
     all_subscriptions: Vec<UserSubscriptionRecord>,
 }
@@ -2453,6 +2465,10 @@ fn normalize_billing_preference(value: Option<&str>) -> String {
     .to_string()
 }
 
+fn billing_preference_supported(preference: &str) -> bool {
+    FUNDING_SOURCE_READY || preference == "wallet_only"
+}
+
 fn read_billing_preference(setting: Option<&str>) -> String {
     let value = setting
         .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
@@ -2602,6 +2618,29 @@ mod tests {
             normalize_billing_preference(Some("not-real")),
             "subscription_first"
         );
+    }
+
+    #[test]
+    fn self_subscription_contract_disables_funding_sources() {
+        let response = SelfSubscriptionResponse {
+            billing_preference: "subscription_first".to_string(),
+            funding_source_ready: FUNDING_SOURCE_READY,
+            supported_funding_surfaces: SUPPORTED_FUNDING_SURFACES,
+            subscriptions: Vec::new(),
+            all_subscriptions: Vec::new(),
+        };
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["funding_source_ready"], false);
+        assert_eq!(value["supported_funding_surfaces"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn unsupported_funding_preferences_fail_closed() {
+        assert!(billing_preference_supported("wallet_only"));
+        assert!(!billing_preference_supported("wallet_first"));
+        assert!(!billing_preference_supported("subscription_first"));
+        assert!(!billing_preference_supported("subscription_only"));
     }
 
     #[test]

@@ -76,10 +76,19 @@ struct SubmitResponse {
 /// Extract the upstream task id from a Vidu submit response (Go `DoResponse`): a
 /// `failed` state is an error, otherwise return the `task_id`.
 pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
-    let resp: SubmitResponse = serde_json::from_slice(resp_body)
-        .map_err(|err| format!("unmarshal_response_failed: {err}"))?;
+    parse_submit_response_classified(resp_body).map_err(super::SubmitResponseFailure::into_message)
+}
+
+pub fn parse_submit_response_classified(
+    resp_body: &[u8],
+) -> Result<String, super::SubmitResponseFailure> {
+    let resp: SubmitResponse = serde_json::from_slice(resp_body).map_err(|err| {
+        super::SubmitResponseFailure::Unknown(format!("unmarshal_response_failed: {err}"))
+    })?;
     if resp.state == "failed" {
-        return Err("task failed".to_string());
+        return Err(super::SubmitResponseFailure::Rejected(
+            "task failed".to_string(),
+        ));
     }
     Ok(resp.task_id)
 }

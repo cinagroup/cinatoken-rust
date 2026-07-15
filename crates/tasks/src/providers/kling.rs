@@ -156,10 +156,17 @@ struct SubmitData {
 /// non-zero `code` is an error (carrying `message`), otherwise return
 /// `data.task_id`.
 pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
-    let resp: SubmitResponse = serde_json::from_slice(resp_body)
-        .map_err(|err| format!("unmarshal_response_failed: {err}"))?;
+    parse_submit_response_classified(resp_body).map_err(super::SubmitResponseFailure::into_message)
+}
+
+pub fn parse_submit_response_classified(
+    resp_body: &[u8],
+) -> Result<String, super::SubmitResponseFailure> {
+    let resp: SubmitResponse = serde_json::from_slice(resp_body).map_err(|err| {
+        super::SubmitResponseFailure::Unknown(format!("unmarshal_response_failed: {err}"))
+    })?;
     if resp.code != 0 {
-        return Err(resp.message);
+        return Err(super::SubmitResponseFailure::Rejected(resp.message));
     }
     Ok(resp.data.task_id)
 }

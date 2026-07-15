@@ -12891,3 +12891,119 @@ WFP external Durable Object binding contract:
 Go/VPS remains authoritative. Task P0, the FreeModel subscription/Realtime
 boundary, WFP remote attachment evidence, and the existing signed G1-G8 gates
 keep production **NO-GO**.
+
+### 22.213 2026-07-15 Current Production Gate Snapshot And Task v2 Ownership
+
+This increment converts the Task audit findings into a fail-closed local
+implementation and makes the remaining production boundary machine-readable.
+It is not remote deployment or provider evidence.
+
+Implemented local ownership boundary:
+
+- Migration `0031_task_billing_intents.sql` is now the D1 head. One immutable
+  operation identity freezes user, token, channel, reserved quota, funding
+  source, provider identity, billing contract JSON, and its SHA-256 before any
+  provider call.
+- The submit state (`prepared`, `submitting`, `submitted`, `submit_unknown`) is
+  separate from financial state (`reserved`, `attached`, `settled`, `refunded`,
+  `recovery_required`). `submitting` is committed before fetch. Network,
+  response-classification, and provider-accepted/local-attachment ambiguity
+  enter `submit_unknown`; they cannot use the automatic refund path.
+- Video, Suno, and Midjourney use the same pre-provider reserve contract.
+  Provider task insertion, unique intent attachment, user request accounting,
+  and channel usage accounting share one guarded D1 batch. Conditional updates
+  are followed by a forced-abort assertion so a zero-row write rolls back.
+- Unified Task and Midjourney terminal transitions now join the provider/read
+  model CAS to the financial intent transition. Refund triggers restore only the
+  frozen wallet/subscription and token targets and reject missing ownership
+  rows. Replays cannot apply the same terminal transition twice.
+- Scheduled recovery refunds only expired `prepared` operations. Expired
+  `submitting` operations become `recovery_required + submit_unknown`, preserving
+  funds and identity until provider lookup or operator evidence resolves them.
+
+Production gate decomposition:
+
+| Gate | Local status | Production requirement |
+| --- | --- | --- |
+| Task request auth/pricing/frozen contract | Implemented locally | Remote provider and D1 replay |
+| Task v2 pre-provider durable owner | Implemented locally | Fault injection and `submit_unknown` reconciliation |
+| Shared cron/DO poll ownership | Not implemented | Generation-fenced D1 lease and stale-result rejection |
+| TaskRunner DO fast path | Partial | Must not stand in for financial ownership |
+| Subscription management/purchase | Implemented locally | Request funding still wallet-only |
+| Subscription funding HTTP/Task/Realtime | Not implemented | Atomic source selection, freeze, settle, refund, reset races |
+| Realtime tiered settlement | Implemented locally | Flat/free-model/subscription parity remains open |
+| FreeModel | Task base policy partial | HTTP, Realtime, additive charges, accounting parity |
+
+Stable blocker IDs are now:
+
+- `task_v2_durable_ownership`
+- `subscription_funding_source_parity`
+- `realtime_flat_billing_parity`
+- `free_model_runtime_policy`
+- `ali_async_image_task_settlement`
+- `provider_usage_staging_reconciliation`
+
+The capability contract exposes Task v2 contract/compiled/schema/runtime/
+staging/cutover phases separately. It also reports subscription funding and
+Realtime flat billing as false and publishes no supported subscription funding
+surface. Frontend readiness requires these explicit phases; a true
+`task_runner_cutover_ready` or tiered Realtime signal can no longer make the
+overall cutover stage complete by itself.
+
+User-facing stopgap:
+
+- Subscription purchase and management stay enabled.
+- `/api/subscription/self` reports that subscription funding is not ready.
+- The frontend permits only `wallet_only` while that capability is false or
+  absent and explains that purchased subscriptions cannot yet fund API requests.
+
+Local evidence includes the 31-file D1 replay, Task-intent state-machine probes,
+Worker host/wasm compilation, capability tests, and Bun readiness tests. The
+complete design and recovery matrix is in
+`docs/task-v2-durable-ownership.md`.
+
+Remaining NO-GO conditions are shared D1 poll leases, provider idempotency or
+lookup recovery, fair persisted retry scheduling, Suno/Midjourney DO parity,
+financial outbox/reconciliation where final usage differs, subscription funding
+parity, Realtime flat/free-model parity, remote staging fault/load/invoice and
+browser evidence, rotated credentials, rollback rehearsal, monitoring, and
+signed G1-G8 approval. Go/VPS remains authoritative.
+
+### 22.214 2026-07-15 Task v2 Recovery And Admission Hardening
+
+This increment closes local correctness findings discovered during the Task v2
+review. It does not change the production NO-GO decision and does not claim
+remote D1 or provider evidence.
+
+Implemented hardening:
+
+- Provider submit parsing now distinguishes a structured rejection from an
+  unknown result. Vidu/Ali/Kling/Jimeng/Suno/Midjourney `2xx`/`4xx` rejection
+  envelopes use one D1 transition to `rejected + refunded`; `5xx`, redirects,
+  malformed JSON, a missing accepted task ID, network failure, and attachment
+  ambiguity remain `submit_unknown`.
+- The reject/refund transition is atomic. Expired `rejected` rows are also
+  included in scheduled recovery so an older or interrupted two-step transition
+  cannot strand an owned reserve.
+- Refunds may credit the frozen user/token rows after soft deletion. Physical
+  absence still fails closed. A D1 trigger rejects channel deletion while any
+  Task intent for that channel is `reserved`, `attached`, or
+  `recovery_required`.
+- Midjourney has a D1-first one-hour timeout sweep that runs independently of
+  channel lookup and provider response. It applies the same terminal CAS and
+  intent refund used by normal polling and accepts both legacy second and
+  current millisecond submit times.
+- Task authentication now delays only the user-wallet balance check. Token
+  status, expiry, token quota, model restriction, user state, and IP policy are
+  still enforced first. After pricing is frozen, only an explicit FreeModel
+  decision may skip wallet admission; paid plans still fail with 403.
+- The DO lifecycle fixture now expects all 31 applied migrations. D1 replay also
+  proves active-channel deletion protection, atomic rejected refund, and
+  accepted-task attachment plus refund against soft-deleted ownership rows.
+
+Remaining Task v2 production blockers are stable client/provider idempotency,
+provider lookup and signed `submit_unknown` reconciliation, a shared
+generation-fenced cron/TaskRunner poll lease, persisted fair retry/backoff,
+checked 64-bit financial D1 binding, full HTTP/Realtime/subscription FreeModel
+parity, remote fault injection, invoice reconciliation, and rollback evidence.
+Go/VPS remains authoritative until the complete signed cutover gates pass.

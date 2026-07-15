@@ -35,6 +35,7 @@ REQUIRED_TABLES = [
     "relay_billing_reservations",
     "relay_billing_recovery_state",
     "relay_billing_finalization_incidents",
+    "task_billing_intents",
 ]
 
 REQUIRED_COLUMNS = {
@@ -192,6 +193,36 @@ REQUIRED_COLUMNS = {
         "resolution",
         "last_error",
     },
+    "task_billing_intents": {
+        "reservation_key",
+        "task_kind",
+        "public_task_id",
+        "user_id",
+        "token_id",
+        "channel_id",
+        "quota",
+        "funding_source",
+        "subscription_id",
+        "billing_contract_json",
+        "billing_contract_sha256",
+        "status",
+        "submit_state",
+        "provider_kind",
+        "provider_idempotency_key",
+        "provider_task_id",
+        "request_accounted",
+        "lease_expires_at",
+        "owner_generation",
+        "submit_attempt_count",
+        "recovery_attempt_count",
+        "recovery_last_error",
+        "created_at",
+        "updated_at",
+        "attached_at",
+        "settled_at",
+        "refunded_at",
+        "recovery_required_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -232,6 +263,11 @@ REQUIRED_INDEXES = {
         "idx_relay_billing_finalization_incidents_event": True,
         "idx_relay_billing_finalization_incidents_status": False,
     },
+    "task_billing_intents": {
+        "idx_task_billing_intents_status_lease": False,
+        "idx_task_billing_intents_user_status": False,
+        "idx_task_billing_intents_provider_task": True,
+    },
 }
 
 
@@ -264,6 +300,7 @@ def main() -> int:
     segment_guard_verified = False
     relay_owner_guard_verified = False
     flat_intent_guard_verified = False
+    task_billing_intents_verified = False
     if not args.schema:
         verify_realtime_lease_migration_guard(schema_paths)
         lease_guard_verified = True
@@ -282,6 +319,8 @@ def main() -> int:
     if not args.schema:
         verify_flat_billing_intent_guard(conn)
         flat_intent_guard_verified = True
+        verify_task_billing_intents(conn)
+        task_billing_intents_verified = True
 
     missing = [
         table
@@ -327,6 +366,8 @@ def main() -> int:
         message += " + 0026 relay-owner drain guard"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
+    if task_billing_intents_verified:
+        message += " + 0031 task billing intent state machine"
 
     if args.seed:
         for value in args.seed:
@@ -429,6 +470,650 @@ def verify_flat_billing_intent_guard(conn: sqlite3.Connection) -> None:
         except sqlite3.IntegrityError:
             continue
         raise SystemExit(f"0030 must reject billing contract mutation: {mutation}")
+
+
+def verify_task_billing_intents(conn: sqlite3.Connection) -> None:
+    for trigger in (
+        "task_billing_intent_contract_immutable_guard",
+        "task_billing_intent_insert_guard",
+        "task_billing_intent_channel_delete_guard",
+        "task_billing_intent_submit_transition_guard",
+        "task_billing_intent_reserve_apply",
+        "task_billing_intent_status_transition_guard",
+        "task_billing_intent_attach_guard",
+        "task_billing_intent_attach_accounting",
+        "task_billing_intent_terminal_guard",
+        "task_billing_intent_refund_guard",
+        "task_billing_intent_refund_apply",
+    ):
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0031 task billing intent trigger missing: {trigger}")
+
+    user_id = 310031
+    token_id = 310031
+    channel_id = 310031
+    conn.execute(
+        """
+        INSERT INTO users (
+          id, username, password, quota, used_quota, request_count, created_at
+        ) VALUES (?, 'sqlite-0031-user', 'not-used', 1000, 100, 7, 1)
+        """,
+        (user_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO tokens (
+          id, user_id, "key", remain_quota, used_quota, accessed_time
+        ) VALUES (?, ?, 'sqlite-0031-token', 800, 200, 1)
+        """,
+        (token_id, user_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO channels (id, "key", name, used_quota)
+        VALUES (?, 'sqlite-0031-channel-key', 'sqlite-0031-channel', 300)
+        """,
+        (channel_id,),
+    )
+    baseline = (1000, 100, 7, 800, 200, 300)
+
+    expect_integrity_error(
+        lambda: insert_task_billing_intent(
+            conn,
+            "0031-atomic-failure",
+            user_id,
+            token_id,
+            channel_id,
+            quota=900,
+            created_at=1000,
+        ),
+        "0031 must reject a reserve when the token balance is insufficient",
+        "task billing intent admission failed",
+    )
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        baseline,
+        "failed reserve must not partially debit the wallet",
+    )
+    failed_rows = conn.execute(
+        "SELECT count(*) FROM task_billing_intents WHERE reservation_key = ?",
+        ("0031-atomic-failure",),
+    ).fetchone()[0]
+    if failed_rows != 0:
+        raise SystemExit("0031 failed reserve unexpectedly persisted an intent")
+
+    insert_task_billing_intent(
+        conn,
+        "0031-prepared-refund",
+        user_id,
+        token_id,
+        channel_id,
+        quota=40,
+        created_at=1100,
+    )
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        (960, 100, 7, 760, 240, 300),
+        "wallet and token reserve must apply atomically",
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'refunded', refunded_at = 1101, updated_at = 1101
+        WHERE reservation_key = '0031-prepared-refund'
+        """
+    )
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        baseline,
+        "prepared refund must restore the wallet and token reserve",
+    )
+
+    insert_task_billing_intent(
+        conn,
+        "0031-submit-unknown",
+        user_id,
+        token_id,
+        channel_id,
+        quota=50,
+        created_at=1200,
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET submit_state = 'submitting', submit_attempt_count = 1, updated_at = 1201
+        WHERE reservation_key = '0031-submit-unknown'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET submit_state = 'submit_unknown',
+            recovery_last_error = 'provider outcome unknown',
+            updated_at = 1202
+        WHERE reservation_key = '0031-submit-unknown'
+        """
+    )
+    assert_task_billing_state(
+        conn,
+        "0031-submit-unknown",
+        "reserved",
+        "submit_unknown",
+        "submitting to submit_unknown must retain the reserve",
+    )
+    unknown_accounting = (950, 100, 7, 750, 250, 300)
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        unknown_accounting,
+        "submit_unknown must not automatically refund",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE task_billing_intents
+            SET status = 'refunded', refunded_at = 1203, updated_at = 1203
+            WHERE reservation_key = '0031-submit-unknown'
+            """
+        ),
+        "0031 must reject a direct refund from submit_unknown",
+        "refunded task billing intent is incomplete",
+    )
+    assert_task_billing_state(
+        conn,
+        "0031-submit-unknown",
+        "reserved",
+        "submit_unknown",
+        "rejected submit_unknown refund must leave the intent unchanged",
+    )
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        unknown_accounting,
+        "rejected submit_unknown refund must leave accounting unchanged",
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET submit_state = 'rejected', updated_at = 1204
+        WHERE reservation_key = '0031-submit-unknown'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'refunded', refunded_at = 1205, updated_at = 1205
+        WHERE reservation_key = '0031-submit-unknown'
+        """
+    )
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        baseline,
+        "rejected submit may refund after the provider outcome is known",
+    )
+
+    insert_task_billing_intent(
+        conn,
+        "0031-attached-refund",
+        user_id,
+        token_id,
+        channel_id,
+        quota=60,
+        created_at=1300,
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE task_billing_intents
+            SET submit_state = 'submitted', updated_at = 1301
+            WHERE reservation_key = '0031-attached-refund'
+            """
+        ),
+        "0031 must reject prepared to submitted without submitting",
+        "invalid task billing intent submit transition",
+    )
+    assert_task_billing_state(
+        conn,
+        "0031-attached-refund",
+        "reserved",
+        "prepared",
+        "invalid submit transition must leave the intent unchanged",
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET submit_state = 'submitting', submit_attempt_count = 1, updated_at = 1302
+        WHERE reservation_key = '0031-attached-refund'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET submit_state = 'submitted',
+            provider_task_id = 'provider-task-refund',
+            updated_at = 1303
+        WHERE reservation_key = '0031-attached-refund'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'attached', request_accounted = 1,
+            attached_at = 1304, updated_at = 1304
+        WHERE reservation_key = '0031-attached-refund'
+        """
+    )
+    attached_accounting = (940, 160, 8, 740, 260, 360)
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        attached_accounting,
+        "submitted attach must account the request once",
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'attached', updated_at = 1305
+        WHERE reservation_key = '0031-attached-refund'
+        """
+    )
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        attached_accounting,
+        "repeated attached status must not double-account the request",
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'refunded', refunded_at = 1306, updated_at = 1306
+        WHERE reservation_key = '0031-attached-refund'
+        """
+    )
+    refunded_accounting = (1000, 160, 8, 800, 200, 360)
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        refunded_accounting,
+        "terminal refund must restore the reserve exactly once",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE task_billing_intents
+            SET status = 'refunded', refunded_at = 1307, updated_at = 1307
+            WHERE reservation_key = '0031-attached-refund'
+            """
+        ),
+        "0031 must reject a second terminal refund",
+        "refunded task billing intent is incomplete",
+    )
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        refunded_accounting,
+        "rejected second refund must not change accounting",
+    )
+
+    immutable_mutations = (
+        ("reservation_key", "reservation_key = '0031-changed-key'"),
+        ("task_kind", "task_kind = 'midjourney'"),
+        ("public_task_id", "public_task_id = '0031-changed-public-task'"),
+        ("user_id", "user_id = user_id + 1"),
+        ("token_id", "token_id = 0"),
+        ("channel_id", "channel_id = channel_id + 1"),
+        ("quota", "quota = quota + 1"),
+        ("funding_source", "funding_source = 'subscription'"),
+        ("subscription_id", "subscription_id = 1"),
+        ("billing_contract_json", "billing_contract_json = '{\"changed\":true}'"),
+        ("billing_contract_sha256", f"billing_contract_sha256 = '{'b' * 64}'"),
+        ("provider_kind", "provider_kind = 'changed-provider'"),
+        (
+            "provider_idempotency_key",
+            "provider_idempotency_key = 'changed-idempotency-key'",
+        ),
+        ("created_at", "created_at = created_at + 1"),
+    )
+    for column, mutation in immutable_mutations:
+        expect_integrity_error(
+            lambda mutation=mutation: conn.execute(
+                "UPDATE task_billing_intents SET "
+                f"{mutation} WHERE reservation_key = '0031-attached-refund'"
+            ),
+            f"0031 must reject immutable contract mutation: {column}",
+            "task billing intent contract is immutable",
+        )
+
+    insert_task_billing_intent(
+        conn,
+        "0031-settle",
+        user_id,
+        token_id,
+        channel_id,
+        quota=70,
+        created_at=1400,
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET submit_state = 'submitting', submit_attempt_count = 1, updated_at = 1401
+        WHERE reservation_key = '0031-settle'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET submit_state = 'submitted',
+            provider_task_id = 'provider-task-settle',
+            updated_at = 1402
+        WHERE reservation_key = '0031-settle'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'attached', request_accounted = 1,
+            attached_at = 1403, updated_at = 1403
+        WHERE reservation_key = '0031-settle'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'settled', settled_at = 1404, updated_at = 1404
+        WHERE reservation_key = '0031-settle'
+        """
+    )
+    settled_row = conn.execute(
+        """
+        SELECT status, submit_state, request_accounted, settled_at
+        FROM task_billing_intents
+        WHERE reservation_key = '0031-settle'
+        """
+    ).fetchone()
+    if settled_row != ("settled", "submitted", 1, 1404):
+        raise SystemExit(f"0031 successful settle has unexpected state: {settled_row}")
+    settled_accounting = (930, 230, 9, 730, 270, 430)
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        settled_accounting,
+        "successful settle must retain the reserve and attached accounting",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE task_billing_intents
+            SET status = 'attached', updated_at = 1405
+            WHERE reservation_key = '0031-settle'
+            """
+        ),
+        "0031 must reject settled to attached",
+        "invalid task billing intent status transition",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE task_billing_intents
+            SET submit_state = 'prepared', updated_at = 1405
+            WHERE reservation_key = '0031-settle'
+            """
+        ),
+        "0031 must reject submitted to prepared",
+        "invalid task billing intent submit transition",
+    )
+    assert_task_billing_state(
+        conn,
+        "0031-settle",
+        "settled",
+        "submitted",
+        "illegal terminal transitions must leave the intent unchanged",
+    )
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        settled_accounting,
+        "illegal terminal transitions must leave accounting unchanged",
+    )
+
+    insert_task_billing_intent(
+        conn,
+        "0031-channel-delete-guard",
+        user_id,
+        token_id,
+        channel_id,
+        quota=0,
+        created_at=1500,
+    )
+    expect_integrity_error(
+        lambda: conn.execute("DELETE FROM channels WHERE id = ?", (channel_id,)),
+        "0031 must keep channels with active task billing ownership",
+        "channel has active task billing intent",
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'refunded', refunded_at = 1501, updated_at = 1501
+        WHERE reservation_key = '0031-channel-delete-guard'
+        """
+    )
+
+    insert_task_billing_intent(
+        conn,
+        "0031-soft-deleted-attach",
+        user_id,
+        token_id,
+        channel_id,
+        quota=20,
+        created_at=1550,
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET submit_state = 'submitting', submit_attempt_count = 1, updated_at = 1551
+        WHERE reservation_key = '0031-soft-deleted-attach'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET submit_state = 'submitted', provider_task_id = 'provider-soft-deleted',
+            updated_at = 1552
+        WHERE reservation_key = '0031-soft-deleted-attach'
+        """
+    )
+    conn.execute("UPDATE users SET deleted_at = 1553 WHERE id = ?", (user_id,))
+    conn.execute("UPDATE tokens SET deleted_at = 1553 WHERE id = ?", (token_id,))
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'attached', request_accounted = 1,
+            attached_at = 1554, updated_at = 1554
+        WHERE reservation_key = '0031-soft-deleted-attach'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'refunded', refunded_at = 1555, updated_at = 1555
+        WHERE reservation_key = '0031-soft-deleted-attach'
+        """
+    )
+    soft_deleted_attach_accounting = (930, 250, 10, 730, 270, 450)
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        soft_deleted_attach_accounting,
+        "soft-deleted owners must not block accepted task attachment or refund",
+    )
+    conn.execute("UPDATE users SET deleted_at = NULL WHERE id = ?", (user_id,))
+    conn.execute("UPDATE tokens SET deleted_at = NULL WHERE id = ?", (token_id,))
+
+    insert_task_billing_intent(
+        conn,
+        "0031-soft-deleted-refund",
+        user_id,
+        token_id,
+        channel_id,
+        quota=20,
+        created_at=1600,
+    )
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET submit_state = 'submitting', submit_attempt_count = 1, updated_at = 1601
+        WHERE reservation_key = '0031-soft-deleted-refund'
+        """
+    )
+    conn.execute("UPDATE users SET deleted_at = 1602 WHERE id = ?", (user_id,))
+    conn.execute("UPDATE tokens SET deleted_at = 1602 WHERE id = ?", (token_id,))
+    conn.execute(
+        """
+        UPDATE task_billing_intents
+        SET status = 'refunded', submit_state = 'rejected',
+            refunded_at = 1603, updated_at = 1603
+        WHERE reservation_key = '0031-soft-deleted-refund'
+        """
+    )
+    assert_task_billing_accounting(
+        conn,
+        user_id,
+        token_id,
+        channel_id,
+        soft_deleted_attach_accounting,
+        "soft-deleted users and tokens must still receive owned refunds",
+    )
+    conn.execute("UPDATE users SET deleted_at = NULL WHERE id = ?", (user_id,))
+    conn.execute("UPDATE tokens SET deleted_at = NULL WHERE id = ?", (token_id,))
+
+    conn.execute("DELETE FROM task_billing_intents WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
+    conn.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
+    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+def insert_task_billing_intent(
+    conn: sqlite3.Connection,
+    reservation_key: str,
+    user_id: int,
+    token_id: int,
+    channel_id: int,
+    quota: int,
+    created_at: int,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO task_billing_intents (
+          reservation_key, task_kind, public_task_id, user_id, token_id,
+          channel_id, quota, billing_contract_json, billing_contract_sha256,
+          provider_kind, provider_idempotency_key, lease_expires_at,
+          created_at, updated_at
+        ) VALUES (?, 'task', ?, ?, ?, ?, ?, ?, ?, 'sqlite-provider', ?, ?, ?, ?)
+        """,
+        (
+            reservation_key,
+            f"public:{reservation_key}",
+            user_id,
+            token_id,
+            channel_id,
+            quota,
+            '{"funding_source":"wallet"}',
+            "a" * 64,
+            f"provider:{reservation_key}",
+            created_at + 300,
+            created_at,
+            created_at,
+        ),
+    )
+
+
+def expect_integrity_error(
+    action,
+    failure_message: str,
+    expected_error: str = "",
+) -> None:
+    try:
+        action()
+    except sqlite3.IntegrityError as error:
+        if expected_error and expected_error not in str(error):
+            raise SystemExit(
+                f"{failure_message}: unexpected SQLite error: {error}"
+            ) from error
+        return
+    raise SystemExit(failure_message)
+
+
+def assert_task_billing_state(
+    conn: sqlite3.Connection,
+    reservation_key: str,
+    expected_status: str,
+    expected_submit_state: str,
+    context: str,
+) -> None:
+    actual = conn.execute(
+        """
+        SELECT status, submit_state
+        FROM task_billing_intents
+        WHERE reservation_key = ?
+        """,
+        (reservation_key,),
+    ).fetchone()
+    expected = (expected_status, expected_submit_state)
+    if actual != expected:
+        raise SystemExit(f"0031 {context}: state={actual}, expected={expected}")
+
+
+def assert_task_billing_accounting(
+    conn: sqlite3.Connection,
+    user_id: int,
+    token_id: int,
+    channel_id: int,
+    expected: tuple[int, int, int, int, int, int],
+    context: str,
+) -> None:
+    actual = conn.execute(
+        """
+        SELECT u.quota, u.used_quota, u.request_count,
+               t.remain_quota, t.used_quota, c.used_quota
+        FROM users AS u
+        JOIN tokens AS t ON t.id = ? AND t.user_id = u.id
+        JOIN channels AS c ON c.id = ?
+        WHERE u.id = ?
+        """,
+        (token_id, channel_id, user_id),
+    ).fetchone()
+    if actual != expected:
+        raise SystemExit(f"0031 {context}: accounting={actual}, expected={expected}")
 
 
 def verify_realtime_lease_migration_guard(schema_paths: list[Path]) -> None:

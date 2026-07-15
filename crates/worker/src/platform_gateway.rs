@@ -94,7 +94,8 @@ use crate::relay_billing_queue::BILLING_QUEUE_BINDING;
 use crate::relay_billing_smoke::{smoke_compiled, smoke_enabled, smoke_ready};
 use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
 use crate::task_repository::{
-    task_refund_cas_batch_compiled, task_refund_replay_contract_compiled,
+    task_billing_intent_contract_compiled, task_refund_cas_batch_compiled,
+    task_refund_replay_contract_compiled,
 };
 use crate::task_runner::{
     fetch_task_runner_status, is_task_runner_cutover_ready, task_runner_alarm_contract_compiled,
@@ -156,7 +157,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0030_billing_contract_immutability.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0031_task_billing_intents.sql";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
     "migration_0026_applied",
     "legacy_workers_drained",
@@ -171,6 +172,18 @@ const RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS: &[&str] = &[
     "ali_async_image_task_settlement",
     "free_model_runtime_policy",
     "provider_usage_staging_reconciliation",
+    "task_v2_durable_ownership",
+    "subscription_funding_source_parity",
+    "realtime_flat_billing_parity",
+];
+const TASK_V2_CUTOVER_GUARDS: &[&str] = &[
+    "migration_0031_applied",
+    "pre_provider_reservation",
+    "submit_unknown_fail_closed",
+    "atomic_task_attachment",
+    "atomic_terminal_financial_transition",
+    "shared_poll_lease",
+    "staging_fault_replay",
 ];
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0001_core.sql",
@@ -203,6 +216,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0028_realtime_usage_reconciliation_resolution.sql",
     "0029_flat_billing_intents.sql",
     "0030_billing_contract_immutability.sql",
+    "0031_task_billing_intents.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -386,6 +400,11 @@ struct PlatformCapabilities {
     relay_flat_billing_go_parity_blockers: Vec<&'static str>,
     relay_flat_billing_intent_staging_verified: bool,
     relay_flat_billing_intent_cutover_ready: bool,
+    subscription_funding_source_compiled: bool,
+    subscription_funding_source_runtime_ready: bool,
+    subscription_funding_source_staging_verified: bool,
+    subscription_funding_source_cutover_ready: bool,
+    subscription_funding_supported_surfaces: Vec<&'static str>,
     relay_billing_reservation_lease_seconds: i64,
     relay_billing_prebind_owner_generation_contract_version: u32,
     relay_billing_prebind_owner_generation_compiled: bool,
@@ -476,6 +495,17 @@ struct PlatformCapabilities {
     realtime_session_billing_settlement_compiled: bool,
     realtime_session_platform_smoke_ready: bool,
     realtime_session_v1_cutover_ready: bool,
+    realtime_flat_billing_compiled: bool,
+    realtime_flat_billing_runtime_ready: bool,
+    realtime_flat_billing_staging_verified: bool,
+    realtime_flat_billing_cutover_ready: bool,
+    task_v2_contract_version: u32,
+    task_v2_ownership_compiled: bool,
+    task_v2_schema_ready: bool,
+    task_v2_runtime_ready: bool,
+    task_v2_staging_verified: bool,
+    task_v2_cutover_ready: bool,
+    task_v2_cutover_guards: Vec<&'static str>,
     task_poller_scheduled_handler_compiled: bool,
     task_poller_timeout_sweep_compiled: bool,
     task_poller_refund_batch_compiled: bool,
@@ -1096,6 +1126,22 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_runner_status_probe_compiled,
         task_runner_staging_replay_verified,
     );
+    let task_v2_contract_version = 1;
+    let task_v2_ownership_compiled = task_billing_intent_contract_compiled();
+    let task_v2_schema_ready = d1_migration_ready;
+    let task_v2_runtime_ready = task_v2_ownership_compiled && task_v2_schema_ready;
+    // Fault-injection staging evidence and a shared D1 poll lease are still
+    // required before TaskRunner/cron may be treated as production ownership.
+    let task_v2_staging_verified = false;
+    let task_v2_cutover_ready = false;
+    let subscription_funding_source_compiled = false;
+    let subscription_funding_source_runtime_ready = false;
+    let subscription_funding_source_staging_verified = false;
+    let subscription_funding_source_cutover_ready = false;
+    let realtime_flat_billing_compiled = false;
+    let realtime_flat_billing_runtime_ready = false;
+    let realtime_flat_billing_staging_verified = false;
+    let realtime_flat_billing_cutover_ready = false;
     let capabilities = PlatformCapabilities {
         scheduling_gateway_compiled: true,
         scheduling_gateway_active: true,
@@ -1209,6 +1255,11 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_flat_billing_go_parity_blockers: RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS.to_vec(),
         relay_flat_billing_intent_staging_verified,
         relay_flat_billing_intent_cutover_ready,
+        subscription_funding_source_compiled,
+        subscription_funding_source_runtime_ready,
+        subscription_funding_source_staging_verified,
+        subscription_funding_source_cutover_ready,
+        subscription_funding_supported_surfaces: Vec::new(),
         relay_billing_reservation_lease_seconds,
         relay_billing_prebind_owner_generation_contract_version,
         relay_billing_prebind_owner_generation_compiled,
@@ -1300,6 +1351,17 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_settlement_compiled,
         realtime_session_platform_smoke_ready,
         realtime_session_v1_cutover_ready,
+        realtime_flat_billing_compiled,
+        realtime_flat_billing_runtime_ready,
+        realtime_flat_billing_staging_verified,
+        realtime_flat_billing_cutover_ready,
+        task_v2_contract_version,
+        task_v2_ownership_compiled,
+        task_v2_schema_ready,
+        task_v2_runtime_ready,
+        task_v2_staging_verified,
+        task_v2_cutover_ready,
+        task_v2_cutover_guards: TASK_V2_CUTOVER_GUARDS.to_vec(),
         task_poller_scheduled_handler_compiled: true,
         task_poller_timeout_sweep_compiled,
         task_poller_refund_batch_compiled,
@@ -3602,6 +3664,9 @@ mod tests {
                 "ali_async_image_task_settlement",
                 "free_model_runtime_policy",
                 "provider_usage_staging_reconciliation",
+                "task_v2_durable_ownership",
+                "subscription_funding_source_parity",
+                "realtime_flat_billing_parity",
             ]
         );
     }
@@ -4014,10 +4079,7 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(
-            EXPECTED_D1_MIGRATION,
-            "0030_billing_contract_immutability.sql"
-        );
+        assert_eq!(EXPECTED_D1_MIGRATION, "0031_task_billing_intents.sql");
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")
@@ -4077,6 +4139,12 @@ mod tests {
         let billing_contract_immutability =
             include_str!("../../../migrations/d1/0030_billing_contract_immutability.sql");
         assert!(billing_contract_immutability.contains("relay_billing_contract_immutable_guard"));
+        let task_billing_intents =
+            include_str!("../../../migrations/d1/0031_task_billing_intents.sql");
+        assert!(task_billing_intents.contains("submit_unknown"));
+        assert!(task_billing_intents.contains("task_billing_intent_refund_guard"));
+        assert!(task_billing_intents
+            .contains("ON task_billing_intents(task_kind, channel_id, provider_task_id)"));
     }
 
     #[test]

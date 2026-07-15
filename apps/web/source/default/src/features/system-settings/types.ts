@@ -499,6 +499,11 @@ export type PlatformCapabilities = {
   relay_flat_billing_go_parity_blockers: string[]
   relay_flat_billing_intent_staging_verified: boolean
   relay_flat_billing_intent_cutover_ready: boolean
+  subscription_funding_source_compiled: boolean
+  subscription_funding_source_runtime_ready: boolean
+  subscription_funding_source_staging_verified: boolean
+  subscription_funding_source_cutover_ready: boolean
+  subscription_funding_supported_surfaces: string[]
   relay_billing_reservation_lease_seconds: number
   relay_billing_prebind_owner_generation_contract_version: number
   relay_billing_prebind_owner_generation_compiled: boolean
@@ -589,6 +594,17 @@ export type PlatformCapabilities = {
   realtime_session_billing_settlement_compiled: boolean
   realtime_session_platform_smoke_ready: boolean
   realtime_session_v1_cutover_ready: boolean
+  realtime_flat_billing_compiled: boolean
+  realtime_flat_billing_runtime_ready: boolean
+  realtime_flat_billing_staging_verified: boolean
+  realtime_flat_billing_cutover_ready: boolean
+  task_v2_contract_version: number
+  task_v2_ownership_compiled: boolean
+  task_v2_schema_ready: boolean
+  task_v2_runtime_ready: boolean
+  task_v2_staging_verified: boolean
+  task_v2_cutover_ready: boolean
+  task_v2_cutover_guards: string[]
   task_poller_scheduled_handler_compiled: boolean
   task_poller_timeout_sweep_compiled: boolean
   task_poller_refund_batch_compiled: boolean

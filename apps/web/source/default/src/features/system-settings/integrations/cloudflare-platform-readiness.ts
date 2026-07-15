@@ -94,6 +94,10 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_flat_billing_go_parity_blockers'
   | 'relay_flat_billing_intent_staging_verified'
   | 'relay_flat_billing_intent_cutover_ready'
+  | 'subscription_funding_source_compiled'
+  | 'subscription_funding_source_runtime_ready'
+  | 'subscription_funding_source_staging_verified'
+  | 'subscription_funding_source_cutover_ready'
   | 'relay_billing_prebind_owner_generation_compiled'
   | 'relay_billing_prebind_owner_generation_configured'
   | 'relay_billing_prebind_owner_generation_staging_verified'
@@ -210,6 +214,17 @@ export type PlatformReadinessCapabilities = Pick<
   | 'realtime_session_platform_smoke_ready'
   | 'realtime_session_billing_settlement_staging_smoke_ready'
   | 'realtime_session_v1_cutover_ready'
+  | 'realtime_flat_billing_compiled'
+  | 'realtime_flat_billing_runtime_ready'
+  | 'realtime_flat_billing_staging_verified'
+  | 'realtime_flat_billing_cutover_ready'
+  | 'task_v2_contract_version'
+  | 'task_v2_ownership_compiled'
+  | 'task_v2_schema_ready'
+  | 'task_v2_runtime_ready'
+  | 'task_v2_staging_verified'
+  | 'task_v2_cutover_ready'
+  | 'task_v2_cutover_guards'
   | 'task_runner_do_available'
   | 'task_runner_do_enabled'
   | 'task_runner_do_foundation_compiled'
@@ -421,6 +436,12 @@ export function getFlatBillingParityBlockerLabel(blocker: string) {
       return 'Provider usage provenance parity'
     case 'provider_usage_staging_reconciliation':
       return 'Provider usage staging reconciliation'
+    case 'task_v2_durable_ownership':
+      return 'Task v2 durable ownership'
+    case 'subscription_funding_source_parity':
+      return 'Subscription funding-source parity'
+    case 'realtime_flat_billing_parity':
+      return 'Realtime flat-billing parity'
     default:
       return blocker
   }
@@ -500,7 +521,10 @@ export function buildPlatformReadinessSummary(
     capabilities.task_runner_rearm_contract_compiled,
     capabilities.task_runner_submit_path_compiled,
     capabilities.task_runner_poll_path_compiled,
-    capabilities.task_runner_status_probe_compiled
+    capabilities.task_runner_status_probe_compiled,
+    capabilities.task_v2_contract_version > 0,
+    capabilities.task_v2_ownership_compiled,
+    capabilities.task_v2_cutover_guards.length > 0
   )
 
   const implementation = createReadyStage('implementation', [
@@ -568,7 +592,9 @@ export function buildPlatformReadinessSummary(
       'task-runner-runtime',
       allReady(
         capabilities.task_runner_do_available,
-        capabilities.task_runner_do_enabled
+        capabilities.task_runner_do_enabled,
+        capabilities.task_v2_schema_ready,
+        capabilities.task_v2_runtime_ready
       )
     ),
     readySignal('quota-coordinator-binding', quotaCoordinator.binding),
@@ -591,7 +617,8 @@ export function buildPlatformReadinessSummary(
     capabilities.task_runner_do_available,
     capabilities.task_runner_do_enabled,
     capabilities.task_runner_storage_error_retry_contract_compiled,
-    capabilities.task_runner_status_probe_compiled
+    capabilities.task_runner_status_probe_compiled,
+    capabilities.task_v2_runtime_ready
   )
   const smoke = createVerificationStage('smoke', [
     verificationSignal(
@@ -639,7 +666,10 @@ export function buildPlatformReadinessSummary(
     verificationSignal(
       'task-runner-replay',
       taskRunnerReplayReady,
-      capabilities.task_runner_staging_replay_verified
+      allReady(
+        capabilities.task_runner_staging_replay_verified,
+        capabilities.task_v2_staging_verified
+      )
     ),
     verificationSignal(
       'quota-coordinator-staging-bake',
@@ -687,12 +717,27 @@ export function buildPlatformReadinessSummary(
       'ai-gateway-fallback-cutover',
       capabilities.relay_ai_gateway_cross_model_fallback_cutover_ready
     ),
-    readySignal('task-runner-cutover', capabilities.task_runner_cutover_ready),
+    readySignal(
+      'task-runner-cutover',
+      allReady(
+        capabilities.task_runner_cutover_ready,
+        capabilities.task_v2_cutover_ready
+      )
+    ),
     readySignal(
       'relay-billing-recovery-cutover',
       capabilities.relay_billing_orphan_recovery_cutover_ready
     ),
-    readySignal('relay-flat-billing-intent-cutover', flatBillingIntent.cutover),
+    readySignal(
+      'relay-flat-billing-intent-cutover',
+      allReady(
+        flatBillingIntent.cutover,
+        capabilities.subscription_funding_source_compiled,
+        capabilities.subscription_funding_source_runtime_ready,
+        capabilities.subscription_funding_source_staging_verified,
+        capabilities.subscription_funding_source_cutover_ready
+      )
+    ),
     readySignal(
       'relay-billing-owner-generation-cutover',
       capabilities.relay_billing_prebind_owner_generation_cutover_ready
@@ -704,7 +749,13 @@ export function buildPlatformReadinessSummary(
     readySignal('quota-coordinator-cutover', quotaCoordinator.cutover),
     readySignal(
       'realtime-v1-cutover',
-      capabilities.realtime_session_v1_cutover_ready
+      allReady(
+        capabilities.realtime_session_v1_cutover_ready,
+        capabilities.realtime_flat_billing_compiled,
+        capabilities.realtime_flat_billing_runtime_ready,
+        capabilities.realtime_flat_billing_staging_verified,
+        capabilities.realtime_flat_billing_cutover_ready
+      )
     ),
     readySignal(
       'realtime-billing-reconciliation-cutover',

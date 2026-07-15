@@ -1440,6 +1440,26 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "v1beta".to_string());
     let now = (worker::Date::now().as_millis() / 1000) as i64;
+    match task_repository::task_billing_intent_schema_ready(&db).await {
+        Ok(true) => match task_repository::sweep_expired_task_billing_intents(&db, now, 64).await {
+            Ok(summary) if summary.candidates > 0 => worker::console_log!(
+                "task billing intent recovery: candidates={} refunded={} recovery_required={} finalized={} failed={}",
+                summary.candidates,
+                summary.refunded,
+                summary.recovery_required,
+                summary.already_finalized,
+                summary.failed
+            ),
+            Ok(_) => {}
+            Err(err) => worker::console_error!("task billing intent recovery failed: {err}"),
+        },
+        Ok(false) => worker::console_error!(
+            "task billing intent recovery refused: migration 0031 is not applied"
+        ),
+        Err(err) => worker::console_error!(
+            "task billing intent recovery migration check failed: {err}"
+        ),
+    }
     if relay::relay_billing_orphan_recovery_enabled(&env) {
         let heartbeat = relay::relay_billing_stream_lease_heartbeat_runtime_status(&env);
         if !heartbeat.valid {
@@ -1609,6 +1629,12 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
     {
         Ok(settled) => worker::console_log!("task poller: settled {settled} suno task(s)"),
         Err(err) => worker::console_error!("task poller: suno batch failed: {err}"),
+    }
+    match mj_repository::sweep_timed_out_midjourneys(&db, now, poller_config.timeout_sweep_limit)
+        .await
+    {
+        Ok(settled) => worker::console_log!("task poller: timed out {settled} mj task(s)"),
+        Err(err) => worker::console_error!("task poller: mj timeout sweep failed: {err}"),
     }
     match task_orchestration::poll_unfinished_midjourney_tasks(&db, now, poller_config.query_limit)
         .await

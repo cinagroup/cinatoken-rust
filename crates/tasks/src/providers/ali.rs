@@ -95,13 +95,25 @@ struct SubmitOutput {
 /// non-empty top-level `code` is an API error (`"<code>: <message>"`), an empty
 /// `output.task_id` is an error, otherwise return `output.task_id`.
 pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
-    let resp: SubmitResponse = serde_json::from_slice(resp_body)
-        .map_err(|err| format!("unmarshal_response_body_failed: {err}"))?;
+    parse_submit_response_classified(resp_body).map_err(super::SubmitResponseFailure::into_message)
+}
+
+pub fn parse_submit_response_classified(
+    resp_body: &[u8],
+) -> Result<String, super::SubmitResponseFailure> {
+    let resp: SubmitResponse = serde_json::from_slice(resp_body).map_err(|err| {
+        super::SubmitResponseFailure::Unknown(format!("unmarshal_response_body_failed: {err}"))
+    })?;
     if !resp.code.is_empty() {
-        return Err(format!("{}: {}", resp.code, resp.message));
+        return Err(super::SubmitResponseFailure::Rejected(format!(
+            "{}: {}",
+            resp.code, resp.message
+        )));
     }
     if resp.output.task_id.is_empty() {
-        return Err("task_id is empty".to_string());
+        return Err(super::SubmitResponseFailure::Unknown(
+            "task_id is empty".to_string(),
+        ));
     }
     Ok(resp.output.task_id)
 }

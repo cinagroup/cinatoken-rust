@@ -119,10 +119,63 @@ export interface CreateUserSubscriptionRequest {
 // Self Subscription Data (user-facing)
 // ============================================================================
 
+export const billingPreferences = [
+  'subscription_first',
+  'wallet_first',
+  'subscription_only',
+  'wallet_only',
+] as const
+
+export type BillingPreference = (typeof billingPreferences)[number]
+
 export interface SelfSubscriptionData {
   billing_preference: string
+  funding_source_ready?: boolean
+  supported_funding_surfaces?: string[]
   subscriptions: UserSubscriptionRecord[]
   all_subscriptions: UserSubscriptionRecord[]
+}
+
+type SubscriptionFundingCapability = Pick<
+  SelfSubscriptionData,
+  'funding_source_ready' | 'supported_funding_surfaces'
+>
+
+export function isSubscriptionFundingSourceReady(
+  capability: SubscriptionFundingCapability | null | undefined
+): boolean {
+  return (
+    capability?.funding_source_ready === true &&
+    Array.isArray(capability.supported_funding_surfaces) &&
+    capability.supported_funding_surfaces.length > 0
+  )
+}
+
+export function canSelectBillingPreference(
+  preference: BillingPreference,
+  fundingSourceReady: boolean,
+  hasActiveSubscription: boolean
+): boolean {
+  if (!fundingSourceReady) return preference === 'wallet_only'
+  if (!hasActiveSubscription) {
+    return !['subscription_first', 'subscription_only'].includes(preference)
+  }
+  return true
+}
+
+export function getDisplayedBillingPreference(
+  preference: BillingPreference,
+  fundingSourceReady: boolean,
+  hasActiveSubscription: boolean
+): BillingPreference {
+  if (!fundingSourceReady) return preference
+  if (
+    !hasActiveSubscription &&
+    ['subscription_first', 'subscription_only'].includes(preference)
+  ) {
+    return 'wallet_first'
+  }
+  return preference
 }
 
 // ============================================================================

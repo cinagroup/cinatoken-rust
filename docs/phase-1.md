@@ -1324,3 +1324,44 @@ Production remains **NO-GO**.
 Production remains **NO-GO** pending synchronous live evidence, the asynchronous
 state machine, free-model runtime policy, provider usage staging reconciliation,
 credential rotation, rollback, and signed G1-G8 approval.
+
+## 2026-07-15 Task v2 Durable Ownership And Funding UI Fail-Closed Increment
+
+- D1 head advances to `0031_task_billing_intents.sql`. Video, Suno, and
+  Midjourney now create an immutable billing intent and reserve wallet/token
+  quota before provider I/O.
+- Submission state is independent from financial state. A Worker interruption or
+  unclassifiable response after outbound I/O becomes `submit_unknown` and
+  `recovery_required`; the scheduled recovery path cannot automatically refund
+  or blindly resubmit it.
+- Unified Task and Midjourney provider attachment, successful-request accounting,
+  and terminal settle/refund use guarded D1 batches. Conditional zero-row writes
+  force transaction abort, and refund triggers verify the original user/token
+  targets before marking the intent final.
+- Expired `prepared` intents are safe to refund because provider submission was
+  never claimed. Expired `submitting` intents are quarantined for reconciliation
+  instead. Zero-quota tasks still attach and count once.
+- `/api/platform/capabilities` now separates TaskRunner fast-path readiness from
+  Task v2 financial ownership and publishes stable blockers for Task v2,
+  subscription funding-source parity, and Realtime flat billing parity.
+- Subscription purchase/management remains available, but ordinary request
+  funding still uses wallet only. The self-subscription contract now exposes
+  this limitation and the UI disables non-wallet funding preferences rather than
+  promising behavior the runtime cannot perform.
+- Local schema verification covers the 31-file migration set, 31 tables, 167
+  incremental columns, 30 key indexes, and the Task intent state machine. See
+  `docs/task-v2-durable-ownership.md` for the failure matrix and remaining gates.
+- Structured provider rejection now refunds atomically; malformed or ambiguous
+  results remain quarantined. Active intent channels cannot be deleted, and an
+  owned refund still reaches soft-deleted user/token rows.
+- Midjourney timeout recovery is D1-driven before provider polling, and Task
+  FreeModel admission delays only the user-wallet check until the frozen policy
+  decision. Token and access-policy checks remain pre-provider.
+
+Open production gates remain substantial: shared generation-fenced D1 poll
+leases across cron/DO, provider idempotency or lookup recovery, automated
+`submit_unknown` reconciliation, task-family fairness/backoff, subscription
+funding on HTTP/Task/Realtime, Realtime flat/free-model parity, remote D1 and
+provider fault replay, invoice reconciliation, browser evidence, credential
+rotation, rollback, monitoring, and signed G1-G8 approval. Go/VPS remains the
+production authority and Cloudflare remains **NO-GO**.

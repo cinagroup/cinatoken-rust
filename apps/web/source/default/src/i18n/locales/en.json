@@ -3045,6 +3045,7 @@
     "Pre-consumed": "Pre-consumed",
     "Pre-Consumed Quota": "Pre-Consumed Quota",
     "Preference saved as {{pref}}, but no active subscription. Wallet will be used automatically.": "Preference saved as {{pref}}, but no active subscription. Wallet will be used automatically.",
+    "Subscription purchases are available, but API requests cannot use subscription balance yet.": "Subscription purchases are available, but API requests cannot use subscription balance yet.",
     "Preferences": "Preferences",
     "Prefill Group Management": "Prefill Group Management",
     "Prefill Groups": "Prefill Groups",

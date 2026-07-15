@@ -18,6 +18,20 @@ pub mod vidu;
 
 use crate::TaskInfo;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubmitResponseFailure {
+    Rejected(String),
+    Unknown(String),
+}
+
+impl SubmitResponseFailure {
+    pub fn into_message(self) -> String {
+        match self {
+            Self::Rejected(message) | Self::Unknown(message) => message,
+        }
+    }
+}
+
 /// The task-capable video providers, identified by their Cloudflare channel-type
 /// id (`constant/channel.go`). This is the dispatch the polling orchestration
 /// uses to pick a parser, ported from the channel-type switch in Go
@@ -77,15 +91,25 @@ impl VideoProvider {
     /// (sora/vidu/doubao/kling/ali) dispatch to it; the others return an error
     /// until their submit parser is ported.
     pub fn parse_submit_response(self, body: &[u8]) -> Result<String, String> {
+        self.parse_submit_response_classified(body)
+            .map_err(SubmitResponseFailure::into_message)
+    }
+
+    pub fn parse_submit_response_classified(
+        self,
+        body: &[u8],
+    ) -> Result<String, SubmitResponseFailure> {
         match self {
-            VideoProvider::Sora => sora::parse_submit_response(body),
-            VideoProvider::Vidu => vidu::parse_submit_response(body),
-            VideoProvider::Doubao => doubao::parse_submit_response(body),
-            VideoProvider::Kling => kling::parse_submit_response(body),
-            VideoProvider::Ali => ali::parse_submit_response(body),
-            VideoProvider::Jimeng => jimeng::parse_submit_response(body),
+            VideoProvider::Sora => sora::parse_submit_response_classified(body),
+            VideoProvider::Vidu => vidu::parse_submit_response_classified(body),
+            VideoProvider::Doubao => doubao::parse_submit_response_classified(body),
+            VideoProvider::Kling => kling::parse_submit_response_classified(body),
+            VideoProvider::Ali => ali::parse_submit_response_classified(body),
+            VideoProvider::Jimeng => jimeng::parse_submit_response_classified(body),
             VideoProvider::Vertex | VideoProvider::Gemini | VideoProvider::Hailuo => {
-                Err("submit response parser not yet ported for this provider".to_string())
+                Err(SubmitResponseFailure::Unknown(
+                    "submit response parser not yet ported for this provider".to_string(),
+                ))
             }
         }
     }
@@ -120,6 +144,26 @@ mod tests {
         }
         // A non-task channel type.
         assert_eq!(VideoProvider::from_channel_type(999), None);
+    }
+
+    #[test]
+    fn submit_failures_distinguish_explicit_rejection_from_unknown_results() {
+        assert_eq!(
+            VideoProvider::Ali.parse_submit_response_classified(
+                br#"{"code":"InvalidParameter","message":"bad prompt"}"#,
+            ),
+            Err(SubmitResponseFailure::Rejected(
+                "InvalidParameter: bad prompt".to_string()
+            ))
+        );
+        assert!(matches!(
+            VideoProvider::Ali.parse_submit_response_classified(b"not-json"),
+            Err(SubmitResponseFailure::Unknown(_))
+        ));
+        assert!(matches!(
+            VideoProvider::Sora.parse_submit_response_classified(br#"{}"#),
+            Err(SubmitResponseFailure::Unknown(_))
+        ));
     }
 
     #[test]

@@ -27,14 +27,15 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 | WFP Rust tenant script | Dedicated Rust/Wasm tenant crate, strict artifact manifest/uploader, central-authority v3 transport, signed physical-target/policy claims, outbound invocation context, platform-owned Gateway policy, and final-boundary replay guard are present; tenant has no authority key, replay binding, bearer, or Gateway policy authority | Gated substrate | Real staging namespace/schema-3 outbound readback, live context/policy propagation, missing-worker/resource-limit/context faults, tenant-policy spoof negatives, one paid provider call, central billing outcome, and traces |
 | AI Gateway multi-model forwarding | Default-off direct and cross-model paths, actual-serving-group billing contract, and operator readiness exist | Gated substrate | Deployed provider-route canary, usage/error reconciliation, terminal audit delivery, fault injection, and rollback |
 | HTTP flat billing intent | Migrations 0029-0030, schema-v4 immutable per-candidate snapshots, domain-separated digest validation, reserve/bind/Queue/CAS finalization, request-id replay rejection, exact-decimal final rounding, fail-closed unknown-model admission, a hash-bound Go-generated flat manifest, and Ali synchronous image actual-count settlement pass locally | Gated local substrate | Complete Ali asynchronous task settlement, free-model runtime policy, and provider usage staging reconciliation; regenerate the manifest at cutover; obtain remote 0030/Queue/D1/invoice, abort/idle, rollback, and approval evidence |
+| Task v2 durable billing ownership | Migration 0031 reserves before provider I/O, atomically refunds structured rejection, quarantines unknown results, protects active channels, supports soft-deleted refund targets, D1-times-out Midjourney, and atomically attaches/settles video, Suno, and Midjourney locally | Gated local substrate | Add a shared D1 poll lease, stable provider idempotency/lookup recovery, checked 64-bit financial binding, fair persisted retry, unknown-submit reconciliation, remote fault replay, invoice evidence, and staging approval |
 | Realtime billing reconciliation | Migration 0028, an admin queue, frozen-expression preview, root step-up apply, atomic settle/refund, and a React/Bun workbench pass locally with mutation default-off | Gated local control plane | Rotated credential, remote 0028, dual-control/retention policy, provider invoice correlation, D1/concurrency/rollback drills, alerts, and approval |
 | `cinatoken.com` production deployment | No current deployment evidence; the credential included in the task is exposed and was not used | Not started | Revoke/rotate the exposed token, issue least-privilege replacement credentials, finish G1-G8, deploy staging, canary, then production DNS/cutover |
 
 This re-audit keeps the overall migration goal open. Passing local gates proves
 implementation readiness only for the covered behavior.
 
-The current local D1 head is migration 0030: 30 contiguous migrations, 30
-tables, 139 checked incremental columns, and 27 key indexes. Flat intent runtime
+The current local D1 head is migration 0031: 31 contiguous migrations, 31
+tables, 167 checked incremental columns, and 30 key indexes. Flat intent runtime
 and admission readiness do not imply pricing cutover readiness;
 `relay_flat_billing_go_parity_ready` remains hard false.
 

@@ -4624,6 +4624,61 @@ classification, remote direct/Gateway/WFP replay, provider invoice correlation,
 credential rotation, alerts, rollback, and G1-G8 approval remain open.
 Production remains **NO-GO**.
 
+## Durable Task Billing Ownership Hardening Verification (2026-07-15)
+
+```powershell
+cargo test -p cinatoken-worker --lib
+# PASS; 696/696
+
+cargo test -p cinatoken-tasks
+# PASS; 124/124
+
+python tools/verify_sqlite.py
+# PASS; 31 migrations/tables, 167 incremental columns, 30 key indexes,
+# and the 0031 Task billing state machine
+
+bun test apps/web/source/default/src/features/subscriptions/subscription-funding.test.ts
+# PASS; 5/5
+
+bun run check:web:readiness
+# PASS; 56/56
+
+bun run check
+# PASS; frontend and Worker builds, D1/DO/Queue/TaskRunner contracts,
+# workspace tests, and main/tenant/outbound wasm32 checks
+
+git diff --check
+# PASS
+```
+
+Verified behavior:
+
+- Migration 0031 owns Task billing intent, reservation, attachment, terminal
+  settlement, and refund state in D1. Trigger guards reject invalid
+  transitions and channel deletion while money is reserved or recovery is
+  required.
+- Video, Suno, and Midjourney submission classify explicit provider rejection
+  separately from ambiguous transport or response failures. Explicit
+  `2xx`/`4xx` rejections atomically refund; `5xx`, redirects, network failures,
+  and malformed outcomes remain recoverable and do not risk a duplicate
+  provider submission.
+- Recovery sweeps include confirmed pre-provider rejections and D1-owned
+  Midjourney timeouts, including legacy second timestamps. Refunds remain
+  possible after user or token soft deletion, and accepted provider work can
+  still attach before reaching its terminal state.
+- Task authentication preserves token, user, expiry, model, IP, and token-quota
+  checks. Only a frozen billing plan with `free_model=true` may bypass an empty
+  user wallet; paid plans remain fail-closed.
+- Subscription funding controls consume server capability facts and show a
+  localized blocking reason instead of exposing an unsupported production
+  path.
+
+This is local E3 evidence. Stable provider idempotency, generation-fenced poll
+leases, `submit_unknown` operator reconciliation, checked 64-bit financial D1
+bindings, full HTTP/Realtime free-model parity, remote fault/load/rollback
+evidence, credential rotation, and G1-G8 approval remain blocking. Production
+remains **NO-GO**.
+
 ## Ali Synchronous Image Actual-Count Settlement Verification (2026-07-15)
 
 ```powershell

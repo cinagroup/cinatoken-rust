@@ -86,10 +86,17 @@ pub fn task_needs_update(current: &CurrentTaskState, incoming: &SunoDataResponse
 /// the response is a `TaskResponse<String>` whose `data` is the task id; a
 /// non-`success` code is an error carrying `message`.
 pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
-    let resp: TaskResponse<String> = serde_json::from_slice(resp_body)
-        .map_err(|err| format!("unmarshal_response_body_failed: {err}"))?;
+    parse_submit_response_classified(resp_body).map_err(super::SubmitResponseFailure::into_message)
+}
+
+pub fn parse_submit_response_classified(
+    resp_body: &[u8],
+) -> Result<String, super::SubmitResponseFailure> {
+    let resp: TaskResponse<String> = serde_json::from_slice(resp_body).map_err(|err| {
+        super::SubmitResponseFailure::Unknown(format!("unmarshal_response_body_failed: {err}"))
+    })?;
     if !resp.is_success() {
-        return Err(resp.message);
+        return Err(super::SubmitResponseFailure::Rejected(resp.message));
     }
     Ok(resp.data)
 }
@@ -109,6 +116,14 @@ mod tests {
             parse_submit_response(br#"{"code":"fail","message":"insufficient credits","data":""}"#)
                 .unwrap_err(),
             "insufficient credits"
+        );
+        assert_eq!(
+            parse_submit_response_classified(
+                br#"{"code":"fail","message":"insufficient credits","data":""}"#,
+            ),
+            Err(crate::providers::SubmitResponseFailure::Rejected(
+                "insufficient credits".to_string()
+            ))
         );
     }
 

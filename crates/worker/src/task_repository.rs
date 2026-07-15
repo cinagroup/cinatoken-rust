@@ -18,12 +18,91 @@
 use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
 use cinatoken_tasks::{build_task_id, settlement_for, TaskInfo, TaskSettlement, TaskStatus};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use worker::{D1Database, D1Type};
 
 pub(crate) const LEGACY_TASK_TIMEOUT_CUTOFF_UNIX: i64 = 1_740_182_400;
+pub(crate) const TASK_BILLING_INTENT_MIGRATION: &str = "0031_task_billing_intents.sql";
+pub(crate) const TASK_BILLING_INTENT_LEASE_SECONDS: i64 = 900;
+const TASK_BILLING_INTENT_SWEEP_MAX_LIMIT: i64 = 64;
+const TASK_BILLING_INTENT_SWEEP_SELECT: &str = r#"
+    SELECT reservation_key, submit_state
+    FROM task_billing_intents
+    WHERE status = 'reserved'
+      AND submit_state IN ('prepared', 'submitting', 'rejected')
+      AND lease_expires_at < ?1
+    ORDER BY lease_expires_at ASC, reservation_key ASC
+    LIMIT ?2
+"#;
 const LEGACY_TASK_TIMEOUT_REASON: &str = "任务超时（旧系统遗留任务，不进行退款，请联系管理员）";
 const TASK_REFUND_MARKER_PATH: &str = "$.task_refund_marker";
 const TASK_REFUND_DONE_AT_PATH: &str = "$.task_refund_done_at";
+
+#[derive(Debug, Clone, Copy)]
+pub struct TaskBillingIntentRecord<'a> {
+    pub reservation_key: &'a str,
+    pub task_kind: &'a str,
+    pub public_task_id: &'a str,
+    pub user_id: i64,
+    pub token_id: i64,
+    pub channel_id: i64,
+    pub quota: i64,
+    pub funding_source: &'a str,
+    pub subscription_id: i64,
+    pub billing_contract_json: &'a str,
+    pub provider_kind: &'a str,
+    pub provider_idempotency_key: &'a str,
+    pub created_at: i64,
+    pub lease_expires_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct TaskBillingIntent {
+    pub reservation_key: String,
+    pub task_kind: String,
+    pub public_task_id: String,
+    pub user_id: i64,
+    pub token_id: i64,
+    pub channel_id: i64,
+    pub quota: i64,
+    pub funding_source: String,
+    pub subscription_id: i64,
+    pub billing_contract_json: String,
+    pub billing_contract_sha256: String,
+    pub status: String,
+    pub submit_state: String,
+    pub provider_kind: String,
+    pub provider_idempotency_key: String,
+    pub provider_task_id: String,
+    pub request_accounted: i64,
+    pub lease_expires_at: i64,
+    pub owner_generation: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskBillingIntentAttachOutcome {
+    Applied,
+    MatchingAttached,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskBillingIntentRefundOutcome {
+    Applied,
+    AlreadyFinalized,
+    NotFound,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TaskBillingIntentSweepSummary {
+    pub candidates: i64,
+    pub refunded: i64,
+    pub recovery_required: i64,
+    pub already_finalized: i64,
+    pub failed: i64,
+}
 
 /// Generate a public task id — `"task_"` + 32 CSPRNG characters, the Worker
 /// (wasm) half of Go `GenerateTaskID`. Bytes come from `getrandom` (Web Crypto)
@@ -49,6 +128,369 @@ pub fn generate_task_id() -> String {
     build_task_id(&indices)
 }
 
+const TASK_BILLING_INTENT_COLUMNS: &str = r#"reservation_key, task_kind, public_task_id,
+    user_id, token_id, channel_id, quota, funding_source, subscription_id,
+    billing_contract_json, billing_contract_sha256, status, submit_state,
+    provider_kind, provider_idempotency_key, provider_task_id,
+    request_accounted, lease_expires_at, owner_generation, created_at, updated_at"#;
+
+fn task_billing_contract_sha256(contract_json: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(contract_json.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn validate_task_billing_intent_record(record: &TaskBillingIntentRecord<'_>) -> worker::Result<()> {
+    let reservation_key = record.reservation_key.trim();
+    let public_task_id = record.public_task_id.trim();
+    let contract_json = record.billing_contract_json.trim();
+    if reservation_key.is_empty()
+        || reservation_key.len() > 160
+        || public_task_id.is_empty()
+        || public_task_id.len() > 160
+        || !matches!(record.task_kind, "task" | "midjourney")
+        || record.user_id <= 0
+        || record.token_id < 0
+        || record.channel_id <= 0
+        || record.quota < 0
+        || !matches!(record.funding_source, "wallet" | "subscription")
+        || (record.funding_source == "wallet" && record.subscription_id != 0)
+        || (record.funding_source == "subscription" && record.subscription_id <= 0)
+        || contract_json.len() > 32 * 1024
+        || serde_json::from_str::<serde_json::Value>(contract_json).is_err()
+        || record.provider_kind.trim().is_empty()
+        || record.provider_kind.trim().len() > 64
+        || record.provider_idempotency_key.trim().is_empty()
+        || record.provider_idempotency_key.trim().len() > 160
+        || record.created_at <= 0
+        || record.lease_expires_at <= record.created_at
+    {
+        return Err(worker::Error::RustError(
+            "task billing intent contract is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Persist the immutable task billing contract and reserve its funding before
+/// any provider request. Migration 0031 owns the wallet/subscription and token
+/// mutations in insert/refund triggers so the row and its financial side effect
+/// share one D1 transaction.
+pub async fn reserve_task_billing_intent(
+    db: &D1Database,
+    record: TaskBillingIntentRecord<'_>,
+) -> worker::Result<()> {
+    validate_task_billing_intent_record(&record)?;
+    let contract_json = record.billing_contract_json.trim();
+    let contract_sha256 = task_billing_contract_sha256(contract_json);
+    let args = [
+        D1Type::Text(record.reservation_key.trim()),
+        D1Type::Text(record.task_kind),
+        D1Type::Text(record.public_task_id.trim()),
+        D1Type::Integer(d1_i32(record.user_id)),
+        D1Type::Integer(d1_i32(record.token_id)),
+        D1Type::Integer(d1_i32(record.channel_id)),
+        D1Type::Integer(task_refund_quota_i32(record.quota)?),
+        D1Type::Text(record.funding_source),
+        D1Type::Integer(d1_i32(record.subscription_id)),
+        D1Type::Text(contract_json),
+        D1Type::Text(&contract_sha256),
+        D1Type::Text(record.provider_kind.trim()),
+        D1Type::Text(record.provider_idempotency_key.trim()),
+        D1Type::Integer(d1_i32(record.created_at)),
+        D1Type::Integer(d1_i32(record.lease_expires_at)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            INSERT INTO task_billing_intents (
+              reservation_key, task_kind, public_task_id, user_id, token_id,
+              channel_id, quota, funding_source, subscription_id,
+              billing_contract_json, billing_contract_sha256,
+              provider_kind, provider_idempotency_key,
+              created_at, updated_at, lease_expires_at
+            ) VALUES (
+              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15
+            )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    if changes != 1 {
+        return Err(worker::Error::RustError(
+            "task billing intent reserve did not apply".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Fence the provider call before any outbound I/O. Once this transition wins,
+/// an ambiguous network result may only become `submit_unknown`; it is never
+/// eligible for the automatic pre-submit refund sweep.
+pub async fn mark_task_billing_intent_submitting(
+    db: &D1Database,
+    reservation_key: &str,
+    now: i64,
+) -> worker::Result<bool> {
+    let lease_expires_at = now.saturating_add(TASK_BILLING_INTENT_LEASE_SECONDS);
+    let args = [
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Integer(d1_i32(lease_expires_at)),
+        D1Type::Text(reservation_key.trim()),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE task_billing_intents
+            SET submit_state = 'submitting',
+                submit_attempt_count = submit_attempt_count + 1,
+                lease_expires_at = ?2,
+                updated_at = ?1,
+                owner_generation = owner_generation + 1,
+                recovery_last_error = ''
+            WHERE reservation_key = ?3
+              AND status = 'reserved'
+              AND submit_state = 'prepared'
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+pub async fn mark_task_billing_intent_submit_unknown(
+    db: &D1Database,
+    reservation_key: &str,
+    now: i64,
+    reason: &str,
+) -> worker::Result<bool> {
+    let reason = reason.trim().chars().take(256).collect::<String>();
+    let args = [
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Text(&reason),
+        D1Type::Text(reservation_key.trim()),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE task_billing_intents
+            SET status = 'recovery_required',
+                submit_state = 'submit_unknown',
+                recovery_required_at = CASE
+                  WHEN recovery_required_at > 0 THEN recovery_required_at ELSE ?1 END,
+                recovery_attempt_count = recovery_attempt_count + 1,
+                recovery_last_error = ?2,
+                updated_at = ?1,
+                owner_generation = owner_generation + 1
+            WHERE reservation_key = ?3
+              AND status = 'reserved'
+              AND submit_state = 'submitting'
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+pub async fn reject_and_refund_task_billing_intent(
+    db: &D1Database,
+    reservation_key: &str,
+    now: i64,
+    reason: &str,
+) -> worker::Result<bool> {
+    let reason = reason.trim().chars().take(256).collect::<String>();
+    let args = [
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Text(&reason),
+        D1Type::Text(reservation_key.trim()),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE task_billing_intents
+            SET status = 'refunded',
+                submit_state = 'rejected',
+                refunded_at = ?1,
+                updated_at = ?1,
+                owner_generation = owner_generation + 1,
+                recovery_last_error = ?2
+            WHERE reservation_key = ?3
+              AND status = 'reserved'
+              AND submit_state = 'submitting'
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+pub async fn find_task_billing_intent(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<Option<TaskBillingIntent>> {
+    let arg = D1Type::Text(reservation_key.trim());
+    db.prepare(&format!(
+        "SELECT {TASK_BILLING_INTENT_COLUMNS} FROM task_billing_intents WHERE reservation_key = ?1 LIMIT 1"
+    ))
+    .bind_refs(&arg)?
+    .first::<TaskBillingIntent>(None)
+    .await
+}
+
+/// Refund only a pre-attachment intent. Attached work must transition through
+/// the task/Midjourney terminal CAS so a live task cannot be refunded by an
+/// ambiguous submit response.
+pub async fn refund_unattached_task_billing_intent(
+    db: &D1Database,
+    reservation_key: &str,
+    now: i64,
+    reason: &str,
+) -> worker::Result<TaskBillingIntentRefundOutcome> {
+    let reason = reason.trim().chars().take(256).collect::<String>();
+    let args = [
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Text(&reason),
+        D1Type::Text(reservation_key.trim()),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE task_billing_intents
+            SET status = 'refunded',
+                refunded_at = ?1,
+                updated_at = ?1,
+                owner_generation = owner_generation + 1,
+                recovery_last_error = ?2
+            WHERE reservation_key = ?3
+              AND status IN ('reserved', 'recovery_required')
+              AND submit_state IN ('prepared', 'rejected')
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(TaskBillingIntentRefundOutcome::Applied);
+    }
+    match find_task_billing_intent(db, reservation_key).await? {
+        None => Ok(TaskBillingIntentRefundOutcome::NotFound),
+        Some(_) => Ok(TaskBillingIntentRefundOutcome::AlreadyFinalized),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskBillingIntentKeyRow {
+    reservation_key: String,
+    submit_state: String,
+}
+
+pub async fn sweep_expired_task_billing_intents(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<TaskBillingIntentSweepSummary> {
+    let limit = limit.clamp(1, TASK_BILLING_INTENT_SWEEP_MAX_LIMIT);
+    let args = [D1Type::Integer(d1_i32(now)), D1Type::Integer(d1_i32(limit))];
+    let rows = db
+        .prepare(TASK_BILLING_INTENT_SWEEP_SELECT)
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<TaskBillingIntentKeyRow>()?;
+    let mut summary = TaskBillingIntentSweepSummary {
+        candidates: rows.len() as i64,
+        ..TaskBillingIntentSweepSummary::default()
+    };
+    for row in rows {
+        if row.submit_state == "submitting" {
+            match mark_task_billing_intent_submit_unknown(
+                db,
+                &row.reservation_key,
+                now,
+                "provider_submit_lease_expired",
+            )
+            .await
+            {
+                Ok(true) => summary.recovery_required += 1,
+                Ok(false) => summary.already_finalized += 1,
+                Err(err) => {
+                    summary.failed += 1;
+                    worker::console_error!(
+                        "task billing intent unknown-submit recovery failed for {}: {}",
+                        row.reservation_key,
+                        err
+                    );
+                }
+            }
+            continue;
+        }
+        match refund_unattached_task_billing_intent(
+            db,
+            &row.reservation_key,
+            now,
+            "submit_intent_lease_expired",
+        )
+        .await
+        {
+            Ok(TaskBillingIntentRefundOutcome::Applied) => summary.refunded += 1,
+            Ok(TaskBillingIntentRefundOutcome::AlreadyFinalized)
+            | Ok(TaskBillingIntentRefundOutcome::NotFound) => summary.already_finalized += 1,
+            Err(err) => {
+                summary.failed += 1;
+                worker::console_error!(
+                    "task billing intent recovery failed for {}: {}",
+                    row.reservation_key,
+                    err
+                );
+            }
+        }
+    }
+    Ok(summary)
+}
+
+pub async fn task_billing_intent_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    #[derive(Debug, Deserialize)]
+    struct SchemaCountRow {
+        count: i64,
+    }
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM sqlite_master
+            WHERE (type = 'table' AND name = 'task_billing_intents')
+               OR (type = 'trigger' AND name IN (
+                 'task_billing_intent_contract_immutable_guard',
+                 'task_billing_intent_insert_guard',
+                 'task_billing_intent_channel_delete_guard',
+                 'task_billing_intent_reserve_apply',
+                 'task_billing_intent_submit_transition_guard',
+                 'task_billing_intent_status_transition_guard',
+                 'task_billing_intent_attach_guard',
+                 'task_billing_intent_attach_accounting',
+                 'task_billing_intent_terminal_guard',
+                 'task_billing_intent_refund_guard',
+                 'task_billing_intent_refund_apply'
+               ))
+            "#,
+        )
+        .first::<SchemaCountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 12).unwrap_or(false))
+}
+
+pub(crate) fn task_billing_intent_contract_compiled() -> bool {
+    TASK_BILLING_INTENT_MIGRATION == "0031_task_billing_intents.sql"
+        && TASK_BILLING_INTENT_LEASE_SECONDS == 900
+        && task_billing_contract_sha256("{}")
+            == "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+}
+
 /// The fields needed to create a task row. Columns not listed take their
 /// `0001_core.sql` defaults.
 pub struct NewTask<'a> {
@@ -63,6 +505,9 @@ pub struct NewTask<'a> {
     /// `TaskPrivateData.TokenId`, "令牌 ID，用于令牌额度退款") so a failed task's
     /// reserve can be refunded to the token, not just the user.
     pub token_id: i64,
+    /// Migration-0031 pre-provider ownership identity. Empty is accepted only
+    /// for imported/legacy rows that predate durable task intents.
+    pub billing_reservation_key: &'a str,
     pub quota: i64,
     pub action: &'a str,
     pub status: TaskStatus,
@@ -92,6 +537,8 @@ pub struct TaskRow {
     /// predate token-id persistence). Drives the token-quota refund on failure.
     #[serde(default)]
     pub token_id: i64,
+    #[serde(default)]
+    pub billing_reservation_key: String,
     pub quota: i64,
     pub action: String,
     pub status: String,
@@ -119,6 +566,7 @@ pub async fn insert_task(db: &D1Database, task: &NewTask<'_>) -> worker::Result<
     let private_data = serde_json::json!({
         "token_id": task.token_id,
         "upstream_task_id": task.upstream_task_id,
+        "billing_reservation_key": task.billing_reservation_key,
     })
     .to_string();
     let args = [
@@ -207,6 +655,160 @@ pub async fn insert_task(db: &D1Database, task: &NewTask<'_>) -> worker::Result<
     Ok(())
 }
 
+/// Attach a provider-accepted task to its pre-provider billing intent. The task
+/// insert and the intent's `reserved -> attached` transition share one D1
+/// batch; migration 0031 performs request/channel accounting from that unique
+/// transition. A matching committed row is accepted after an ambiguous batch
+/// response, while any divergent identity fails closed.
+pub async fn attach_task_billing_intent(
+    db: &D1Database,
+    task: &NewTask<'_>,
+) -> worker::Result<TaskBillingIntentAttachOutcome> {
+    let reservation_key = task.billing_reservation_key.trim();
+    if reservation_key.is_empty()
+        || task.task_id.trim().is_empty()
+        || task.upstream_task_id.trim().is_empty()
+    {
+        return Err(worker::Error::RustError(
+            "task billing attachment identity is invalid".to_string(),
+        ));
+    }
+    let private_data = serde_json::json!({
+        "token_id": task.token_id,
+        "upstream_task_id": task.upstream_task_id,
+        "billing_reservation_key": reservation_key,
+    })
+    .to_string();
+    let insert_args = [
+        D1Type::Text(task.task_id),
+        D1Type::Text(task.upstream_task_id),
+        D1Type::Text(task.platform),
+        D1Type::Integer(d1_i32(task.user_id)),
+        D1Type::Text(task.username),
+        D1Type::Text(task.group),
+        D1Type::Integer(d1_i32(task.channel_id)),
+        D1Type::Integer(d1_i32(task.quota)),
+        D1Type::Text(task.action),
+        D1Type::Text(task.status.as_str()),
+        D1Type::Integer(d1_i32(task.submit_time)),
+        D1Type::Integer(d1_i32(task.created_at)),
+        D1Type::Integer(d1_i32(task.updated_at)),
+        D1Type::Text(task.properties),
+        D1Type::Text(&private_data),
+        D1Type::Text(task.data),
+        D1Type::Text(reservation_key),
+        D1Type::Integer(d1_i32(task.token_id)),
+    ];
+    let insert = db
+        .prepare(
+            r#"
+            INSERT INTO tasks
+              (task_id, upstream_task_id, platform, user_id, username, "group",
+               channel_id, quota, action, status, submit_time, created_at, updated_at,
+               properties, private_data, data)
+            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
+            WHERE EXISTS (
+              SELECT 1 FROM task_billing_intents
+              WHERE reservation_key = ?17
+                AND task_kind = 'task'
+                AND public_task_id = ?1
+                AND user_id = ?4
+                AND token_id = ?18
+                AND channel_id = ?7
+                AND quota = ?8
+                AND status IN ('reserved', 'recovery_required')
+                AND submit_state IN ('submitting', 'submit_unknown')
+            )
+            "#,
+        )
+        .bind_refs(&insert_args)?;
+    let attach_args = [
+        D1Type::Text(task.upstream_task_id),
+        D1Type::Integer(d1_i32(task.updated_at)),
+        D1Type::Text(reservation_key),
+        D1Type::Text(task.task_id),
+        D1Type::Integer(d1_i32(task.user_id)),
+        D1Type::Integer(d1_i32(task.token_id)),
+        D1Type::Integer(d1_i32(task.channel_id)),
+        D1Type::Integer(d1_i32(task.quota)),
+    ];
+    let attach = db
+        .prepare(
+            r#"
+            UPDATE task_billing_intents
+            SET status = 'attached',
+                submit_state = 'submitted',
+                provider_task_id = ?1,
+                request_accounted = 1,
+                attached_at = ?2,
+                updated_at = ?2,
+                owner_generation = owner_generation + 1,
+                recovery_last_error = ''
+            WHERE reservation_key = ?3
+              AND task_kind = 'task'
+              AND public_task_id = ?4
+              AND user_id = ?5
+              AND token_id = ?6
+              AND channel_id = ?7
+              AND quota = ?8
+              AND status IN ('reserved', 'recovery_required')
+              AND submit_state IN ('submitting', 'submit_unknown')
+              AND EXISTS (
+                SELECT 1 FROM tasks
+                WHERE task_id = ?4
+                  AND upstream_task_id = ?1
+                  AND json_extract(private_data, '$.billing_reservation_key') = ?3
+              )
+            "#,
+        )
+        .bind_refs(&attach_args)?;
+
+    match db
+        .batch(vec![
+            insert,
+            assert_task_billing_previous_statement_statement(db, reservation_key)?,
+            attach,
+            assert_task_billing_previous_statement_statement(db, reservation_key)?,
+        ])
+        .await
+    {
+        Ok(results) => {
+            if task_batch_changed(&results, 0)? && task_batch_changed(&results, 2)? {
+                return Ok(TaskBillingIntentAttachOutcome::Applied);
+            }
+        }
+        Err(err) => {
+            if let Some(intent) = find_task_billing_intent(db, reservation_key).await? {
+                if intent.status == "attached"
+                    && intent.submit_state == "submitted"
+                    && intent.public_task_id == task.task_id
+                    && intent.provider_task_id == task.upstream_task_id
+                    && intent.request_accounted == 1
+                {
+                    return Ok(TaskBillingIntentAttachOutcome::MatchingAttached);
+                }
+            }
+            return Err(err);
+        }
+    }
+
+    match find_task_billing_intent(db, reservation_key).await? {
+        Some(intent)
+            if intent.status == "attached"
+                && intent.submit_state == "submitted"
+                && intent.public_task_id == task.task_id
+                && intent.provider_task_id == task.upstream_task_id
+                && intent.request_accounted == 1 =>
+        {
+            Ok(TaskBillingIntentAttachOutcome::MatchingAttached)
+        }
+        Some(_) => Ok(TaskBillingIntentAttachOutcome::Conflict),
+        None => Err(worker::Error::RustError(
+            "task billing intent disappeared during attachment".to_string(),
+        )),
+    }
+}
+
 /// Load unfinished tasks for the poller — rows not yet in a terminal status that
 /// carry an upstream id to poll (Go's "未完成的任务" selection). Bounded by
 /// `limit` and ordered by id so a batch is deterministic.
@@ -215,7 +817,12 @@ pub async fn find_unfinished_tasks(db: &D1Database, limit: i64) -> worker::Resul
     db.prepare(
         r#"
         SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
-               COALESCE(json_extract(private_data, '$.token_id'), 0) AS token_id,
+               CASE WHEN json_valid(private_data)
+                    THEN COALESCE(json_extract(private_data, '$.token_id'), 0)
+                    ELSE 0 END AS token_id,
+               CASE WHEN json_valid(private_data)
+                    THEN COALESCE(json_extract(private_data, '$.billing_reservation_key'), '')
+                    ELSE '' END AS billing_reservation_key,
                quota, action, status, fail_reason, progress, finish_time,
                submit_time
         FROM tasks
@@ -247,7 +854,12 @@ pub async fn find_timed_out_unfinished_tasks(
     db.prepare(
         r#"
         SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
-               COALESCE(json_extract(private_data, '$.token_id'), 0) AS token_id,
+               CASE WHEN json_valid(private_data)
+                    THEN COALESCE(json_extract(private_data, '$.token_id'), 0)
+                    ELSE 0 END AS token_id,
+               CASE WHEN json_valid(private_data)
+                    THEN COALESCE(json_extract(private_data, '$.billing_reservation_key'), '')
+                    ELSE '' END AS billing_reservation_key,
                quota, action, status, fail_reason, progress, finish_time,
                submit_time
         FROM tasks
@@ -273,7 +885,12 @@ pub async fn find_task_by_task_id(
     db.prepare(
         r#"
         SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
-               COALESCE(json_extract(private_data, '$.token_id'), 0) AS token_id,
+               CASE WHEN json_valid(private_data)
+                    THEN COALESCE(json_extract(private_data, '$.token_id'), 0)
+                    ELSE 0 END AS token_id,
+               CASE WHEN json_valid(private_data)
+                    THEN COALESCE(json_extract(private_data, '$.billing_reservation_key'), '')
+                    ELSE '' END AS billing_reservation_key,
                quota, action, status, fail_reason, progress, finish_time,
                submit_time
         FROM tasks
@@ -306,6 +923,36 @@ pub async fn update_task_status_cas(
     finish_time: i64,
     updated_at: i64,
 ) -> worker::Result<bool> {
+    let result = update_task_status_cas_statement(
+        db,
+        id,
+        from,
+        to,
+        fail_reason,
+        progress,
+        result_url,
+        result_data,
+        finish_time,
+        updated_at,
+    )?
+    .run()
+    .await?;
+    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    Ok(changes == 1)
+}
+
+fn update_task_status_cas_statement(
+    db: &D1Database,
+    id: i64,
+    from: TaskStatus,
+    to: TaskStatus,
+    fail_reason: &str,
+    progress: &str,
+    result_url: &str,
+    result_data: Option<&str>,
+    finish_time: i64,
+    updated_at: i64,
+) -> worker::Result<worker::D1PreparedStatement> {
     let should_update_data = if result_data.is_some() { 1 } else { 0 };
     let result_data = result_data.unwrap_or("");
     let args = [
@@ -324,9 +971,8 @@ pub async fn update_task_status_cas(
     // `Task.PrivateData.ResultURL`) without clobbering the reserving token_id
     // stored there at insert. An empty URL is written as-is (fetch falls back
     // to fail_reason, matching Go `GetResultURL`).
-    let result = db
-        .prepare(
-            r#"
+    db.prepare(
+        r#"
             UPDATE tasks
             SET status = ?1, fail_reason = ?2, progress = ?3,
                 private_data = json_set(
@@ -338,12 +984,8 @@ pub async fn update_task_status_cas(
                 finish_time = ?7, updated_at = ?8
             WHERE id = ?9 AND status = ?10
             "#,
-        )
-        .bind_refs(&args)?
-        .run()
-        .await?;
-    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
-    Ok(changes == 1)
+    )
+    .bind_refs(&args)
 }
 
 fn update_task_status_cas_with_refund_marker_statement(
@@ -502,6 +1144,108 @@ fn mark_task_refund_done_statement(
     .bind_refs(&args)
 }
 
+fn refund_attached_task_billing_intent_statement(
+    db: &D1Database,
+    task: &TaskRow,
+    terminal_status: TaskStatus,
+    refunded_at: i64,
+    refund_kind: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let reason = format!("terminal_{refund_kind}");
+    let args = [
+        D1Type::Integer(d1_i32(refunded_at)),
+        D1Type::Text(&reason),
+        D1Type::Text(task.billing_reservation_key.trim()),
+        D1Type::Integer(d1_i32(task.id)),
+        D1Type::Text(terminal_status.as_str()),
+    ];
+    db.prepare(
+        r#"
+        UPDATE task_billing_intents
+        SET status = 'refunded',
+            refunded_at = ?1,
+            updated_at = ?1,
+            owner_generation = owner_generation + 1,
+            recovery_last_error = ?2
+        WHERE reservation_key = ?3
+          AND task_kind = 'task'
+          AND status = 'attached'
+          AND EXISTS (
+            SELECT 1 FROM tasks
+            WHERE id = ?4
+              AND status = ?5
+              AND json_extract(
+                CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+                '$.billing_reservation_key'
+              ) = ?3
+          )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+pub(crate) fn assert_task_billing_previous_statement_statement(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [D1Type::Text(reservation_key.trim())];
+    db.prepare(
+        r#"
+        INSERT INTO task_billing_intents (
+          reservation_key, task_kind, public_task_id, user_id, channel_id,
+          billing_contract_json, billing_contract_sha256, lease_expires_at,
+          provider_kind, provider_idempotency_key
+        )
+        SELECT ?1, 'task', ?1, 0, 0, '{}',
+               '0000000000000000000000000000000000000000000000000000000000000000',
+               1, 'batch_assertion', 'batch_assertion'
+        WHERE changes() != 1
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn settle_attached_task_billing_intent_statement(
+    db: &D1Database,
+    task: &TaskRow,
+    from: TaskStatus,
+    to: TaskStatus,
+    settled_at: i64,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        D1Type::Integer(d1_i32(settled_at)),
+        D1Type::Text(task.billing_reservation_key.trim()),
+        D1Type::Integer(d1_i32(task.id)),
+        D1Type::Text(from.as_str()),
+        D1Type::Text(to.as_str()),
+    ];
+    db.prepare(
+        r#"
+        UPDATE task_billing_intents
+        SET status = 'settled',
+            settled_at = ?1,
+            updated_at = ?1,
+            owner_generation = owner_generation + 1,
+            recovery_last_error = ''
+        WHERE reservation_key = ?2
+          AND task_kind = 'task'
+          AND status = 'attached'
+          AND request_accounted = 1
+          AND EXISTS (
+            SELECT 1 FROM tasks
+            WHERE id = ?3
+              AND status = ?5
+              AND status <> ?4
+              AND json_extract(
+                CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+                '$.billing_reservation_key'
+              ) = ?2
+          )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
 fn task_refund_marker(
     task_id: i64,
     from: TaskStatus,
@@ -552,6 +1296,29 @@ async fn update_task_status_cas_and_refund_batch(
     updated_at: i64,
     refund_kind: &str,
 ) -> worker::Result<bool> {
+    let reservation_key = task.billing_reservation_key.trim();
+    if !reservation_key.is_empty() {
+        let statements = vec![
+            update_task_status_cas_statement(
+                db,
+                task.id,
+                from,
+                to,
+                fail_reason,
+                progress,
+                result_url,
+                result_data,
+                finish_time,
+                updated_at,
+            )?,
+            assert_task_billing_previous_statement_statement(db, reservation_key)?,
+            refund_attached_task_billing_intent_statement(db, task, to, updated_at, refund_kind)?,
+            assert_task_billing_previous_statement_statement(db, reservation_key)?,
+        ];
+        let results = db.batch(statements).await?;
+        return Ok(task_batch_changed(&results, 0)? && task_batch_changed(&results, 2)?);
+    }
+
     let quota = task_refund_quota_i32(task.quota)?;
     if quota == 0 {
         return update_task_status_cas(
@@ -584,7 +1351,9 @@ async fn update_task_status_cas_and_refund_batch(
             updated_at,
             &refund_marker,
         )?,
+        assert_task_billing_previous_statement_statement(db, reservation_key)?,
         credit_user_task_refund_statement(db, task.id, task.user_id, quota, &refund_marker)?,
+        assert_task_billing_previous_statement_statement(db, reservation_key)?,
     ];
     if task.token_id > 0 {
         statements.push(credit_token_task_refund_statement(
@@ -595,6 +1364,10 @@ async fn update_task_status_cas_and_refund_batch(
             updated_at,
             &refund_marker,
         )?);
+        statements.push(assert_task_billing_previous_statement_statement(
+            db,
+            reservation_key,
+        )?);
     }
     let done_statement_index = statements.len();
     statements.push(mark_task_refund_done_statement(
@@ -602,6 +1375,10 @@ async fn update_task_status_cas_and_refund_batch(
         task.id,
         &refund_marker,
         updated_at,
+    )?);
+    statements.push(assert_task_billing_previous_statement_statement(
+        db,
+        reservation_key,
     )?);
 
     let results = db.batch(statements).await?;
@@ -612,6 +1389,56 @@ async fn update_task_status_cas_and_refund_batch(
         ));
     }
     Ok(won)
+}
+
+async fn update_task_status_cas_and_settle_intent_batch(
+    db: &D1Database,
+    task: &TaskRow,
+    from: TaskStatus,
+    to: TaskStatus,
+    fail_reason: &str,
+    progress: &str,
+    result_url: &str,
+    result_data: Option<&str>,
+    finish_time: i64,
+    updated_at: i64,
+) -> worker::Result<bool> {
+    let reservation_key = task.billing_reservation_key.trim();
+    if reservation_key.is_empty() {
+        return update_task_status_cas(
+            db,
+            task.id,
+            from,
+            to,
+            fail_reason,
+            progress,
+            result_url,
+            result_data,
+            finish_time,
+            updated_at,
+        )
+        .await;
+    }
+    let results = db
+        .batch(vec![
+            update_task_status_cas_statement(
+                db,
+                task.id,
+                from,
+                to,
+                fail_reason,
+                progress,
+                result_url,
+                result_data,
+                finish_time,
+                updated_at,
+            )?,
+            assert_task_billing_previous_statement_statement(db, reservation_key)?,
+            settle_attached_task_billing_intent_statement(db, task, from, to, updated_at)?,
+            assert_task_billing_previous_statement_statement(db, reservation_key)?,
+        ])
+        .await?;
+    Ok(task_batch_changed(&results, 0)? && task_batch_changed(&results, 2)?)
 }
 
 pub(crate) fn task_refund_cas_batch_compiled() -> bool {
@@ -847,7 +1674,7 @@ pub async fn apply_task_timeout(
     let from = task.status();
     let legacy = is_legacy_timeout_task(task.submit_time);
     let reason = task_timeout_reason(timeout_minutes, legacy);
-    if !legacy && task.quota != 0 {
+    if !legacy && (task.quota != 0 || !task.billing_reservation_key.trim().is_empty()) {
         return update_task_status_cas_and_refund_batch(
             db,
             task,
@@ -899,21 +1726,41 @@ pub async fn apply_poll_result(
     now: i64,
 ) -> worker::Result<bool> {
     let from = task.status();
-    if matches!(settlement_for(from, info.status), TaskSettlement::Refund) && task.quota != 0 {
-        return update_task_status_cas_and_refund_batch(
-            db,
-            task,
-            from,
-            info.status,
-            &info.reason,
-            &info.progress,
-            &info.url,
-            result_data,
-            finish_time,
-            now,
-            "poll",
-        )
-        .await;
+    match settlement_for(from, info.status) {
+        TaskSettlement::Refund
+            if task.quota != 0 || !task.billing_reservation_key.trim().is_empty() =>
+        {
+            return update_task_status_cas_and_refund_batch(
+                db,
+                task,
+                from,
+                info.status,
+                &info.reason,
+                &info.progress,
+                &info.url,
+                result_data,
+                finish_time,
+                now,
+                "poll",
+            )
+            .await;
+        }
+        TaskSettlement::Keep if !task.billing_reservation_key.trim().is_empty() => {
+            return update_task_status_cas_and_settle_intent_batch(
+                db,
+                task,
+                from,
+                info.status,
+                &info.reason,
+                &info.progress,
+                &info.url,
+                result_data,
+                finish_time,
+                now,
+            )
+            .await;
+        }
+        _ => {}
     }
     let won = update_task_status_cas(
         db,
@@ -962,7 +1809,10 @@ pub async fn apply_suno_poll_result(
         0
     };
 
-    if is_failure && !from.is_terminal() && task.quota != 0 {
+    if is_failure
+        && !from.is_terminal()
+        && (task.quota != 0 || !task.billing_reservation_key.trim().is_empty())
+    {
         return update_task_status_cas_and_refund_batch(
             db,
             task,
@@ -975,6 +1825,25 @@ pub async fn apply_suno_poll_result(
             finish_time,
             now,
             "suno",
+        )
+        .await;
+    }
+
+    if to == TaskStatus::Success
+        && !from.is_terminal()
+        && !task.billing_reservation_key.trim().is_empty()
+    {
+        return update_task_status_cas_and_settle_intent_batch(
+            db,
+            task,
+            from,
+            to,
+            item_fail_reason,
+            progress,
+            "",
+            None,
+            finish_time,
+            now,
         )
         .await;
     }
@@ -1047,5 +1916,12 @@ mod tests {
             suno_poll_target_status(TaskStatus::InProgress, "SUCCESS", ""),
             TaskStatus::Success
         );
+    }
+
+    #[test]
+    fn task_billing_sweep_recovers_confirmed_pre_provider_rejections() {
+        assert!(TASK_BILLING_INTENT_SWEEP_SELECT.contains("'prepared'"));
+        assert!(TASK_BILLING_INTENT_SWEEP_SELECT.contains("'submitting'"));
+        assert!(TASK_BILLING_INTENT_SWEEP_SELECT.contains("'rejected'"));
     }
 }

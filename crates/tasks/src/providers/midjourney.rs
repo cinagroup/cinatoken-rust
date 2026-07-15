@@ -120,10 +120,17 @@ struct MidjourneyResponse {
 /// `dto.MidjourneyResponse`): `code == 1` is success and `result` is the mj id;
 /// any other code is an error carrying `description`.
 pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
-    let resp: MidjourneyResponse = serde_json::from_slice(resp_body)
-        .map_err(|err| format!("unmarshal_response_body_failed: {err}"))?;
+    parse_submit_response_classified(resp_body).map_err(super::SubmitResponseFailure::into_message)
+}
+
+pub fn parse_submit_response_classified(
+    resp_body: &[u8],
+) -> Result<String, super::SubmitResponseFailure> {
+    let resp: MidjourneyResponse = serde_json::from_slice(resp_body).map_err(|err| {
+        super::SubmitResponseFailure::Unknown(format!("unmarshal_response_body_failed: {err}"))
+    })?;
     if resp.code != 1 {
-        return Err(resp.description);
+        return Err(super::SubmitResponseFailure::Rejected(resp.description));
     }
     Ok(resp.result)
 }
@@ -142,6 +149,12 @@ mod tests {
         assert_eq!(
             parse_submit_response(br#"{"code":4,"description":"banned prompt"}"#).unwrap_err(),
             "banned prompt"
+        );
+        assert_eq!(
+            parse_submit_response_classified(br#"{"code":4,"description":"banned prompt"}"#,),
+            Err(crate::providers::SubmitResponseFailure::Rejected(
+                "banned prompt".to_string()
+            ))
         );
     }
 

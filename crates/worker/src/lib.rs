@@ -1337,6 +1337,18 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/suno/fetch", |req, ctx| async move {
             task_orchestration::handle_task_fetch_batch(req, ctx.env).await
         })
+        .get_async(
+            "/api/task/submissions/:submission_id",
+            |req, ctx| async move {
+                let submission_id = ctx.param("submission_id").cloned();
+                task_orchestration::handle_task_submission_status(
+                    req,
+                    ctx.env,
+                    submission_id.as_ref(),
+                )
+                .await
+            },
+        )
         .post_async("/suno/submit/:action", |req, ctx| async move {
             let action = ctx.param("action").cloned().unwrap_or_default();
             let now = (worker::Date::now().as_millis() / 1000) as i64;

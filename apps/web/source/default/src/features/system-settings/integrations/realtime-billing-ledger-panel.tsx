@@ -19,7 +19,6 @@ For commercial licensing, please contact support@cinagroup.com
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -30,6 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import {
   getRealtimeBillingLedgerStatus,
   getRealtimeBillingReconciliationQueue,
@@ -200,10 +200,7 @@ export function RealtimeBillingLedgerPanel(props: {
                 disabled={!queue.data.next_cursor || queue.isFetching}
                 onClick={() => {
                   if (!queue.data.next_cursor) return
-                  setQueueHistory((history) => [
-                    ...history,
-                    queueCursor ?? '',
-                  ])
+                  setQueueHistory((history) => [...history, queueCursor ?? ''])
                   setQueueCursor(queue.data.next_cursor)
                 }}
               >
@@ -231,7 +228,9 @@ export function RealtimeBillingLedgerPanel(props: {
                       {record.reconciliation_id.slice(0, 12)}...
                       {record.reconciliation_id.slice(-8)}
                     </TableCell>
-                    <TableCell>{t(humanizeCode(record.quarantine_reason))}</TableCell>
+                    <TableCell>
+                      {t(humanizeCode(record.quarantine_reason))}
+                    </TableCell>
                     <TableCell className='text-right'>
                       {record.pre_consumed_quota}
                     </TableCell>

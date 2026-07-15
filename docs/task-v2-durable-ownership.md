@@ -398,3 +398,68 @@ Rollback order is recovery off, scheduler and TaskRunner off, lease env
 authority off, D1 authority off, then D1 enforcement off. Drain leases and
 reconcile accepted provider work. Every quarantine must be resolved, held out,
 or explicitly excluded before Go/VPS resumes. Production remains **NO-GO**.
+
+## Submit Operation Identity And Caller Recovery
+
+Migrations 0038 and 0039 make the caller-visible create attempt a durable
+operation before production cutover:
+
+| Field | Authority and invariant |
+| --- | --- |
+| `client_operation_key_sha256` | Domain-separated SHA-256 of user, exact API token, task kind, and caller key; immutable and unique in that scope |
+| `client_request_sha256` | Domain-separated SHA-256 of route/provider/action/model scope plus the original request bytes; immutable and compared on replay |
+| `provider_idempotency_key` | Frozen local provider-operation identity; unique per task kind, provider, and channel, but not yet proven accepted by every provider |
+| `submit_deadline_at` | Immutable absolute provider-I/O deadline, 5..120 seconds after creation and no later than the billing-intent lease |
+
+Reservation uses `INSERT OR IGNORE` followed by canonical owner-scoped readback.
+A matching client operation and request digest returns the existing intent. A
+matching operation with a different request digest is a conflict. Any other
+insert conflict is an error, not a speculative replay.
+
+The caller protocol is:
+
+1. Send a stable bounded `Idempotency-Key` with every create request.
+2. On 200, consume the normal provider-compatible task response.
+3. On 202, retain `submission_id` and poll
+   `GET /api/task/submissions/:submission_id` with the same API token. Do not
+   issue a new key or provider create.
+4. On 409 from an idempotent replay, inspect the returned terminal
+   `lifecycle_status`/`status`; do not mutate the original request under the
+   same key.
+5. Treat transport loss before receiving any response exactly like a possible
+   202: retry once with the same key, then follow canonical status.
+
+The status route is exact-token scoped and no-store. It returns public task
+kind, lifecycle/submit state, task availability, terminal state, and created,
+deadline, and update timestamps. It never returns provider task ID, channel,
+contracts, request/operation digests, credentials, quota owner, or raw request.
+
+Ambiguity classification is deliberately conservative. Redirects, 408, 409,
+425, 429, 5xx, network/abort/body-limit failures, unclassified accepted
+responses, and accepted-provider/local-attachment failures retain the reserve
+and become queryable recovery. Other 4xx responses and structured provider
+rejection use the reject/refund path. The system never retries an ambiguous
+create automatically.
+
+The deadline is absolute across route handling, Vertex OAuth, provider fetch,
+and response buffering. Provider response bodies are capped at 4 MiB. The D1
+attachment transaction is outside the fetch deadline and has its own durable
+`submit_unknown` recovery semantics. This distinction is intentional: the
+local implementation must not claim that a timer can cancel work the provider
+already accepted.
+
+### Rollout contract
+
+Apply 0038, deploy the new writer disabled, prove all new rows carry valid
+digests/deadlines, drain every old writer, then apply 0039. Historical
+zero-value rows remain lease-recoverable. After 0039, only a 0039-compatible
+Worker may be deployed. `TASK_CLIENT_IDEMPOTENCY_REQUIRED` is enabled only for
+an isolated caller cohort after client retry behavior has been tested; it must
+become true before Task v2 runtime or cutover can be considered ready.
+
+Local uniqueness and a status query close duplicate calls through this Worker.
+They do not prove that an upstream accepts the key or supports lookup. The
+capability fields `task_submit_provider_native_idempotency_verified` and
+`task_submit_provider_lookup_verified` remain false until each provider family
+has immutable remote evidence and invoice reconciliation. Production remains
+**NO-GO**.

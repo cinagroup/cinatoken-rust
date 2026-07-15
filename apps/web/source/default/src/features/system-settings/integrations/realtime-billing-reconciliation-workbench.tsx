@@ -21,8 +21,6 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2, ShieldCheck, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { RiskAcknowledgementDialog } from '@/components/risk-acknowledgement-dialog'
-import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,6 +33,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { RiskAcknowledgementDialog } from '@/components/risk-acknowledgement-dialog'
+import { StatusBadge } from '@/components/status-badge'
 import {
   SecureVerificationDialog,
   useSecureVerification,
@@ -84,8 +84,9 @@ export function RealtimeBillingReconciliationWorkbench(props: {
   const reconciliationId = target.reconciliation_id
   const [action, setAction] =
     useState<RealtimeBillingReconciliationAction>('settle')
-  const [reason, setReason] =
-    useState<RealtimeBillingReconciliationReason>('provider_usage_verified')
+  const [reason, setReason] = useState<RealtimeBillingReconciliationReason>(
+    'provider_usage_verified'
+  )
   const [evidenceReference, setEvidenceReference] = useState('')
   const [tokenValues, setTokenValues] = useState(EMPTY_TOKENS)
   const [preview, setPreview] =
@@ -97,9 +98,7 @@ export function RealtimeBillingReconciliationWorkbench(props: {
   const totalIsConsistent =
     usage !== null &&
     usage.input_tokens + usage.output_tokens === usage.total_tokens
-  const evidenceIsValid = /^[A-Za-z0-9._:/#@-]{1,128}$/u.test(
-    evidenceReference
-  )
+  const evidenceIsValid = /^[A-Za-z0-9._:/#@-]{1,128}$/u.test(evidenceReference)
   const formIsValid =
     reconciliationId.length === 64 &&
     evidenceIsValid &&
@@ -312,7 +311,9 @@ export function RealtimeBillingReconciliationWorkbench(props: {
                 step={1}
                 value={tokenValues[field]}
                 aria-invalid={
-                  field === 'total_tokens' && usage !== null && !totalIsConsistent
+                  field === 'total_tokens' &&
+                  usage !== null &&
+                  !totalIsConsistent
                 }
                 onChange={(event) => {
                   setTokenValues((current) => ({
@@ -397,7 +398,9 @@ export function RealtimeBillingReconciliationWorkbench(props: {
           `${t('Evidence reference')}: ${evidenceReference}`,
         ]}
         checklist={[
-          t('I verified the provider evidence against this exact reconciliation.'),
+          t(
+            'I verified the provider evidence against this exact reconciliation.'
+          ),
           t('I reviewed the frozen pricing preview and quota delta.'),
         ]}
         requiredText={`${action.toUpperCase()} ${compactId}`}
@@ -430,17 +433,16 @@ export function RealtimeBillingReconciliationWorkbench(props: {
 function parseUsage(
   values: Record<TokenField, string>
 ): RealtimeBillingReconciliationUsage | null {
-  const parsed = TOKEN_FIELDS.reduce<Partial<RealtimeBillingReconciliationUsage>>(
-    (usage, { field }) => {
-      const value = Number(values[field])
-      if (!Number.isSafeInteger(value) || value < 0 || value > 2147483647) {
-        return usage
-      }
-      usage[field] = value
+  const parsed = TOKEN_FIELDS.reduce<
+    Partial<RealtimeBillingReconciliationUsage>
+  >((usage, { field }) => {
+    const value = Number(values[field])
+    if (!Number.isSafeInteger(value) || value < 0 || value > 2147483647) {
       return usage
-    },
-    {}
-  )
+    }
+    usage[field] = value
+    return usage
+  }, {})
   return TOKEN_FIELDS.every(({ field }) => parsed[field] !== undefined)
     ? (parsed as RealtimeBillingReconciliationUsage)
     : null

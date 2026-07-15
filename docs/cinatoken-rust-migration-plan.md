@@ -13338,3 +13338,99 @@ entire submit operation, remote D1 and staging evidence, real provider and
 TaskRunner hot-path proof, WFP namespace upload/readback, and a paid WFP canary
 remain hard blockers. These are independent of the local recovery control
 plane, so production remains **NO-GO**.
+
+### 22.217 2026-07-15 Bounded And Recoverable Task Submission
+
+This current-head increment adds a local submit-operation identity and caller
+recovery contract. It does not prove provider-native idempotency, remote D1,
+or production readiness. Go/VPS remains authoritative.
+
+#### Implemented local contract
+
+- Migration `0038_task_submit_operation_expand.sql` adds
+  `submit_deadline_at`, a token-scoped `client_operation_key_sha256`, a
+  `client_request_sha256`, local client-operation uniqueness, local
+  provider-operation uniqueness, and a deadline sweep index. Empty digests and
+  a zero deadline remain legal during the expand phase so the old Worker can
+  continue writing while the new candidate is deployed disabled.
+- Migration `0039_task_submit_operation_enforce.sql` requires both digests to
+  be 64 lowercase hex characters and the deadline to be 5 through 120 seconds
+  after creation and no later than the reserve lease. Deadline and client
+  identity are immutable after insert. Historical zero-value rows remain
+  readable and use their lease for recovery; a new zero-value row is rejected.
+- The public submit paths for generic video providers, OpenAI video/remix,
+  Suno, and Midjourney accept a bounded `Idempotency-Key`. The local uniqueness
+  scope is `(user_id, token_id, task_kind, client_operation_key_sha256)`.
+  Reusing the key with the same domain-separated request digest returns the
+  canonical submission and does not issue a second provider create. Reusing it
+  with different route/model/body facts fails closed.
+- `TASK_CLIENT_IDEMPOTENCY_REQUIRED` is an explicit cutover gate. It remains
+  `false` in committed default, staging, and production configuration. While it
+  is false, a request without the header receives a generated one-shot
+  identity and therefore cannot be safely retried by the caller. Task v2
+  runtime/cutover readiness requires the flag to be true.
+- The absolute provider-submit deadline starts from the route timestamp and is
+  shared by request preparation, Vertex OAuth, provider fetch, and bounded
+  response-body read. Fetch uses an abort signal and all provider response
+  buffering is capped at 4 MiB. Local D1 attachment follows provider I/O and is
+  not falsely claimed to be inside that network deadline; an accepted provider
+  result plus attachment failure enters durable reconciliation instead.
+- Ambiguous transport, 3xx, 408, 409, 425, 429, 5xx, malformed accepted
+  response, or provider-accepted/local-attachment uncertainty returns `202`
+  with a stable `submission_id` and `status_url`. It is never automatically
+  resubmitted or refunded. Confirmed pre-provider rejection and deterministic
+  provider rejection keep the reject/refund path.
+- `GET /api/task/submissions/:submission_id` is API-token authenticated,
+  scoped to the exact creating user and token, and `private, no-store`. It
+  exposes only public submission state and timestamps. Provider task ID,
+  channel identity, frozen contracts, operation digests, credentials, and
+  billing ownership remain private. A different token, including another token
+  for the same user, receives 404.
+- Operator reconciliation reads are now separately ready when code and schema
+  exist. Mutation readiness still requires
+  `TASK_SUBMIT_RECONCILIATION_ENABLED`; disabling mutation no longer hides the
+  read-only diagnostic queue from an authorized root operator.
+
+#### Expand, enforce, and rollback order
+
+| Wave | Action | Required proof / stop condition |
+| --- | --- | --- |
+| O0 freeze | Keep Go/VPS authoritative; submit reconciliation and every staging/cutover marker false | Stop on an unknown Task writer or unresolved accepted provider operation |
+| O1 backup | Record D1 restore point, exact migration ledger, active versions, new-row rate, zero/deadline counts, and provider invoice watermark | Stop on missing restore proof or duplicate provider/client operation identity |
+| O2 expand | Apply 0038 only | Read back all three columns and all three indexes; old writer insert must still succeed; existing business hashes must not change |
+| O3 dual writer | Deploy the 0038/0039-aware Worker with client idempotency still optional and Rust traffic disabled or isolated | Every newly created Rust row has two valid digests and a 5..120 second deadline; no provider request occurs before durable reserve/submitting fences |
+| O4 drain | Remove every pre-0038 writer and wait beyond isolate, Queue, cron, alarm, and in-flight request lifetime | Newly created zero digest/deadline count stays zero for the agreed observation window |
+| O5 enforce | Apply 0039 | Old-writer fixture fails; new-writer fixture succeeds; historical zero rows remain unchanged; schema/capability readback is exact |
+| O6 caller canary | Require `Idempotency-Key` only for an isolated staging cohort | Same request/key produces one D1 intent and one provider create; different payload/key conflict fails; timeout returns queryable 202 |
+| O7 provider proof | Run provider-specific create timeout, response truncation, rate limit, and lookup campaigns | Each provider must either natively honor the frozen identity or support deterministic lookup; invoice/task inventory must converge without a second create |
+| O8 review | Archive redacted D1/provider/invoice/alert/rollback evidence and review independently | Only a new candidate may set any provider proof or staging marker true |
+
+After 0039, rollback may disable `TASK_CLIENT_IDEMPOTENCY_REQUIRED`, Task
+traffic, reconciliation mutation, scheduler, and TaskRunner, but it must retain
+0038/0039 and use a 0039-compatible Worker. Never roll back to a writer that
+omits the enforced digests/deadline. Reconcile every `submitting` or
+`submit_unknown` row before Go/VPS can create or poll the same external work.
+
+#### Architecture evidence boundary
+
+- The implemented WFP path is Dynamic Dispatch to a Rust tenant Worker followed
+  by a Rust outbound Worker policy boundary. Remote namespace upload, exact
+  binding attachment, script readback, and paid egress are still absent. Do not
+  describe this as a fully verified private Service Binding data path.
+- Durable Object WebSocket hibernation restores accepted inbound client sockets
+  and persisted attachment/state. An active outbound provider WebSocket prevents
+  hibernation; after true eviction the in-memory upstream bridge is gone. The
+  current design intentionally fails closed and refunds/reconciles instead of
+  claiming transparent provider-session resumption.
+- AI Gateway routes and application fallback policy exist locally, but provider
+  fallback evidence and one-retry-owner behavior remain staging gates. A second
+  retry owner in AI Gateway, tenant Worker, outbound Worker, or central relay is
+  a stop condition.
+
+Current local schema evidence is 39 migrations, 35 tables, 244 checked
+incremental columns, and 45 key indexes. Worker unit tests pass 711/711,
+Workerd lifecycle tests pass 43/43 after release builds of the main, WFP tenant,
+and WFP outbound Workers, and frontend readiness passes 70/70. Provider-native
+idempotency and lookup capabilities remain explicitly false, all tracked
+client-required values remain false, and no remote migration/deployment
+evidence is claimed. Production remains **NO-GO**.

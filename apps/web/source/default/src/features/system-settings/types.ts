@@ -605,6 +605,19 @@ export type PlatformCapabilities = {
   task_v2_staging_verified: boolean
   task_v2_cutover_ready: boolean
   task_v2_cutover_guards: string[]
+  task_submit_operation_contract_version: number
+  task_submit_operation_compiled: boolean
+  task_submit_operation_schema_ready: boolean
+  task_submit_timeout_configured: boolean
+  task_submit_timeout_valid: boolean
+  task_submit_timeout_seconds: number
+  task_submit_client_idempotency_compiled: boolean
+  task_submit_client_idempotency_required: boolean
+  task_submit_status_query_compiled: boolean
+  task_submit_local_operation_unique: boolean
+  task_submit_provider_native_idempotency_verified: boolean
+  task_submit_provider_lookup_verified: boolean
+  task_submit_operation_cutover_ready: boolean
   task_poll_lease_contract_version: number
   task_poll_lease_compiled: boolean
   task_poll_lease_schema_ready: boolean
@@ -633,6 +646,7 @@ export type PlatformCapabilities = {
   task_poller_max_consecutive_failures: number
   task_submit_reconciliation_compiled: boolean
   task_submit_reconciliation_enabled: boolean
+  task_submit_reconciliation_read_ready: boolean
   task_submit_reconciliation_ready: boolean
   task_submit_reconciliation_staging_verified: boolean
   task_submit_reconciliation_cutover_ready: boolean

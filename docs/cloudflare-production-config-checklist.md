@@ -1164,3 +1164,40 @@ Provider-operation uniqueness/native idempotency, a complete submit-operation
 deadline, remote D1/staging/provider/TaskRunner hot paths, WFP namespace
 upload/readback, paid canary, invoice/load/alert evidence, credential rotation,
 and signed rollback remain hard blockers. Production remains **NO-GO**.
+
+## Task Submit Operation Configuration
+
+The following non-secret variables must be explicit in top-level, staging, and
+production configuration:
+
+| Variable | Committed value | Validation |
+| --- | --- | --- |
+| `TASK_SUBMIT_TIMEOUT_SECONDS` | `90` | Integer from 5 through 120; one absolute provider-submit deadline |
+| `TASK_CLIENT_IDEMPOTENCY_REQUIRED` | `false` | Exact boolean string; must become true before Task v2 runtime/cutover readiness |
+
+Capability readback must include operation contract version, compiled/schema
+state, timeout configured/valid/effective values, client-idempotency compiled
+and required values, status-query compilation, local uniqueness, both provider
+proof flags, and operation cutover. A disabled reconciliation mutation gate may
+not suppress root read-only diagnostics; verify
+`task_submit_reconciliation_read_ready` separately from mutation readiness.
+
+Configuration promotion is fail-closed:
+
+1. Apply 0038 while both vars keep committed values and Rust task traffic is
+   disabled or isolated.
+2. Deploy the new writer and prove every new row has two valid digests and a
+   valid deadline. Drain all old isolates/writers before 0039.
+3. Apply 0039 and prove an old-writer fixture fails while a new-writer fixture
+   succeeds. Never deploy a pre-0039 writer afterward.
+4. In isolated staging only, set client idempotency required true while all
+   provider proof and staging markers remain false. Prove every supported
+   caller preserves a key across disconnect/retry.
+5. Keep provider-native idempotency and lookup false until immutable remote
+   evidence is independently reviewed. These are evidence fields, not values
+   inferred from local code.
+
+Do not store caller keys, raw request bodies, provider IDs, credentials, or
+frozen contracts in capability archives. Record only candidate/config hashes,
+aggregate counts, redacted digests, status transitions, provider request
+counts, and invoice reconciliation. Production remains **NO-GO**.

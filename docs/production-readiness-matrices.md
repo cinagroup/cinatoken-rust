@@ -739,6 +739,26 @@ Reconcile quarantined rows before Go/VPS resumes. Any other sequence is a
 G4/G5/G7 abort. No remote or deployment evidence is recorded here; production
 remains **NO-GO**.
 
+## 2026-07-15 Task Submit Operation Matrix
+
+| Gate | Current local state | Production acceptance | Status |
+| --- | --- | --- | --- |
+| 0038 expand | Deadline and two digest columns; client/provider unique indexes; deadline index; old-writer defaults allowed | Remote exact object readback, unchanged business hashes, old/new writer compatibility | Local only |
+| 0039 enforce | New rows require immutable lowercase SHA-256 digests and 5..120 second deadline | Old writers fully drained; old fixture rejected; new fixture accepted; rollback candidate verified compatible | Local only |
+| Client replay | Same token/task/key plus same request digest returns the canonical intent without provider I/O | Required-key client rollout, retry-after-disconnect test, key conflict test, one provider create | Local only |
+| Recovery API | Exact creating token receives private no-store public status; other token receives 404 | Staging auth/cache/redaction/load test and client integration evidence | Local only |
+| Provider I/O bound | Absolute deadline spans route preparation, Vertex OAuth, fetch, and bounded 4 MiB response read | Per-provider timeout/partial/oversize/late-accept campaign and alert thresholds | Local only |
+| Attachment ambiguity | Accepted provider result plus failed local attach returns queryable 202 and retains recovery ownership | D1 batch fault injection, operator reconciliation, invoice convergence | Local only |
+| Provider idempotency | Frozen local identity is unique but not forwarded/accepted under a verified universal contract | Native key acceptance or deterministic lookup for every enabled provider/channel | Blocked |
+| Client requirement | Capability and config gate exist; tracked default/staging/production value is false | Isolated staging cohort proves all supported callers preserve keys across retries | Blocked |
+| Cutover | Requires local schema/runtime, client requirement, provider-native idempotency, provider lookup, staging proof, and broader Task v2 gates | Named security, billing, privacy, SRE, and rollback approval | NO-GO |
+
+The WFP/DO architecture remains bounded by actual evidence: Dynamic Dispatch,
+Rust tenant, and Rust outbound policy code exist locally, but remote namespace
+upload/readback and paid egress do not. DO hibernation restores inbound client
+sockets/state, not an evicted provider WebSocket bridge. AI Gateway and
+application fallback must keep one retry owner. Production remains **NO-GO**.
+
 ## 2026-07-15 cinaVibeSDK Architecture Audit Matrix
 
 | Audited boundary | Correct interpretation | cinatoken-rust production gate |

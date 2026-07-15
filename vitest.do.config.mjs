@@ -39,6 +39,8 @@ export default defineConfig({
           TASK_POLL_LEASE_ENABLED: "true",
           TASK_POLL_SCHEDULER_ENABLED: "true",
           TASK_POLL_RECOVERY_ENABLED: "true",
+          TASK_SUBMIT_TIMEOUT_SECONDS: "90",
+          TASK_CLIENT_IDEMPOTENCY_REQUIRED: "true",
           REALTIME_SESSION_V1_ENABLED: "true",
           REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED: "true",
           REALTIME_BILLING_RECONCILIATION_ENABLED: "true",

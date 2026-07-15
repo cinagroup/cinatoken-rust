@@ -21,8 +21,6 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2, ShieldCheck, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { RiskAcknowledgementDialog } from '@/components/risk-acknowledgement-dialog'
-import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,6 +33,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { RiskAcknowledgementDialog } from '@/components/risk-acknowledgement-dialog'
+import { StatusBadge } from '@/components/status-badge'
 import {
   SecureVerificationDialog,
   useSecureVerification,
@@ -72,18 +72,14 @@ export function TaskSubmitReconciliationWorkbench(props: {
       ? 'provider_task_verified'
       : 'provider_confirms_not_accepted'
   )
-  const [providerTaskId, setProviderTaskId] = useState(
-    target.provider_task_id
-  )
+  const [providerTaskId, setProviderTaskId] = useState(target.provider_task_id)
   const [evidenceReference, setEvidenceReference] = useState('')
   const [preview, setPreview] =
     useState<TaskSubmitReconciliationPreview | null>(null)
   const [idempotencyKey, setIdempotencyKey] = useState('')
   const [riskOpen, setRiskOpen] = useState(false)
 
-  const evidenceIsValid = /^[A-Za-z0-9._:/#@-]{1,128}$/u.test(
-    evidenceReference
-  )
+  const evidenceIsValid = /^[A-Za-z0-9._:/#@-]{1,128}$/u.test(evidenceReference)
   const providerIdIsValid =
     action === 'refund' || isTaskProviderIdValid(providerTaskId)
   const formIsValid = evidenceIsValid && providerIdIsValid
@@ -161,9 +157,7 @@ export function TaskSubmitReconciliationWorkbench(props: {
     }
   }
 
-  const compactId = compactTaskSubmitReconciliationId(
-    target.reconciliation_id
-  )
+  const compactId = compactTaskSubmitReconciliationId(target.reconciliation_id)
   return (
     <div className='mt-4 space-y-4 border-t pt-4'>
       <div className='flex flex-wrap items-start justify-between gap-3'>

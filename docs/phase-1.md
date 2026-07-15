@@ -1498,3 +1498,26 @@ quarantined row before Go/VPS resumes. Provider-operation uniqueness/native
 idempotency, whole-submit deadlines, remote D1/staging/provider/TaskRunner hot
 paths, WFP namespace upload/readback, paid canary, and signed G1-G8 evidence
 remain hard blockers. Production is **NO-GO**.
+
+## 2026-07-15 Phase 1 Submit Operation Gate
+
+- D1 head advances through compatible 0038 expansion to 0039 enforcement. The
+  local baseline is 39 migrations, 35 tables, 244 checked incremental columns,
+  and 45 key indexes.
+- New writers persist a token-scoped client operation digest, request digest,
+  and 5..120 second absolute submit deadline before provider I/O. Same-key,
+  same-request replay performs no second provider create.
+- Ambiguous create results return 202 plus `submission_id`/`status_url` and stay
+  reserved for reconciliation. The owner-token status route is private,
+  no-store, and redacted.
+- `TASK_CLIENT_IDEMPOTENCY_REQUIRED=false` remains explicit in every tracked
+  environment. Phase 1 cannot report Task v2 runtime/cutover ready until a
+  reviewed staging candidate requires the key.
+- Provider-native idempotency and deterministic lookup remain false capability
+  gates. Local uniqueness is not a substitute for provider evidence.
+
+Activation order is 0038 expand -> disabled dual-writer deploy -> old-writer
+drain -> zero-value readback -> 0039 enforce -> isolated required-key client
+canary -> provider fault/lookup/invoice campaign -> independent review. After
+0039, rollback must use a 0039-compatible writer and retain both migrations.
+There is no production activation wave. Production remains **NO-GO**.

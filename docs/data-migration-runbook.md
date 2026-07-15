@@ -729,3 +729,63 @@ Provider-operation uniqueness/native idempotency, whole-submit operation
 deadlines, remote D1/staging/provider/TaskRunner hot-path proof, WFP namespace
 upload/readback, paid canary, alerts/load, and signed rollback remain hard
 blockers. Production remains **NO-GO**.
+
+## 0038/0039 Task Submit Operation Migration Runbook
+
+0038 is an expand migration and 0039 is its writer-enforcement boundary. They
+must not be applied as one unobserved step in production.
+
+### Preflight
+
+1. Verify the exact D1 target, restore point, migration ledger through 0037,
+   active Worker versions, Queue/cron/alarm deliveries, Go/VPS task writers,
+   and provider invoice watermark.
+2. Inventory active Task/Midjourney intents by redacted status, submit state,
+   creation time, provider/channel digest, and attachment state. Stop on a
+   duplicate provider operation or unresolved accepted create.
+3. Record deterministic business counts/hashes and the number of newly created
+   rows with missing client digests or deadline. Do not export raw provider IDs,
+   caller idempotency keys, requests, credentials, or billing contracts.
+
+### Expand and dual write
+
+1. Apply only 0038. Read back all three columns,
+   `idx_task_billing_intents_client_operation`,
+   `idx_task_billing_intents_provider_operation`, and
+   `idx_task_billing_intents_submit_deadline` with exact SQL and uniqueness.
+2. Prove a 0037-era writer can still insert a zero-value row and the new writer
+   inserts two lowercase SHA-256 digests plus a deadline 5..120 seconds after
+   creation and before lease expiry.
+3. Deploy the new candidate with Rust task traffic disabled or an isolated
+   cohort. Keep client-key requirement, reconciliation mutation, scheduler,
+   TaskRunner, and every staging/cutover proof false.
+4. Observe beyond the maximum old isolate, request, Queue, cron, alarm, and
+   deployment lifetime. Stop unless every new candidate row is fully populated
+   and the count of newly created zero-value rows remains zero.
+
+### Enforce and validate
+
+1. Drain and remove every old writer, then apply 0039 once. Do not hand-edit the
+   migration ledger or rewrite historical zero-value rows.
+2. Verify the insert and immutable triggers. Wrong length, uppercase, non-hex,
+   missing digest, deadline below 5 seconds, deadline above 120 seconds,
+   deadline past lease, or later identity/deadline mutation must fail.
+3. Verify historical rows retain zero values and remain recoverable through the
+   legacy lease branch. Verify the new deadline sweep uses the deadline index
+   while the legacy branch uses the lease index.
+4. Retry the same token/task/key and request: one intent and no second provider
+   call. Change route/model/body under the same key: conflict and no provider
+   call. Use a different token: no cross-token disclosure or replay.
+5. Inject timeout, redirect, 408/409/425/429/5xx, oversized response,
+   unclassified response, and post-accept attachment failure. Require a stable
+   202 status handle, retained reserve, and canonical owner-token query.
+
+### Rollback
+
+Disable required-key admission and Rust task traffic first, then reconciliation
+mutation, TaskRunner, scheduler, recovery, and lease authority as appropriate.
+Retain 0038/0039 and deploy only a 0039-compatible Worker. Reconcile all
+`submitting`, `submit_unknown`, and accepted-but-unattached rows against the
+provider and invoice before Go/VPS creates or polls overlapping work. Never
+drop the indexes/triggers, backfill guessed keys, reuse a caller key, or return
+to an old writer. Production remains **NO-GO**.

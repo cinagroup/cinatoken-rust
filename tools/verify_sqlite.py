@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -276,9 +277,12 @@ REQUIRED_COLUMNS = {
         "submit_state",
         "provider_kind",
         "provider_idempotency_key",
+        "client_operation_key_sha256",
+        "client_request_sha256",
         "provider_task_id",
         "request_accounted",
         "lease_expires_at",
+        "submit_deadline_at",
         "owner_generation",
         "submit_attempt_count",
         "recovery_attempt_count",
@@ -370,6 +374,9 @@ REQUIRED_INDEXES = {
         "idx_task_billing_intent_reconciliation_id": True,
         "idx_task_billing_intent_reconciliation_resolution_key": True,
         "idx_task_billing_intent_reconciliation_queue": False,
+        "idx_task_billing_intents_client_operation": True,
+        "idx_task_billing_intents_provider_operation": True,
+        "idx_task_billing_intents_submit_deadline": False,
     },
     "task_billing_reconciliation_events": {
         "idx_task_billing_reconciliation_event_identity": True,
@@ -413,6 +420,8 @@ def main() -> int:
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
     task_submit_reconciliation_rollout_verified = False
+    task_submit_operation_verified = False
+    task_submit_operation_rollout_verified = False
     task_poll_lease_verified = False
     task_poll_lease_rollout_verified = False
     task_poll_schedule_verified = False
@@ -428,6 +437,8 @@ def main() -> int:
         relay_owner_guard_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
+        verify_task_submit_operation_rollout(schema_paths)
+        task_submit_operation_rollout_verified = True
         verify_task_poll_lease_rollout(schema_paths)
         task_poll_lease_rollout_verified = True
         verify_task_poll_schedule_rollout(schema_paths)
@@ -449,6 +460,8 @@ def main() -> int:
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
         task_submit_reconciliation_verified = True
+        verify_task_submit_operation(conn)
+        task_submit_operation_verified = True
         verify_task_poll_lease(conn)
         task_poll_lease_verified = True
         verify_task_poll_schedule(conn)
@@ -506,6 +519,10 @@ def main() -> int:
         message += " + 0032/0033 task submit reconciliation"
     if task_submit_reconciliation_rollout_verified:
         message += " + 0032 expand/0033 enforce rollout"
+    if task_submit_operation_verified:
+        message += " + 0038/0039 bounded task submit operation"
+    if task_submit_operation_rollout_verified:
+        message += " + 0038 expand/0039 enforce rollout"
     if task_poll_lease_verified:
         message += " + 0034/0035 generation-fenced task polling"
     if task_poll_lease_rollout_verified:
@@ -1181,15 +1198,22 @@ def insert_task_billing_intent(
     quota: int,
     created_at: int,
 ) -> None:
+    client_operation_key_sha256 = hashlib.sha256(
+        f"client-operation:{reservation_key}".encode()
+    ).hexdigest()
+    client_request_sha256 = hashlib.sha256(
+        f"client-request:{reservation_key}".encode()
+    ).hexdigest()
     conn.execute(
         """
         INSERT INTO task_billing_intents (
           reservation_key, task_kind, public_task_id, user_id, token_id,
           channel_id, quota, billing_contract_json, billing_contract_sha256,
           attach_contract_json, attach_contract_sha256,
-          provider_kind, provider_idempotency_key, lease_expires_at,
-          created_at, updated_at
-        ) VALUES (?, 'task', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sqlite-provider', ?, ?, ?, ?)
+          provider_kind, provider_idempotency_key,
+          client_operation_key_sha256, client_request_sha256,
+          submit_deadline_at, lease_expires_at, created_at, updated_at
+        ) VALUES (?, 'task', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sqlite-provider', ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             reservation_key,
@@ -1203,11 +1227,169 @@ def insert_task_billing_intent(
             '{"contract_version":"task-attach-v1","task_kind":"task"}',
             "b" * 64,
             f"provider:{reservation_key}",
+            client_operation_key_sha256,
+            client_request_sha256,
+            created_at + 90,
             created_at + 300,
             created_at,
             created_at,
         ),
     )
+
+
+def verify_task_submit_operation(conn: sqlite3.Connection) -> None:
+    for trigger in (
+        "task_billing_intent_submit_operation_insert_guard",
+        "task_billing_intent_submit_operation_immutable_guard",
+    ):
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0039 task submit operation trigger missing: {trigger}")
+
+    user_id = 380038
+    token_id = 380038
+    channel_id = 380038
+    conn.execute(
+        "INSERT INTO users (id, username, password, quota, aff_code, created_at) "
+        "VALUES (?, 'sqlite-0039-user', 'not-used', 1000, 'sqlite-0039', 1)",
+        (user_id,),
+    )
+    conn.execute(
+        "INSERT INTO tokens (id, user_id, \"key\", remain_quota, used_quota) "
+        "VALUES (?, ?, 'sqlite-0039-token', 1000, 0)",
+        (token_id, user_id),
+    )
+    conn.execute(
+        "INSERT INTO channels (id, key, name) "
+        "VALUES (?, 'sqlite-0039-channel-key', 'sqlite-0039-channel')",
+        (channel_id,),
+    )
+    insert_task_billing_intent(
+        conn,
+        "0039-operation",
+        user_id,
+        token_id,
+        channel_id,
+        quota=10,
+        created_at=3_900,
+    )
+    deadline = conn.execute(
+        "SELECT submit_deadline_at FROM task_billing_intents "
+        "WHERE reservation_key = '0039-operation'"
+    ).fetchone()[0]
+    if deadline != 3_990:
+        raise SystemExit(f"0039 task submit deadline was not persisted: {deadline}")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE task_billing_intents SET submit_deadline_at = 3991 "
+            "WHERE reservation_key = '0039-operation'"
+        ),
+        "0039 submit deadline must be immutable",
+        "task submit operation identity is immutable",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            INSERT INTO task_billing_intents (
+              reservation_key, task_kind, public_task_id, user_id, token_id,
+              channel_id, quota, billing_contract_json, billing_contract_sha256,
+              attach_contract_json, attach_contract_sha256,
+              provider_kind, provider_idempotency_key,
+              client_operation_key_sha256, client_request_sha256,
+              submit_deadline_at, lease_expires_at, created_at, updated_at
+            )
+            SELECT '0039-operation-duplicate', task_kind,
+                   'public:0039-operation-duplicate', user_id, token_id,
+                   channel_id, quota, billing_contract_json,
+                   billing_contract_sha256, attach_contract_json,
+                   attach_contract_sha256, provider_kind,
+                   provider_idempotency_key, lower(hex(randomblob(32))),
+                   client_request_sha256, submit_deadline_at,
+                   lease_expires_at, created_at, updated_at
+            FROM task_billing_intents
+            WHERE reservation_key = '0039-operation'
+            """
+        ),
+        "0038 provider operation identity must be unique",
+        "UNIQUE constraint failed",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            INSERT INTO task_billing_intents (
+              reservation_key, task_kind, public_task_id, user_id, token_id,
+              channel_id, quota, billing_contract_json, billing_contract_sha256,
+              attach_contract_json, attach_contract_sha256,
+              provider_kind, provider_idempotency_key,
+              client_operation_key_sha256, client_request_sha256,
+              submit_deadline_at, lease_expires_at, created_at, updated_at
+            )
+            SELECT '0039-client-operation-duplicate', task_kind,
+                   'public:0039-client-operation-duplicate', user_id, token_id,
+                   channel_id, quota, billing_contract_json,
+                   billing_contract_sha256, attach_contract_json,
+                   attach_contract_sha256, provider_kind,
+                   'provider:0039-client-operation-duplicate',
+                   client_operation_key_sha256, client_request_sha256,
+                   submit_deadline_at, lease_expires_at, created_at, updated_at
+            FROM task_billing_intents
+            WHERE reservation_key = '0039-operation'
+            """
+        ),
+        "0038 client operation identity must be unique per token and task kind",
+        "UNIQUE constraint failed",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            INSERT INTO task_billing_intents (
+              reservation_key, task_kind, public_task_id, user_id, token_id,
+              channel_id, quota, billing_contract_json, billing_contract_sha256,
+              attach_contract_json, attach_contract_sha256,
+              provider_kind, provider_idempotency_key,
+              client_operation_key_sha256, client_request_sha256,
+              submit_deadline_at, lease_expires_at, created_at, updated_at
+            ) VALUES (
+              '0039-invalid-deadline', 'task', 'public:0039-invalid-deadline',
+              ?, ?, ?, 1, '{"funding_source":"wallet"}', ?,
+              '{"contract_version":"task-attach-v1","task_kind":"task"}', ?,
+              'sqlite-provider', 'provider:0039-invalid-deadline', ?, ?, 4121,
+              4300, 4000, 4000
+            )
+            """,
+            (
+                user_id,
+                token_id,
+                channel_id,
+                "a" * 64,
+                "b" * 64,
+                hashlib.sha256(b"invalid-deadline-operation").hexdigest(),
+                hashlib.sha256(b"invalid-deadline-request").hexdigest(),
+            ),
+        ),
+        "0039 submit deadline must stay inside the 5..120 second contract",
+        "task submit operation contract is invalid",
+    )
+
+    plan = " ".join(
+        row[3]
+        for row in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT reservation_key "
+            "FROM task_billing_intents "
+            "INDEXED BY idx_task_billing_intents_submit_deadline "
+            "WHERE status = 'reserved' "
+            "AND submit_state IN ('prepared', 'submitting', 'rejected') "
+            "AND submit_deadline_at < 5000 "
+            "ORDER BY submit_state, submit_deadline_at, reservation_key"
+        ).fetchall()
+    )
+    if "idx_task_billing_intents_submit_deadline" not in plan:
+        raise SystemExit(f"0038 submit deadline query missed partial index: {plan}")
+
+    conn.execute("DELETE FROM task_billing_intents WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
+    conn.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
+    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
 
 def verify_task_submit_reconciliation(conn: sqlite3.Connection) -> None:
@@ -2180,6 +2362,137 @@ def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:
         lambda: insert_legacy_intent("0033-blocked-old-writer"),
         "0033 must block a writer without a frozen attach contract",
         "task billing intent admission failed",
+    )
+
+
+def verify_task_submit_operation_rollout(schema_paths: list[Path]) -> None:
+    expand_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0038_task_submit_operation_expand.sql"
+        ),
+        None,
+    )
+    enforce_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0039_task_submit_operation_enforce.sql"
+        ),
+        None,
+    )
+    if expand_path is None or enforce_path is None:
+        raise SystemExit("0038/0039 task submit operation rollout migrations not found")
+    if schema_paths.index(expand_path) + 1 != schema_paths.index(enforce_path):
+        raise SystemExit("0038 expand must immediately precede 0039 enforcement")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == expand_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    user_id = 390039
+    token_id = 390039
+    channel_id = 390039
+    conn.execute(
+        "INSERT INTO users (id, username, password, quota, aff_code, created_at) "
+        "VALUES (?, 'sqlite-0039-rollout-user', 'not-used', 1000, 'sqlite-0039-rollout', 1)",
+        (user_id,),
+    )
+    conn.execute(
+        "INSERT INTO tokens (id, user_id, \"key\", remain_quota, used_quota) "
+        "VALUES (?, ?, 'sqlite-0039-rollout-token', 1000, 0)",
+        (token_id, user_id),
+    )
+    conn.execute(
+        "INSERT INTO channels (id, key, name) "
+        "VALUES (?, 'sqlite-0039-rollout-channel-key', 'sqlite-0039-rollout-channel')",
+        (channel_id,),
+    )
+
+    legacy_insert = """
+        INSERT INTO task_billing_intents (
+          reservation_key, task_kind, public_task_id, user_id, token_id,
+          channel_id, quota, billing_contract_json, billing_contract_sha256,
+          attach_contract_json, attach_contract_sha256,
+          provider_kind, provider_idempotency_key, lease_expires_at,
+          created_at, updated_at
+        ) VALUES (?, 'task', ?, ?, ?, ?, 10,
+                  '{"funding_source":"wallet"}', ?,
+                  '{"contract_version":"task-attach-v1","task_kind":"task"}', ?,
+                  'sqlite-provider', ?, ?, ?, ?)
+    """
+
+    def insert_legacy_intent(reservation_key: str, created_at: int) -> None:
+        conn.execute(
+            legacy_insert,
+            (
+                reservation_key,
+                f"public:{reservation_key}",
+                user_id,
+                token_id,
+                channel_id,
+                "a" * 64,
+                "b" * 64,
+                f"provider:{reservation_key}",
+                created_at + 900,
+                created_at,
+                created_at,
+            ),
+        )
+
+    insert_legacy_intent("0038-preexisting", 3_800)
+    conn.executescript(expand_path.read_text(encoding="utf-8"))
+    preexisting_deadline = conn.execute(
+        "SELECT submit_deadline_at FROM task_billing_intents "
+        "WHERE reservation_key = '0038-preexisting'"
+    ).fetchone()
+    if preexisting_deadline != (0,):
+        raise SystemExit(
+            f"0038 expand changed an existing task deadline: {preexisting_deadline}"
+        )
+
+    insert_legacy_intent("0038-late-old-writer", 3_810)
+    late_old_writer = conn.execute(
+        "SELECT submit_deadline_at FROM task_billing_intents "
+        "WHERE reservation_key = '0038-late-old-writer'"
+    ).fetchone()
+    if late_old_writer != (0,):
+        raise SystemExit("0038 expand is not compatible with the old task writer")
+
+    insert_task_billing_intent(
+        conn,
+        "0038-new-writer",
+        user_id,
+        token_id,
+        channel_id,
+        quota=10,
+        created_at=3_820,
+    )
+    conn.executescript(enforce_path.read_text(encoding="utf-8"))
+    historical_zero_count = conn.execute(
+        "SELECT count(*) FROM task_billing_intents "
+        "WHERE reservation_key IN ('0038-preexisting', '0038-late-old-writer') "
+        "AND submit_deadline_at = 0"
+    ).fetchone()[0]
+    if historical_zero_count != 2:
+        raise SystemExit("0039 enforcement rewrote historical zero-deadline rows")
+
+    expect_integrity_error(
+        lambda: insert_legacy_intent("0039-blocked-old-writer", 3_830),
+        "0039 must block a writer without a submit deadline",
+        "task submit operation contract is invalid",
+    )
+    insert_task_billing_intent(
+        conn,
+        "0039-new-writer",
+        user_id,
+        token_id,
+        channel_id,
+        quota=10,
+        created_at=3_840,
     )
 
 

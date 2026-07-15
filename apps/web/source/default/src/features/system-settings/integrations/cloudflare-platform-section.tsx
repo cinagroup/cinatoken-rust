@@ -198,7 +198,7 @@ export function CloudflarePlatformSection() {
             />
 
             <TaskSubmitReconciliationPanel
-              runtimeReady={capabilities.task_submit_reconciliation_ready}
+              runtimeReady={capabilities.task_submit_reconciliation_read_ready}
               mutationEnabled={capabilities.task_submit_reconciliation_ready}
             />
 
@@ -1683,6 +1683,75 @@ function buildCapabilityGroups(
             seconds: capabilities.task_poller_poll_lease_seconds,
           }),
           missingLabel: t('Invalid'),
+        },
+        {
+          label: t('Task submit operation contract'),
+          description: t(
+            'Freezes one provider operation identity per task/channel and validates the D1 operation schema (contract v{{version}}).',
+            { version: capabilities.task_submit_operation_contract_version }
+          ),
+          ready:
+            capabilities.task_submit_operation_compiled &&
+            capabilities.task_submit_operation_schema_ready &&
+            capabilities.task_submit_local_operation_unique,
+          readyLabel: t('Locally enforced'),
+          missingLabel: t('Not ready'),
+          missingVariant: capabilities.task_submit_operation_compiled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Whole-submit deadline'),
+          description: t(
+            'TASK_SUBMIT_TIMEOUT_SECONDS bounds request preparation, Vertex OAuth exchange, provider fetch, and response-body read with an abortable absolute deadline.'
+          ),
+          ready:
+            capabilities.task_submit_timeout_configured &&
+            capabilities.task_submit_timeout_valid,
+          readyLabel: t('{{seconds}} seconds', {
+            seconds: capabilities.task_submit_timeout_seconds,
+          }),
+          missingLabel: t('Invalid or missing'),
+          missingVariant: 'warning',
+        },
+        {
+          label: t('Client submit idempotency'),
+          description: t(
+            'Requires a bounded Idempotency-Key, persists a token-scoped request digest, and exposes an owner-only no-store submission-status query.'
+          ),
+          ready:
+            capabilities.task_submit_client_idempotency_compiled &&
+            capabilities.task_submit_client_idempotency_required &&
+            capabilities.task_submit_status_query_compiled,
+          readyLabel: t('Required'),
+          missingLabel: capabilities.task_submit_client_idempotency_compiled
+            ? t('Optional')
+            : t('Missing'),
+          missingVariant: 'warning',
+        },
+        {
+          label: t('Provider operation recovery proof'),
+          description: t(
+            'Requires provider-native acceptance of the frozen idempotency identity and lookup of an ambiguous submit without issuing a second create.'
+          ),
+          ready:
+            capabilities.task_submit_provider_native_idempotency_verified &&
+            capabilities.task_submit_provider_lookup_verified,
+          readyLabel: t('Verified'),
+          missingLabel: t('Remote proof required'),
+          missingVariant: capabilities.task_submit_local_operation_unique
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Task submit operation cutover'),
+          description: t(
+            'Remains blocked until local uniqueness, the bounded runtime, provider-native idempotency, and provider lookup all converge.'
+          ),
+          ready: capabilities.task_submit_operation_cutover_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Blocked'),
+          missingVariant: 'warning',
         },
         {
           label: t('TaskRunner Durable Object'),

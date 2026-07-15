@@ -11,13 +11,14 @@
 use crate::task_repository::{
     advance_task_poll_family_cursor, apply_poll_result, apply_task_timeout,
     attach_task_billing_intent, claim_task_poll_lease, claim_task_timeout_poll_lease,
-    find_timed_out_unfinished_tasks, find_unfinished_suno_tasks, find_unfinished_tasks,
-    generate_task_id, generate_task_poll_owner, mark_task_billing_intent_submit_unknown,
+    find_task_billing_intent_for_owner, find_timed_out_unfinished_tasks,
+    find_unfinished_suno_tasks, find_unfinished_tasks, generate_task_id, generate_task_poll_owner,
+    mark_task_billing_intent_submit_unknown,
     mark_task_billing_intent_submit_unknown_with_provider_task_id,
     mark_task_billing_intent_submitting, record_task_poll_failure,
     reject_and_refund_task_billing_intent, release_task_poll_lease, reserve_task_billing_intent,
-    NewTask, TaskBillingIntentAttachOutcome, TaskBillingIntentRecord, TaskPollLease, TaskRow,
-    TASK_BILLING_INTENT_LEASE_SECONDS,
+    NewTask, TaskBillingIntent, TaskBillingIntentAttachOutcome, TaskBillingIntentRecord,
+    TaskBillingIntentReserveOutcome, TaskPollLease, TaskRow, TASK_BILLING_INTENT_LEASE_SECONDS,
 };
 use base64::{
     engine::general_purpose::{
@@ -55,6 +56,8 @@ const VIDEO_PROXY_REDIRECT_POLICY: RequestRedirect = RequestRedirect::Error;
 const TASK_ACTION_GENERATE: &str = "generate";
 const TASK_ACTION_TEXT_GENERATE: &str = "textGenerate";
 const TASK_ACTION_REMIX: &str = "remixGenerate";
+const TASK_IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
+const TASK_IDEMPOTENCY_KEY_MAX_LEN: usize = 128;
 pub(crate) const TASK_QUERY_LIMIT_ENV: &str = "TASK_QUERY_LIMIT";
 pub(crate) const TASK_TIMEOUT_MINUTES_ENV: &str = "TASK_TIMEOUT_MINUTES";
 pub(crate) const TASK_POLL_LEASE_SECONDS_ENV: &str = "TASK_POLL_LEASE_SECONDS";
@@ -64,12 +67,15 @@ pub(crate) const TASK_POLL_RETRY_BASE_SECONDS_ENV: &str = "TASK_POLL_RETRY_BASE_
 pub(crate) const TASK_POLL_RETRY_MAX_SECONDS_ENV: &str = "TASK_POLL_RETRY_MAX_SECONDS";
 pub(crate) const TASK_POLL_MAX_CONSECUTIVE_FAILURES_ENV: &str =
     "TASK_POLL_MAX_CONSECUTIVE_FAILURES";
+pub(crate) const TASK_SUBMIT_TIMEOUT_SECONDS_ENV: &str = "TASK_SUBMIT_TIMEOUT_SECONDS";
+pub(crate) const TASK_CLIENT_IDEMPOTENCY_REQUIRED_ENV: &str = "TASK_CLIENT_IDEMPOTENCY_REQUIRED";
 pub(crate) const DEFAULT_TASK_QUERY_LIMIT: i64 = 100;
 pub(crate) const DEFAULT_TASK_TIMEOUT_MINUTES: i64 = 1_440;
 pub(crate) const DEFAULT_TASK_POLL_LEASE_SECONDS: i64 = 120;
 pub(crate) const DEFAULT_TASK_POLL_RETRY_BASE_SECONDS: i64 = 15;
 pub(crate) const DEFAULT_TASK_POLL_RETRY_MAX_SECONDS: i64 = 900;
 pub(crate) const DEFAULT_TASK_POLL_MAX_CONSECUTIVE_FAILURES: i64 = 8;
+pub(crate) const DEFAULT_TASK_SUBMIT_TIMEOUT_SECONDS: i64 = 90;
 pub(crate) const TASK_TIMEOUT_SWEEP_LIMIT: i64 = 100;
 const MAX_TASK_QUERY_LIMIT: i64 = 1_000;
 const MAX_TASK_TIMEOUT_MINUTES: i64 = 30 * 24 * 60;
@@ -77,11 +83,149 @@ const MIN_TASK_POLL_LEASE_SECONDS: i64 = 30;
 const MAX_TASK_POLL_LEASE_SECONDS: i64 = 900;
 const MAX_TASK_POLL_RETRY_SECONDS: i64 = 86_400;
 const MAX_TASK_POLL_CONSECUTIVE_FAILURES: i64 = 100;
+const MIN_TASK_SUBMIT_TIMEOUT_SECONDS: i64 = 5;
+const MAX_TASK_SUBMIT_TIMEOUT_SECONDS: i64 = 120;
 const TASK_PROVIDER_POLL_MAX_TIMEOUT_SECONDS: i64 = 90;
 const TASK_PROVIDER_POLL_LEASE_SAFETY_SECONDS: i64 = 15;
 pub(crate) const TASK_POLL_FAMILY_QUERY_LIMIT: i64 = 8;
 const TASK_POLL_STORED_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+const TASK_PROVIDER_RESPONSE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const TASK_POLL_STORED_VIDEO_PREFIX_CHARS: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TaskSubmitTimeoutRuntimeStatus {
+    pub configured: bool,
+    pub valid: bool,
+    pub effective_seconds: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TaskSubmitDeadline {
+    deadline_ms: f64,
+}
+
+impl TaskSubmitDeadline {
+    fn until(deadline_at: i64) -> Self {
+        Self {
+            deadline_ms: deadline_at.max(0) as f64 * 1_000.0,
+        }
+    }
+
+    fn remaining(&self) -> worker::Result<Duration> {
+        let remaining_ms = self.deadline_ms - js_sys::Date::now();
+        if remaining_ms <= 0.0 {
+            return Err(worker::Error::RustError(
+                "task provider submit deadline expired".to_string(),
+            ));
+        }
+        Ok(Duration::from_millis(remaining_ms.ceil() as u64))
+    }
+}
+
+fn task_submit_timeout_value(raw: Option<&str>) -> Option<i64> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| {
+            (MIN_TASK_SUBMIT_TIMEOUT_SECONDS..=MAX_TASK_SUBMIT_TIMEOUT_SECONDS).contains(value)
+        })
+}
+
+pub(crate) fn task_submit_timeout_runtime_status(env: &Env) -> TaskSubmitTimeoutRuntimeStatus {
+    let raw = env
+        .var(TASK_SUBMIT_TIMEOUT_SECONDS_ENV)
+        .ok()
+        .map(|value| value.to_string());
+    let configured = raw.as_deref().is_some_and(|value| !value.trim().is_empty());
+    let parsed = task_submit_timeout_value(raw.as_deref());
+    TaskSubmitTimeoutRuntimeStatus {
+        configured,
+        valid: configured && parsed.is_some(),
+        effective_seconds: parsed.unwrap_or(DEFAULT_TASK_SUBMIT_TIMEOUT_SECONDS),
+    }
+}
+
+pub(crate) fn task_client_idempotency_required(env: &Env) -> bool {
+    env.var(TASK_CLIENT_IDEMPOTENCY_REQUIRED_ENV)
+        .ok()
+        .is_some_and(|value| value.to_string().trim().eq_ignore_ascii_case("true"))
+}
+
+fn task_submit_deadline_at(now: i64, timeout_seconds: i64) -> i64 {
+    now.saturating_add(timeout_seconds.clamp(
+        MIN_TASK_SUBMIT_TIMEOUT_SECONDS,
+        MAX_TASK_SUBMIT_TIMEOUT_SECONDS,
+    ))
+}
+
+fn task_submit_idempotency_key(req: &Request, required: bool) -> Result<Option<String>, String> {
+    let Some(value) = req
+        .headers()
+        .get(TASK_IDEMPOTENCY_KEY_HEADER)
+        .ok()
+        .flatten()
+    else {
+        return if required {
+            Err("Idempotency-Key header is required".to_string())
+        } else {
+            Ok(None)
+        };
+    };
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > TASK_IDEMPOTENCY_KEY_MAX_LEN
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("invalid Idempotency-Key header".to_string());
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn task_submit_digest(domain: &str, parts: &[&[u8]]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    for part in parts {
+        hasher.update((part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn task_submit_client_operation_digest(
+    user_id: i64,
+    token_id: i64,
+    task_kind: &str,
+    client_key: Option<&str>,
+    fallback_public_task_id: &str,
+) -> String {
+    let user_id = user_id.to_string();
+    let token_id = token_id.to_string();
+    let key = client_key.unwrap_or(fallback_public_task_id);
+    let mode = if client_key.is_some() {
+        b"client".as_slice()
+    } else {
+        b"generated".as_slice()
+    };
+    task_submit_digest(
+        "cinatoken:task-client-operation:v1",
+        &[
+            user_id.as_bytes(),
+            token_id.as_bytes(),
+            task_kind.as_bytes(),
+            mode,
+            key.as_bytes(),
+        ],
+    )
+}
+
+fn task_submit_client_request_digest(scope: &str, body: &[u8]) -> String {
+    task_submit_digest(
+        "cinatoken:task-client-request:v1",
+        &[scope.as_bytes(), body],
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TaskPollFamily {
@@ -507,7 +651,7 @@ pub fn build_submit_http_request(
 async fn acquire_vertex_token(
     service_account_json: &str,
     now: i64,
-    timeout_seconds: Option<u64>,
+    timeout: Option<Duration>,
 ) -> worker::Result<(String, String)> {
     let sa: vertex::ServiceAccount = serde_json::from_str(service_account_json)
         .map_err(|err| worker::Error::RustError(format!("parse service account: {err}")))?;
@@ -522,9 +666,15 @@ async fn acquire_vertex_token(
         )],
         body: Some(vertex::token_exchange_body(&jwt)),
     };
-    let response = match timeout_seconds {
-        Some(timeout_seconds) => {
-            execute_poll_request_with_timeout(&request, timeout_seconds).await?
+    let response = match timeout {
+        Some(timeout) => {
+            execute_provider_request_with_timeout(
+                &request,
+                timeout,
+                "Vertex OAuth token exchange timed out",
+            )
+            .await?
+            .body
         }
         None => execute_poll_request(&request).await?,
     };
@@ -541,11 +691,21 @@ async fn submit_vertex_task(
     req: &TaskSubmitReq,
     model: &str,
     now: i64,
-) -> worker::Result<String> {
-    let (token, project_id) = acquire_vertex_token(service_account_json, now, None).await?;
+    deadline: TaskSubmitDeadline,
+) -> Result<String, SubmitTaskFailure> {
+    let token_timeout = deadline
+        .remaining()
+        .map_err(SubmitTaskFailure::BeforeProvider)?;
+    let (token, project_id) = acquire_vertex_token(service_account_json, now, Some(token_timeout))
+        .await
+        .map_err(SubmitTaskFailure::BeforeProvider)?;
     let url = vertex::build_predict_url(base_url, "v1", &project_id, region, model);
-    let payload = gemini::convert_to_request_payload(req).map_err(worker::Error::RustError)?;
-    let body = serde_json::to_string(&payload)?;
+    let payload = gemini::convert_to_request_payload(req)
+        .map_err(worker::Error::RustError)
+        .map_err(SubmitTaskFailure::BeforeProvider)?;
+    let body = serde_json::to_string(&payload)
+        .map_err(worker::Error::from)
+        .map_err(SubmitTaskFailure::BeforeProvider)?;
     let request = PollRequest {
         method: HttpMethod::Post,
         url,
@@ -555,8 +715,34 @@ async fn submit_vertex_task(
         ],
         body: Some(body),
     };
-    let response = execute_poll_request(&request).await?;
-    vertex::parse_submit_response(&response).map_err(worker::Error::RustError)
+    let response = execute_provider_request_with_timeout(
+        &request,
+        deadline
+            .remaining()
+            .map_err(SubmitTaskFailure::BeforeProvider)?,
+        "task provider submit timed out",
+    )
+    .await
+    .map_err(SubmitTaskFailure::ProviderResultUnknown)?;
+    if submit_http_status_is_ambiguous(response.status) {
+        return Err(SubmitTaskFailure::ProviderResultUnknown(
+            worker::Error::RustError(format!(
+                "provider submit returned ambiguous HTTP status {}",
+                response.status
+            )),
+        ));
+    }
+    if (400..500).contains(&response.status) {
+        return Err(SubmitTaskFailure::ProviderRejected(
+            worker::Error::RustError(format!(
+                "provider rejected submit with HTTP status {}",
+                response.status
+            )),
+        ));
+    }
+    vertex::parse_submit_response(&response.body)
+        .map_err(worker::Error::RustError)
+        .map_err(SubmitTaskFailure::ProviderResultUnknown)
 }
 
 /// Poll a Vertex task: decode the operation name, build the
@@ -577,8 +763,12 @@ async fn poll_vertex_task(
         decode_local_task_id(&task.upstream_task_id).map_err(worker::Error::RustError)?;
     let url =
         vertex::build_fetch_url(base_url, &operation_name).map_err(worker::Error::RustError)?;
-    let (token, _project_id) =
-        acquire_vertex_token(service_account_json, now, Some(timeout_seconds)).await?;
+    let (token, _project_id) = acquire_vertex_token(
+        service_account_json,
+        now,
+        Some(Duration::from_secs(timeout_seconds.max(1))),
+    )
+    .await?;
     let remaining_ms = deadline_ms - js_sys::Date::now();
     if remaining_ms <= 0.0 {
         return Err(worker::Error::RustError(
@@ -630,6 +820,130 @@ pub struct SubmitTaskOutcome {
     pub task_data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayTaskSubmitOutcome {
+    pub public_task_id: String,
+    pub lifecycle_status: String,
+    pub submit_state: String,
+    pub provider_task_id: Option<String>,
+    pub replayed: bool,
+    pub http_status: u16,
+}
+
+fn replay_task_submit_outcome(intent: TaskBillingIntent) -> RelayTaskSubmitOutcome {
+    let http_status = if matches!(intent.status.as_str(), "attached" | "settled") {
+        200
+    } else if intent.status == "refunded" || intent.submit_state == "rejected" {
+        409
+    } else {
+        202
+    };
+    RelayTaskSubmitOutcome {
+        public_task_id: intent.public_task_id,
+        lifecycle_status: intent.status,
+        submit_state: intent.submit_state,
+        provider_task_id: (!intent.provider_task_id.is_empty()).then_some(intent.provider_task_id),
+        replayed: true,
+        http_status,
+    }
+}
+
+fn pending_task_submit_outcome(
+    public_task_id: String,
+    provider_task_id: Option<String>,
+    recovery_persisted: bool,
+) -> RelayTaskSubmitOutcome {
+    RelayTaskSubmitOutcome {
+        public_task_id,
+        lifecycle_status: if recovery_persisted {
+            "recovery_required".to_string()
+        } else {
+            "reserved".to_string()
+        },
+        submit_state: if recovery_persisted {
+            "submit_unknown".to_string()
+        } else {
+            "submitting".to_string()
+        },
+        provider_task_id,
+        replayed: false,
+        http_status: 202,
+    }
+}
+
+fn relay_task_submit_response(
+    outcome: RelayTaskSubmitOutcome,
+    response_kind: VideoSubmitResponse,
+    model: &str,
+    created_at: i64,
+) -> worker::Result<Response> {
+    if outcome.http_status == 200 {
+        return match response_kind {
+            VideoSubmitResponse::LegacyTaskId => {
+                task_submission_json(&serde_json::json!({"task_id": outcome.public_task_id}), 200)
+            }
+            VideoSubmitResponse::OpenAiVideo => task_submission_json(
+                &openai_video_submit_json(&outcome.public_task_id, model, created_at),
+                200,
+            ),
+        };
+    }
+    let status_url = format!("/api/task/submissions/{}", outcome.public_task_id);
+    let mut payload = serde_json::json!({
+        "task_id": &outcome.public_task_id,
+        "submission_id": &outcome.public_task_id,
+        "status": &outcome.submit_state,
+        "lifecycle_status": &outcome.lifecycle_status,
+        "replayed": outcome.replayed,
+        "status_url": status_url,
+    });
+    if outcome.http_status == 409 {
+        payload["error"] = serde_json::Value::String(
+            "idempotency key already resolved to a terminal submission".to_string(),
+        );
+    }
+    task_submission_json(&payload, outcome.http_status)
+}
+
+fn midjourney_task_submit_response(
+    outcome: RelayTaskSubmitOutcome,
+    description: &str,
+) -> worker::Result<Response> {
+    if outcome.http_status == 200 {
+        let Some(provider_task_id) = outcome.provider_task_id else {
+            return task_submission_json(
+                &serde_json::json!({
+                    "code": 4,
+                    "description": "task is attached but provider identity is unavailable",
+                    "submission_id": outcome.public_task_id,
+                }),
+                502,
+            );
+        };
+        return task_submission_json(
+            &serde_json::json!({
+                "code": 1,
+                "description": "submit success",
+                "result": provider_task_id,
+            }),
+            200,
+        );
+    }
+    let status_url = format!("/api/task/submissions/{}", outcome.public_task_id);
+    task_submission_json(
+        &serde_json::json!({
+            "code": 4,
+            "description": description,
+            "submission_id": &outcome.public_task_id,
+            "status": &outcome.submit_state,
+            "lifecycle_status": &outcome.lifecycle_status,
+            "replayed": outcome.replayed,
+            "status_url": status_url,
+        }),
+        outcome.http_status,
+    )
+}
+
 pub enum SubmitTaskFailure {
     BeforeProvider(worker::Error),
     ProviderRejected(worker::Error),
@@ -646,7 +960,7 @@ impl SubmitTaskFailure {
     }
 }
 
-pub async fn submit_task(
+async fn submit_task(
     provider: VideoProvider,
     base_url: &str,
     key: &str,
@@ -658,14 +972,21 @@ pub async fn submit_task(
     vertex_region: &str,
     raw_client_body: &[u8],
     now: i64,
+    deadline: TaskSubmitDeadline,
 ) -> Result<SubmitTaskOutcome, SubmitTaskFailure> {
     // Vertex needs an async GCP token exchange before building the request, so it
     // bypasses the sync build_submit_* path.
     if provider == VideoProvider::Vertex {
-        let upstream_task_id =
-            submit_vertex_task(base_url, key, vertex_region, req, upstream_model, now)
-                .await
-                .map_err(SubmitTaskFailure::ProviderResultUnknown)?;
+        let upstream_task_id = submit_vertex_task(
+            base_url,
+            key,
+            vertex_region,
+            req,
+            upstream_model,
+            now,
+            deadline,
+        )
+        .await?;
         return Ok(SubmitTaskOutcome {
             upstream_task_id,
             task_data: Vec::new(),
@@ -687,9 +1008,15 @@ pub async fn submit_task(
     )
     .map_err(worker::Error::RustError)
     .map_err(SubmitTaskFailure::BeforeProvider)?;
-    let response = execute_provider_request(&request)
-        .await
-        .map_err(SubmitTaskFailure::ProviderResultUnknown)?;
+    let response = execute_provider_request_with_timeout(
+        &request,
+        deadline
+            .remaining()
+            .map_err(SubmitTaskFailure::BeforeProvider)?,
+        "task provider submit timed out",
+    )
+    .await
+    .map_err(SubmitTaskFailure::ProviderResultUnknown)?;
     if submit_http_status_is_ambiguous(response.status) {
         return Err(SubmitTaskFailure::ProviderResultUnknown(
             worker::Error::RustError(format!(
@@ -861,8 +1188,10 @@ pub struct TaskSubmitContext<'a> {
     pub origin_model: &'a str,
     pub action: &'a str,
     pub origin_task_id: &'a str,
+    pub client_idempotency_key: Option<&'a str>,
     pub billing_plan: &'a TaskBillingPlan,
     pub now: i64,
+    pub submit_deadline_at: i64,
     /// Configured Gemini API version (e.g. `v1beta`); only used by Gemini.
     pub gemini_version: &'a str,
     /// Configured Vertex region (e.g. `us-central1`); only used by Vertex.
@@ -886,7 +1215,9 @@ pub async fn relay_task_submit(
     ctx: &TaskSubmitContext<'_>,
     req: &TaskSubmitReq,
     raw_client_body: &[u8],
-) -> worker::Result<String> {
+) -> worker::Result<RelayTaskSubmitOutcome> {
+    let submit_deadline = TaskSubmitDeadline::until(ctx.submit_deadline_at);
+    let submit_deadline_at = ctx.submit_deadline_at;
     let ratios: Vec<f64> = match ctx.provider {
         VideoProvider::Sora => sora::estimate_billing(
             &req.seconds,
@@ -902,6 +1233,18 @@ pub async fn relay_task_submit(
     let free_model = ctx.billing_plan.free_model_runtime_policy.free_model;
     let reserved_quota = if free_model { 0 } else { quota };
     let public_task_id = generate_task_id();
+    let client_operation_key_sha256 = task_submit_client_operation_digest(
+        ctx.user_id,
+        ctx.token_id,
+        "task",
+        ctx.client_idempotency_key,
+        &public_task_id,
+    );
+    let request_scope = format!(
+        "task:{}:{}:{}",
+        ctx.platform, ctx.action, ctx.upstream_model
+    );
+    let client_request_sha256 = task_submit_client_request_digest(&request_scope, raw_client_body);
     let billing_contract = serde_json::json!({
         "contract_version": "task-flat-v1",
         "snapshot": &ctx.billing_plan.snapshot,
@@ -927,7 +1270,7 @@ pub async fn relay_task_submit(
         "data": "{}",
     })
     .to_string();
-    reserve_task_billing_intent(
+    match reserve_task_billing_intent(
         db,
         TaskBillingIntentRecord {
             reservation_key: &public_task_id,
@@ -943,11 +1286,20 @@ pub async fn relay_task_submit(
             attach_contract_json: &attach_contract_json,
             provider_kind: ctx.platform,
             provider_idempotency_key: &public_task_id,
+            client_operation_key_sha256: &client_operation_key_sha256,
+            client_request_sha256: &client_request_sha256,
             created_at: ctx.now,
+            submit_deadline_at,
             lease_expires_at: ctx.now.saturating_add(TASK_BILLING_INTENT_LEASE_SECONDS),
         },
     )
-    .await?;
+    .await?
+    {
+        TaskBillingIntentReserveOutcome::Applied => {}
+        TaskBillingIntentReserveOutcome::Replay(intent) => {
+            return Ok(replay_task_submit_outcome(intent));
+        }
+    }
     if !mark_task_billing_intent_submitting(db, &public_task_id, ctx.now).await? {
         return Err(worker::Error::RustError(
             "task billing intent could not claim provider submission".to_string(),
@@ -966,6 +1318,7 @@ pub async fn relay_task_submit(
         ctx.vertex_region,
         raw_client_body,
         ctx.now,
+        submit_deadline,
     )
     .await
     {
@@ -992,14 +1345,20 @@ pub async fn relay_task_submit(
         }
         Err(failure @ SubmitTaskFailure::ProviderResultUnknown(_)) => {
             let err = failure.into_error();
-            let _ = mark_task_billing_intent_submit_unknown(
+            let recovery_persisted = mark_task_billing_intent_submit_unknown(
                 db,
                 &public_task_id,
                 ctx.now,
                 &format!("provider submit result unknown: {err}"),
             )
-            .await;
-            return Err(err);
+            .await
+            .unwrap_or(false);
+            worker::console_warn!("provider task submit is ambiguous: {}", err);
+            return Ok(pending_task_submit_outcome(
+                public_task_id,
+                None,
+                recovery_persisted,
+            ));
         }
     };
 
@@ -1031,32 +1390,51 @@ pub async fn relay_task_submit(
         Ok(TaskBillingIntentAttachOutcome::Applied)
         | Ok(TaskBillingIntentAttachOutcome::MatchingAttached) => {}
         Ok(TaskBillingIntentAttachOutcome::Conflict) => {
-            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
+            let recovery_persisted = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 db,
                 &public_task_id,
                 ctx.now,
                 "provider accepted but local attachment conflicted",
                 &submit_outcome.upstream_task_id,
             )
-            .await;
-            return Err(worker::Error::RustError(
-                "provider accepted task but durable attachment conflicted".to_string(),
+            .await
+            .unwrap_or(false);
+            return Ok(pending_task_submit_outcome(
+                public_task_id,
+                Some(submit_outcome.upstream_task_id),
+                recovery_persisted,
             ));
         }
         Err(insert_err) => {
-            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
+            let recovery_persisted = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 db,
                 &public_task_id,
                 ctx.now,
                 &format!("provider accepted but local attachment failed: {insert_err}"),
                 &submit_outcome.upstream_task_id,
             )
-            .await;
-            return Err(insert_err);
+            .await
+            .unwrap_or(false);
+            worker::console_error!(
+                "provider task attachment failed after acceptance: {}",
+                insert_err
+            );
+            return Ok(pending_task_submit_outcome(
+                public_task_id,
+                Some(submit_outcome.upstream_task_id),
+                recovery_persisted,
+            ));
         }
     }
 
-    Ok(public_task_id)
+    Ok(RelayTaskSubmitOutcome {
+        public_task_id,
+        lifecycle_status: "attached".to_string(),
+        submit_state: "submitted".to_string(),
+        provider_task_id: Some(submit_outcome.upstream_task_id),
+        replayed: false,
+        http_status: 200,
+    })
 }
 
 /// Video channel types that run task providers (`constant/channel.go`), used to
@@ -1188,6 +1566,17 @@ async fn handle_parsed_task_submit_with_response(
     action_override: Option<&str>,
 ) -> worker::Result<Response> {
     let db = env.d1("DB")?;
+    let submit_deadline_at = task_submit_deadline_at(
+        now,
+        task_submit_timeout_runtime_status(&env).effective_seconds,
+    );
+    let client_idempotency_key =
+        match task_submit_idempotency_key(req, task_client_idempotency_required(&env)) {
+            Ok(value) => value,
+            Err(message) => {
+                return crate::json_with_status(&serde_json::json!({"error": message}), 400)
+            }
+        };
 
     let Some(api_key) = crate::relay::extract_api_key(req) else {
         return crate::json_with_status(&serde_json::json!({"error": "missing api key"}), 401);
@@ -1278,24 +1667,21 @@ async fn handle_parsed_task_submit_with_response(
         origin_model: &model,
         action,
         origin_task_id: "",
+        client_idempotency_key: client_idempotency_key.as_deref(),
         billing_plan: &billing_plan,
         now,
+        submit_deadline_at,
         gemini_version: &gemini_version,
         vertex_region: &vertex_region,
     };
 
     match relay_task_submit(&db, &ctx, &task_req, &body_bytes).await {
-        Ok(public_task_id) => {
-            crate::task_runner::arm_task_runner_after_submit(&env, &public_task_id).await;
-            match response_kind {
-                VideoSubmitResponse::LegacyTaskId => {
-                    crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
-                }
-                VideoSubmitResponse::OpenAiVideo => crate::json_with_status(
-                    &openai_video_submit_json(&public_task_id, &model, now),
-                    200,
-                ),
+        Ok(outcome) => {
+            if !outcome.replayed && outcome.http_status == 200 {
+                crate::task_runner::arm_task_runner_after_submit(&env, &outcome.public_task_id)
+                    .await;
             }
+            relay_task_submit_response(outcome, response_kind, &model, now)
         }
         Err(err) => crate::json_with_status(&serde_json::json!({"error": err.to_string()}), 500),
     }
@@ -1418,6 +1804,15 @@ pub async fn handle_openai_video_remix(
     now: i64,
 ) -> worker::Result<Response> {
     let db = env.d1("DB")?;
+    let submit_deadline_at = task_submit_deadline_at(
+        now,
+        task_submit_timeout_runtime_status(&env).effective_seconds,
+    );
+    let client_idempotency_key =
+        match task_submit_idempotency_key(&req, task_client_idempotency_required(&env)) {
+            Ok(value) => value,
+            Err(message) => return task_error_response("invalid_request", &message, 400),
+        };
 
     let Some(api_key) = crate::relay::extract_api_key(&req) else {
         return task_error_response("unauthorized", "missing api key", 401);
@@ -1556,16 +1951,21 @@ pub async fn handle_openai_video_remix(
         origin_model: &model,
         action: TASK_ACTION_REMIX,
         origin_task_id: &origin_upstream_task_id,
+        client_idempotency_key: client_idempotency_key.as_deref(),
         billing_plan: &billing_plan,
         now,
+        submit_deadline_at,
         gemini_version: &gemini_version,
         vertex_region: &vertex_region,
     };
 
     match relay_task_submit(&db, &ctx, &task_req, &body_bytes).await {
-        Ok(public_task_id) => {
-            crate::task_runner::arm_task_runner_after_submit(&env, &public_task_id).await;
-            crate::json_with_status(&openai_video_submit_json(&public_task_id, &model, now), 200)
+        Ok(outcome) => {
+            if !outcome.replayed && outcome.http_status == 200 {
+                crate::task_runner::arm_task_runner_after_submit(&env, &outcome.public_task_id)
+                    .await;
+            }
+            relay_task_submit_response(outcome, VideoSubmitResponse::OpenAiVideo, &model, now)
         }
         Err(err) => task_error_response("submit_task_failed", &err.to_string(), 500),
     }
@@ -1585,6 +1985,16 @@ pub async fn handle_suno_submit(
     now: i64,
 ) -> worker::Result<Response> {
     let db = env.d1("DB")?;
+    let submit_timeout_seconds = task_submit_timeout_runtime_status(&env).effective_seconds;
+    let submit_deadline_at = task_submit_deadline_at(now, submit_timeout_seconds);
+    let submit_deadline = TaskSubmitDeadline::until(submit_deadline_at);
+    let client_idempotency_key =
+        match task_submit_idempotency_key(&req, task_client_idempotency_required(&env)) {
+            Ok(value) => value,
+            Err(message) => {
+                return crate::json_with_status(&serde_json::json!({"error": message}), 400)
+            }
+        };
     // Go uppercases the action (ValidateRequestAndSetAction); the upstream URL
     // and stored action use it, while the billing model lowercases it back.
     let action = action.to_uppercase();
@@ -1652,6 +2062,15 @@ pub async fn handle_suno_submit(
     let free_model = billing_plan.free_model_runtime_policy.free_model;
     let reserved_quota = if free_model { 0 } else { base_quota };
     let public_task_id = generate_task_id();
+    let client_operation_key_sha256 = task_submit_client_operation_digest(
+        auth.user_id,
+        auth.token_id,
+        "task",
+        client_idempotency_key.as_deref(),
+        &public_task_id,
+    );
+    let client_request_sha256 =
+        task_submit_client_request_digest(&format!("task:suno:{action}:{model}"), &body_bytes);
     let billing_contract = serde_json::json!({
         "contract_version": "task-flat-v1",
         "snapshot": &billing_plan.snapshot,
@@ -1676,7 +2095,7 @@ pub async fn handle_suno_submit(
         "data": "{}",
     })
     .to_string();
-    reserve_task_billing_intent(
+    match reserve_task_billing_intent(
         &db,
         TaskBillingIntentRecord {
             reservation_key: &public_task_id,
@@ -1692,11 +2111,26 @@ pub async fn handle_suno_submit(
             attach_contract_json: &attach_contract_json,
             provider_kind: "suno",
             provider_idempotency_key: &public_task_id,
+            client_operation_key_sha256: &client_operation_key_sha256,
+            client_request_sha256: &client_request_sha256,
             created_at: now,
+            submit_deadline_at,
             lease_expires_at: now.saturating_add(TASK_BILLING_INTENT_LEASE_SECONDS),
         },
     )
-    .await?;
+    .await?
+    {
+        TaskBillingIntentReserveOutcome::Applied => {}
+        TaskBillingIntentReserveOutcome::Replay(intent) => {
+            let outcome = replay_task_submit_outcome(intent);
+            return relay_task_submit_response(
+                outcome,
+                VideoSubmitResponse::LegacyTaskId,
+                &model,
+                now,
+            );
+        }
+    }
     if !mark_task_billing_intent_submitting(&db, &public_task_id, now).await? {
         return crate::json_with_status(
             &serde_json::json!({"error": "task billing intent could not claim provider submission"}),
@@ -1718,14 +2152,42 @@ pub async fn handle_suno_submit(
         body: Some(String::from_utf8(body_bytes).unwrap_or_default()),
     };
 
-    let upstream_task_id = match execute_provider_request(&request).await {
+    let remaining = match submit_deadline.remaining() {
+        Ok(remaining) => remaining,
+        Err(err) => {
+            let _ = reject_and_refund_task_billing_intent(
+                &db,
+                &public_task_id,
+                now,
+                "Suno submit deadline expired before provider I/O",
+            )
+            .await?;
+            return crate::json_with_status(&serde_json::json!({"error": err.to_string()}), 504);
+        }
+    };
+    let upstream_task_id = match execute_provider_request_with_timeout(
+        &request,
+        remaining,
+        "task provider submit timed out",
+    )
+    .await
+    {
         Ok(response) if submit_http_status_is_ambiguous(response.status) => {
             let err = format!(
                 "Suno submit returned ambiguous HTTP status {}",
                 response.status
             );
-            let _ = mark_task_billing_intent_submit_unknown(&db, &public_task_id, now, &err).await;
-            return crate::json_with_status(&serde_json::json!({"error": err}), 502);
+            let recovery_persisted =
+                mark_task_billing_intent_submit_unknown(&db, &public_task_id, now, &err)
+                    .await
+                    .unwrap_or(false);
+            worker::console_warn!("Suno task submit is ambiguous: {}", err);
+            return relay_task_submit_response(
+                pending_task_submit_outcome(public_task_id, None, recovery_persisted),
+                VideoSubmitResponse::LegacyTaskId,
+                &model,
+                now,
+            );
         }
         Ok(response) => match suno::parse_submit_response_classified(&response.body) {
             Ok(id) => id,
@@ -1740,25 +2202,39 @@ pub async fn handle_suno_submit(
                 return crate::json_with_status(&serde_json::json!({"error": err}), 400);
             }
             Err(SubmitResponseFailure::Unknown(err)) => {
-                let _ = mark_task_billing_intent_submit_unknown(
+                let recovery_persisted = mark_task_billing_intent_submit_unknown(
                     &db,
                     &public_task_id,
                     now,
                     &format!("Suno submit response could not be classified: {err}"),
                 )
-                .await;
-                return crate::json_with_status(&serde_json::json!({"error": err}), 500);
+                .await
+                .unwrap_or(false);
+                worker::console_warn!("Suno task submit response is ambiguous: {}", err);
+                return relay_task_submit_response(
+                    pending_task_submit_outcome(public_task_id, None, recovery_persisted),
+                    VideoSubmitResponse::LegacyTaskId,
+                    &model,
+                    now,
+                );
             }
         },
         Err(err) => {
-            let _ = mark_task_billing_intent_submit_unknown(
+            let recovery_persisted = mark_task_billing_intent_submit_unknown(
                 &db,
                 &public_task_id,
                 now,
                 &format!("Suno submit result unknown: {err}"),
             )
-            .await;
-            return crate::json_with_status(&serde_json::json!({"error": err.to_string()}), 500);
+            .await
+            .unwrap_or(false);
+            worker::console_warn!("Suno task submit transport is ambiguous: {}", err);
+            return relay_task_submit_response(
+                pending_task_submit_outcome(public_task_id, None, recovery_persisted),
+                VideoSubmitResponse::LegacyTaskId,
+                &model,
+                now,
+            );
         }
     };
 
@@ -1785,29 +2261,50 @@ pub async fn handle_suno_submit(
         Ok(TaskBillingIntentAttachOutcome::Applied)
         | Ok(TaskBillingIntentAttachOutcome::MatchingAttached) => {}
         Ok(TaskBillingIntentAttachOutcome::Conflict) => {
-            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
+            let recovery_persisted = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 &db,
                 &public_task_id,
                 now,
                 "Suno provider accepted but local attachment conflicted",
                 &upstream_task_id,
             )
-            .await;
-            return crate::json_with_status(
-                &serde_json::json!({"error": "provider accepted task but durable attachment conflicted"}),
-                503,
+            .await
+            .unwrap_or(false);
+            return relay_task_submit_response(
+                pending_task_submit_outcome(
+                    public_task_id,
+                    Some(upstream_task_id),
+                    recovery_persisted,
+                ),
+                VideoSubmitResponse::LegacyTaskId,
+                &model,
+                now,
             );
         }
         Err(insert_err) => {
-            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
+            let recovery_persisted = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 &db,
                 &public_task_id,
                 now,
                 &format!("Suno provider accepted but local attachment failed: {insert_err}"),
                 &upstream_task_id,
             )
-            .await;
-            return Err(insert_err);
+            .await
+            .unwrap_or(false);
+            worker::console_error!(
+                "Suno attachment failed after provider acceptance: {}",
+                insert_err
+            );
+            return relay_task_submit_response(
+                pending_task_submit_outcome(
+                    public_task_id,
+                    Some(upstream_task_id),
+                    recovery_persisted,
+                ),
+                VideoSubmitResponse::LegacyTaskId,
+                &model,
+                now,
+            );
         }
     }
     crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
@@ -1827,6 +2324,16 @@ pub async fn handle_mj_submit(
     now: i64,
 ) -> worker::Result<Response> {
     let db = env.d1("DB")?;
+    let submit_timeout_seconds = task_submit_timeout_runtime_status(&env).effective_seconds;
+    let submit_deadline_at = task_submit_deadline_at(now, submit_timeout_seconds);
+    let submit_deadline = TaskSubmitDeadline::until(submit_deadline_at);
+    let client_idempotency_key =
+        match task_submit_idempotency_key(&req, task_client_idempotency_required(&env)) {
+            Ok(value) => value,
+            Err(message) => {
+                return crate::json_with_status(&serde_json::json!({"error": message}), 400)
+            }
+        };
 
     let Some(api_key) = crate::relay::extract_api_key(&req) else {
         return crate::json_with_status(&serde_json::json!({"error": "missing api key"}), 401);
@@ -1894,6 +2401,17 @@ pub async fn handle_mj_submit(
     let free_model = billing_plan.free_model_runtime_policy.free_model;
     let reserved_quota = if free_model { 0 } else { base_quota };
     let billing_reservation_key = generate_task_id();
+    let client_operation_key_sha256 = task_submit_client_operation_digest(
+        auth.user_id,
+        auth.token_id,
+        "midjourney",
+        client_idempotency_key.as_deref(),
+        &billing_reservation_key,
+    );
+    let client_request_sha256 = task_submit_client_request_digest(
+        &format!("task:midjourney:{action}:{model}"),
+        &body_bytes,
+    );
     let billing_contract = serde_json::json!({
         "contract_version": "task-flat-v1",
         "snapshot": &billing_plan.snapshot,
@@ -1918,7 +2436,7 @@ pub async fn handle_mj_submit(
         "properties": mj_properties,
     })
     .to_string();
-    reserve_task_billing_intent(
+    match reserve_task_billing_intent(
         &db,
         TaskBillingIntentRecord {
             reservation_key: &billing_reservation_key,
@@ -1934,11 +2452,23 @@ pub async fn handle_mj_submit(
             attach_contract_json: &attach_contract_json,
             provider_kind: "midjourney",
             provider_idempotency_key: &billing_reservation_key,
+            client_operation_key_sha256: &client_operation_key_sha256,
+            client_request_sha256: &client_request_sha256,
             created_at: now,
+            submit_deadline_at,
             lease_expires_at: now.saturating_add(TASK_BILLING_INTENT_LEASE_SECONDS),
         },
     )
-    .await?;
+    .await?
+    {
+        TaskBillingIntentReserveOutcome::Applied => {}
+        TaskBillingIntentReserveOutcome::Replay(intent) => {
+            return midjourney_task_submit_response(
+                replay_task_submit_outcome(intent),
+                "idempotent task submission replay",
+            );
+        }
+    }
     if !mark_task_billing_intent_submitting(&db, &billing_reservation_key, now).await? {
         return crate::json_with_status(
             &serde_json::json!({"code": 4, "description": "task billing intent could not claim provider submission"}),
@@ -1957,18 +2487,42 @@ pub async fn handle_mj_submit(
         body: Some(String::from_utf8(body_bytes.clone()).unwrap_or_default()),
     };
 
-    let mj_id = match execute_provider_request(&request).await {
+    let remaining = match submit_deadline.remaining() {
+        Ok(remaining) => remaining,
+        Err(err) => {
+            let _ = reject_and_refund_task_billing_intent(
+                &db,
+                &billing_reservation_key,
+                now,
+                "Midjourney submit deadline expired before provider I/O",
+            )
+            .await?;
+            return crate::json_with_status(
+                &serde_json::json!({"code": 4, "description": err.to_string()}),
+                504,
+            );
+        }
+    };
+    let mj_id = match execute_provider_request_with_timeout(
+        &request,
+        remaining,
+        "task provider submit timed out",
+    )
+    .await
+    {
         Ok(response) if submit_http_status_is_ambiguous(response.status) => {
             let err = format!(
                 "Midjourney submit returned ambiguous HTTP status {}",
                 response.status
             );
-            let _ =
+            let recovery_persisted =
                 mark_task_billing_intent_submit_unknown(&db, &billing_reservation_key, now, &err)
-                    .await;
-            return crate::json_with_status(
-                &serde_json::json!({"code": 4, "description": err}),
-                502,
+                    .await
+                    .unwrap_or(false);
+            worker::console_warn!("Midjourney task submit is ambiguous: {}", err);
+            return midjourney_task_submit_response(
+                pending_task_submit_outcome(billing_reservation_key, None, recovery_persisted),
+                "provider submit result is being reconciled",
             );
         }
         Ok(response) => match midjourney::parse_submit_response_classified(&response.body) {
@@ -1987,30 +2541,34 @@ pub async fn handle_mj_submit(
                 );
             }
             Err(SubmitResponseFailure::Unknown(err)) => {
-                let _ = mark_task_billing_intent_submit_unknown(
+                let recovery_persisted = mark_task_billing_intent_submit_unknown(
                     &db,
                     &billing_reservation_key,
                     now,
                     &format!("Midjourney submit response could not be classified: {err}"),
                 )
-                .await;
-                return crate::json_with_status(
-                    &serde_json::json!({"code": 4, "description": err}),
-                    400,
+                .await
+                .unwrap_or(false);
+                worker::console_warn!("Midjourney submit response is ambiguous: {}", err);
+                return midjourney_task_submit_response(
+                    pending_task_submit_outcome(billing_reservation_key, None, recovery_persisted),
+                    "provider submit response is being reconciled",
                 );
             }
         },
         Err(err) => {
-            let _ = mark_task_billing_intent_submit_unknown(
+            let recovery_persisted = mark_task_billing_intent_submit_unknown(
                 &db,
                 &billing_reservation_key,
                 now,
                 &format!("Midjourney submit result unknown: {err}"),
             )
-            .await;
-            return crate::json_with_status(
-                &serde_json::json!({"code": 4, "description": err.to_string()}),
-                500,
+            .await
+            .unwrap_or(false);
+            worker::console_warn!("Midjourney submit transport is ambiguous: {}", err);
+            return midjourney_task_submit_response(
+                pending_task_submit_outcome(billing_reservation_key, None, recovery_persisted),
+                "provider submit transport result is being reconciled",
             );
         }
     };
@@ -2037,35 +2595,59 @@ pub async fn handle_mj_submit(
         Ok(TaskBillingIntentAttachOutcome::Applied)
         | Ok(TaskBillingIntentAttachOutcome::MatchingAttached) => {}
         Ok(TaskBillingIntentAttachOutcome::Conflict) => {
-            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
+            let recovery_persisted = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 &db,
                 &billing_reservation_key,
                 now,
                 "Midjourney provider accepted but local attachment conflicted",
                 &mj_id,
             )
-            .await;
-            return crate::json_with_status(
-                &serde_json::json!({"code": 4, "description": "provider accepted task but durable attachment conflicted"}),
-                503,
+            .await
+            .unwrap_or(false);
+            return midjourney_task_submit_response(
+                pending_task_submit_outcome(
+                    billing_reservation_key,
+                    Some(mj_id),
+                    recovery_persisted,
+                ),
+                "provider accepted task; durable attachment is being reconciled",
             );
         }
         Err(insert_err) => {
-            let _ = mark_task_billing_intent_submit_unknown_with_provider_task_id(
+            let recovery_persisted = mark_task_billing_intent_submit_unknown_with_provider_task_id(
                 &db,
                 &billing_reservation_key,
                 now,
                 &format!("Midjourney provider accepted but local attachment failed: {insert_err}"),
                 &mj_id,
             )
-            .await;
-            return Err(insert_err);
+            .await
+            .unwrap_or(false);
+            worker::console_error!(
+                "Midjourney attachment failed after provider acceptance: {}",
+                insert_err
+            );
+            return midjourney_task_submit_response(
+                pending_task_submit_outcome(
+                    billing_reservation_key,
+                    Some(mj_id),
+                    recovery_persisted,
+                ),
+                "provider accepted task; durable attachment is being reconciled",
+            );
         }
     }
 
-    crate::json_with_status(
-        &serde_json::json!({"code": 1, "description": "submit success", "result": mj_id}),
-        200,
+    midjourney_task_submit_response(
+        RelayTaskSubmitOutcome {
+            public_task_id: billing_reservation_key,
+            lifecycle_status: "attached".to_string(),
+            submit_state: "submitted".to_string(),
+            provider_task_id: Some(mj_id),
+            replayed: false,
+            http_status: 200,
+        },
+        "submit success",
     )
 }
 
@@ -2075,7 +2657,9 @@ struct ProviderHttpResponse {
 }
 
 fn submit_http_status_is_ambiguous(status: u16) -> bool {
-    !(200..300).contains(&status) && !(400..500).contains(&status)
+    matches!(status, 408 | 409 | 425 | 429)
+        || !(200..500).contains(&status)
+        || (300..400).contains(&status)
 }
 
 async fn execute_provider_request(request: &PollRequest) -> worker::Result<ProviderHttpResponse> {
@@ -2097,21 +2681,21 @@ async fn execute_provider_request(request: &PollRequest) -> worker::Result<Provi
     let outbound = Request::new_with_init(&request.url, &init)?;
     let mut response = Fetch::Request(outbound).send().await?;
     let status = response.status_code();
-    let body = response.text().await?.into_bytes();
+    let body =
+        crate::relay::read_response_bytes_limited(&mut response, TASK_PROVIDER_RESPONSE_MAX_BYTES)
+            .await
+            .map_err(|err| worker::Error::RustError(err.message("task provider response body")))?;
     Ok(ProviderHttpResponse { status, body })
 }
 
-/// Execute a provider poll request and return the response body bytes. The
-/// caller feeds these to the matching provider parser
-/// ([`VideoProvider::parse_task_result`]).
-pub async fn execute_poll_request(request: &PollRequest) -> worker::Result<Vec<u8>> {
-    Ok(execute_provider_request(request).await?.body)
-}
-
-async fn execute_poll_request_with_timeout(
+async fn execute_provider_request_with_timeout(
     request: &PollRequest,
-    timeout_seconds: u64,
-) -> worker::Result<Vec<u8>> {
+    timeout: Duration,
+    timeout_message: &'static str,
+) -> worker::Result<ProviderHttpResponse> {
+    if timeout.is_zero() {
+        return Err(worker::Error::RustError(timeout_message.to_string()));
+    }
     let mut headers = Headers::new();
     for (name, value) in &request.headers {
         headers.set(name, value)?;
@@ -2131,20 +2715,45 @@ async fn execute_poll_request_with_timeout(
     let signal = controller.signal();
     let fetch = async move {
         let mut response = Fetch::Request(outbound).send_with_signal(&signal).await?;
-        response.text().await.map(|body| body.into_bytes())
+        let status = response.status_code();
+        let body = crate::relay::read_response_bytes_limited(
+            &mut response,
+            TASK_PROVIDER_RESPONSE_MAX_BYTES,
+        )
+        .await
+        .map_err(|err| worker::Error::RustError(err.message("task provider response body")))?;
+        Ok(ProviderHttpResponse { status, body })
     };
-    let delay = Delay::from(Duration::from_secs(timeout_seconds.max(1)));
+    let delay = Delay::from(timeout);
     futures_util::pin_mut!(fetch);
     futures_util::pin_mut!(delay);
     match select(fetch, delay).await {
         Either::Left((result, _)) => result,
         Either::Right(((), _)) => {
             controller.abort();
-            Err(worker::Error::RustError(
-                "task provider poll timed out".to_string(),
-            ))
+            Err(worker::Error::RustError(timeout_message.to_string()))
         }
     }
+}
+
+/// Execute a provider poll request and return the response body bytes. The
+/// caller feeds these to the matching provider parser
+/// ([`VideoProvider::parse_task_result`]).
+pub async fn execute_poll_request(request: &PollRequest) -> worker::Result<Vec<u8>> {
+    Ok(execute_provider_request(request).await?.body)
+}
+
+async fn execute_poll_request_with_timeout(
+    request: &PollRequest,
+    timeout_seconds: u64,
+) -> worker::Result<Vec<u8>> {
+    Ok(execute_provider_request_with_timeout(
+        request,
+        Duration::from_secs(timeout_seconds.max(1)),
+        "task provider poll timed out",
+    )
+    .await?
+    .body)
 }
 
 /// Execute a poll request and parse it with the given provider's parser — the
@@ -3726,6 +4335,72 @@ async fn proxy_video_content_url(url: &str) -> worker::Result<Response> {
     finalize_video_proxy_response(upstream)
 }
 
+fn task_submission_json(value: &serde_json::Value, status: u16) -> worker::Result<Response> {
+    let mut response = crate::json_with_status(value, status)?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "private, no-store")?;
+    Ok(response)
+}
+
+/// Return the durable submit-operation state for the API token that created it.
+/// Provider IDs, channel identity, billing contracts, and idempotency digests
+/// stay private so a timed-out caller can recover without duplicating work.
+pub async fn handle_task_submission_status(
+    req: Request,
+    env: Env,
+    submission_id: Option<&String>,
+) -> worker::Result<Response> {
+    let Some(submission_id) = submission_id
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty() && value.len() <= 160)
+    else {
+        return task_submission_json(&serde_json::json!({"error": "invalid submission id"}), 400);
+    };
+    let Some(api_key) = crate::relay::extract_api_key(&req) else {
+        return task_submission_json(&serde_json::json!({"error": "missing api key"}), 401);
+    };
+    let db = env.d1("DB")?;
+    let client_ip = crate::relay::client_ip(&req);
+    let auth =
+        match crate::relay::authenticate_for_model_list(&db, &env, &api_key, client_ip.as_deref())
+            .await
+        {
+            Ok(auth) => auth,
+            Err(response) => {
+                let mut response = response?;
+                response
+                    .headers_mut()
+                    .set("Cache-Control", "private, no-store")?;
+                return Ok(response);
+            }
+        };
+    let Some(intent) =
+        find_task_billing_intent_for_owner(&db, auth.user_id, auth.token_id, submission_id).await?
+    else {
+        return task_submission_json(&serde_json::json!({"error": "submission not found"}), 404);
+    };
+    let task_available = matches!(intent.status.as_str(), "attached" | "settled");
+    let terminal = intent.status == "settled"
+        || intent.status == "refunded"
+        || intent.submit_state == "rejected";
+    task_submission_json(
+        &serde_json::json!({
+            "submission_id": intent.public_task_id,
+            "task_id": intent.public_task_id,
+            "task_kind": intent.task_kind,
+            "lifecycle_status": intent.status,
+            "submit_state": intent.submit_state,
+            "task_available": task_available,
+            "terminal": terminal,
+            "created_at": intent.created_at,
+            "submit_deadline_at": intent.submit_deadline_at,
+            "updated_at": intent.updated_at,
+        }),
+        200,
+    )
+}
+
 /// Shared auth for the fetch endpoints (same token auth as task submit).
 async fn authenticate_fetch(
     req: &Request,
@@ -4171,10 +4846,61 @@ mod tests {
     #[test]
     fn task_submit_http_status_keeps_ambiguous_outcomes_reserved() {
         assert!(!submit_http_status_is_ambiguous(200));
-        assert!(!submit_http_status_is_ambiguous(429));
+        assert!(submit_http_status_is_ambiguous(408));
+        assert!(submit_http_status_is_ambiguous(409));
+        assert!(submit_http_status_is_ambiguous(425));
+        assert!(submit_http_status_is_ambiguous(429));
+        assert!(!submit_http_status_is_ambiguous(400));
         assert!(submit_http_status_is_ambiguous(302));
         assert!(submit_http_status_is_ambiguous(500));
         assert!(submit_http_status_is_ambiguous(599));
+    }
+
+    #[test]
+    fn task_submit_client_operation_digest_is_token_scoped_and_replay_stable() {
+        let first = task_submit_client_operation_digest(
+            7,
+            11,
+            "task",
+            Some("client-operation-1"),
+            "generated-a",
+        );
+        let replay = task_submit_client_operation_digest(
+            7,
+            11,
+            "task",
+            Some("client-operation-1"),
+            "generated-b",
+        );
+        let other_token = task_submit_client_operation_digest(
+            7,
+            12,
+            "task",
+            Some("client-operation-1"),
+            "generated-a",
+        );
+        let generated = task_submit_client_operation_digest(7, 11, "task", None, "generated-a");
+        assert_eq!(first, replay);
+        assert_ne!(first, other_token);
+        assert_ne!(first, generated);
+        assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn task_submit_request_digest_binds_scope_and_body() {
+        let first = task_submit_client_request_digest("task:suno:generate:model", br#"{"x":1}"#);
+        assert_eq!(
+            first,
+            task_submit_client_request_digest("task:suno:generate:model", br#"{"x":1}"#)
+        );
+        assert_ne!(
+            first,
+            task_submit_client_request_digest("task:suno:extend:model", br#"{"x":1}"#)
+        );
+        assert_ne!(
+            first,
+            task_submit_client_request_digest("task:suno:generate:model", br#"{"x":2}"#)
+        );
     }
 
     fn task_row() -> crate::task_repository::TaskDtoRow {

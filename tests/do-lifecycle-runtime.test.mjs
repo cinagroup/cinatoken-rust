@@ -1276,9 +1276,23 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 37,
-        d1_expected_migration: "0037_task_poll_recovery.sql",
+        d1_migration_applied_count: 39,
+        d1_expected_migration: "0039_task_submit_operation_enforce.sql",
         d1_migration_ready: true,
+        task_v2_contract_version: 5,
+        task_submit_operation_contract_version: 1,
+        task_submit_operation_compiled: true,
+        task_submit_operation_schema_ready: true,
+        task_submit_timeout_configured: true,
+        task_submit_timeout_valid: true,
+        task_submit_timeout_seconds: 90,
+        task_submit_client_idempotency_compiled: true,
+        task_submit_client_idempotency_required: true,
+        task_submit_status_query_compiled: true,
+        task_submit_local_operation_unique: true,
+        task_submit_provider_native_idempotency_verified: false,
+        task_submit_provider_lookup_verified: false,
+        task_submit_operation_cutover_ready: false,
         task_poll_scheduler_contract_version: 1,
         task_poll_scheduler_compiled: true,
         task_poll_scheduler_schema_ready: true,
@@ -1354,6 +1368,104 @@ describe("Rust Durable Object lifecycle contracts", () => {
       "queue_v2_generation",
       "staging_race_replay",
     ]);
+  }, 30_000);
+
+  it("returns task submission state only to the creating API token", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const now = Math.floor(Date.now() / 1000);
+    const submissionId = "task-submit-status-runtime";
+    const billingContract = JSON.stringify({ funding_source: "wallet" });
+    const attachContract = JSON.stringify({
+      contract_version: "task-attach-v1",
+      task_kind: "task",
+      platform: "suno",
+    });
+    const bytes = (value) => new TextEncoder().encode(value);
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO users
+          (id, username, password, status, role, quota, "group", aff_code, created_at)
+         VALUES (91, 'task-status-owner', 'x', 1, 1, 1000, 'default',
+                 'task-status-owner', ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO tokens
+          (id, user_id, "key", status, name, expired_time, remain_quota,
+           unlimited_quota, model_limits_enabled, model_limits, allow_ips,
+           used_quota, "group", cross_group_retry)
+         VALUES (91, 91, 'sk-task-status-owner', 1, 'owner', -1, 1000,
+                 0, 0, '', '', 0, 'default', 0)`,
+      ),
+      env.DB.prepare(
+        `INSERT INTO tokens
+          (id, user_id, "key", status, name, expired_time, remain_quota,
+           unlimited_quota, model_limits_enabled, model_limits, allow_ips,
+           used_quota, "group", cross_group_retry)
+         VALUES (92, 91, 'sk-task-status-other-token', 1, 'other', -1, 1000,
+                 0, 0, '', '', 0, 'default', 0)`,
+      ),
+      env.DB.prepare(
+        "INSERT INTO channels (id, key, name, status) VALUES (91, 'task-status-channel', 'task-status-channel', 1)",
+      ),
+      env.DB.prepare(
+        `INSERT INTO task_billing_intents (
+          reservation_key, task_kind, public_task_id, user_id, token_id,
+          channel_id, quota, billing_contract_json, billing_contract_sha256,
+          attach_contract_json, attach_contract_sha256,
+          provider_kind, provider_idempotency_key,
+          client_operation_key_sha256, client_request_sha256,
+          submit_deadline_at, lease_expires_at, created_at, updated_at
+        ) VALUES (?1, 'task', ?1, 91, 91, 91, 0, ?2, ?3, ?4, ?5,
+                  'suno', ?1, ?6, ?7, ?8, ?9, ?10, ?10)`,
+      ).bind(
+        submissionId,
+        billingContract,
+        await sha256Hex(bytes(billingContract)),
+        attachContract,
+        await sha256Hex(bytes(attachContract)),
+        await sha256Hex(bytes("client-operation:task-status-runtime")),
+        await sha256Hex(bytes("client-request:task-status-runtime")),
+        now + 90,
+        now + 900,
+        now,
+      ),
+    ]);
+
+    const ownerResponse = await SELF.fetch(
+      `https://cinatoken.test/api/task/submissions/${submissionId}`,
+      { headers: { authorization: "Bearer sk-task-status-owner" } },
+    );
+    const ownerPayload = await ownerResponse.json();
+    expect(ownerResponse.status).toBe(200);
+    expect(ownerResponse.headers.get("cache-control")).toContain("no-store");
+    expect(ownerPayload).toMatchObject({
+      submission_id: submissionId,
+      task_id: submissionId,
+      task_kind: "task",
+      lifecycle_status: "reserved",
+      submit_state: "prepared",
+      task_available: false,
+      terminal: false,
+      submit_deadline_at: now + 90,
+    });
+    expect(ownerPayload.provider_task_id).toBeUndefined();
+    expect(ownerPayload.client_operation_key_sha256).toBeUndefined();
+
+    const otherTokenResponse = await SELF.fetch(
+      `https://cinatoken.test/api/task/submissions/${submissionId}`,
+      { headers: { authorization: "Bearer sk-task-status-other-token" } },
+    );
+    expect(otherTokenResponse.status).toBe(404);
+    expect(otherTokenResponse.headers.get("cache-control")).toContain("no-store");
+
+    const invalidTokenResponse = await SELF.fetch(
+      `https://cinatoken.test/api/task/submissions/${submissionId}`,
+      { headers: { authorization: "Bearer sk-task-status-invalid" } },
+    );
+    expect(invalidTokenResponse.status).toBe(401);
+    expect(invalidTokenResponse.headers.get("cache-control")).toContain(
+      "no-store",
+    );
   }, 30_000);
 
   it("requeues a quarantined task with step-up, stale-preview fencing, and idempotent audit", async () => {

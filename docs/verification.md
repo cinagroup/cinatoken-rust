@@ -4713,6 +4713,78 @@ bindings, full HTTP/Realtime free-model parity, remote fault/load/rollback
 evidence, credential rotation, and G1-G8 approval remain blocking. Production
 remains **NO-GO**.
 
+## 0038/0039 Recoverable Task Submit Verification Contract
+
+This current-head overlay supersedes only older Task migration counts and
+statements that local submit uniqueness/deadline/status recovery are absent. It
+does not record remote or provider PASS evidence.
+
+```powershell
+python tools/verify_sqlite.py
+# require: 39 migrations, 35 tables, 244 incremental columns, 45 key indexes
+
+bun run check:task-poll-scheduler-config
+cargo test -p cinatoken-worker --lib
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run check:web:readiness
+bun run check:do-lifecycle-runtime
+bun run check
+```
+
+SQLite verification must additionally prove:
+
+1. 0038 immediately precedes 0039 and the expand phase accepts both old and new
+   writer shapes;
+2. client-operation uniqueness is scoped to user, exact token, and task kind;
+3. provider-operation uniqueness is scoped to task kind, provider, channel,
+   and frozen provider key;
+4. both client digests require immutable lowercase SHA-256 after 0039;
+5. submit deadline is immutable, inside 5..120 seconds, and no later than the
+   intent lease;
+6. historical zero-value rows remain unchanged while an old writer is rejected
+   after enforcement;
+7. the current deadline branch and legacy lease branch use their intended
+   indexes.
+
+Worker/Workerd verification must prove same-key same-request replay without a
+second provider call, same-key changed-request conflict, 408/409/425/429 and
+5xx ambiguity, bounded response-body failure, post-accept attachment failure,
+stable 202 recovery, exact-token status ownership, 404 for another token,
+no-store, and absence of provider/channel/contract/digest identity in the
+public response. Capability assertions must keep provider-native idempotency,
+provider lookup, operation cutover, and production cutover false.
+
+Current local evidence on 2026-07-15:
+
+```text
+python tools/verify_sqlite.py
+# PASS; 39 migrations, 35 tables, 244 incremental columns, 45 key indexes
+
+cargo test -p cinatoken-worker --lib
+# PASS; 711/711; six existing dead-code warnings
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS; standalone Worker WASM target
+
+bun run check:task-poll-scheduler-config
+# PASS; 4/4 tests
+
+bun run check:web:readiness
+# PASS; 70/70 tests across 10 files
+
+bun run check:do-lifecycle-runtime
+# PASS; release builds of the main, WFP tenant, and WFP outbound Workers; 43/43 tests
+
+bun run check
+# PASS; full repository chain, including release builds, Workerd 43/43,
+# Playground 1/1, frontend build/audits, D1 verification, workspace tests,
+# and the main, WFP tenant, and WFP outbound wasm32 targets
+```
+
+The required-key flag remains false in tracked environments and provider proof
+remains absent. Local PASS cannot promote these fields. Production remains
+**NO-GO**.
+
 ## Ali Synchronous Image Actual-Count Settlement Verification (2026-07-15)
 
 ```powershell

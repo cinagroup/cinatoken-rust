@@ -901,3 +901,29 @@ Rollback is recovery off -> scheduler/TaskRunner off -> lease env off -> D1
 authority off -> D1 enforcement off, followed by lease/provider reconciliation
 and quarantine disposition before Go/VPS resumes. Production remains
 **NO-GO**.
+
+## 2026-07-15 Recoverable Task Submit Status
+
+The current local D1 head is now
+`0039_task_submit_operation_enforce.sql`. Migration 0038 is a compatible
+expand phase; 0039 rejects new task intents without immutable client-operation
+and request digests plus a 5..120 second submit deadline. Local client and
+provider operation indexes are unique. The verified schema report is 39
+migrations, 35 tables, 244 checked incremental columns, and 45 key indexes.
+
+Generic video, OpenAI video/remix, Suno, and Midjourney now share client-key
+replay protection. Ambiguous provider/transport/attachment outcomes return a
+stable 202 recovery envelope instead of an unqueryable 500. The exact creating
+API token can read a no-store, redacted submission status; a different token
+receives 404. Provider response buffering is capped and the absolute network
+deadline covers Vertex OAuth through response-body read.
+
+This is local correctness, not remote provider proof. Tracked
+`TASK_CLIENT_IDEMPOTENCY_REQUIRED` remains false, provider-native idempotency
+and provider lookup capabilities remain false, and the D1 attachment phase is
+handled through durable ambiguity rather than claimed cancellable by the fetch
+deadline. The 0038 -> dual-writer -> drain -> 0039 rollout, remote D1 readback,
+provider fault/invoice campaigns, WFP namespace/readback, paid egress,
+TaskRunner/provider hot paths, load/alerts, credential rotation, rollback, and
+G1-G8 approval remain open. Go/VPS remains authoritative and production
+remains **NO-GO**.

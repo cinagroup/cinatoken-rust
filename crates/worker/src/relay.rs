@@ -7257,7 +7257,7 @@ fn parse_relay_json_bytes(bytes: &[u8], max_bytes: usize) -> Result<Value, Relay
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum RelayBufferedTextError {
+pub(crate) enum RelayBufferedTextError {
     InvalidContentLength(String),
     TooLarge {
         actual_bytes: Option<usize>,
@@ -7277,7 +7277,7 @@ impl RelayBufferedTextError {
         }
     }
 
-    fn message(&self, label: &str) -> String {
+    pub(crate) fn message(&self, label: &str) -> String {
         match self {
             Self::InvalidContentLength(err) => {
                 format!("invalid {label} content-length: {err}")
@@ -7319,7 +7319,7 @@ async fn read_response_text_limited(
     }
 }
 
-async fn read_response_bytes_limited(
+pub(crate) async fn read_response_bytes_limited(
     response: &mut Response,
     max_bytes: usize,
 ) -> Result<Vec<u8>, RelayBufferedTextError> {

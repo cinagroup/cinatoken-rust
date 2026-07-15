@@ -39,6 +39,7 @@ export type PlatformReadinessSignalId =
   | 'task-poll-lease-implementation'
   | 'task-poll-scheduler-implementation'
   | 'task-poll-recovery-implementation'
+  | 'task-submit-operation-implementation'
   | 'task-submit-reconciliation-implementation'
   | 'ai-gateway-runtime'
   | 'ai-gateway-fallback-runtime'
@@ -49,6 +50,7 @@ export type PlatformReadinessSignalId =
   | 'task-poll-lease-runtime'
   | 'task-poll-scheduler-runtime'
   | 'task-poll-recovery-runtime'
+  | 'task-submit-operation-runtime'
   | 'task-submit-reconciliation-runtime'
   | 'quota-coordinator-binding'
   | 'quota-coordinator-shadow-runtime'
@@ -66,6 +68,7 @@ export type PlatformReadinessSignalId =
   | 'task-poll-lease-staging-proof'
   | 'task-poll-scheduler-staging-proof'
   | 'task-poll-recovery-staging-proof'
+  | 'task-submit-operation-provider-proof'
   | 'task-submit-reconciliation-staging-proof'
   | 'quota-coordinator-staging-bake'
   | 'relay-billing-stream-error-smoke'
@@ -77,6 +80,7 @@ export type PlatformReadinessSignalId =
   | 'task-poll-lease-cutover'
   | 'task-poll-scheduler-cutover'
   | 'task-poll-recovery-cutover'
+  | 'task-submit-operation-cutover'
   | 'task-submit-reconciliation-cutover'
   | 'relay-billing-recovery-cutover'
   | 'relay-flat-billing-intent-cutover'
@@ -241,6 +245,19 @@ export type PlatformReadinessCapabilities = Pick<
   | 'task_v2_staging_verified'
   | 'task_v2_cutover_ready'
   | 'task_v2_cutover_guards'
+  | 'task_submit_operation_contract_version'
+  | 'task_submit_operation_compiled'
+  | 'task_submit_operation_schema_ready'
+  | 'task_submit_timeout_configured'
+  | 'task_submit_timeout_valid'
+  | 'task_submit_timeout_seconds'
+  | 'task_submit_client_idempotency_compiled'
+  | 'task_submit_client_idempotency_required'
+  | 'task_submit_status_query_compiled'
+  | 'task_submit_local_operation_unique'
+  | 'task_submit_provider_native_idempotency_verified'
+  | 'task_submit_provider_lookup_verified'
+  | 'task_submit_operation_cutover_ready'
   | 'task_poll_lease_contract_version'
   | 'task_poll_lease_compiled'
   | 'task_poll_lease_schema_ready'
@@ -304,6 +321,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'task-poll-lease-implementation': 'Task poll generation-fenced lease',
   'task-poll-scheduler-implementation': 'Task poll scheduler',
   'task-poll-recovery-implementation': 'Task poll quarantine recovery',
+  'task-submit-operation-implementation':
+    'Task provider operation identity and deadline',
   'task-submit-reconciliation-implementation': 'Task submit reconciliation',
   'ai-gateway-runtime': 'AI Gateway',
   'ai-gateway-fallback-runtime': 'AI Gateway fallback',
@@ -314,6 +333,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'task-poll-lease-runtime': 'Task poll generation-fenced lease',
   'task-poll-scheduler-runtime': 'Task poll scheduler',
   'task-poll-recovery-runtime': 'Task poll quarantine recovery',
+  'task-submit-operation-runtime': 'Task submit operation deadline',
   'task-submit-reconciliation-runtime': 'Task submit reconciliation',
   'quota-coordinator-binding': 'QuotaCoordinator binding',
   'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
@@ -334,6 +354,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'task-poll-lease-staging-proof': 'Task poll lease race proof',
   'task-poll-scheduler-staging-proof': 'Task poll scheduler proof',
   'task-poll-recovery-staging-proof': 'Task poll recovery proof',
+  'task-submit-operation-provider-proof':
+    'Provider-native idempotency and operation lookup proof',
   'task-submit-reconciliation-staging-proof':
     'Task submit reconciliation proof',
   'quota-coordinator-staging-bake': 'QuotaCoordinator staging bake',
@@ -347,6 +369,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'task-poll-lease-cutover': 'Task poll generation-fenced lease',
   'task-poll-scheduler-cutover': 'Task poll scheduler',
   'task-poll-recovery-cutover': 'Task poll quarantine recovery',
+  'task-submit-operation-cutover': 'Task submit operation contract',
   'task-submit-reconciliation-cutover': 'Task submit reconciliation',
   'relay-billing-recovery-cutover': 'Relay billing recovery',
   'relay-flat-billing-intent-cutover': 'Relay flat billing intent',
@@ -587,6 +610,31 @@ export function buildPlatformReadinessSummary(
     capabilities.task_v2_ownership_compiled,
     capabilities.task_v2_cutover_guards.length > 0
   )
+  const taskSubmitOperationImplementation = allReady(
+    capabilities.task_submit_operation_contract_version > 0,
+    capabilities.task_submit_operation_compiled,
+    capabilities.task_submit_client_idempotency_compiled,
+    capabilities.task_submit_status_query_compiled
+  )
+  const taskSubmitOperationRuntime = allReady(
+    taskSubmitOperationImplementation,
+    capabilities.task_submit_operation_schema_ready,
+    capabilities.task_submit_timeout_configured,
+    capabilities.task_submit_timeout_valid,
+    capabilities.task_submit_timeout_seconds >= 5,
+    capabilities.task_submit_timeout_seconds <= 120,
+    capabilities.task_submit_client_idempotency_required,
+    capabilities.task_submit_local_operation_unique
+  )
+  const taskSubmitOperationProviderProof = allReady(
+    taskSubmitOperationRuntime,
+    capabilities.task_submit_provider_native_idempotency_verified,
+    capabilities.task_submit_provider_lookup_verified
+  )
+  const taskSubmitOperationCutover = allReady(
+    taskSubmitOperationProviderProof,
+    capabilities.task_submit_operation_cutover_ready
+  )
   const taskPollLeaseImplementation = allReady(
     capabilities.task_poll_lease_contract_version > 0,
     capabilities.task_poll_lease_compiled
@@ -637,7 +685,8 @@ export function buildPlatformReadinessSummary(
   )
   const taskV2Cutover = allReady(
     capabilities.task_v2_cutover_ready,
-    taskPollSchedulerCutover
+    taskPollSchedulerCutover,
+    taskSubmitOperationCutover
   )
 
   const implementation = createReadyStage('implementation', [
@@ -675,6 +724,10 @@ export function buildPlatformReadinessSummary(
     readySignal(
       'task-poll-recovery-implementation',
       taskPollRecoveryImplementation
+    ),
+    readySignal(
+      'task-submit-operation-implementation',
+      taskSubmitOperationImplementation
     ),
     readySignal(
       'task-submit-reconciliation-implementation',
@@ -728,6 +781,7 @@ export function buildPlatformReadinessSummary(
     readySignal('task-poll-lease-runtime', taskPollLeaseRuntime),
     readySignal('task-poll-scheduler-runtime', taskPollSchedulerRuntime),
     readySignal('task-poll-recovery-runtime', taskPollRecoveryRuntime),
+    readySignal('task-submit-operation-runtime', taskSubmitOperationRuntime),
     readySignal(
       'task-submit-reconciliation-runtime',
       capabilities.task_submit_reconciliation_ready
@@ -823,6 +877,11 @@ export function buildPlatformReadinessSummary(
       capabilities.task_poll_recovery_staging_verified
     ),
     verificationSignal(
+      'task-submit-operation-provider-proof',
+      taskSubmitOperationRuntime,
+      taskSubmitOperationProviderProof
+    ),
+    verificationSignal(
       'task-submit-reconciliation-staging-proof',
       capabilities.task_submit_reconciliation_ready,
       capabilities.task_submit_reconciliation_staging_verified
@@ -891,6 +950,7 @@ export function buildPlatformReadinessSummary(
     ),
     readySignal('task-poll-scheduler-cutover', taskPollSchedulerCutover),
     readySignal('task-poll-recovery-cutover', taskPollRecoveryCutover),
+    readySignal('task-submit-operation-cutover', taskSubmitOperationCutover),
     readySignal(
       'task-submit-reconciliation-cutover',
       capabilities.task_submit_reconciliation_cutover_ready

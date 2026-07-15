@@ -15,6 +15,8 @@ const expected = {
   TASK_POLL_SCHEDULER_STAGING_VERIFIED: "false",
   TASK_POLL_RECOVERY_ENABLED: "false",
   TASK_POLL_RECOVERY_STAGING_VERIFIED: "false",
+  TASK_SUBMIT_TIMEOUT_SECONDS: "90",
+  TASK_CLIENT_IDEMPOTENCY_REQUIRED: "false",
 };
 
 const environments = [
@@ -36,12 +38,16 @@ describe("task poll scheduler Wrangler defaults", () => {
       const retryBase = Number(vars.TASK_POLL_RETRY_BASE_SECONDS);
       const retryMax = Number(vars.TASK_POLL_RETRY_MAX_SECONDS);
       const maxFailures = Number(vars.TASK_POLL_MAX_CONSECUTIVE_FAILURES);
+      const submitTimeout = Number(vars.TASK_SUBMIT_TIMEOUT_SECONDS);
       expect(Number.isSafeInteger(retryBase)).toBe(true);
       expect(Number.isSafeInteger(retryMax)).toBe(true);
       expect(Number.isSafeInteger(maxFailures)).toBe(true);
+      expect(Number.isSafeInteger(submitTimeout)).toBe(true);
       expect(retryBase).toBeGreaterThan(0);
       expect(retryMax).toBeGreaterThanOrEqual(retryBase);
       expect(maxFailures).toBeGreaterThan(0);
+      expect(submitTimeout).toBeGreaterThanOrEqual(5);
+      expect(submitTimeout).toBeLessThanOrEqual(120);
     });
   }
 

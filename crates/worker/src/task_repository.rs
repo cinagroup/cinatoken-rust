@@ -31,15 +31,28 @@ pub(crate) const TASK_POLL_SCHEDULER_MIGRATION: &str = "0036_task_poll_schedule.
 pub(crate) const TASK_POLL_SCHEDULER_CONTRACT_VERSION: u32 = 1;
 pub(crate) const TASK_POLL_RECOVERY_MIGRATION: &str = "0037_task_poll_recovery.sql";
 pub(crate) const TASK_POLL_RECOVERY_CONTRACT_VERSION: u32 = 2;
+pub(crate) const TASK_SUBMIT_OPERATION_MIGRATION: &str = "0039_task_submit_operation_enforce.sql";
+pub(crate) const TASK_SUBMIT_OPERATION_CONTRACT_VERSION: u32 = 1;
 pub(crate) const TASK_BILLING_INTENT_LEASE_SECONDS: i64 = 900;
 const TASK_BILLING_INTENT_SWEEP_MAX_LIMIT: i64 = 64;
 const TASK_BILLING_INTENT_SWEEP_SELECT: &str = r#"
     SELECT reservation_key, submit_state
-    FROM task_billing_intents
-    WHERE status = 'reserved'
-      AND submit_state IN ('prepared', 'submitting', 'rejected')
-      AND lease_expires_at < ?1
-    ORDER BY lease_expires_at ASC, reservation_key ASC
+    FROM (
+      SELECT reservation_key, submit_state, submit_deadline_at AS effective_deadline
+      FROM task_billing_intents INDEXED BY idx_task_billing_intents_submit_deadline
+      WHERE status = 'reserved'
+        AND submit_state IN ('prepared', 'submitting', 'rejected')
+        AND submit_deadline_at > 0
+        AND submit_deadline_at < ?1
+      UNION ALL
+      SELECT reservation_key, submit_state, lease_expires_at AS effective_deadline
+      FROM task_billing_intents INDEXED BY idx_task_billing_intents_status_lease
+      WHERE status = 'reserved'
+        AND submit_state IN ('prepared', 'submitting', 'rejected')
+        AND submit_deadline_at = 0
+        AND lease_expires_at < ?1
+    )
+    ORDER BY effective_deadline ASC, reservation_key ASC
     LIMIT ?2
 "#;
 const LEGACY_TASK_TIMEOUT_REASON: &str = "任务超时（旧系统遗留任务，不进行退款，请联系管理员）";
@@ -188,7 +201,10 @@ pub struct TaskBillingIntentRecord<'a> {
     pub attach_contract_json: &'a str,
     pub provider_kind: &'a str,
     pub provider_idempotency_key: &'a str,
+    pub client_operation_key_sha256: &'a str,
+    pub client_request_sha256: &'a str,
     pub created_at: i64,
+    pub submit_deadline_at: i64,
     pub lease_expires_at: i64,
 }
 
@@ -211,9 +227,12 @@ pub struct TaskBillingIntent {
     pub submit_state: String,
     pub provider_kind: String,
     pub provider_idempotency_key: String,
+    pub client_operation_key_sha256: String,
+    pub client_request_sha256: String,
     pub provider_task_id: String,
     pub request_accounted: i64,
     pub lease_expires_at: i64,
+    pub submit_deadline_at: i64,
     pub owner_generation: i64,
     pub reconciliation_id: String,
     pub reconciliation_revision: i64,
@@ -234,6 +253,12 @@ pub enum TaskBillingIntentAttachOutcome {
     Applied,
     MatchingAttached,
     Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskBillingIntentReserveOutcome {
+    Applied,
+    Replay(TaskBillingIntent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,8 +305,9 @@ const TASK_BILLING_INTENT_COLUMNS: &str = r#"reservation_key, task_kind, public_
     user_id, token_id, channel_id, quota, funding_source, subscription_id,
     billing_contract_json, billing_contract_sha256,
     attach_contract_json, attach_contract_sha256, status, submit_state,
-    provider_kind, provider_idempotency_key, provider_task_id,
-    request_accounted, lease_expires_at, owner_generation,
+    provider_kind, provider_idempotency_key, client_operation_key_sha256,
+    client_request_sha256, provider_task_id,
+    request_accounted, lease_expires_at, submit_deadline_at, owner_generation,
     reconciliation_id, reconciliation_revision, reconciliation_resolution,
     reconciliation_resolution_key, reconciliation_resolved_at,
     reconciliation_operator_id, reconciliation_evidence_sha256,
@@ -366,7 +392,12 @@ fn validate_task_billing_intent_record(record: &TaskBillingIntentRecord<'_>) -> 
         || record.provider_kind.trim().len() > 64
         || record.provider_idempotency_key.trim().is_empty()
         || record.provider_idempotency_key.trim().len() > 160
+        || !is_lower_hex_digest(record.client_operation_key_sha256)
+        || !is_lower_hex_digest(record.client_request_sha256)
         || record.created_at <= 0
+        || record.submit_deadline_at <= record.created_at
+        || record.submit_deadline_at > record.lease_expires_at
+        || !(5..=120).contains(&record.submit_deadline_at.saturating_sub(record.created_at))
         || record.lease_expires_at <= record.created_at
     {
         return Err(worker::Error::RustError(
@@ -376,6 +407,13 @@ fn validate_task_billing_intent_record(record: &TaskBillingIntentRecord<'_>) -> 
     Ok(())
 }
 
+fn is_lower_hex_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// Persist the immutable task billing contract and reserve its funding before
 /// any provider request. Migration 0031 owns the wallet/subscription and token
 /// mutations in insert/refund triggers so the row and its financial side effect
@@ -383,7 +421,7 @@ fn validate_task_billing_intent_record(record: &TaskBillingIntentRecord<'_>) -> 
 pub async fn reserve_task_billing_intent(
     db: &D1Database,
     record: TaskBillingIntentRecord<'_>,
-) -> worker::Result<()> {
+) -> worker::Result<TaskBillingIntentReserveOutcome> {
     validate_task_billing_intent_record(&record)?;
     let contract_json = record.billing_contract_json.trim();
     let contract_sha256 = task_billing_contract_sha256(contract_json);
@@ -405,22 +443,26 @@ pub async fn reserve_task_billing_intent(
         D1Type::Text(&attach_contract_sha256),
         D1Type::Text(record.provider_kind.trim()),
         D1Type::Text(record.provider_idempotency_key.trim()),
+        D1Type::Text(record.client_operation_key_sha256),
+        D1Type::Text(record.client_request_sha256),
         D1Type::Integer(d1_i32(record.created_at)),
+        D1Type::Integer(d1_i32(record.submit_deadline_at)),
         D1Type::Integer(d1_i32(record.lease_expires_at)),
     ];
     let result = db
         .prepare(
             r#"
-            INSERT INTO task_billing_intents (
+            INSERT OR IGNORE INTO task_billing_intents (
               reservation_key, task_kind, public_task_id, user_id, token_id,
               channel_id, quota, funding_source, subscription_id,
               billing_contract_json, billing_contract_sha256,
               attach_contract_json, attach_contract_sha256,
               provider_kind, provider_idempotency_key,
-              created_at, updated_at, lease_expires_at
+              client_operation_key_sha256, client_request_sha256,
+              created_at, updated_at, submit_deadline_at, lease_expires_at
             ) VALUES (
               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-              ?14, ?15, ?16, ?16, ?17
+              ?14, ?15, ?16, ?17, ?18, ?18, ?19, ?20
             )
             "#,
         )
@@ -428,12 +470,28 @@ pub async fn reserve_task_billing_intent(
         .run()
         .await?;
     let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
-    if changes != 1 {
+    if changes == 1 {
+        return Ok(TaskBillingIntentReserveOutcome::Applied);
+    }
+    let Some(existing) = find_task_billing_intent_by_client_operation(
+        db,
+        record.user_id,
+        record.token_id,
+        record.task_kind,
+        record.client_operation_key_sha256,
+    )
+    .await?
+    else {
         return Err(worker::Error::RustError(
-            "task billing intent reserve did not apply".to_string(),
+            "task billing intent reserve conflicted".to_string(),
+        ));
+    };
+    if existing.client_request_sha256 != record.client_request_sha256 {
+        return Err(worker::Error::RustError(
+            "task idempotency key conflicts with a different request".to_string(),
         ));
     }
-    Ok(())
+    Ok(TaskBillingIntentReserveOutcome::Replay(existing))
 }
 
 /// Fence the provider call before any outbound I/O. Once this transition wins,
@@ -581,6 +639,49 @@ pub async fn find_task_billing_intent(
         "SELECT {TASK_BILLING_INTENT_COLUMNS} FROM task_billing_intents WHERE reservation_key = ?1 LIMIT 1"
     ))
     .bind_refs(&arg)?
+    .first::<TaskBillingIntent>(None)
+    .await
+}
+
+pub async fn find_task_billing_intent_by_client_operation(
+    db: &D1Database,
+    user_id: i64,
+    token_id: i64,
+    task_kind: &str,
+    client_operation_key_sha256: &str,
+) -> worker::Result<Option<TaskBillingIntent>> {
+    let args = [
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(token_id)),
+        D1Type::Text(task_kind),
+        D1Type::Text(client_operation_key_sha256),
+    ];
+    db.prepare(&format!(
+        "SELECT {TASK_BILLING_INTENT_COLUMNS} FROM task_billing_intents \
+         WHERE user_id = ?1 AND token_id = ?2 AND task_kind = ?3 \
+           AND client_operation_key_sha256 = ?4 LIMIT 1"
+    ))
+    .bind_refs(&args)?
+    .first::<TaskBillingIntent>(None)
+    .await
+}
+
+pub async fn find_task_billing_intent_for_owner(
+    db: &D1Database,
+    user_id: i64,
+    token_id: i64,
+    public_task_id: &str,
+) -> worker::Result<Option<TaskBillingIntent>> {
+    let args = [
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(token_id)),
+        D1Type::Text(public_task_id),
+    ];
+    db.prepare(&format!(
+        "SELECT {TASK_BILLING_INTENT_COLUMNS} FROM task_billing_intents \
+         WHERE user_id = ?1 AND token_id = ?2 AND public_task_id = ?3 LIMIT 1"
+    ))
+    .bind_refs(&args)?
     .first::<TaskBillingIntent>(None)
     .await
 }
@@ -1012,7 +1113,10 @@ pub async fn task_billing_intent_schema_ready(db: &D1Database) -> worker::Result
                  'idx_task_billing_intent_reconciliation_id',
                  'idx_task_billing_intent_reconciliation_resolution_key',
                  'idx_task_billing_intent_reconciliation_queue',
-                 'idx_task_billing_reconciliation_event_identity'
+                 'idx_task_billing_reconciliation_event_identity',
+                 'idx_task_billing_intents_client_operation',
+                 'idx_task_billing_intents_provider_operation',
+                 'idx_task_billing_intents_submit_deadline'
                ))
                OR (type = 'trigger' AND name IN (
                  'task_billing_intent_contract_immutable_guard',
@@ -1028,13 +1132,15 @@ pub async fn task_billing_intent_schema_ready(db: &D1Database) -> worker::Result
                  'task_billing_intent_refund_apply',
                  'task_billing_intent_reconciliation_guard',
                  'task_billing_reconciliation_event_update_guard',
-                 'task_billing_reconciliation_event_delete_guard'
+                 'task_billing_reconciliation_event_delete_guard',
+                 'task_billing_intent_submit_operation_insert_guard',
+                 'task_billing_intent_submit_operation_immutable_guard'
                ))
             "#,
         )
         .first::<SchemaCountRow>(None)
         .await?;
-    if !row.map(|row| row.count == 23).unwrap_or(false) {
+    if !row.map(|row| row.count == 28).unwrap_or(false) {
         return Ok(false);
     }
     let columns = db
@@ -1047,7 +1153,9 @@ pub async fn task_billing_intent_schema_ready(db: &D1Database) -> worker::Result
                 'reconciliation_id', 'reconciliation_revision',
                 'reconciliation_resolution', 'reconciliation_resolution_key',
                 'reconciliation_resolved_at', 'reconciliation_operator_id',
-                'reconciliation_evidence_sha256', 'reconciliation_reason'
+                'reconciliation_evidence_sha256', 'reconciliation_reason',
+                'submit_deadline_at', 'client_operation_key_sha256',
+                'client_request_sha256'
               )
               UNION ALL
               SELECT name FROM pragma_table_info('task_billing_reconciliation_events')
@@ -1062,13 +1170,20 @@ pub async fn task_billing_intent_schema_ready(db: &D1Database) -> worker::Result
         )
         .first::<SchemaCountRow>(None)
         .await?;
-    Ok(columns.map(|row| row.count == 23).unwrap_or(false))
+    Ok(columns.map(|row| row.count == 26).unwrap_or(false))
 }
 
 pub(crate) fn task_billing_intent_contract_compiled() -> bool {
+    let expand = include_str!("../../../migrations/d1/0038_task_submit_operation_expand.sql");
+    let enforce = include_str!("../../../migrations/d1/0039_task_submit_operation_enforce.sql");
     TASK_BILLING_INTENT_MIGRATION == "0031_task_billing_intents.sql"
         && TASK_SUBMIT_RECONCILIATION_MIGRATION == "0033_task_submit_reconciliation_enforce.sql"
+        && TASK_SUBMIT_OPERATION_MIGRATION == "0039_task_submit_operation_enforce.sql"
+        && TASK_SUBMIT_OPERATION_CONTRACT_VERSION == 1
         && TASK_BILLING_INTENT_LEASE_SECONDS == 900
+        && expand.contains("ADD COLUMN submit_deadline_at")
+        && expand.contains("idx_task_billing_intents_provider_operation")
+        && enforce.contains("task_billing_intent_submit_operation_insert_guard")
         && task_billing_contract_sha256("{}")
             == "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 }

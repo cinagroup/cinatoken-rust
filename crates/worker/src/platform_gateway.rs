@@ -97,7 +97,8 @@ use crate::task_billing_reconcile::{
     TASK_SUBMIT_RECONCILIATION_STAGING_VERIFIED_ENV,
 };
 use crate::task_orchestration::{
-    task_poller_config_from_env, task_timeout_sweep_compiled, TASK_POLL_LEASE_ENABLED_ENV,
+    task_client_idempotency_required, task_poller_config_from_env,
+    task_submit_timeout_runtime_status, task_timeout_sweep_compiled, TASK_POLL_LEASE_ENABLED_ENV,
     TASK_POLL_SCHEDULER_ENABLED_ENV,
 };
 use crate::task_poll_recovery::{
@@ -110,7 +111,7 @@ use crate::task_repository::{
     task_refund_replay_contract_compiled, TaskPollLeaseRuntimeStatus,
     TaskPollRecoveryRuntimeStatus, TaskPollSchedulerRuntimeStatus,
     TASK_POLL_LEASE_CONTRACT_VERSION, TASK_POLL_RECOVERY_CONTRACT_VERSION,
-    TASK_POLL_SCHEDULER_CONTRACT_VERSION,
+    TASK_POLL_SCHEDULER_CONTRACT_VERSION, TASK_SUBMIT_OPERATION_CONTRACT_VERSION,
 };
 use crate::task_runner::{
     fetch_task_runner_status, is_task_runner_cutover_ready, task_runner_alarm_contract_compiled,
@@ -172,7 +173,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0037_task_poll_recovery.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0039_task_submit_operation_enforce.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -194,8 +195,12 @@ const RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS: &[&str] = &[
     "realtime_flat_billing_parity",
 ];
 const TASK_V2_CUTOVER_GUARDS: &[&str] = &[
-    "migration_0037_applied",
+    "migration_0039_applied",
     "pre_provider_reservation",
+    "provider_operation_local_uniqueness",
+    "whole_submit_deadline",
+    "provider_native_idempotency",
+    "provider_operation_lookup",
     "submit_unknown_fail_closed",
     "operator_reconciliation_evidence",
     "atomic_task_attachment",
@@ -243,6 +248,8 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0035_task_poll_lease_enforce.sql",
     "0036_task_poll_schedule.sql",
     "0037_task_poll_recovery.sql",
+    "0038_task_submit_operation_expand.sql",
+    "0039_task_submit_operation_enforce.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -532,6 +539,19 @@ struct PlatformCapabilities {
     task_v2_staging_verified: bool,
     task_v2_cutover_ready: bool,
     task_v2_cutover_guards: Vec<&'static str>,
+    task_submit_operation_contract_version: u32,
+    task_submit_operation_compiled: bool,
+    task_submit_operation_schema_ready: bool,
+    task_submit_timeout_configured: bool,
+    task_submit_timeout_valid: bool,
+    task_submit_timeout_seconds: i64,
+    task_submit_client_idempotency_compiled: bool,
+    task_submit_client_idempotency_required: bool,
+    task_submit_status_query_compiled: bool,
+    task_submit_local_operation_unique: bool,
+    task_submit_provider_native_idempotency_verified: bool,
+    task_submit_provider_lookup_verified: bool,
+    task_submit_operation_cutover_ready: bool,
     task_poll_lease_contract_version: u32,
     task_poll_lease_compiled: bool,
     task_poll_lease_schema_ready: bool,
@@ -557,6 +577,7 @@ struct PlatformCapabilities {
     task_poll_recovery_cutover_ready: bool,
     task_submit_reconciliation_compiled: bool,
     task_submit_reconciliation_enabled: bool,
+    task_submit_reconciliation_read_ready: bool,
     task_submit_reconciliation_ready: bool,
     task_submit_reconciliation_staging_verified: bool,
     task_submit_reconciliation_cutover_ready: bool,
@@ -1272,11 +1293,37 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_poll_scheduler_cutover_ready,
         task_runner_staging_replay_verified,
     );
-    let task_v2_contract_version = 4;
+    let task_submit_timeout = task_submit_timeout_runtime_status(&env);
+    let task_submit_operation_contract_version = TASK_SUBMIT_OPERATION_CONTRACT_VERSION;
+    let task_submit_operation_compiled = task_billing_intent_contract_compiled();
+    let task_submit_operation_schema_ready = task_v2_object_schema_ready;
+    let task_submit_timeout_configured = task_submit_timeout.configured;
+    let task_submit_timeout_valid = task_submit_timeout.valid;
+    let task_submit_timeout_seconds = task_submit_timeout.effective_seconds;
+    let task_submit_client_idempotency_compiled = true;
+    let task_submit_client_idempotency_required = task_client_idempotency_required(&env);
+    let task_submit_status_query_compiled = true;
+    let task_submit_local_operation_unique =
+        task_submit_operation_compiled && task_submit_operation_schema_ready;
+    // Provider documentation and local code do not prove that every task
+    // provider accepts the frozen key or can look an ambiguous operation up by
+    // that key. These remain explicit remote-evidence gates.
+    let task_submit_provider_native_idempotency_verified = false;
+    let task_submit_provider_lookup_verified = false;
+    let task_submit_operation_cutover_ready = task_submit_local_operation_unique
+        && task_submit_client_idempotency_compiled
+        && task_submit_timeout_configured
+        && task_submit_timeout_valid
+        && task_submit_client_idempotency_required
+        && task_submit_status_query_compiled
+        && task_submit_provider_native_idempotency_verified
+        && task_submit_provider_lookup_verified;
+    let task_v2_contract_version = 5;
     let task_v2_ownership_compiled = task_billing_intent_contract_compiled()
         && task_poll_lease_compiled
         && task_poll_scheduler_compiled
-        && task_poll_recovery_compiled;
+        && task_poll_recovery_compiled
+        && task_submit_operation_compiled;
     let task_v2_schema_ready = task_v2_object_schema_ready
         && task_poll_lease_schema_ready
         && task_poll_scheduler_schema_ready
@@ -1285,9 +1332,14 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         && task_v2_schema_ready
         && task_poll_lease_runtime_ready
         && task_poll_scheduler_runtime_ready
-        && task_poll_recovery_runtime_ready;
+        && task_poll_recovery_runtime_ready
+        && task_submit_timeout_configured
+        && task_submit_timeout_valid
+        && task_submit_client_idempotency_required;
     let task_submit_reconciliation_compiled = task_submit_reconciliation_compiled();
     let task_submit_reconciliation_enabled = task_submit_reconciliation_enabled(&env);
+    let task_submit_reconciliation_read_ready =
+        task_submit_reconciliation_compiled && task_v2_object_schema_ready;
     let task_submit_reconciliation_ready = task_submit_reconciliation_compiled
         && task_submit_reconciliation_enabled
         && task_v2_object_schema_ready;
@@ -1527,6 +1579,19 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_v2_staging_verified,
         task_v2_cutover_ready,
         task_v2_cutover_guards: TASK_V2_CUTOVER_GUARDS.to_vec(),
+        task_submit_operation_contract_version,
+        task_submit_operation_compiled,
+        task_submit_operation_schema_ready,
+        task_submit_timeout_configured,
+        task_submit_timeout_valid,
+        task_submit_timeout_seconds,
+        task_submit_client_idempotency_compiled,
+        task_submit_client_idempotency_required,
+        task_submit_status_query_compiled,
+        task_submit_local_operation_unique,
+        task_submit_provider_native_idempotency_verified,
+        task_submit_provider_lookup_verified,
+        task_submit_operation_cutover_ready,
         task_poll_lease_contract_version,
         task_poll_lease_compiled,
         task_poll_lease_schema_ready,
@@ -1552,6 +1617,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_poll_recovery_cutover_ready,
         task_submit_reconciliation_compiled,
         task_submit_reconciliation_enabled,
+        task_submit_reconciliation_read_ready,
         task_submit_reconciliation_ready,
         task_submit_reconciliation_staging_verified,
         task_submit_reconciliation_cutover_ready,
@@ -4279,7 +4345,10 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(EXPECTED_D1_MIGRATION, "0037_task_poll_recovery.sql");
+        assert_eq!(
+            EXPECTED_D1_MIGRATION,
+            "0039_task_submit_operation_enforce.sql"
+        );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")
@@ -4358,6 +4427,16 @@ mod tests {
         assert!(task_submit_reconciliation_enforce.contains("attach_contract_json = '{}'"));
         assert!(task_submit_reconciliation_enforce
             .contains("DROP TRIGGER task_billing_intent_reconciliation_expand_backfill"));
+        let task_submit_operation_expand =
+            include_str!("../../../migrations/d1/0038_task_submit_operation_expand.sql");
+        let task_submit_operation_enforce =
+            include_str!("../../../migrations/d1/0039_task_submit_operation_enforce.sql");
+        assert!(task_submit_operation_expand.contains("ADD COLUMN submit_deadline_at"));
+        assert!(
+            task_submit_operation_expand.contains("idx_task_billing_intents_provider_operation")
+        );
+        assert!(task_submit_operation_enforce
+            .contains("task_billing_intent_submit_operation_immutable_guard"));
     }
 
     #[test]

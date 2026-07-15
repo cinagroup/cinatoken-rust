@@ -174,6 +174,19 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   task_v2_staging_verified: false,
   task_v2_cutover_ready: false,
   task_v2_cutover_guards: [],
+  task_submit_operation_contract_version: 0,
+  task_submit_operation_compiled: false,
+  task_submit_operation_schema_ready: false,
+  task_submit_timeout_configured: false,
+  task_submit_timeout_valid: false,
+  task_submit_timeout_seconds: 90,
+  task_submit_client_idempotency_compiled: false,
+  task_submit_client_idempotency_required: false,
+  task_submit_status_query_compiled: false,
+  task_submit_local_operation_unique: false,
+  task_submit_provider_native_idempotency_verified: false,
+  task_submit_provider_lookup_verified: false,
+  task_submit_operation_cutover_ready: false,
   task_poll_lease_contract_version: 0,
   task_poll_lease_compiled: false,
   task_poll_lease_schema_ready: false,
@@ -244,6 +257,8 @@ describe('Cloudflare platform readiness headline', () => {
       'task-poll-lease-implementation': 'Task poll generation-fenced lease',
       'task-poll-scheduler-implementation': 'Task poll scheduler',
       'task-poll-recovery-implementation': 'Task poll quarantine recovery',
+      'task-submit-operation-implementation':
+        'Task provider operation identity and deadline',
       'task-submit-reconciliation-implementation': 'Task submit reconciliation',
       'ai-gateway-runtime': 'AI Gateway',
       'ai-gateway-fallback-runtime': 'AI Gateway fallback',
@@ -255,6 +270,7 @@ describe('Cloudflare platform readiness headline', () => {
       'task-poll-lease-runtime': 'Task poll generation-fenced lease',
       'task-poll-scheduler-runtime': 'Task poll scheduler',
       'task-poll-recovery-runtime': 'Task poll quarantine recovery',
+      'task-submit-operation-runtime': 'Task submit operation deadline',
       'task-submit-reconciliation-runtime': 'Task submit reconciliation',
       'quota-coordinator-binding': 'QuotaCoordinator binding',
       'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
@@ -276,6 +292,8 @@ describe('Cloudflare platform readiness headline', () => {
       'task-poll-lease-staging-proof': 'Task poll lease race proof',
       'task-poll-scheduler-staging-proof': 'Task poll scheduler proof',
       'task-poll-recovery-staging-proof': 'Task poll recovery proof',
+      'task-submit-operation-provider-proof':
+        'Provider-native idempotency and operation lookup proof',
       'task-submit-reconciliation-staging-proof':
         'Task submit reconciliation proof',
       'quota-coordinator-staging-bake': 'QuotaCoordinator staging bake',
@@ -291,6 +309,7 @@ describe('Cloudflare platform readiness headline', () => {
       'task-poll-lease-cutover': 'Task poll generation-fenced lease',
       'task-poll-scheduler-cutover': 'Task poll scheduler',
       'task-poll-recovery-cutover': 'Task poll quarantine recovery',
+      'task-submit-operation-cutover': 'Task submit operation contract',
       'task-submit-reconciliation-cutover': 'Task submit reconciliation',
       'relay-billing-recovery-cutover': 'Relay billing recovery',
       'relay-flat-billing-intent-cutover': 'Relay flat billing intent',
@@ -397,6 +416,10 @@ describe('Cloudflare platform readiness headline', () => {
         task_poll_scheduler_compiled: true,
         task_poll_recovery_contract_version: 1,
         task_poll_recovery_compiled: true,
+        task_submit_operation_contract_version: 1,
+        task_submit_operation_compiled: true,
+        task_submit_client_idempotency_compiled: true,
+        task_submit_status_query_compiled: true,
         task_submit_reconciliation_compiled: true,
       })
     )
@@ -818,6 +841,7 @@ describe('Cloudflare platform readiness headline', () => {
         'ready-to-verify',
         'blocked',
         'ready-to-verify',
+        'blocked',
         'blocked',
         'blocked',
         'blocked',
@@ -1362,6 +1386,19 @@ describe('Cloudflare platform readiness headline', () => {
         task_poll_recovery_runtime_ready: true,
         task_poll_recovery_staging_verified: true,
         task_poll_recovery_cutover_ready: true,
+        task_submit_operation_contract_version: 1,
+        task_submit_operation_compiled: true,
+        task_submit_operation_schema_ready: true,
+        task_submit_timeout_configured: true,
+        task_submit_timeout_valid: true,
+        task_submit_timeout_seconds: 90,
+        task_submit_client_idempotency_compiled: true,
+        task_submit_client_idempotency_required: true,
+        task_submit_status_query_compiled: true,
+        task_submit_local_operation_unique: true,
+        task_submit_provider_native_idempotency_verified: true,
+        task_submit_provider_lookup_verified: true,
+        task_submit_operation_cutover_ready: true,
         task_submit_reconciliation_compiled: true,
         task_submit_reconciliation_enabled: true,
         task_submit_reconciliation_ready: true,
@@ -1396,7 +1433,7 @@ describe('Cloudflare platform readiness headline', () => {
 
     assert.equal(getStage(blocked, 'cutover').complete, false)
     assert.equal(getStage(ready, 'cutover').complete, true)
-    assert.equal(getStage(ready, 'cutover').readyCount, 13)
+    assert.equal(getStage(ready, 'cutover').readyCount, 14)
   })
 
   test('keeps task poll lease split across all four production stages', () => {
@@ -1667,6 +1704,19 @@ describe('Cloudflare platform readiness headline', () => {
       task_poll_recovery_runtime_ready: true,
       task_poll_recovery_staging_verified: true,
       task_poll_recovery_cutover_ready: true,
+      task_submit_operation_contract_version: 1,
+      task_submit_operation_compiled: true,
+      task_submit_operation_schema_ready: true,
+      task_submit_timeout_configured: true,
+      task_submit_timeout_valid: true,
+      task_submit_timeout_seconds: 90,
+      task_submit_client_idempotency_compiled: true,
+      task_submit_client_idempotency_required: true,
+      task_submit_status_query_compiled: true,
+      task_submit_local_operation_unique: true,
+      task_submit_provider_native_idempotency_verified: true,
+      task_submit_provider_lookup_verified: true,
+      task_submit_operation_cutover_ready: true,
     }
     const runtimeBlocked = buildPlatformReadinessSummary(
       makeCapabilities({

@@ -2115,3 +2115,62 @@ Provider-operation uniqueness/native idempotency, complete submit-operation
 deadlines, remote D1/staging/provider/TaskRunner hot paths, WFP namespace
 upload/readback, paid WFP canary, load/alert evidence, and signed rollback
 remain hard blockers. Production remains **NO-GO**.
+
+## 0038/0039 Recoverable Task Submit Staging Smoke
+
+This is an execution template, not evidence that remote D1 or a provider has
+been exercised.
+
+### Schema and writer rollout
+
+1. Record candidate/config/migration hashes, D1 restore proof, exact ledger
+   through 0037, active writer versions, and provider invoice watermark.
+2. Apply 0038 only. Require exact readback of the three new columns and three
+   indexes, unchanged business hashes, successful old-writer fixture, and
+   successful populated new-writer fixture.
+3. Deploy the new writer disabled, then isolate a zero-traffic canary. Keep
+   `TASK_CLIENT_IDEMPOTENCY_REQUIRED=false`, provider proof false,
+   reconciliation mutation false, scheduler/TaskRunner false, and Go/VPS
+   authoritative.
+4. Drain all old isolates and writers. Observe longer than maximum request,
+   deployment, Queue, cron, and alarm lifetime. Require zero newly created rows
+   with missing digests or deadline.
+5. Apply 0039. Require old-writer rejection, new-writer success, historical
+   zero-row preservation, exact trigger SQL, capability schema-ready true, and
+   all runtime/staging/cutover fields still false.
+
+### Caller and ambiguity cases
+
+| Case | Action | Required result |
+| --- | --- | --- |
+| Required key | Enable the flag only for an isolated client cohort | Missing/invalid key is 400 before provider I/O; supported clients preserve the key across retry |
+| Identical replay | Submit identical route/model/body twice with one key | Same submission ID; one reserve; one provider create; no double accounting |
+| Conflicting replay | Change route, model, action, or bytes under the same key | Conflict; no provider call; original intent unchanged |
+| Token isolation | Reuse the literal key from a second token | Independent operation; neither token can query the other's submission |
+| Lost response | Drop the client connection after provider dispatch, then retry same key | Canonical replay or 202; never a second provider create |
+| HTTP ambiguity | Inject redirect, 408, 409, 425, 429, and 5xx | 202 plus stable status URL; reserve retained; no automatic resubmit/refund |
+| Body ambiguity | Truncate/malformed/oversize an accepted response | Bounded memory; 202; durable reconciliation evidence |
+| Clear rejection | Return a documented provider rejection before acceptance | Atomic rejected/refunded outcome; retry returns terminal 409 |
+| Attachment failure | Accept upstream create and fail D1 attach/batch/readback | Provider ID stays private in recovery state; caller receives 202; operator reconciliation converges |
+| Owner query | Query as creating token, another token for same user, and unrelated user | Owner gets private no-store redacted status; both others get 404 |
+| Deadline | Delay request prep, Vertex OAuth, headers, and body separately | One absolute 5..120 second provider-I/O budget; abort at expiry; no unbounded body read |
+
+For each provider family archive redacted request count, operation digest,
+submission transition, D1 revision, quota/accounting delta, provider console or
+lookup result, invoice delta, latency, memory/CPU/subrequest metrics, alerts,
+and cleanup proof. Do not archive raw idempotency keys, provider IDs, prompts,
+credentials, or frozen contracts.
+
+### Promotion and rollback
+
+Provider-native idempotency is verified only if the provider documents and the
+staging campaign proves acceptance of the frozen key. Provider lookup is
+verified only if an ambiguous create can be found deterministically without a
+second create. Both are per-provider evidence, reviewed independently, and
+must not be inferred from local uniqueness.
+
+Rollback disables required-key admission and Rust task traffic first. Preserve
+0038/0039, deploy only a compatible writer, and reconcile every in-flight or
+unknown operation before Go/VPS resumes. Repeat the rollback under provider
+timeout, D1 ambiguity, deployment replacement, and alert-delivery failure.
+Production remains **NO-GO**.

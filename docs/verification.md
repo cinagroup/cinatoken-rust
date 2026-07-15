@@ -4624,6 +4624,67 @@ classification, remote direct/Gateway/WFP replay, provider invoice correlation,
 credential rotation, alerts, rollback, and G1-G8 approval remain open.
 Production remains **NO-GO**.
 
+## Ali Synchronous Image Actual-Count Settlement Verification (2026-07-15)
+
+```powershell
+cargo fmt --all --check
+# PASS
+
+cargo test -p cinatoken-providers --lib
+# PASS; 95/95
+
+cargo test -p cinatoken-relay --lib
+# PASS; 89/89
+
+cargo test -p cinatoken-worker --lib
+# PASS; 689/689
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS; three pre-existing dead_code warnings only
+
+bun run check:web:readiness
+# PASS; 52/52
+
+bun run check
+# PASS; release main/tenant/outbound Wasm builds, Workerd 41/41,
+# Playground 1/1, frontend build and audits, billing/config/D1 checks,
+# workspace tests, and main/tenant/outbound wasm32 checks
+```
+
+Verified behavior:
+
+- Ali synchronous image generation and non-Wan image edit requests use the
+  native DashScope multimodal endpoint and preserve the Go adapter's model,
+  parameter, response-format, and request-count precedence.
+- Multipart edits accept the Go-compatible `image`, `image[]`, and indexed
+  image fields while preserving file order. They fail before quota reservation
+  when the image set is absent, reaches file 17, exceeds 12 MiB, contains a part
+  header over 8 KiB, or lacks a verified PNG, JPEG, GIF, or WebP byte signature.
+- Provider responses are parsed within an 8 MiB bound. Actual count prefers a
+  positive provider `usage.image_count`, then converted output count, then the
+  normalized request count; zero provider usage cannot erase the fallback.
+- Only a terminal clone of the legacy flat billing snapshot adjusts image
+  count. The frozen reservation snapshot, digest, admission decision, and
+  tiered-expression request input remain unchanged.
+- `b64_json` mode never fetches provider-owned URLs from the Worker. Provider
+  base64 output is accepted, while URL-only or partial conversion returns 502
+  and refunds; it cannot create an outbound fetch, empty billed success, or
+  SSRF path.
+- Provider response metadata is reduced to bounded request, numeric usage, and
+  terminal task/status fields; original image/base64 payloads are not duplicated.
+- A bounded `ALI_SYNC_IMAGE_MODELS` replacement is applied consistently to
+  candidate filtering, Admin Channel Test, and native generation/edit conversion.
+- Audit records contain bounded request and count provenance only. Uploaded
+  image bytes and channel credentials are never stored in the settlement audit.
+- Platform readiness now names `ali_async_image_task_settlement` as the
+  remaining Ali blocker; synchronous actual-count settlement is no longer
+  represented as missing.
+
+This closes local Ali synchronous image actual-count settlement. Ali async
+submit/poll settlement, free-model runtime policy, staging usage and invoice
+reconciliation, deployed Cloudflare evidence, credential rotation, rollback,
+and G1-G8 approval remain blocking. Production remains **NO-GO**.
+
 ## Native Provider Usage Recovery Verification (2026-07-15)
 
 Focused verification covers:

@@ -26,7 +26,7 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 | Rust Durable Objects | RealtimeSession has a six-scenario local workerd/D1/mock-upstream suite plus an explicit release-Wasm Workerd/SQLite hibernate-evict-restore test for the client socket, attachment/bridge segment, and persisted metrics; reservation binding, settlement, and refund are isolated by bridge segment; TaskRunner, channel affinity, Passkey ceremony, and WFP authority replay have focused tests | Locally exercised substrate | Active-upstream eviction must prove 1011 fail-closed, exactly-once refund/lease handoff, no replacement call, and clean reconnect; deployed eviction/alarm/reconnect/replay/load evidence remains required on Cloudflare staging |
 | WFP Rust tenant script | Dedicated Rust/Wasm tenant crate, strict artifact manifest/uploader, central-authority v3 transport, signed physical-target/policy claims, outbound invocation context, platform-owned Gateway policy, and final-boundary replay guard are present; tenant has no authority key, replay binding, bearer, or Gateway policy authority | Gated substrate | Real staging namespace/schema-3 outbound readback, live context/policy propagation, missing-worker/resource-limit/context faults, tenant-policy spoof negatives, one paid provider call, central billing outcome, and traces |
 | AI Gateway multi-model forwarding | Default-off direct and cross-model paths, actual-serving-group billing contract, and operator readiness exist | Gated substrate | Deployed provider-route canary, usage/error reconciliation, terminal audit delivery, fault injection, and rollback |
-| HTTP flat billing intent | Migrations 0029-0030, schema-v4 immutable per-candidate snapshots, domain-separated digest validation, reserve/bind/Queue/CAS finalization, request-id replay rejection, exact-decimal final rounding, fail-closed unknown-model admission, and a hash-bound Go-generated flat manifest pass locally | Gated local substrate | Complete provider actual-count, image-edit/free-model runtime and remaining usage-source semantics; regenerate the manifest at cutover; obtain remote 0030/Queue/D1/invoice, abort/idle, rollback, and approval evidence |
+| HTTP flat billing intent | Migrations 0029-0030, schema-v4 immutable per-candidate snapshots, domain-separated digest validation, reserve/bind/Queue/CAS finalization, request-id replay rejection, exact-decimal final rounding, fail-closed unknown-model admission, a hash-bound Go-generated flat manifest, and Ali synchronous image actual-count settlement pass locally | Gated local substrate | Complete Ali asynchronous task settlement, free-model runtime policy, and provider usage staging reconciliation; regenerate the manifest at cutover; obtain remote 0030/Queue/D1/invoice, abort/idle, rollback, and approval evidence |
 | Realtime billing reconciliation | Migration 0028, an admin queue, frozen-expression preview, root step-up apply, atomic settle/refund, and a React/Bun workbench pass locally with mutation default-off | Gated local control plane | Rotated credential, remote 0028, dual-control/retention policy, provider invoice correlation, D1/concurrency/rollback drills, alerts, and approval |
 | `cinatoken.com` production deployment | No current deployment evidence; the credential included in the task is exposed and was not used | Not started | Revoke/rotate the exposed token, issue least-privilege replacement credentials, finish G1-G8, deploy staging, canary, then production DNS/cutover |
 
@@ -757,8 +757,37 @@ source/generator/template hashes and replayed by Rust. Offline manifest
 integrity and all three Rust replay tests pass.
 
 This removes TTS/OpenRouter and the missing Go flat manifest from the local G4
-gap list. Provider actual image/count replacement, multipart image edits,
-free-model runtime policy, remaining usage-source semantics, cutover-commit
+gap list. Ali synchronous image actual-count replacement and multipart image
+edit conversion are now also locally closed. Ali asynchronous task settlement,
+free-model runtime policy, provider usage staging reconciliation, cutover-commit
 manifest regeneration, remote Queue/D1/provider reconciliation, browser
 journeys, credential rotation, rollback, and signed G1-G8 evidence remain open.
 Go/VPS stays authoritative and production remains **NO-GO**.
+
+## 2026-07-15 Ali Synchronous Image Settlement Status
+
+Type 17 now admits `/v1/images/generations` and `/v1/images/edits` only for the
+source-audited synchronous model patterns. Generation JSON and bounded
+multipart edits are converted to the DashScope multimodal generation contract;
+edits preserve up to 16 `image`, `image[]`, or indexed `image[n]` files in
+source-compatible precedence order. Wan edits and every asynchronous image
+model fail before quota reserve. `ALI_SYNC_IMAGE_MODELS` can replace the
+defaults through the same bounded pattern contract used by routing, Admin
+Channel Test, and native conversion.
+
+Successful provider responses replace the frozen flat request count using the
+first positive source: `usage.image_count`, converted non-empty output count,
+then normalized request `n`. Only a terminal clone of the flat pricing snapshot
+is adjusted; the stored snapshot/digest and tiered-expression request context
+remain immutable. Audit metadata records requested, converted, actual, and
+source values without image content or credentials. URL output remains URL;
+`b64_json` accepts provider base64 only and never fetches remote URLs. A
+URL-only or partial base64 result returns 502 and refunds rather than returning
+empty/partial success. Multipart parsing stops on the 17th matching file and
+rejects part headers above 8 KiB; response metadata no longer duplicates image
+payloads.
+
+Local tests are implementation evidence, not cutover evidence. The published
+blocker is now `ali_async_image_task_settlement`; production remains **NO-GO**
+until the asynchronous D1/TaskRunner/Queue state machine and synchronous live
+provider, billing, invoice, failure, and rollback evidence are complete.

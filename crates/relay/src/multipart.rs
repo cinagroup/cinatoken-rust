@@ -3,8 +3,8 @@
 //! Used by the upload relay endpoints (`/v1/audio/transcriptions`,
 //! `/v1/audio/translations`, `/v1/images/edits`) to pull the `model` form
 //! field out of the request so the relay can authenticate, route, and bill
-//! the request. The full multipart body is forwarded to the upstream
-//! verbatim; this module only reads the text fields the gateway needs.
+//! the request. Most providers receive the full multipart body verbatim;
+//! dedicated adapters can also read bounded file parts for native conversion.
 //!
 //! This is intentionally NOT a full multipart parser. It does not decode
 //! base64 or quoted-printable, and it does not validate the body against RFC
@@ -12,12 +12,38 @@
 //! ASCII headers each part needs. The body itself is scanned as bytes so real
 //! binary uploads can still expose nearby text fields such as `model`.
 
+use std::fmt;
+
+const MAX_MULTIPART_PART_HEADER_BYTES: usize = 8 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultipartFile<'a> {
     pub filename: String,
     pub content_type: Option<String>,
     pub bytes: &'a [u8],
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultipartFilesError {
+    TooManyFiles { max_files: usize },
+    PartHeadersTooLarge,
+}
+
+impl fmt::Display for MultipartFilesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooManyFiles { max_files } => {
+                write!(f, "multipart request exceeds the {max_files}-file limit")
+            }
+            Self::PartHeadersTooLarge => write!(
+                f,
+                "multipart part headers exceed the {MAX_MULTIPART_PART_HEADER_BYTES}-byte limit"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MultipartFilesError {}
 
 /// Extract a single text field from a `multipart/form-data` body by name.
 ///
@@ -44,6 +70,58 @@ pub fn extract_multipart_file<'a>(
 ) -> Option<MultipartFile<'a>> {
     let boundary = extract_boundary(content_type)?;
     extract_file_with_boundary(body, &boundary, field_name)
+}
+
+/// Extract every file part with the exact field name, preserving body order.
+pub fn extract_multipart_files<'a>(
+    body: &'a [u8],
+    content_type: &str,
+    field_name: &str,
+) -> Vec<MultipartFile<'a>> {
+    let Some(boundary) = extract_boundary(content_type) else {
+        return Vec::new();
+    };
+    extract_files_with_boundary(body, &boundary, |name| name == field_name)
+}
+
+/// Extract every file part whose field name starts with the supplied prefix.
+pub fn extract_multipart_files_with_prefix<'a>(
+    body: &'a [u8],
+    content_type: &str,
+    field_prefix: &str,
+) -> Vec<MultipartFile<'a>> {
+    let Some(boundary) = extract_boundary(content_type) else {
+        return Vec::new();
+    };
+    extract_files_with_boundary(body, &boundary, |name| name.starts_with(field_prefix))
+}
+
+/// Extract exact-name file parts while refusing to retain more than `max_files`.
+pub fn extract_multipart_files_bounded<'a>(
+    body: &'a [u8],
+    content_type: &str,
+    field_name: &str,
+    max_files: usize,
+) -> Result<Vec<MultipartFile<'a>>, MultipartFilesError> {
+    let Some(boundary) = extract_boundary(content_type) else {
+        return Ok(Vec::new());
+    };
+    extract_files_with_boundary_bounded(body, &boundary, max_files, |name| name == field_name)
+}
+
+/// Extract prefix-matched file parts while refusing to retain more than `max_files`.
+pub fn extract_multipart_files_with_prefix_bounded<'a>(
+    body: &'a [u8],
+    content_type: &str,
+    field_prefix: &str,
+    max_files: usize,
+) -> Result<Vec<MultipartFile<'a>>, MultipartFilesError> {
+    let Some(boundary) = extract_boundary(content_type) else {
+        return Ok(Vec::new());
+    };
+    extract_files_with_boundary_bounded(body, &boundary, max_files, |name| {
+        name.starts_with(field_prefix)
+    })
 }
 
 /// Extract the `boundary` parameter from a `multipart/form-data;
@@ -114,6 +192,71 @@ fn extract_file_with_boundary<'a>(
         });
     }
     None
+}
+
+fn extract_files_with_boundary<'a, F>(
+    body: &'a [u8],
+    boundary: &str,
+    mut matches_name: F,
+) -> Vec<MultipartFile<'a>>
+where
+    F: FnMut(&str) -> bool,
+{
+    let Some(parts) = MultipartParts::new(body, boundary) else {
+        return Vec::new();
+    };
+    parts
+        .filter_map(|part| {
+            let (headers, part_body) = split_part_headers(part)?;
+            let (name, filename) = parse_content_disposition(headers)?;
+            if !matches_name(&name) {
+                return None;
+            }
+            Some(MultipartFile {
+                filename: filename?,
+                content_type: parse_part_content_type(headers),
+                bytes: part_body,
+            })
+        })
+        .collect()
+}
+
+fn extract_files_with_boundary_bounded<'a, F>(
+    body: &'a [u8],
+    boundary: &str,
+    max_files: usize,
+    mut matches_name: F,
+) -> Result<Vec<MultipartFile<'a>>, MultipartFilesError>
+where
+    F: FnMut(&str) -> bool,
+{
+    let Some(parts) = MultipartParts::new(body, boundary) else {
+        return Ok(Vec::new());
+    };
+    let mut files = Vec::with_capacity(max_files.min(16));
+    for part in parts {
+        let Some((headers, part_body)) = split_part_headers_bounded(part)? else {
+            continue;
+        };
+        let Some((name, filename)) = parse_content_disposition(headers) else {
+            continue;
+        };
+        if !matches_name(&name) {
+            continue;
+        }
+        let Some(filename) = filename else {
+            continue;
+        };
+        if files.len() >= max_files {
+            return Err(MultipartFilesError::TooManyFiles { max_files });
+        }
+        files.push(MultipartFile {
+            filename,
+            content_type: parse_part_content_type(headers),
+            bytes: part_body,
+        });
+    }
+    Ok(files)
 }
 
 struct MultipartParts<'a> {
@@ -215,10 +358,25 @@ fn find_subslice_from(haystack: &[u8], needle: &[u8], start: usize) -> Option<us
 }
 
 fn split_part_headers(part: &[u8]) -> Option<(&str, &[u8])> {
+    split_part_headers_bounded(part).ok().flatten()
+}
+
+fn split_part_headers_bounded(part: &[u8]) -> Result<Option<(&str, &[u8])>, MultipartFilesError> {
     let separator = b"\r\n\r\n";
-    let header_end = find_subslice_from(part, separator, 0)?;
-    let headers = std::str::from_utf8(&part[..header_end]).ok()?;
-    Some((headers, &part[header_end + separator.len()..]))
+    let Some(header_end) = find_subslice_from(part, separator, 0) else {
+        return if part.len() > MAX_MULTIPART_PART_HEADER_BYTES {
+            Err(MultipartFilesError::PartHeadersTooLarge)
+        } else {
+            Ok(None)
+        };
+    };
+    if header_end > MAX_MULTIPART_PART_HEADER_BYTES {
+        return Err(MultipartFilesError::PartHeadersTooLarge);
+    }
+    let Some(headers) = std::str::from_utf8(&part[..header_end]).ok() else {
+        return Ok(None);
+    };
+    Ok(Some((headers, &part[header_end + separator.len()..])))
 }
 
 /// Parse a `Content-Disposition: form-data; name="field"[; filename="..."]`
@@ -410,6 +568,66 @@ mod tests {
         assert_eq!(file.filename, "audio.wav");
         assert_eq!(file.content_type.as_deref(), Some("audio/wav"));
         assert_eq!(file.bytes, bytes);
+    }
+
+    #[test]
+    fn extract_multiple_file_parts_preserves_order_and_indexed_names() {
+        let boundary = "images";
+        let body = build_multipart(
+            boundary,
+            &[
+                ("image[]", Some("one.png"), "one"),
+                ("image[]", Some("two.png"), "two"),
+                ("image[2]", Some("three.png"), "three"),
+            ],
+        );
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let exact = extract_multipart_files(body.as_bytes(), &content_type, "image[]");
+        assert_eq!(
+            exact
+                .iter()
+                .map(|file| file.filename.as_str())
+                .collect::<Vec<_>>(),
+            ["one.png", "two.png"]
+        );
+        let indexed = extract_multipart_files_with_prefix(body.as_bytes(), &content_type, "image[");
+        assert_eq!(indexed.len(), 3);
+        assert_eq!(indexed[2].bytes, b"three");
+    }
+
+    #[test]
+    fn bounded_file_extraction_rejects_the_first_excess_part() {
+        let boundary = "bounded-images";
+        let fields = (0..17)
+            .map(|_| ("image[]", Some("image.png"), "x"))
+            .collect::<Vec<_>>();
+        let body = build_multipart(boundary, &fields);
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        assert_eq!(
+            extract_multipart_files_bounded(body.as_bytes(), &content_type, "image[]", 16),
+            Err(MultipartFilesError::TooManyFiles { max_files: 16 })
+        );
+    }
+
+    #[test]
+    fn bounded_file_extraction_rejects_oversized_part_headers() {
+        let boundary = "oversized-headers";
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"{}\"\r\n\r\nx\r\n--{boundary}--\r\n",
+            "a".repeat(MAX_MULTIPART_PART_HEADER_BYTES)
+        );
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        assert_eq!(
+            extract_multipart_files_bounded(body.as_bytes(), &content_type, "image", 16),
+            Err(MultipartFilesError::PartHeadersTooLarge)
+        );
+        assert_eq!(
+            extract_multipart_field(body.as_bytes(), &content_type, "model"),
+            None
+        );
     }
 
     #[test]

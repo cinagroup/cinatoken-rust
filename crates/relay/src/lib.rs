@@ -10,7 +10,11 @@ pub use cache::{
     scoped_key, token_fingerprint, CachedAuthenticatedToken, CachedRelayChannel, RelayCacheKeys,
     RELAY_CACHE_SCHEMA_VERSION,
 };
-pub use multipart::{extract_multipart_field, extract_multipart_file, MultipartFile};
+pub use multipart::{
+    extract_multipart_field, extract_multipart_file, extract_multipart_files,
+    extract_multipart_files_bounded, extract_multipart_files_with_prefix,
+    extract_multipart_files_with_prefix_bounded, MultipartFile, MultipartFilesError,
+};
 pub use openai_compatible::{
     apply_gemini_native_model_mapping, apply_model_mapping, channel_type_supported,
     clamp_i64_to_i32, csv_contains, first_channel_key, gemini_response_completion_text,

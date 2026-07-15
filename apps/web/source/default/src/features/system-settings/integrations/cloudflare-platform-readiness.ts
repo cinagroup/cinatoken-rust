@@ -409,8 +409,8 @@ export function getFlatBillingIntentReadiness(
 
 export function getFlatBillingParityBlockerLabel(blocker: string) {
   switch (blocker) {
-    case 'ali_actual_image_count':
-      return 'Ali actual image count'
+    case 'ali_async_image_task_settlement':
+      return 'Ali async image task settlement'
     case 'free_model_runtime_policy':
       return 'Free-model runtime policy'
     case 'provider_cache_field_scope_parity':

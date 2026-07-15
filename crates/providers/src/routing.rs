@@ -502,17 +502,18 @@ mod tests {
         );
         assert_eq!(messages.ai_gateway_route, None);
 
+        let image = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::AliOpenAi,
+            channel_type: 17,
+            base_url: None,
+            endpoint_path: "images/generations",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
         assert_eq!(
-            ProviderRegistry::resolve(ProviderEndpoint {
-                provider: ProviderKind::AliOpenAi,
-                channel_type: 17,
-                base_url: None,
-                endpoint_path: "images/generations",
-                upstream_query: None,
-                gemini_route: None,
-            })
-            .unwrap_err(),
-            ProviderRouteError::UnsupportedProviderRoute
+            image.upstream_url,
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
         );
     }
 

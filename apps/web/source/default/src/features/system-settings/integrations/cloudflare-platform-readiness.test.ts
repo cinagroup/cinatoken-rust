@@ -1068,7 +1068,7 @@ describe('Cloudflare platform readiness headline', () => {
         relay_flat_billing_intent_runtime_ready: true,
         relay_flat_billing_go_parity_ready: false,
         relay_flat_billing_go_parity_blockers: [
-          'ali_actual_image_count',
+          'ali_async_image_task_settlement',
           'free_model_runtime_policy',
           'provider_cache_field_scope_parity',
         ],
@@ -1142,16 +1142,18 @@ describe('Cloudflare platform readiness headline', () => {
     const inconsistentBackend = getFlatBillingIntentReadiness(
       makeCapabilities({
         relay_flat_billing_go_parity_ready: true,
-        relay_flat_billing_go_parity_blockers: ['ali_actual_image_count'],
+        relay_flat_billing_go_parity_blockers: [
+          'ali_async_image_task_settlement',
+        ],
       })
     )
     assert.equal(inconsistentBackend.parity, false)
     assert.deepEqual(inconsistentBackend.parityBlockers, [
-      'ali_actual_image_count',
+      'ali_async_image_task_settlement',
     ])
     assert.equal(
-      getFlatBillingParityBlockerLabel('ali_actual_image_count'),
-      'Ali actual image count'
+      getFlatBillingParityBlockerLabel('ali_async_image_task_settlement'),
+      'Ali async image task settlement'
     )
     assert.equal(
       getFlatBillingParityBlockerLabel('provider_cache_field_scope_parity'),

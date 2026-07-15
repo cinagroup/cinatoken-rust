@@ -472,6 +472,7 @@ inventory proves no route targets this service.
 | `RELAY_MODEL_FALLBACKS_JSON` | var | Exact JSON object from requested primary model to one AI-Gateway-prefixed fallback model | Default `{}`; maximum 128 mappings and 200 characters per model name; never use a silent wildcard or secret value |
 | `RELAY_MODEL_FALLBACK_STAGING_VERIFIED` | var | Production cutover evidence marker | Keep `false` until archived staging proves primary server failure, served fallback identity, token denial, channel reselection, exactly-one reserve/refund/settlement, audit metadata, streaming boundary, and rollback |
 | `RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED` | var | Messages-specific fallback cutover evidence marker | Default `false`; requires independent `/v1/messages` logical/effective schema mismatch, full D1 candidate selection, sticky 401/403/429 veto, non-stream/stream, billing, audit, and rollback evidence. Overall fallback cutover requires this and the general marker |
+| `ALI_SYNC_IMAGE_MODELS` | var | Optional Ali synchronous image model-pattern override | Empty/unset uses the audited Go defaults. A non-empty comma-separated value replaces them consistently in candidate filtering, Admin Channel Test, and native request conversion; at most 32 non-empty patterns of at most 128 bytes are considered. Freeze and hash the production value with the Go `SyncImageModels` setting before canary. |
 | `RELAY_ACTUAL_GROUP_BILLING_STAGING_SMOKE_ENABLED` | var | Admin-only actual-serving-group D1 Worker-binding smoke | Default `false` in every environment. Enable only against isolated non-production D1 for the three fixed smoke scenarios; require the three `relay_ai_gateway_actual_group_billing_staging_smoke_*` capabilities, strict PASS reports, and `cleanupVerified=true`, then disable again. This flag is not a fallback cutover marker. |
 | `AI_GATEWAY_ID_OPENAI_CHAT` | outbound Worker var | Optional platform Gateway override for `/v1/chat/completions` | Overrides `AI_GATEWAY_ID` for this route only; never a tenant binding |
 | `AI_GATEWAY_ID_OPENAI_RESPONSES` | outbound Worker var | Optional platform Gateway override for `/v1/responses` | Overrides `AI_GATEWAY_ID` for this route only; never a tenant binding |
@@ -783,13 +784,14 @@ armed only when:
   before provider egress. Never log or persist the raw identity.
 - Staging proof cannot override source parity. Cutover additionally requires
   `relay_flat_billing_go_parity_ready=true`; this remains hard false until
-  Ali actual-image/count replacement, native asynchronous submit/poll,
-  free-model policy, and remaining provider usage sources are implemented and
-  verified. Generic OpenAI-compatible multipart image-edit flat settlement,
-  the immutable Go flat manifest, TTS binary/audio detail, and OpenRouter cost
-  inference are locally closed but still require approved cutover-commit
-  regeneration and deployed direct/Gateway/WFP, Queue/D1, provider-invoice,
-  abort, and rollback evidence; local parity is not sufficient for cutover.
+  Ali asynchronous task settlement, free-model policy, and remaining provider
+  usage reconciliation are implemented and verified. Ali synchronous image
+  conversion and actual-count replacement, generic OpenAI-compatible multipart
+  image-edit flat settlement, the immutable Go flat manifest, TTS binary/audio
+  detail, and OpenRouter cost inference are locally closed but still require
+  approved cutover-commit regeneration and deployed direct/Gateway/WFP,
+  Queue/D1, provider-invoice, abort, and rollback evidence; local parity is not
+  sufficient for cutover.
 - Multipart image-edit staging evidence must prove that flat pricing receives
   request `n`, `size`, and `quality`, while tiered expressions do not gain new
   multipart parameter visibility. Archive success-without-usage, malformed
@@ -799,9 +801,21 @@ armed only when:
   whenever `relay_flat_billing_go_parity_ready=false`; the frontend must render
   the same blocker IDs by name. A true parity bit with any remaining blocker
   must stay fail-closed.
-- Ali native image capability remains false until asynchronous submit/poll is
-  owned by a bounded Queue or Workflow path with idempotent task identity,
-  terminal timeout/refund, duplicate-delivery replay, count provenance, and
+- Ali synchronous image generation and edit must remain restricted to the
+  audited synchronous model patterns or an explicitly frozen
+  `ALI_SYNC_IMAGE_MODELS` value matching the production Go setting. Staging
+  must cover generation/edit,
+  multi-image edit, URL/base64 responses, zero/missing `usage.image_count`,
+  immediate 17th-file rejection, 8-KiB part-header and 12-MiB request bounds,
+  byte-signature MIME rejection, the 8-MiB response conversion bound, compact
+  non-image metadata, provider error, duplicate identity, invoice
+  reconciliation, and rollback. `b64_json` must never trigger a Worker-side
+  fetch of a provider URL; URL-only or partial base64 conversion must return 502
+  and refund the reservation.
+- Ali asynchronous image capability remains false until submit/poll is owned by
+  a bounded TaskRunner DO plus D1/Queue path with idempotent task identity,
+  reservation linkage, provider-terminal CAS, terminal timeout/refund,
+  duplicate-delivery replay, count provenance, recovery scan, and
   provider-invoice reconciliation. A long polling loop inside one request is
   not production evidence.
 - Ordinary upstream failure and zero-usage refund must leave request count and

@@ -168,7 +168,7 @@ const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
     "staging_race_replay",
 ];
 const RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS: &[&str] = &[
-    "ali_actual_image_count",
+    "ali_async_image_task_settlement",
     "free_model_runtime_policy",
     "provider_usage_staging_reconciliation",
 ];
@@ -3599,7 +3599,7 @@ mod tests {
         assert_eq!(
             RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS,
             [
-                "ali_actual_image_count",
+                "ali_async_image_task_settlement",
                 "free_model_runtime_policy",
                 "provider_usage_staging_reconciliation",
             ]

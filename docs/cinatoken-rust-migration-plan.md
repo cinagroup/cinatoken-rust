@@ -12706,3 +12706,105 @@ and SSE text collection, Anthropic partial cache preservation, missing
 **NO-GO** until the three structured blockers, remote reconciliation, browser
 journeys, faults/load/alerts, credential rotation, rollback, and signed G1-G8
 approval are complete.
+
+### 22.211 2026-07-15 Ali Synchronous Image Actual-Count Settlement
+
+This increment closes the local synchronous half of the Ali/Bailian image gap
+without importing Go's in-request asynchronous polling loop into Workers. The
+mandatory billing-expression specification was reread before changing terminal
+pricing behavior; expression request context remains the source of truth for
+tiered billing.
+
+Implemented locally:
+
+- Ali type 17 now owns `/v1/images/generations` and `/v1/images/edits` only when
+  the mapped model matches the source synchronous model families. Generation
+  targets the DashScope multimodal generation endpoint. Wan edits and all
+  asynchronous image models are rejected during candidate filtering before a
+  quota reservation or provider call. `ALI_SYNC_IMAGE_MODELS` provides the
+  source-compatible bounded operator override: at most 32 non-empty patterns,
+  each at most 128 bytes, replace the audited defaults consistently in
+  candidate filtering, Admin Channel Test, generation conversion, and edit
+  conversion.
+- OpenAI generation JSON is converted to the native `model`, `input`, and
+  `parameters` contract while retaining audited native overrides. Multipart
+  edits are converted to bounded data URLs and native multimodal messages.
+- Multipart extraction follows source precedence: every `image` file, otherwise
+  every `image[]` file, otherwise indexed `image[n]` fields in body order. The
+  Worker stops and rejects on the 17th matching file, rejects part headers over
+  8 KiB, more than 12 MiB of image bytes, files whose bytes do not match
+  PNG/JPEG/GIF/WebP signatures, missing
+  prompt/image, invalid count, and unsupported response formats. A private
+  validity marker is computed during multipart preparation so these failures
+  remove the Ali candidate before quota reservation.
+- Provider result and choice shapes are converted back to OpenAI image data.
+  Requested URL output remains URL output. `b64_json` accepts provider-supplied
+  base64 only; the Worker never fetches a provider URL to synthesize base64.
+  A URL-only or partially unconvertible `b64_json` success is rejected as 502
+  and follows the existing reservation refund path instead of returning empty
+  data with a charge.
+- The actual image count follows the source adapter exactly: first positive
+  `usage.image_count`, then a non-empty converted data count, then normalized
+  request `n`. Zero usage does not suppress the converted/request fallback.
+- The terminal flat pricing snapshot is cloned and only its resolved
+  `other_ratio` is scaled by `actual/requested`. The stored schema-v4 snapshot,
+  `flat-v4` digest, admission decision, and Queue identity remain immutable.
+  Tiered-expression input does not receive response-derived count or new
+  multipart fields.
+- Relay audit metadata records requested, converted, actual, and count source.
+  It does not persist image bytes, base64 output, provider keys, or request
+  credentials. Client response metadata is reduced to bounded request ID,
+  numeric usage, and terminal task/status fields so the original image payload
+  is not duplicated in Worker memory or the response body.
+
+Failure and retry boundary:
+
+- Provider HTTP errors, malformed JSON, provider error envelopes, unsupported
+  shapes, the Ali-specific 8 MiB response conversion limit, body limits, and
+  transform failures remain on the existing terminal refund path. A response
+  cannot be charged merely because the request asked for images.
+- Synchronous requests continue through the immutable flat reservation and
+  idempotent Queue/D1 finalizer. Candidate retries recompute provider-native
+  request conversion but do not create a second billing reservation.
+- Asynchronous submit responses are not represented as synchronous success and
+  no fake task ID is returned from `/v1/images/*`.
+
+Remaining production plan for `ali_async_image_task_settlement`:
+
+1. Add an explicit image task kind and persist task-to-reservation linkage,
+   mapped model, channel generation, requested count, frozen pricing digest,
+   provider task ID, polling deadline, and sanitized response metadata in D1.
+2. Submit once under a stable idempotency identity. Commit the provider task ID
+   and reservation owner with CAS before acknowledging an asynchronous result.
+3. Wake a deterministic TaskRunner DO by alarm. Each poll performs bounded
+   provider I/O, writes monotonic provider state, and re-arms with capped
+   backoff; DO memory and hibernation attachment are never ledger authority.
+4. Separate `provider_terminal` from `settled`. On provider success, freeze
+   count and provenance using the same three-source rule, then enqueue the
+   immutable settlement event. On provider failure/timeout, enqueue an
+   immutable refund event.
+5. Make D1 terminal CAS and Queue consumers idempotent under duplicate alarm,
+   duplicate Queue delivery, Worker interruption, delayed poll, and lost Queue
+   send. A scheduled recovery scan must find provider-terminal but unsettled
+   rows and terminal reservations without an owned task.
+6. Prove cancellation, timeout, zero-result success, malformed success,
+   provider 4xx/5xx, polling horizon, duplicate delivery, DLQ replay, D1
+   ambiguity, invoice delta, alerting, and disable-first rollback in staging.
+
+Operator/readiness changes:
+
+- `/api/platform/capabilities` now publishes
+  `ali_async_image_task_settlement` instead of the obsolete aggregate
+  `ali_actual_image_count`. The React/Bun Cloudflare panel renders the new
+  operator label and still treats any non-empty blocker list as fail-closed.
+- `relay_flat_billing_go_parity_ready` remains hard false. The other active
+  blockers remain `free_model_runtime_policy` and
+  `provider_usage_staging_reconciliation`.
+- Local tests prove request/response conversion, multi-image extraction, count
+  precedence, snapshot adjustment, expression isolation, route admission, and
+  operator blocker shape. They are not deployed provider or invoice evidence.
+
+Go/VPS remains authoritative and production remains **NO-GO** until the async
+state machine, synchronous and asynchronous staging reconciliation, remaining
+flat blockers, credential rotation, rollback rehearsal, and signed G1-G8
+approval are complete.

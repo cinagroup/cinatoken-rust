@@ -256,7 +256,13 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   OpenAI-to-Gemini request conversion, asyncBatchEmbedContent, and image/video
   task paths are still pending.
 - OpenAI-compatible image generation supports JSON and SSE passthrough; image
-  edits are now wired via the multipart/raw-body relay path.
+  edits are wired via the multipart/raw-body relay path. Ali type 17 adds a
+  direct-only synchronous adapter: generation JSON and up to 16 multipart edit
+  images (12 MiB total) are converted to native DashScope JSON, responses are
+  converted back to OpenAI image shape behind an 8 MiB parse bound, and flat
+  settlement replaces request `n` with positive provider `usage.image_count`
+  or converted output count. Asynchronous Ali models and Wan edits fail before
+  reserve.
 - OpenAI-compatible audio speech supports JSON request passthrough and
   unparsed audio/SSE response passthrough; audio transcription and translation
   are now wired via the multipart/raw-body relay path (model extracted from
@@ -327,7 +333,7 @@ patterns and accepts a bounded `ALI_ANTHROPIC_MESSAGES_MODELS` operator
 override. Rerank currently admits only `gte-rerank-v2`. Optional
 `X-DashScope-Plugin` is derived only from printable server-side
 `channels.other` up to 4 KiB, and relay cache schema v4 prevents older cached
-channels from omitting that configuration. Unsupported image generation/edit
+channels from omitting that configuration. Unsupported asynchronous image
 polling, remote provider image fetch, audio, Gemini, non-native Messages, and
 qwen3 rerank paths fail before quota reserve. AI Gateway and WFP are also
 rejected because this repository has no managed DashScope provider contract in
@@ -335,6 +341,20 @@ either transport. Admin Channel Test, including legacy Completions, and
 frontend readiness consume the same six-route registry. This is local contract
 evidence only; production remains **NO-GO** pending route-specific staging,
 billing/audit reconciliation, and rollback proof.
+
+## 2026-07-15 Ali Synchronous Image Safety Closure
+
+Ali synchronous generation and non-Wan edits now use the DashScope multimodal
+endpoint with actual-count flat settlement. `ALI_SYNC_IMAGE_MODELS` is a
+bounded replacement for the audited Go default patterns and is applied at
+candidate filtering, Admin Channel Test, and native request conversion.
+
+Multipart edit conversion retains at most 16 matching files, stops at the 17th,
+rejects part headers above 8 KiB, caps image bytes at 12 MiB, and verifies image
+signatures. Provider JSON is capped at 8 MiB and response metadata is reduced so
+image payloads are not serialized twice. `b64_json` never fetches provider URLs;
+a URL-only or partial conversion is a 502/refund, not an empty billed success.
+Async submit/poll settlement and live provider/invoice evidence remain NO-GO.
 
 ## 2026-07-13 Tencent Hunyuan Direct Adapter Boundary
 

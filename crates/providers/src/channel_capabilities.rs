@@ -183,6 +183,8 @@ const ALI_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::Completions,
     ProviderRelayRoute::Responses,
     ProviderRelayRoute::Embeddings,
+    ProviderRelayRoute::ImageGenerations,
+    ProviderRelayRoute::ImageEdits,
     ProviderRelayRoute::AnthropicMessages,
     ProviderRelayRoute::Rerank,
 ];
@@ -336,7 +338,7 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
         Ali,
         Partial,
         ALI_ROUTES,
-        "direct-only DashScope OpenAI, Responses, native Messages, and rerank adapter is implemented"
+        "direct-only DashScope OpenAI, synchronous image, native Messages, and rerank adapter is implemented; asynchronous image models remain deferred"
     ),
     capability!(
         18,
@@ -802,9 +804,13 @@ mod tests {
         for route in ALI_ROUTES {
             assert!(channel_supports_relay_route(17, *route));
         }
-        assert!(!channel_supports_relay_route(
+        assert!(channel_supports_relay_route(
             17,
             ProviderRelayRoute::ImageGenerations
+        ));
+        assert!(channel_supports_relay_route(
+            17,
+            ProviderRelayRoute::ImageEdits
         ));
         for route in JINA_ROUTES {
             assert!(channel_supports_relay_route(38, *route));

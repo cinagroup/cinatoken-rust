@@ -1212,9 +1212,14 @@ not staging evidence and does not change the production **NO-GO** decision.
    baseline `73652508abc5`; bind source/generator/template hashes, 10 terminal
    cases, 8 admission/pre-consume cases, and the exact final integer quota.
    Regenerate and sign it again at the approved cutover commit.
-3. Close the remaining provider formulas in Rust: provider actual image count,
-   multipart image-edit/Ali response semantics, free-model runtime policy,
-   provider `OtherRatios`, and remaining usage-source rules. Keep
+3. DONE locally for synchronous Ali images: native generation/edit conversion,
+   bounded multi-image multipart input, source-compatible actual-count
+   precedence, immutable flat-snapshot adjustment, secret-free provenance,
+   file-17/part-header/response-memory guards, URL-only `b64_json` 502/refund,
+   compact metadata, and a bounded `ALI_SYNC_IMAGE_MODELS` override. Freeze the
+   production override against Go `SyncImageModels` in the signed canary packet.
+   Next, close Ali asynchronous task settlement, free-model runtime policy, and
+   provider usage staging reconciliation. Keep
    `relay_flat_billing_go_parity_ready` hard false until those gaps and remote
    reconciliation are exact.
 4. Apply migrations through 0030 in isolated staging with all Queue, recovery,

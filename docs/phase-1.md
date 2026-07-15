@@ -1287,8 +1287,40 @@ Production remains **NO-GO**.
   pre-consume but can still post-charge tool/audio additions. HTTP, Realtime,
   Task, wallet admission, request counting, and serving-group semantics must be
   implemented together before that blocker can close.
-- Ali actual-image settlement remains an explicit asynchronous tranche using
+- Ali asynchronous image settlement remains an explicit tranche using
   the existing TaskRunner DO, D1 CAS, and billing Queue. cinaVibeSDK is a design
   reference for DO alarms and WFP dispatch only, not a billing source of truth.
 
 Production remains **NO-GO**.
+
+## 2026-07-15 Ali Synchronous Image Actual-Count Increment
+
+- Type 17 now exposes `/v1/images/generations` and `/v1/images/edits` only for
+  source-audited synchronous models; asynchronous models and Wan edits remain
+  fail-closed before reserve.
+- Generation JSON and multipart edit input are converted to DashScope native
+  multimodal JSON. Edit conversion preserves all files from `image`, then
+  `image[]`, then indexed `image[n]`, with Worker safety limits of 16 images and
+  12 MiB total image bytes. Extraction stops on the 17th match and rejects
+  part headers above 8 KiB. Ali response conversion is capped at 8 MiB and
+  emits compact metadata without duplicating image payloads.
+- Successful responses convert results/choices into OpenAI image data and
+  select the billed count from positive `usage.image_count`, non-empty converted
+  output count, then normalized request `n`.
+- The terminal flat snapshot clone alone receives the actual-count adjustment.
+  The persisted `flat-v4` snapshot/digest and tiered billing-expression request
+  context are unchanged, preserving the mandatory expression contract.
+- Audit evidence stores requested, converted, actual, and provenance fields but
+  no image data or provider credentials. `b64_json` never fetches provider URLs;
+  URL-only/partial conversion fails with 502 and refunds. The bounded
+  `ALI_SYNC_IMAGE_MODELS` override keeps production Go model configuration
+  aligned across candidate filtering, Admin probe, and request conversion.
+- The structured blocker is narrowed from `ali_actual_image_count` to
+  `ali_async_image_task_settlement`. That remaining tranche requires durable
+  task/reservation linkage, TaskRunner DO alarms, provider-terminal D1 CAS,
+  idempotent Queue finalization, recovery scan, timeout/refund, and staging
+  invoice reconciliation.
+
+Production remains **NO-GO** pending synchronous live evidence, the asynchronous
+state machine, free-model runtime policy, provider usage staging reconciliation,
+credential rotation, rollback, and signed G1-G8 approval.

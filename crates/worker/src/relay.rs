@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use cinatoken_billing::{
     build_tiered_token_params, compute_flat_quota_from_snapshot, compute_tiered_quota_with_request,
     detect_billing_expr_variables, estimate_flat_pre_consumed_quota,
@@ -23,8 +24,11 @@ use cinatoken_providers::{
         AiGatewayCutoverPlan, AiGatewayModelAuthor,
     },
     ali::{
-        ali_plugin_header_value, apply_ali_request, supports_ali_anthropic_messages_with_config,
-        supports_ali_native_rerank, transform_ali_rerank_response_body,
+        ali_plugin_header_value, ali_sync_image_edit_request_with_config, apply_ali_request,
+        apply_ali_sync_image_generation_request_with_config,
+        supports_ali_anthropic_messages_with_config, supports_ali_native_rerank,
+        supports_ali_sync_image_edit_with_config, supports_ali_sync_image_generation_with_config,
+        transform_ali_image_response_body, transform_ali_rerank_response_body, AliImageCountSource,
     },
     baidu_v2::{apply_baidu_v2_request, parse_baidu_v2_key},
     channel_supports_relay_route, channel_types_for_relay_route,
@@ -169,6 +173,7 @@ const DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 const IMAGE_JSON_RESPONSE_LIMIT_BYTES: usize = 24 * 1024 * 1024;
+const ALI_IMAGE_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const RERANK_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const GEMINI_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const AUDIO_SPEECH_RESPONSE_LIMIT_BYTES: usize = 25 * 1024 * 1024;
@@ -186,6 +191,7 @@ const ESTIMATED_FILE_INPUT_TOKENS: i64 = 4_096;
 const MODEL_OBJECT_CREATED: i64 = 1_626_777_600;
 const MODEL_LIST_CACHE_MODEL_KEY: &str = "__model_list__";
 const ALI_ANTHROPIC_MESSAGES_MODELS_ENV: &str = "ALI_ANTHROPIC_MESSAGES_MODELS";
+const ALI_SYNC_IMAGE_MODELS_ENV: &str = "ALI_SYNC_IMAGE_MODELS";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayProviderKind {
@@ -883,6 +889,7 @@ fn prepare_admin_channel_probe(
     request: &AdminChannelProbeRequest,
     inject_stream_options: bool,
     ali_messages_model_patterns: Option<&str>,
+    ali_sync_image_model_patterns: Option<&str>,
 ) -> Result<PreparedAdminChannelProbe, AdminChannelProbeError> {
     let model = request.model.trim();
     if model.is_empty() {
@@ -925,7 +932,14 @@ fn prepare_admin_channel_probe(
     };
     let provider = endpoint.effective_provider(channel.channel_type);
     if channel.channel_type == CHANNEL_TYPE_ALI
-        && !ali_accepts_request_shape(&endpoint, channel, &body, true, ali_messages_model_patterns)
+        && !ali_accepts_request_shape(
+            &endpoint,
+            channel,
+            &body,
+            true,
+            ali_messages_model_patterns,
+            ali_sync_image_model_patterns,
+        )
     {
         return Err(AdminChannelProbeError::new(
             422,
@@ -937,15 +951,19 @@ fn prepare_admin_channel_probe(
             ),
         ));
     }
-    apply_endpoint_request_transform(&mut body, &endpoint.upstream_path, channel).map_err(
-        |err| {
-            AdminChannelProbeError::new(
-                422,
-                "channel_test_transform_invalid",
-                format!("channel probe request transform failed: {err}"),
-            )
-        },
-    )?;
+    apply_endpoint_request_transform_with_config(
+        &mut body,
+        &endpoint.upstream_path,
+        channel,
+        ali_sync_image_model_patterns,
+    )
+    .map_err(|err| {
+        AdminChannelProbeError::new(
+            422,
+            "channel_test_transform_invalid",
+            format!("channel probe request transform failed: {err}"),
+        )
+    })?;
     apply_provider_request_transform(&mut body, provider);
     if inject_stream_options && provider_uses_openai_stream_options(provider) {
         cinatoken_relay::openai_compatible::apply_stream_options(
@@ -1541,11 +1559,13 @@ async fn execute_admin_channel_probe_inner(
 ) -> Result<AdminChannelProbeResult, AdminChannelProbeError> {
     let inject_stream_options = stream_options_inject_enabled(env);
     let ali_messages_model_patterns = optional_env_var(env, ALI_ANTHROPIC_MESSAGES_MODELS_ENV);
+    let ali_sync_image_model_patterns = optional_env_var(env, ALI_SYNC_IMAGE_MODELS_ENV);
     let prepared = prepare_admin_channel_probe(
         channel,
         request,
         inject_stream_options,
         ali_messages_model_patterns.as_deref(),
+        ali_sync_image_model_patterns.as_deref(),
     )?;
     let max_json_response_bytes = RelayJsonResponseConfig::from_env(env)
         .map_err(|err| {
@@ -2519,6 +2539,7 @@ async fn relay_endpoint_with_auth(
         RelayModelRouteAudit::primary(&model, configured_fallback_model.as_deref());
     let mut served_model = model.clone();
     let ali_messages_model_patterns = optional_env_var(&env, ALI_ANTHROPIC_MESSAGES_MODELS_ENV);
+    let ali_sync_image_model_patterns = optional_env_var(&env, ALI_SYNC_IMAGE_MODELS_ENV);
 
     // Resolve the candidate pool(s). For an "auto" token group, walk the user's
     // auto groups (Go `CacheGetRandomSatisfiedChannel`); otherwise a single group.
@@ -2553,8 +2574,9 @@ async fn relay_endpoint_with_auth(
         &mut group_pools,
         &endpoint,
         should_relay_stream,
-        json_body.as_ref(),
+        Some(json_body.as_ref().unwrap_or(&flat_pricing_request_body)),
         ali_messages_model_patterns.as_deref(),
+        ali_sync_image_model_patterns.as_deref(),
     );
     if tencent_is_only_stream_candidate
         && group_pools.iter().all(|(_, channels)| channels.is_empty())
@@ -2748,10 +2770,11 @@ async fn relay_endpoint_with_auth(
                             }
                         }
                     }
-                    if let Err(error) = apply_endpoint_request_transform(
+                    if let Err(error) = apply_endpoint_request_transform_with_config(
                         &mut upstream_body,
                         &endpoint.upstream_path,
                         &channel,
+                        ali_sync_image_model_patterns.as_deref(),
                     ) {
                         forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
                         return Err(error);
@@ -2952,12 +2975,29 @@ async fn relay_endpoint_with_auth(
                     bytes,
                     content_type,
                 } => {
-                    // Multipart/raw bodies are forwarded verbatim. Model mapping
-                    // is intentionally NOT applied (see docs/relay-mvp.md). All
-                    // upload endpoints are OpenAI-compatible.
                     if let Err(err) = ensure_wfp_json_body(&channel) {
                         forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
                         Err(err)
+                    } else if channel.channel_type == CHANNEL_TYPE_ALI
+                        && endpoint.route == ProviderRelayRoute::ImageEdits
+                    {
+                        let mapped_model =
+                            mapped_model_name(&model, channel.model_mapping.as_deref())
+                                .unwrap_or_else(|| model.clone());
+                        match ali_image_edit_body_from_multipart(
+                            bytes,
+                            content_type,
+                            &mapped_model,
+                            ali_sync_image_model_patterns.as_deref(),
+                        ) {
+                            Ok(body) => {
+                                forward_ali(&upstream_url, &upstream_key, &channel, &body).await
+                            }
+                            Err(err) => {
+                                forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
+                                Err(err)
+                            }
+                        }
                     } else {
                         forward_raw_openai_compatible(
                             &upstream_url,
@@ -3144,6 +3184,7 @@ async fn relay_endpoint_with_auth(
                 should_relay_stream,
                 json_body.as_ref(),
                 ali_messages_model_patterns.as_deref(),
+                ali_sync_image_model_patterns.as_deref(),
             );
             let fallback_candidate_evidence = retain_ai_gateway_fallback_candidates(
                 &mut fallback_group_pools,
@@ -3632,6 +3673,11 @@ async fn relay_endpoint_with_auth(
                 .unwrap_or(0)
                 .saturating_add(extra_prompt_tokens)
         });
+    let image_request = image_request_audit(
+        &endpoint.upstream_path,
+        channel.channel_type,
+        &flat_pricing_request_body,
+    );
     let audit = RelayAuditContext {
         started_at,
         client_ip,
@@ -3643,6 +3689,8 @@ async fn relay_endpoint_with_auth(
         usage_locally_estimated: false,
         non_stream_usage_parse_failed: false,
         tts_response_usage: None,
+        image_request,
+        ali_image_usage: None,
         provider_usage_source: relay_provider_usage_source(selected_provider, channel.channel_type),
         stream_lease_heartbeat: None,
         affinity: affinity_audit,
@@ -4188,6 +4236,7 @@ fn retain_pre_reserve_capable_channels(
     should_relay_stream: bool,
     request_body: Option<&Value>,
     ali_messages_model_patterns: Option<&str>,
+    ali_sync_image_model_patterns: Option<&str>,
 ) {
     for (_, channels) in group_pools {
         channels.retain(|channel| {
@@ -4216,6 +4265,7 @@ fn retain_pre_reserve_capable_channels(
                         body,
                         false,
                         ali_messages_model_patterns,
+                        ali_sync_image_model_patterns,
                     )
                 })
             } else {
@@ -4293,8 +4343,9 @@ fn channel_accepts_endpoint_request_shape(
         }
     }
     if channel.channel_type == CHANNEL_TYPE_ALI {
-        return request_body
-            .is_some_and(|body| ali_accepts_request_shape(endpoint, channel, body, false, None));
+        return request_body.is_some_and(|body| {
+            ali_accepts_request_shape(endpoint, channel, body, false, None, None)
+        });
     }
     if channel.channel_type == CHANNEL_TYPE_PERPLEXITY
         && endpoint.route == ProviderRelayRoute::ChatCompletions
@@ -4334,6 +4385,7 @@ fn ali_accepts_request_shape(
     body: &Value,
     model_already_mapped: bool,
     ali_messages_model_patterns: Option<&str>,
+    ali_sync_image_model_patterns: Option<&str>,
 ) -> bool {
     if ali_plugin_header_value(&channel.other).is_err() {
         return false;
@@ -4396,7 +4448,65 @@ fn ali_accepts_request_shape(
                     .get("return_documents")
                     .map_or(true, |value| value.is_null() || value.is_boolean())
         }
+        ProviderRelayRoute::ImageGenerations => {
+            supports_ali_sync_image_generation_with_config(
+                &effective_model,
+                ali_sync_image_model_patterns,
+            ) && ali_image_common_request_shape_is_valid(body)
+                && (body
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .is_some_and(|prompt| !prompt.trim().is_empty())
+                    || body.get("input").is_some_and(|input| !input.is_null()))
+        }
+        ProviderRelayRoute::ImageEdits => {
+            supports_ali_sync_image_edit_with_config(
+                &effective_model,
+                ali_sync_image_model_patterns,
+            ) && ali_image_common_request_shape_is_valid(body)
+                && body
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .is_some_and(|prompt| !prompt.trim().is_empty())
+                && body
+                    .get("_multipart_image_valid")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        }
         _ => false,
+    }
+}
+
+fn ali_image_common_request_shape_is_valid(body: &Value) -> bool {
+    if body
+        .get("stream")
+        .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false))
+    {
+        return false;
+    }
+    if body.get("response_format").is_some_and(|value| {
+        !value.is_null() && !matches!(value.as_str(), Some("url") | Some("b64_json") | Some(""))
+    }) {
+        return false;
+    }
+    let count = ali_image_request_count_value(body);
+    count.is_some_and(|count| count <= 1_024)
+}
+
+fn ali_image_request_count_value(body: &Value) -> Option<u64> {
+    let value = if body.get("parameters").is_some() {
+        match body.get("parameters") {
+            Some(Value::Object(parameters)) => parameters.get("n"),
+            Some(Value::Null) => None,
+            Some(_) => return None,
+            None => None,
+        }
+    } else {
+        body.get("n")
+    };
+    match value {
+        None | Some(Value::Null) => Some(1),
+        Some(value) => value.as_u64(),
     }
 }
 
@@ -4543,6 +4653,7 @@ async fn execute_relay_attempt_plan(
     ai_gateway_runtime: Option<&RelayAiGatewayRuntime>,
     provider_headers: &RelayProviderHeaders,
 ) -> RelayAttemptExecution {
+    let ali_sync_image_model_patterns = optional_env_var(env, ALI_SYNC_IMAGE_MODELS_ENV);
     let mut last_failure = None;
     let mut selected_attempt = None;
     let mut attempts = RelayAttemptAuditLedger::default();
@@ -4618,10 +4729,11 @@ async fn execute_relay_attempt_plan(
                         }
                     }
                 }
-                if let Err(error) = apply_endpoint_request_transform(
+                if let Err(error) = apply_endpoint_request_transform_with_config(
                     &mut upstream_body,
                     &endpoint.upstream_path,
                     &channel,
+                    ali_sync_image_model_patterns.as_deref(),
                 ) {
                     let failure = RelayAttemptFailure::configuration_error(
                         channel.id,
@@ -4786,6 +4898,25 @@ async fn execute_relay_attempt_plan(
                 if let Err(err) = ensure_wfp_json_body(&channel) {
                     forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
                     Err(err)
+                } else if channel.channel_type == CHANNEL_TYPE_ALI
+                    && endpoint.route == ProviderRelayRoute::ImageEdits
+                {
+                    let mapped_model = mapped_model_name(model, channel.model_mapping.as_deref())
+                        .unwrap_or_else(|| model.to_string());
+                    match ali_image_edit_body_from_multipart(
+                        bytes,
+                        content_type,
+                        &mapped_model,
+                        ali_sync_image_model_patterns.as_deref(),
+                    ) {
+                        Ok(body) => {
+                            forward_ali(&upstream_url, &upstream_key, &channel, &body).await
+                        }
+                        Err(err) => {
+                            forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
+                            Err(err)
+                        }
+                    }
                 } else {
                     forward_raw_openai_compatible(
                         &upstream_url,
@@ -5527,12 +5658,145 @@ fn multipart_billing_request_bodies(
     {
         body.insert("n".to_string(), Value::from(n));
     }
-    for field in ["size", "quality"] {
+    for field in ["size", "quality", "prompt", "response_format"] {
         if let Some(value) = cinatoken_relay::extract_multipart_field(bytes, content_type, field) {
             body.insert(field.to_string(), Value::String(value));
         }
     }
+    let image_files = multipart_image_files(bytes, content_type);
+    let (image_present, image_valid) = match &image_files {
+        Ok(image_files) => {
+            let image_total_bytes = image_files
+                .iter()
+                .try_fold(0usize, |total, image| total.checked_add(image.bytes.len()));
+            (
+                !image_files.is_empty(),
+                !image_files.is_empty()
+                    && image_total_bytes
+                        .is_some_and(|total| total <= MAX_ALI_IMAGE_EDIT_TOTAL_BYTES)
+                    && image_files
+                        .iter()
+                        .all(|image| detected_image_mime(image.bytes).is_some()),
+            )
+        }
+        Err(_) => (true, false),
+    };
+    body.insert(
+        "_multipart_image_present".to_string(),
+        Value::Bool(image_present),
+    );
+    body.insert(
+        "_multipart_image_valid".to_string(),
+        Value::Bool(image_valid),
+    );
+    if let Some(watermark) =
+        cinatoken_relay::extract_multipart_field(bytes, content_type, "watermark")
+    {
+        body.insert("watermark".to_string(), Value::Bool(watermark == "true"));
+    }
     (expression_body, Value::Object(body))
+}
+
+const MAX_ALI_IMAGE_EDIT_FILES: usize = 16;
+const MAX_ALI_IMAGE_EDIT_TOTAL_BYTES: usize = 12 * 1024 * 1024;
+
+fn multipart_image_files<'a>(
+    bytes: &'a [u8],
+    content_type: &str,
+) -> Result<Vec<cinatoken_relay::MultipartFile<'a>>, cinatoken_relay::MultipartFilesError> {
+    let direct = cinatoken_relay::extract_multipart_files_bounded(
+        bytes,
+        content_type,
+        "image",
+        MAX_ALI_IMAGE_EDIT_FILES,
+    )?;
+    if !direct.is_empty() {
+        return Ok(direct);
+    }
+    let array = cinatoken_relay::extract_multipart_files_bounded(
+        bytes,
+        content_type,
+        "image[]",
+        MAX_ALI_IMAGE_EDIT_FILES,
+    )?;
+    if !array.is_empty() {
+        return Ok(array);
+    }
+    cinatoken_relay::extract_multipart_files_with_prefix_bounded(
+        bytes,
+        content_type,
+        "image[",
+        MAX_ALI_IMAGE_EDIT_FILES,
+    )
+}
+
+fn ali_image_edit_body_from_multipart(
+    bytes: &[u8],
+    content_type: &str,
+    model: &str,
+    ali_sync_image_model_patterns: Option<&str>,
+) -> worker::Result<Value> {
+    let prompt = cinatoken_relay::extract_multipart_field(bytes, content_type, "prompt")
+        .ok_or_else(|| worker::Error::RustError("Ali image edit prompt is missing".to_string()))?;
+    let image_files = multipart_image_files(bytes, content_type).map_err(|err| {
+        worker::Error::RustError(format!("Ali image edit multipart validation failed: {err}"))
+    })?;
+    if image_files.is_empty() {
+        return Err(worker::Error::RustError(
+            "Ali image edit requires an image file".to_string(),
+        ));
+    }
+    let total_image_bytes = image_files
+        .iter()
+        .try_fold(0usize, |total, image| total.checked_add(image.bytes.len()));
+    if total_image_bytes.is_none_or(|total| total > MAX_ALI_IMAGE_EDIT_TOTAL_BYTES) {
+        return Err(worker::Error::RustError(format!(
+            "Ali image edit files exceed the {MAX_ALI_IMAGE_EDIT_TOTAL_BYTES}-byte conversion limit"
+        )));
+    }
+    let images = image_files
+        .into_iter()
+        .map(|image| {
+            let mime = detected_image_mime(image.bytes).ok_or_else(|| {
+                worker::Error::RustError("Ali image edit file is not a supported image".to_string())
+            })?;
+            Ok(format!(
+                "data:{mime};base64,{}",
+                BASE64_STANDARD.encode(image.bytes)
+            ))
+        })
+        .collect::<worker::Result<Vec<_>>>()?;
+    let requested_count = cinatoken_relay::extract_multipart_field(bytes, content_type, "n")
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(1);
+    let watermark = cinatoken_relay::extract_multipart_field(bytes, content_type, "watermark")
+        .map(|value| value == "true");
+    let response_format =
+        cinatoken_relay::extract_multipart_field(bytes, content_type, "response_format");
+    ali_sync_image_edit_request_with_config(
+        model,
+        &prompt,
+        &images,
+        requested_count,
+        watermark,
+        response_format.as_deref(),
+        ali_sync_image_model_patterns,
+    )
+    .map_err(|err| worker::Error::RustError(format!("Ali image edit transform failed: {err}")))
+}
+
+fn detected_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 fn multipart_extra_prompt_tokens(
@@ -8544,6 +8808,30 @@ async fn complete_relay_response(
         .unwrap_or_else(|| "application/json".to_string());
     let upstream_request_id =
         response_header(&upstream, &["x-tc-requestid", "x-request-id", "cf-ray"]);
+    if status == 200
+        && provider == RelayProviderKind::AliOpenAi
+        && matches!(
+            endpoint_path.as_str(),
+            "images/generations" | "images/edits"
+        )
+    {
+        return complete_ali_image_response(
+            upstream,
+            env,
+            db,
+            context,
+            auth,
+            channel,
+            model,
+            group,
+            endpoint_path,
+            audit,
+            status,
+            upstream_request_id,
+            max_json_response_bytes,
+        )
+        .await;
+    }
     if status == 200 && provider == RelayProviderKind::AliOpenAi && endpoint_path == "rerank" {
         return complete_ali_rerank_response(
             upstream,
@@ -8793,6 +9081,115 @@ async fn complete_relay_response(
         max_json_response_bytes,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_ali_image_response(
+    mut upstream: Response,
+    env: Env,
+    db: D1Database,
+    context: Option<Context>,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    mut audit: RelayAuditContext,
+    status: u16,
+    upstream_request_id: Option<String>,
+    max_json_response_bytes: usize,
+) -> worker::Result<Response> {
+    let body = match read_response_text_limited(
+        &mut upstream,
+        max_json_response_bytes.min(ALI_IMAGE_JSON_RESPONSE_LIMIT_BYTES),
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(err) => {
+            let message = format!(
+                "failed to read Ali image response: {}",
+                err.message("Ali image response body")
+            );
+            record_owned_relay_audit(
+                context,
+                env,
+                db,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                502,
+                UsageSummary::default(),
+                audit,
+                upstream_request_id,
+                "Ali image response validation",
+            )
+            .await;
+            return openai_error_response(message, 502);
+        }
+    };
+    let request = audit.image_request.as_ref().ok_or_else(|| {
+        worker::Error::RustError("Ali image request audit facts are missing".to_string())
+    })?;
+    let transformed = match transform_ali_image_response_body(
+        &body,
+        Some(&request.response_format),
+        request.requested_count,
+        audit.started_at,
+    ) {
+        Ok(transformed) => transformed,
+        Err(err) => {
+            worker::console_error!("failed to validate Ali image response: {}", err);
+            record_owned_relay_audit(
+                context,
+                env,
+                db,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                502,
+                UsageSummary::default(),
+                audit,
+                upstream_request_id,
+                "Ali image response validation",
+            )
+            .await;
+            return openai_error_response("invalid Ali image response body".to_string(), 502);
+        }
+    };
+    audit.ali_image_usage = Some(AliImageUsageAudit {
+        requested_count: request.requested_count,
+        converted_count: transformed.converted_image_count,
+        actual_count: transformed.actual_image_count,
+        count_source: transformed.count_source,
+    });
+    record_owned_relay_audit(
+        context,
+        env,
+        db,
+        auth,
+        channel,
+        model,
+        group,
+        endpoint_path,
+        status,
+        UsageSummary::default(),
+        audit,
+        upstream_request_id,
+        "Ali image",
+    )
+    .await;
+
+    let mut response = Response::ok(transformed.body)?.with_status(status);
+    response
+        .headers_mut()
+        .set("content-type", "application/json")?;
+    set_cors_headers(&mut response)?;
+    Ok(response)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10102,6 +10499,11 @@ struct RelayAuditContext {
     /// Bounded, response-derived OpenAI-compatible TTS usage. This is local
     /// settlement evidence, not an upstream-reported token block.
     tts_response_usage: Option<TtsResponseUsageAudit>,
+    /// Frozen request-time image facts used by provider response conversion.
+    image_request: Option<ImageRequestAudit>,
+    /// Ali terminal image-count evidence. This is populated only after the
+    /// bounded provider body has been converted to the client response.
+    ali_image_usage: Option<AliImageUsageAudit>,
     /// Provider and wire family that supplied the usage evidence. Transport
     /// provenance (direct, AI Gateway fallback, or WFP) remains in model_route.
     provider_usage_source: &'static str,
@@ -10128,6 +10530,20 @@ struct TtsResponseUsageAudit {
     duration_seconds: Option<f64>,
     output_audio_tokens: i32,
     source: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct ImageRequestAudit {
+    requested_count: u32,
+    response_format: String,
+}
+
+#[derive(Debug, Clone)]
+struct AliImageUsageAudit {
+    requested_count: u32,
+    converted_count: u32,
+    actual_count: u32,
+    count_source: AliImageCountSource,
 }
 
 #[derive(Debug, Clone)]
@@ -10406,6 +10822,20 @@ async fn record_relay_audit(
                 "duration_seconds": tts.duration_seconds,
                 "output_audio_tokens": tts.output_audio_tokens,
                 "usage_source": tts.source,
+            }),
+        );
+    }
+    if let Some(image) = &audit.ali_image_usage {
+        set_json_value(
+            &mut other,
+            "image_count",
+            json!({
+                "provider": "ali",
+                "requested_count": image.requested_count,
+                "converted_count": image.converted_count,
+                "actual_count": image.actual_count,
+                "source": image.count_source.as_str(),
+                "flat_pricing_adjustment": "replace_requested_count",
             }),
         );
     }
@@ -10872,7 +11302,11 @@ async fn record_relay_audit(
                 channel.channel_type,
                 &preflight.snapshot,
             );
-            let result = compute_flat_quota_from_snapshot(&projection.usage, &preflight.snapshot);
+            let settlement_snapshot = flat_settlement_snapshot_with_actual_image_count(
+                &preflight.snapshot,
+                audit.ali_image_usage.as_ref(),
+            );
+            let result = compute_flat_quota_from_snapshot(&projection.usage, &settlement_snapshot);
             let final_quota = result.quota;
             stage_relay_billing_settlement(
                 env,
@@ -12797,16 +13231,13 @@ fn request_other_ratio_product(
     let Some(body) = request_body else {
         return 1.0;
     };
-    let image_count = body
-        .get("n")
-        .and_then(Value::as_u64)
-        .or_else(|| {
-            (channel_type == CHANNEL_TYPE_ALI)
-                .then(|| body.pointer("/parameters/n").and_then(Value::as_u64))
-                .flatten()
-        })
-        .unwrap_or(1)
-        .max(1) as f64;
+    let image_count = if channel_type == CHANNEL_TYPE_ALI {
+        ali_image_request_count_value(body)
+    } else {
+        body.get("n").and_then(Value::as_u64)
+    }
+    .unwrap_or(1)
+    .max(1) as f64;
     let prompt_extend = channel_type == CHANNEL_TYPE_ALI
         && model.contains("z-image")
         && body
@@ -12814,6 +13245,57 @@ fn request_other_ratio_product(
             .and_then(Value::as_bool)
             .unwrap_or(false);
     image_count * if prompt_extend { 2.0 } else { 1.0 }
+}
+
+fn image_request_audit(
+    endpoint_path: &str,
+    channel_type: i32,
+    request_body: &Value,
+) -> Option<ImageRequestAudit> {
+    if !matches!(endpoint_path, "images/generations" | "images/edits") {
+        return None;
+    }
+    let requested_count = if channel_type == CHANNEL_TYPE_ALI {
+        ali_image_request_count_value(request_body)
+    } else {
+        request_body.get("n").and_then(Value::as_u64)
+    }
+    .and_then(|value| u32::try_from(value).ok())
+    .filter(|value| *value > 0)
+    .unwrap_or(1);
+    let response_format = request_body
+        .get("response_format")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "url" | "b64_json"))
+        .unwrap_or("url")
+        .to_string();
+    Some(ImageRequestAudit {
+        requested_count,
+        response_format,
+    })
+}
+
+fn flat_settlement_snapshot_with_actual_image_count(
+    snapshot: &FlatPricingSnapshot,
+    image: Option<&AliImageUsageAudit>,
+) -> FlatPricingSnapshot {
+    let Some(image) = image else {
+        return snapshot.clone();
+    };
+    if image.requested_count == 0 || image.actual_count == 0 {
+        return snapshot.clone();
+    }
+    // The frozen product contains request `n` and any independent request-time
+    // factors (for example z-image prompt_extend). Replace only `n`; the
+    // remaining frozen contract is unchanged.
+    let terminal_product = snapshot.other_ratio_product / f64::from(image.requested_count)
+        * f64::from(image.actual_count);
+    if !terminal_product.is_finite() || terminal_product <= 0.0 {
+        return snapshot.clone();
+    }
+    let mut terminal = snapshot.clone();
+    terminal.other_ratio_product = terminal_product;
+    terminal
 }
 
 fn request_image_price_ratio(
@@ -13264,13 +13746,34 @@ fn validate_chat_completions_request(body: &Value) -> Option<&'static str> {
     None
 }
 
+#[cfg(test)]
 fn apply_endpoint_request_transform(
     body: &mut Value,
     endpoint_path: &str,
     channel: &RelayChannel,
 ) -> worker::Result<()> {
+    apply_endpoint_request_transform_with_config(body, endpoint_path, channel, None)
+}
+
+fn apply_endpoint_request_transform_with_config(
+    body: &mut Value,
+    endpoint_path: &str,
+    channel: &RelayChannel,
+    ali_sync_image_model_patterns: Option<&str>,
+) -> worker::Result<()> {
     if channel.channel_type == CHANNEL_TYPE_ALI {
         apply_ali_request(body, endpoint_path);
+        if endpoint_path == "images/generations" {
+            apply_ali_sync_image_generation_request_with_config(
+                body,
+                ali_sync_image_model_patterns,
+            )
+            .map_err(|err| {
+                worker::Error::RustError(format!(
+                    "Ali synchronous image request transform failed: {err}"
+                ))
+            })?;
+        }
     }
     if endpoint_path == "rerank" && channel.channel_type == CHANNEL_TYPE_COHERE {
         apply_cohere_rerank_request_transform(body);
@@ -14595,7 +15098,7 @@ mod tests {
             endpoint_type: AdminProbeEndpoint::OpenAi,
             stream: false,
         };
-        let prepared = prepare_admin_channel_probe(&channel, &request, false, None).unwrap();
+        let prepared = prepare_admin_channel_probe(&channel, &request, false, None, None).unwrap();
         assert_eq!(prepared.upstream_key, "first-key");
         assert_eq!(prepared.body["model"], "provider-model");
         assert_eq!(prepared.effective_model, "provider-model");
@@ -15272,7 +15775,7 @@ mod tests {
             b"Content-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\n",
         );
         body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
-        body.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x00, 0xff]);
+        body.extend_from_slice(b"\x89PNG\r\n\x1a\nimage");
         body.extend_from_slice(b"\r\n");
         body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
         let content_type = format!("multipart/form-data; boundary={boundary}");
@@ -15286,7 +15789,10 @@ mod tests {
                 "model": "dall-e-3",
                 "n": 2,
                 "size": "1024x1792",
-                "quality": "hd"
+                "quality": "hd",
+                "prompt": "make it blue",
+                "_multipart_image_present": true,
+                "_multipart_image_valid": true,
             })
         );
         assert_eq!(
@@ -15302,6 +15808,156 @@ mod tests {
             request_image_price_ratio("images/edits", "dall-e-3", Some(&flat_body)),
             3.0
         );
+    }
+
+    #[test]
+    fn ali_multipart_image_edit_is_converted_to_bounded_native_json() {
+        let boundary = "ali-image-edit-boundary";
+        let mut body = Vec::new();
+        for (name, value) in [
+            ("model", "qwen-image-edit-plus"),
+            ("prompt", "remove the sign"),
+            ("n", "2"),
+            ("response_format", "b64_json"),
+            ("watermark", "false"),
+        ] {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+            );
+            body.extend_from_slice(value.as_bytes());
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\n",
+        );
+        body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
+        body.extend_from_slice(b"\x89PNG\r\n\x1a\nimage");
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let native =
+            ali_image_edit_body_from_multipart(&body, &content_type, "qwen-image-edit-plus", None)
+                .unwrap();
+        assert_eq!(native["parameters"]["n"], 2);
+        assert_eq!(native["parameters"]["watermark"], false);
+        assert_eq!(native["response_format"], "b64_json");
+        assert!(native["input"]["messages"][0]["content"][0]["image"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+        assert_eq!(
+            native["input"]["messages"][0]["content"][1]["text"],
+            "remove the sign"
+        );
+    }
+
+    #[test]
+    fn ali_multipart_image_edit_preserves_multiple_array_images() {
+        let boundary = "ali-image-array-boundary";
+        let mut body = Vec::new();
+        for (name, value) in [
+            ("model", "qwen-image-edit-plus"),
+            ("prompt", "combine the references"),
+        ] {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+            );
+            body.extend_from_slice(value.as_bytes());
+            body.extend_from_slice(b"\r\n");
+        }
+        for (field, filename, suffix) in [
+            ("image[]", "one.png", b"one".as_slice()),
+            ("image[]", "two.png", b"two".as_slice()),
+        ] {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{field}\"; filename=\"{filename}\"\r\n"
+                )
+                .as_bytes(),
+            );
+            body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
+            body.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+            body.extend_from_slice(suffix);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let native =
+            ali_image_edit_body_from_multipart(&body, &content_type, "qwen-image-edit-plus", None)
+                .unwrap();
+        let content = native["input"]["messages"][0]["content"]
+            .as_array()
+            .unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(
+            content[0]["image"],
+            format!(
+                "data:image/png;base64,{}",
+                BASE64_STANDARD.encode(b"\x89PNG\r\n\x1a\none")
+            )
+        );
+        assert_eq!(
+            content[1]["image"],
+            format!(
+                "data:image/png;base64,{}",
+                BASE64_STANDARD.encode(b"\x89PNG\r\n\x1a\ntwo")
+            )
+        );
+        assert_eq!(content[2]["text"], "combine the references");
+        assert_eq!(detected_image_mime(b"not-an-image"), None);
+    }
+
+    #[test]
+    fn ali_multipart_image_edit_rejects_the_seventeenth_file_before_reserve() {
+        let mut endpoint = endpoint(false, None);
+        endpoint.route = ProviderRelayRoute::ImageEdits;
+        endpoint.upstream_path = "images/edits".to_string();
+        endpoint.request_body_mode = RelayRequestBodyMode::MultipartForm;
+        let boundary = "ali-image-count-boundary";
+        let mut body = Vec::new();
+        for (name, value) in [
+            ("model", "qwen-image-edit-plus"),
+            ("prompt", "combine references"),
+        ] {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+            );
+            body.extend_from_slice(value.as_bytes());
+            body.extend_from_slice(b"\r\n");
+        }
+        for index in 0..17 {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"image[]\"; filename=\"{index}.png\"\r\nContent-Type: image/png\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+            body.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let (_, flat_body) = multipart_billing_request_bodies(&endpoint, &body, &content_type);
+        assert_eq!(flat_body["_multipart_image_present"], true);
+        assert_eq!(flat_body["_multipart_image_valid"], false);
+        assert!(ali_image_edit_body_from_multipart(
+            &body,
+            &content_type,
+            "qwen-image-edit-plus",
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("16-file limit"));
     }
 
     #[test]
@@ -17098,14 +17754,14 @@ mod tests {
             ProviderRelayRoute::Completions,
             ProviderRelayRoute::Responses,
             ProviderRelayRoute::Embeddings,
+            ProviderRelayRoute::ImageGenerations,
+            ProviderRelayRoute::ImageEdits,
             ProviderRelayRoute::AnthropicMessages,
             ProviderRelayRoute::Rerank,
         ] {
             assert!(channel_supports_relay_route(CHANNEL_TYPE_ALI, route));
         }
         for route in [
-            ProviderRelayRoute::ImageGenerations,
-            ProviderRelayRoute::ImageEdits,
             ProviderRelayRoute::AudioSpeech,
             ProviderRelayRoute::GeminiNative,
         ] {
@@ -17172,12 +17828,14 @@ mod tests {
             &already_mapped,
             true,
             None,
+            None,
         ));
         assert!(ali_accepts_request_shape(
             &messages,
             &channel,
             &already_mapped,
             false,
+            None,
             None,
         ));
         channel.model_mapping = None;
@@ -17223,12 +17881,90 @@ mod tests {
         let mut images = endpoint(false, None);
         images.route = ProviderRelayRoute::ImageGenerations;
         images.upstream_path = "images/generations".to_string();
-        assert!(!channel_accepts_endpoint_request_shape(
+        assert!(channel_accepts_endpoint_request_shape(
             &channel,
             &images,
             Some(&json!({"model": "wan2.6-t2i", "prompt": "hello"}))
         ));
-        assert!(images.try_upstream_url(&channel).is_err());
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &images,
+            Some(&json!({"model": "wan2.5-t2i-preview", "prompt": "hello"}))
+        ));
+        let custom_image_body = json!({"model": "custom-sync-v1", "prompt": "hello"});
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &images,
+            Some(&custom_image_body)
+        ));
+        assert!(ali_accepts_request_shape(
+            &images,
+            &channel,
+            &custom_image_body,
+            false,
+            None,
+            Some("custom-sync"),
+        ));
+        let mut custom_image_body = custom_image_body;
+        apply_endpoint_request_transform_with_config(
+            &mut custom_image_body,
+            "images/generations",
+            &channel,
+            Some("custom-sync"),
+        )
+        .unwrap();
+        assert_eq!(custom_image_body["model"], "custom-sync-v1");
+        assert_eq!(
+            images.upstream_url(&channel),
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        );
+        let mut image_body = json!({
+            "model": "wan2.6-t2i",
+            "prompt": "hello",
+            "n": 2,
+            "size": "1024x1024"
+        });
+        apply_endpoint_request_transform(&mut image_body, "images/generations", &channel).unwrap();
+        assert_eq!(image_body["parameters"]["n"], 2);
+        assert_eq!(image_body["parameters"]["size"], "1024*1024");
+        assert_eq!(
+            image_body["input"]["messages"][0]["content"][0]["text"],
+            "hello"
+        );
+
+        let mut edits = endpoint(false, None);
+        edits.route = ProviderRelayRoute::ImageEdits;
+        edits.upstream_path = "images/edits".to_string();
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &edits,
+            Some(&json!({
+                "model": "qwen-image-edit-plus",
+                "prompt": "edit",
+                "_multipart_image_present": true,
+                "_multipart_image_valid": true
+            }))
+        ));
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &edits,
+            Some(&json!({
+                "model": "wan2.6-image-edit",
+                "prompt": "edit",
+                "_multipart_image_present": true,
+                "_multipart_image_valid": true
+            }))
+        ));
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &edits,
+            Some(&json!({
+                "model": "qwen-image-edit-plus",
+                "prompt": "edit",
+                "_multipart_image_present": true,
+                "_multipart_image_valid": false
+            }))
+        ));
     }
 
     #[test]
@@ -17240,7 +17976,8 @@ mod tests {
             endpoint_type: AdminProbeEndpoint::JinaRerank,
             stream: false,
         };
-        let prepared = prepare_admin_channel_probe(&channel, &rerank_request, false, None).unwrap();
+        let prepared =
+            prepare_admin_channel_probe(&channel, &rerank_request, false, None, None).unwrap();
         assert_eq!(prepared.provider, RelayProviderKind::AliOpenAi);
         assert_eq!(prepared.body["input"]["query"], "hi");
         assert_eq!(prepared.body["parameters"]["return_documents"], true);
@@ -17255,10 +17992,17 @@ mod tests {
             endpoint_type: AdminProbeEndpoint::Anthropic,
             stream: true,
         };
-        assert!(prepare_admin_channel_probe(&channel, &messages_request, true, None).is_err());
-        let prepared =
-            prepare_admin_channel_probe(&channel, &messages_request, true, Some("custom-native"))
-                .unwrap();
+        assert!(
+            prepare_admin_channel_probe(&channel, &messages_request, true, None, None).is_err()
+        );
+        let prepared = prepare_admin_channel_probe(
+            &channel,
+            &messages_request,
+            true,
+            Some("custom-native"),
+            None,
+        )
+        .unwrap();
         assert_eq!(prepared.provider, RelayProviderKind::AliMessages);
         assert_eq!(prepared.body["model"], "custom-native");
         assert!(prepared.body.get("stream_options").is_none());
@@ -17298,13 +18042,16 @@ mod tests {
                 endpoint
             );
         }
-        assert!(resolve_admin_probe_endpoint(
-            CHANNEL_TYPE_ALI,
-            AdminProbeEndpoint::ImageGeneration,
-            "wan2.6-t2i",
-            false,
-        )
-        .is_err());
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                CHANNEL_TYPE_ALI,
+                AdminProbeEndpoint::ImageGeneration,
+                "wan2.6-t2i",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::ImageGeneration
+        );
     }
 
     #[test]
@@ -18011,6 +18758,7 @@ mod tests {
             false,
             Some(&body),
             None,
+            None,
         );
         assert!(pools[0].1.is_empty());
 
@@ -18023,6 +18771,7 @@ mod tests {
             &ai_gateway_chat_endpoint_for_tests(),
             false,
             Some(&body),
+            None,
             None,
         );
         assert!(pools[0].1.is_empty());
@@ -18140,7 +18889,7 @@ mod tests {
             ],
         )];
         retain_route_capable_channels(&mut pools, Some(endpoint.route));
-        retain_pre_reserve_capable_channels(&mut pools, &endpoint, true, None, None);
+        retain_pre_reserve_capable_channels(&mut pools, &endpoint, true, None, None, None);
 
         let remaining = pools[0]
             .1
@@ -19609,6 +20358,15 @@ mod tests {
             6.0
         );
         assert_eq!(
+            request_other_ratio_product(
+                "images/generations",
+                CHANNEL_TYPE_ALI,
+                "z-image-turbo",
+                Some(&json!({"n": 9, "parameters": {}}))
+            ),
+            1.0
+        );
+        assert_eq!(
             request_image_price_ratio(
                 "images/generations",
                 "dall-e-3",
@@ -19632,6 +20390,43 @@ mod tests {
             ),
             3.0
         );
+
+        let audit = image_request_audit(
+            "images/generations",
+            CHANNEL_TYPE_ALI,
+            &json!({"n": 9, "parameters": {"n": 3}, "response_format": "b64_json"}),
+        )
+        .unwrap();
+        assert_eq!(audit.requested_count, 3);
+        assert_eq!(audit.response_format, "b64_json");
+        assert_eq!(
+            image_request_audit(
+                "images/generations",
+                CHANNEL_TYPE_ALI,
+                &json!({"n": 9, "parameters": {}}),
+            )
+            .unwrap()
+            .requested_count,
+            1
+        );
+        assert!(ali_image_common_request_shape_is_valid(&json!({
+            "model": "qwen-image-plus",
+            "prompt": "x",
+            "n": 0
+        })));
+
+        let config = PricingConfig::new();
+        let snapshot =
+            FlatPricingSnapshot::from_config("z-image-turbo", "default", &config, 6.0, 500);
+        let usage = AliImageUsageAudit {
+            requested_count: 3,
+            converted_count: 2,
+            actual_count: 2,
+            count_source: AliImageCountSource::ConvertedResponse,
+        };
+        let terminal = flat_settlement_snapshot_with_actual_image_count(&snapshot, Some(&usage));
+        assert_eq!(snapshot.other_ratio_product, 6.0);
+        assert_eq!(terminal.other_ratio_product, 4.0);
     }
 
     #[test]

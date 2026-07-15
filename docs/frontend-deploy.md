@@ -176,7 +176,7 @@ false-positive call:
   rankings from the status capability clamp.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-214 frontend Worker-facing calls, 304 Worker routes, 0 missing calls, categories
+223 frontend Worker-facing calls, 326 Worker routes, 0 missing calls, categories
 `{}`, and SHA-256
 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. New
 unclassified calls or an unreviewed route-set change fail the check. Local
@@ -221,6 +221,10 @@ or performance runbook shows user-visible load cost.
 - Login, self and logout use the Go-compatible envelope.
 - OAuth buttons are advertised only when the corresponding runtime settings are
   complete.
+- Auth verification is generation-fenced. Every Axios request captures its
+  auth generation, HTTP 401 cleanup is conditional, and GET deduplication is
+  scoped to one generation; stale results cannot overwrite, clear, redirect,
+  or supply data to a newer authenticated session.
 
 ## Secret Hygiene
 
@@ -263,6 +267,9 @@ Before marking frontend hosting complete:
    A 2xx response without this evidence must not render as Success. Run Test All
    once and reconcile its synchronous succeeded/failed/skipped counts with the
    refreshed channel rows.
+9. Run a real browser gate (Chromium desktop and mobile) for login, logout,
+   expired session, relogin, role changes, CRUD journeys, console errors, and
+   failed network requests. Unit/build/route audits do not satisfy this gate.
 
 The HTTP-only portions of items 1-2 have staging evidence. Rendered browser
 behavior and items 3-8 remain open because the current staging database is

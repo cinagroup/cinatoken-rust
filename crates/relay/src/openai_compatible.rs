@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use rust_decimal::Decimal;
 use serde_json::Value;
 
 pub const CHANNEL_TYPE_OPENAI: i32 = 1;
@@ -57,6 +58,42 @@ pub const CHANNEL_TYPE_GEMINI: i32 = 24;
 pub const GEMINI_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_GEMINI];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum UsageSemanticSource {
+    #[default]
+    OpenAiDefault,
+    UpstreamExplicit,
+    NativeAnthropic,
+}
+
+impl UsageSemanticSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiDefault => "openai_default",
+            Self::UpstreamExplicit => "upstream_explicit",
+            Self::NativeAnthropic => "native_anthropic",
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CacheCreationSource {
+    #[default]
+    None,
+    UpstreamAggregate,
+    UpstreamSplit,
+}
+
+impl CacheCreationSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::UpstreamAggregate => "upstream_aggregate",
+            Self::UpstreamSplit => "upstream_split",
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct UsageSummary {
     pub prompt_tokens: i32,
     pub completion_tokens: i32,
@@ -70,6 +107,9 @@ pub struct UsageSummary {
     pub audio_input_tokens: i32,
     pub audio_output_tokens: i32,
     pub is_anthropic_usage_semantic: bool,
+    pub usage_semantic_source: UsageSemanticSource,
+    pub provider_cost_usd: Option<Decimal>,
+    pub cache_creation_source: CacheCreationSource,
     pub tool_usage: ToolUsageSummary,
 }
 
@@ -608,9 +648,7 @@ impl SseUsageAccumulator {
         match self.mode {
             SseUsageMode::OpenAi => {
                 if let Some(summary) = usage_summary_from_sse_data_lines(&self.data_lines, false) {
-                    let tool_usage = self.latest.tool_usage;
-                    self.latest = summary;
-                    self.latest.tool_usage = tool_usage;
+                    self.latest = merge_openai_stream_usage(self.latest, summary);
                 }
                 accumulate_openai_stream_text(
                     &self.data_lines,
@@ -699,12 +737,6 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
     let cache_creation_tokens = first_non_zero_i32(&[
         nested_i32_field(usage, &input_token_detail_keys, &["cached_creation_tokens"]),
         first_i32_field(usage, &["cache_creation_input_tokens"]),
-        nested_i32_field(usage, &["cache_creation"], &["ephemeral_5m_input_tokens"])
-            .saturating_add(nested_i32_field(
-                usage,
-                &["cache_creation"],
-                &["ephemeral_1h_input_tokens"],
-            )),
     ]);
     let claude_cache_creation_5m_tokens = first_i32_field(
         usage,
@@ -740,10 +772,21 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
         image_output_tokens = first_i32_field(usage, &["output_tokens"]);
     }
     let audio_output_tokens = nested_i32_field(usage, &output_token_detail_keys, &["audio_tokens"]);
-    let is_anthropic_usage_semantic = usage
-        .get("usage_semantic")
-        .and_then(Value::as_str)
-        .is_some_and(|value| value.eq_ignore_ascii_case("anthropic"));
+    let explicit_usage_semantic = usage.get("usage_semantic").and_then(Value::as_str);
+    let is_anthropic_usage_semantic =
+        explicit_usage_semantic.is_some_and(|value| value.eq_ignore_ascii_case("anthropic"));
+    let usage_semantic_source = if explicit_usage_semantic.is_some() {
+        UsageSemanticSource::UpstreamExplicit
+    } else {
+        UsageSemanticSource::OpenAiDefault
+    };
+    let cache_creation_source = if cache_creation_tokens > 0 {
+        CacheCreationSource::UpstreamAggregate
+    } else if claude_cache_creation_5m_tokens > 0 || claude_cache_creation_1h_tokens > 0 {
+        CacheCreationSource::UpstreamSplit
+    } else {
+        CacheCreationSource::None
+    };
 
     Some(UsageSummary {
         prompt_tokens,
@@ -758,6 +801,9 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
         audio_input_tokens,
         audio_output_tokens,
         is_anthropic_usage_semantic,
+        usage_semantic_source,
+        provider_cost_usd: decimal_json_number(usage.get("cost")),
+        cache_creation_source,
         tool_usage: ToolUsageSummary {
             claude_web_search_calls: nested_i32_field(
                 usage,
@@ -1063,6 +1109,25 @@ fn usage_summary_from_moonshot_sse_data_lines(data_lines: &[String]) -> Option<U
     usage_summary_from_moonshot_value(&value)
 }
 
+fn merge_openai_stream_usage(previous: UsageSummary, mut current: UsageSummary) -> UsageSummary {
+    current.provider_cost_usd = current.provider_cost_usd.or(previous.provider_cost_usd);
+    let previous_semantic_wins = semantic_source_rank(previous.usage_semantic_source)
+        > semantic_source_rank(current.usage_semantic_source);
+    let source = preferred_semantic_source(
+        current.usage_semantic_source,
+        previous.usage_semantic_source,
+    );
+    if previous_semantic_wins {
+        current.is_anthropic_usage_semantic = previous.is_anthropic_usage_semantic;
+    }
+    current.usage_semantic_source = source;
+    if current.cache_creation_source == CacheCreationSource::None {
+        current.cache_creation_source = previous.cache_creation_source;
+    }
+    current.tool_usage = previous.tool_usage;
+    current
+}
+
 fn merge_moonshot_stream_usage(previous: UsageSummary, current: UsageSummary) -> UsageSummary {
     UsageSummary {
         prompt_tokens: non_zero_or(current.prompt_tokens, previous.prompt_tokens),
@@ -1085,10 +1150,57 @@ fn merge_moonshot_stream_usage(previous: UsageSummary, current: UsageSummary) ->
         image_output_tokens: non_zero_or(current.image_output_tokens, previous.image_output_tokens),
         audio_input_tokens: non_zero_or(current.audio_input_tokens, previous.audio_input_tokens),
         audio_output_tokens: non_zero_or(current.audio_output_tokens, previous.audio_output_tokens),
-        is_anthropic_usage_semantic: current.is_anthropic_usage_semantic
-            || previous.is_anthropic_usage_semantic,
+        is_anthropic_usage_semantic: if semantic_source_rank(current.usage_semantic_source)
+            >= semantic_source_rank(previous.usage_semantic_source)
+        {
+            current.is_anthropic_usage_semantic
+        } else {
+            previous.is_anthropic_usage_semantic
+        },
+        usage_semantic_source: preferred_semantic_source(
+            current.usage_semantic_source,
+            previous.usage_semantic_source,
+        ),
+        provider_cost_usd: current.provider_cost_usd.or(previous.provider_cost_usd),
+        cache_creation_source: if current.cache_creation_source != CacheCreationSource::None {
+            current.cache_creation_source
+        } else {
+            previous.cache_creation_source
+        },
         tool_usage: merge_cumulative_tool_usage(previous.tool_usage, current.tool_usage),
     }
+}
+
+fn preferred_semantic_source(
+    current: UsageSemanticSource,
+    previous: UsageSemanticSource,
+) -> UsageSemanticSource {
+    if semantic_source_rank(current) >= semantic_source_rank(previous) {
+        current
+    } else {
+        previous
+    }
+}
+
+fn semantic_source_rank(source: UsageSemanticSource) -> u8 {
+    match source {
+        UsageSemanticSource::OpenAiDefault => 0,
+        UsageSemanticSource::UpstreamExplicit => 1,
+        UsageSemanticSource::NativeAnthropic => 2,
+    }
+}
+
+fn decimal_json_number(value: Option<&Value>) -> Option<Decimal> {
+    let Value::Number(number) = value? else {
+        return None;
+    };
+    let raw = number.to_string();
+    let value = if raw.contains(['e', 'E']) {
+        Decimal::from_scientific(&raw).ok()?
+    } else {
+        raw.parse().ok()?
+    };
+    (value >= Decimal::ZERO).then_some(value)
 }
 
 fn non_zero_or(current: i32, previous: i32) -> i32 {
@@ -1227,6 +1339,7 @@ fn usage_summary_from_gemini_sse_data_lines(data_lines: &[String]) -> Option<Usa
 fn mark_anthropic_usage_semantic(mut usage: UsageSummary) -> UsageSummary {
     if usage_has_tokens(&usage) {
         usage.is_anthropic_usage_semantic = true;
+        usage.usage_semantic_source = UsageSemanticSource::NativeAnthropic;
     }
     usage
 }
@@ -1261,6 +1374,12 @@ fn merge_anthropic_stream_usage(mut current: UsageSummary, event: UsageSummary) 
     }
     if event.audio_output_tokens > 0 {
         current.audio_output_tokens = event.audio_output_tokens;
+    }
+    current.provider_cost_usd = event.provider_cost_usd.or(current.provider_cost_usd);
+    current.usage_semantic_source =
+        preferred_semantic_source(event.usage_semantic_source, current.usage_semantic_source);
+    if event.cache_creation_source != CacheCreationSource::None {
+        current.cache_creation_source = event.cache_creation_source;
     }
 
     current.total_tokens = current
@@ -1968,12 +2087,62 @@ mod tests {
                 total_tokens: 1_600,
                 cached_tokens: 200,
                 cache_creation_tokens: 30,
+                cache_creation_source: CacheCreationSource::UpstreamAggregate,
                 image_input_tokens: 120,
                 image_output_tokens: 40,
                 audio_input_tokens: 80,
                 audio_output_tokens: 60,
                 ..UsageSummary::default()
             }
+        );
+    }
+
+    #[test]
+    fn usage_summary_preserves_numeric_provider_cost_and_rejects_strings() {
+        let usage = usage_summary_from_body(
+            r#"{"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.0016464,"usage_semantic":"anthropic"}}"#,
+        );
+        assert_eq!(usage.provider_cost_usd, Some(Decimal::new(16_464, 7)));
+        assert!(usage.is_anthropic_usage_semantic);
+        assert_eq!(
+            usage.usage_semantic_source,
+            UsageSemanticSource::UpstreamExplicit
+        );
+
+        let string_cost = usage_summary_from_body(
+            r#"{"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":"0.0016464"}}"#,
+        );
+        assert_eq!(string_cost.provider_cost_usd, None);
+    }
+
+    #[test]
+    fn openai_sse_retains_cost_and_explicit_semantic_from_earlier_usage_event() {
+        let body = concat!(
+            "data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":1,\"cost\":0.0016464,\"usage_semantic\":\"anthropic\"}}\n\n",
+            "data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let usage = usage_summary_from_sse_stream(body);
+        assert_eq!(usage.completion_tokens, 2);
+        assert_eq!(usage.provider_cost_usd, Some(Decimal::new(16_464, 7)));
+        assert!(usage.is_anthropic_usage_semantic);
+        assert_eq!(
+            usage.usage_semantic_source,
+            UsageSemanticSource::UpstreamExplicit
+        );
+    }
+
+    #[test]
+    fn openai_sse_latest_explicit_semantic_wins_at_equal_precedence() {
+        let body = concat!(
+            "data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":1,\"usage_semantic\":\"anthropic\"}}\n\n",
+            "data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"usage_semantic\":\"openai\"}}\n\n",
+        );
+        let usage = usage_summary_from_sse_stream(body);
+        assert!(!usage.is_anthropic_usage_semantic);
+        assert_eq!(
+            usage.usage_semantic_source,
+            UsageSemanticSource::UpstreamExplicit
         );
     }
 
@@ -2116,6 +2285,8 @@ mod tests {
                 claude_cache_creation_5m_tokens: 30,
                 claude_cache_creation_1h_tokens: 20,
                 is_anthropic_usage_semantic: true,
+                usage_semantic_source: UsageSemanticSource::UpstreamExplicit,
+                cache_creation_source: CacheCreationSource::UpstreamSplit,
                 ..UsageSummary::default()
             }
         );
@@ -2165,10 +2336,11 @@ mod tests {
                 completion_tokens: 25,
                 total_tokens: 525,
                 cached_tokens: 120,
-                cache_creation_tokens: 50,
                 claude_cache_creation_5m_tokens: 30,
                 claude_cache_creation_1h_tokens: 20,
                 is_anthropic_usage_semantic: true,
+                usage_semantic_source: UsageSemanticSource::NativeAnthropic,
+                cache_creation_source: CacheCreationSource::UpstreamSplit,
                 ..UsageSummary::default()
             }
         );
@@ -2195,6 +2367,7 @@ mod tests {
                 total_tokens: 73,
                 cached_tokens: 12,
                 is_anthropic_usage_semantic: true,
+                usage_semantic_source: UsageSemanticSource::NativeAnthropic,
                 ..UsageSummary::default()
             }
         );
@@ -2321,10 +2494,11 @@ mod tests {
                 completion_tokens: 15,
                 total_tokens: 40,
                 cached_tokens: 5,
-                cache_creation_tokens: 5,
                 claude_cache_creation_5m_tokens: 2,
                 claude_cache_creation_1h_tokens: 3,
                 is_anthropic_usage_semantic: true,
+                usage_semantic_source: UsageSemanticSource::NativeAnthropic,
+                cache_creation_source: CacheCreationSource::UpstreamSplit,
                 ..UsageSummary::default()
             }
         );
@@ -2529,6 +2703,7 @@ mod tests {
                 completion_tokens: 6,
                 total_tokens: 14,
                 is_anthropic_usage_semantic: true,
+                usage_semantic_source: UsageSemanticSource::NativeAnthropic,
                 ..UsageSummary::default()
             }
         );

@@ -8,6 +8,9 @@ const zeroReserveModel = "gpt-runtime-zero-reserve";
 const flatAuditLimitModel = "gpt-runtime-flat-audit-limit";
 const unsetModel = "gpt-runtime-unset-model";
 const fixedAudioModel = "tts-runtime-fixed-price";
+const pcmAudioModel = "gpt-runtime-tts-pcm";
+const oversizedAudioModel = "gpt-runtime-tts-oversized";
+const openRouterCostModel = "gpt-4.1";
 const cohereConsumedLimitModel = "rerank-runtime-cohere-consumed-limit";
 
 export class MockRealtimeProvider extends DurableObject {
@@ -37,6 +40,35 @@ export class MockRealtimeProvider extends DurableObject {
         return new Response("Relay stream already active", { status: 409 });
       }
       const requestBody = await request.json().catch(() => ({}));
+      if (requestBody.model === openRouterCostModel && requestBody.stream !== true) {
+        const previous = (await this.ctx.storage.get("state")) ?? { count: 0 };
+        await this.ctx.storage.put("state", {
+          count: previous.count + 1,
+          method: request.method,
+          path: url.pathname,
+          authorizationPresent: request.headers.has("authorization"),
+          openRouterCost: true,
+        });
+        return Response.json({
+          id: "chatcmpl-runtime-openrouter-cost",
+          object: "chat.completion",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "cost reconstructed" },
+              finish_reason: "stop",
+            },
+          ],
+          usage: {
+            prompt_tokens: 2604,
+            completion_tokens: 383,
+            total_tokens: 2987,
+            prompt_tokens_details: { cached_tokens: 2432 },
+            usage_semantic: "anthropic",
+            cost: 0.0016464,
+          },
+        });
+      }
       if (
         requestBody.model === nonStreamAuditLimitModel ||
         requestBody.model === zeroReserveModel ||
@@ -145,7 +177,19 @@ export class MockRealtimeProvider extends DurableObject {
         path: url.pathname,
         authorizationPresent: request.headers.has("authorization"),
         fixedAudio: requestBody.model === fixedAudioModel,
+        pcmAudio: requestBody.model === pcmAudioModel,
+        oversizedAudio: requestBody.model === oversizedAudioModel,
       });
+      if (requestBody.model === pcmAudioModel) {
+        return new Response(new Uint8Array(48), {
+          headers: { "content-type": "audio/pcm" },
+        });
+      }
+      if (requestBody.model === oversizedAudioModel) {
+        return new Response(new Uint8Array(1025), {
+          headers: { "content-type": "audio/mpeg" },
+        });
+      }
       return new Response("runtime-audio", {
         headers: { "content-type": "audio/mpeg" },
       });

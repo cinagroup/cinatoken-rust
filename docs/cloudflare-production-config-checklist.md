@@ -764,15 +764,18 @@ armed only when:
   environment until remote 0030, Queue/D1 settlement/refund replay, duplicate
   request identity, body-limit, and rollback evidence is reviewed.
 - Require a non-empty frozen snapshot and a repository-validated
-  `flat-v3:<sha256>` digest for every flat reservation. Mutable options are not
+  `flat-v4:<sha256>` digest for every flat reservation. Mutable options are not
   a terminal pricing source.
-- Before deploying a Worker that accepts only `flat-v3`, prove every `flat-v2`
-  reservation is terminal and every related Queue/DLQ replay is drained. Do
-  not strand an older snapshot behind the strict v3 repository boundary.
-- Snapshot schema v3 must contain finite non-negative web/file per-1K prices
-  and all nine GPT Image 1 per-call prices. Staging must mutate
-  `tool_price_setting.prices` during an in-flight request and prove the terminal
-  charge still uses the admitted snapshot.
+- Before deploying a Worker that accepts only `flat-v4`, prove every `flat-v3`
+  reservation is terminal and every related Queue/DLQ/parking replay is
+  drained. Do not strand an older snapshot behind the strict v4 repository
+  boundary.
+- Snapshot schema v4 must contain finite non-negative web/file per-1K prices,
+  all nine GPT Image 1 per-call prices, both audio ratios, the resolved
+  audio-detail-routing bit, the exact Go-default model-ratio match bit, and the
+  OpenRouter inference version. Staging must mutate `tool_price_setting.prices`
+  during an in-flight request and prove the terminal charge still uses the
+  admitted snapshot.
 - Responses SSE tool facts are capped at 256 IDs and duplicate IDs cannot
   double charge. Archive non-stream, stream, duplicate, malformed, oversized,
   Claude cumulative-count, legacy preview, and image quality/size evidence.
@@ -780,11 +783,12 @@ armed only when:
   before provider egress. Never log or persist the raw identity.
 - Staging proof cannot override source parity. Cutover additionally requires
   `relay_flat_billing_go_parity_ready=true`; this remains hard false until
-  OpenRouter cache-write inference, TTS/audio-detail settlement, provider
-  actual-image/count replacement, free-model and usage-source semantics, and
-  an immutable Go-generated flat manifest are implemented and verified.
-  Decimal rounding, request multipliers, tool surcharge, and site/user
-  unset-model admission are locally closed but are not sufficient for cutover.
+  provider actual-image/count replacement, image-edit/Ali response semantics,
+  free-model policy, remaining provider usage sources, and an immutable
+  Go-generated flat manifest are implemented and verified. TTS binary/audio
+  detail and OpenRouter cost inference are locally closed but still require
+  deployed direct/Gateway/WFP, Queue/D1, provider-invoice, abort, and rollback
+  evidence; local parity is not sufficient for cutover.
 - Ordinary upstream failure and zero-usage refund must leave request count and
   channel usage unchanged. Successful billable usage owns one terminal request
   mutation through the reservation ledger.

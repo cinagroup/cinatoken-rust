@@ -1182,4 +1182,28 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   cost/cache semantic provenance, then capture authenticated staging upload,
   Settings/Content readback, tenant smoke, Queue/D1/provider reconciliation,
   fault/load/alert, credential rotation, rollback, and signed G1-G8 evidence.
-  Production remains **NO-GO**.
+Production remains **NO-GO**.
+
+## 2026-07-15 Flat Audio, OpenRouter, And Auth Lifecycle Increment
+
+- Flat snapshots advance to schema v4 and `flat-v4:<sha256>`, freezing audio
+  ratios, Go's audio-detail-routing decision, and OpenRouter
+  default-ratio/inference eligibility. A deployment must first drain every v3
+  reservation and Queue/DLQ/parking replay.
+- Bounded speech response settlement now derives PCM/container duration or the
+  Go decimal-byte fallback, applies dedicated input/output audio ratios, and
+  refunds oversized consumed responses before client delivery.
+- OpenRouter type 20 preserves Decimal provider cost and explicit semantic
+  provenance. Anthropic flat usage uses `P-H-W`; eligible missing aggregate
+  cache-write is reconstructed from cost, while explicit aggregate, custom
+  ratio, fixed-price, and invalid candidates remain untouched and audited.
+- Tiered expressions retain provider-original usage and do not consume this
+  flat-only inference.
+- Frontend auth verification and each request's HTTP 401 cleanup now share a
+  generation fence, and GET deduplication is scoped to one generation. The
+  production build and focused lifecycle tests pass; Playwright desktop/mobile
+  evidence is still required.
+- Remaining next work: provider actual image/count and image-edit parity,
+  immutable Go flat fixtures, browser journey automation, then remote
+  Queue/D1/provider reconciliation after credential rotation. Production
+  remains **NO-GO**.

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 mod expression;
 mod flat;
+mod openrouter;
 mod pricing;
 mod tiered;
 
@@ -17,6 +18,10 @@ pub use flat::{
     compute_flat_quota_with_other_ratio_product, estimate_flat_pre_consumed_quota, FlatBillingMode,
     FlatPricingSnapshot, FlatQuotaResult, FlatUsage, ImageGenerationPriceClass,
     ToolSurchargePrices,
+};
+pub use openrouter::{
+    infer_openrouter_cache_write_tokens, OpenRouterCacheWriteInference, OpenRouterCacheWriteInput,
+    OpenRouterCacheWriteReason, OPENROUTER_CACHE_WRITE_INFERENCE_VERSION,
 };
 pub use pricing::PricingConfig;
 pub use tiered::{

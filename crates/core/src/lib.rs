@@ -16,7 +16,9 @@ pub mod response;
 pub mod status;
 pub mod tiktoken;
 
-pub use audio_duration::{audio_duration_seconds, wav_duration_seconds};
+pub use audio_duration::{
+    audio_duration_seconds, tts_audio_duration_seconds, wav_duration_seconds,
+};
 pub use bpe::bpe_token_count;
 pub use channel_select::{auto_group_retry_step, select_weighted, AutoGroupOutcome, Candidate};
 pub use completion_ratio::hardcoded_completion_ratio;

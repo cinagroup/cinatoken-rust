@@ -1021,6 +1021,31 @@ remote eviction/redeploy, actual-provider invoice correlation, alerts,
 retention, and a dual-control operator resolution workflow remain absent.
 Production remains **NO-GO**.
 
+## 2026-07-15 Source Boundary And Browser Evidence Audit
+
+The reference boundary was re-audited at cinaVibeSDK commit `918e974`. That
+tree contains no Rust crate or Cargo manifest. Its reusable evidence is the
+TypeScript Workers/Agents SDK topology: fail-closed dispatch ownership,
+deterministic stateful identity, persisted hibernation state, dispatch namespace
+identity, and centrally owned model/credential/fallback policy. The Rust
+scheduling planner, Rust Durable Object, Rust/Wasm tenant, outbound Worker, and
+request-bound HMAC authority are cinatoken-rust implementations.
+
+The current Rust gateway expresses owner precedence as a tested pure planner;
+RealtimeSession restores accepted client sockets from attachments/storage; and
+the WFP tenant/outbound split keeps provider bearer credentials outside tenant
+code. These local contracts are stronger than copying the reference Worker
+header behavior, but they are not deployed evidence. Active outbound WebSockets
+still prevent DO hibernation and must never be presented as resumable state.
+
+The reference AI Gateway `/compat` path is deprecated. cinatoken-rust continues
+to use current REST/provider boundaries and keeps provider selection plus
+billing reconciliation in the central relay. The highest remaining local G5
+gap is browser automation: route/build/readiness checks do not prove logout,
+expired session, relogin, roles, CRUD, Passkey, desktop/mobile console, or
+network behavior. The generation-fenced auth fix closes the known stale-session
+race, while Playwright evidence remains planned. Production remains **NO-GO**.
+
 ## 2026-07-14 Realtime Reconciliation Control-Plane Alignment
 
 The local operator workflow now applies the same ownership split without

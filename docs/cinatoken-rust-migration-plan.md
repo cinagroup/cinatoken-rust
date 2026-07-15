@@ -10652,6 +10652,56 @@ archive direct/Gateway/WFP JSON and SSE evidence, active-upstream eviction and
 billing idempotency pass, and rollback is rehearsed. Production remains
 **NO-GO**.
 
+### 22.208 2026-07-15 Flat Audio And OpenRouter Contract V4
+
+This increment closes two local P0 items left open by 22.206 and 22.207. The Go
+billing expression contract was reread before implementation; tiered expression
+inputs remain provider-original and do not consume OpenRouter cost inference.
+
+Implemented locally:
+
+- `FlatPricingSnapshot` schema v4 and `flat-v4:<sha256>` freeze audio input and
+  output ratios, Go's resolved audio-detail-routing decision, exact Go-default
+  model-ratio eligibility, and the OpenRouter cache-write inference version. A
+  v4-only rollout must drain all v3 reservations and Queue/DLQ/parking replays
+  first.
+- Successful OpenAI-compatible speech responses are read through a bounded
+  binary path. Exact lowercase PCM uses `bytes / 48000`; supported containers
+  use parsed duration; unsupported, malformed, and WebM responses use decimal
+  byte fallback. Oversized or consumed-invalid responses return 502 and refund
+  the frozen reservation before delivery.
+- Flat audio settlement applies the dedicated formula only when the normalized
+  model exists in Go's active audio or audio-completion ratio map, and then uses
+  both frozen ratios:
+  `audio_output * audio_ratio * audio_completion_ratio`. Audit records response
+  format, bytes, duration, derived tokens, ratios, and duration/byte provenance.
+- Numeric non-negative `usage.cost` is preserved as Decimal across JSON and SSE
+  parsing. Usage semantic, semantic source, and cache-creation source are
+  explicit; split 5m/1h cache creation is no longer silently rewritten into an
+  aggregate field.
+- Type 20 with Anthropic semantics projects prompt as `P-H-W`. When aggregate
+  cache-write is absent, flat per-token pricing may reconstruct it from frozen
+  default pricing and provider cost, with one half-away-from-zero round and the
+  bound `0 <= W <= P-H`. Fixed price, custom model ratio, unit creation ratio,
+  missing cost, and invalid/out-of-range candidates fail closed with an audit
+  reason. Explicit upstream aggregate usage always wins.
+- Frontend auth verification and request-time 401 cleanup are
+  generation-fenced, while GET deduplication is scoped to one generation.
+  Logout, relogin, and stale request races cannot reuse data from or erase a
+  newer verified session. Browser-level desktop/mobile auth and CRUD evidence
+  remains outstanding.
+- The cinaVibeSDK audit confirms it is a TypeScript Workers/Agents SDK topology
+  reference, not a Rust source repository. Rust gateway, hibernatable DO, WFP
+  tenant, and outbound authority remain native cinatoken-rust implementations.
+
+Local host tests and focused Workerd settlement tests cover duration, byte
+fallback, response bounds, refund, the Go `2604/2432/383 -> 798` regression,
+cost reconstruction, immutable v4 digest, and exact D1 accounting. This is E3
+evidence only. Provider actual-count/image-edit parity, the Go-generated flat
+manifest, remote Queue/D1/DLQ and invoice reconciliation, fault/load/alert
+evidence, credential rotation, rollback, and signed G1-G8 approval remain open.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
 ### 22.173 2026-07-13 Realtime Attachment Reconstruction And Lease Safety
 
 This increment closes the deterministic local lifecycle case requested in

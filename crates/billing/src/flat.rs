@@ -18,14 +18,17 @@
 //! `model_ratio * group_ratio`.
 //! ```text
 //! ratio              = model_ratio * group_ratio
-//! base_tokens        = prompt - cached - cache_creation - image   // OpenAI
+//! base_tokens        = prompt - cached - cache_creation - image - audio_input
 //! base_tokens        = prompt                                   // Anthropic
 //! cached_contrib     = cached * cache_ratio
 //! cache_create_contrib = cache_creation * cache_creation_ratio   // 5m/1h split
 //!                     // for Anthropic: remaining*generic + 5m_tokens*5m + 1h_tokens*1h
 //! image_contrib      = image * image_ratio
-//! completion_quota   = completion * completion_ratio
-//! prompt_quota       = base_tokens + cached_contrib + image_contrib + cache_create_contrib
+//! audio_input_contrib = audio_input * audio_ratio
+//! audio_output_contrib = audio_output * audio_ratio * audio_completion_ratio
+//! completion_quota   = (completion - audio_output) * completion_ratio
+//! prompt_quota       = base_tokens + cached_contrib + image_contrib
+//!                      + cache_create_contrib + audio_input_contrib
 //! quota              = round((prompt_quota + completion_quota) * ratio)
 //! ```
 //!
@@ -75,6 +78,9 @@ pub struct FlatUsage {
     pub image_tokens: i64,
     /// Audio input tokens used by Gemini's separate per-million USD price.
     pub audio_input_tokens: i64,
+    /// Audio output tokens removed from the ordinary completion base and
+    /// repriced with `audio_ratio * audio_completion_ratio`.
+    pub audio_output_tokens: i64,
     /// Responses and Claude built-in tool facts. These counts are bounded by
     /// the relay parser before entering billing.
     pub web_search_preview_calls: i64,
@@ -218,9 +224,12 @@ pub struct FlatPricingSnapshot {
     pub image_ratio: f64,
     pub audio_ratio: f64,
     pub audio_completion_ratio: f64,
+    pub uses_audio_detail_billing: bool,
     pub audio_input_price_per_million: f64,
     pub quota_per_unit: f64,
     pub model_price: Option<f64>,
+    pub model_ratio_matches_go_default: bool,
+    pub openrouter_cache_write_inference_version: u16,
     /// Fixed-price image size/quality adjustment. Go includes this factor in
     /// pre-consume while excluding `OtherRatios`.
     pub image_price_ratio: f64,
@@ -232,7 +241,7 @@ pub struct FlatPricingSnapshot {
 }
 
 impl FlatPricingSnapshot {
-    pub const SCHEMA_VERSION: u16 = 3;
+    pub const SCHEMA_VERSION: u16 = 4;
 
     pub fn from_config(
         model: &str,
@@ -264,9 +273,13 @@ impl FlatPricingSnapshot {
             image_ratio: config.image_ratio(model),
             audio_ratio: config.audio_ratio(model),
             audio_completion_ratio: config.audio_completion_ratio(model),
+            uses_audio_detail_billing: config.uses_audio_detail_billing(model),
             audio_input_price_per_million: config.audio_input_price_per_million(model),
             quota_per_unit: config.quota_per_unit,
             model_price,
+            model_ratio_matches_go_default: config.model_ratio_matches_go_default(model),
+            openrouter_cache_write_inference_version:
+                crate::OPENROUTER_CACHE_WRITE_INFERENCE_VERSION,
             image_price_ratio: 1.0,
             other_ratio_product,
             tool_prices: ToolSurchargePrices::from_config(model, config),
@@ -286,6 +299,11 @@ impl FlatPricingSnapshot {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != Self::SCHEMA_VERSION {
             return Err("flat pricing snapshot schema is unsupported");
+        }
+        if self.openrouter_cache_write_inference_version
+            != crate::OPENROUTER_CACHE_WRITE_INFERENCE_VERSION
+        {
+            return Err("flat pricing snapshot OpenRouter inference version is unsupported");
         }
         let values = [
             self.model_ratio,
@@ -347,6 +365,11 @@ pub struct FlatQuotaResult {
     pub image_price_ratio: f64,
     pub other_ratio_product: f64,
     pub audio_input_price_per_million: f64,
+    pub audio_ratio: f64,
+    pub audio_completion_ratio: f64,
+    pub uses_audio_detail_billing: bool,
+    pub audio_input_tokens: i64,
+    pub audio_output_tokens: i64,
     pub web_search_preview_calls: i64,
     pub web_search_calls: i64,
     pub file_search_calls: i64,
@@ -405,6 +428,11 @@ pub fn compute_flat_quota_from_snapshot(
         image_price_ratio: snapshot.image_price_ratio,
         other_ratio_product,
         audio_input_price_per_million: snapshot.audio_input_price_per_million,
+        audio_ratio: snapshot.audio_ratio,
+        audio_completion_ratio: snapshot.audio_completion_ratio,
+        uses_audio_detail_billing: snapshot.uses_audio_detail_billing,
+        audio_input_tokens: usage.audio_input_tokens.max(0),
+        audio_output_tokens: usage.audio_output_tokens.max(0),
         web_search_preview_calls: usage.web_search_preview_calls.max(0),
         web_search_calls: usage.web_search_calls.max(0),
         file_search_calls: usage.file_search_calls.max(0),
@@ -427,6 +455,8 @@ pub fn compute_flat_quota_from_snapshot(
         Some(d_cache_creation_ratio_5m),
         Some(d_cache_creation_ratio_1h),
         Some(d_image_ratio),
+        Some(d_audio_ratio),
+        Some(d_audio_completion_ratio),
         Some(d_quota_per_unit),
         Some(d_image_price_ratio),
         Some(d_other_ratio_product),
@@ -440,6 +470,8 @@ pub fn compute_flat_quota_from_snapshot(
         go_decimal_from_f64(cache_creation_ratio_5m),
         go_decimal_from_f64(cache_creation_ratio_1h),
         go_decimal_from_f64(image_ratio),
+        go_decimal_from_f64(snapshot.audio_ratio),
+        go_decimal_from_f64(snapshot.audio_completion_ratio),
         go_decimal_from_f64(snapshot.quota_per_unit),
         go_decimal_from_f64(snapshot.image_price_ratio),
         go_decimal_from_f64(other_ratio_product),
@@ -488,11 +520,14 @@ pub fn compute_flat_quota_from_snapshot(
     let cache_creation_1h = Decimal::from(usage.cache_creation_1h_tokens.max(0));
     let image = Decimal::from(usage.image_tokens.max(0));
     let audio_input = Decimal::from(usage.audio_input_tokens.max(0));
+    let audio_output = Decimal::from(usage.audio_output_tokens.max(0));
 
     let mut base_tokens = prompt;
     let mut cached_with_ratio = Decimal::ZERO;
     let mut cache_creation_with_ratio = Decimal::ZERO;
     let mut image_with_ratio = Decimal::ZERO;
+    let mut audio_input_with_ratio = Decimal::ZERO;
+    let mut audio_output_with_ratio = Decimal::ZERO;
 
     if !cached.is_zero() {
         if !usage.is_anthropic_usage_semantic {
@@ -553,6 +588,26 @@ pub fn compute_flat_quota_from_snapshot(
             return result(i64::MAX, tool_surcharge_audit);
         };
         audio_input_quota = value;
+    } else if !audio_input.is_zero() && snapshot.uses_audio_detail_billing {
+        base_tokens -= audio_input;
+        let Some(value) = audio_input.checked_mul(d_audio_ratio) else {
+            return result(i64::MAX, tool_surcharge_audit);
+        };
+        audio_input_with_ratio = value;
+    }
+
+    let completion_base = if snapshot.uses_audio_detail_billing {
+        completion - audio_output
+    } else {
+        completion
+    };
+    if !audio_output.is_zero() && snapshot.uses_audio_detail_billing {
+        let Some(value) =
+            checked_decimal_product(&[audio_output, d_audio_ratio, d_audio_completion_ratio])
+        else {
+            return result(i64::MAX, tool_surcharge_audit);
+        };
+        audio_output_with_ratio = value;
     }
 
     let Some(prompt_quota) = checked_decimal_sum(&[
@@ -560,10 +615,14 @@ pub fn compute_flat_quota_from_snapshot(
         cached_with_ratio,
         image_with_ratio,
         cache_creation_with_ratio,
+        audio_input_with_ratio,
     ]) else {
         return result(i64::MAX, tool_surcharge_audit);
     };
-    let Some(completion_quota) = completion.checked_mul(d_completion_ratio) else {
+    let Some(completion_quota) = completion_base
+        .checked_mul(d_completion_ratio)
+        .and_then(|value| value.checked_add(audio_output_with_ratio))
+    else {
         return result(i64::MAX, tool_surcharge_audit);
     };
     let Some(raw_quota) = prompt_quota
@@ -754,6 +813,55 @@ mod tests {
         let result = compute_flat_quota(&usage, "gpt-4o", "default", &config);
         assert_eq!(result.quota, 600);
         assert_eq!(result.mode, FlatBillingMode::PerToken);
+    }
+
+    #[test]
+    fn audio_details_replace_text_bases_and_use_both_frozen_audio_ratios() {
+        let mut config = config_with_model_ratio("gpt-audio", 2.0);
+        config
+            .completion_ratios
+            .insert("gpt-audio".to_string(), 4.0);
+        config.audio_ratios.insert("gpt-audio".to_string(), 3.0);
+        config
+            .audio_completion_ratios
+            .insert("gpt-audio".to_string(), 2.0);
+        let usage = FlatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            audio_input_tokens: 20,
+            audio_output_tokens: 10,
+            ..FlatUsage::default()
+        };
+
+        // (80 text-in + 20*3 audio-in + 40*4 text-out + 10*3*2 audio-out) * 2.
+        let result = compute_flat_quota(&usage, "gpt-audio", "default", &config);
+        assert_eq!(result.quota, 720);
+        assert_eq!(result.audio_ratio, 3.0);
+        assert_eq!(result.audio_completion_ratio, 2.0);
+        assert!(result.uses_audio_detail_billing);
+        assert_eq!(result.audio_input_tokens, 20);
+        assert_eq!(result.audio_output_tokens, 10);
+    }
+
+    #[test]
+    fn audio_details_keep_text_formula_without_an_audio_ratio_contract() {
+        let mut config = config_with_model_ratio("plain-audio-details", 1.0);
+        config
+            .completion_ratios
+            .insert("plain-audio-details".to_string(), 4.0);
+        let usage = FlatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            audio_input_tokens: 20,
+            audio_output_tokens: 10,
+            ..FlatUsage::default()
+        };
+
+        let result = compute_flat_quota(&usage, "plain-audio-details", "default", &config);
+        assert_eq!(result.quota, 300);
+        assert!(!result.uses_audio_detail_billing);
     }
 
     #[test]
@@ -1138,7 +1246,7 @@ mod tests {
         let json = serde_json::to_string(&snapshot).unwrap();
         let restored: FlatPricingSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, snapshot);
-        assert_eq!(restored.schema_version, 3);
+        assert_eq!(restored.schema_version, FlatPricingSnapshot::SCHEMA_VERSION);
         assert_eq!(restored.tool_prices.web_search_per_1k, 10.0);
         restored.validate().unwrap();
     }

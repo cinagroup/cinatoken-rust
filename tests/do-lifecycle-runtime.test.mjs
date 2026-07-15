@@ -41,6 +41,12 @@ const relayFlatAuditLimitModel = "gpt-runtime-flat-audit-limit";
 const relayFlatAuditLimitToken = "sk-runtime-flat-audit-limit";
 const relayFixedAudioModel = "tts-runtime-fixed-price";
 const relayFixedAudioToken = "sk-runtime-fixed-audio";
+const relayPcmAudioModel = "gpt-runtime-tts-pcm";
+const relayPcmAudioToken = "sk-runtime-pcm-audio";
+const relayOversizedAudioModel = "gpt-runtime-tts-oversized";
+const relayOversizedAudioToken = "sk-runtime-oversized-audio";
+const relayOpenRouterCostModel = "gpt-4.1";
+const relayOpenRouterCostToken = "sk-runtime-openrouter-cost";
 const relayUnsetModel = "gpt-runtime-unset-model";
 const relayUnsetToken = "sk-runtime-unset-model";
 const relayCohereConsumedLimitModel = "rerank-runtime-cohere-consumed-limit";
@@ -1829,7 +1835,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
       final_quota: 0,
       request_accounted: 0,
     });
-    expect(state.reservation.expr_hash).toMatch(/^flat-v3:[a-f0-9]{64}$/);
+    expect(state.reservation.expr_hash).toMatch(/^flat-v4:[a-f0-9]{64}$/);
     expect(state.reservation.snapshot_bytes).toBeGreaterThan(0);
     expect(state.log).toMatchObject({
       quota: 0,
@@ -2060,17 +2066,219 @@ describe("Rust Durable Object lifecycle contracts", () => {
       final_quota: state.log.quota,
       request_accounted: 1,
     });
-    expect(state.reservation.expr_hash).toMatch(/^flat-v3:[a-f0-9]{64}$/);
+    expect(state.reservation.expr_hash).toMatch(/^flat-v4:[a-f0-9]{64}$/);
     expect(state.reservation.snapshot_bytes).toBeGreaterThan(0);
     expect(state.log).toMatchObject({
       billingPending: false,
-      usageSource: "request_estimate",
+      usageSource: "tts_response_bytes",
       flatBillingMode: "fixed_price",
     });
     await expect(providerState()).resolves.toMatchObject({
       count: 1,
       path: "/v1/audio/speech",
       fixedAudio: true,
+    });
+  }, 30_000);
+
+  it("settles PCM speech from bounded response duration with frozen audio ratios", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayPcmAudioModel,
+      token: relayPcmAudioToken,
+      billingExpression: null,
+      pricingOptions: {
+        ModelRatio: { [relayPcmAudioModel]: 2 },
+        CompletionRatio: { [relayPcmAudioModel]: 4 },
+        AudioRatio: { [relayPcmAudioModel]: 3 },
+        AudioCompletionRatio: { [relayPcmAudioModel]: 4 },
+      },
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const response = await SELF.fetch(
+      "https://cinatoken.test/v1/audio/speech",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${relayPcmAudioToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: relayPcmAudioModel,
+          input: "",
+          voice: "alloy",
+          response_format: "pcm",
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    expect((await response.arrayBuffer()).byteLength).toBe(48);
+
+    const state = await waitForNonTieredRelayLog(relayPcmAudioModel);
+    expect(state.log.quota).toBe(410);
+    expect(state.user).toMatchObject({
+      quota: account.userQuota - 410,
+      used_quota: 410,
+      request_count: 1,
+    });
+    expect(state.token).toMatchObject({
+      remain_quota: account.tokenRemainQuota - 410,
+      used_quota: 410,
+    });
+    expect(state.channel.used_quota).toBe(410);
+    expect(state.reservation).toMatchObject({
+      billing_kind: "flat",
+      status: "settled",
+      final_quota: 410,
+      request_accounted: 1,
+    });
+    expect(state.reservation.expr_hash).toMatch(/^flat-v4:[a-f0-9]{64}$/);
+    expect(state.log).toMatchObject({
+      billingPending: false,
+      usageSource: "tts_response_duration",
+      flatBillingMode: "per_token",
+    });
+    await expect(providerState()).resolves.toMatchObject({
+      count: 1,
+      path: "/v1/audio/speech",
+      pcmAudio: true,
+    });
+  }, 30_000);
+
+  it("bounds oversized speech responses and refunds the reservation", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayOversizedAudioModel,
+      token: relayOversizedAudioToken,
+      billingExpression: null,
+      pricingOptions: {
+        ModelRatio: { [relayOversizedAudioModel]: 2 },
+      },
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const response = await SELF.fetch(
+      "https://cinatoken.test/v1/audio/speech",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${relayOversizedAudioToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: relayOversizedAudioModel,
+          input: "oversized runtime audio",
+          voice: "alloy",
+          response_format: "mp3",
+        }),
+      },
+    );
+    expect(response.status).toBe(502);
+
+    const refunded = await waitForRelayTerminalByModel(
+      relayOversizedAudioModel,
+      "refunded",
+    );
+    expect(refunded.reservation.pre_consumed_quota).toBeGreaterThan(0);
+    expect(refunded.reservation).toMatchObject({
+      status: "refunded",
+      final_quota: 0,
+      finalization_reason: "upstream_error",
+      request_accounted: 0,
+    });
+    expect(refunded.user).toMatchObject({
+      quota: account.userQuota,
+      used_quota: 0,
+      request_count: 0,
+    });
+    expect(refunded.token).toMatchObject({
+      remain_quota: account.tokenRemainQuota,
+      used_quota: 0,
+    });
+    expect(refunded.channel.used_quota).toBe(0);
+    await expect(providerState()).resolves.toMatchObject({
+      count: 1,
+      path: "/v1/audio/speech",
+      oversizedAudio: true,
+    });
+  }, 30_000);
+
+  it("reconstructs OpenRouter Anthropic cache write from provider cost", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayOpenRouterCostModel,
+      token: relayOpenRouterCostToken,
+      channelType: 20,
+      billingExpression: null,
+      pricingOptions: {
+        CompletionRatio: { [relayOpenRouterCostModel]: 1 },
+        CacheRatio: { [relayOpenRouterCostModel]: 0.1 },
+        CreateCacheRatio: { [relayOpenRouterCostModel]: 1.25 },
+      },
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const response = await SELF.fetch(
+      "https://cinatoken.test/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${relayOpenRouterCostToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: relayOpenRouterCostModel,
+          messages: [{ role: "user", content: "runtime OpenRouter cost" }],
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).choices[0].message.content).toBe(
+      "cost reconstructed",
+    );
+
+    const state = await waitForNonTieredRelayLog(relayOpenRouterCostModel);
+    expect(state.log.quota).toBe(823);
+    expect(state.user).toMatchObject({
+      quota: account.userQuota - 823,
+      used_quota: 823,
+      request_count: 1,
+    });
+    expect(state.token).toMatchObject({
+      remain_quota: account.tokenRemainQuota - 823,
+      used_quota: 823,
+    });
+    expect(state.channel.used_quota).toBe(823);
+    expect(state.reservation).toMatchObject({
+      billing_kind: "flat",
+      status: "settled",
+      final_quota: 823,
+      request_accounted: 1,
+    });
+    expect(state.reservation.expr_hash).toMatch(/^flat-v4:[a-f0-9]{64}$/);
+    expect(state.log).toMatchObject({
+      usageSource: "upstream",
+      usageSemantic: "anthropic",
+      usageSemanticSource: "upstream_explicit",
+      providerCostUsd: "0.0016464",
+      cacheCreationSource: "openrouter_cost_inference",
+      openRouterCacheWriteApplied: true,
+      openRouterCacheWriteTokens: 100,
+      flatBillingMode: "per_token",
+    });
+    await expect(providerState()).resolves.toMatchObject({
+      count: 1,
+      path: "/v1/chat/completions",
+      openRouterCost: true,
     });
   }, 30_000);
 
@@ -3502,6 +3710,14 @@ async function waitForNonTieredRelayLog(modelName) {
         billingPending: other?.billing_pending,
         billingLedgerOutcome: other?.billing_ledger_outcome,
         usageSource: other?.usage_source,
+        usageSemantic: other?.usage_semantic,
+        usageSemanticSource: other?.usage_semantic_source,
+        providerCostUsd: other?.provider_cost_usd,
+        cacheCreationSource: other?.cache_creation_source,
+        openRouterCacheWriteApplied:
+          other?.openrouter_cache_write_inference?.applied,
+        openRouterCacheWriteTokens:
+          other?.openrouter_cache_write_inference?.candidate_tokens,
         flatBillingMode: other?.flat_billing?.mode,
         reservationClass:
           other?.non_stream_billing_observation?.reservation_class,

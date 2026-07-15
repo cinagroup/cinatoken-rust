@@ -30,6 +30,27 @@ pub fn audio_duration_seconds(
         .or_else(|| duration_from_magic(data))
 }
 
+/// Go-compatible duration lookup for an OpenAI-compatible TTS response. The
+/// request's `response_format` is authoritative and case-sensitive; unlike
+/// uploaded-audio inspection, this path never guesses from content type or
+/// magic bytes. Go's WebM parser currently returns unsupported, so WebM must
+/// fall back to byte-based token estimation even when its metadata is valid.
+pub fn tts_audio_duration_seconds(data: &[u8], response_format: &str) -> Option<f64> {
+    let format = match response_format {
+        "pcm" => return Some(data.len() as f64 / 48_000.0),
+        "wav" => AudioFormat::Wav,
+        "mp3" => AudioFormat::Mp3,
+        "flac" => AudioFormat::Flac,
+        "m4a" | "mp4" => AudioFormat::Mp4,
+        "ogg" | "oga" => AudioFormat::Ogg,
+        "opus" => AudioFormat::Opus,
+        "aiff" | "aif" | "aifc" => AudioFormat::Aiff,
+        "aac" => AudioFormat::Aac,
+        "webm" | _ => return None,
+    };
+    duration_for_format(data, format)
+}
+
 /// Duration in seconds of a PCM WAV from its header: `frames = pcmSize /
 /// (channels * bits/8)` with integer floor, then `frames / sampleRate`. This
 /// matches Go `getWAVDuration`, including the declared data-size path and the
@@ -1038,5 +1059,27 @@ mod tests {
         let duration =
             audio_duration_seconds(&data, Some("voice.webm"), Some("audio/webm")).unwrap();
         assert!((duration - 0.042).abs() < 0.000001);
+    }
+
+    #[test]
+    fn tts_duration_uses_exact_pcm_contract_and_no_magic_fallback() {
+        assert_eq!(tts_audio_duration_seconds(&[], "pcm"), Some(0.0));
+        assert_eq!(
+            tts_audio_duration_seconds(&vec![0; 48_000], "pcm"),
+            Some(1.0)
+        );
+
+        let body = vec![0; 48_000];
+        let wav = wav(1, 24_000, 16, 48_000, &body);
+        assert_eq!(tts_audio_duration_seconds(&wav, "wav"), Some(1.0));
+        assert_eq!(tts_audio_duration_seconds(&wav, "WAV"), None);
+        assert_eq!(tts_audio_duration_seconds(&wav, ""), None);
+    }
+
+    #[test]
+    fn tts_webm_preserves_go_byte_fallback_behavior() {
+        let data = webm(1_234.0, None, false);
+        assert!(webm_duration_seconds(&data).is_some());
+        assert_eq!(tts_audio_duration_seconds(&data, "webm"), None);
     }
 }

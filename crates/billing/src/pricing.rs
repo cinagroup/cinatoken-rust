@@ -256,6 +256,14 @@ impl PricingConfig {
         ratio.unwrap_or(37.5)
     }
 
+    /// Whether the active ratio exactly matches Go's immutable default map.
+    /// OpenRouter cost reconstruction is disabled for missing defaults and
+    /// operator overrides because provider cost cannot safely explain those
+    /// local pricing contracts.
+    pub fn model_ratio_matches_go_default(&self, model: &str) -> bool {
+        default_model_ratio(model).is_some_and(|default| self.model_ratio(model) == default)
+    }
+
     /// Completion-token ratio relative to prompt. Ports Go
     /// `GetCompletionRatio` precedence exactly (after
     /// `format_matching_model_name`):
@@ -392,6 +400,18 @@ impl PricingConfig {
                     .flatten()
             })
             .unwrap_or(1.0)
+    }
+
+    /// Whether Go would route usage with audio token details through
+    /// `PostAudioConsumeQuota`. A model enters that path only when either
+    /// runtime audio-ratio map contains the normalized model name.
+    pub fn uses_audio_detail_billing(&self, model: &str) -> bool {
+        let name = format_matching_model_name(model);
+        self.audio_ratios.contains_key(&name)
+            || self.audio_completion_ratios.contains_key(&name)
+            || (!self.audio_ratios_replaced && default_audio_ratio(&name).is_some())
+            || (!self.audio_completion_ratios_replaced
+                && default_audio_completion_ratio(&name).is_some())
     }
 
     /// Gemini input-audio price in USD per million tokens. This mirrors the
@@ -862,6 +882,12 @@ mod tests {
         assert_eq!(config.image_ratio("gpt-image-1"), 1.0);
         assert_eq!(config.audio_ratio("gpt-4o-audio-preview"), 1.0);
         assert_eq!(config.audio_completion_ratio("gpt-4o-audio-preview"), 1.0);
+        assert!(!config.uses_audio_detail_billing("gpt-4o-audio-preview"));
+
+        let defaults = PricingConfig::new();
+        assert!(defaults.uses_audio_detail_billing("gpt-4o-audio-preview"));
+        assert!(defaults.uses_audio_detail_billing("tts-1"));
+        assert!(!defaults.uses_audio_detail_billing("plain-model"));
     }
 
     #[test]

@@ -264,6 +264,7 @@ dependencies = [
  "cinatoken-core",
  "cinatoken-storage",
  "ipnet",
+ "rust_decimal",
  "serde",
  "serde_json",
 ]

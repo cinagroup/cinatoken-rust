@@ -637,8 +637,8 @@ reconcile, replay staging proof, D1 migration, and recovery admission all agree.
 | Option replacement | Present option `{}` replaces the seeded runtime map; missing rows use defaults; explicit zero remains configured | Mutate options through the production admin path and prove cache invalidation, rollback, and cross-isolate consistency |
 | Terminal arithmetic | Exact decimal intermediates and half-away-from-zero final rounding pass Rust/Go boundary fixtures | Generate and sign an immutable Go flat manifest over production-shaped provider formulas |
 | Frozen contract | Migrations 0029-0030 require a snapshot/digest and reject later identity, snapshot, strategy, pre-consume, or quota-contract mutation | Apply 0030 remotely with write gates false, run negative D1 mutation probes, backup/rollback, and ledger reconciliation |
-| Runtime | Release main/tenant/outbound Rust/Wasm suite passes Workerd 38/38 | Local Workerd is E3 only; authenticate staging resources and complete Queue/DLQ, abort/idle, invoice, tracing, load, and rollback drills |
-| Cutover | `relay_flat_billing_go_parity_ready` is hard false | Remains NO-GO until OpenRouter/audio/provider actual-count and usage-source parity, the Go manifest, remote Queue/D1/provider evidence, G1-G8, and credential rotation are complete |
+| Runtime | Release main/tenant/outbound Rust/Wasm suite includes bounded TTS settlement/refund and OpenRouter cost reconstruction under Workerd | Local Workerd is E3 only; authenticate staging resources and complete Queue/DLQ, abort/idle, invoice, tracing, load, and rollback drills |
+| Cutover | `relay_flat_billing_go_parity_ready` is hard false | TTS/OpenRouter are locally closed; remains NO-GO until provider actual-count and remaining usage-source parity, the Go manifest, remote Queue/D1/provider evidence, G1-G8, and credential rotation are complete |
 
 ## HTTP Pre-Bind Owner Generation Gate (2026-07-14)
 

@@ -4794,3 +4794,70 @@ readback was executed. TTS binary duration and audio-detail settlement,
 OpenRouter cost-based cache-write provenance, deployed Queue/D1/DLQ and provider
 reconciliation, fault/load/alert evidence, credential rotation, rollback, and
 G1-G8 approval remain blocking. Production remains **NO-GO**.
+
+## Flat Audio And OpenRouter V4 Verification (2026-07-15)
+
+```powershell
+cargo test -p cinatoken-core audio_duration
+# PASS; 16/16 selected duration tests
+
+cargo test -p cinatoken-billing
+# PASS; 101 unit tests plus 10 Go-expression parity fixtures
+
+cargo test -p cinatoken-relay --lib
+# PASS; 83/83
+
+cargo test -p cinatoken-worker --lib
+# PASS; 679/679
+
+bunx vitest run --config vitest.do.config.mjs `
+  -t "audio|PCM speech|oversized speech|OpenRouter Anthropic cache write"
+# PASS; 4 selected, 37 skipped
+
+cd apps/web/source/default
+bun test src/stores/auth-store.test.mjs
+# PASS; 6/6, 18 assertions
+
+bun run build:check
+# PASS; TypeScript and production Rsbuild
+
+cd ../../../..
+bun run check
+# PASS; full release gate, Workerd 41/41, frontend readiness 52/52,
+# route parity 223/326 with zero missing, D1 verification, workspace tests,
+# and main/tenant/outbound wasm32 checks
+
+bun run check:web:quality
+# BASELINE FAIL; ESLint passes, but repository-wide Prettier still reports
+# three pre-existing system-settings files outside this increment. The four
+# changed auth files pass targeted ESLint and Prettier checks.
+```
+
+Verified behavior:
+
+- A bounded 48-byte PCM response derives 17 output-audio tokens and settles
+  once with frozen `AudioRatio` and `AudioCompletionRatio`. Unsupported MP3
+  bytes use the Go decimal-byte fallback. A response beyond the configured
+  bound returns 502 and refunds user, token, channel, and request accounting.
+- Flat v4 snapshots are domain-separated as `flat-v4:<sha256>` and freeze the
+  new audio and OpenRouter eligibility facts, including whether Go would route
+  that model through audio-detail billing. Audio details on an unconfigured
+  model retain the ordinary text completion formula.
+- OpenRouter numeric cost and explicit semantic provenance survive JSON and
+  SSE parsing. Type 20 Anthropic projection reproduces the Go
+  `2604/2432/383 -> 798` vector; an eligible cost reconstructs 100 cache-write
+  tokens, settles 823 quota in Workerd, and records raw/effective prompt,
+  candidate, source, version, and reason.
+- Explicit aggregate cache-write, fixed price, custom model ratio, missing
+  cost, unit creation ratio, and invalid/out-of-range candidates disable
+  inference. Tiered expressions retain original provider usage.
+- Frontend requests capture their auth generation, GET deduplication is scoped
+  to that generation, and verification generations prevent logout/401/relogin
+  and stale request races from reusing data, clearing, or redirecting a newer
+  session.
+
+This is local E3 evidence. Full deployed browser journeys, provider
+actual-count/image-edit parity, the immutable Go flat manifest, remote
+Queue/D1/DLQ and provider invoice reconciliation, fault/load/alert evidence,
+credential rotation, rollback, and G1-G8 approval remain blocking. Production
+remains **NO-GO**.

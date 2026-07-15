@@ -19,13 +19,14 @@ For commercial licensing, please contact support@cinagroup.com
 import axios, { type AxiosRequestConfig } from 'axios'
 import { t } from 'i18next'
 import { toast } from 'sonner'
-import { useAuthStore } from '@/stores/auth-store'
+import { clearAuthSession, useAuthStore } from '@/stores/auth-store'
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
     skipBusinessError?: boolean
     skipErrorHandler?: boolean
     disableDuplicate?: boolean
+    authGeneration?: number
   }
 }
 
@@ -57,17 +58,22 @@ const inFlightGet = new Map<string, Promise<unknown>>()
 const originalGet = api.get.bind(api)
 
 api.get = ((url: string, config: ApiRequestConfig = {}) => {
+  const authGeneration =
+    config.authGeneration ?? useAuthStore.getState().auth.verificationGeneration
+  const requestConfig = { ...config, authGeneration }
   const disableDuplicate = config.disableDuplicate
-  if (disableDuplicate) return originalGet(url, config)
+  if (disableDuplicate) return originalGet(url, requestConfig)
 
   const params = config.params ? JSON.stringify(config.params) : '{}'
-  const key = `${url}?${params}`
+  const key = `${authGeneration}:${url}?${params}`
 
   // Return existing in-flight request if available
   if (inFlightGet.has(key)) return inFlightGet.get(key)!
 
   // Create new request and clean up after completion
-  const req = originalGet(url, config).finally(() => inFlightGet.delete(key))
+  const req = originalGet(url, requestConfig).finally(() =>
+    inFlightGet.delete(key)
+  )
   inFlightGet.set(key, req)
   return req
 }) as typeof api.get
@@ -102,7 +108,10 @@ api.interceptors.response.use(
 
     if (status === 401) {
       try {
-        useAuthStore.getState().auth.reset()
+        const authGeneration = error?.config?.authGeneration
+        clearAuthSession(
+          typeof authGeneration === 'number' ? authGeneration : undefined
+        )
       } catch {
         /* empty */
       }
@@ -160,6 +169,9 @@ export function getCommonHeaders(): Record<string, string> {
 
 // Attach user ID header for all requests
 api.interceptors.request.use((config) => {
+  if (config.authGeneration === undefined) {
+    config.authGeneration = useAuthStore.getState().auth.verificationGeneration
+  }
   const uid = getUserId()
   if (uid) {
     // Custom header for user identification
@@ -177,10 +189,11 @@ api.interceptors.request.use((config) => {
 // ----------------------------------------------------------------------------
 
 // Get current user info
-export async function getSelf() {
+export async function getSelf(authGeneration?: number) {
   const res = await api.get('/api/user/self', {
     // Avoid global 401 toast during guards/preloads
     skipErrorHandler: true,
+    authGeneration,
   })
   return res.data
 }

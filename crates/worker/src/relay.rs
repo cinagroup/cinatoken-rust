@@ -1,19 +1,19 @@
 use cinatoken_billing::{
     build_tiered_token_params, compute_flat_quota_from_snapshot, compute_tiered_quota_with_request,
     detect_billing_expr_variables, estimate_flat_pre_consumed_quota,
-    estimate_tiered_billing_snapshot_with_request, rebase_tiered_billing_snapshot_group_ratio,
-    settle, split_billing_expr_request_rule, BillingExprVariables, FlatBillingMode,
-    FlatPricingSnapshot, FlatQuotaResult, FlatUsage, ImageGenerationPriceClass, PricingConfig,
-    Quota, RequestInput, TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, TokenParams,
-    UsageSemantic,
+    estimate_tiered_billing_snapshot_with_request, infer_openrouter_cache_write_tokens,
+    rebase_tiered_billing_snapshot_group_ratio, settle, split_billing_expr_request_rule,
+    BillingExprVariables, FlatBillingMode, FlatPricingSnapshot, FlatQuotaResult, FlatUsage,
+    ImageGenerationPriceClass, OpenRouterCacheWriteInput, PricingConfig, Quota, RequestInput,
+    TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::relay::ErrorItem;
 use cinatoken_core::{
     audio_duration_seconds, audio_transcription_tokens, auto_group_retry_step,
     format_matching_model_name, image_dimensions, image_tokens, image_tokens_needs_dimensions,
-    is_openai_text_model, openai_chat_format_overhead, select_weighted, ApiError, ApiResult,
-    Candidate, ErrorBody, MediaTokenFlags,
+    is_openai_text_model, openai_chat_format_overhead, select_weighted, tts_audio_duration_seconds,
+    ApiError, ApiResult, Candidate, ErrorBody, MediaTokenFlags,
 };
 use cinatoken_providers::{
     ai_gateway::{
@@ -56,9 +56,9 @@ use cinatoken_relay::{
     ImageGenerationQuality, ImageGenerationSize, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
     ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ALI, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_COHERE,
     CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT,
-    CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUBMODEL,
-    CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VOLCENGINE, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4,
-    RELAY_CACHE_SCHEMA_VERSION,
+    CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PERPLEXITY,
+    CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VOLCENGINE,
+    CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4, RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -170,6 +170,7 @@ const EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 const IMAGE_JSON_RESPONSE_LIMIT_BYTES: usize = 24 * 1024 * 1024;
 const RERANK_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const GEMINI_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+const AUDIO_SPEECH_RESPONSE_LIMIT_BYTES: usize = 25 * 1024 * 1024;
 const ADMIN_CHANNEL_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const ADMIN_CHANNEL_PROBE_SSE_LIMIT_BYTES: usize = 512 * 1024;
 const CHANNEL_TYPE_MOKAAI: i32 = 44;
@@ -436,6 +437,7 @@ impl RelayEndpoint {
                 "embeddings" => EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES,
                 "images/generations" => IMAGE_JSON_RESPONSE_LIMIT_BYTES,
                 "rerank" => RERANK_JSON_RESPONSE_LIMIT_BYTES,
+                "audio/speech" => AUDIO_SPEECH_RESPONSE_LIMIT_BYTES,
                 _ => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
             },
             RelayProviderKind::AliMessages
@@ -3626,6 +3628,7 @@ async fn relay_endpoint_with_auth(
         missing_usage_estimate_enabled: relay_billing_missing_usage_estimate_enabled(&env),
         usage_locally_estimated: false,
         non_stream_usage_parse_failed: false,
+        tts_response_usage: None,
         stream_lease_heartbeat: None,
         affinity: affinity_audit,
         model_route: model_route_audit,
@@ -7005,6 +7008,61 @@ async fn read_response_text_limited(
     }
 }
 
+async fn read_response_bytes_limited(
+    response: &mut Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, RelayBufferedTextError> {
+    if let Some(content_length) = response_content_length(response)? {
+        if content_length > max_bytes {
+            return Err(RelayBufferedTextError::TooLarge {
+                actual_bytes: Some(content_length),
+                max_bytes,
+                body_consumed: false,
+            });
+        }
+    }
+
+    match response.body() {
+        ResponseBody::Empty => Ok(Vec::new()),
+        ResponseBody::Body(bytes) => {
+            if bytes.len() > max_bytes {
+                Err(RelayBufferedTextError::TooLarge {
+                    actual_bytes: Some(bytes.len()),
+                    max_bytes,
+                    body_consumed: false,
+                })
+            } else {
+                Ok(bytes.to_vec())
+            }
+        }
+        ResponseBody::Stream(_) => {
+            let mut stream = response
+                .stream()
+                .map_err(|err| RelayBufferedTextError::Read(err.to_string()))?;
+            let mut bytes = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|err| RelayBufferedTextError::Read(err.to_string()))?;
+                let next_len = bytes.len().checked_add(chunk.len()).ok_or(
+                    RelayBufferedTextError::TooLarge {
+                        actual_bytes: None,
+                        max_bytes,
+                        body_consumed: true,
+                    },
+                )?;
+                if next_len > max_bytes {
+                    return Err(RelayBufferedTextError::TooLarge {
+                        actual_bytes: Some(next_len),
+                        max_bytes,
+                        body_consumed: true,
+                    });
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(bytes)
+        }
+    }
+}
+
 async fn read_response_stream_text_limited(
     response: &mut Response,
     max_bytes: usize,
@@ -8230,6 +8288,191 @@ fn finalize_relay_response(upstream: Response, content_type: &str) -> worker::Re
     Ok(response)
 }
 
+fn finalize_buffered_relay_bytes(
+    upstream: &Response,
+    bytes: Vec<u8>,
+    status: u16,
+    content_type: &str,
+) -> worker::Result<Response> {
+    let mut headers = Headers::new();
+    for (name, value) in upstream.headers().entries() {
+        let _ = headers.set(&name, &value);
+    }
+    let mut response = Response::from_bytes(bytes)?
+        .with_status(status)
+        .with_headers(headers);
+    response.headers_mut().set("content-type", content_type)?;
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+fn tts_response_usage(
+    bytes: &[u8],
+    response_format: &str,
+    estimated_prompt_tokens: i64,
+) -> (UsageSummary, TtsResponseUsageAudit) {
+    let duration_seconds = tts_audio_duration_seconds(bytes, response_format);
+    let (output_audio_tokens, source) = match duration_seconds {
+        Some(duration) => {
+            let tokens = (duration.ceil() / 60.0 * 1_000.0).round();
+            (bounded_nonnegative_i32(tokens), "tts_response_duration")
+        }
+        None => (
+            bytes.len().div_ceil(1_000).min(i32::MAX as usize) as i32,
+            "tts_response_bytes",
+        ),
+    };
+    let prompt_tokens = estimated_prompt_tokens.clamp(0, i64::from(i32::MAX)) as i32;
+    let total_tokens = prompt_tokens.saturating_add(output_audio_tokens);
+    let audit_format = response_format
+        .chars()
+        .filter(|value| !value.is_control())
+        .take(32)
+        .collect();
+    (
+        UsageSummary {
+            prompt_tokens,
+            completion_tokens: output_audio_tokens,
+            total_tokens,
+            audio_output_tokens: output_audio_tokens,
+            ..UsageSummary::default()
+        },
+        TtsResponseUsageAudit {
+            response_format: audit_format,
+            response_bytes: bytes.len(),
+            duration_seconds,
+            output_audio_tokens,
+            source,
+        },
+    )
+}
+
+fn bounded_nonnegative_i32(value: f64) -> i32 {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else if value >= f64::from(i32::MAX) {
+        i32::MAX
+    } else {
+        value as i32
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_audio_speech_response(
+    mut upstream: Response,
+    env: &Env,
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+    channel: &RelayChannel,
+    model: &str,
+    group: &str,
+    endpoint_path: &str,
+    audit: &RelayAuditContext,
+    max_response_bytes: usize,
+) -> worker::Result<Response> {
+    let status = upstream.status_code();
+    let content_type = upstream
+        .headers()
+        .get("content-type")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
+    let bytes = match read_response_bytes_limited(&mut upstream, max_response_bytes).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let mut failure_audit = audit.clone();
+            failure_audit.non_stream_usage_parse_failed = true;
+            if let Err(audit_err) = record_relay_audit(
+                env,
+                db,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                502,
+                &UsageSummary::default(),
+                &failure_audit,
+                upstream_request_id.as_deref(),
+                false,
+            )
+            .await
+            {
+                worker::console_error!("failed to finalize unreadable TTS response: {}", audit_err);
+            }
+            return openai_error_response(
+                format!(
+                    "failed to inspect TTS response for billing: {}",
+                    err.message("TTS response body")
+                ),
+                502,
+            );
+        }
+    };
+
+    if status != 200 {
+        let audit_status = if status >= 400 { status } else { 502 };
+        if let Err(err) = record_relay_audit(
+            env,
+            db,
+            auth,
+            channel,
+            model,
+            group,
+            endpoint_path,
+            audit_status,
+            &UsageSummary::default(),
+            audit,
+            upstream_request_id.as_deref(),
+            false,
+        )
+        .await
+        {
+            worker::console_error!("failed to record non-200 TTS audit: {}", err);
+        }
+        if status < 400 {
+            return openai_error_response(
+                format!("TTS upstream returned unsupported success status {status}"),
+                502,
+            );
+        }
+        return finalize_buffered_relay_bytes(&upstream, bytes, status, &content_type);
+    }
+
+    let response_format = audit
+        .billing_request_input
+        .body
+        .as_ref()
+        .and_then(|body| body.get("response_format"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let (usage, tts_audit) =
+        tts_response_usage(&bytes, response_format, audit.estimated_prompt_tokens);
+    let mut response_audit = audit.clone();
+    response_audit.tts_response_usage = Some(tts_audit);
+    if let Err(err) = record_relay_audit(
+        env,
+        db,
+        auth,
+        channel,
+        model,
+        group,
+        endpoint_path,
+        status,
+        &usage,
+        &response_audit,
+        upstream_request_id.as_deref(),
+        false,
+    )
+    .await
+    {
+        worker::console_error!("failed to record TTS relay audit: {}", err);
+    }
+
+    finalize_buffered_relay_bytes(&upstream, bytes, status, &content_type)
+}
+
 async fn complete_relay_response(
     mut upstream: Response,
     env: Env,
@@ -8310,6 +8553,21 @@ async fn complete_relay_response(
             status,
             upstream_request_id,
             content_type,
+            max_json_response_bytes,
+        )
+        .await;
+    }
+    if endpoint_path == "audio/speech" {
+        return complete_audio_speech_response(
+            upstream,
+            &env,
+            &db,
+            &auth,
+            &channel,
+            &model,
+            &group,
+            &endpoint_path,
+            &audit,
             max_json_response_bytes,
         )
         .await;
@@ -9641,6 +9899,9 @@ struct RelayAuditContext {
     /// pre-consumption instead of being misclassified as missing usage and
     /// refunded after the provider result was delivered.
     non_stream_usage_parse_failed: bool,
+    /// Bounded, response-derived OpenAI-compatible TTS usage. This is local
+    /// settlement evidence, not an upstream-reported token block.
+    tts_response_usage: Option<TtsResponseUsageAudit>,
     /// Bounded D1 lease-renewal evidence for positive-reserve SSE requests.
     /// This is populated by the cloned stream branch and never contains the
     /// reservation key or account identity.
@@ -9655,6 +9916,15 @@ struct RelayAuditContext {
     /// Bounded, secret-free channel-attempt evidence. User log responses strip
     /// `other`; operators retain this ledger under `other.admin_info`.
     attempts: RelayAttemptAuditLedger,
+}
+
+#[derive(Debug, Clone)]
+struct TtsResponseUsageAudit {
+    response_format: String,
+    response_bytes: usize,
+    duration_seconds: Option<f64>,
+    output_audio_tokens: i32,
+    source: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -9866,6 +10136,8 @@ async fn record_relay_audit(
     let usage_present = reported_usage_present || request_contract_usage;
     let usage_source = if audit.non_stream_usage_parse_failed {
         "unavailable_parse_failure"
+    } else if let Some(tts) = &audit.tts_response_usage {
+        tts.source
     } else if audit.usage_locally_estimated {
         "local_estimate"
     } else if request_contract_usage && endpoint_path.starts_with("audio/") {
@@ -9896,6 +10168,43 @@ async fn record_relay_audit(
             "wfp_worker": audit.model_route.wfp_worker,
         },
     });
+    set_json_string(
+        &mut other,
+        "usage_semantic",
+        if usage.is_anthropic_usage_semantic {
+            "anthropic"
+        } else {
+            "openai"
+        }
+        .to_string(),
+    );
+    set_json_string(
+        &mut other,
+        "usage_semantic_source",
+        usage.usage_semantic_source.as_str().to_string(),
+    );
+    set_json_string(
+        &mut other,
+        "cache_creation_source",
+        usage.cache_creation_source.as_str().to_string(),
+    );
+    if let Some(cost) = usage.provider_cost_usd {
+        set_json_string(&mut other, "provider_cost_usd", cost.to_string());
+    }
+    if let Some(tts) = &audit.tts_response_usage {
+        set_json_value(
+            &mut other,
+            "audio",
+            json!({
+                "tts_response": true,
+                "response_format": tts.response_format,
+                "response_bytes": tts.response_bytes,
+                "duration_seconds": tts.duration_seconds,
+                "output_audio_tokens": tts.output_audio_tokens,
+                "usage_source": tts.source,
+            }),
+        );
+    }
     if audit.non_stream_usage_parse_failed {
         set_json_bool(&mut other, "non_stream_usage_parse_failed", true);
         let reservation_class = match audit.billing_preflight.as_ref() {
@@ -10350,16 +10659,16 @@ async fn record_relay_audit(
                 );
             })
         } else if upstream_status < 400 && usage_present {
-            let result = compute_flat_quota_from_snapshot(
-                &flat_usage_from_summary(
-                    usage,
-                    endpoint_path,
-                    model,
-                    &audit.billing_request_input,
-                    preflight.estimated_prompt_tokens,
-                ),
+            let projection = project_flat_usage(
+                usage,
+                endpoint_path,
+                model,
+                &audit.billing_request_input,
+                preflight.estimated_prompt_tokens,
+                channel.channel_type,
                 &preflight.snapshot,
             );
+            let result = compute_flat_quota_from_snapshot(&projection.usage, &preflight.snapshot);
             let final_quota = result.quota;
             stage_relay_billing_settlement(
                 env,
@@ -10377,6 +10686,14 @@ async fn record_relay_audit(
                 quota = final_quota;
                 pending_billing_finalization = pending;
                 apply_flat_billing_audit(&mut other, &result);
+                set_json_string(
+                    &mut other,
+                    "cache_creation_source",
+                    projection.cache_creation_source.to_string(),
+                );
+                if let Some(inference) = projection.openrouter_inference {
+                    set_json_value(&mut other, "openrouter_cache_write_inference", inference);
+                }
                 set_json_value(
                     &mut other,
                     "flat_billing_intent",
@@ -10578,6 +10895,11 @@ fn apply_flat_billing_audit(other: &mut Value, result: &FlatQuotaResult) {
             "image_price_ratio": result.image_price_ratio,
             "other_ratio_product": result.other_ratio_product,
             "audio_input_price_per_million": result.audio_input_price_per_million,
+            "audio_ratio": result.audio_ratio,
+            "audio_completion_ratio": result.audio_completion_ratio,
+            "uses_audio_detail_billing": result.uses_audio_detail_billing,
+            "audio_input_tokens": result.audio_input_tokens,
+            "audio_output_tokens": result.audio_output_tokens,
             "tool_surcharge": {
                 "quota_before_other_ratio": result.tool_surcharge_quota,
                 "web_search_preview_calls": result.web_search_preview_calls,
@@ -10731,7 +11053,7 @@ pub(crate) struct ActualGroupBillingSmokeEvidence {
 
 const TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY: &str = "max_candidate_group";
 const TIERED_BILLING_SELECTED_GROUP_STRATEGY: &str = "selected_group";
-const FLAT_BILLING_CONTRACT_PREFIX: &str = "flat-v3:";
+const FLAT_BILLING_CONTRACT_PREFIX: &str = "flat-v4:";
 
 #[derive(Clone)]
 struct TieredBillingPreflight {
@@ -12066,6 +12388,90 @@ fn tiered_billing_settlement(
     })
 }
 
+#[derive(Debug)]
+struct FlatUsageProjection {
+    usage: FlatUsage,
+    cache_creation_source: &'static str,
+    openrouter_inference: Option<Value>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_flat_usage(
+    usage: &UsageSummary,
+    endpoint_path: &str,
+    model: &str,
+    request: &RequestInput,
+    estimated_prompt_tokens: i64,
+    channel_type: i32,
+    snapshot: &FlatPricingSnapshot,
+) -> FlatUsageProjection {
+    let mut projected = flat_usage_from_summary(
+        usage,
+        endpoint_path,
+        model,
+        request,
+        estimated_prompt_tokens,
+    );
+    let mut cache_creation_source = usage.cache_creation_source.as_str();
+    if channel_type != CHANNEL_TYPE_OPENROUTER || !usage.is_anthropic_usage_semantic {
+        return FlatUsageProjection {
+            usage: projected,
+            cache_creation_source,
+            openrouter_inference: None,
+        };
+    }
+
+    let raw_prompt_tokens = projected.prompt_tokens.max(0);
+    let raw_cache_creation_tokens = projected.cache_creation_tokens.max(0);
+    let inference = infer_openrouter_cache_write_tokens(OpenRouterCacheWriteInput {
+        is_openrouter: true,
+        is_anthropic_usage_semantic: true,
+        is_per_token: snapshot.mode == FlatBillingMode::PerToken,
+        model_ratio_matches_go_default: snapshot.model_ratio_matches_go_default,
+        prompt_tokens: raw_prompt_tokens,
+        completion_tokens: projected.completion_tokens.max(0),
+        cache_read_tokens: projected.cached_tokens.max(0),
+        existing_cache_creation_tokens: raw_cache_creation_tokens,
+        provider_cost_usd: usage.provider_cost_usd,
+        model_ratio: snapshot.model_ratio,
+        completion_ratio: snapshot.completion_ratio,
+        cache_ratio: snapshot.cache_ratio,
+        cache_creation_ratio: snapshot.cache_creation_ratio,
+        quota_per_unit: snapshot.quota_per_unit,
+    });
+    if let Some(inferred) = inference.applied_tokens {
+        projected.cache_creation_tokens = inferred;
+        cache_creation_source = "openrouter_cost_inference";
+    }
+
+    // OpenRouter reports Anthropic-semantic prompt as aggregate input. Go
+    // projects it to P-H-W before passing it to the flat formula; the
+    // Anthropic flag then prevents the generic engine from subtracting twice.
+    projected.prompt_tokens = raw_prompt_tokens
+        .saturating_sub(projected.cached_tokens.max(0))
+        .saturating_sub(projected.cache_creation_tokens.max(0));
+    let inference_audit = json!({
+        "version": snapshot.openrouter_cache_write_inference_version,
+        "applied": inference.applied_tokens.is_some(),
+        "candidate_tokens": inference.candidate_tokens,
+        "reason": inference.reason.as_str(),
+        "raw_prompt_tokens": raw_prompt_tokens,
+        "effective_prompt_tokens": projected.prompt_tokens,
+        "cache_read_tokens": projected.cached_tokens.max(0),
+        "raw_cache_creation_tokens": raw_cache_creation_tokens,
+        "effective_cache_creation_tokens": projected.cache_creation_tokens.max(0),
+        "cache_creation_5m_tokens": projected.cache_creation_5m_tokens.max(0),
+        "cache_creation_1h_tokens": projected.cache_creation_1h_tokens.max(0),
+        "model_ratio_matches_go_default": snapshot.model_ratio_matches_go_default,
+    });
+
+    FlatUsageProjection {
+        usage: projected,
+        cache_creation_source,
+        openrouter_inference: Some(inference_audit),
+    }
+}
+
 fn flat_usage_from_summary(
     usage: &UsageSummary,
     endpoint_path: &str,
@@ -12103,6 +12509,7 @@ fn flat_usage_from_summary(
         cache_creation_1h_tokens: usage.claude_cache_creation_1h_tokens as i64,
         image_tokens: usage.image_input_tokens as i64,
         audio_input_tokens: usage.audio_input_tokens as i64,
+        audio_output_tokens: usage.audio_output_tokens as i64,
         web_search_preview_calls,
         web_search_calls,
         file_search_calls: i64::from(usage.tool_usage.responses_file_search_calls.max(0)),
@@ -14780,6 +15187,27 @@ mod tests {
     }
 
     #[test]
+    fn tts_response_usage_matches_go_duration_and_decimal_byte_fallback() {
+        let (pcm, pcm_audit) = tts_response_usage(&[0], "pcm", 5);
+        assert_eq!(pcm.prompt_tokens, 5);
+        assert_eq!(pcm.completion_tokens, 17);
+        assert_eq!(pcm.audio_output_tokens, 17);
+        assert_eq!(pcm.total_tokens, 22);
+        assert_eq!(pcm_audit.duration_seconds, Some(1.0 / 48_000.0));
+        assert_eq!(pcm_audit.source, "tts_response_duration");
+
+        let bytes = vec![0; 1_001];
+        let (fallback, fallback_audit) = tts_response_usage(&bytes, "webm", 0);
+        assert_eq!(fallback.audio_output_tokens, 2);
+        assert_eq!(fallback.total_tokens, 2);
+        assert_eq!(fallback_audit.duration_seconds, None);
+        assert_eq!(fallback_audit.source, "tts_response_bytes");
+
+        let (case_sensitive, _) = tts_response_usage(&[0], "PCM", 0);
+        assert_eq!(case_sensitive.audio_output_tokens, 1);
+    }
+
+    #[test]
     fn chat_completions_request_validation_matches_go_typed_request_boundary() {
         assert_eq!(
             validate_chat_completions_request(&json!({
@@ -15626,6 +16054,12 @@ mod tests {
         assert_eq!(
             config.max_bytes_for(&endpoint),
             RERANK_JSON_RESPONSE_LIMIT_BYTES
+        );
+
+        endpoint.upstream_path = "audio/speech".to_string();
+        assert_eq!(
+            config.max_bytes_for(&endpoint),
+            AUDIO_SPEECH_RESPONSE_LIMIT_BYTES
         );
 
         endpoint.provider = RelayProviderKind::GeminiNative;
@@ -18496,7 +18930,7 @@ mod tests {
             "gpt-test",
             "chat/completions",
             "flat",
-            "flat-v3:contract-a",
+            "flat-v4:contract-a",
             "sha256:request-a",
         )
         .unwrap();
@@ -18506,7 +18940,7 @@ mod tests {
             "gpt-test",
             "chat/completions",
             "flat",
-            "flat-v3:contract-a",
+            "flat-v4:contract-a",
             "sha256:request-a",
         )
         .unwrap();
@@ -18516,7 +18950,7 @@ mod tests {
             "gpt-test",
             "chat/completions",
             "flat",
-            "flat-v3:contract-b",
+            "flat-v4:contract-b",
             "sha256:request-a",
         )
         .unwrap();
@@ -18614,6 +19048,86 @@ mod tests {
             0,
         );
         assert_eq!(legacy.web_search_preview_calls, 1);
+    }
+
+    #[test]
+    fn openrouter_anthropic_projection_preserves_go_798_regression_vector() {
+        let model = "openrouter-claude-regression";
+        let config = PricingConfig::new().with_json_maps(
+            Some(r#"{"openrouter-claude-regression":1}"#),
+            Some(r#"{"openrouter-claude-regression":1}"#),
+            Some("{}"),
+            Some(r#"{"openrouter-claude-regression":0.1}"#),
+            None,
+            None,
+        );
+        let snapshot = FlatPricingSnapshot::from_config(model, "default", &config, 1.0, 500);
+        let usage = UsageSummary {
+            prompt_tokens: 2_604,
+            completion_tokens: 383,
+            total_tokens: 2_987,
+            cached_tokens: 2_432,
+            is_anthropic_usage_semantic: true,
+            ..UsageSummary::default()
+        };
+
+        let projection = project_flat_usage(
+            &usage,
+            "chat/completions",
+            model,
+            &RequestInput::default(),
+            0,
+            CHANNEL_TYPE_OPENROUTER,
+            &snapshot,
+        );
+        assert_eq!(projection.usage.prompt_tokens, 172);
+        assert_eq!(
+            compute_flat_quota_from_snapshot(&projection.usage, &snapshot).quota,
+            798
+        );
+    }
+
+    #[test]
+    fn openrouter_cost_projection_infers_cache_write_and_records_provenance() {
+        let model = "gpt-4.1";
+        let config = PricingConfig::new();
+        let mut snapshot = FlatPricingSnapshot::from_config(model, "default", &config, 1.0, 500);
+        snapshot.model_ratio = 1.0;
+        snapshot.completion_ratio = 1.0;
+        snapshot.cache_ratio = 0.1;
+        snapshot.cache_creation_ratio = 1.25;
+        snapshot.model_ratio_matches_go_default = true;
+        let usage = UsageSummary {
+            prompt_tokens: 2_604,
+            completion_tokens: 383,
+            total_tokens: 2_987,
+            cached_tokens: 2_432,
+            is_anthropic_usage_semantic: true,
+            provider_cost_usd: Some(rust_decimal::Decimal::new(16_464, 7)),
+            ..UsageSummary::default()
+        };
+
+        let projection = project_flat_usage(
+            &usage,
+            "chat/completions",
+            model,
+            &RequestInput::default(),
+            0,
+            CHANNEL_TYPE_OPENROUTER,
+            &snapshot,
+        );
+        assert_eq!(projection.usage.cache_creation_tokens, 100);
+        assert_eq!(projection.usage.prompt_tokens, 72);
+        assert_eq!(
+            projection.cache_creation_source,
+            "openrouter_cost_inference"
+        );
+        let audit = projection.openrouter_inference.unwrap();
+        assert_eq!(audit["applied"], true);
+        assert_eq!(audit["candidate_tokens"], 100);
+        assert_eq!(audit["reason"], "applied");
+        assert_eq!(audit["raw_prompt_tokens"], 2_604);
+        assert_eq!(audit["effective_prompt_tokens"], 72);
     }
 
     #[test]

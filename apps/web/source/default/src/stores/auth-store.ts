@@ -53,8 +53,14 @@ export interface AuthUser {
 interface AuthState {
   auth: {
     user: AuthUser | null
+    verificationGeneration: number
+    verifiedGeneration: number | null
     setUser: (user: AuthUser | null) => void
-    reset: () => void
+    commitSessionVerification: (
+      user: AuthUser,
+      expectedGeneration: number
+    ) => boolean
+    reset: (expectedGeneration?: number) => boolean
   }
 }
 
@@ -78,6 +84,8 @@ export const useAuthStore = create<AuthState>()((set) => {
   return {
     auth: {
       user: initUser,
+      verificationGeneration: 0,
+      verifiedGeneration: null,
       setUser: (user) =>
         set((state) => {
           // Persist user to localStorage
@@ -88,18 +96,71 @@ export const useAuthStore = create<AuthState>()((set) => {
               window.localStorage.removeItem('user')
             }
           }
-          return { ...state, auth: { ...state.auth, user } }
+          return {
+            ...state,
+            auth: {
+              ...state.auth,
+              user,
+              verificationGeneration: state.auth.verificationGeneration + 1,
+              verifiedGeneration: null,
+            },
+          }
         }),
-      reset: () =>
+      commitSessionVerification: (user, expectedGeneration) => {
+        let committed = false
         set((state) => {
+          if (
+            state.auth.verificationGeneration !== expectedGeneration ||
+            !state.auth.user
+          ) {
+            return state
+          }
+
+          if (typeof window !== 'undefined') {
+            window.localStorage.setItem('user', JSON.stringify(user))
+          }
+          committed = true
+          return {
+            ...state,
+            auth: {
+              ...state.auth,
+              user,
+              verifiedGeneration: expectedGeneration,
+            },
+          }
+        })
+        return committed
+      },
+      reset: (expectedGeneration) => {
+        let cleared = false
+        set((state) => {
+          if (
+            expectedGeneration !== undefined &&
+            state.auth.verificationGeneration !== expectedGeneration
+          ) {
+            return state
+          }
+
           if (typeof window !== 'undefined') {
             window.localStorage.removeItem('user')
           }
+          cleared = true
           return {
             ...state,
-            auth: { ...state.auth, user: null },
+            auth: {
+              ...state.auth,
+              user: null,
+              verificationGeneration: state.auth.verificationGeneration + 1,
+              verifiedGeneration: null,
+            },
           }
-        }),
+        })
+        return cleared
+      },
     },
   }
 })
+
+export function clearAuthSession(expectedGeneration?: number): boolean {
+  return useAuthStore.getState().auth.reset(expectedGeneration)
+}

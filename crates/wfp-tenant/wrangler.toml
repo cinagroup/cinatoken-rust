@@ -3,6 +3,10 @@ main = "build/worker/shim.mjs"
 compatibility_date = "2026-07-11"
 compatibility_flags = ["nodejs_compat"]
 
+[observability]
+enabled = true
+head_sampling_rate = 0.1
+
 [build]
 command = "bun ../../tools/build_worker.mjs --crate wfp-tenant --release"
 cwd = "crates/wfp-tenant"
@@ -11,7 +15,6 @@ cwd = "crates/wfp-tenant"
 CINATOKEN_TENANT_ID = "local"
 CINATOKEN_WFP_WORKER_NAME = "cinatoken-wfp-tenant"
 CF_ACCOUNT_ID = ""
-AI_GATEWAY_ID = ""
 CINATOKEN_WFP_OUTBOUND_AUTH_MODE = "platform-outbound-v1"
 
 # Cloudflare AI authentication belongs to the dispatch namespace outbound

@@ -275,12 +275,13 @@ Build and archive the strict Rust/Wasm dry-run manifest:
 ```powershell
 New-Item -ItemType Directory -Force .wrangler/evidence | Out-Null
 bun run build:wfp-tenant
-bun tools/deploy_wfp_tenant_artifact.mjs --dry-run --json --script-name tenant-smoke --tenant-id tenant-smoke --namespace $env:WFP_DISPATCH_NAMESPACE --account-id $env:CLOUDFLARE_ACCOUNT_ID > .wrangler/evidence/wfp-tenant-artifact-manifest.json
+bun tools/deploy_wfp_tenant_artifact.mjs --dry-run --json --script-name tenant-smoke --tenant-id tenant-smoke --namespace $env:WFP_DISPATCH_NAMESPACE --account-id $env:CLOUDFLARE_ACCOUNT_ID --observability-head-sampling-rate 1 > .wrangler/evidence/wfp-tenant-artifact-manifest.json
 ```
 
 Run the strict uploader only after the dry-run passes. Archive the redacted
 Cloudflare PUT result and GET content/metadata readback; verify the returned
-module set and SHA-256 values match the dry-run manifest. The official endpoint
+module set, SHA-256 values, compatibility settings, and observability
+`enabled=true` / `head_sampling_rate=1` match the dry-run manifest. The official endpoint
 contract is the Workers for Platforms Scripts REST API:
 <https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/subresources/namespaces/subresources/scripts/>.
 

@@ -140,8 +140,6 @@ pub(crate) const RELAY_BILLING_PREBIND_OWNER_GENERATION_CONTRACT_VERSION: u32 = 
 const AI_GATEWAY_DIRECT_FALLBACK_AUDIT_HEADER: &str =
     "x-cinatoken-internal-ai-gateway-direct-fallback";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
-const CLOUDFLARE_API_TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
-const CLOUDFLARE_AI_GATEWAY_TOKEN_ENV: &str = "CLOUDFLARE_AI_GATEWAY_TOKEN";
 const AI_GATEWAY_ID_ENV: &str = "AI_GATEWAY_ID";
 /// When set (`true`/`1`), a missing or invalid upstream usage block triggers
 /// Go's estimate-and-bill fallback instead of refunding the reserve. Default off
@@ -6480,8 +6478,10 @@ impl RelayAiGatewayRuntime {
             env_flag(optional_env_var(env, RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV).as_deref()),
             optional_env_var(env, CLOUDFLARE_ACCOUNT_ID_ENV),
             optional_env_var(env, AI_GATEWAY_ID_ENV),
-            optional_secret_or_env_var(env, CLOUDFLARE_AI_GATEWAY_TOKEN_ENV)
-                .or_else(|| optional_secret_or_env_var(env, CLOUDFLARE_API_TOKEN_ENV)),
+            optional_secret_or_env_var(
+                env,
+                crate::relay_ai_gateway_policy::CLOUDFLARE_AI_GATEWAY_TOKEN_ENV,
+            ),
         )
     }
 
@@ -6491,18 +6491,16 @@ impl RelayAiGatewayRuntime {
         gateway_id: Option<String>,
         api_token: Option<String>,
     ) -> Option<Self> {
-        if !router_enabled {
-            return None;
-        }
+        let config = crate::relay_ai_gateway_policy::relay_ai_gateway_runtime_config(
+            router_enabled,
+            account_id,
+            gateway_id,
+            api_token,
+        )?;
         Some(Self {
-            account_id: account_id?.trim().to_string(),
-            gateway_id: gateway_id?.trim().to_string(),
-            api_token: api_token?.trim().to_string(),
-        })
-        .filter(|runtime| {
-            !runtime.account_id.is_empty()
-                && !runtime.gateway_id.is_empty()
-                && !runtime.api_token.is_empty()
+            account_id: config.account_id,
+            gateway_id: config.gateway_id,
+            api_token: config.api_token,
         })
     }
 }

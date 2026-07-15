@@ -70,7 +70,7 @@ const PLAN: WfpTenantPlan = {
     available: true,
     crate_path: 'crates/wfp-tenant',
     build_command: 'bun run build:wfp-tenant',
-    shim_path: 'crates/wfp-tenant/build/worker/shim.mjs',
+    shim_path: 'crates/wfp-tenant/build/index.js',
     deployment_status: 'artifact_upload_tool_required',
   },
 }

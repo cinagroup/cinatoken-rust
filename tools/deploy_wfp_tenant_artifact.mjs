@@ -11,10 +11,10 @@ const defaultArtifactDir = path.join(
   "crates",
   "wfp-tenant",
   "build",
-  "worker",
 );
-const defaultMainModule = "shim.mjs";
+const defaultMainModule = "index.js";
 const defaultCompatibilityDate = "2026-07-11";
+const defaultObservabilityHeadSamplingRate = 0.1;
 const cloudflareApiBase = "https://api.cloudflare.com/client/v4";
 const wasmMagic = Uint8Array.from([0x00, 0x61, 0x73, 0x6d]);
 const outboundAuthMode = "platform-outbound-v1";
@@ -133,6 +133,9 @@ async function main(options) {
   const compatibilityDate = validateCompatibilityDate(
     options.compatibilityDate || defaultCompatibilityDate,
   );
+  const observabilityHeadSamplingRate = validateObservabilityHeadSamplingRate(
+    options.observabilityHeadSamplingRate,
+  );
   const apiToken = required(options.apiToken, "api-token");
   const metadata = uploadMetadata({
     mainModule: options.mainModule,
@@ -140,6 +143,7 @@ async function main(options) {
     tenantId,
     workerName: publicScriptName,
     accountId,
+    observabilityHeadSamplingRate,
   });
   const uploadUrl = dispatchUploadUrl(accountId, namespace, scriptName);
   const modules = await collectArtifactModules(
@@ -281,6 +285,11 @@ function normalizeOptions(args) {
     compatibilityDate:
       value("compatibility-date", "WFP_TENANT_COMPATIBILITY_DATE") ||
       defaultCompatibilityDate,
+    observabilityHeadSamplingRate:
+      value(
+        "observability-head-sampling-rate",
+        "WFP_TENANT_OBSERVABILITY_HEAD_SAMPLING_RATE",
+      ) || String(defaultObservabilityHeadSamplingRate),
     workerPrefix: value("worker-prefix", "WFP_DISPATCH_WORKER_PREFIX") || "",
     artifactDir,
     mainModule: args.values.get("main-module") || defaultMainModule,
@@ -306,8 +315,9 @@ function usage(exitCode, error) {
       "  AI Gateway IDs and request policy are outbound-only and cannot be attached to a tenant.",
       "  --worker-prefix <prefix>    or WFP_DISPATCH_WORKER_PREFIX",
       "  --compatibility-date <YYYY-MM-DD>",
-      "  --artifact-dir <path>       default crates/wfp-tenant/build/worker",
-      "  --main-module <path>        default shim.mjs",
+      "  --observability-head-sampling-rate <0..1>  default 0.1; must be greater than zero",
+      "  --artifact-dir <path>       default crates/wfp-tenant/build",
+      "  --main-module <path>        default index.js",
       "  --dry-run                   print redacted upload plan without PUT",
       "  --self-test-artifact-manifest  validate strict Rust/Wasm artifacts without network",
       "  --self-test-deploy-plan        validate fail-closed token handling without network",
@@ -406,6 +416,7 @@ function uploadMetadata({
   tenantId,
   workerName,
   accountId,
+  observabilityHeadSamplingRate,
 }) {
   const bindings = [
     {
@@ -433,6 +444,10 @@ function uploadMetadata({
     main_module: mainModule,
     compatibility_date: compatibilityDate,
     compatibility_flags: ["nodejs_compat"],
+    observability: {
+      enabled: true,
+      head_sampling_rate: observabilityHeadSamplingRate,
+    },
     bindings,
   };
 }
@@ -488,9 +503,9 @@ function runArtifactManifestSelfTest() {
   });
   const cases = [];
   expectArtifactValidationFailure(
-    "missing-main-shim",
+    "missing-main-module",
     [module("index_bg.wasm", validWasm)],
-    /main module shim\.mjs was not found/,
+    /main module index\.js was not found/,
     cases,
   );
   expectArtifactValidationFailure(
@@ -604,6 +619,14 @@ function runDeployPlanSelfTest() {
     throw new Error("tenant metadata contains platform authority material");
   }
   cases.push({ name: "tenant-authority-material-absent", passed: true });
+  if (
+    authorityMetadata.observability?.enabled !== true ||
+    authorityMetadata.observability.head_sampling_rate !==
+      defaultObservabilityHeadSamplingRate
+  ) {
+    throw new Error("tenant metadata did not freeze the observability policy");
+  }
+  cases.push({ name: "tenant-observability-policy-frozen", passed: true });
   return { ok: true, deployPlanSelfTest: true, cases };
 }
 
@@ -614,6 +637,7 @@ function selfTestUploadMetadata() {
     tenantId: "tenant-smoke",
     workerName: "tenant-smoke",
     accountId: "00000000000000000000000000000000",
+    observabilityHeadSamplingRate: defaultObservabilityHeadSamplingRate,
   });
 }
 
@@ -697,6 +721,22 @@ function validateCompatibilityDate(value) {
     throw new Error("compatibility-date must use YYYY-MM-DD");
   }
   return trimmed;
+}
+
+function validateObservabilityHeadSamplingRate(value) {
+  const trimmed = required(value, "observability-head-sampling-rate");
+  if (!/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(trimmed)) {
+    throw new Error(
+      "observability-head-sampling-rate must be a decimal greater than 0 and at most 1",
+    );
+  }
+  const rate = Number(trimmed);
+  if (!Number.isFinite(rate) || rate <= 0 || rate > 1) {
+    throw new Error(
+      "observability-head-sampling-rate must be a decimal greater than 0 and at most 1",
+    );
+  }
+  return rate;
 }
 
 function normalizeWorkerName(value) {

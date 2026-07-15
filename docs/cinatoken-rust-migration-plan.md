@@ -12432,3 +12432,45 @@ provider-invoice, direct/AI Gateway/WFP abort and idle fault, load, alert,
 credential rotation, rollback, and signed G1-G8 evidence remain absent.
 `relay_flat_billing_go_parity_ready` stays hard false, Go/VPS remains
 authoritative, and production remains **NO-GO**.
+
+### 22.207 2026-07-15 WFP Artifact, Observability, And Gateway Credential Contract
+
+This increment tightens the Cloudflare deployment and evidence boundary. It
+does not change the billing expression contract, which was reread from
+`pkg/billingexpr/expr.md` before the pricing audit.
+
+Implemented and verified locally:
+
+- The WFP uploader now consumes the actual `worker-build` output at
+  `crates/wfp-tenant/build/index.js` with its referenced
+  `index_bg.wasm`. The previous default pointed at a compatibility shim that
+  was not a complete upload artifact. Strict scanning still rejects missing,
+  fake, or unreferenced Wasm modules.
+- Tenant upload metadata freezes observability as enabled with a configurable
+  nonzero `head_sampling_rate` (default `0.1`). The schema-v3 post-upload
+  contract compares upload intent, Scripts Settings GET, and multipart Content
+  GET metadata exactly, while rejecting disabled sampling and readback drift.
+- Tenant Workers receive only the four reviewed identity and outbound-authority
+  bindings. `AI_GATEWAY_ID`, gateway request policy, Cloudflare credentials,
+  and WFP authority secrets remain platform/outbound-owned and are forbidden in
+  tenant upload and readback evidence.
+- Main-relay AI Gateway readiness and runtime now share one fail-closed policy.
+  They require `CLOUDFLARE_AI_GATEWAY_TOKEN`; the generic
+  `CLOUDFLARE_API_TOKEN` is no longer accepted as a runtime fallback or counted
+  as readiness. Tenant compatibility input is advanced to `2026-07-11`.
+- Local evidence passes Worker 676/676, WFP artifact 5/5, deploy policy 3/3,
+  readback collector 19/19, post-upload verifier 28/28, and the complete
+  `bun run check` release gate. That gate includes Workerd 38/38, frontend
+  readiness 52/52, route parity 223/326 with zero missing, D1 30 migrations / 30
+  tables / 139 checked columns / 27 indexes, workspace tests, and
+  main/tenant/outbound Wasm checks.
+
+The source audit also corrected the documented audio-output term to
+`AudioOutput * AudioRatio * AudioCompletionRatio`. Runtime TTS binary
+duration/byte-fallback settlement and OpenRouter cost-based cache-write
+inference with semantic/source provenance are still unimplemented, so flat
+billing parity remains hard false. No authenticated Cloudflare upload,
+Settings/Content readback, tenant smoke, Queue/D1/DLQ, provider-invoice,
+load/alert, credential-rotation, rollback, or signed G1-G8 evidence was produced
+by this local increment. Go/VPS remains authoritative and production remains
+**NO-GO**.

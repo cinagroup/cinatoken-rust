@@ -61,12 +61,14 @@ billable = promptText
          + cacheCreate1h     * cacheCreationRatio1h
          + image             * imageRatio
          + audioIn           * audioRatio
-         + audioOut          * audioCompletionRatio
+         + audioOut          * audioRatio * audioCompletionRatio
 quota = round(billable * modelRatio * groupRatio)
 ```
 
-(Confirm the exact sub-category arithmetic against `service/billing.go` when
-porting; the variable set above is authoritative.)
+The compound output-audio term is intentional and follows Go
+`service/quota.go`; `audioCompletionRatio` is not a replacement for
+`audioRatio`. TTS response-duration/byte-fallback synthesis and the route
+conditions that select this dedicated formula remain unimplemented in Rust.
 
 ## Resolution Edge Cases (match exactly)
 

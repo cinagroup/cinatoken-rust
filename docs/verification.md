@@ -4746,3 +4746,51 @@ Gemini Imagen, image-edit/Ali actual count, a Go-generated flat manifest,
 remote Queue/D1/DLQ/provider reconciliation, abort/idle faults, credential
 rotation, rollback, and G1-G8 approval remain blocking. Tiered tool surcharge
 parity was outside this increment. Production remains **NO-GO**.
+
+## WFP Artifact And Gateway Credential Verification (2026-07-15)
+
+```powershell
+cargo test -p cinatoken-worker --lib
+# PASS; 676/676
+
+bun tools/deploy_wfp_tenant_artifact.mjs --self-test-artifact-manifest `
+  --script-name selftest --namespace selftest --json
+# PASS; 5/5 strict Rust/Wasm artifact cases
+
+bun tools/deploy_wfp_tenant_artifact.mjs --self-test-deploy-plan `
+  --script-name selftest --namespace selftest --json
+# PASS; 3/3 tenant binding and observability policy cases
+
+bun tools/collect_wfp_post_upload_readback.mjs --self-test
+# PASS; schema v3, 19/19
+
+bun tools/verify_wfp_post_upload.mjs --self-test --json
+# PASS; schema v3, 28/28
+
+bun run check
+# PASS; complete release gate, Workerd 38/38, frontend readiness 52/52,
+# 223 frontend calls / 326 Worker routes / zero missing, D1 30 migrations /
+# 30 tables / 139 checked columns / 27 indexes, workspace tests, and
+# main/tenant/outbound wasm32 checks
+```
+
+Verified behavior:
+
+- The upload manifest starts at the actual `worker-build` `index.js`, contains
+  a referenced Wasm binary, and rejects incomplete or fabricated artifacts.
+- Upload intent and both Cloudflare readback surfaces must report enabled,
+  nonzero, exactly matching observability. Schema-v2 or drifted evidence cannot
+  pass the verifier.
+- Tenant metadata cannot contain AI Gateway identity/policy, Cloudflare bearer
+  tokens, or WFP authority secrets. The main relay requires the dedicated
+  `CLOUDFLARE_AI_GATEWAY_TOKEN`; generic account-management credentials cannot
+  make readiness true.
+- The audited source formula includes
+  `audio_output * audio_ratio * audio_completion_ratio`; documentation now
+  reflects that contract without claiming runtime TTS parity.
+
+This is local E3 evidence only. No live upload or authenticated Settings/Content
+readback was executed. TTS binary duration and audio-detail settlement,
+OpenRouter cost-based cache-write provenance, deployed Queue/D1/DLQ and provider
+reconciliation, fault/load/alert evidence, credential rotation, rollback, and
+G1-G8 approval remain blocking. Production remains **NO-GO**.

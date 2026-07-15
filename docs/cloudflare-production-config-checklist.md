@@ -425,7 +425,10 @@ The root-only plan route may report redacted artifact requirements, but the
 Worker-side deploy route is disabled. The generated JavaScript fallback is
 status-only and is not a production AI runtime. Build `crates/wfp-tenant` with
 `bun run build:wfp-tenant`, then use only the strict Rust/Wasm artifact uploader
-behind `bun run deploy:wfp-tenant`. It rejects a missing/empty main shim, a
+behind `bun run deploy:wfp-tenant`. The uploader consumes the current
+`worker-build` runtime artifact from `crates/wfp-tenant/build`, with `index.js`
+as the multipart main module; `build/worker/shim.mjs` remains Wrangler-only
+compatibility glue. It rejects a missing/empty main module, a
 missing or invalid Wasm module, an incomplete import graph, and any retired
 tenant Cloudflare-token flag.
 
@@ -454,14 +457,15 @@ inventory proves no route targets this service.
 | --- | --- | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | var | Tenant script plan/deploy URL and runtime AI Gateway calls | Plain account identifier; may be left empty until WFP staging |
 | `CLOUDFLARE_API_TOKEN` | secret | Dispatch namespace Rust/Wasm script upload/readback only | Never commit; use a least-privilege deploy token and do not attach it to the tenant runtime |
-| `CLOUDFLARE_AI_GATEWAY_TOKEN` | secret | Preferred main-relay AI Gateway REST runtime token once the router is canaried | Prefer this narrower runtime secret over reusing the WFP dispatch deploy token |
+| `CLOUDFLARE_AI_GATEWAY_TOKEN` | secret | Main-relay AI Gateway REST runtime token once the router is canaried | Required as a dedicated scoped runtime credential. The relay and capability probe reject a configuration that has only `CLOUDFLARE_API_TOKEN`; deploy/readback credentials are never runtime fallbacks |
 | `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` | outbound Worker secret | AI Gateway REST authentication for `cinatoken-wfp-outbound` | Required only on the outbound service; never attach to a tenant, dispatch Worker, upload manifest, log, or evidence artifact; do not reuse the dispatch deploy token |
 | `CINATOKEN_WFP_OUTBOUND_AUTH_MODE` | tenant plain-text var | Declares platform-owned outbound auth | Must equal `platform-outbound-v1`; this marker replaces tenant runtime Cloudflare tokens and carries no credential |
 | `WFP_RELAY_AUTHORITY_SECRET` | platform Worker secret | Central-authority v3 signing and platform replay verification | Master secret, minimum 32 bytes; retained only by the main Worker script and its DO; never make it available to an uploader, tenant, outbound Worker, manifest, log, or evidence artifact |
 | `CINATOKEN_WFP_OUTBOUND_CONTEXT` | dispatch outbound parameter | Bind route kind plus public and dispatched worker identity to final egress | The dispatch attachment declares exactly this one parameter; the main Worker supplies it in the Dynamic Dispatch third argument; it is not a tenant binding or credential |
 | `WFP_AUTHORITY_REPLAY` | Durable Object binding | One-time central-authority consumption before bearer access | Main Worker owns the class and master verifier; each outbound environment binds the matching main script externally. The tenant must have no replay binding. Missing/error fails paid AI closed |
 | `WFP_DISPATCH_NAMESPACE` | var | Tenant script upload target | Must match the commented `DISPATCHER` namespace once WFP is armed |
-| `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
+| `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-07-11`, matching the tracked main and tenant Worker production date |
+| `WFP_TENANT_OBSERVABILITY_HEAD_SAMPLING_RATE` | uploader environment or `--observability-head-sampling-rate` | Generated tenant Worker metadata | Must be greater than 0 and at most 1. The uploader defaults production-shaped plans to `0.1`; staging evidence must pass `1` explicitly |
 | `AI_GATEWAY_ID` | outbound Worker var | Optional platform-owned default `cf-aig-gateway-id` header | Configure on `cinatoken-wfp-outbound`, never on the tenant; empty means the account path has no explicit Gateway ID |
 | `RELAY_AI_GATEWAY_ROUTER_ENABLED` | var | Main relay AI Gateway REST router gate | Must stay `false` until channel-editor-created `channels.other_info.ai_gateway.enabled` canary metadata, provider-prefix policy, key/base-url coupling, same-channel direct fallback smoke, billing settlement, forwarder smoke, and staging panel evidence are approved |
 | `RELAY_MODEL_FALLBACK_ENABLED` | var | Independent Rust primary-to-fallback model gate | Default `false`; requires the AI Gateway router, opted-in primary/fallback channels, supported chat/Responses/Messages route, a validated mapping, `relay_ai_gateway_cross_model_actual_group_billing_compiled=true`, and archived fixed/`auto` staging D1 evidence for maximum reservation plus actual-serving-group settlement/refund |
@@ -490,7 +494,9 @@ Smoke order:
    bearer into a tenant Worker.
 2. Run the WFP tenant checks and `bun run build:wfp-tenant`; archive the strict
    dry-run manifest from `tools/deploy_wfp_tenant_artifact.mjs`, including every
-   module hash and the validated Wasm import graph. Verify the manifest binds
+   module hash and the validated Wasm import graph. Staging must pass
+   `--observability-head-sampling-rate 1`; production-shaped plans default to
+   `0.1`. Verify the manifest binds
    `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1` and contains neither
    `CF_API_TOKEN` nor any equivalent Cloudflare bearer, authority key/master,
    or replay DO binding.
@@ -503,7 +509,8 @@ Smoke order:
    tenant uploader with only its deploy token. Tenant readback must reject
    `WFP_RELAY_AUTHORITY_KEY`, `WFP_RELAY_AUTHORITY_SECRET`, and
    `WFP_AUTHORITY_REPLAY`. Archive the redacted PUT result and a GET
-   content/metadata readback that matches the dry-run artifact hashes. Do not use
+   content/metadata readback that matches the dry-run artifact hashes,
+   compatibility settings, and enabled nonzero observability policy. Do not use
    `/api/platform/wfp/tenant-script/deploy`; it is intentionally disabled.
    Run `bun run check:wfp-tenant:readback-collector`, then set only a rotated,
    read-scoped `CINATOKEN_WFP_READBACK_TOKEN` and collect the official Details,
@@ -513,8 +520,9 @@ Smoke order:
    bun run collect:wfp-tenant:readback -- --account-id <account> --namespace <namespace> --script-name <worker> --confirm-readback --confirm-replacement-token > wfp-readback.json
    ```
 
-   The collector rejects redirects, deployment drift, malformed or oversized
-   multipart content, and credential echoes. It does not accept a token on the
+   The schema-3 collector rejects redirects, deployment drift, disabled or
+   mismatched observability, malformed or oversized multipart content, and
+   credential echoes. It does not accept a token on the
    command line and does not read legacy/general Cloudflare token variables.
    Before the tenant verifier, run the independent outbound-attachment
    collector self-test and capture the dispatch namespace plus both platform
@@ -554,7 +562,7 @@ Smoke order:
    `verificationScope=wfp-tenant-artifact-and-status`,
    `paidEgressVerified=false`, and `productionVerified=false`; the verifier
    recomputes module hashes and rejects script, module, binding, compatibility,
-   readback, or status-dispatch drift. Run
+   observability, readback, or status-dispatch drift. Run
    `bun run check:wfp-tenant:post-upload-verifier` locally before collecting
    remote evidence.
 4. Enable only the gates needed for an admin-authenticated status probe. Confirm

@@ -31,6 +31,7 @@ mod d1_repositories;
 #[allow(dead_code)]
 mod flow_state;
 mod relay;
+mod relay_ai_gateway_policy;
 mod relay_billing_queue;
 mod relay_billing_reconcile;
 mod relay_billing_smoke;

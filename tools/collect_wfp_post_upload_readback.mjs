@@ -2,7 +2,7 @@
 
 import { TextDecoder } from "node:util";
 
-const schemaVersion = 1;
+const schemaVersion = 3;
 const cloudflareApiBase = "https://api.cloudflare.com/client/v4";
 const replacementTokenEnv = "CINATOKEN_WFP_READBACK_TOKEN";
 const requestTimeoutMs = 30_000;
@@ -182,7 +182,7 @@ async function collectReadback(options, dependencies = {}) {
     options.apiToken,
     fetchImpl,
   );
-  validateSettings(settings, beforeIdentity);
+  const observability = validateSettings(settings, beforeIdentity);
   const contentResponse = await fetchBounded(
     `${baseUrl}/content`,
     "content",
@@ -193,6 +193,7 @@ async function collectReadback(options, dependencies = {}) {
   const content = await normalizeContent(
     contentResponse,
     beforeIdentity,
+    observability,
     options.apiToken,
   );
   const detailsAfter = await fetchJson(
@@ -378,6 +379,10 @@ function validateDetails(envelope, expected, label) {
 function validateSettings(envelope, identity) {
   const result = requireObject(envelope.result, "[settings] result");
   validateCompatibility(result, identity, "settings");
+  const observability = validateObservability(
+    result.observability,
+    "settings observability",
+  );
   if (!Array.isArray(result.bindings))
     throw new Error("[settings] bindings must be an array");
   const names = new Set();
@@ -390,9 +395,15 @@ function validateSettings(envelope, identity) {
     requireSingleLine(binding.type, `[settings] ${name} type`);
   }
   assertNoForbiddenTenantBindings(result.bindings, "settings");
+  return observability;
 }
 
-async function normalizeContent(response, identity, apiToken) {
+async function normalizeContent(
+  response,
+  identity,
+  expectedObservability,
+  apiToken,
+) {
   const boundary = requireMultipartBoundary(response.contentType);
   const parts = parseMultipart(response.bytes, boundary);
   const metadataParts = parts.filter((part) => part.name === "metadata");
@@ -420,6 +431,13 @@ async function normalizeContent(response, identity, apiToken) {
   }
   assertNoForbiddenTenantBindings(metadata.bindings, "content metadata");
   validateCompatibility(metadata, identity, "content metadata");
+  const contentObservability = validateObservability(
+    metadata.observability,
+    "content metadata observability",
+  );
+  if (stableJson(contentObservability) !== stableJson(expectedObservability)) {
+    throw new Error("[observability] content metadata policy drifted from settings");
+  }
   const mainModule = requireModuleName(
     metadata.main_module,
     "[content] main_module",
@@ -649,6 +667,20 @@ function validateCompatibility(value, identity, label) {
   ) {
     throw new Error(`[identity] ${label} compatibility settings drifted`);
   }
+}
+
+function validateObservability(value, label) {
+  const observability = requireObject(value, `[${label}]`);
+  if (observability.enabled !== true) {
+    throw new Error(`[observability] ${label} must be enabled`);
+  }
+  const rate = observability.head_sampling_rate;
+  if (!Number.isFinite(rate) || rate <= 0 || rate > 1) {
+    throw new Error(
+      `[observability] ${label} head_sampling_rate must be greater than 0 and at most 1`,
+    );
+  }
+  return { enabled: true, head_sampling_rate: rate };
 }
 
 function normalizeDetailsEnvelope(envelope, identity) {
@@ -991,7 +1023,7 @@ async function runSelfTest() {
           bytes: fixture.metadata,
         },
         {
-          name: "shim.mjs",
+          name: "index.js",
           contentType: "application/javascript+module",
           bytes: Buffer.alloc(maxModuleBytes + 1, 1),
         },
@@ -1023,6 +1055,50 @@ async function runSelfTest() {
     cases,
   );
   await expectCollectionFailure(
+    "observability-disabled",
+    fixture,
+    (responses) => {
+      const changed = structuredClone(fixture.settingsEnvelope);
+      changed.result.observability.enabled = false;
+      responses[1] = jsonResponse(changed);
+    },
+    /observability.*must be enabled/,
+    cases,
+  );
+  await expectCollectionFailure(
+    "observability-readback-drift",
+    fixture,
+    (responses) => {
+      const changedMetadata = {
+        ...JSON.parse(fixture.metadata),
+        observability: { enabled: true, head_sampling_rate: 0.5 },
+      };
+      responses[2] = multipartResponse([
+        {
+          name: "metadata",
+          contentType: "application/json",
+          bytes: JSON.stringify(changedMetadata),
+        },
+        {
+          name: "index.js",
+          filename: "index.js",
+          contentType: "application/javascript+module",
+          bytes: 'import wasm from "./index_bg.wasm";',
+        },
+        {
+          name: "index_bg.wasm",
+          filename: "index_bg.wasm",
+          contentType: "application/wasm",
+          bytes: Buffer.from([
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+          ]),
+        },
+      ]);
+    },
+    /observability.*policy drifted/,
+    cases,
+  );
+  await expectCollectionFailure(
     "credential-echo-rejected",
     fixture,
     (responses) => {
@@ -1044,13 +1120,13 @@ async function runSelfTest() {
           bytes: fixture.metadata,
         },
         {
-          name: "shim.mjs",
+          name: "index.js",
           contentType: "application/javascript+module",
           bytes: fixture.options.apiToken,
         },
       ]);
     },
-    /module shim\.mjs contained the collector credential/,
+    /module index\.js contained the collector credential/,
     cases,
   );
 
@@ -1163,6 +1239,10 @@ function selfTestFixture() {
     compatibility_date: "2026-07-12",
     compatibility_flags: ["nodejs_compat"],
   };
+  const observability = {
+    enabled: true,
+    head_sampling_rate: 0.1,
+  };
   const detailsEnvelope = envelope({
     dispatch_namespace: options.namespace,
     modified_on: "2026-07-12T00:00:00.000Z",
@@ -1175,6 +1255,7 @@ function selfTestFixture() {
   });
   const settingsEnvelope = envelope({
     ...compatibility,
+    observability,
     bindings: [
       {
         name: "TENANT_SELF_TEST_SECRET",
@@ -1184,8 +1265,9 @@ function selfTestFixture() {
     ],
   });
   const metadataObject = {
-    main_module: "shim.mjs",
+    main_module: "index.js",
     ...compatibility,
+    observability,
     bindings: [
       {
         name: "TENANT_SELF_TEST_SECRET",
@@ -1198,8 +1280,8 @@ function selfTestFixture() {
   const content = multipartResponse([
     { name: "metadata", contentType: "application/json", bytes: metadata },
     {
-      name: "shim.mjs",
-      filename: "shim.mjs",
+      name: "index.js",
+      filename: "index.js",
       contentType: "application/javascript+module",
       bytes: 'import wasm from "./index_bg.wasm";',
     },

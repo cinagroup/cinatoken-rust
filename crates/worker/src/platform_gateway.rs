@@ -202,8 +202,6 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
-const CLOUDFLARE_API_TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
-const CLOUDFLARE_AI_GATEWAY_TOKEN_ENV: &str = "CLOUDFLARE_AI_GATEWAY_TOKEN";
 const AI_GATEWAY_ID_ENV: &str = "AI_GATEWAY_ID";
 const WFP_ROUTE_REQUEST_HEADER: &str = "x-cinatoken-wfp-route";
 const WFP_WORKER_REQUEST_HEADER: &str = "x-cinatoken-wfp-worker";
@@ -632,16 +630,24 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
 
     let d1_migration_status = load_d1_migration_status(&env).await;
     let d1_migration_ready = d1_migration_status.ready();
-    let ai_gateway_id_configured = runtime_value(&env, AI_GATEWAY_ID_ENV).is_some();
-    let cloudflare_account_id_configured = runtime_value(&env, CLOUDFLARE_ACCOUNT_ID_ENV).is_some();
-    let cloudflare_ai_gateway_token_configured = cloudflare_ai_gateway_token_configured(&env);
-    let relay_ai_gateway_router_enabled = env_flag(&env, RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV);
-    let relay_ai_gateway_router_ready = is_relay_ai_gateway_router_ready(
-        relay_ai_gateway_router_enabled,
-        cloudflare_account_id_configured,
-        ai_gateway_id_configured,
-        cloudflare_ai_gateway_token_configured,
+    let ai_gateway_id = runtime_value(&env, AI_GATEWAY_ID_ENV);
+    let cloudflare_account_id = runtime_value(&env, CLOUDFLARE_ACCOUNT_ID_ENV);
+    let cloudflare_ai_gateway_token = secret_or_var(
+        &env,
+        crate::relay_ai_gateway_policy::CLOUDFLARE_AI_GATEWAY_TOKEN_ENV,
     );
+    let ai_gateway_id_configured = ai_gateway_id.is_some();
+    let cloudflare_account_id_configured = cloudflare_account_id.is_some();
+    let cloudflare_ai_gateway_token_configured = cloudflare_ai_gateway_token.is_some();
+    let relay_ai_gateway_router_enabled = env_flag(&env, RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV);
+    let relay_ai_gateway_router_ready =
+        crate::relay_ai_gateway_policy::relay_ai_gateway_runtime_config(
+            relay_ai_gateway_router_enabled,
+            cloudflare_account_id,
+            ai_gateway_id,
+            cloudflare_ai_gateway_token,
+        )
+        .is_some();
     let relay_ai_gateway_messages_cross_model_fallback_compiled =
         relay_messages_model_fallback_contract_compiled();
     let relay_ai_gateway_cross_model_fallback_compiled = relay_model_fallback_contract_compiled()
@@ -3009,11 +3015,6 @@ fn secret_or_var(env: &Env, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn cloudflare_ai_gateway_token_configured(env: &Env) -> bool {
-    secret_or_var(env, CLOUDFLARE_AI_GATEWAY_TOKEN_ENV).is_some()
-        || secret_or_var(env, CLOUDFLARE_API_TOKEN_ENV).is_some()
-}
-
 fn relay_ai_gateway_rest_routes() -> Vec<&'static str> {
     MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS
         .iter()
@@ -3108,15 +3109,6 @@ fn quota_coordinator_cutover_ready(
         && reservation_ledger_only
         && staging_verified
         && write_authority_enabled
-}
-
-fn is_relay_ai_gateway_router_ready(
-    router_enabled: bool,
-    account_configured: bool,
-    gateway_id_configured: bool,
-    token_configured: bool,
-) -> bool {
-    router_enabled && account_configured && gateway_id_configured && token_configured
 }
 
 fn is_relay_model_fallback_ready(
@@ -3613,11 +3605,29 @@ mod tests {
 
     #[test]
     fn relay_ai_gateway_router_ready_requires_explicit_gate_and_config() {
-        assert!(is_relay_ai_gateway_router_ready(true, true, true, true));
-        assert!(!is_relay_ai_gateway_router_ready(false, true, true, true));
-        assert!(!is_relay_ai_gateway_router_ready(true, false, true, true));
-        assert!(!is_relay_ai_gateway_router_ready(true, true, false, true));
-        assert!(!is_relay_ai_gateway_router_ready(true, true, true, false));
+        let configured = || Some("configured".to_string());
+        assert!(
+            crate::relay_ai_gateway_policy::relay_ai_gateway_runtime_config(
+                true,
+                configured(),
+                configured(),
+                configured(),
+            )
+            .is_some()
+        );
+        for missing in 0..4 {
+            let mut values = [configured(), configured(), configured(), configured()];
+            values[missing] = None;
+            assert!(
+                crate::relay_ai_gateway_policy::relay_ai_gateway_runtime_config(
+                    values[0].is_some(),
+                    values[1].clone(),
+                    values[2].clone(),
+                    values[3].clone(),
+                )
+                .is_none()
+            );
+        }
     }
 
     #[test]

@@ -724,3 +724,25 @@ usage-source semantics, a Go-generated immutable flat golden manifest, and all
 remote Queue/DLQ/provider/accounting/fault/rollback evidence. The parity
 capability remains hard false; Go/VPS stays authoritative and production
 remains **NO-GO**.
+
+## 2026-07-15 WFP Artifact And Credential Boundary Status
+
+The local WFP deployment path now matches the real Rust/Wasm output: the upload
+main is `crates/wfp-tenant/build/index.js`, its referenced Wasm is mandatory,
+and the Wrangler shim remains a compatibility entry only. Upload metadata and
+both Cloudflare readback surfaces use evidence schema v3 and must agree exactly
+on enabled, nonzero observability sampling.
+
+Tenant metadata is explicitly free of AI Gateway identity/policy and every
+Cloudflare or WFP authority credential. Main-relay AI Gateway readiness and
+runtime share one fail-closed contract requiring the dedicated
+`CLOUDFLARE_AI_GATEWAY_TOKEN`; a generic account API token no longer satisfies
+the data-plane requirement. Local Worker and deployment-contract tests pass,
+and the complete release gate is green.
+
+This closes a local artifact/readiness inconsistency, not the production gate.
+Authenticated upload and Settings/Content readback, tenant traffic smoke,
+remote Queue/D1/DLQ and provider evidence, fault/load/alert drills, replacement
+credential proof, rollback, and G1-G8 approval remain absent. TTS and
+OpenRouter flat-billing parity are also open. Go/VPS stays authoritative and
+production remains **NO-GO**.

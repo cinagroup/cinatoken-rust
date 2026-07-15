@@ -43,7 +43,7 @@ const DEFAULT_COMPATIBILITY_DATE: &str = "2026-07-11";
 const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
 const RUST_TENANT_CRATE: &str = "crates/wfp-tenant";
 const RUST_TENANT_BUILD_COMMAND: &str = "bun run build:wfp-tenant";
-const RUST_TENANT_SHIM_PATH: &str = "crates/wfp-tenant/build/worker/shim.mjs";
+const RUST_TENANT_ARTIFACT_MAIN_PATH: &str = "crates/wfp-tenant/build/index.js";
 pub(crate) const WFP_TENANT_STATUS_PATH: &str = "/__cinatoken/tenant/status";
 pub(crate) const WFP_TENANT_AI_GATEWAY_ROUTES: &[&str] = &[
     "/v1/chat/completions",
@@ -519,7 +519,9 @@ fn plan_response(plan: &TenantScriptPlanResponseInternal) -> TenantScriptPlanRes
             available: true,
             crate_path: RUST_TENANT_CRATE,
             build_command: RUST_TENANT_BUILD_COMMAND,
-            shim_path: RUST_TENANT_SHIM_PATH,
+            // Retain the response field for frontend compatibility; it now
+            // points at the uploader's actual worker-build main module.
+            shim_path: RUST_TENANT_ARTIFACT_MAIN_PATH,
             deployment_status: "artifact_upload_tool_required",
         },
     }
@@ -572,7 +574,7 @@ pub(crate) fn wfp_tenant_rust_wasm_runtime_compiled() -> bool {
     let deploy_tool = include_str!("../../../tools/deploy_wfp_tenant_artifact.mjs");
     RUST_TENANT_CRATE == "crates/wfp-tenant"
         && RUST_TENANT_BUILD_COMMAND == "bun run build:wfp-tenant"
-        && RUST_TENANT_SHIM_PATH == "crates/wfp-tenant/build/worker/shim.mjs"
+        && RUST_TENANT_ARTIFACT_MAIN_PATH == "crates/wfp-tenant/build/index.js"
         && deploy_tool.contains("wasmMagic")
         && deploy_tool.contains("CINATOKEN_WFP_OUTBOUND_AUTH_MODE")
         && !deploy_tool.contains("name: \"WFP_RELAY_AUTHORITY_KEY\"")

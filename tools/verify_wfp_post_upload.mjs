@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
-const schemaVersion = 2;
+const schemaVersion = 3;
 const expectedRuntime = "rust-wasm";
 const expectedOutboundAuthMode = "platform-outbound-v1";
 const expectedAuthorityVerifier = "platform-outbound-central-hmac-v3";
@@ -145,6 +145,7 @@ async function verifyFromFiles(args) {
     artifactDigestSha256: expected.artifactDigestSha256,
     moduleCount: expected.modules.length,
     bindingCount: expected.bindings.length,
+    observability: expected.observability,
     evidence: {
       uploadAccepted: true,
       scriptDetailsReadback: readbackResult.scriptDetails,
@@ -241,6 +242,10 @@ function validateDeployEvidence(value, { allowDryRun }) {
     metadata.compatibility_flags,
     "[script] compatibility_flags",
   );
+  const observability = validateObservability(
+    metadata.observability,
+    "[upload] metadata observability",
+  );
   const bindings = validateBindings(metadata.bindings, {
     label: "[binding] upload metadata",
     expected: true,
@@ -277,6 +282,7 @@ function validateDeployEvidence(value, { allowDryRun }) {
     mainModule,
     compatibilityDate,
     compatibilityFlags,
+    observability,
     modules,
     bindings,
     artifactDigestSha256: artifactDigest(modules),
@@ -350,6 +356,11 @@ async function validateReadbackEvidence(value, expected, evidenceDirectory) {
     "[readback] script settings",
   );
   validateCompatibility(settings, expected, "[readback] settings");
+  compareObservability(
+    settings.observability,
+    expected.observability,
+    "[readback] settings observability",
+  );
   const readbackBindings = validateBindings(settings.bindings, {
     label: "[readback] settings bindings",
     expected: false,
@@ -368,6 +379,11 @@ async function validateReadbackEvidence(value, expected, evidenceDirectory) {
     throw new Error("[module] content readback main_module mismatch");
   }
   validateCompatibility(contentMetadata, expected, "[readback] content metadata");
+  compareObservability(
+    contentMetadata.observability,
+    expected.observability,
+    "[readback] content metadata observability",
+  );
   const contentModules = await materializeContentModules(
     content.modules,
     evidenceDirectory,
@@ -394,6 +410,25 @@ function validateCompatibility(value, expected, label) {
   const flags = sortedUniqueStrings(value.compatibility_flags, `${label} compatibility_flags`);
   if (JSON.stringify(flags) !== JSON.stringify(expected.compatibilityFlags)) {
     throw new Error(`${label} compatibility_flags mismatch`);
+  }
+}
+
+function validateObservability(value, label) {
+  const observability = requireObject(value, label);
+  if (observability.enabled !== true) {
+    throw new Error(`${label} must be enabled`);
+  }
+  const rate = observability.head_sampling_rate;
+  if (!Number.isFinite(rate) || rate <= 0 || rate > 1) {
+    throw new Error(`${label} head_sampling_rate must be greater than 0 and at most 1`);
+  }
+  return { enabled: true, head_sampling_rate: rate };
+}
+
+function compareObservability(value, expected, label) {
+  const actual = validateObservability(value, label);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${label} mismatch`);
   }
 }
 
@@ -629,13 +664,14 @@ function buildDryRunPlan(expected) {
       mainModule: expected.mainModule,
       moduleCount: expected.modules.length,
       bindingCount: expected.bindings.length,
+      observability: expected.observability,
       routes: expectedRoutes,
     },
     requiredEvidence: [
       "successful non-dry-run uploader JSON with Cloudflare upload envelope",
       "Cloudflare Worker Details GET envelope",
-      "Cloudflare script Settings GET envelope with exact bindings",
-      "Cloudflare multipart Content GET metadata and raw module bytes",
+      "Cloudflare script Settings GET envelope with exact bindings and observability",
+      "Cloudflare multipart Content GET metadata with exact observability and raw module bytes",
       "successful live WFP tenant status dispatch JSON",
     ],
   };
@@ -803,7 +839,7 @@ async function runSelfTest() {
     "hash-mismatch",
     fixture,
     (copy) => {
-      copy.readback.content.modules.find((item) => item.name === "shim.mjs").base64 =
+      copy.readback.content.modules.find((item) => item.name === "index.js").base64 =
         Buffer.from("changed", "utf8").toString("base64");
     },
     /\[hash\].*mismatch/,
@@ -816,6 +852,15 @@ async function runSelfTest() {
       copy.readback.settings.success = false;
     },
     /\[readback\].*success=true/,
+    cases,
+  );
+  await expectFailure(
+    "observability-mismatch",
+    fixture,
+    (copy) => {
+      copy.readback.settings.result.observability.head_sampling_rate = 0.5;
+    },
+    /observability.*mismatch/,
     cases,
   );
   await expectFailure(
@@ -853,6 +898,7 @@ async function runSelfTest() {
       "hash",
       "readback",
       "dispatch",
+      "observability",
     ],
   };
 }
@@ -880,7 +926,7 @@ function selfTestFixture() {
   const wasm = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
   const modules = [
     moduleClaim("index_bg.wasm", wasm, "application/wasm"),
-    moduleClaim("shim.mjs", shim, "application/javascript+module"),
+    moduleClaim("index.js", shim, "application/javascript+module"),
   ].sort((left, right) => left.name.localeCompare(right.name));
   const bindings = [
     { name: "CINATOKEN_TENANT_ID", type: "plain_text", text: "tenant-smoke" },
@@ -893,9 +939,10 @@ function selfTestFixture() {
     },
   ];
   const metadata = {
-    main_module: "shim.mjs",
+    main_module: "index.js",
     compatibility_date: "2026-07-11",
     compatibility_flags: ["nodejs_compat"],
+    observability: { enabled: true, head_sampling_rate: 0.1 },
     bindings,
   };
   const cloudflareEnvelope = (result) => ({
@@ -923,13 +970,13 @@ function selfTestFixture() {
       scriptName: "tenant-smoke",
       tenantId: "tenant-smoke",
       namespace: "cinatoken-rust-tenants-staging",
-      mainModule: "shim.mjs",
+      mainModule: "index.js",
       moduleCount: modules.length,
       modules,
       artifactManifest: {
         runtime: expectedRuntime,
         scanned: true,
-        mainModule: "shim.mjs",
+        mainModule: "index.js",
         moduleCount: modules.length,
         totalBytes: modules.reduce((sum, item) => sum + item.bytes, 0),
         mainModulePresent: true,
@@ -951,6 +998,7 @@ function selfTestFixture() {
       settings: cloudflareEnvelope({
         compatibility_date: "2026-07-11",
         compatibility_flags: ["nodejs_compat"],
+        observability: { ...metadata.observability },
         bindings: settingsBindings,
       }),
       content: {
@@ -960,7 +1008,7 @@ function selfTestFixture() {
         metadata,
         modules: [
           { name: "index_bg.wasm", contentType: "application/wasm", base64: wasm.toString("base64") },
-          { name: "shim.mjs", contentType: "application/javascript+module", base64: shim.toString("base64") },
+          { name: "index.js", contentType: "application/javascript+module", base64: shim.toString("base64") },
         ],
       },
     },

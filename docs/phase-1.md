@@ -1157,3 +1157,29 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   manifest, and all remote Queue/D1/provider evidence. Tiered tool surcharges
   were intentionally not changed in this increment. Production remains
   **NO-GO**.
+
+## 2026-07-15 WFP Deployment Evidence And Dedicated Gateway Credential Increment
+
+- The tenant artifact uploader now targets the real Rust/Wasm build output,
+  `crates/wfp-tenant/build/index.js` plus `index_bg.wasm`, instead of the
+  Wrangler-only compatibility shim. Strict manifest validation remains
+  mandatory before upload.
+- Upload metadata enables observability with a nonzero sampling rate. Evidence
+  schema v3 requires exact upload, Scripts Settings GET, and multipart Content
+  GET observability agreement and rejects disabled or drifted readback.
+- Tenant bindings exclude AI Gateway identity/policy and all Cloudflare or WFP
+  authority credentials. Paid AI routing remains centralized in the reviewed
+  outbound Worker.
+- Main-relay AI Gateway runtime and capability readiness use the same
+  fail-closed policy and require only the dedicated
+  `CLOUDFLARE_AI_GATEWAY_TOKEN`; a generic Cloudflare API token cannot satisfy
+  the data-plane gate.
+- Local evidence passes Worker 676/676, artifact manifest 5/5, deploy policy
+  3/3, readback collector 19/19, post-upload verifier 28/28, and the complete
+  release gate with Workerd 38/38, frontend readiness 52/52, zero route parity
+  gaps, D1 schema checks, workspace tests, and all three Wasm targets.
+- Next: implement and freeze TTS duration/audio-detail settlement and OpenRouter
+  cost/cache semantic provenance, then capture authenticated staging upload,
+  Settings/Content readback, tenant smoke, Queue/D1/provider reconciliation,
+  fault/load/alert, credential rotation, rollback, and signed G1-G8 evidence.
+  Production remains **NO-GO**.

@@ -413,8 +413,12 @@ export function getFlatBillingParityBlockerLabel(blocker: string) {
       return 'Ali actual image count'
     case 'free_model_runtime_policy':
       return 'Free-model runtime policy'
-    case 'provider_usage_source_parity':
-      return 'Provider usage-source parity'
+    case 'provider_cache_field_scope_parity':
+      return 'Provider cache-field scope parity'
+    case 'provider_usage_provenance_parity':
+      return 'Provider usage provenance parity'
+    case 'provider_usage_staging_reconciliation':
+      return 'Provider usage staging reconciliation'
     default:
       return blocker
   }

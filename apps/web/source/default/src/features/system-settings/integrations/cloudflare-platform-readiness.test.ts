@@ -1070,6 +1070,7 @@ describe('Cloudflare platform readiness headline', () => {
         relay_flat_billing_go_parity_blockers: [
           'ali_actual_image_count',
           'free_model_runtime_policy',
+          'provider_cache_field_scope_parity',
         ],
         relay_flat_billing_intent_staging_verified: true,
         relay_flat_billing_intent_cutover_ready: false,
@@ -1151,6 +1152,18 @@ describe('Cloudflare platform readiness headline', () => {
     assert.equal(
       getFlatBillingParityBlockerLabel('ali_actual_image_count'),
       'Ali actual image count'
+    )
+    assert.equal(
+      getFlatBillingParityBlockerLabel('provider_cache_field_scope_parity'),
+      'Provider cache-field scope parity'
+    )
+    assert.equal(
+      getFlatBillingParityBlockerLabel('provider_usage_provenance_parity'),
+      'Provider usage provenance parity'
+    )
+    assert.equal(
+      getFlatBillingParityBlockerLabel('provider_usage_staging_reconciliation'),
+      'Provider usage staging reconciliation'
     )
     assert.equal(
       getFlatBillingParityBlockerLabel('future_blocker'),

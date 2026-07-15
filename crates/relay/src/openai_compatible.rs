@@ -121,6 +121,18 @@ pub struct ToolUsageSummary {
     pub image_generation: Option<ImageGenerationToolUsage>,
 }
 
+/// Provider-scoped nonstandard cache fields accepted by the Go relay. Standard
+/// nested token details remain available under every policy.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum UsageCacheFieldPolicy {
+    #[default]
+    Standard,
+    DeepSeek,
+    Zhipu,
+    Moonshot,
+    Anthropic,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageGenerationToolUsage {
     pub quality: ImageGenerationQuality,
@@ -483,10 +495,20 @@ fn apply_gemini_native_model_value_mapping(value: &mut Value, model: &str, mappe
 }
 
 pub fn usage_summary_from_body(body: &str) -> UsageSummary {
+    usage_summary_from_body_with_cache_policy(body, UsageCacheFieldPolicy::Standard)
+}
+
+pub fn usage_summary_from_body_with_cache_policy(
+    body: &str,
+    cache_policy: UsageCacheFieldPolicy,
+) -> UsageSummary {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return UsageSummary::default();
     };
-    usage_summary_with_response_tools(&value, usage_summary_from_value(&value).unwrap_or_default())
+    usage_summary_with_response_tools(
+        &value,
+        usage_summary_from_value(&value, cache_policy).unwrap_or_default(),
+    )
 }
 
 pub fn usage_summary_from_rerank_body(body: &str) -> UsageSummary {
@@ -495,7 +517,7 @@ pub fn usage_summary_from_rerank_body(body: &str) -> UsageSummary {
     };
     usage_summary_from_cohere_rerank_value(&value)
         .or_else(|| usage_summary_from_jina_rerank_value(&value))
-        .or_else(|| usage_summary_from_value(&value))
+        .or_else(|| usage_summary_from_value(&value, UsageCacheFieldPolicy::Standard))
         .unwrap_or_default()
 }
 
@@ -503,7 +525,7 @@ pub fn usage_summary_from_anthropic_body(body: &str) -> UsageSummary {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return UsageSummary::default();
     };
-    let usage = usage_summary_from_value(&value)
+    let usage = usage_summary_from_value(&value, UsageCacheFieldPolicy::Anthropic)
         .map(mark_anthropic_usage_semantic)
         .unwrap_or_default();
     usage_summary_with_response_tools(&value, usage)
@@ -569,12 +591,25 @@ pub struct SseUsageAccumulator {
     /// unbounded stream to grow Worker memory.
     tool_item_ids: HashSet<String>,
     gemini_generated_image_count: i32,
+    /// Whether a provider-native stream emitted its terminal protocol event.
+    /// Anthropic can end the HTTP body cleanly without `message_stop`, so EOF
+    /// alone is not sufficient evidence that its final usage is complete.
+    provider_stream_complete: bool,
+    cache_field_policy: UsageCacheFieldPolicy,
 }
 
 impl SseUsageAccumulator {
+    pub fn openai(cache_field_policy: UsageCacheFieldPolicy) -> Self {
+        Self {
+            cache_field_policy,
+            ..Self::default()
+        }
+    }
+
     pub fn anthropic() -> Self {
         Self {
             mode: SseUsageMode::Anthropic,
+            cache_field_policy: UsageCacheFieldPolicy::Anthropic,
             ..Self::default()
         }
     }
@@ -589,6 +624,7 @@ impl SseUsageAccumulator {
     pub fn moonshot() -> Self {
         Self {
             mode: SseUsageMode::Moonshot,
+            cache_field_policy: UsageCacheFieldPolicy::Moonshot,
             ..Self::default()
         }
     }
@@ -616,7 +652,14 @@ impl SseUsageAccumulator {
     /// accumulated streamed completion text and tool-call count. Callers that
     /// need the missing-usage estimate fallback use this; [`Self::finish`] is the
     /// thin wrapper for callers that only want the usage.
-    pub fn into_parts(mut self) -> (UsageSummary, String, i64) {
+    pub fn into_parts(self) -> (UsageSummary, String, i64) {
+        let (usage, response_text, tool_count, _) = self.into_parts_with_status();
+        (usage, response_text, tool_count)
+    }
+
+    /// Variant of [`Self::into_parts`] that also reports whether a native
+    /// provider emitted its terminal stream event.
+    pub fn into_parts_with_status(mut self) -> (UsageSummary, String, i64, bool) {
         if !self.pending_line.is_empty() {
             let line = std::mem::take(&mut self.pending_line);
             self.push_line(&line);
@@ -629,7 +672,12 @@ impl SseUsageAccumulator {
             self.latest.completion_tokens = self.gemini_generated_image_count.saturating_mul(1_400);
             // Go intentionally preserves the provider-reported total here.
         }
-        (self.latest, self.response_text, self.tool_count)
+        (
+            self.latest,
+            self.response_text,
+            self.tool_count,
+            self.provider_stream_complete,
+        )
     }
 
     fn push_line(&mut self, line: &[u8]) {
@@ -647,7 +695,11 @@ impl SseUsageAccumulator {
     fn flush_event(&mut self) {
         match self.mode {
             SseUsageMode::OpenAi => {
-                if let Some(summary) = usage_summary_from_sse_data_lines(&self.data_lines, false) {
+                if let Some(summary) = usage_summary_from_sse_data_lines(
+                    &self.data_lines,
+                    false,
+                    self.cache_field_policy,
+                ) {
                     self.latest = merge_openai_stream_usage(self.latest, summary);
                 }
                 accumulate_openai_stream_text(
@@ -662,9 +714,15 @@ impl SseUsageAccumulator {
                 );
             }
             SseUsageMode::Anthropic => {
-                if let Some(summary) = usage_summary_from_sse_data_lines(&self.data_lines, true) {
+                if let Some(summary) = usage_summary_from_sse_data_lines(
+                    &self.data_lines,
+                    true,
+                    self.cache_field_policy,
+                ) {
                     self.latest = merge_anthropic_stream_usage(self.latest, summary);
                 }
+                self.provider_stream_complete |=
+                    accumulate_anthropic_stream_text(&self.data_lines, &mut self.response_text);
             }
             SseUsageMode::Moonshot => {
                 if let Some(summary) = usage_summary_from_moonshot_sse_data_lines(&self.data_lines)
@@ -685,6 +743,7 @@ impl SseUsageAccumulator {
                 if let Some(summary) = usage_summary_from_gemini_sse_data_lines(&self.data_lines) {
                     self.latest = summary;
                 }
+                accumulate_gemini_stream_text(&self.data_lines, &mut self.response_text);
             }
         }
         self.data_lines.clear();
@@ -700,7 +759,10 @@ enum SseUsageMode {
     Gemini,
 }
 
-fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
+fn usage_summary_from_value(
+    value: &Value,
+    cache_policy: UsageCacheFieldPolicy,
+) -> Option<UsageSummary> {
     let usage = value
         .get("usage")
         .or_else(|| {
@@ -728,16 +790,34 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
         "output_tokens_details",
         "output_token_details",
     ];
-    let cached_tokens = first_non_zero_i32(&[
-        nested_i32_field(usage, &input_token_detail_keys, &["cached_tokens"]),
-        first_i32_field(usage, &["cached_tokens"]),
-        first_i32_field(usage, &["cache_read_input_tokens"]),
-        first_i32_field(usage, &["prompt_cache_hit_tokens"]),
-    ]);
-    let cache_creation_tokens = first_non_zero_i32(&[
-        nested_i32_field(usage, &input_token_detail_keys, &["cached_creation_tokens"]),
-        first_i32_field(usage, &["cache_creation_input_tokens"]),
-    ]);
+    let standard_cached_tokens =
+        nested_i32_field(usage, &input_token_detail_keys, &["cached_tokens"]);
+    let cached_tokens = match cache_policy {
+        UsageCacheFieldPolicy::Standard => standard_cached_tokens,
+        UsageCacheFieldPolicy::DeepSeek => first_non_zero_i32(&[
+            standard_cached_tokens,
+            first_i32_field(usage, &["prompt_cache_hit_tokens"]),
+        ]),
+        UsageCacheFieldPolicy::Zhipu | UsageCacheFieldPolicy::Moonshot => first_non_zero_i32(&[
+            standard_cached_tokens,
+            first_i32_field(usage, &["cached_tokens"]),
+            first_i32_field(usage, &["prompt_cache_hit_tokens"]),
+        ]),
+        UsageCacheFieldPolicy::Anthropic => first_non_zero_i32(&[
+            standard_cached_tokens,
+            first_i32_field(usage, &["cache_read_input_tokens"]),
+        ]),
+    };
+    let standard_cache_creation_tokens =
+        nested_i32_field(usage, &input_token_detail_keys, &["cached_creation_tokens"]);
+    let cache_creation_tokens = if cache_policy == UsageCacheFieldPolicy::Anthropic {
+        first_non_zero_i32(&[
+            standard_cache_creation_tokens,
+            first_i32_field(usage, &["cache_creation_input_tokens"]),
+        ])
+    } else {
+        standard_cache_creation_tokens
+    };
     let claude_cache_creation_5m_tokens = first_i32_field(
         usage,
         &[
@@ -933,7 +1013,8 @@ fn gemini_generated_image_count(data_lines: &[String]) -> i32 {
 }
 
 fn usage_summary_from_moonshot_value(value: &Value) -> Option<UsageSummary> {
-    let mut summary = usage_summary_from_value(value).unwrap_or_default();
+    let mut summary =
+        usage_summary_from_value(value, UsageCacheFieldPolicy::Moonshot).unwrap_or_default();
     let top_level_usage = value.get("usage");
     let cached_tokens = first_non_zero_i32(&[
         top_level_usage
@@ -1032,14 +1113,20 @@ fn usage_summary_from_gemini_usage_metadata(metadata: &Value) -> Option<UsageSum
         .saturating_add(first_i32_field(metadata, &["toolUsePromptTokenCount"]));
     let mut completion_tokens = first_i32_field(metadata, &["candidatesTokenCount"])
         .saturating_add(first_i32_field(metadata, &["thoughtsTokenCount"]));
-    let mut total_tokens = first_i32_field(metadata, &["totalTokenCount"])
-        .max(prompt_tokens.saturating_add(completion_tokens));
-    if completion_tokens <= 0 && total_tokens > prompt_tokens {
-        completion_tokens = total_tokens.saturating_sub(prompt_tokens);
+    let reported_total_tokens = first_i32_field(metadata, &["totalTokenCount"]);
+    if completion_tokens <= 0 && reported_total_tokens > prompt_tokens {
+        completion_tokens = reported_total_tokens.saturating_sub(prompt_tokens);
     }
-    total_tokens = total_tokens.max(prompt_tokens.saturating_add(completion_tokens));
+    // Preserve a positive provider-reported total even when Gemini's component
+    // fields do not add up to it. This provenance is needed for invoice
+    // reconciliation. Only synthesize a total when the provider omitted it.
+    let total_tokens = if reported_total_tokens > 0 {
+        reported_total_tokens
+    } else {
+        prompt_tokens.saturating_add(completion_tokens)
+    };
 
-    let (image_input_tokens, audio_input_tokens) = gemini_input_modality_tokens(metadata);
+    let (_, audio_input_tokens) = gemini_input_modality_tokens(metadata);
     let (image_output_tokens, audio_output_tokens) =
         gemini_modality_tokens(metadata.get("candidatesTokensDetails"));
 
@@ -1048,7 +1135,7 @@ fn usage_summary_from_gemini_usage_metadata(metadata: &Value) -> Option<UsageSum
         completion_tokens,
         total_tokens,
         cached_tokens: first_i32_field(metadata, &["cachedContentTokenCount"]),
-        image_input_tokens,
+        image_input_tokens: 0,
         image_output_tokens,
         audio_input_tokens,
         audio_output_tokens,
@@ -1059,15 +1146,14 @@ fn usage_summary_from_gemini_usage_metadata(metadata: &Value) -> Option<UsageSum
 fn usage_summary_from_gemini_count_tokens_value(value: &Value) -> Option<UsageSummary> {
     let total_tokens = first_i32_field_value(value, &["totalTokens"])?;
     let cached_tokens = first_i32_field(value, &["cachedContentTokenCount"]);
-    let (image_input_tokens, audio_input_tokens) =
-        gemini_modality_tokens(value.get("promptTokensDetails"));
+    let (_, audio_input_tokens) = gemini_modality_tokens(value.get("promptTokensDetails"));
 
     Some(UsageSummary {
         prompt_tokens: total_tokens,
         completion_tokens: 0,
         total_tokens,
         cached_tokens,
-        image_input_tokens,
+        image_input_tokens: 0,
         audio_input_tokens,
         ..UsageSummary::default()
     })
@@ -1076,6 +1162,7 @@ fn usage_summary_from_gemini_count_tokens_value(value: &Value) -> Option<UsageSu
 fn usage_summary_from_sse_data_lines(
     data_lines: &[String],
     anthropic_semantics: bool,
+    cache_policy: UsageCacheFieldPolicy,
 ) -> Option<UsageSummary> {
     if data_lines.is_empty() {
         return None;
@@ -1088,7 +1175,7 @@ fn usage_summary_from_sse_data_lines(
     }
 
     let value = serde_json::from_str::<Value>(payload).ok()?;
-    let usage = usage_summary_from_value(&value)?;
+    let usage = usage_summary_from_value(&value, cache_policy)?;
     Some(if anthropic_semantics {
         mark_anthropic_usage_semantic(usage)
     } else {
@@ -1270,6 +1357,49 @@ fn accumulate_openai_stream_text(data_lines: &[String], text: &mut String, tool_
     }
 }
 
+/// Accumulate Anthropic `content_block_delta` text while detecting the
+/// protocol-level `message_stop` event. The caller uses the completion bit to
+/// distinguish a complete stream from a cleanly truncated HTTP body.
+fn accumulate_anthropic_stream_text(data_lines: &[String], text: &mut String) -> bool {
+    let Some(value) = sse_json_value(data_lines) else {
+        return false;
+    };
+    if value.get("type").and_then(Value::as_str) == Some("message_stop") {
+        return true;
+    }
+    if value.get("type").and_then(Value::as_str) != Some("content_block_delta") {
+        return false;
+    }
+    let Some(delta) = value.get("delta") else {
+        return false;
+    };
+    for field in ["text", "thinking"] {
+        if let Some(value) = delta.get(field).and_then(Value::as_str) {
+            text.push_str(value);
+        }
+    }
+    false
+}
+
+fn accumulate_gemini_stream_text(data_lines: &[String], text: &mut String) {
+    let Some(value) = sse_json_value(data_lines) else {
+        return;
+    };
+    append_gemini_candidate_text(&value, text);
+}
+
+fn sse_json_value(data_lines: &[String]) -> Option<Value> {
+    if data_lines.is_empty() {
+        return None;
+    }
+    let payload = data_lines.join("\n");
+    let payload = payload.trim();
+    if payload.is_empty() || payload == "[DONE]" {
+        return None;
+    }
+    serde_json::from_str(payload).ok()
+}
+
 /// Concatenate the assistant completion text of a non-stream OpenAI response
 /// body — every `choices[].message.content` plus `reasoning_content`
 /// (or `reasoning`). Mirrors Go `OpenaiHandler`'s missing-usage branch, which
@@ -1300,6 +1430,38 @@ pub fn openai_response_completion_text(body: &str) -> String {
         }
     }
     text
+}
+
+/// Concatenate native Gemini candidate text for missing-usage estimation.
+/// This mirrors Go's Gemini handlers, which append every non-empty
+/// `candidates[].content.parts[].text` value.
+pub fn gemini_response_completion_text(body: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    append_gemini_candidate_text(&value, &mut text);
+    text
+}
+
+fn append_gemini_candidate_text(value: &Value, text: &mut String) {
+    let Some(candidates) = value.get("candidates").and_then(Value::as_array) else {
+        return;
+    };
+    for candidate in candidates {
+        let Some(parts) = candidate
+            .get("content")
+            .and_then(|content| content.get("parts"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for part in parts {
+            if let Some(value) = part.get("text").and_then(Value::as_str) {
+                text.push_str(value);
+            }
+        }
+    }
 }
 
 /// Append an OpenAI message-content value as text. A delta's `content` is
@@ -2419,7 +2581,7 @@ mod tests {
                 completion_tokens: 37,
                 total_tokens: 157,
                 cached_tokens: 11,
-                image_input_tokens: 40,
+                image_input_tokens: 0,
                 audio_input_tokens: 15,
                 image_output_tokens: 5,
                 audio_output_tokens: 6,
@@ -2467,7 +2629,7 @@ mod tests {
                 completion_tokens: 0,
                 total_tokens: 42,
                 cached_tokens: 12,
-                image_input_tokens: 20,
+                image_input_tokens: 0,
                 audio_input_tokens: 5,
                 ..UsageSummary::default()
             }
@@ -2521,6 +2683,59 @@ mod tests {
                 ..UsageSummary::default()
             }
         );
+    }
+
+    #[test]
+    fn gemini_usage_preserves_provider_total_when_components_disagree() {
+        let usage = usage_summary_from_gemini_body(
+            r#"{
+                "usageMetadata": {
+                    "promptTokenCount": 0,
+                    "candidatesTokenCount": 90,
+                    "thoughtsTokenCount": 10,
+                    "totalTokenCount": 110
+                }
+            }"#,
+        );
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 100);
+        assert_eq!(usage.total_tokens, 110);
+    }
+
+    #[test]
+    fn gemini_response_text_and_stream_accumulator_cover_native_candidates() {
+        let event =
+            r#"{"candidates":[{"content":{"parts":[{"text":"hello"},{"text":" world"}]}}]}"#;
+        assert_eq!(gemini_response_completion_text(event), "hello world");
+
+        let mut accumulator = SseUsageAccumulator::gemini();
+        accumulator.push_chunk(format!("data: {event}\n\n").as_bytes());
+        let (usage, text, tools, complete) = accumulator.into_parts_with_status();
+        assert_eq!(usage, UsageSummary::default());
+        assert_eq!(text, "hello world");
+        assert_eq!(tools, 0);
+        assert!(!complete);
+    }
+
+    #[test]
+    fn anthropic_stream_accumulator_preserves_partial_usage_text_and_stop_state() {
+        let mut partial = SseUsageAccumulator::anthropic();
+        partial.push_chunk(
+            concat!(
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"cache_read_input_tokens\":5}}}\n\n",
+                "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"
+            )
+            .as_bytes(),
+        );
+        let (usage, text, _, complete) = partial.into_parts_with_status();
+        assert_eq!(usage.prompt_tokens, 25);
+        assert_eq!(usage.cached_tokens, 5);
+        assert_eq!(text, "hello");
+        assert!(!complete);
+
+        let mut complete_stream = SseUsageAccumulator::anthropic();
+        complete_stream.push_chunk(b"data: {\"type\":\"message_stop\"}\n\n");
+        assert!(complete_stream.into_parts_with_status().3);
     }
 
     #[test]
@@ -2794,11 +3009,31 @@ mod tests {
     }
 
     #[test]
-    fn top_level_cached_tokens_is_a_supported_fallback() {
-        let usage = usage_summary_from_body(
-            r#"{"usage":{"prompt_tokens":100,"completion_tokens":10,"cached_tokens":40}}"#,
+    fn nonstandard_cache_fields_are_provider_scoped_for_json_and_sse() {
+        let body = r#"{"usage":{"prompt_tokens":100,"completion_tokens":10,"cached_tokens":40,"prompt_cache_hit_tokens":30,"cache_read_input_tokens":20}}"#;
+        assert_eq!(usage_summary_from_body(body).cached_tokens, 0);
+        assert_eq!(
+            usage_summary_from_body_with_cache_policy(body, UsageCacheFieldPolicy::DeepSeek)
+                .cached_tokens,
+            30
         );
-        assert_eq!(usage.cached_tokens, 40);
+        assert_eq!(
+            usage_summary_from_body_with_cache_policy(body, UsageCacheFieldPolicy::Zhipu)
+                .cached_tokens,
+            40
+        );
+        assert_eq!(
+            usage_summary_from_body_with_cache_policy(body, UsageCacheFieldPolicy::Anthropic)
+                .cached_tokens,
+            20
+        );
+
+        let mut standard = SseUsageAccumulator::openai(UsageCacheFieldPolicy::Standard);
+        standard.push_chunk(format!("data: {body}\n\n").as_bytes());
+        assert_eq!(standard.finish().cached_tokens, 0);
+        let mut zhipu = SseUsageAccumulator::openai(UsageCacheFieldPolicy::Zhipu);
+        zhipu.push_chunk(format!("data: {body}\n\n").as_bytes());
+        assert_eq!(zhipu.finish().cached_tokens, 40);
     }
 
     #[test]

@@ -1267,3 +1267,28 @@ Production remains **NO-GO**.
   open. That adapter requires bounded asynchronous orchestration and remote
   provider evidence; SiliconFlow/xAI image edits remain unsupported and must
   continue to fail before reserve. Production remains **NO-GO**.
+
+## 2026-07-15 Native Provider Usage Recovery Increment
+
+- Gemini JSON/SSE now fills a missing prompt from the frozen request estimate,
+  estimates a missing completion from native candidate text, preserves a
+  positive provider total, and excludes input IMAGE details from Go's billed
+  subcategory view while retaining AUDIO details.
+- Anthropic-wire SSE accumulates text/thinking and `message_stop`. A missing or
+  incomplete terminal usage supplements prompt/completion only, preserving
+  cache read and split cache-creation facts collected at `message_start`.
+- The behavior stays behind `RELAY_MISSING_USAGE_ESTIMATE_ENABLED`; the default
+  cutover state is unchanged.
+- Nonstandard cache fields are now provider-scoped like Go. Durable audit
+  metadata separates provider/wire source, normalized semantic provenance,
+  local estimation, and transport route. Provider parity is now fail-closed by
+  the explicit staging reconciliation blocker instead of one aggregate label.
+- Parallel source audit rejected a tempting free-model shortcut: Go skips
+  pre-consume but can still post-charge tool/audio additions. HTTP, Realtime,
+  Task, wallet admission, request counting, and serving-group semantics must be
+  implemented together before that blocker can close.
+- Ali actual-image settlement remains an explicit asynchronous tranche using
+  the existing TaskRunner DO, D1 CAS, and billing Queue. cinaVibeSDK is a design
+  reference for DO alarms and WFP dispatch only, not a billing source of truth.
+
+Production remains **NO-GO**.

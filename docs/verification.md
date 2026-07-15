@@ -4624,6 +4624,25 @@ classification, remote direct/Gateway/WFP replay, provider invoice correlation,
 credential rotation, alerts, rollback, and G1-G8 approval remain open.
 Production remains **NO-GO**.
 
+## Native Provider Usage Recovery Verification (2026-07-15)
+
+Focused verification covers:
+
+- Gemini JSON with `prompt=0`, candidates plus thoughts completion, and a
+  provider total smaller than the normalized component sum.
+- Gemini native response/SSE candidate text collection and empty-stream
+  behavior.
+- Anthropic `message_start` cache evidence followed by text and a missing
+  `message_delta`/`message_stop`, plus explicit terminal-event detection.
+- Provider-aware field supplementation that never replaces cache details or a
+  positive Gemini provider total.
+- Frontend rendering of the decomposed cache-scope, usage-provenance, and
+  staging-reconciliation blocker IDs.
+
+This is local evidence only. Live direct/AI Gateway/WFP reconciliation, Ali
+actual image count, and the complete free-model runtime policy remain blocking.
+Production remains **NO-GO**.
+
 ## Frozen Flat Billing Intent Verification (2026-07-14)
 
 ```powershell

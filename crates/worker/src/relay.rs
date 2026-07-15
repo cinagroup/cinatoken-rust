@@ -49,16 +49,17 @@ use cinatoken_providers::{
 };
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
-    first_channel_key, ip_allowlist_matches, is_auto_disable_status, is_retryable_status,
-    mapped_model_name, usage_summary_from_anthropic_body, usage_summary_from_body,
+    first_channel_key, gemini_response_completion_text, ip_allowlist_matches,
+    is_auto_disable_status, is_retryable_status, mapped_model_name,
+    usage_summary_from_anthropic_body, usage_summary_from_body_with_cache_policy,
     usage_summary_from_gemini_body, usage_summary_from_moonshot_body,
     usage_summary_from_rerank_body, CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath,
-    ImageGenerationQuality, ImageGenerationSize, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
-    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ALI, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_COHERE,
-    CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT,
-    CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PERPLEXITY,
-    CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VOLCENGINE,
-    CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4, RELAY_CACHE_SCHEMA_VERSION,
+    ImageGenerationQuality, ImageGenerationSize, RelayCacheKeys, SseUsageAccumulator,
+    UsageCacheFieldPolicy, UsageSummary, ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ALI,
+    CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA,
+    CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER,
+    CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT,
+    CHANNEL_TYPE_VOLCENGINE, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4, RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -3642,6 +3643,7 @@ async fn relay_endpoint_with_auth(
         usage_locally_estimated: false,
         non_stream_usage_parse_failed: false,
         tts_response_usage: None,
+        provider_usage_source: relay_provider_usage_source(selected_provider, channel.channel_type),
         stream_lease_heartbeat: None,
         affinity: affinity_audit,
         model_route: model_route_audit,
@@ -9394,8 +9396,8 @@ async fn response_usage_summary(
         })?;
     }
     let usage = usage_summary_for_provider(&body, provider, endpoint_path, channel_type);
-    // Missing-usage estimate fallback only applies to the OpenAI chat shape
-    // (the body-text extraction is OpenAI-shaped); rerank carries its own usage.
+    // Rerank carries its own usage. Native Gemini needs the same prompt fallback
+    // as Go, but extracts completion text from Gemini candidates.
     let estimate_applicable = estimate_enabled
         && matches!(
             provider,
@@ -9410,15 +9412,28 @@ async fn response_usage_summary(
                 | RelayProviderKind::SubmodelOpenAi
                 | RelayProviderKind::XaiOpenAi
                 | RelayProviderKind::VolcEngineOpenAi
+                | RelayProviderKind::GeminiNative
         )
         && endpoint_path != "rerank";
-    let (usage, locally_estimated) = resolve_non_stream_usage(
-        usage,
-        &body,
-        model,
-        estimated_prompt_tokens,
-        estimate_applicable,
-    );
+    let (usage, locally_estimated) = if provider == RelayProviderKind::GeminiNative {
+        resolve_native_provider_usage(
+            usage,
+            &gemini_response_completion_text(&body),
+            model,
+            estimated_prompt_tokens,
+            estimate_applicable,
+            usage.completion_tokens <= 0,
+            true,
+        )
+    } else {
+        resolve_non_stream_usage(
+            usage,
+            &body,
+            model,
+            estimated_prompt_tokens,
+            estimate_applicable,
+        )
+    };
     if locally_estimated {
         worker::console_log!(
             "relay usage missing; locally estimated non-stream usage for {} (prompt={}, completion={})",
@@ -9436,11 +9451,14 @@ fn usage_summary_for_provider(
     endpoint_path: &str,
     channel_type: i32,
 ) -> UsageSummary {
+    let cache_policy = usage_cache_field_policy(provider, channel_type);
     let mut usage = match provider {
         RelayProviderKind::AliOpenAi if endpoint_path == "rerank" => {
             usage_summary_from_rerank_body(body)
         }
-        RelayProviderKind::AliOpenAi => usage_summary_from_body(body),
+        RelayProviderKind::AliOpenAi => {
+            usage_summary_from_body_with_cache_policy(body, cache_policy)
+        }
         RelayProviderKind::AliMessages => usage_summary_from_anthropic_body(body),
         RelayProviderKind::OpenAiCompatible if endpoint_path == "rerank" => {
             usage_summary_from_rerank_body(body)
@@ -9458,7 +9476,9 @@ fn usage_summary_for_provider(
         | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::TencentHunyuan
         | RelayProviderKind::XaiOpenAi
-        | RelayProviderKind::VolcEngineOpenAi => usage_summary_from_body(body),
+        | RelayProviderKind::VolcEngineOpenAi => {
+            usage_summary_from_body_with_cache_policy(body, cache_policy)
+        }
         RelayProviderKind::AnthropicMessages
         | RelayProviderKind::DeepSeekMessages
         | RelayProviderKind::MoonshotMessages => usage_summary_from_anthropic_body(body),
@@ -9473,6 +9493,53 @@ fn usage_summary_for_provider(
             .max(0);
     }
     usage
+}
+
+fn usage_cache_field_policy(
+    provider: RelayProviderKind,
+    channel_type: i32,
+) -> UsageCacheFieldPolicy {
+    if channel_type == CHANNEL_TYPE_ZHIPU_V4 {
+        UsageCacheFieldPolicy::Zhipu
+    } else {
+        match provider {
+            RelayProviderKind::DeepSeekOpenAi => UsageCacheFieldPolicy::DeepSeek,
+            RelayProviderKind::MoonshotOpenAi => UsageCacheFieldPolicy::Moonshot,
+            RelayProviderKind::AliMessages
+            | RelayProviderKind::AnthropicMessages
+            | RelayProviderKind::DeepSeekMessages
+            | RelayProviderKind::MoonshotMessages => UsageCacheFieldPolicy::Anthropic,
+            _ => UsageCacheFieldPolicy::Standard,
+        }
+    }
+}
+
+fn relay_provider_usage_source(provider: RelayProviderKind, channel_type: i32) -> &'static str {
+    if channel_type == CHANNEL_TYPE_ZHIPU_V4 {
+        return match provider {
+            RelayProviderKind::AnthropicMessages => "zhipu_v4_messages",
+            _ => "zhipu_v4_openai",
+        };
+    }
+    match provider {
+        RelayProviderKind::AliOpenAi => "ali_openai",
+        RelayProviderKind::AliMessages => "ali_messages",
+        RelayProviderKind::BaiduV2OpenAi => "baidu_v2_openai",
+        RelayProviderKind::OpenAiCompatible => "openai_compatible",
+        RelayProviderKind::AnthropicMessages => "anthropic_messages",
+        RelayProviderKind::DeepSeekOpenAi => "deepseek_openai",
+        RelayProviderKind::DeepSeekMessages => "deepseek_messages",
+        RelayProviderKind::MistralOpenAi => "mistral_openai",
+        RelayProviderKind::MoonshotOpenAi => "moonshot_openai",
+        RelayProviderKind::MoonshotMessages => "moonshot_messages",
+        RelayProviderKind::PerplexityOpenAi => "perplexity_openai",
+        RelayProviderKind::SiliconFlowOpenAi => "siliconflow_openai",
+        RelayProviderKind::SubmodelOpenAi => "submodel_openai",
+        RelayProviderKind::TencentHunyuan => "tencent_hunyuan",
+        RelayProviderKind::XaiOpenAi => "xai_openai",
+        RelayProviderKind::VolcEngineOpenAi => "volcengine_openai",
+        RelayProviderKind::GeminiNative => "gemini_native",
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -9605,6 +9672,7 @@ async fn complete_streaming_relay_response(
         let resolution = match streaming_usage_summary(
             &mut audit_response,
             provider,
+            channel.channel_type,
             &endpoint_path,
             &model,
             audit.estimated_prompt_tokens,
@@ -9655,6 +9723,7 @@ async fn complete_streaming_relay_response(
 async fn streaming_usage_summary(
     upstream: &mut Response,
     provider: RelayProviderKind,
+    channel_type: i32,
     endpoint_path: &str,
     model: &str,
     estimated_prompt_tokens: i64,
@@ -9675,7 +9744,9 @@ async fn streaming_usage_summary(
         | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::TencentHunyuan
         | RelayProviderKind::XaiOpenAi
-        | RelayProviderKind::VolcEngineOpenAi => SseUsageAccumulator::default(),
+        | RelayProviderKind::VolcEngineOpenAi => {
+            SseUsageAccumulator::openai(usage_cache_field_policy(provider, channel_type))
+        }
         RelayProviderKind::MoonshotOpenAi => SseUsageAccumulator::moonshot(),
         RelayProviderKind::AliMessages
         | RelayProviderKind::AnthropicMessages
@@ -9807,9 +9878,10 @@ async fn streaming_usage_summary(
         }
     }
 
-    let (usage, response_text, tool_count) = accumulator.into_parts();
-    // The streamed-text accumulation is OpenAI-shaped; only estimate for that
-    // provider (Anthropic/Gemini emit reliable usage chunks).
+    let (usage, response_text, tool_count, provider_stream_complete) =
+        accumulator.into_parts_with_status();
+    // Each supported wire shape now accumulates the response text needed for
+    // Go's partial/missing usage fallback.
     let estimate_applicable = estimate_enabled
         && matches!(
             provider,
@@ -9824,16 +9896,44 @@ async fn streaming_usage_summary(
                 | RelayProviderKind::SubmodelOpenAi
                 | RelayProviderKind::XaiOpenAi
                 | RelayProviderKind::VolcEngineOpenAi
+                | RelayProviderKind::AliMessages
+                | RelayProviderKind::AnthropicMessages
+                | RelayProviderKind::DeepSeekMessages
+                | RelayProviderKind::MoonshotMessages
+                | RelayProviderKind::GeminiNative
         );
-    let (usage, locally_estimated) = resolve_stream_usage(
-        usage,
-        &response_text,
-        tool_count,
-        endpoint_path,
-        model,
-        estimated_prompt_tokens,
-        estimate_applicable,
-    );
+    let (usage, locally_estimated) = match provider {
+        RelayProviderKind::AliMessages
+        | RelayProviderKind::AnthropicMessages
+        | RelayProviderKind::DeepSeekMessages
+        | RelayProviderKind::MoonshotMessages => resolve_native_provider_usage(
+            usage,
+            &response_text,
+            model,
+            estimated_prompt_tokens,
+            estimate_applicable,
+            usage.completion_tokens <= 0 || !provider_stream_complete,
+            false,
+        ),
+        RelayProviderKind::GeminiNative => resolve_native_provider_usage(
+            usage,
+            &response_text,
+            model,
+            estimated_prompt_tokens,
+            estimate_applicable,
+            usage.completion_tokens <= 0,
+            true,
+        ),
+        _ => resolve_stream_usage(
+            usage,
+            &response_text,
+            tool_count,
+            endpoint_path,
+            model,
+            estimated_prompt_tokens,
+            estimate_applicable,
+        ),
+    };
     let usage_recovered_after_error = terminal_error.is_some()
         && cinatoken_tokenizer::valid_usage(
             usage.prompt_tokens as i64,
@@ -9919,6 +10019,61 @@ fn resolve_stream_usage(
     )
 }
 
+/// Fill only missing or demonstrably incomplete native-provider usage fields.
+/// Anthropic keeps cache details from `message_start`; Gemini keeps a positive
+/// provider-reported total even when its components do not sum to that value.
+#[allow(clippy::too_many_arguments)]
+fn resolve_native_provider_usage(
+    usage: UsageSummary,
+    response_text: &str,
+    model: &str,
+    estimated_prompt_tokens: i64,
+    enabled: bool,
+    completion_incomplete: bool,
+    preserve_reported_total: bool,
+) -> (UsageSummary, bool) {
+    if !enabled || (!native_usage_has_evidence(&usage) && response_text.is_empty()) {
+        return (usage, false);
+    }
+
+    let estimate = cinatoken_tokenizer::response_text_to_usage(
+        model,
+        response_text,
+        estimated_prompt_tokens,
+        0,
+    );
+    let mut resolved = usage;
+    let mut locally_estimated = false;
+    if resolved.prompt_tokens == 0 && estimate.prompt_tokens != 0 {
+        resolved.prompt_tokens = clamp_i64_to_i32(estimate.prompt_tokens);
+        locally_estimated = true;
+    }
+    if completion_incomplete && estimate.completion_tokens > resolved.completion_tokens as i64 {
+        resolved.completion_tokens = clamp_i64_to_i32(estimate.completion_tokens);
+        locally_estimated = true;
+    }
+    if locally_estimated && !(preserve_reported_total && resolved.total_tokens > 0) {
+        resolved.total_tokens = resolved
+            .prompt_tokens
+            .saturating_add(resolved.completion_tokens);
+    }
+    (resolved, locally_estimated)
+}
+
+fn native_usage_has_evidence(usage: &UsageSummary) -> bool {
+    usage.prompt_tokens > 0
+        || usage.completion_tokens > 0
+        || usage.total_tokens > 0
+        || usage.cached_tokens > 0
+        || usage.cache_creation_tokens > 0
+        || usage.claude_cache_creation_5m_tokens > 0
+        || usage.claude_cache_creation_1h_tokens > 0
+        || usage.image_input_tokens > 0
+        || usage.image_output_tokens > 0
+        || usage.audio_input_tokens > 0
+        || usage.audio_output_tokens > 0
+}
+
 #[derive(Clone)]
 struct RelayAuditContext {
     started_at: i64,
@@ -9947,6 +10102,9 @@ struct RelayAuditContext {
     /// Bounded, response-derived OpenAI-compatible TTS usage. This is local
     /// settlement evidence, not an upstream-reported token block.
     tts_response_usage: Option<TtsResponseUsageAudit>,
+    /// Provider and wire family that supplied the usage evidence. Transport
+    /// provenance (direct, AI Gateway fallback, or WFP) remains in model_route.
+    provider_usage_source: &'static str,
     /// Bounded D1 lease-renewal evidence for positive-reserve SSE requests.
     /// This is populated by the cloned stream branch and never contains the
     /// reservation key or account identity.
@@ -10199,6 +10357,7 @@ async fn record_relay_audit(
         "upstream_status": upstream_status,
         "total_tokens": usage.total_tokens,
         "usage_source": usage_source,
+        "provider_usage_source": audit.provider_usage_source,
         "model_route": {
             "requested_model": audit.model_route.requested_model,
             "served_model": audit.model_route.served_model,
@@ -19279,13 +19438,94 @@ mod tests {
         );
         assert_eq!(custom.cached_tokens, 0);
 
-        let explicit = usage_summary_for_provider(
+        let nonstandard = usage_summary_for_provider(
             r#"{"usage":{"prompt_tokens":100,"cached_tokens":40},"timings":{"cache_n":64}}"#,
             RelayProviderKind::OpenAiCompatible,
             "chat/completions",
             CHANNEL_TYPE_OPENAI,
         );
-        assert_eq!(explicit.cached_tokens, 40);
+        assert_eq!(nonstandard.cached_tokens, 64);
+    }
+
+    #[test]
+    fn provider_cache_fallbacks_are_scoped_like_go() {
+        let body = r#"{
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "cached_tokens": 40,
+                "prompt_cache_hit_tokens": 30,
+                "cache_read_input_tokens": 20
+            }
+        }"#;
+        assert_eq!(
+            usage_summary_for_provider(
+                body,
+                RelayProviderKind::OpenAiCompatible,
+                "chat/completions",
+                8,
+            )
+            .cached_tokens,
+            0
+        );
+        assert_eq!(
+            usage_summary_for_provider(
+                body,
+                RelayProviderKind::DeepSeekOpenAi,
+                "chat/completions",
+                CHANNEL_TYPE_DEEPSEEK,
+            )
+            .cached_tokens,
+            30
+        );
+        assert_eq!(
+            usage_summary_for_provider(
+                body,
+                RelayProviderKind::OpenAiCompatible,
+                "chat/completions",
+                CHANNEL_TYPE_ZHIPU_V4,
+            )
+            .cached_tokens,
+            40
+        );
+        assert_eq!(
+            usage_summary_for_provider(
+                body,
+                RelayProviderKind::MoonshotOpenAi,
+                "chat/completions",
+                CHANNEL_TYPE_MOONSHOT,
+            )
+            .cached_tokens,
+            40
+        );
+        assert_eq!(
+            usage_summary_for_provider(body, RelayProviderKind::AnthropicMessages, "messages", 14,)
+                .cached_tokens,
+            20
+        );
+    }
+
+    #[test]
+    fn provider_usage_source_preserves_provider_and_wire_family() {
+        assert_eq!(
+            relay_provider_usage_source(RelayProviderKind::GeminiNative, 24),
+            "gemini_native"
+        );
+        assert_eq!(
+            relay_provider_usage_source(RelayProviderKind::DeepSeekMessages, CHANNEL_TYPE_DEEPSEEK),
+            "deepseek_messages"
+        );
+        assert_eq!(
+            relay_provider_usage_source(RelayProviderKind::OpenAiCompatible, CHANNEL_TYPE_ZHIPU_V4,),
+            "zhipu_v4_openai"
+        );
+        assert_eq!(
+            relay_provider_usage_source(
+                RelayProviderKind::AnthropicMessages,
+                CHANNEL_TYPE_ZHIPU_V4,
+            ),
+            "zhipu_v4_messages"
+        );
     }
 
     #[test]
@@ -19715,6 +19955,65 @@ mod tests {
             resolve_stream_usage(valid, "x", 1, "chat/completions", "gpt-4o", 100, true);
         assert!(!est2);
         assert_eq!(r2, valid);
+    }
+
+    #[test]
+    fn resolve_native_gemini_usage_fills_prompt_and_preserves_provider_total() {
+        let usage = UsageSummary {
+            prompt_tokens: 0,
+            completion_tokens: 100,
+            total_tokens: 110,
+            ..UsageSummary::default()
+        };
+        let (resolved, estimated) =
+            resolve_native_provider_usage(usage, "", "gemini-2.5-pro", 20, true, false, true);
+        assert!(estimated);
+        assert_eq!(resolved.prompt_tokens, 20);
+        assert_eq!(resolved.completion_tokens, 100);
+        assert_eq!(resolved.total_tokens, 110);
+    }
+
+    #[test]
+    fn resolve_native_anthropic_partial_usage_keeps_cache_and_estimates_completion() {
+        let usage = UsageSummary {
+            prompt_tokens: 25,
+            total_tokens: 25,
+            cached_tokens: 5,
+            claude_cache_creation_5m_tokens: 2,
+            is_anthropic_usage_semantic: true,
+            ..UsageSummary::default()
+        };
+        let (resolved, estimated) = resolve_native_provider_usage(
+            usage,
+            "Hello world",
+            "claude-3-5-sonnet",
+            40,
+            true,
+            true,
+            false,
+        );
+        assert!(estimated);
+        assert_eq!(resolved.prompt_tokens, 25);
+        assert!(resolved.completion_tokens > 0);
+        assert_eq!(resolved.total_tokens, 25 + resolved.completion_tokens);
+        assert_eq!(resolved.cached_tokens, 5);
+        assert_eq!(resolved.claude_cache_creation_5m_tokens, 2);
+        assert!(resolved.is_anthropic_usage_semantic);
+    }
+
+    #[test]
+    fn resolve_native_usage_does_not_invent_evidence_for_an_empty_stream() {
+        let (resolved, estimated) = resolve_native_provider_usage(
+            UsageSummary::default(),
+            "",
+            "gemini-2.5-pro",
+            20,
+            true,
+            true,
+            true,
+        );
+        assert!(!estimated);
+        assert_eq!(resolved, UsageSummary::default());
     }
 
     #[test]

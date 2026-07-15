@@ -170,7 +170,7 @@ const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
 const RELAY_FLAT_BILLING_GO_PARITY_BLOCKERS: &[&str] = &[
     "ali_actual_image_count",
     "free_model_runtime_policy",
-    "provider_usage_source_parity",
+    "provider_usage_staging_reconciliation",
 ];
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0001_core.sql",
@@ -3601,7 +3601,7 @@ mod tests {
             [
                 "ali_actual_image_count",
                 "free_model_runtime_policy",
-                "provider_usage_source_parity",
+                "provider_usage_staging_reconciliation",
             ]
         );
     }

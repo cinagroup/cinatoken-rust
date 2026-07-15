@@ -12631,3 +12631,78 @@ journeys, remote Queue/D1/DLQ/provider evidence, fault/load/alerts, credential
 rotation, rollback, and signed G1-G8 approval remain mandatory.
 `relay_flat_billing_go_parity_ready` stays hard false, Go/VPS remains
 authoritative, and production remains **NO-GO**.
+
+### 22.210 2026-07-15 Provider Usage Recovery And Blocker Decomposition
+
+This increment follows a three-way read-only audit of Go free-model behavior,
+provider usage normalization, and Ali/Bailian asynchronous image settlement.
+The billing expression contract was reread before changing charge-affecting
+code.
+
+Implemented locally:
+
+- Native Gemini JSON and SSE now apply the existing guarded missing-usage
+  fallback. A zero `promptTokenCount` is replaced by the request-time prompt
+  estimate while a nonzero candidate/thought completion remains authoritative.
+  If completion usage is absent, bounded candidate-part text supplies the local
+  estimate.
+- A positive Gemini `totalTokenCount` is preserved exactly even when prompt and
+  completion components do not add up to it. A total is synthesized only when
+  the provider omits it. This keeps provider reconciliation evidence distinct
+  from the quota formula's normalized component view.
+- Native Anthropic-wire SSE now accumulates `text` and `thinking` deltas and
+  records whether `message_stop` was observed. Missing completion, or a cleanly
+  truncated stream without `message_stop`, supplements only incomplete fields;
+  `message_start` cache read and split cache-creation evidence remains intact.
+- Gemini input modality details now follow the Go adapter: AUDIO contributes to
+  the audio subcategory, while IMAGE is not copied into the separately priced
+  input-image field. Output image/audio modality handling is unchanged.
+- All charge-affecting recovery remains behind
+  `RELAY_MISSING_USAGE_ESTIMATE_ENABLED`. The default-disabled cutover gate,
+  immutable flat-v4 snapshot, reservation ownership, Queue finalization, and
+  tiered expression normalization are unchanged.
+
+The previous aggregate `provider_usage_source_parity` blocker was too broad to
+be an auditable production gate. It was decomposed into three work items:
+
+- `provider_cache_field_scope_parity`: restrict nonstandard cache fallbacks to
+  the Go provider/channel families that own each field.
+- `provider_usage_provenance_parity`: expose provider-origin versus normalized
+  semantic provenance in durable audit evidence.
+- `provider_usage_staging_reconciliation`: prove direct, AI Gateway, and WFP
+  responses against D1/Queue/DLQ settlement and provider invoices.
+
+The cache-field scope item is implemented in this increment: standard nested
+details remain universal, DeepSeek alone accepts `prompt_cache_hit_tokens`,
+Zhipu/Moonshot accept their audited top-level fallbacks, Anthropic-wire accepts
+`cache_read_input_tokens`, and type 1 alone accepts llama.cpp `timings.cache_n`.
+It is therefore no longer published as an active blocker. Durable audit `other`
+now also records `provider_usage_source` independently from local-vs-upstream
+`usage_source`, normalized `usage_semantic`, semantic provenance, transport
+fallback, and WFP route evidence. The local provenance item is no longer
+published either; live reconciliation remains active.
+
+The free-model audit found that Go `FreeModel` means "skip pre-consume and
+wallet admission", not "force final quota to zero". A zero model price or ratio
+can still incur tool or independent audio charges through post-consume. The
+correct tranche therefore requires a versioned policy contract, delayed wallet
+admission without bypassing token exhaustion, per-serving-group decisions,
+atomic post-consume/request counting, and HTTP/Realtime/Task parity. The blocker
+remains open rather than accepting a zero-charge shortcut.
+
+The Ali audit also confirms that cinaVibeSDK provides reusable DO alarm and WFP
+dispatch patterns, but no Ali provider or billing implementation. The target
+design remains central authority plus deterministic TaskRunner DO, D1 CAS, and
+idempotent billing Queue finalization. Provider success must freeze actual count
+as positive `usage.image_count`, then non-empty result count, then request `n`;
+`provider_terminal` must remain distinct from `settled` so a failed Queue send
+is recoverable. Workflow adoption is deferred until the existing DO/Queue
+boundary is exhausted and staging evidence justifies the larger deployment
+surface.
+
+Local unit coverage includes Gemini component/total disagreement, native JSON
+and SSE text collection, Anthropic partial cache preservation, missing
+`message_stop`, and empty-stream no-evidence behavior. Production remains
+**NO-GO** until the three structured blockers, remote reconciliation, browser
+journeys, faults/load/alerts, credential rotation, rollback, and signed G1-G8
+approval are complete.

@@ -24,6 +24,7 @@ const CONTAINER_SCHEDULER_CUTOVER_GUARDS: &[&str] = &[
     "runtime_enabled",
     "routing_key_hmac_secret",
     "controller_service_binding",
+    "controller_status_probe",
     "container_runtime",
     "deny_by_default_egress",
     "shared_storage_contract",
@@ -118,6 +119,7 @@ pub fn container_scheduler_cutover_ready(
     enabled: bool,
     routing_secret_configured: bool,
     controller_service_binding_available: bool,
+    controller_status_verified: bool,
     container_runtime_compiled: bool,
     deny_by_default_egress_compiled: bool,
     shared_storage_contract_compiled: bool,
@@ -131,6 +133,7 @@ pub fn container_scheduler_cutover_ready(
         && enabled
         && routing_secret_configured
         && controller_service_binding_available
+        && controller_status_verified
         && container_runtime_compiled
         && deny_by_default_egress_compiled
         && shared_storage_contract_compiled
@@ -209,13 +212,13 @@ mod tests {
     #[test]
     fn cutover_requires_every_remote_and_runtime_proof() {
         let guards = container_scheduler_cutover_guards();
-        assert_eq!(guards.len(), 12);
+        assert_eq!(guards.len(), 13);
         assert!(guards.contains(&"remote_fault_matrix"));
         assert!(!container_scheduler_cutover_ready(
-            true, true, true, true, true, true, true, true, true, true, false, true,
+            true, true, true, true, true, false, true, true, true, true, true, true, true,
         ));
         assert!(container_scheduler_cutover_ready(
-            true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, true, true, true,
         ));
     }
 

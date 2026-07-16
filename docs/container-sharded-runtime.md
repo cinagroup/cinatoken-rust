@@ -456,10 +456,19 @@ Implemented locally:
 - Rust 1.78 builder plus distroless non-root runtime Dockerfile, `lite` instance
   type, eight-instance maximum, staged rollout, and SSH off.
 
-Still absent: edge service binding, routing/authority/provider secrets,
-D1/KV/R2 controller operations, provider allowlists and credential injection,
-actual `RelayShardContainer` Workerd/Container process tests for protocol,
-`containerFetch`, and lifecycle hooks, N/N-1 protocol, signed image
-digest/SBOM/scan, remote lifecycle/fault evidence, and staging/canary/cutover
-authorization. The local host has no Docker engine, so no image or real
-Container was started.
+The edge config now declares environment-specific private service bindings and
+matching authority metadata. The Rust admin capability probe signs the shared
+empty-body GET vector, bounds fetch plus response parsing to three seconds and
+4 KiB, and distinguishes binding, authority, contract, Controller-enable, and
+execution-enable state. The probe is false in every tracked environment and no
+remote binding has been verified.
+
+Still absent: routing/authority/provider secret provisioning, targeted shard
+`/readyz` proof, D1/KV/R2 controller operations, provider allowlists and
+credential injection, actual `RelayShardContainer` Workerd/Container process
+tests for protocol, `containerFetch`, and lifecycle hooks, N/N-1 protocol,
+signed image digest/SBOM/scan, remote lifecycle/fault evidence, and
+staging/canary/cutover authorization. The local host has no Docker engine, so
+no image or real Container was started. See
+`docs/container-execution-plane-source-audit.md` for the cinaVibeSDK and Go
+cinatoken source-to-target contract.

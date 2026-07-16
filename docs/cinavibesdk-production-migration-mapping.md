@@ -1135,3 +1135,35 @@ service/environment/context attachment, live replay behavior, bearer-free
 tenant binding inventory, provider and billing reconciliation, fault evidence,
 credential rotation, and rollback rehearsal. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-16 Dual-Source Container Execution Plane Mapping
+
+The Container design now has two explicit source authorities. cinaVibeSDK
+supplies the Cloudflare topology patterns: deterministic DO/Container identity,
+class/binding/migration alignment, short health probes, lifecycle hooks, and
+separate infrastructure capacity. Go cinatoken supplies the business pipeline:
+`TokenAuth` and rate limits precede `Distribute`; model/group/channel/credential
+selection precedes relay; pricing and pre-consume precede provider I/O; one
+controller loop owns retry; Task persistence and settlement remain linked.
+
+cinatoken-rust therefore keeps authentication, channel selection, reservation,
+settlement, retry policy, and provider-operation identity in the edge/D1
+correctness spine. A shard DO owns only deterministic routing, lease/fence,
+replay, capacity, and lifecycle. Its Container receives an immutable admitted
+operation and disposable scratch; it cannot become a second business or
+financial authority.
+
+The root Worker now declares a private `CONTAINER_CONTROLLER` service binding
+for each environment and has a default-off Rust status client. The client uses
+the existing cross-language authority vector, one absolute timeout over fetch
+and bounded parsing, strict protocol/ring/config verification, and no public
+HTTP fallback. Controller and execution enablement remain independent gates;
+cutover requires both in addition to verified transport.
+
+This is configuration and local contract evidence, not deployed readiness.
+Controller-first deployment, status readback, targeted `/readyz`, real
+Container lifecycle, N/N-1, shared storage, provider/billing, image supply
+chain, fault/load/cost, canary, rollback, and approval evidence remain open.
+The detailed source mapping is in
+`docs/container-execution-plane-source-audit.md`. Production remains
+**NO-GO**.

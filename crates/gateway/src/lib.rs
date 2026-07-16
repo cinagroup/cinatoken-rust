@@ -159,12 +159,21 @@ pub fn is_static_asset_path(path: &str) -> bool {
     let path = path.split('?').next().unwrap_or(path);
     if matches!(
         path,
-        "/api" | "/v1" | "/v1beta" | "/mj" | "/jimeng" | "/suno" | "/pg" | "/dashboard/billing"
+        "/api"
+            | "/internal"
+            | "/v1"
+            | "/v1beta"
+            | "/mj"
+            | "/jimeng"
+            | "/suno"
+            | "/pg"
+            | "/dashboard/billing"
     ) {
         return false;
     }
     for prefix in [
         "/api/",
+        "/internal/",
         "/v1/",
         "/v1beta/",
         "/mj/",
@@ -434,7 +443,16 @@ mod tests {
             plan_request(request(GatewayMethod::Other, "/api/status"), config()).owner,
             GatewayOwner::ApiRouter
         );
-        for path in ["/api", "/v1", "/v1beta", "/mj", "/suno", "/pg"] {
+        for path in [
+            "/api",
+            "/internal",
+            "/internal/v1/status",
+            "/v1",
+            "/v1beta",
+            "/mj",
+            "/suno",
+            "/pg",
+        ] {
             assert_eq!(
                 plan_request(request(GatewayMethod::Other, path), config()).owner,
                 GatewayOwner::ApiRouter,

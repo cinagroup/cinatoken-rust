@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import goldenVector from "../../../tests/fixtures/container-authority-v1.json";
 import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
+  INTERNAL_STATUS_PATH,
+  MAX_EXECUTION_WINDOW_SECONDS,
   ProtocolError,
   createAuthorityTokenForTest,
   parseOperationEnvelope,
   sha256Hex,
-  verifyAuthority,
   verifyOperationRequest,
+  verifyStatusRequest,
   type AuthorityClaims,
   type AuthorityEnvironment,
   type OperationEnvelope,
@@ -79,9 +82,7 @@ async function signedRequest(value = envelope(), overrides: Partial<AuthorityCla
 
 describe("container controller private protocol", () => {
   test("verifies the Rust authority golden vector", async () => {
-    const vector = await Bun.file(
-      new URL("../../../tests/fixtures/container-authority-v1.json", import.meta.url),
-    ).json();
+    const vector = goldenVector;
     const goldenEnv: AuthorityEnvironment = {
       ...env,
       CONTAINER_AUTHORITY_ISSUER: vector.issuer,
@@ -89,16 +90,56 @@ describe("container controller private protocol", () => {
       CONTAINER_AUTHORITY_CURRENT_KID: vector.kid,
       CONTAINER_AUTHORITY_CURRENT_SECRET: vector.secret,
     };
-    const claims = await verifyAuthority(
-      vector.token,
-      vector.method,
-      vector.path,
-      new Uint8Array(),
+    const claims = await verifyStatusRequest(
+      new Request(`https://controller.internal${INTERNAL_STATUS_PATH}`, {
+        headers: { [AUTHORITY_HEADER]: vector.token },
+      }),
       goldenEnv,
       vector.issued_at + 1,
     );
     expect(claims.dispatch_id).toBe(vector.dispatch_id);
     expect(claims.expires_at).toBe(vector.expires_at);
+  });
+
+  test("status probe rejects bodies, missing authority, and wrong routes", async () => {
+    const vector = goldenVector;
+    const goldenEnv: AuthorityEnvironment = {
+      ...env,
+      CONTAINER_AUTHORITY_ISSUER: vector.issuer,
+      CONTAINER_AUTHORITY_AUDIENCE: vector.audience,
+      CONTAINER_AUTHORITY_CURRENT_KID: vector.kid,
+      CONTAINER_AUTHORITY_CURRENT_SECRET: vector.secret,
+      CONTAINER_AUTHORITY_PREVIOUS_KID: "",
+      CONTAINER_AUTHORITY_PREVIOUS_SECRET: undefined,
+    };
+    await expect(
+      verifyStatusRequest(
+        new Request(`https://controller.internal${INTERNAL_STATUS_PATH}`, {
+          headers: {
+            [AUTHORITY_HEADER]: vector.token,
+            "content-length": "1",
+          },
+        }),
+        goldenEnv,
+        vector.issued_at + 1,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_status_body", status: 400 });
+    await expect(
+      verifyStatusRequest(
+        new Request(`https://controller.internal${INTERNAL_STATUS_PATH}`),
+        goldenEnv,
+        vector.issued_at + 1,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_authority", status: 403 });
+    await expect(
+      verifyStatusRequest(
+        new Request("https://controller.internal/internal/v1/wrong", {
+          headers: { [AUTHORITY_HEADER]: vector.token },
+        }),
+        goldenEnv,
+        vector.issued_at + 1,
+      ),
+    ).rejects.toMatchObject({ code: "route_not_found", status: 404 });
   });
 
   test("accepts a bounded signed operation with a canonical shard fence", async () => {
@@ -144,7 +185,13 @@ describe("container controller private protocol", () => {
     ).toThrow("stale_shard_fence");
     expect(() =>
       parseOperationEnvelope(
-        new TextEncoder().encode(JSON.stringify({ ...envelope(), execution_deadline_at: now + 121 })),
+        new TextEncoder().encode(
+          JSON.stringify({
+            ...envelope(),
+            owner_lease_expires_at: now + MAX_EXECUTION_WINDOW_SECONDS + 1,
+            execution_deadline_at: now + MAX_EXECUTION_WINDOW_SECONDS + 1,
+          }),
+        ),
         env,
         now,
       ),
@@ -213,5 +260,19 @@ describe("container controller private protocol", () => {
       body,
     });
     expect((await verifyOperationRequest(previous, env, now + 1)).claims.dispatch_id).toBe("dispatch-previous");
+  });
+
+  test("fails closed when the authority rotation keyring is inconsistent", async () => {
+    const request = await signedRequest();
+    await expect(
+      verifyOperationRequest(
+        request,
+        {
+          ...env,
+          CONTAINER_AUTHORITY_PREVIOUS_KID: env.CONTAINER_AUTHORITY_CURRENT_KID,
+        },
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "authority_unavailable", status: 503 });
   });
 });

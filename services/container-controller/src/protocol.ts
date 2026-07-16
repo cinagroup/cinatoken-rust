@@ -3,6 +3,7 @@ export const AUTHORITY_HEADER = "x-cinatoken-container-authority";
 export const INTERNAL_OPERATION_PATH = "/internal/v1/operations";
 export const INTERNAL_STATUS_PATH = "/internal/v1/status";
 export const MAX_OPERATION_BODY_BYTES = 64 * 1024;
+export const MAX_EXECUTION_WINDOW_SECONDS = 300;
 const MAX_TOKEN_BYTES = 4096;
 const MAX_JSON_SEGMENT_BYTES = 2048;
 const MAX_AUTHORITY_LIFETIME_SECONDS = 60;
@@ -122,6 +123,7 @@ export async function verifyStatusRequest(
   if (request.method !== "GET" || new URL(request.url).pathname !== INTERNAL_STATUS_PATH) {
     throw new ProtocolError("route_not_found", 404);
   }
+  await requireEmptyBody(request);
   return verifyAuthority(
     requiredAuthority(request),
     request.method,
@@ -140,6 +142,7 @@ export async function verifyAuthority(
   env: AuthorityEnvironment,
   now: number,
 ): Promise<AuthorityClaims> {
+  validateAuthorityKeyring(env);
   if (token.length === 0 || token.length > MAX_TOKEN_BYTES) {
     throw new ProtocolError("invalid_authority", 403);
   }
@@ -328,7 +331,11 @@ export function parseOperationEnvelope(
   ) {
     throw new ProtocolError("stale_shard_fence", 409);
   }
-  if (executionDeadlineAt <= now || executionDeadlineAt > ownerLeaseExpiresAt) {
+  if (
+    executionDeadlineAt <= now ||
+    executionDeadlineAt > ownerLeaseExpiresAt ||
+    executionDeadlineAt > now + MAX_EXECUTION_WINDOW_SECONDS
+  ) {
     throw new ProtocolError("invalid_operation_deadline", 409);
   }
   return envelope;
@@ -395,6 +402,27 @@ async function readBoundedBody(request: Request, requireJson: boolean): Promise<
   return body;
 }
 
+async function requireEmptyBody(request: Request): Promise<void> {
+  const length = request.headers.get("content-length");
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) !== 0)) {
+    throw new ProtocolError("invalid_status_body", 400);
+  }
+  if (request.body === null) return;
+  const reader = request.body.getReader();
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) return;
+      if (next.value.byteLength > 0) {
+        await reader.cancel("invalid_status_body");
+        throw new ProtocolError("invalid_status_body", 400);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function requiredAuthority(request: Request): string {
   const value = request.headers.get(AUTHORITY_HEADER);
   if (value === null) {
@@ -415,6 +443,25 @@ function selectAuthoritySecret(kid: string, env: AuthorityEnvironment): string {
     return env.CONTAINER_AUTHORITY_PREVIOUS_SECRET;
   }
   throw new ProtocolError("invalid_authority", 403);
+}
+
+function validateAuthorityKeyring(env: AuthorityEnvironment): void {
+  const encoder = new TextEncoder();
+  const currentSecretValid = encoder.encode(env.CONTAINER_AUTHORITY_CURRENT_SECRET).length >= 32;
+  const currentKidValid = KEY_ID.test(env.CONTAINER_AUTHORITY_CURRENT_KID);
+  const previousKidConfigured = env.CONTAINER_AUTHORITY_PREVIOUS_KID.length > 0;
+  const previousSecretConfigured =
+    env.CONTAINER_AUTHORITY_PREVIOUS_SECRET !== undefined &&
+    env.CONTAINER_AUTHORITY_PREVIOUS_SECRET.length > 0;
+  const previousPairValid =
+    previousKidConfigured === previousSecretConfigured &&
+    (!previousKidConfigured ||
+      (KEY_ID.test(env.CONTAINER_AUTHORITY_PREVIOUS_KID) &&
+        env.CONTAINER_AUTHORITY_PREVIOUS_KID !== env.CONTAINER_AUTHORITY_CURRENT_KID &&
+        encoder.encode(env.CONTAINER_AUTHORITY_PREVIOUS_SECRET ?? "").length >= 32));
+  if (!currentSecretValid || !currentKidValid || !previousPairValid) {
+    throw new ProtocolError("authority_unavailable", 503);
+  }
 }
 
 function decodeBase64Url(value: string, maxBytes: number): Uint8Array {

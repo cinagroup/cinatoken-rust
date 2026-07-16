@@ -13532,10 +13532,49 @@ with a mutable pool size, separate `max_instances` truth sources, recovery from
 ephemeral Container disk, retry-by-random-ID, and public-URL internal dispatch.
 cinatoken-rust keeps opaque keyed routing, Jump Consistent Hash, ring-generation
 fences, one explicit shard-count/capacity contract, DO SQLite recovery, and a
-future private service binding.
+private Service Binding contract.
 
 Still open are actual `RelayShardContainer`/Docker lifecycle tests, a Rust to
-TypeScript non-empty POST golden vector, signed edge status probe and private
-binding, D1/KV/R2 operations, provider egress/credentials, N/N-1 rollout,
-remote fault/load/cost evidence, and C1-C5 approval. All switches stay false;
-Go/VPS remains authoritative and production remains **NO-GO**.
+TypeScript non-empty POST golden vector, authenticated remote status evidence,
+a targeted shard readiness probe, D1/KV/R2 operations, provider
+egress/credentials, N/N-1 rollout, remote fault/load/cost evidence, and C1-C5
+approval. All switches stay false; Go/VPS remains authoritative and production
+remains **NO-GO**.
+
+## 22.221 Private Edge-to-Controller Contract And Dual-Source Audit (2026-07-16)
+
+This increment applies the cinaVibeSDK Cloudflare topology without displacing
+the Go cinatoken business authority. The root Worker now declares a private
+`CONTAINER_CONTROLLER` service binding for local, staging, and production;
+target names exactly match the isolated Controller Workers. The edge still has
+no Container binding and no public Controller URL fallback.
+
+The Rust caller signs `/internal/v1/status` with the shared empty-body golden
+vector, uses `Env::service`, limits the complete fetch/body/parse operation to
+three seconds and 4 KiB, and rejects status unless protocol, ring generation,
+shard count, and verifier-secret readiness match. Capabilities report binding,
+authority, contract, Controller enablement, and execution enablement
+separately. `CONTAINER_CONTROLLER_PROBE_ENABLED`, scheduler, Controller,
+execution, and staging-verification flags remain false.
+
+The security audit also closes adjacent protocol gaps: status rejects a body;
+current/previous keys must form a complete distinct keyring; authority protocol
+and method bounds now match Rust and TypeScript; operation deadlines are capped
+at 300 seconds; the Controller awaits DO dispatch, preserves bounded 502
+protocol errors, validates the runtime response envelope; and the runtime
+requires the Controller protocol header. Public `/internal/*` paths can no
+longer fall through to SPA assets.
+
+Go source review confirms that token auth, model/group/channel selection,
+credential resolution, pre-consume, retry ownership, settlement, and Task
+identity stay before or outside Container execution. cinaVibeSDK review
+confirms that deterministic naming, lifecycle semantics, and separate health
+probes are reusable, while modulo pools, public bearer runners, in-memory
+recovery loops, ephemeral-disk truth, SSH, and unpinned downloads are not.
+
+This is still local C3 foundation. The Controller must be deployed first, then
+the edge binding with probe off, followed by authenticated status readback and
+a targeted shard `/readyz` deep probe. Actual Container lifecycle, replayable
+results, streaming/large responses, shared storage, provider and billing,
+N/N-1, image supply chain, remote faults/load/cost, canary, domain cutover, and
+rollback evidence remain mandatory. Production remains **NO-GO**.

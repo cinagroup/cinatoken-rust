@@ -1183,6 +1183,11 @@ production configuration:
 | `CONTAINER_SCHEDULER_SHARD_COUNT` | `8` | Integer from 1 through 1024; exact value is shared by edge and controller |
 | `CONTAINER_SCHEDULER_ENABLED` | `false` | Must remain false until controller, image, egress, storage, capacity, and fault gates pass |
 | `CONTAINER_SCHEDULER_STAGING_VERIFIED` | `false` | Remote evidence only; local tests cannot promote it |
+| `CONTAINER_CONTROLLER_PROBE_ENABLED` | `false` | Enables only the signed status probe; it is not execution or cutover authority |
+| `CONTAINER_PROTOCOL_VERSION` | `1` | Must match the Controller and native runtime contract |
+| `CONTAINER_AUTHORITY_ISSUER` | `cinatoken-edge` | Exact signed-request issuer in every environment |
+| `CONTAINER_AUTHORITY_AUDIENCE` | `cinatoken-container-controller` | Exact private Controller audience |
+| `CONTAINER_AUTHORITY_CURRENT_KID` | `container-authority-current` | Non-secret key identifier; the corresponding secret is provisioned separately |
 
 Controller-only non-secret variables are explicit in all three isolated
 Controller configs:
@@ -1194,9 +1199,16 @@ Controller configs:
 | `CONTAINER_MAX_TERMINAL_OPERATIONS` | `10000` | Positive bounded history target; protected replay rows use ledger backpressure instead of unsafe eviction |
 
 `CONTAINER_SCHEDULER_ROUTING_SECRET` is a future secret, not a tracked variable.
-The controller Worker must be deployed before adding its private service binding
-to the edge Worker. No environment may add `[[containers]]` to the edge Rust
-Worker; Container ownership belongs to the isolated controller configuration.
+`CONTAINER_AUTHORITY_CURRENT_SECRET` is a Worker secret in both the edge signer
+and Controller verifier. The optional previous key pair exists only on the
+Controller verifier during rotation; key identifiers and authority metadata
+must match before the probe is enabled. The Controller Worker must be deployed
+first, followed by the edge Worker with the private
+`CONTAINER_CONTROLLER` Service Binding and probe disabled. Only then may an
+operator provision matching secrets, enable the probe in isolated staging, and
+archive authenticated status readback. No environment may add `[[containers]]`
+to the edge Rust Worker; Container ownership belongs to the isolated Controller
+configuration.
 
 The isolated controller has separate local, staging, and production configs.
 All keep `CONTAINER_CONTROLLER_ENABLED=false` and

@@ -24,6 +24,7 @@ mod affinity;
 mod cache;
 mod cache_invalidation;
 mod channel_upstream_update;
+mod container_controller;
 mod container_scheduler;
 mod d1_repositories;
 // Foundational mutable-flow-state substrate (item 2.1). Its consumers
@@ -2253,6 +2254,9 @@ mod tests {
             "/api/token/",
             "/api/channel/",
             "/api/log/",
+            "/internal",
+            "/internal/v1/status",
+            "/internal/v1/operations",
             "/v1/models",
             "/v1/chat/completions",
             "/v1/completions",

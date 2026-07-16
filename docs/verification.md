@@ -5545,3 +5545,62 @@ deployment, secret readback, actual Container lifecycle/OOM, egress,
 R2 replay/KV lag/D1 ambiguity, sustained retention/load, N/N-1,
 image supply chain, load/cost, and rollback evidence remain mandatory.
 Production remains **NO-GO**.
+
+## Private Edge-to-Controller Contract Verification (2026-07-16)
+
+The private status-contract increment was verified with the tracked probe and
+all runtime switches disabled:
+
+```text
+cargo test -p cinatoken-container-authority -p cinatoken-container-runtime \
+  -p cinatoken-gateway -p cinatoken-worker
+# PASS: authority 12/12; runtime unit 6/6 and HTTP 7/7; gateway 5/5;
+# worker 717/717
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS: standalone Worker wasm32 target check
+
+node_modules\.bin\tsc.exe \
+  -p services/container-controller/tsconfig.json --noEmit
+# PASS: strict TypeScript
+
+node_modules\.bin\vitest.exe run \
+  --config vitest.container-controller-protocol.config.mjs
+# PASS: 8/8 portable authority/status/deadline/keyring contract tests
+
+node_modules\.bin\vitest.exe run \
+  --config vitest.container-controller.config.mjs
+# PASS: 10/10 Workerd/SQLite ledger scenarios
+
+node_modules\.bin\wrangler.exe types \
+  services/container-controller/worker-configuration.d.ts \
+  --config services/container-controller/wrangler.jsonc \
+  --env-interface ContainerControllerEnv --check
+# PASS: generated Controller Env types are current
+
+node_modules\.bin\wrangler.exe deploy \
+  --config services/container-controller/wrangler.jsonc --dry-run \
+  --containers-rollout none --outdir .wrangler/container-controller-build
+# PASS: Controller bundle, DO binding, default-off vars, and Container manifest
+```
+
+Wrangler type generation also parsed the root local, staging, and production
+configuration after the custom build hook was temporarily omitted for this
+parse-only check and then restored. The generated ignored declarations showed
+the exact `CONTAINER_CONTROLLER` Fetcher targets, protocol and authority
+metadata, and `CONTAINER_CONTROLLER_PROBE_ENABLED="false"` in every scope.
+
+This Windows host currently has no Bun executable on `PATH`, so the changed
+Bun-only TOML configuration test and the full `bun run check` aggregate were
+not rerun in this increment. The portable protocol suite, strict TypeScript,
+Wrangler parses/dry-run, Rust host tests, and wasm32 check all passed. Wrangler
+also emitted an `EPERM` warning while attempting to write its optional user-log
+file, but every successful command above exited zero and produced its expected
+artifact or readback.
+
+These are local contract results only. No Cloudflare credential was used, no
+secret was provisioned, and no Worker, DO, image, or Container was deployed.
+Authenticated remote status readback, a targeted shard readiness probe, actual
+Container lifecycle, N/N-1, provider/billing integration, fault/load/cost,
+canary, rollback, and C1-C5 approval remain required. Production remains
+**NO-GO**.

@@ -28,6 +28,7 @@ use worker::{
 use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
 };
+use crate::container_controller::probe as probe_container_controller;
 use crate::container_scheduler::{
     container_local_contracts, container_scheduler_cutover_guards,
     container_scheduler_cutover_ready, container_scheduler_foundation_compiled,
@@ -387,6 +388,14 @@ struct PlatformCapabilities {
     container_scheduler_enabled: bool,
     container_scheduler_routing_secret_configured: bool,
     container_scheduler_controller_service_binding_available: bool,
+    container_scheduler_controller_probe_enabled: bool,
+    container_scheduler_controller_authority_configured: bool,
+    container_scheduler_controller_status_verified: bool,
+    container_scheduler_controller_ready: bool,
+    container_scheduler_controller_status_state: &'static str,
+    container_scheduler_controller_enabled: bool,
+    container_scheduler_controller_execution_enabled: bool,
+    container_scheduler_controller_previous_secret_configured: bool,
     container_scheduler_container_runtime_compiled: bool,
     container_scheduler_deny_by_default_egress_compiled: bool,
     container_scheduler_shared_storage_contract_compiled: bool,
@@ -874,10 +883,26 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let container_scheduler_enabled = env_flag(&env, CONTAINER_SCHEDULER_ENABLED_ENV);
     let container_scheduler_routing_secret_configured =
         container_scheduler_routing_secret_configured(&env);
+    let container_controller_probe =
+        probe_container_controller(&env, container_scheduler_status).await;
     // Local source contracts are reported separately from deployed bindings,
     // shared storage, rolling compatibility, and remote fault evidence.
     let container_local_contracts = container_local_contracts();
-    let container_scheduler_controller_service_binding_available = false;
+    let container_scheduler_controller_service_binding_available =
+        container_controller_probe.binding_available;
+    let container_scheduler_controller_probe_enabled = container_controller_probe.probe_enabled;
+    let container_scheduler_controller_authority_configured =
+        container_controller_probe.authority_configured;
+    let container_scheduler_controller_status_verified = container_controller_probe.verified;
+    let container_scheduler_controller_ready = container_controller_probe.verified
+        && container_controller_probe.controller_enabled
+        && container_controller_probe.execution_enabled;
+    let container_scheduler_controller_status_state = container_controller_probe.state;
+    let container_scheduler_controller_enabled = container_controller_probe.controller_enabled;
+    let container_scheduler_controller_execution_enabled =
+        container_controller_probe.execution_enabled;
+    let container_scheduler_controller_previous_secret_configured =
+        container_controller_probe.previous_secret_configured;
     let container_scheduler_container_runtime_compiled = container_local_contracts.runtime_compiled;
     let container_scheduler_deny_by_default_egress_compiled =
         container_local_contracts.deny_by_default_egress_compiled;
@@ -894,6 +919,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduler_enabled,
         container_scheduler_routing_secret_configured,
         container_scheduler_controller_service_binding_available,
+        container_scheduler_controller_ready,
         container_scheduler_container_runtime_compiled,
         container_scheduler_deny_by_default_egress_compiled,
         container_scheduler_shared_storage_contract_compiled,
@@ -1476,6 +1502,14 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduler_enabled,
         container_scheduler_routing_secret_configured,
         container_scheduler_controller_service_binding_available,
+        container_scheduler_controller_probe_enabled,
+        container_scheduler_controller_authority_configured,
+        container_scheduler_controller_status_verified,
+        container_scheduler_controller_ready,
+        container_scheduler_controller_status_state,
+        container_scheduler_controller_enabled,
+        container_scheduler_controller_execution_enabled,
+        container_scheduler_controller_previous_secret_configured,
         container_scheduler_container_runtime_compiled,
         container_scheduler_deny_by_default_egress_compiled,
         container_scheduler_shared_storage_contract_compiled,

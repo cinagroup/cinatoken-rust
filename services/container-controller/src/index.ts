@@ -13,6 +13,7 @@ import {
   MAX_OPERATION_BODY_BYTES,
   ProtocolError,
   type AuthorityEnvironment,
+  type OperationEnvelope,
   verifyOperationRequest,
   verifyStatusRequest,
 } from "./protocol";
@@ -114,7 +115,19 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           signal: AbortSignal.timeout(remainingMs),
         });
         body = await readBoundedResponse(upstream, MAX_OPERATION_BODY_BYTES);
-      } catch {
+        validateContainerOperationResponse(upstream, body, verified.envelope);
+      } catch (error) {
+        if (error instanceof ProtocolError) {
+          this.ledger.transitionOperation(
+            verified.envelope.operation_id,
+            verified.envelope.owner_generation,
+            "running",
+            "failed",
+            error.status,
+            Math.floor(Date.now() / 1000),
+          );
+          return jsonError(error.code, error.status);
+        }
         this.ledger.transitionOperation(
           verified.envelope.operation_id,
           verified.envelope.owner_generation,
@@ -189,10 +202,12 @@ const handler: ExportedHandler<ControllerEnv> = {
             protocol_version: Number(env.CONTAINER_PROTOCOL_VERSION),
             ring_generation: Number(env.CONTAINER_RING_GENERATION),
             shard_count: Number(env.CONTAINER_SHARD_COUNT),
-            authority_current_secret_configured: env.CONTAINER_AUTHORITY_CURRENT_SECRET.length >= 32,
+            authority_current_secret_configured: authoritySecretConfigured(
+              env.CONTAINER_AUTHORITY_CURRENT_SECRET,
+            ),
             authority_previous_secret_configured:
               env.CONTAINER_AUTHORITY_PREVIOUS_SECRET !== undefined &&
-              env.CONTAINER_AUTHORITY_PREVIOUS_SECRET.length >= 32,
+              authoritySecretConfigured(env.CONTAINER_AUTHORITY_PREVIOUS_SECRET),
           }),
           { status: 200, headers: jsonHeaders },
         );
@@ -206,7 +221,7 @@ const handler: ExportedHandler<ControllerEnv> = {
         return jsonError("container_execution_disabled", 503);
       }
       const stub = env.RELAY_SHARDS.getByName(verified.envelope.shard.instance_name);
-      return stub.fetch(
+      return await stub.fetch(
         new Request(`https://relay-shard.internal${INTERNAL_OPERATION_PATH}`, {
           method: "POST",
           headers: {
@@ -304,4 +319,45 @@ async function readBoundedResponse(response: Response, limit: number): Promise<U
 
 function boundedLogValue(value: unknown): string {
   return String(value ?? "unknown").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 64);
+}
+
+function validateContainerOperationResponse(
+  response: Response,
+  body: Uint8Array,
+  envelope: Pick<OperationEnvelope, "protocol_version" | "operation_id" | "trace_id">,
+): void {
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") {
+    throw new ProtocolError("invalid_container_response", 502);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
+    );
+  } catch {
+    throw new ProtocolError("invalid_container_response", 502);
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProtocolError("invalid_container_response", 502);
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  const allowed = ["protocol_version", "operation_id", "status", "code", "trace_id"];
+  if (
+    keys.some((key) => !allowed.includes(key)) ||
+    !["protocol_version", "operation_id", "status", "trace_id"].every((key) => key in record) ||
+    record.protocol_version !== envelope.protocol_version ||
+    record.operation_id !== envelope.operation_id ||
+    record.trace_id !== envelope.trace_id ||
+    (record.status !== "accepted" && record.status !== "rejected") ||
+    (response.ok && (record.status !== "accepted" || record.code !== undefined)) ||
+    (!response.ok && (record.status !== "rejected" || typeof record.code !== "string"))
+  ) {
+    throw new ProtocolError("invalid_container_response", 502);
+  }
+}
+
+function authoritySecretConfigured(secret: string): boolean {
+  return new TextEncoder().encode(secret).length >= 32;
 }

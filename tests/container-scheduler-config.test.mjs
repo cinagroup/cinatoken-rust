@@ -12,16 +12,30 @@ const expected = {
   CONTAINER_SCHEDULER_SHARD_COUNT: "8",
   CONTAINER_SCHEDULER_ENABLED: "false",
   CONTAINER_SCHEDULER_STAGING_VERIFIED: "false",
+  CONTAINER_CONTROLLER_PROBE_ENABLED: "false",
+  CONTAINER_PROTOCOL_VERSION: "1",
 };
 
 const environments = [
-  ["top-level", config, config.vars],
-  ["staging", config.env?.staging, config.env?.staging?.vars],
-  ["production", config.env?.production, config.env?.production?.vars],
+  ["top-level", config, config.vars, "cinatoken-container-controller-local", "local"],
+  [
+    "staging",
+    config.env?.staging,
+    config.env?.staging?.vars,
+    "cinatoken-container-controller-staging",
+    "staging",
+  ],
+  [
+    "production",
+    config.env?.production,
+    config.env?.production?.vars,
+    "cinatoken-container-controller-production",
+    "production",
+  ],
 ];
 
 describe("container scheduler Wrangler foundation", () => {
-  for (const [environment, scope, vars] of environments) {
+  for (const [environment, scope, vars, controllerService, authorityEnvironment] of environments) {
     test(`${environment} keeps the ring valid and runtime fail-closed`, () => {
       expect(vars).toBeDefined();
       expect(
@@ -32,8 +46,19 @@ describe("container scheduler Wrangler foundation", () => {
       expect(Number(vars.CONTAINER_SCHEDULER_RING_GENERATION)).toBe(1);
       expect(Number(vars.CONTAINER_SCHEDULER_SHARD_COUNT)).toBe(8);
       expect(vars.CONTAINER_SCHEDULER_ROUTING_SECRET).toBeUndefined();
+      expect(vars.CONTAINER_AUTHORITY_CURRENT_SECRET).toBeUndefined();
+      expect(vars.CONTAINER_AUTHORITY_ISSUER).toBe(
+        `cinatoken-edge-${authorityEnvironment}`,
+      );
+      expect(vars.CONTAINER_AUTHORITY_AUDIENCE).toBe(controllerService);
+      expect(vars.CONTAINER_AUTHORITY_CURRENT_KID).toBe(
+        `${authorityEnvironment}-v1`,
+      );
+      expect(scope?.services).toEqual([
+        { binding: "CONTAINER_CONTROLLER", service: controllerService },
+      ]);
 
-      // The planner lands before the isolated controller Worker and image.
+      // Containers remain owned only by the isolated controller Worker.
       expect(scope?.containers).toBeUndefined();
     });
   }

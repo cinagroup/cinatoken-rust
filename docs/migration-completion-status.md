@@ -949,10 +949,10 @@ remains **NO-GO**.
 
 The repository now contains the isolated TypeScript Controller Worker,
 `RelayShardContainer` SQLite Container DO, separate Rust/TypeScript authority
-protocol, and native axum runtime skeleton. Every tracked Controller and edge
-runtime switch remains false; the edge has no Controller service binding.
-Provider execution is absent and the native server returns a stable 501 for
-every non-probe operation.
+protocol, native axum runtime skeleton, and an edge-only private Service Binding
+client. Every tracked Controller, probe, scheduler, execution, and staging
+switch remains false. Provider execution is absent and the native server
+returns a stable 501 for every non-probe operation.
 
 Focused local evidence covers generated Env types, strict TypeScript, Wrangler
 dry-run bundling, private authority tamper/time/audience/body checks, complete
@@ -966,9 +966,12 @@ explicitly configured for seven days and a 10,000-row target per shard, with
 replay-window protection and ledger backpressure.
 
 The Workerd fixture exercises the production ledger module, not the actual
-`RelayShardContainer` class or a Docker process. Edge binding, signed status
-probe, Container lifecycle callbacks, shared storage, N/N-1, remote faults,
-staging verification, and cutover stay false.
+`RelayShardContainer` class or a Docker process. The edge contract signs and
+bounds `/internal/v1/status`, validates protocol/ring/shard/keyring state, and
+reports transport verification separately from Controller execution readiness.
+Remote status evidence, a targeted shard readiness probe, Container lifecycle
+callbacks, shared storage, N/N-1, remote faults, staging verification, and
+cutover stay open.
 
 No Docker engine is installed, no image or Container was started, no secret was
 provisioned, and no remote deployment is claimed. D1/KV/R2 Controller

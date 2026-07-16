@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PORT: u16 = 8080;
 pub const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
+pub const MAX_EXECUTION_WINDOW_SECONDS: u64 = 300;
+pub const CONTAINER_PROTOCOL_HEADER: &str = "x-cinatoken-container-protocol";
 
 const PROTOCOL_VERSION: u32 = 1;
 const SHARD_CONTRACT_VERSION: u32 = 1;
@@ -93,6 +95,18 @@ async fn operations(headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> 
             );
         }
     };
+
+    if headers
+        .get(CONTAINER_PROTOCOL_HEADER)
+        .and_then(|value| value.to_str().ok())
+        != Some("1")
+    {
+        return error_response(
+            StatusCode::UPGRADE_REQUIRED,
+            "invalid_container_protocol",
+            "x-cinatoken-container-protocol must be 1",
+        );
+    }
 
     if !has_json_content_type(&headers) {
         return error_response(
@@ -222,7 +236,8 @@ impl OperationEnvelope {
             ));
         }
         if !(now < self.execution_deadline_at
-            && self.execution_deadline_at <= self.owner_lease_expires_at)
+            && self.execution_deadline_at <= self.owner_lease_expires_at
+            && self.execution_deadline_at <= now.saturating_add(MAX_EXECUTION_WINDOW_SECONDS))
         {
             return Err(ValidationError::new(
                 "invalid_execution_deadline",
@@ -538,6 +553,14 @@ mod tests {
 
         operation = valid_operation(1_000);
         operation.execution_deadline_at = operation.owner_lease_expires_at + 1;
+        assert_eq!(
+            operation.validate(1_000).unwrap_err().code,
+            "invalid_execution_deadline"
+        );
+
+        operation = valid_operation(1_000);
+        operation.owner_lease_expires_at = 1_000 + MAX_EXECUTION_WINDOW_SECONDS + 1;
+        operation.execution_deadline_at = 1_000 + MAX_EXECUTION_WINDOW_SECONDS + 1;
         assert_eq!(
             operation.validate(1_000).unwrap_err().code,
             "invalid_execution_deadline"

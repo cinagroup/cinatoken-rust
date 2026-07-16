@@ -1548,7 +1548,8 @@ cost, and rollback evidence are all false gates. Production remains **NO-GO**.
 
 - The isolated Controller, SQLite `RelayShardContainer`, deny-all outbound
   proxy, Rust authority crate, native axum server, and non-root Dockerfile now
-  exist locally. The edge config still owns no Container or Controller binding.
+  exist locally. The edge owns no Container, but now declares a private
+  environment-specific Controller service binding.
 - The token binds `kid`, issuer, audience, protocol, dispatch, method, path,
   body digest, and a bounded time window. The operation carries the full shard
   fence, owner lease/generation, stable provider identity, admission/input
@@ -1566,10 +1567,16 @@ cost, and rollback evidence are all false gates. Production remains **NO-GO**.
   are untracked and separated by domain. The native runtime executes only
   `health_probe`.
 
-Next is actual `RelayShardContainer` protocol/lifecycle coverage, a non-empty
-POST cross-language authority vector, and an isolated Controller staging deploy
-with no edge binding. It must include secret/config readback, remote SQLite
-concurrency and eviction, linux/amd64 build/SBOM/sign/scan, Container lifecycle
-faults, D1/KV/R2 contracts, provider deny/allow/injection negatives, then N/N-1
-rollout. Only after those pass may C3 add a disabled edge binding and signed
-status probe for synthetic shadow work. Production remains **NO-GO**.
+The signed Rust-to-TypeScript status path and private binding are now compiled,
+but `CONTAINER_CONTROLLER_PROBE_ENABLED=false` everywhere. The status contract
+rejects a body and keyring drift, bounds the whole subrequest, and keeps
+transport verification separate from Controller/execution acceptance. The
+public edge `/internal/*` surface fails into API 404 rather than SPA fallback.
+
+Next is Controller-first isolated staging deployment, signed status readback,
+then a targeted shard `/readyz` deep probe and actual `RelayShardContainer`
+protocol/lifecycle coverage. It must include remote SQLite concurrency and
+eviction, linux/amd64 build/SBOM/sign/scan, Container lifecycle faults,
+D1/KV/R2 contracts, provider deny/allow/injection negatives, and N/N-1 rollout.
+No relay or Task route may use the binding before those pass. Production
+remains **NO-GO**.

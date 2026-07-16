@@ -367,7 +367,7 @@ fn validate_identifier(value: &str) -> Result<(), AuthorityError> {
 }
 
 fn validate_protocol_version(version: u32) -> Result<(), AuthorityError> {
-    if version > 0 {
+    if (1..=255).contains(&version) {
         Ok(())
     } else {
         Err(AuthorityError::InvalidInput)
@@ -389,28 +389,7 @@ fn validate_body_hash(hash: &str) -> Result<(), AuthorityError> {
 fn validate_method(method: &str) -> Result<(), AuthorityError> {
     let valid = !method.is_empty()
         && method.len() <= 16
-        && method.bytes().all(|byte| {
-            matches!(
-                byte,
-                b'A'..=b'Z'
-                    | b'0'..=b'9'
-                    | b'!'
-                    | b'#'
-                    | b'$'
-                    | b'%'
-                    | b'&'
-                    | b'\''
-                    | b'*'
-                    | b'+'
-                    | b'-'
-                    | b'.'
-                    | b'^'
-                    | b'_'
-                    | b'`'
-                    | b'|'
-                    | b'~'
-            )
-        });
+        && method.bytes().all(|byte| byte.is_ascii_uppercase());
     if valid {
         Ok(())
     } else {
@@ -822,6 +801,10 @@ mod tests {
             protocol_version: 0,
             ..input(100)
         };
+        let oversized_protocol = AuthorityInput {
+            protocol_version: 256,
+            ..input(100)
+        };
         let invalid_hash = AuthorityInput {
             body_sha256: OTHER_BODY_HASH.to_ascii_uppercase().leak(),
             ..input(100)
@@ -845,6 +828,7 @@ mod tests {
         for invalid in [
             invalid_issuer,
             invalid_protocol,
+            oversized_protocol,
             invalid_hash,
             lowercase_method,
             spaced_method,

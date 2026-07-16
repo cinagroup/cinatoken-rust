@@ -4,7 +4,7 @@ use axum::{
     body::{to_bytes, Body},
     http::{header::CONTENT_TYPE, Request, StatusCode},
 };
-use cinatoken_container_runtime::{app, MAX_REQUEST_BODY_BYTES};
+use cinatoken_container_runtime::{app, CONTAINER_PROTOCOL_HEADER, MAX_REQUEST_BODY_BYTES};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -41,6 +41,7 @@ fn valid_operation(kind: &str) -> Value {
 
 async fn send(body: String, content_type: Option<&str>) -> (StatusCode, Value) {
     let mut builder = Request::builder().method("POST").uri("/v1/operations");
+    builder = builder.header(CONTAINER_PROTOCOL_HEADER, "1");
     if let Some(content_type) = content_type {
         builder = builder.header(CONTENT_TYPE, content_type);
     }
@@ -51,6 +52,25 @@ async fn send(body: String, content_type: Option<&str>) -> (StatusCode, Value) {
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     (status, serde_json::from_slice(&body).unwrap())
+}
+
+#[tokio::test]
+async fn operation_endpoint_requires_the_controller_protocol_header() {
+    let response = app()
+        .oneshot(
+            Request::post("/v1/operations")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(valid_operation("health_probe").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UPGRADE_REQUIRED);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["code"],
+        "invalid_container_protocol"
+    );
 }
 
 #[tokio::test]

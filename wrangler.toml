@@ -47,6 +47,12 @@ run_worker_first = ["/api/*", "/v1/*"]
 [ai]
 binding = "AI"
 
+# Private, capability-scoped Worker-to-Worker path. The controller must be
+# deployed before this caller; no public controller URL is used.
+[[services]]
+binding = "CONTAINER_CONTROLLER"
+service = "cinatoken-container-controller-local"
+
 # Relay admission limits use Cloudflare's in-process Rate Limiting binding.
 # Namespace IDs are account-local numeric identifiers, not credentials or
 # provisioned resource IDs. Keep each environment/scope pair distinct.
@@ -113,6 +119,11 @@ CONTAINER_SCHEDULER_RING_GENERATION = "1"
 CONTAINER_SCHEDULER_SHARD_COUNT = "8"
 CONTAINER_SCHEDULER_ENABLED = "false"
 CONTAINER_SCHEDULER_STAGING_VERIFIED = "false"
+CONTAINER_CONTROLLER_PROBE_ENABLED = "false"
+CONTAINER_PROTOCOL_VERSION = "1"
+CONTAINER_AUTHORITY_ISSUER = "cinatoken-edge-local"
+CONTAINER_AUTHORITY_AUDIENCE = "cinatoken-container-controller-local"
+CONTAINER_AUTHORITY_CURRENT_KID = "local-v1"
 REALTIME_BILLING_RESERVATION_LEASE_SECONDS = "900"
 REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 REALTIME_BILLING_ORPHAN_SWEEP_LIMIT = "32"
@@ -273,6 +284,10 @@ run_worker_first = ["/api/*", "/v1/*"]
 [env.staging.ai]
 binding = "AI"
 
+[[env.staging.services]]
+binding = "CONTAINER_CONTROLLER"
+service = "cinatoken-container-controller-staging"
+
 [[env.staging.ratelimits]]
 name = "RELAY_TOKEN_RATE_LIMITER"
 namespace_id = "5100201"
@@ -336,6 +351,11 @@ CONTAINER_SCHEDULER_RING_GENERATION = "1"
 CONTAINER_SCHEDULER_SHARD_COUNT = "8"
 CONTAINER_SCHEDULER_ENABLED = "false"
 CONTAINER_SCHEDULER_STAGING_VERIFIED = "false"
+CONTAINER_CONTROLLER_PROBE_ENABLED = "false"
+CONTAINER_PROTOCOL_VERSION = "1"
+CONTAINER_AUTHORITY_ISSUER = "cinatoken-edge-staging"
+CONTAINER_AUTHORITY_AUDIENCE = "cinatoken-container-controller-staging"
+CONTAINER_AUTHORITY_CURRENT_KID = "staging-v1"
 REALTIME_BILLING_RESERVATION_LEASE_SECONDS = "900"
 REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 REALTIME_BILLING_ORPHAN_SWEEP_LIMIT = "32"
@@ -497,6 +517,10 @@ run_worker_first = ["/api/*", "/v1/*"]
 [env.production.ai]
 binding = "AI"
 
+[[env.production.services]]
+binding = "CONTAINER_CONTROLLER"
+service = "cinatoken-container-controller-production"
+
 [[env.production.ratelimits]]
 name = "RELAY_TOKEN_RATE_LIMITER"
 namespace_id = "5100301"
@@ -560,6 +584,11 @@ CONTAINER_SCHEDULER_RING_GENERATION = "1"
 CONTAINER_SCHEDULER_SHARD_COUNT = "8"
 CONTAINER_SCHEDULER_ENABLED = "false"
 CONTAINER_SCHEDULER_STAGING_VERIFIED = "false"
+CONTAINER_CONTROLLER_PROBE_ENABLED = "false"
+CONTAINER_PROTOCOL_VERSION = "1"
+CONTAINER_AUTHORITY_ISSUER = "cinatoken-edge-production"
+CONTAINER_AUTHORITY_AUDIENCE = "cinatoken-container-controller-production"
+CONTAINER_AUTHORITY_CURRENT_KID = "production-v1"
 REALTIME_BILLING_RESERVATION_LEASE_SECONDS = "900"
 REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 REALTIME_BILLING_ORPHAN_SWEEP_LIMIT = "32"

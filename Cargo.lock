@@ -495,6 +495,7 @@ dependencies = [
  "cinatoken-auth",
  "cinatoken-billing",
  "cinatoken-cache",
+ "cinatoken-container-authority",
  "cinatoken-coordinator",
  "cinatoken-core",
  "cinatoken-gateway",

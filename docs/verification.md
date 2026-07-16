@@ -5816,3 +5816,48 @@ create-only R2 client-response path, actual byte replay, divergence reconciler,
 Linux canary, 0043 enforcement, remote migration/fault matrix, and staging proof
 remain open. All eight Container operation/financial/replay/reconciliation/
 canary/proof gates remain false, and production remains **NO-GO**.
+
+## Exact Container Response and Divergence Foundation Verification (2026-07-16)
+
+This current-head overlay supersedes only the preceding claim that the local R2
+client-response path is absent. It does not claim edge wiring or a complete
+reconciler. Current local evidence:
+
+```powershell
+cargo test -p cinatoken-worker --lib container_
+# PASS: 37 passed; 0 failed.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 748 passed; 0 failed.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS; expected dead-code warnings remain while all Container paths are off.
+
+cargo fmt --all -- --check
+# PASS.
+
+C:\Users\cina\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe tools\verify_sqlite.py
+# PASS: 42 migrations, 38 tables, 323 incremental columns, 54 key indexes.
+```
+
+Focused tests cover the deterministic 4 MiB response key, safe canonical
+header allowlist, forced no-store policy, duplicate/control-character rejection,
+strong D1 receipt-to-manifest conversion, fail-closed D1/DO/R2 classification,
+and exclusion of Container-owned reservations from the generic billing orphan
+sweep. The source-contract test requires the 0040-aware exclusion at candidate,
+recovery-mark, refund, and defer mutation boundaries.
+
+The R2 implementation uses conditional create, exact HEAD readback, and a
+bounded GET whose returned bytes are independently rehashed and recounted.
+These calls are not exercised against a remote R2 bucket by Rust unit tests.
+The full suite also confirms every tracked Container gate remains false. No
+frontend file or platform-readiness predicate changed; Bun remains unavailable
+in this environment, so the aggregate frontend check was not rerun.
+
+Still required are edge integration, live Service Binding and R2 evidence,
+concurrent conflict/orphan fault injection, fair reconciliation pagination,
+durable backoff and metrics, operator authorization, exact DO phase mapping,
+provider-attempt journaling, the Linux non-streaming chat canary, N/N-1,
+old-writer drain, 0043 enforcement, rollback, and C1-C5 approval. No remote
+migration, deploy, object write, provider call, or traffic switch occurred;
+Go/VPS remains authoritative and production remains **NO-GO**.

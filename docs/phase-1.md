@@ -1714,3 +1714,27 @@ remain open. `CONTAINER_FINANCIAL_TERMINAL_ENABLED`,
 remain false in every tracked environment. No public route, remote migration,
 or deployment is enabled; Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-16 Phase 1 Exact Response and Divergence Foundation Gate
+
+The default-off Worker now compiles a 4 MiB exact client-response R2 contract.
+Writes are deterministic and create-only; both new and existing objects require
+version/checksum/size/type/custom-metadata verification. Replay additionally
+performs a bounded GET and recomputes the actual body digest and length before
+reconstructing the canonical status and allowlisted no-store headers. D1
+terminal receipts are revalidated against the same header, status, key, and
+body contract rather than trusting persisted metadata.
+
+The generic billing orphan sweep now detects migration 0040 and excludes every
+reservation owned by a global Container operation at candidate and mutation
+time. A pure fail-closed D1/DO/R2 classifier supplies the policy foundation for
+exact replay and recovery without performing a second provider attempt or a
+financial mutation.
+
+No public relay path calls these helpers, and the bounded reconciliation runner
+still needs fair pagination, durable backoff, metrics, authorization, and
+operator resolution. The Linux canary, provider-attempt journal, remote R2 and
+DO lifecycle faults, old-writer drain, 0043 enforcement, and N/N-1 evidence
+also remain open. Exact-response and divergence compiled-readiness claims stay
+false, all eight Container gates remain false, no remote action occurred,
+Go/VPS remains authoritative, and production remains **NO-GO**.

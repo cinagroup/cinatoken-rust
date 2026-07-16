@@ -7,6 +7,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use worker::{D1Database, D1Result, D1Type};
 
+use crate::container_artifacts::{
+    container_client_response_key, validate_container_client_response_headers_json,
+    MAX_CONTAINER_CLIENT_RESPONSE_BYTES,
+};
+
 pub(crate) const BILLING_MODE_OPTION_KEY: &str = "billing_setting.billing_mode";
 pub(crate) const BILLING_EXPR_OPTION_KEY: &str = "billing_setting.billing_expr";
 pub(crate) const GROUP_RATIO_OPTION_KEY: &str = "group_ratio_setting.group_ratio";
@@ -31,7 +36,6 @@ pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_MIGRATION: &str =
     "0042_relay_container_financial_terminal_expand.sql";
 const RELAY_CONTAINER_OPERATION_RECOVERY_MAX_LIMIT: i64 = 64;
 const RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION: i64 = 1;
-const RELAY_CONTAINER_RESPONSE_HEADERS_MAX_BYTES: usize = 4 * 1024;
 const RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_BYTES: usize = 64 * 1024;
 pub(crate) const RELAY_FLAT_BILLING_INTENT_MIGRATION: &str = "0029_flat_billing_intents.sql";
 pub(crate) const REALTIME_USAGE_RECONCILIATION_MIGRATION: &str =
@@ -2626,56 +2630,19 @@ fn validate_relay_container_client_response(
     )?;
     validate_relay_container_sha256(response.sha256, "client response sha256")?;
     validate_relay_container_content_type(response.content_type, "client response content type")?;
-    let headers = relay_container_canonical_json(
+    validate_container_client_response_headers_json(
         response.headers_json,
-        "client response headers",
-        RELAY_CONTAINER_RESPONSE_HEADERS_MAX_BYTES,
-        true,
+        response.headers_sha256,
+        response.content_type,
     )?;
-    if relay_container_sha256_hex(response.headers_json.as_bytes()) != response.headers_sha256 {
-        return Err(worker::Error::RustError(
-            "relay container client response header digest does not match".to_string(),
-        ));
-    }
-    let allowed_headers = [
-        "anthropic-request-id",
-        "cache-control",
-        "content-type",
-        "openai-request-id",
-        "retry-after",
-        "x-request-id",
-    ];
-    let Some(headers) = headers.as_object() else {
-        return Err(worker::Error::RustError(
-            "relay container client response headers must be an object".to_string(),
-        ));
-    };
-    for (name, value) in headers {
-        let Some(value) = value.as_str() else {
-            return Err(worker::Error::RustError(
-                "relay container client response header value is invalid".to_string(),
-            ));
-        };
-        if allowed_headers.binary_search(&name.as_str()).is_err()
-            || value.is_empty()
-            || value.len() > 1_024
-            || value.chars().any(char::is_control)
-        {
-            return Err(worker::Error::RustError(
-                "relay container client response header is not replayable".to_string(),
-            ));
-        }
-    }
-    if headers.get("content-type").and_then(Value::as_str) != Some(response.content_type) {
-        return Err(worker::Error::RustError(
-            "relay container client response content type is inconsistent".to_string(),
-        ));
-    }
-    let expected_key = format!(
-        "container-client-responses/v1/{}/{}/{}",
-        command.operation_id, command.operation_owner_generation, response.sha256
-    );
-    if response.object_key != expected_key || !(0..=64 * 1024 * 1024).contains(&response.size) {
+    let expected_key = container_client_response_key(
+        command.operation_id,
+        command.operation_owner_generation,
+        response.sha256,
+    )?;
+    if response.object_key != expected_key
+        || !(0..=MAX_CONTAINER_CLIENT_RESPONSE_BYTES as i64).contains(&response.size)
+    {
         return Err(worker::Error::RustError(
             "relay container client response manifest is invalid".to_string(),
         ));
@@ -3463,7 +3430,7 @@ pub async fn relay_container_financial_terminal_receipt_for_operation(
     }
 }
 
-fn relay_container_financial_receipt_integrity_valid(
+pub(crate) fn relay_container_financial_receipt_integrity_valid(
     receipt: &RelayContainerFinancialTerminalReceipt,
 ) -> bool {
     if relay_container_sha256_hex(receipt.outbox_payload_json.as_bytes())
@@ -3674,10 +3641,49 @@ fn relay_container_financial_receipt_integrity_valid(
         receipt.client_response_content_type.is_some(),
     ];
     if receipt.billing_action == "recovery_required" {
-        response_fields.iter().all(|present| !present)
-    } else {
-        response_fields.iter().all(|present| *present)
+        return response_fields.iter().all(|present| !present);
     }
+    if !response_fields.iter().all(|present| *present) {
+        return false;
+    }
+    let Some(status) = receipt.client_response_status else {
+        return false;
+    };
+    let status_matches_action = match receipt.billing_action.as_str() {
+        "settle" => (200..=299).contains(&status) && status != 202,
+        "refund" => (400..=599).contains(&status),
+        _ => false,
+    };
+    let (
+        Some(headers_json),
+        Some(headers_sha256),
+        Some(object_key),
+        Some(sha256),
+        Some(size),
+        Some(content_type),
+    ) = (
+        receipt.client_response_headers_json.as_deref(),
+        receipt.client_response_headers_sha256.as_deref(),
+        receipt.client_response_object_key.as_deref(),
+        receipt.client_response_sha256.as_deref(),
+        receipt.client_response_size,
+        receipt.client_response_content_type.as_deref(),
+    )
+    else {
+        return false;
+    };
+    let expected_key =
+        container_client_response_key(&receipt.operation_id, receipt.owner_generation, sha256);
+    status_matches_action
+        && receipt.operation_response_status == Some(status)
+        && validate_container_client_response_headers_json(
+            headers_json,
+            headers_sha256,
+            content_type,
+        )
+        .is_ok()
+        && expected_key.is_ok_and(|expected| expected == object_key)
+        && (0..=MAX_CONTAINER_CLIENT_RESPONSE_BYTES as i64).contains(&size)
 }
 
 pub async fn relay_container_operation_recovery_candidates(
@@ -4712,6 +4718,7 @@ pub async fn refund_relay_billing_reservation(
         request_accounting,
         refunded_at,
         None,
+        false,
     )
     .await
 }
@@ -4732,11 +4739,32 @@ pub async fn relay_billing_reservation_schema_ready(db: &D1Database) -> worker::
     Ok(row.map(|row| row.count == 5).unwrap_or(false))
 }
 
+async fn relay_container_operation_migration_applied(db: &D1Database) -> worker::Result<bool> {
+    let args = [D1Type::Text(RELAY_CONTAINER_OPERATION_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT CASE WHEN
+              EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'relay_container_operations'
+              )
+              OR EXISTS (SELECT 1 FROM d1_migrations WHERE name = ?1)
+            THEN 1 ELSE 0 END AS count
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
+}
+
 pub async fn sweep_expired_relay_billing_reservations(
     db: &D1Database,
     now: i64,
     limit: i64,
 ) -> worker::Result<RelayBillingOrphanSweepSummary> {
+    let container_operation_authority = relay_container_operation_migration_applied(db).await?;
     let cutoff = now.saturating_sub(RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS);
     let args = [
         D1Type::Integer(d1_i32(cutoff)),
@@ -4744,7 +4772,23 @@ pub async fn sweep_expired_relay_billing_reservations(
         D1Type::Integer(d1_i32(limit.clamp(1, RELAY_BILLING_ORPHAN_SWEEP_MAX_LIMIT))),
     ];
     let candidates = db
-        .prepare(
+        .prepare(if container_operation_authority {
+            r#"
+            SELECT reservation_key, channel_id, selected_group, selected_at,
+                   lease_expires_at, owner_generation, recovery_attempt_count
+            FROM relay_billing_reservations
+            WHERE status = 'reserved'
+              AND lease_expires_at < ?1
+              AND recovery_next_attempt_at <= ?2
+              AND NOT EXISTS (
+                SELECT 1 FROM relay_container_operations AS operation
+                WHERE operation.reservation_key =
+                  relay_billing_reservations.reservation_key
+              )
+            ORDER BY lease_expires_at ASC, reservation_key ASC
+            LIMIT ?3
+            "#
+        } else {
             r#"
             SELECT reservation_key, channel_id, selected_group, selected_at,
                    lease_expires_at, owner_generation, recovery_attempt_count
@@ -4754,8 +4798,8 @@ pub async fn sweep_expired_relay_billing_reservations(
               AND recovery_next_attempt_at <= ?2
             ORDER BY lease_expires_at ASC, reservation_key ASC
             LIMIT ?3
-            "#,
-        )
+            "#
+        })
         .bind_refs(&args)?
         .all()
         .await?
@@ -4769,7 +4813,14 @@ pub async fn sweep_expired_relay_billing_reservations(
             && !candidate.selected_group.is_empty()
             && candidate.selected_at > 0
         {
-            match mark_relay_billing_recovery_required(db, &candidate, now).await {
+            match mark_relay_billing_recovery_required(
+                db,
+                &candidate,
+                now,
+                container_operation_authority,
+            )
+            .await
+            {
                 Ok(RelayBillingReservationFinalizationOutcome::Applied) => {
                     summary.recovery_required = summary.recovery_required.saturating_add(1);
                     summary
@@ -4801,9 +4852,14 @@ pub async fn sweep_expired_relay_billing_reservations(
                 ) => summary.failed = summary.failed.saturating_add(1),
                 Err(_) => {
                     summary.failed = summary.failed.saturating_add(1);
-                    if defer_relay_billing_orphan_recovery(db, &candidate, now)
-                        .await
-                        .unwrap_or(false)
+                    if defer_relay_billing_orphan_recovery(
+                        db,
+                        &candidate,
+                        now,
+                        container_operation_authority,
+                    )
+                    .await
+                    .unwrap_or(false)
                     {
                         summary.deferred = summary.deferred.saturating_add(1);
                     }
@@ -4822,6 +4878,7 @@ pub async fn sweep_expired_relay_billing_reservations(
             RelayBillingRequestAccounting::Skip,
             now,
             Some(candidate.lease_expires_at),
+            container_operation_authority,
         )
         .await
         {
@@ -4856,9 +4913,14 @@ pub async fn sweep_expired_relay_billing_reservations(
             ) => summary.failed = summary.failed.saturating_add(1),
             Err(_) => {
                 summary.failed = summary.failed.saturating_add(1);
-                if defer_relay_billing_orphan_recovery(db, &candidate, now)
-                    .await
-                    .unwrap_or(false)
+                if defer_relay_billing_orphan_recovery(
+                    db,
+                    &candidate,
+                    now,
+                    container_operation_authority,
+                )
+                .await
+                .unwrap_or(false)
                 {
                     summary.deferred = summary.deferred.saturating_add(1);
                 }
@@ -5039,6 +5101,7 @@ async fn refund_relay_billing_reservation_inner(
     request_accounting: RelayBillingRequestAccounting,
     refunded_at: i64,
     expected_lease_expires_at: Option<i64>,
+    exclude_container_operation: bool,
 ) -> worker::Result<RelayBillingReservationFinalizationOutcome> {
     let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
     let finalization_reason =
@@ -5079,7 +5142,7 @@ async fn refund_relay_billing_reservation_inner(
         D1Type::Integer(d1_i32(RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)),
     ];
     let status_update = db
-        .prepare(
+        .prepare(if exclude_container_operation {
             r#"
             UPDATE relay_billing_reservations
             SET status = 'refunded', owner_generation = owner_generation + 1,
@@ -5093,8 +5156,28 @@ async fn refund_relay_billing_reservation_inner(
                   AND channel_id = 0 AND selected_group = '' AND selected_at = 0
                 )
               )
-            "#,
-        )
+              AND NOT EXISTS (
+                SELECT 1 FROM relay_container_operations AS operation
+                WHERE operation.reservation_key =
+                  relay_billing_reservations.reservation_key
+              )
+            "#
+        } else {
+            r#"
+            UPDATE relay_billing_reservations
+            SET status = 'refunded', owner_generation = owner_generation + 1,
+                finalization_reason = ?5,
+                request_accounted = ?6, updated_at = ?3, refunded_at = ?3
+            WHERE reservation_key = ?1 AND status = 'reserved'
+              AND owner_generation = ?2
+              AND (
+                ?4 = 0 OR (
+                  lease_expires_at = ?4 AND ?3 > lease_expires_at + ?7
+                  AND channel_id = 0 AND selected_group = '' AND selected_at = 0
+                )
+              )
+            "#
+        })
         .bind_refs(&args)?;
     let mut statements = Vec::new();
     let mut checked = Vec::new();
@@ -5312,6 +5395,7 @@ async fn mark_relay_billing_recovery_required(
     db: &D1Database,
     candidate: &RelayBillingExpiredLeaseCandidate,
     now: i64,
+    exclude_container_operation: bool,
 ) -> worker::Result<RelayBillingReservationFinalizationOutcome> {
     let args = [
         D1Type::Text(candidate.reservation_key.as_str()),
@@ -5324,7 +5408,7 @@ async fn mark_relay_billing_recovery_required(
         D1Type::Integer(d1_i32(RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)),
     ];
     let result = db
-        .prepare(
+        .prepare(if exclude_container_operation {
             r#"
             UPDATE relay_billing_reservations
             SET status = 'recovery_required',
@@ -5337,8 +5421,27 @@ async fn mark_relay_billing_recovery_required(
               AND lease_expires_at = ?2 AND owner_generation = ?3
               AND channel_id = ?4 AND selected_group = ?5 AND selected_at = ?6
               AND ?7 > lease_expires_at + ?8
-            "#,
-        )
+              AND NOT EXISTS (
+                SELECT 1 FROM relay_container_operations AS operation
+                WHERE operation.reservation_key =
+                  relay_billing_reservations.reservation_key
+              )
+            "#
+        } else {
+            r#"
+            UPDATE relay_billing_reservations
+            SET status = 'recovery_required',
+                owner_generation = owner_generation + 1,
+                finalization_reason = 'bound_usage_missing',
+                recovery_last_attempt_at = ?7,
+                recovery_required_at = ?7,
+                updated_at = ?7
+            WHERE reservation_key = ?1 AND status = 'reserved'
+              AND lease_expires_at = ?2 AND owner_generation = ?3
+              AND channel_id = ?4 AND selected_group = ?5 AND selected_at = ?6
+              AND ?7 > lease_expires_at + ?8
+            "#
+        })
         .bind_refs(&args)?
         .run()
         .await;
@@ -5393,6 +5496,7 @@ async fn defer_relay_billing_orphan_recovery(
     db: &D1Database,
     candidate: &RelayBillingExpiredLeaseCandidate,
     now: i64,
+    exclude_container_operation: bool,
 ) -> worker::Result<bool> {
     let attempt_count = candidate.recovery_attempt_count.saturating_add(1);
     let exponent = attempt_count.saturating_sub(1).clamp(0, 6) as u32;
@@ -5407,7 +5511,7 @@ async fn defer_relay_billing_orphan_recovery(
         D1Type::Integer(d1_i32(now.saturating_add(retry_after))),
     ];
     let result = db
-        .prepare(
+        .prepare(if exclude_container_operation {
             r#"
             UPDATE relay_billing_reservations
             SET recovery_attempt_count = recovery_attempt_count + 1,
@@ -5416,8 +5520,23 @@ async fn defer_relay_billing_orphan_recovery(
                 updated_at = MAX(updated_at, ?4)
             WHERE reservation_key = ?1 AND status = 'reserved'
               AND lease_expires_at = ?2 AND owner_generation = ?3
-            "#,
-        )
+              AND NOT EXISTS (
+                SELECT 1 FROM relay_container_operations AS operation
+                WHERE operation.reservation_key =
+                  relay_billing_reservations.reservation_key
+              )
+            "#
+        } else {
+            r#"
+            UPDATE relay_billing_reservations
+            SET recovery_attempt_count = recovery_attempt_count + 1,
+                recovery_last_attempt_at = ?4,
+                recovery_next_attempt_at = ?5,
+                updated_at = MAX(updated_at, ?4)
+            WHERE reservation_key = ?1 AND status = 'reserved'
+              AND lease_expires_at = ?2 AND owner_generation = ?3
+            "#
+        })
         .bind_refs(&args)?
         .run()
         .await?;
@@ -15633,7 +15752,7 @@ mod tests {
         RelayContainerClientResponseRecord {
             status,
             headers_json:
-                "{\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}",
+                "{\"cache-control\":\"no-store\",\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}",
             headers_sha256,
             object_key,
             object_version: "client-response-version-001",
@@ -16104,7 +16223,7 @@ mod tests {
 
     #[test]
     fn relay_container_financial_settlement_freezes_every_quota_delta() {
-        let headers = "{\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}";
+        let headers = "{\"cache-control\":\"no-store\",\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}";
         let headers_sha256 = relay_container_sha256_hex(headers.as_bytes());
         let response_key = concat!(
             "container-client-responses/v1/relayreserve-test/2/",
@@ -16156,17 +16275,28 @@ mod tests {
             assert_eq!(prepared.request_count_delta, 1);
             let receipt = relay_container_test_financial_receipt(&command, &operation, &prepared);
             assert!(relay_container_financial_receipt_integrity_valid(&receipt));
+            let replay_manifest =
+                crate::container_reconciliation::client_response_manifest_from_receipt(&receipt)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(replay_manifest.status, 200);
+            assert_eq!(replay_manifest.body.object_key, response_key);
+            assert_eq!(replay_manifest.body.size, 384);
             let mut tampered = receipt;
             tampered.billing_current_reason = "tampered".to_string();
             assert!(!relay_container_financial_receipt_integrity_valid(
                 &tampered
             ));
+            assert!(
+                crate::container_reconciliation::client_response_manifest_from_receipt(&tampered)
+                    .is_err()
+            );
         }
     }
 
     #[test]
     fn relay_container_financial_refund_handles_tokenless_request_policy() {
-        let headers = "{\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}";
+        let headers = "{\"cache-control\":\"no-store\",\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}";
         let headers_sha256 = relay_container_sha256_hex(headers.as_bytes());
         let response_key = concat!(
             "container-client-responses/v1/relayreserve-test/2/",
@@ -16259,7 +16389,7 @@ mod tests {
         assert_eq!(quarantined.user_quota_delta, 0);
         assert_eq!(quarantined.request_count_delta, 0);
 
-        let headers = "{\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}";
+        let headers = "{\"cache-control\":\"no-store\",\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}";
         let headers_sha256 = relay_container_sha256_hex(headers.as_bytes());
         let response_key = concat!(
             "container-client-responses/v1/relayreserve-test/2/",
@@ -16301,7 +16431,7 @@ mod tests {
 
     #[test]
     fn relay_container_client_response_rejects_non_allowlisted_headers() {
-        let headers = "{\"content-type\":\"application/json\",\"set-cookie\":\"secret=1\"}";
+        let headers = "{\"cache-control\":\"no-store\",\"content-type\":\"application/json\",\"set-cookie\":\"secret=1\"}";
         let headers_sha256 = relay_container_sha256_hex(headers.as_bytes());
         let response_key = concat!(
             "container-client-responses/v1/relayreserve-test/2/",
@@ -16381,6 +16511,27 @@ mod tests {
         ));
         assert!(source.contains("OR status = 'recovery_required'"));
         assert!(source.contains("LIMIT ?2"));
+    }
+
+    #[test]
+    fn generic_relay_orphan_sweep_never_owns_container_reservations() {
+        let source = include_str!("d1_repositories.rs");
+        let start = source
+            .find("async fn relay_container_operation_migration_applied")
+            .unwrap();
+        let end = source
+            .find("pub async fn reserve_realtime_billing_quota")
+            .unwrap();
+        let sweep = &source[start..end];
+        assert!(sweep.contains("relay_container_operation_migration_applied(db)"));
+        assert!(sweep.contains("FROM sqlite_master"));
+        assert!(
+            sweep
+                .matches("relay_container_operations AS operation")
+                .count()
+                >= 4
+        );
+        assert!(sweep.contains("AND NOT EXISTS ("));
     }
 
     #[test]

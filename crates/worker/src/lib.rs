@@ -26,6 +26,7 @@ mod cache_invalidation;
 mod channel_upstream_update;
 mod container_artifacts;
 mod container_controller;
+mod container_reconciliation;
 mod container_scheduler;
 mod d1_repositories;
 // Foundational mutable-flow-state substrate (item 2.1). Its consumers

@@ -13863,3 +13863,54 @@ D1/DO/R2 divergence reconciler, followed by old-writer drain and a separate
 0043 enforcement migration. No remote migration, deploy, provider call, or
 traffic switch occurred. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 22.228 Exact Client Response and Divergence Foundation (2026-07-16)
+
+The Go and cinaVibeSDK audits were repeated before this increment. The retained
+invariants are stable logical ownership, one durable retry owner, immutable
+large artifacts, persistence before external work, and explicit reconciliation
+across stores. In-memory promises, modulo worker pools, best-effort financial
+cleanup, and an automatic new provider attempt after an ambiguous result are
+not migration patterns.
+
+The audit also found a blocking ownership defect in the generic relay billing
+orphan sweep. Once migration 0040 exists, a billing reservation bound to
+`relay_container_operations` belongs to the Container recovery protocol, not
+the legacy billing-only refund loop. The repository now detects the applied
+0040 schema and excludes those reservations in the candidate query and every
+later mark/refund/defer mutation window. Pre-0040 databases retain the legacy
+query, while post-0040 races fail closed instead of advancing the billing
+generation without the matching operation transition.
+
+The Worker now compiles a default-off exact client-response artifact contract:
+
+1. response bodies are bounded to 4 MiB before R2 I/O;
+2. status, content type, and a fixed response-header allowlist are canonicalized
+   into deterministic JSON, with `cache-control: no-store` forced;
+3. the object key is content-addressed by operation, owner generation, and body
+   digest, while status, header digest, size, and content type are frozen in the
+   D1 manifest and exact R2 metadata;
+4. R2 writes are create-only with `If-None-Match: *`; both a new write and an
+   exact existing object require HEAD verification of version, checksum, size,
+   content type, and operation-bound custom metadata; and
+5. replay performs a bounded GET, repeats the manifest and metadata checks,
+   recomputes the digest and length from the actual bytes, and reconstructs only
+   the canonical status and allowlisted headers.
+
+The D1 terminal receipt is converted to the same strong manifest only after
+recomputing its header digest, enforcing the no-store policy, checking terminal
+status/action consistency, and verifying the exact object key and 4 MiB bound.
+A pure fail-closed classifier now maps normalized D1, DO, and R2 observations to
+converged, pending, recoverable, lagging, missing, divergent, orphaned, legacy,
+unavailable, or contract-violation states. Receipt-to-R2 inspection and replay
+adapters reuse that classifier foundation.
+
+This is not the bounded reconciliation runner and is not connected to a public
+relay route. Candidate pagination/fairness, durable retry/backoff, metrics,
+operator authorization, DO phase fidelity, R2 orphan retention, provider
+attempt journaling, the Linux chat canary, remote faults, and N/N-1 evidence
+remain required. Platform readiness therefore continues to report exact
+response replay and divergence reconciliation as not compiled for cutover;
+all eight Container gates remain false. No remote migration, R2 write,
+deployment, provider call, or traffic switch occurred. Go/VPS remains
+authoritative and production remains **NO-GO**.

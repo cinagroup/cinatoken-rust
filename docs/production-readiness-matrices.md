@@ -824,11 +824,11 @@ rollback target without recording credentials or request bodies.
 | Global operation terminal CAS | Exact completed/failed/recovery-required operation evidence and authorized recovery resolution; same-state rewrites rejected | PASS (local operation evidence only) |
 | Query-only DO recovery | Signed operation/owner/shard/trace query remains valid after deadline and performs no claim, schedule, wake, or Container I/O | PASS (local portable/Workerd only) |
 | Atomic financial terminal batch | Operation terminal + billing settle/refund/recovery + quota/request/channel mutation + immutable audit/outbox commit together | PASS (local default-off D1 contract); blocked for edge wiring and remote proof |
-| Recovery reconciler | Bounded candidate scan, DO/D1 convergence, divergence metrics, authorization, retry horizon, and operator resolution | Blocked: reader/query foundation only |
+| Recovery reconciler | Bounded candidate scan, DO/D1/R2 convergence, divergence metrics, authorization, retry horizon, and operator resolution | Partial local foundation: reader/query plus pure fail-closed divergence classification; fair cursor, durable runner/backoff, mutations, metrics, and authorization remain blocked |
 | Cold-shard recovery | Persistent schedule invokes owner/deadline CAS in real Container DO | Blocked: no Docker/remote evidence |
 | Reserved admission | D1 status, generation, lease, and owner deadline all pass | PASS (local binding test) |
-| Original response replay | Exact status, allowlisted headers, and byte-identical R2 body | Blocked |
+| Original response replay | Exact status, allowlisted headers, and byte-identical R2 body | PASS for default-off local create-only writer and verified bounded read/replay contract; blocked for edge wiring, remote R2 faults, and public canary proof |
 | Edge billing order | Selected-attempt D1 bind and frozen billing inputs precede Container dispatch | Blocked |
 | Provider attempt journal | Dispatch-before-send identity and one durable retry owner | Blocked |
-| Independent cutover gates | Operation write, terminal CAS, reconciliation, chat canary, and staging proof are all explicit false-by-default prerequisites | PASS (local config contract only) |
+| Independent cutover gates | Operation write, terminal CAS, reconciliation, chat canary, staging proof, financial terminal, exact response, and divergence proof are explicit false-by-default prerequisites | PASS (local config contract only) |
 | Cutover | Real Container, N/N-1, remote faults, billing convergence, load/cost, rollback, C1-C5 | **NO-GO** |

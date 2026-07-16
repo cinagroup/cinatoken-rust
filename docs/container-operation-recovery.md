@@ -105,9 +105,10 @@ The 0042 financial terminal contract stores a separate exact client-response
 manifest: status, canonical allowlisted headers, R2 version, digest, size, and
 content type. It deliberately does not reuse the Container result manifest,
 because failed operations forbid a result object while their deterministic
-client error still needs exact replay. The edge still needs the bounded R2
-fetch and byte return path; persisted manifest replay is not yet a live
-byte-for-byte public response.
+client error still needs exact replay. The bounded R2 writer, verified fetch,
+and byte-return helpers now compile default-off, but no edge route calls them.
+Persisted manifest replay is therefore still not a live byte-for-byte public
+response.
 
 ### Ambiguous execution
 
@@ -200,6 +201,36 @@ that every legacy terminal transition has an event. All eight operation,
 financial, replay, reconciliation, canary, divergence-proof, and staging gates
 therefore remain false.
 
+### Exact client response and divergence classification
+
+The edge foundation now has a separate create-only R2 client-response object.
+It accepts at most 4 MiB, canonicalizes a fixed safe header allowlist, forces
+`cache-control: no-store`, and keys by operation ID, owner generation, and body
+digest. Status, header digest, size, and content type are frozen in the D1
+manifest and exact R2 custom metadata. A conditional-write miss is accepted
+only after the existing object passes the same HEAD verification as a newly
+created object.
+
+Replay first validates the D1 terminal receipt and reconstructs the same strong
+manifest. It then verifies the R2 version, checksum, length, content type, and
+custom metadata, performs a bounded GET, recomputes the digest and length from
+the returned bytes, and creates a response containing only the canonical
+status and allowlisted headers. A digest stored in metadata is never accepted
+as proof of the bytes by itself.
+
+The generic relay billing orphan sweep now treats any reservation referenced by
+`relay_container_operations` as Container-owned once migration 0040 is
+present. Candidate selection and all later mutation race windows exclude those
+rows, preventing a legacy refund path from advancing only the billing
+generation.
+
+A pure classifier covers normalized D1, DO, and R2 observations without
+performing mutations. It distinguishes converged replay, pending execution,
+D1 lag, resolvable recovery, terminal conflicts, missing/divergent/orphan R2
+objects, legacy eventless terminal rows, unavailable observations, and contract
+violations. This is a policy foundation only: the bounded runner, fair cursor,
+durable backoff, metrics, authorization, and operator resolution remain open.
+
 ## Edge Integration Order
 
 The first real business canary must preserve the existing relay lifecycle:
@@ -242,12 +273,14 @@ The following are still mandatory:
 - derive the implemented tenant/user/token/route-scoped client idempotency HMAC
   at admission, require it for the canary, and map the implemented same-key/
   different-request lookup conflict to 409;
-- implement the default-off reconciler using the bounded D1 candidate reader
-  and signed status-only DO query, including divergence metrics and operator
+- complete the default-off reconciler around the implemented classifier,
+  bounded D1 candidate reader, and signed status-only DO query, including a
+  fair durable cursor, retry/backoff horizon, divergence metrics, and operator
   resolution authorization;
 - dispatch-before-send provider attempt journal and one retry owner;
 - deterministic local provider canary in the actual Linux image;
-- create-only exact client-response R2 writes and byte-identical edge replay;
+- wire the implemented create-only exact client-response R2 write and verified
+  byte replay into the narrow edge canary without enabling any broader route;
 - after old writers drain and remote 0042 invariants pass, add a separate 0043
   enforcement migration that rejects legacy empty identity and eventless v1
   terminal transitions;

@@ -957,10 +957,18 @@ every non-probe operation.
 Focused local evidence covers generated Env types, strict TypeScript, Wrangler
 dry-run bundling, private authority tamper/time/audience/body checks, complete
 shard fencing, current/previous key rotation, a Rust/TypeScript golden vector,
-bounded native HTTP behavior, deny-all egress source, and persisted capacity
-rejection source checks. Controller Workerd concurrency/capacity/eviction,
-bounded terminal-operation retention, binding, shared storage, N/N-1, remote
-faults, staging verification, and cutover stay false.
+bounded native HTTP behavior, deny-all egress source, and ten real
+Workerd/SQLite ledger scenarios for max+1 admission, conflicts, expired 504
+recovery with late-result CAS, retryable capacity release, time/count
+compaction, refreshed-dispatch protection, legacy rejection migration,
+replay-window backpressure, and eviction persistence. Terminal history is
+explicitly configured for seven days and a 10,000-row target per shard, with
+replay-window protection and ledger backpressure.
+
+The Workerd fixture exercises the production ledger module, not the actual
+`RelayShardContainer` class or a Docker process. Edge binding, signed status
+probe, Container lifecycle callbacks, shared storage, N/N-1, remote faults,
+staging verification, and cutover stay false.
 
 No Docker engine is installed, no image or Container was started, no secret was
 provisioned, and no remote deployment is claimed. D1/KV/R2 Controller

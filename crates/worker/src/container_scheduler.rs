@@ -84,10 +84,12 @@ pub struct ContainerLocalContracts {
     pub runtime_compiled: bool,
     pub deny_by_default_egress_compiled: bool,
     pub capacity_rejection_compiled: bool,
+    pub bounded_terminal_retention_compiled: bool,
 }
 
 pub fn container_local_contracts() -> ContainerLocalContracts {
     let controller = include_str!("../../../services/container-controller/src/index.ts");
+    let ledger = include_str!("../../../services/container-controller/src/ledger.ts");
     let controller_config =
         include_str!("../../../services/container-controller/wrangler.production.jsonc");
     let runtime = include_str!("../../container-runtime/src/lib.rs");
@@ -100,9 +102,12 @@ pub fn container_local_contracts() -> ContainerLocalContracts {
             && controller.contains("container_egress_denied")
             && controller.contains("export { ContainerProxy }")
             && controller_config.contains("\"enabled\": false"),
-        capacity_rejection_compiled: controller.contains("capacity_rejected")
+        capacity_rejection_compiled: controller.contains("claim.kind === \"capacity\"")
             && controller.contains("CONTAINER_MAX_IN_FLIGHT_PER_SHARD")
             && controller.contains("retry-after"),
+        bounded_terminal_retention_compiled: ledger.contains("terminalRetentionSeconds")
+            && ledger.contains("maxTerminalOperations")
+            && ledger.contains("response_status = 504"),
     }
 }
 
@@ -220,5 +225,6 @@ mod tests {
         assert!(contracts.runtime_compiled);
         assert!(contracts.deny_by_default_egress_compiled);
         assert!(contracts.capacity_rejection_compiled);
+        assert!(contracts.bounded_terminal_retention_compiled);
     }
 }

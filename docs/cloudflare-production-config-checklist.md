@@ -1184,6 +1184,15 @@ production configuration:
 | `CONTAINER_SCHEDULER_ENABLED` | `false` | Must remain false until controller, image, egress, storage, capacity, and fault gates pass |
 | `CONTAINER_SCHEDULER_STAGING_VERIFIED` | `false` | Remote evidence only; local tests cannot promote it |
 
+Controller-only non-secret variables are explicit in all three isolated
+Controller configs:
+
+| Variable | Committed value | Validation |
+| --- | --- | --- |
+| `CONTAINER_MAX_IN_FLIGHT_PER_SHARD` | `2` | Integer 1..64; max+1 Workerd admission must return retryable capacity without persisting a poisoned rejection |
+| `CONTAINER_TERMINAL_RETENTION_SECONDS` | `604800` | At least the 600-second dispatch replay window; old terminal history is age-pruned |
+| `CONTAINER_MAX_TERMINAL_OPERATIONS` | `10000` | Positive bounded history target; protected replay rows use ledger backpressure instead of unsafe eviction |
+
 `CONTAINER_SCHEDULER_ROUTING_SECRET` is a future secret, not a tracked variable.
 The controller Worker must be deployed before adding its private service binding
 to the edge Worker. No environment may add `[[containers]]` to the edge Rust
@@ -1193,7 +1202,8 @@ The isolated controller has separate local, staging, and production configs.
 All keep `CONTAINER_CONTROLLER_ENABLED=false` and
 `CONTAINER_EXECUTION_ENABLED=false`, protocol/ring generation `1`, eight shards,
 two in-flight operations per shard, `lite` instances, SSH off, and no public
-route, workers.dev, or preview URL. `CONTAINER_AUTHORITY_CURRENT_SECRET` and the
+route, workers.dev, or preview URL. Their ledger also declares seven-day
+terminal retention and a 10,000-row history target. `CONTAINER_AUTHORITY_CURRENT_SECRET` and the
 optional previous secret are provisioned only through Wrangler secret input;
 they must never be placed in vars, committed `.dev.vars`, CLI arguments, logs,
 image layers, or Container environment variables. Routing, Container authority,

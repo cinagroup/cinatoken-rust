@@ -5500,9 +5500,14 @@ bun run check
 Current focused evidence:
 
 ```text
-bun run check:container-controller
-# PASS: generated types, strict TypeScript, Wrangler dry-run bundle, and local
-# protocol/config tests
+node_modules\.bin\tsc.exe -p services/container-controller/tsconfig.json --noEmit
+# PASS: strict TypeScript
+
+node_modules\.bin\vitest.exe run --config vitest.container-controller.config.mjs
+# PASS: 10/10 Workerd/SQLite ledger scenarios
+
+node_modules\.bin\wrangler.exe deploy --config services/container-controller/wrangler.jsonc --dry-run --containers-rollout none
+# PASS: dry-run bundle with only the default-off Controller bindings and image
 
 cargo test -p cinatoken-container-authority
 # PASS: bounded authority, tamper/binding/time/key negatives, and shared golden
@@ -5510,6 +5515,12 @@ cargo test -p cinatoken-container-authority
 
 cargo test -p cinatoken-container-runtime
 # PASS: 12 validation and HTTP endpoint tests on the stable host toolchain
+
+cargo test -p cinatoken-worker --lib container_scheduler
+# PASS: 4/4 focused scheduler and local Controller contract tests
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS: standalone Worker wasm32 target check
 ```
 
 The dry-run reports only the `RELAY_SHARDS` DO, explicit default-off vars, and
@@ -5519,13 +5530,18 @@ is also pending because the pre-existing local GNU toolchain was incomplete and
 its repair download stalled; the Dockerfile remains pinned to the declared
 workspace MSRV builder.
 
-The current Bun tests validate protocol and configuration contracts. They do
-not instantiate `RelayShardContainer` under Workerd, so SQLite claim races,
-max+1 capacity rejection, lifecycle callbacks, eviction, and terminal-operation
-retention remain unverified runtime behavior.
+The Controller gate now runs ten Workerd/SQLite scenarios against the same
+`RelayShardLedger` module used by production. They prove max+1 serialization,
+operation/dispatch conflict behavior, expired in-flight 504 recovery, retry
+after capacity release, terminal CAS against late completion, time/count
+compaction, refreshed-dispatch protection, legacy rejection migration,
+replay-window backpressure, and state persistence across DO eviction. The
+fixture deliberately does not instantiate `RelayShardContainer`,
+because the local Containers runtime requires Docker; protocol-to-container
+dispatch and lifecycle callbacks remain unverified runtime behavior.
 
 Do not promote C1/C2 from local evidence. Docker/Linux build, isolated
-deployment, secret readback, DO eviction/concurrency, lifecycle/OOM, egress,
-R2 replay/KV lag/D1 ambiguity, bounded terminal-operation retention, N/N-1,
+deployment, secret readback, actual Container lifecycle/OOM, egress,
+R2 replay/KV lag/D1 ambiguity, sustained retention/load, N/N-1,
 image supply chain, load/cost, and rollback evidence remain mandatory.
 Production remains **NO-GO**.

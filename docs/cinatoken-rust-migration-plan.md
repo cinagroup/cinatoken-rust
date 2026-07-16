@@ -13484,7 +13484,8 @@ Delivered local substrate:
    durable owner generation, stable provider operation ID, R2 references, and
    owner/execution deadlines.
 3. DO SQLite atomically persists dispatch replay, operation ownership, ring and
-   lifecycle state, and capacity rejection before Container startup.
+   lifecycle state before Container startup. Capacity rejection is retryable
+   and does not persist a poisoned terminal claim.
 4. The native axum service supplies health/readiness, a strict 64 KiB operation
    endpoint, graceful shutdown, and a stable 501 for provider execution. Its
    Dockerfile uses a Rust 1.78 builder and distroless non-root runtime.
@@ -13499,3 +13500,42 @@ build, SBOM/signature/scan, remote fault/load/cost, shadow, canary, and rollback
 evidence remain required. The local host has no Docker engine; no Container was
 started or deployed. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 22.220 Bounded Container Ledger Runtime Evidence (2026-07-16)
+
+This increment converts the Controller's embedded SQL into a reusable
+`RelayShardLedger` and runs it inside a real SQLite Durable Object under
+Workerd. It does not instantiate a Container process and does not change edge
+or production authority.
+
+Implemented and verified locally:
+
+1. Claim, fence, replay, lifecycle, expiry, and compaction SQL now has one
+   production module shared by `RelayShardContainer` and the Workerd fixture.
+2. All Controller environments explicitly retain terminal history for seven
+   days with a 10,000-row target. History inside the dispatch replay window is
+   protected; a full ledger applies retryable backpressure instead of deleting
+   idempotency evidence.
+3. Per-shard in-flight capacity rejection returns `503 + Retry-After` without
+   persisting a terminal rejection, so the same operation can be admitted after
+   capacity is released.
+4. Ten Workerd/SQLite scenarios cover max+1 concurrent claims, operation and
+   dispatch conflicts, expired in-flight conversion to 504, late-result CAS,
+   capacity release, age/count compaction, refreshed-dispatch protection,
+   legacy rejection migration, replay-window backpressure, and
+   operation/lifecycle persistence after eviction.
+   The suite is part of `check:container-controller` and therefore the root
+   `bun run check` gate.
+
+The parallel cinaVibeSDK audit confirms what must not be copied: modulo routing
+with a mutable pool size, separate `max_instances` truth sources, recovery from
+ephemeral Container disk, retry-by-random-ID, and public-URL internal dispatch.
+cinatoken-rust keeps opaque keyed routing, Jump Consistent Hash, ring-generation
+fences, one explicit shard-count/capacity contract, DO SQLite recovery, and a
+future private service binding.
+
+Still open are actual `RelayShardContainer`/Docker lifecycle tests, a Rust to
+TypeScript non-empty POST golden vector, signed edge status probe and private
+binding, D1/KV/R2 operations, provider egress/credentials, N/N-1 rollout,
+remote fault/load/cost evidence, and C1-C5 approval. All switches stay false;
+Go/VPS remains authoritative and production remains **NO-GO**.

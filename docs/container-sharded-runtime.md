@@ -320,12 +320,14 @@ Exit: local crate, Worker, config, frontend type, and repository gates pass.
 - `RelayShardContainer extends Container` with SQLite DO migration;
 - no public route; private service-binding protocol only;
 - deny-by-default outbound `ContainerProxy`;
-- controller unit/Workerd tests for signatures, fencing, capacity, and storage;
+- controller unit tests for signatures plus Workerd/SQLite ledger tests for
+  fencing, concurrency, capacity, retention, and eviction;
 - independent staging/production Wrangler configs.
 
-Local generated types, strict TypeScript, protocol/config tests, and a Wrangler
-dry-run bundle pass. Exit still requires isolated staging deployment with no
-edge binding plus startup, binding, secret, SQLite eviction, and concurrent
+Local generated types, strict TypeScript, protocol/config tests, a Wrangler
+dry-run bundle, and ten Workerd/SQLite ledger scenarios pass. Exit still
+requires an isolated staging deployment with no edge binding plus actual
+`RelayShardContainer` startup, lifecycle, secret, eviction, and concurrent
 capacity evidence.
 
 ### Phase C2: native Rust image (local skeleton implemented)
@@ -385,10 +387,11 @@ CONTAINER_SCHEDULER_ENABLED=false
 CONTAINER_SCHEDULER_STAGING_VERIFIED=false
 ```
 
-Future tracked controller configuration includes explicit `max_instances`,
+Tracked controller configuration now includes explicit `max_instances`,
 `instance_type`, rollout percentages, active grace period, sleep timeout,
-required ports, placement constraints, image digest, protocol N/N-1, per-shard
-concurrency, and queue limits.
+required ports, per-shard concurrency, seven-day terminal retention, and a
+10,000-row terminal-history target. Placement constraints, image digest,
+protocol N/N-1, and account queue limits remain future configuration.
 
 Future secrets include the routing HMAC secret, edge-to-controller authority
 secret, and provider credentials used only by the outbound handler. Their
@@ -438,8 +441,13 @@ Implemented locally:
 - `services/container-controller`: three explicit environment configs,
   `RelayShardContainer` SQLite migration, signed authority verification,
   complete shard fence, dispatch replay, owner/idempotency conflicts, persisted
-  capacity-rejection source path, lifecycle state, and deny-all HTTP/HTTPS
-  egress;
+  lifecycle state, retryable capacity backpressure without a poisoned terminal
+  claim, bounded terminal history, and deny-all HTTP/HTTPS egress;
+- ten Workerd/SQLite ledger scenarios cover max+1 concurrent admission,
+  operation and dispatch conflicts, expired 504 recovery with late-result CAS,
+  time/count compaction, refreshed-dispatch protection, retry after capacity
+  release, legacy rejection migration, replay-window backpressure, and eviction
+  persistence;
 - `cinatoken-container-authority`: bounded Rust signer/verifier and a shared
   Rust/TypeScript golden vector;
 - `cinatoken-container-runtime`: axum health/readiness/operation server, 64 KiB
@@ -450,8 +458,8 @@ Implemented locally:
 
 Still absent: edge service binding, routing/authority/provider secrets,
 D1/KV/R2 controller operations, provider allowlists and credential injection,
-bounded terminal-operation retention/compaction, Controller Workerd tests for
-SQLite concurrency/capacity/eviction, N/N-1 protocol, signed image
-digest/SBOM/scan, remote lifecycle/fault evidence, and
-staging/canary/cutover authorization. The local host has no Docker engine, so
-no image or real Container was started.
+actual `RelayShardContainer` Workerd/Container process tests for protocol,
+`containerFetch`, and lifecycle hooks, N/N-1 protocol, signed image
+digest/SBOM/scan, remote lifecycle/fault evidence, and staging/canary/cutover
+authorization. The local host has no Docker engine, so no image or real
+Container was started.

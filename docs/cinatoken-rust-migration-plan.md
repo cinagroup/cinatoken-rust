@@ -13964,10 +13964,47 @@ other seven Container gates remain false in development, staging, and
 production. Platform exact-response and divergence-reconciliation compiled
 cutover flags also remain false. R2 orphan discovery is still incomplete
 because the Worker has no bounded object-inventory cursor for objects lacking
-a D1 manifest; live status/list/operator retry APIs, a provider-attempt
+a D1 manifest; operator preview/retry APIs, a provider-attempt
 journal, any resolution/apply workflow, edge exact replay, the Linux canary,
 N/N-1, remote fault evidence, and 0044 enforcement remain open.
 
 No remote migration, deployment, provider call, object mutation, financial
 mutation, or traffic switch occurred. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.230 Redacted Container Reconciliation Operator Reads (2026-07-17)
+
+The 0043 observer now has a read-only operator surface without adding a new
+mutation or weakening any Container gate:
+
+1. `GET /api/platform/container/reconciliation/status` requires AdminAuth and
+   reports compiled/schema/runtime state, configured scan limit, redacted
+   cursor and high-watermark references, run lease/timestamps, state totals,
+   due and expired-lease counts, and bounded class totals;
+2. `GET /api/platform/container/reconciliations` requires RootAuth and provides
+   stable newest-first pagination over immutable observation sequence, with a
+   default limit of 20, hard maximum of 50, and exact optional status/class
+   filters; and
+3. every success, validation error, and auth failure returns
+   `Cache-Control: no-store`.
+
+Neither response exposes the operation ID, reservation key, reconciliation ID,
+claim owner, provider operation ID, request body, billing snapshot, quota, or
+credential. Operation, reconciliation, scan-cursor, and high-watermark
+identities are represented only by domain-separated SHA-256 references. The
+repository SELECT does not retrieve `claim_owner`, and the API rejects unknown
+states/classes, inconsistent aggregate totals, malformed stored identities,
+and invalid counters rather than serializing corrupted state.
+
+The status route deliberately reports `schema_ready=false` as authenticated
+state when 0043 is absent; the detail route returns 503 until the schema is
+ready. Both routes are pure D1 reads. There is still no retry, preview, apply,
+settlement, refund, operation update, DO mutation, R2 mutation, provider call,
+or public relay integration behind these endpoints.
+
+R2 orphan inventory, a provider-attempt journal, authenticated retry preview,
+a separately gated apply protocol, exact edge replay, the Linux canary, N/N-1,
+remote faults, old-writer drain, and 0044 enforcement remain open. All eight
+Container gates and both cutover-compiled claims remain false. No remote
+migration or deployment occurred; Go/VPS remains authoritative and production
+remains **NO-GO**.

@@ -1759,8 +1759,31 @@ and cannot retry provider execution.
 
 The existing reconciliation flag remains false in all tracked environments;
 exact-response and divergence compiled cutover claims remain false as well.
-Next are bounded R2 orphan inventory, authenticated operator status/list/retry,
+Next are bounded R2 orphan inventory, authenticated retry preview,
 provider-attempt journaling, a separately gated generation-fenced apply path,
 edge exact replay, the Linux canary, remote fault/N/N-1 evidence, old-writer
 drain, and enforcement migration 0044. No remote action occurred. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-17 Phase 1 Container Reconciliation Operator Read Gate
+
+The Worker now exposes an AdminAuth, no-store aggregate status and a RootAuth,
+no-store observation list for the 0043 Container observer. Status includes
+schema/runtime state, redacted scan/run progress, state totals, due/expired
+lease counts, and class totals. List pagination uses immutable observation
+sequence, defaults to 20, caps at 50, and accepts only exact allowlisted status
+and class filters.
+
+Raw operation/reservation/reconciliation IDs, claim owner, provider identity,
+request data, billing snapshots, quota, and credentials are never returned.
+Domain-separated SHA-256 references replace the operational identities, and
+inconsistent stored counters or unknown state/class values fail closed. A
+Workerd test applies all 43 migrations and verifies unauthenticated denial,
+Root access, no-store headers, filters, aggregates, and response redaction.
+
+These routes perform only parameterized D1 reads and do not add a retry or
+apply endpoint. R2 orphan inventory, retry preview, provider-attempt journal,
+generation-fenced apply, edge replay, Linux canary, remote faults/N/N-1,
+old-writer drain, and 0044 enforcement remain open. All Container gates stay
+false, no remote action occurred, Go/VPS remains authoritative, and production
+remains **NO-GO**.

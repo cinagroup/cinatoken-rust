@@ -27,6 +27,7 @@ mod channel_upstream_update;
 mod container_artifacts;
 mod container_controller;
 mod container_reconciliation;
+mod container_reconciliation_admin;
 mod container_scheduler;
 mod d1_repositories;
 // Foundational mutable-flow-state substrate (item 2.1). Its consumers
@@ -196,6 +197,18 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             "/api/platform/container/shards/readiness",
             |req, ctx| async move {
                 platform_gateway::container_shard_readiness(req, ctx.env).await
+            },
+        )
+        .get_async(
+            "/api/platform/container/reconciliation/status",
+            |req, ctx| async move {
+                container_reconciliation_admin::status(req, ctx.env).await
+            },
+        )
+        .get_async(
+            "/api/platform/container/reconciliations",
+            |req, ctx| async move {
+                container_reconciliation_admin::list(req, ctx.env).await
             },
         )
         .post_async(
@@ -2267,6 +2280,8 @@ mod tests {
             "/api/setup",
             "/api/platform/capabilities",
             "/api/platform/container/shards/readiness",
+            "/api/platform/container/reconciliation/status",
+            "/api/platform/container/reconciliations",
             "/api/platform/quota-coordinator/reconciliation",
             "/api/platform/relay-billing/ledger/status",
             "/api/platform/task-runner/task-smoke/status",

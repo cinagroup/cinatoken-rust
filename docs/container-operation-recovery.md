@@ -260,9 +260,16 @@ The scheduled runner is enabled only by
 Its only mutations are the 0043 cursor and observation rows. It cannot update
 `relay_container_operations`, billing, quota, accounting, the DO ledger, R2,
 or provider state; cannot dispatch; and cannot authorize settlement or refund.
-The redacted run summary contains only bounded counts and class names. Future
-operator status/list/retry and any apply workflow require separate
-authorization, idempotency, audit, and default-false gates.
+The redacted run summary contains only bounded counts and class names.
+
+AdminAuth can read a no-store aggregate status containing schema/runtime
+state, scan/run progress, due/expired counts, and class totals. RootAuth can
+read a no-store observation queue through an immutable sequence cursor with
+strict status/class filters and a 50-row hard limit. Both surfaces replace raw
+operation, reconciliation, cursor, and high-watermark identities with
+domain-separated SHA-256 references and never select the claim owner. Stored
+contract drift fails the request closed. Operator retry and any apply workflow
+still require separate preview, idempotency, audit, and default-false gates.
 
 ## Edge Integration Order
 
@@ -306,9 +313,9 @@ The following are still mandatory:
 - derive the implemented tenant/user/token/route-scoped client idempotency HMAC
   at admission, require it for the canary, and map the implemented same-key/
   different-request lookup conflict to 409;
-- add bounded R2 orphan inventory plus authenticated operator status/list/retry
-  around the implemented observer, then design any resolution/apply workflow
-  as a separately gated generation-fenced protocol with audit and preview;
+- add bounded R2 orphan inventory plus authenticated retry preview around the
+  implemented status/list surface, then design any resolution/apply workflow
+  as a separately gated generation-fenced protocol with audit;
 - dispatch-before-send provider attempt journal and one retry owner;
 - deterministic local provider canary in the actual Linux image;
 - wire the implemented create-only exact client-response R2 write and verified

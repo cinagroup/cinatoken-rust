@@ -5913,3 +5913,44 @@ fault evidence, old-writer drain, enforcement migration 0044, rollback, and
 C1-C5 approval. No remote migration, deployment, provider call, object write,
 financial mutation, or traffic switch occurred. Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+## Container Reconciliation Operator Read Verification (2026-07-17)
+
+This overlay adds only authenticated read visibility to the 0043 observer.
+
+```powershell
+cargo test -p cinatoken-worker --lib container_reconciliation
+# PASS: 11 passed; 0 failed.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 758 passed; 0 failed.
+
+node node_modules/vitest/vitest.mjs run --config vitest.do.config.mjs
+# PASS: 44 passed; 0 failed.
+
+python tools/verify_sqlite.py
+# PASS: 43 migrations, 40 tables, 360 incremental columns, 57 key indexes.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo fmt --all -- --check
+bun run check
+# PASS.
+```
+
+Rust tests cover domain-separated operation/reconciliation/cursor references,
+raw identity and run-owner redaction, strict cursor/filter bounds, aggregate
+and stored-row fail-closed validation, parameterized stable pagination, route
+registration, AdminAuth/RootAuth separation, no-store responses, and absence
+of INSERT/UPDATE/DELETE from the operator read implementation. The class
+allowlist is byte-for-byte shared with the observer classifier.
+
+Workerd applies the full migration chain, transitions two valid observations
+through pending, leased, and retry, then proves unauthenticated 401 responses,
+authenticated aggregate/list results, exact filters, stable two-page cursor
+pagination, no-store headers, and no raw operation ID, reconciliation ID, or
+claim owner in either response.
+
+No retry/apply endpoint, financial mutation, operation mutation, DO/R2 write,
+provider call, remote migration, deployment, or traffic switch is claimed.
+All eight Container gates remain false; Go/VPS remains authoritative and
+production remains **NO-GO**.

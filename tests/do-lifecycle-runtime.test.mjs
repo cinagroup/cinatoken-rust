@@ -1866,6 +1866,143 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   });
 
+  it("exposes only authenticated redacted Container reconciliation observations", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const { cookie } = await setupAndLoginBillingRoot();
+    const seeded = [
+      await seedContainerReconciliationObservation("1"),
+      await seedContainerReconciliationObservation("2"),
+    ];
+    const statusUrl =
+      "https://cinatoken.test/api/platform/container/reconciliation/status";
+    const listUrl =
+      "https://cinatoken.test/api/platform/container/reconciliations" +
+      "?status=retry&class=store_unavailable&limit=1";
+
+    const anonymousStatus = await SELF.fetch(statusUrl);
+    expect(anonymousStatus.status).toBe(401);
+    expect(anonymousStatus.headers.get("cache-control")).toBe("no-store");
+    const statusResponse = await SELF.fetch(statusUrl, {
+      headers: { cookie },
+    });
+    const statusText = await statusResponse.text();
+    expect(statusResponse.status).toBe(200);
+    expect(statusResponse.headers.get("cache-control")).toBe("no-store");
+    for (const identity of seeded) {
+      expect(statusText).not.toContain(identity.operationId);
+      expect(statusText).not.toContain(identity.reconciliationId);
+      expect(statusText).not.toContain(identity.claimOwner);
+    }
+    expect(JSON.parse(statusText)).toMatchObject({
+      success: true,
+      data: {
+        contract_version: 1,
+        observer_compiled: true,
+        schema_ready: true,
+        runtime_enabled: false,
+        scan_limit: 4,
+        run: {
+          owner_present: false,
+          active: false,
+        },
+        observations: {
+          total: 2,
+          pending: 0,
+          leased: 0,
+          retry: 2,
+          converged: 0,
+          dead_letter: 0,
+          due: 0,
+          expired_leases: 0,
+        },
+        classes: [{ class: "store_unavailable", count: 2 }],
+      },
+    });
+
+    const anonymousList = await SELF.fetch(listUrl);
+    expect(anonymousList.status).toBe(401);
+    expect(anonymousList.headers.get("cache-control")).toBe("no-store");
+    for (const invalidQuery of [
+      "?status=unknown",
+      "?limit=1&limit=2",
+    ]) {
+      const invalidList = await SELF.fetch(
+        `https://cinatoken.test/api/platform/container/reconciliations${invalidQuery}`,
+        { headers: { cookie } },
+      );
+      expect(invalidList.status).toBe(400);
+      expect(invalidList.headers.get("cache-control")).toBe("no-store");
+    }
+    const listResponse = await SELF.fetch(listUrl, { headers: { cookie } });
+    const listText = await listResponse.text();
+    expect(listResponse.status).toBe(200);
+    expect(listResponse.headers.get("cache-control")).toBe("no-store");
+    for (const identity of seeded) {
+      expect(listText).not.toContain(identity.operationId);
+      expect(listText).not.toContain(identity.reconciliationId);
+      expect(listText).not.toContain(identity.claimOwner);
+    }
+    const list = JSON.parse(listText);
+    expect(list).toMatchObject({
+      success: true,
+      data: {
+        contract_version: 1,
+        count: 1,
+        status_filter: "retry",
+        class_filter: "store_unavailable",
+        records: [
+          {
+            owner_generation: 2,
+            status: "retry",
+            class: "store_unavailable",
+            last_error_code: "controller_status_unavailable",
+            claim_generation: 1,
+            attempt_count: 1,
+            consecutive_failures: 1,
+            due: false,
+            lease_active: false,
+            lease_expired: false,
+          },
+        ],
+      },
+    });
+    expect(list.data.records[0].operation_reference).toMatch(/^[a-f0-9]{64}$/u);
+    expect(list.data.records[0].reconciliation_reference).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
+    expect(list.data.next_cursor).toMatch(/^[1-9][0-9]*$/u);
+
+    const secondPageResponse = await SELF.fetch(
+      `${listUrl}&cursor=${list.data.next_cursor}`,
+      { headers: { cookie } },
+    );
+    const secondPageText = await secondPageResponse.text();
+    expect(secondPageResponse.status).toBe(200);
+    expect(secondPageResponse.headers.get("cache-control")).toBe("no-store");
+    for (const identity of seeded) {
+      expect(secondPageText).not.toContain(identity.operationId);
+      expect(secondPageText).not.toContain(identity.reconciliationId);
+      expect(secondPageText).not.toContain(identity.claimOwner);
+    }
+    const secondPage = JSON.parse(secondPageText);
+    expect(secondPage).toMatchObject({
+      success: true,
+      data: {
+        contract_version: 1,
+        count: 1,
+        next_cursor: null,
+        status_filter: "retry",
+        class_filter: "store_unavailable",
+      },
+    });
+    expect(secondPage.data.records[0].operation_reference).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
+    expect(secondPage.data.records[0].operation_reference).not.toBe(
+      list.data.records[0].operation_reference,
+    );
+  });
+
   it("quarantines and queue-replays one billing DLQ incident under root step-up", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     await seedRealtimeBillingAccount();
@@ -3846,6 +3983,98 @@ async function seedRealtimeReservation({
   )
     .bind(reservationKey, session, bridgeSegment, leaseExpiresAt)
     .run();
+}
+
+async function seedContainerReconciliationObservation(suffix) {
+  const now = Math.floor(Date.now() / 1000);
+  const operationId = `relaycontainer-runtime-observer-${suffix}`;
+  const identity =
+    suffix === "1"
+      ? { client: "c", request: "d", reconciliation: "e" }
+      : { client: "1", request: "2", reconciliation: "3" };
+  const reconciliationId = identity.reconciliation.repeat(64);
+  const claimOwner = "c".repeat(32);
+  const inputSha256 = "b".repeat(64);
+  const operationCreatedAt = now - 200;
+  const executionDeadlineAt = now - 100;
+  const ownerLeaseExpiresAt = now + 600;
+  const observationCreatedAt = now - 10;
+
+  await env.DB.prepare(
+    `INSERT INTO relay_container_operations (
+       reservation_key, operation_id, owner_generation,
+       owner_lease_expires_at, channel_id, selected_group, operation_kind,
+       provider_operation_id, admission_sha256, protocol_version,
+       shard_contract_version, ring_generation, shard_count, shard_index,
+       instance_name, execution_deadline_at, input_mode, input_object_key,
+       input_object_version, input_sha256, input_size, input_content_type,
+       trace_id, client_idempotency_hmac_sha256, client_request_sha256,
+       reconciliation_id, status, created_at, updated_at
+     ) VALUES (
+       ?1, ?1, 2, ?2, 42, 'default', 'health_probe',
+       ?11, ?3, 1, 1, 1, 8, 3,
+       'cinatoken-relay-shard-v1-0003', ?4, 'r2', ?5,
+       ?12, ?6, 0, 'application/json',
+       ?13, ?7, ?8, ?9, 'prepared', ?10, ?10
+     )`,
+  )
+    .bind(
+      operationId,
+      ownerLeaseExpiresAt,
+      "a".repeat(64),
+      executionDeadlineAt,
+      `container-inputs/v1/${operationId}/2/${inputSha256}`,
+      inputSha256,
+      identity.client.repeat(64),
+      identity.request.repeat(64),
+      reconciliationId,
+      operationCreatedAt,
+      `provider-runtime-observer-${suffix}`,
+      `input-version-runtime-${suffix}`,
+      `trace-runtime-observer-${suffix}`,
+    )
+    .run();
+  await env.DB.prepare(
+    `INSERT INTO relay_container_reconciliation_observations (
+       operation_id, reservation_key, operation_created_at,
+       owner_generation, reconciliation_id, status, available_at,
+       recovery_deadline_at, created_at, updated_at
+     ) VALUES (?1, ?1, ?2, 2, ?3, 'pending', ?4, ?5, ?4, ?4)`,
+  )
+    .bind(
+      operationId,
+      operationCreatedAt,
+      reconciliationId,
+      observationCreatedAt,
+      observationCreatedAt + 86_400,
+    )
+    .run();
+  await env.DB.prepare(
+    `UPDATE relay_container_reconciliation_observations
+     SET status = 'leased', claim_generation = 1, claim_owner = ?2,
+         claim_lease_expires_at = ?4, available_at = 0, attempt_count = 1,
+         first_observed_at = ?3, last_attempt_at = ?3, updated_at = ?3
+     WHERE operation_id = ?1`,
+  )
+    .bind(
+      operationId,
+      claimOwner,
+      observationCreatedAt + 1,
+      observationCreatedAt + 31,
+    )
+    .run();
+  await env.DB.prepare(
+    `UPDATE relay_container_reconciliation_observations
+     SET status = 'retry', claim_owner = '', claim_lease_expires_at = 0,
+         available_at = ?3, consecutive_failures = 1,
+         last_observed_at = ?2, last_class = 'store_unavailable',
+         last_error_code = 'controller_status_unavailable', updated_at = ?2
+     WHERE operation_id = ?1`,
+  )
+    .bind(operationId, observationCreatedAt + 2, now + 300)
+    .run();
+
+  return { operationId, reconciliationId, claimOwner };
 }
 
 async function seedRelayBillingReservation({

@@ -1152,6 +1152,31 @@ mod tests {
                 <= CONTAINER_RECONCILIATION_RETRY_MAX_SECONDS
         );
         assert!(container_reconciliation_observer_compiled());
+        let classes = [
+            ContainerDivergenceClass::ConvergedReplayable,
+            ContainerDivergenceClass::PreparedDoAbsent,
+            ContainerDivergenceClass::DispatchedDoAbsent,
+            ContainerDivergenceClass::PendingDoClaimed,
+            ContainerDivergenceClass::PendingDoRunning,
+            ContainerDivergenceClass::D1LaggingDispatch,
+            ContainerDivergenceClass::D1LaggingTerminal,
+            ContainerDivergenceClass::RecoveryDoAbsent,
+            ContainerDivergenceClass::RecoveryPending,
+            ContainerDivergenceClass::RecoveryResolvable,
+            ContainerDivergenceClass::TerminalDoAbsent,
+            ContainerDivergenceClass::TerminalConflict,
+            ContainerDivergenceClass::TerminalResponseMissing,
+            ContainerDivergenceClass::TerminalResponseDivergent,
+            ContainerDivergenceClass::ResponseR2Orphan,
+            ContainerDivergenceClass::LegacyTerminalWithoutReceipt,
+            ContainerDivergenceClass::StoreUnavailable,
+            ContainerDivergenceClass::ContractViolation,
+        ]
+        .map(ContainerDivergenceClass::as_str);
+        assert_eq!(
+            classes.as_slice(),
+            crate::d1_repositories::RELAY_CONTAINER_RECONCILIATION_CLASSES
+        );
     }
 
     #[test]

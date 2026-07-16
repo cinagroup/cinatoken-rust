@@ -36,6 +36,28 @@ pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_MIGRATION: &str =
     "0042_relay_container_financial_terminal_expand.sql";
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_MIGRATION: &str =
     "0043_relay_container_reconciliation_observer.sql";
+pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
+    &["pending", "leased", "retry", "converged", "dead_letter"];
+pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
+    "converged_replayable",
+    "prepared_do_absent",
+    "dispatched_do_absent",
+    "pending_do_claimed",
+    "pending_do_running",
+    "d1_lagging_dispatch",
+    "d1_lagging_terminal",
+    "recovery_do_absent",
+    "recovery_pending",
+    "recovery_resolvable",
+    "terminal_do_absent",
+    "terminal_conflict",
+    "terminal_response_missing",
+    "terminal_response_divergent",
+    "response_r2_orphan",
+    "legacy_terminal_without_receipt",
+    "store_unavailable",
+    "contract_violation",
+];
 const RELAY_CONTAINER_OPERATION_RECOVERY_MAX_LIMIT: i64 = 64;
 const RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION: i64 = 1;
 const RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_BYTES: usize = 64 * 1024;
@@ -184,6 +206,65 @@ pub struct RelayContainerReconciliationCursor {
     pub run_generation: i64,
     pub run_owner: String,
     pub run_lease_expires_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerReconciliationRuntimeSnapshot {
+    pub last_created_at: i64,
+    pub last_reservation_key: String,
+    pub round_high_created_at: i64,
+    pub round_high_reservation_key: String,
+    pub scan_generation: i64,
+    pub run_generation: i64,
+    pub run_owner: String,
+    pub run_lease_expires_at: i64,
+    pub last_started_at: i64,
+    pub last_completed_at: i64,
+    pub last_success_at: i64,
+    pub last_error_code: String,
+    pub total_count: i64,
+    pub pending_count: i64,
+    pub leased_count: i64,
+    pub retry_count: i64,
+    pub converged_count: i64,
+    pub dead_letter_count: i64,
+    pub due_count: i64,
+    pub expired_lease_count: i64,
+    pub oldest_due_at: i64,
+    pub latest_observed_at: i64,
+    pub latest_updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerReconciliationClassCount {
+    pub last_class: String,
+    pub observation_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerReconciliationObservationRow {
+    pub observation_sequence: i64,
+    pub operation_id: String,
+    pub operation_created_at: i64,
+    pub owner_generation: i64,
+    pub reconciliation_id: String,
+    pub status: String,
+    pub claim_generation: i64,
+    pub claim_lease_expires_at: i64,
+    pub available_at: i64,
+    pub attempt_count: i64,
+    pub consecutive_failures: i64,
+    pub first_observed_at: i64,
+    pub last_attempt_at: i64,
+    pub last_observed_at: i64,
+    pub last_class: String,
+    pub last_error_code: String,
+    pub recovery_deadline_at: i64,
+    pub converged_at: i64,
+    pub dead_lettered_at: i64,
+    pub dead_letter_reason: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3854,6 +3935,130 @@ pub async fn relay_container_reconciliation_schema_ready(db: &D1Database) -> wor
         .first::<CountRow>(None)
         .await?;
     Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn relay_container_reconciliation_runtime_snapshot(
+    db: &D1Database,
+    now: i64,
+) -> worker::Result<RelayContainerReconciliationRuntimeSnapshot> {
+    let now = relay_container_d1_integer(now, "reconciliation status time")?;
+    db.prepare(
+        r#"
+        SELECT cursor.last_created_at, cursor.last_reservation_key,
+               cursor.round_high_created_at,
+               cursor.round_high_reservation_key,
+               cursor.scan_generation, cursor.run_generation,
+               cursor.run_owner, cursor.run_lease_expires_at,
+               cursor.last_started_at, cursor.last_completed_at,
+               cursor.last_success_at, cursor.last_error_code,
+               summary.total_count, summary.pending_count,
+               summary.leased_count, summary.retry_count,
+               summary.converged_count, summary.dead_letter_count,
+               summary.due_count, summary.expired_lease_count,
+               summary.oldest_due_at, summary.latest_observed_at,
+               summary.latest_updated_at
+        FROM relay_container_reconciliation_cursor AS cursor
+        CROSS JOIN (
+          SELECT COUNT(1) AS total_count,
+                 COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0)
+                   AS pending_count,
+                 COALESCE(SUM(CASE WHEN status = 'leased' THEN 1 ELSE 0 END), 0)
+                   AS leased_count,
+                 COALESCE(SUM(CASE WHEN status = 'retry' THEN 1 ELSE 0 END), 0)
+                   AS retry_count,
+                 COALESCE(SUM(CASE WHEN status = 'converged' THEN 1 ELSE 0 END), 0)
+                   AS converged_count,
+                 COALESCE(SUM(CASE WHEN status = 'dead_letter' THEN 1 ELSE 0 END), 0)
+                   AS dead_letter_count,
+                 COALESCE(SUM(CASE
+                   WHEN status IN ('pending', 'retry') AND available_at <= ?1
+                   THEN 1 ELSE 0 END), 0) AS due_count,
+                 COALESCE(SUM(CASE
+                   WHEN status = 'leased' AND claim_lease_expires_at <= ?1
+                   THEN 1 ELSE 0 END), 0) AS expired_lease_count,
+                 COALESCE(MIN(CASE
+                   WHEN status IN ('pending', 'retry') AND available_at <= ?1
+                   THEN available_at END), 0) AS oldest_due_at,
+                 COALESCE(MAX(last_observed_at), 0) AS latest_observed_at,
+                 COALESCE(MAX(updated_at), 0) AS latest_updated_at
+          FROM relay_container_reconciliation_observations
+        ) AS summary
+        WHERE cursor.cursor_name = 'operation_observer_v1'
+        "#,
+    )
+    .bind_refs(&now)?
+    .first::<RelayContainerReconciliationRuntimeSnapshot>(None)
+    .await?
+    .ok_or_else(|| {
+        worker::Error::RustError(
+            "relay container reconciliation runtime snapshot is unavailable".to_string(),
+        )
+    })
+}
+
+pub async fn relay_container_reconciliation_class_counts(
+    db: &D1Database,
+) -> worker::Result<Vec<RelayContainerReconciliationClassCount>> {
+    db.prepare(
+        r#"
+        SELECT last_class, COUNT(1) AS observation_count
+        FROM relay_container_reconciliation_observations
+        WHERE last_class <> ''
+        GROUP BY last_class
+        ORDER BY last_class ASC
+        LIMIT 32
+        "#,
+    )
+    .all()
+    .await?
+    .results::<RelayContainerReconciliationClassCount>()
+}
+
+pub async fn list_relay_container_reconciliation_observations(
+    db: &D1Database,
+    before_sequence: i64,
+    status: &str,
+    class: &str,
+    limit: i64,
+) -> worker::Result<Vec<RelayContainerReconciliationObservationRow>> {
+    if before_sequence < 0
+        || (!status.is_empty() && !RELAY_CONTAINER_RECONCILIATION_STATUSES.contains(&status))
+        || (!class.is_empty() && !RELAY_CONTAINER_RECONCILIATION_CLASSES.contains(&class))
+    {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation observation query is invalid".to_string(),
+        ));
+    }
+    let before_sequence = before_sequence.to_string();
+    let limit = limit.clamp(1, 51).to_string();
+    let args = [
+        D1Type::Text(&before_sequence),
+        D1Type::Text(status),
+        D1Type::Text(class),
+        D1Type::Text(&limit),
+    ];
+    db.prepare(
+        r#"
+        SELECT rowid AS observation_sequence, operation_id,
+               operation_created_at, owner_generation, reconciliation_id,
+               status, claim_generation, claim_lease_expires_at,
+               available_at, attempt_count, consecutive_failures,
+               first_observed_at, last_attempt_at, last_observed_at,
+               last_class, last_error_code, recovery_deadline_at,
+               converged_at, dead_lettered_at, dead_letter_reason,
+               created_at, updated_at
+        FROM relay_container_reconciliation_observations
+        WHERE (CAST(?1 AS INTEGER) = 0 OR rowid < CAST(?1 AS INTEGER))
+          AND (?2 = '' OR status = ?2)
+          AND (?3 = '' OR last_class = ?3)
+        ORDER BY rowid DESC
+        LIMIT CAST(?4 AS INTEGER)
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RelayContainerReconciliationObservationRow>()
 }
 
 #[derive(Debug, Deserialize)]
@@ -17516,6 +17721,27 @@ mod tests {
         validate_relay_container_operation_for_reconciliation(&legacy).unwrap();
         legacy.reconciliation_id = "a".repeat(64);
         assert!(validate_relay_container_operation_for_reconciliation(&legacy).is_err());
+    }
+
+    #[test]
+    fn relay_container_reconciliation_operator_queries_are_bounded_and_read_only() {
+        let source = include_str!("d1_repositories.rs");
+        let start = source
+            .find("pub async fn relay_container_reconciliation_runtime_snapshot")
+            .unwrap();
+        let end = source
+            .find("struct RelayContainerReconciliationHighWatermark")
+            .unwrap();
+        let operator_reads = &source[start..end];
+        assert!(operator_reads.contains("rowid AS observation_sequence"));
+        assert!(operator_reads.contains("ORDER BY rowid DESC"));
+        assert!(operator_reads.contains("LIMIT CAST(?4 AS INTEGER)"));
+        assert!(operator_reads.contains("last_class <> ''"));
+        assert!(operator_reads.contains("expired_lease_count"));
+        assert!(!operator_reads.contains("claim_owner,"));
+        assert!(!operator_reads.contains("INSERT "));
+        assert!(!operator_reads.contains("UPDATE "));
+        assert!(!operator_reads.contains("DELETE "));
     }
 
     #[test]

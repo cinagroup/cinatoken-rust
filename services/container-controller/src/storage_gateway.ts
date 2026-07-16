@@ -79,6 +79,7 @@ interface StorageRoute {
 interface AdmissionSnapshotRow {
   status: string;
   lease_expires_at: number;
+  owner_deadline_at: number;
   owner_generation: number;
 }
 
@@ -106,7 +107,7 @@ const ROUTES: Record<StorageGatewayAction, StorageRoute> = {
 };
 
 const ADMISSION_SNAPSHOT_SQL = `
-SELECT status, lease_expires_at, owner_generation
+SELECT status, lease_expires_at, owner_deadline_at, owner_generation
 FROM relay_billing_reservations
 WHERE reservation_key = ?1 AND owner_generation = ?2
 LIMIT 1
@@ -121,7 +122,6 @@ const STORAGE_KEY = /^[A-Za-z0-9/_.:-]+$/;
 const IDENTIFIER = /^[A-Za-z0-9._:-]+$/;
 const OPERATION_KIND = /^[a-z0-9_:-]+$/;
 const CONTENT_TYPE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?:;[ -~]+)?$/;
-const ADMISSION_STATUSES = new Set(["reserved", "settled", "refunded", "recovery_required"]);
 
 class GatewayError extends Error {
   constructor(
@@ -278,15 +278,28 @@ async function getD1Admission(
     .first<AdmissionSnapshotRow>();
   if (row === null) throw new GatewayError("admission_snapshot_not_found", 404);
   if (
-    !ADMISSION_STATUSES.has(row.status) ||
+    typeof row.status !== "string" ||
     !isNonNegativeInteger(row.lease_expires_at) ||
+    !isNonNegativeInteger(row.owner_deadline_at) ||
     row.owner_generation !== grant.owner_generation
   ) {
     throw new GatewayError("admission_snapshot_invalid", 502);
   }
+  if (row.status !== "reserved") {
+    throw new GatewayError("admission_not_reserved", 409);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (
+    row.lease_expires_at <= now ||
+    row.owner_deadline_at <= now ||
+    row.owner_deadline_at > row.lease_expires_at
+  ) {
+    throw new GatewayError("admission_lease_expired", 409);
+  }
   return jsonResponse({
     status: row.status,
     lease_expires_at: row.lease_expires_at,
+    owner_deadline_at: row.owner_deadline_at,
     owner_generation: row.owner_generation,
   });
 }

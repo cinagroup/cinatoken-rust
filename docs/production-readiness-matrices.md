@@ -811,3 +811,18 @@ staging. It may not turn on a storage action flag, execution gate, scheduler,
 or customer route. Promotion evidence must identify the exact deployment,
 binding resources, image digest, protocol versions, test operation IDs, and
 rollback target without recording credentials or request bodies.
+
+## 2026-07-16 Durable Operation Recovery Matrix
+
+| Gate | Required evidence | Current verdict |
+| --- | --- | --- |
+| Strict Container outcome | completed/rejected/recovery_required, exact fields, result bounds | PASS (local only) |
+| Result-required completion | Non-health completed CAS fails without attached R2 descriptor | PASS (Workerd) |
+| Terminal manifest replay | Initial and duplicate outcome reconstructed from persisted trace/status/code/result | PASS (local only) |
+| Ambiguous execution | Running timeout and post-dispatch response loss become recovery_required with no retry | PASS (local ledger/controller) |
+| Cold-shard recovery | Persistent schedule invokes owner/deadline CAS in real Container DO | Blocked: no Docker/remote evidence |
+| Reserved admission | D1 status, generation, lease, and owner deadline all pass | PASS (local binding test) |
+| Original response replay | Exact status, allowlisted headers, and byte-identical R2 body | Blocked |
+| Edge billing order | Selected-attempt D1 bind and frozen billing inputs precede Container dispatch | Blocked |
+| Provider attempt journal | Dispatch-before-send identity and one durable retry owner | Blocked |
+| Cutover | Real Container, N/N-1, remote faults, billing convergence, load/cost, rollback, C1-C5 | **NO-GO** |

@@ -2,8 +2,8 @@ import { Container, ContainerProxy } from "@cloudflare/containers";
 import {
   DISPATCH_REPLAY_RETENTION_SECONDS,
   RelayShardLedger,
+  operationStorageResult,
   type OperationRow,
-  type OperationStatus,
   type RecordStorageResultOutcome,
   type RelayShardLedgerPolicy,
   type StorageAccessGrant,
@@ -24,6 +24,10 @@ import {
   verifyReadinessRequest,
   verifyStatusRequest,
 } from "./protocol";
+import {
+  operationOutcomeResponse,
+  parseContainerOperationResponse,
+} from "./operation_outcome";
 import {
   CONTENT_SHA256_HEADER,
   D1_ADMISSION_HOST,
@@ -179,6 +183,20 @@ export class RelayShardContainer extends Container<ControllerEnv> {
       }
       return { ok: false, error: { code: "storage_result_unavailable", status: 503 } };
     }
+  }
+
+  async reconcileOperationDeadline(payload: unknown): Promise<void> {
+    const schedule = parseOperationRecoverySchedule(payload);
+    const now = Math.floor(Date.now() / 1000);
+    if (schedule.deadline_at > now) {
+      await this.schedule(
+        new Date((schedule.deadline_at + 1) * 1000),
+        "reconcileOperationDeadline",
+        schedule,
+      );
+      return;
+    }
+    this.ledger.expireOperation(schedule.operation_id, schedule.owner_generation, now);
   }
 
   async readinessProbe(
@@ -352,17 +370,44 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         });
       }
       if (this.env.CONTAINER_EXECUTION_ENABLED !== "true") {
-        this.ledger.transitionOperation(
+        const outcome = finalizeOperationOutcome(
+          this.ledger,
           verified.envelope.operation_id,
           verified.envelope.owner_generation,
           "claimed",
           "failed",
           503,
+          "container_execution_disabled",
           now,
+          false,
         );
-        return jsonError("container_execution_disabled", 503);
+        return operationOutcomeResponse(outcome);
       }
 
+      try {
+        await this.schedule(
+          new Date((verified.envelope.execution_deadline_at + 1) * 1000),
+          "reconcileOperationDeadline",
+          {
+            operation_id: verified.envelope.operation_id,
+            owner_generation: verified.envelope.owner_generation,
+            deadline_at: verified.envelope.execution_deadline_at,
+          } satisfies OperationRecoverySchedule,
+        );
+      } catch {
+        const outcome = finalizeOperationOutcome(
+          this.ledger,
+          verified.envelope.operation_id,
+          verified.envelope.owner_generation,
+          "claimed",
+          "failed",
+          503,
+          "container_recovery_schedule_unavailable",
+          Math.floor(Date.now() / 1000),
+          false,
+        );
+        return operationOutcomeResponse(outcome);
+      }
       const started = this.ledger.transitionOperation(
         verified.envelope.operation_id,
         verified.envelope.owner_generation,
@@ -378,64 +423,59 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           verified.envelope.owner_generation,
           now,
         );
-        return jsonError("container_execution_ambiguous", 504);
+        const outcome = this.ledger.readOperationOutcome(verified.envelope.operation_id);
+        return outcome === null
+          ? jsonError("operation_completion_conflict", 409)
+          : operationOutcomeResponse(outcome);
       }
       const remainingMs = Math.max(
         1,
         (verified.envelope.execution_deadline_at - Math.floor(Date.now() / 1000)) * 1000,
       );
-      let upstream: Response;
-      let body: Uint8Array;
       try {
-        upstream = await this.containerFetch("http://container/v1/operations", {
+        const upstream = await this.containerFetch("http://container/v1/operations", {
           method: "POST",
           headers: { "content-type": "application/json", "x-cinatoken-container-protocol": "1" },
           body: copyArrayBuffer(verified.body),
           signal: AbortSignal.timeout(remainingMs),
         });
-        body = await readBoundedResponse(upstream, MAX_OPERATION_BODY_BYTES);
-        validateContainerOperationResponse(upstream, body, verified.envelope);
-      } catch (error) {
-        if (error instanceof ProtocolError) {
-          this.ledger.transitionOperation(
-            verified.envelope.operation_id,
-            verified.envelope.owner_generation,
-            "running",
-            "failed",
-            error.status,
-            Math.floor(Date.now() / 1000),
-          );
-          return jsonError(error.code, error.status);
-        }
-        this.ledger.transitionOperation(
+        const body = await readBoundedResponse(upstream, MAX_OPERATION_BODY_BYTES);
+        const containerOutcome = parseContainerOperationResponse(
+          upstream,
+          body,
+          verified.envelope,
+        );
+        validatePersistedContainerResult(this.ledger, verified.envelope, containerOutcome.result);
+        const outcome = finalizeOperationOutcome(
+          this.ledger,
           verified.envelope.operation_id,
           verified.envelope.owner_generation,
           "running",
-          "failed",
-          504,
+          containerOutcome.status === "completed"
+            ? "completed"
+            : containerOutcome.status === "rejected"
+              ? "failed"
+              : "recovery_required",
+          containerOutcome.status === "recovery_required" ? 202 : upstream.status,
+          containerOutcome.code,
           Math.floor(Date.now() / 1000),
+          containerOutcome.status !== "recovery_required",
         );
-        return jsonError("container_execution_ambiguous", 504);
-      }
-      const status: OperationStatus = upstream.ok ? "completed" : "failed";
-      const completed = this.ledger.transitionOperation(
-        verified.envelope.operation_id,
-        verified.envelope.owner_generation,
-        "running",
-        status,
-        upstream.status,
-        Math.floor(Date.now() / 1000),
-        true,
-      );
-      if (!completed) {
-        this.ledger.expireOperation(
+        return operationOutcomeResponse(outcome);
+      } catch {
+        const outcome = finalizeOperationOutcome(
+          this.ledger,
           verified.envelope.operation_id,
           verified.envelope.owner_generation,
+          "running",
+          "recovery_required",
+          202,
+          "container_execution_ambiguous",
           Math.floor(Date.now() / 1000),
+          false,
         );
-        return jsonError("container_execution_ambiguous", 504);
+        return operationOutcomeResponse(outcome);
       }
-      return new Response(body, { status: upstream.status, headers: jsonHeaders });
     } catch (error) {
       return protocolErrorResponse(error);
     }
@@ -555,11 +595,79 @@ const handler: ExportedHandler<ControllerEnv> = {
 export default handler;
 
 function responseForExisting(row: OperationRow): Response {
-  const status = row.response_status ?? (row.status === "failed" ? 502 : 202);
-  return new Response(
-    JSON.stringify({ operation_id: row.operation_id, status: row.status, duplicate: true }),
-    { status, headers: jsonHeaders },
-  );
+  return operationOutcomeResponse(row);
+}
+
+interface OperationRecoverySchedule {
+  operation_id: string;
+  owner_generation: number;
+  deadline_at: number;
+}
+
+function parseOperationRecoverySchedule(value: unknown): OperationRecoverySchedule {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProtocolError("invalid_operation_recovery_schedule", 500);
+  }
+  const record = value as Record<string, unknown>;
+  const expected = ["operation_id", "owner_generation", "deadline_at"];
+  if (
+    Object.keys(record).length !== expected.length ||
+    expected.some((key) => !(key in record)) ||
+    typeof record.operation_id !== "string" ||
+    record.operation_id.length < 1 ||
+    record.operation_id.length > 128 ||
+    !/^[A-Za-z0-9._:-]+$/.test(record.operation_id) ||
+    typeof record.owner_generation !== "number" ||
+    !Number.isSafeInteger(record.owner_generation) ||
+    record.owner_generation < 1 ||
+    typeof record.deadline_at !== "number" ||
+    !Number.isSafeInteger(record.deadline_at) ||
+    record.deadline_at < 1
+  ) {
+    throw new ProtocolError("invalid_operation_recovery_schedule", 500);
+  }
+  return {
+    operation_id: record.operation_id,
+    owner_generation: record.owner_generation,
+    deadline_at: record.deadline_at,
+  };
+}
+
+function finalizeOperationOutcome(
+  ledger: RelayShardLedger,
+  operationId: string,
+  ownerGeneration: number,
+  expectedStatus: "claimed" | "running",
+  status: "completed" | "failed" | "recovery_required",
+  responseStatus: number,
+  responseCode: string | null,
+  now: number,
+  requireBeforeDeadline: boolean,
+): OperationRow {
+  try {
+    return ledger.finalizeOperation(
+      operationId,
+      ownerGeneration,
+      expectedStatus,
+      status,
+      responseStatus,
+      responseCode,
+      now,
+      requireBeforeDeadline,
+    );
+  } catch (error) {
+    if (error instanceof ProtocolError && error.code === "operation_completion_conflict") {
+      const current = ledger.readOperationOutcome(operationId);
+      if (
+        current !== null &&
+        current.owner_generation === ownerGeneration &&
+        ["completed", "failed", "recovery_required"].includes(current.status)
+      ) {
+        return current;
+      }
+    }
+    throw error;
+  }
 }
 
 const STORAGE_OPERATION_ID_HEADER = "x-cinatoken-operation-id";
@@ -897,40 +1005,27 @@ function boundedLogValue(value: unknown): string {
   return String(value ?? "unknown").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 64);
 }
 
-function validateContainerOperationResponse(
-  response: Response,
-  body: Uint8Array,
-  envelope: Pick<OperationEnvelope, "protocol_version" | "operation_id" | "trace_id">,
+function validatePersistedContainerResult(
+  ledger: RelayShardLedger,
+  envelope: OperationEnvelope,
+  reported: StorageResultRecord | null,
 ): void {
-  const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
-  if (contentType !== "application/json") {
-    throw new ProtocolError("invalid_container_response", 502);
+  const row = ledger.readOperationOutcome(envelope.operation_id);
+  if (row === null || row.owner_generation !== envelope.owner_generation) {
+    throw new ProtocolError("container_result_unavailable", 502);
   }
-  let value: unknown;
-  try {
-    value = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
-    );
-  } catch {
-    throw new ProtocolError("invalid_container_response", 502);
-  }
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new ProtocolError("invalid_container_response", 502);
-  }
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record);
-  const allowed = ["protocol_version", "operation_id", "status", "code", "trace_id"];
+  const persisted = operationStorageResult(row);
+  if (reported === null && persisted === null) return;
   if (
-    keys.some((key) => !allowed.includes(key)) ||
-    !["protocol_version", "operation_id", "status", "trace_id"].every((key) => key in record) ||
-    record.protocol_version !== envelope.protocol_version ||
-    record.operation_id !== envelope.operation_id ||
-    record.trace_id !== envelope.trace_id ||
-    (record.status !== "accepted" && record.status !== "rejected") ||
-    (response.ok && (record.status !== "accepted" || record.code !== undefined)) ||
-    (!response.ok && (record.status !== "rejected" || typeof record.code !== "string"))
+    reported === null ||
+    persisted === null ||
+    reported.object_key !== persisted.object_key ||
+    reported.object_version !== persisted.object_version ||
+    reported.sha256 !== persisted.sha256 ||
+    reported.size !== persisted.size ||
+    reported.content_type !== persisted.content_type
   ) {
-    throw new ProtocolError("invalid_container_response", 502);
+    throw new ProtocolError("container_result_mismatch", 502);
   }
 }
 

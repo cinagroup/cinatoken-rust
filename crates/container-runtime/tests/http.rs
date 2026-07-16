@@ -104,16 +104,22 @@ async fn health_and_readiness_endpoints_are_live() {
 }
 
 #[tokio::test]
-async fn health_probe_is_accepted_without_execution() {
+async fn health_probe_is_completed_without_enabling_execution() {
     let (status, body) = send(
         valid_operation("health_probe").to_string(),
         Some("application/json"),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["status"], "accepted");
-    assert_eq!(body["operation_id"], "operation-123");
-    assert!(body.get("code").is_none());
+    assert_eq!(
+        body,
+        json!({
+            "protocol_version": 1,
+            "operation_id": "operation-123",
+            "status": "completed",
+            "trace_id": "trace-123"
+        })
+    );
 }
 
 #[tokio::test]
@@ -124,8 +130,16 @@ async fn other_valid_operations_fail_closed_with_a_stable_code() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(body["status"], "rejected");
-    assert_eq!(body["code"], "execution_not_enabled");
+    assert_eq!(
+        body,
+        json!({
+            "protocol_version": 1,
+            "operation_id": "operation-123",
+            "status": "rejected",
+            "code": "execution_not_enabled",
+            "trace_id": "trace-123"
+        })
+    );
 }
 
 #[tokio::test]

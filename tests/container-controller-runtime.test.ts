@@ -22,6 +22,7 @@ interface OperationSqlRow {
   operation_id: string;
   status: OperationStatus;
   response_status: number | null;
+  response_code: string | null;
   updated_at: number;
 }
 
@@ -125,7 +126,7 @@ describe("RelayShardLedger in Workerd", () => {
     await runInDurableObject(stub, (_instance, state) => {
       const rows = state.storage.sql
         .exec<OperationSqlRow>(
-          `SELECT operation_id, status, response_status, updated_at
+          `SELECT operation_id, status, response_status, response_code, updated_at
              FROM cinatoken_shard_operations ORDER BY operation_id`,
         )
         .toArray();
@@ -278,7 +279,7 @@ describe("RelayShardLedger in Workerd", () => {
     await runInDurableObject(stub, (_instance, state) => {
       const rows = state.storage.sql
         .exec<OperationSqlRow>(
-          `SELECT operation_id, status, response_status, updated_at
+          `SELECT operation_id, status, response_status, response_code, updated_at
              FROM cinatoken_shard_operations ORDER BY operation_id`,
         )
         .toArray();
@@ -287,12 +288,14 @@ describe("RelayShardLedger in Workerd", () => {
           operation_id: "expired-operation",
           status: "failed",
           response_status: 504,
+          response_code: "container_execution_deadline_expired",
           updated_at: BASE_NOW + 11,
         },
         {
           operation_id: "replacement-operation",
           status: "claimed",
           response_status: null,
+          response_code: null,
           updated_at: BASE_NOW + 11,
         },
       ]);
@@ -492,7 +495,7 @@ describe("RelayShardLedger in Workerd", () => {
     ).resolves.toMatchObject({ kind: "existing", row: { status: "completed" } });
   });
 
-  it("rejects a late completion after maintenance has terminalized the operation", async () => {
+  it("moves an expired running operation to recovery instead of definite failure", async () => {
     const stub = ledgerStub("late-completion-cas");
     const policy = ledgerPolicy({ maxInFlight: 1 });
     const envelope = operationEnvelope("late-completion", {
@@ -525,14 +528,15 @@ describe("RelayShardLedger in Workerd", () => {
     await runInDurableObject(stub, (_instance, state) => {
       const row = state.storage.sql
         .exec<OperationSqlRow>(
-          `SELECT operation_id, status, response_status, updated_at
+          `SELECT operation_id, status, response_status, response_code, updated_at
              FROM cinatoken_shard_operations WHERE operation_id = 'late-completion'`,
         )
         .one();
       expect(row).toEqual({
         operation_id: "late-completion",
-        status: "failed",
-        response_status: 504,
+        status: "recovery_required",
+        response_status: 202,
+        response_code: "container_execution_ambiguous",
         updated_at: BASE_NOW + 11,
       });
     });
@@ -836,12 +840,73 @@ describe("RelayShardLedger in Workerd", () => {
     await expect(
       stub.authorizeStorageOutcome(operation.operation_id, 1, BASE_NOW + 5),
     ).resolves.toMatchObject({ ok: true, grant: { result } });
-    await stub.transition(operation.operation_id, 1, "running", "completed", 200, BASE_NOW + 6);
+    await expect(
+      stub.finalizeOutcome(
+        operation.operation_id,
+        1,
+        "running",
+        "completed",
+        200,
+        null,
+        BASE_NOW + 6,
+        true,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        operation_id: operation.operation_id,
+        operation_kind: "chat_completion",
+        trace_id: operation.trace_id,
+        status: "completed",
+        response_status: 200,
+        response_code: null,
+        result_object_key: result.object_key,
+        result_object_version: result.object_version,
+        result_sha256: result.sha256,
+        result_size: result.size,
+        result_content_type: result.content_type,
+      },
+    });
+    await evictDurableObject(stub);
+    await expect(stub.readOutcome(operation.operation_id)).resolves.toMatchObject({
+      trace_id: operation.trace_id,
+      status: "completed",
+      result_object_version: result.object_version,
+    });
     await expect(
       stub.authorizeStorageOutcome(operation.operation_id, 1, BASE_NOW + 7),
     ).resolves.toEqual({
       ok: false,
       error: { code: "storage_access_denied", status: 403 },
+    });
+  });
+
+  it("refuses to complete a relay operation before its durable result is attached", async () => {
+    const stub = ledgerStub("result-required-before-completion");
+    const operation = operationEnvelope("result-required", {
+      operation_kind: "chat_completion",
+    });
+    await stub.claim(operation, sha256("f"), "dispatch-result-required", ledgerPolicy(), BASE_NOW);
+    await stub.transition(operation.operation_id, 1, "claimed", "running", null, BASE_NOW, true);
+    await expect(
+      stub.finalizeOutcome(
+        operation.operation_id,
+        1,
+        "running",
+        "completed",
+        200,
+        null,
+        BASE_NOW + 1,
+        true,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "operation_result_required", status: 409 },
+    });
+    await expect(stub.readOutcome(operation.operation_id)).resolves.toMatchObject({
+      status: "running",
+      response_status: null,
+      result_object_key: null,
     });
   });
 });

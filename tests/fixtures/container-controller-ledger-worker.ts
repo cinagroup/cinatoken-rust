@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   RelayShardLedger,
   type ClaimResult,
+  type OperationRow,
   type OperationStatus,
   type ReadinessCompletion,
   type RecordStorageResultOutcome,
@@ -31,6 +32,10 @@ type StorageAccessOutcome =
 
 type StorageResultOutcome =
   | { ok: true; result: RecordStorageResultOutcome }
+  | { ok: false; error: { code: string; status: number } };
+
+type FinalizeOperationOutcome =
+  | { ok: true; result: OperationRow }
   | { ok: false; error: { code: string; status: number } };
 
 interface LedgerWorkerEnv {
@@ -94,6 +99,42 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
       now,
       requireBeforeDeadline,
     );
+  }
+
+  async finalizeOutcome(
+    operationId: string,
+    ownerGeneration: number,
+    expectedStatus: "claimed" | "running",
+    status: "completed" | "failed" | "recovery_required",
+    responseStatus: number,
+    responseCode: string | null,
+    now: number,
+    requireBeforeDeadline: boolean,
+  ): Promise<FinalizeOperationOutcome> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.finalizeOperation(
+          operationId,
+          ownerGeneration,
+          expectedStatus,
+          status,
+          responseStatus,
+          responseCode,
+          now,
+          requireBeforeDeadline,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
+  }
+
+  async readOutcome(operationId: string): Promise<OperationRow | null> {
+    return this.ledger.readOperationOutcome(operationId);
   }
 
   async lifecycle(state: string, detail: string | null, now: number): Promise<void> {

@@ -206,3 +206,22 @@ substitute for remote R2 versioning, KV propagation, D1 contention, actual
 Container lifecycle, or N/N-1 evidence. The next execution milestone must add
 one end-to-end non-billable provider canary while all customer traffic remains
 on Go/VPS.
+
+## Durable Outcome Audit Closure
+
+The P0 transient-result and ambiguous-timeout gaps identified above are now
+closed at the local protocol/ledger level. The DO stores trace, result identity,
+response status/code, and recovery_required; non-health completion requires an
+attached result; running timeout is never reduced to definite failure; and a
+persisted deadline schedule drives cold-shard reconciliation.
+
+The source audit also found that the current edge relay binds selected billing
+ownership too late for asynchronous Container dispatch. The future Container
+branch must perform the existing D1 selected-attempt CAS before dispatch and
+must use its returned owner generation. It must not assume a generation or
+recompute billing expressions in the Container. The full implementation order
+and invariants are in docs/container-operation-recovery.md.
+
+No edge business operation, provider attempt journal, actual Container storage
+client, byte replay, or settlement connection exists yet. Those remain the next
+P0 implementation boundary, and production remains **NO-GO**.

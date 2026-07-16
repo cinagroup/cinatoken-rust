@@ -13676,3 +13676,36 @@ billing, canary, and rollback gates pass. Go/VPS remains authoritative and
 production remains **NO-GO**.
 Concurrent conflicting uploads and deterministic orphan-object retention or
 cleanup must also be proven remotely before the R2 write gate can be enabled.
+
+## 22.224 Durable Operation Outcome and Recovery Contract (2026-07-16)
+
+The Go and cinaVibeSDK source audit is now captured in
+docs/container-operation-recovery.md. The retained design rule is that a named
+DO is the durable supervisor and retry owner while the Container is a
+disposable executor. Provider success, result identity, and the execution
+classification must survive request loss, DO eviction, and Container restart.
+
+The local Controller now persists trace ID, response status/code, the exact R2
+result descriptor, and a separate recovery_required state. Non-health success
+cannot become completed until the result descriptor is attached to the same
+operation and owner generation. Initial and duplicate terminal requests are
+reconstructed from the same durable columns; Container timeout, malformed
+response, disconnect, or post-dispatch mismatch becomes query-only
+recovery_required rather than an ordinary retryable failure.
+
+Claimed deadlines remain definite pre-dispatch failures. Running deadlines are
+ambiguous. A Container-library schedule is persisted before containerFetch so
+cold shards are reconciled without waiting for another claim; schedule failure
+prevents dispatch. The D1 admission gateway now exposes only a reserved,
+generation-matched reservation with a live lease and owner deadline.
+
+The Rust runtime outcome envelope is strict: completed, rejected, or
+recovery_required, with an exact R2 result manifest required for future
+non-health completion. Runtime execution remains false and no provider call is
+implemented.
+
+This closes durable outcome-manifest replay locally, not original response-byte
+replay or billing terminalization. Edge request staging, pre-dispatch billing
+bind, provider attempt journal, actual Container storage client/canary, R2
+response fetch, settlement, N/N-1, Docker, remote faults, and rollout evidence
+remain mandatory. Production remains **NO-GO**.

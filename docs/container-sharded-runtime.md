@@ -502,6 +502,27 @@ does not replace actual Container lifecycle, N/N-1, provider, storage, billing,
 load, cost, image supply-chain, canary, or rollback evidence. Production stays
 **NO-GO**.
 
+## 2026-07-16 Durable Outcome and Deadline Recovery
+
+The shard ledger now separates definite failure from ambiguous execution.
+claimed expiry becomes failed before dispatch; running expiry becomes
+recovery_required and cannot automatically retry, switch channel, settle, or
+refund. Before dispatch the Controller persists a reconcileOperationDeadline
+task through the Container library schedule API. Its callback is fenced by
+operation ID, owner generation, and the stored deadline.
+
+The Container response is no longer a transient accepted/rejected
+acknowledgement. It is a strict completed/rejected/recovery_required envelope.
+For every non-health completion, its R2 result manifest must exactly match the
+manifest already attached to the DO. Terminal duplicate requests return an
+outcome reconstructed from durable state without waking the Container.
+
+The D1 storage action now requires reserved state plus live billing lease and
+owner deadline. This is still a local contract: byte replay, provider attempts,
+billing terminalization, real Container scheduling, and remote fault evidence
+are not complete. See docs/container-operation-recovery.md. Production remains
+**NO-GO**.
+
 ## 2026-07-16 Owner-Fenced Shared Storage Gateway
 
 `RelayShardContainer.outboundByHost` now exposes four internal-only storage

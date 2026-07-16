@@ -484,6 +484,12 @@ describe("container storage gateway", () => {
     const prepared: string[] = [];
     const bound: unknown[][] = [];
     let currentValues: unknown[] = [];
+    const admission = {
+      status: "reserved",
+      lease_expires_at: 2_000_000_100,
+      owner_deadline_at: 2_000_000_000,
+      owner_generation: 7,
+    };
     const statement = {
       bind(...values: unknown[]) {
         currentValues = values;
@@ -492,11 +498,7 @@ describe("container storage gateway", () => {
       },
       async first<T>() {
         if (currentValues[1] !== 7) return null;
-        return {
-          status: "reserved",
-          lease_expires_at: 1_800_000_100,
-          owner_generation: 7,
-        } as T;
+        return { ...admission } as T;
       },
     };
     const database = {
@@ -517,7 +519,8 @@ describe("container storage gateway", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       status: "reserved",
-      lease_expires_at: 1_800_000_100,
+      lease_expires_at: 2_000_000_100,
+      owner_deadline_at: 2_000_000_000,
       owner_generation: 7,
     });
     expect(prepared[0]).toContain("FROM relay_billing_reservations");
@@ -533,5 +536,16 @@ describe("container storage gateway", () => {
     expect(fenced.status).toBe(404);
     expect(await errorCode(fenced)).toBe("admission_snapshot_not_found");
     expect(bound[1]).toEqual([grant.operation_id, 8]);
+
+    admission.status = "refunded";
+    const terminal = await handleStorageGatewayRequest(env, request(), grant);
+    expect(terminal.status).toBe(409);
+    expect(await errorCode(terminal)).toBe("admission_not_reserved");
+
+    admission.status = "reserved";
+    admission.owner_deadline_at = 1;
+    const expired = await handleStorageGatewayRequest(env, request(), grant);
+    expect(expired.status).toBe(409);
+    expect(await errorCode(expired)).toBe("admission_lease_expired");
   });
 });

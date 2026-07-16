@@ -1607,6 +1607,25 @@ cold/warm shard probe third. N/N-1, real lifecycle/fault, image supply-chain,
 storage/provider/billing, load/cost, rollback, and approval evidence remain
 hard blockers. Production remains **NO-GO**.
 
+## 2026-07-16 Phase 1 Durable Operation Recovery Gate
+
+Local code now provides strict Container outcomes, result-required non-health
+completion, deterministic terminal outcome manifests, pre-dispatch persistent
+deadline scheduling, recovery_required for ambiguous running operations, and
+reserved/live D1 admission checks. A terminal duplicate does not execute the
+Container again.
+
+Portable protocol, Workerd SQLite, native runtime, TypeScript, and Rust source
+capability tests cover this contract. Docker is unavailable locally, so no real
+Container process, schedule callback, or multi-Worker E2E is claimed. Next is
+the narrow non-streaming chat canary described in
+docs/container-operation-recovery.md: billing bind before dispatch, immutable
+R2 input, private Controller client, deterministic Container adapter, verified
+R2 byte replay, and normal settlement/audit.
+
+Every tracked execution, storage, scheduler, and staging switch remains false.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
 ## 2026-07-16 Phase 1 Container Shared Storage Gate
 
 The Controller now compiles a narrow shared-storage contract for the sharded

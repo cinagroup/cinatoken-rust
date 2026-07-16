@@ -20,6 +20,8 @@ pub const DEFAULT_PORT: u16 = 8080;
 pub const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 pub const MAX_EXECUTION_WINDOW_SECONDS: u64 = 300;
 pub const CONTAINER_PROTOCOL_HEADER: &str = "x-cinatoken-container-protocol";
+pub const EXECUTION_NOT_ENABLED_CODE: &str = "execution_not_enabled";
+pub const AMBIGUOUS_EXECUTION_CODE: &str = "ambiguous_execution";
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const SHARD_CONTRACT_VERSION: u32 = 1;
@@ -147,16 +149,14 @@ async fn operations(headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> 
         return error_response(StatusCode::BAD_REQUEST, error.code, error.message);
     }
 
-    let accepted = envelope.operation_kind == "health_probe";
-    let response = OperationResponse {
-        protocol_version: PROTOCOL_VERSION,
-        operation_id: envelope.operation_id,
-        status: if accepted { "accepted" } else { "rejected" },
-        code: (!accepted).then_some("execution_not_enabled"),
-        trace_id: envelope.trace_id,
+    let completed = envelope.operation_kind == "health_probe";
+    let response = if completed {
+        OperationResponse::completed(envelope.operation_id, envelope.trace_id)
+    } else {
+        OperationResponse::rejected_execution_not_enabled(envelope.operation_id, envelope.trace_id)
     };
 
-    if accepted {
+    if completed {
         (StatusCode::OK, Json(response)).into_response()
     } else {
         (StatusCode::NOT_IMPLEMENTED, Json(response)).into_response()
@@ -201,14 +201,297 @@ struct ErrorResponse {
     message: &'static str,
 }
 
-#[derive(Debug, Serialize)]
-struct OperationResponse {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationOutcomeStatus {
+    Completed,
+    Rejected,
+    RecoveryRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperationResultManifest {
+    object_key: String,
+    object_version: String,
+    sha256: String,
+    size: u64,
+    content_type: String,
+}
+
+impl OperationResultManifest {
+    pub fn try_new(
+        object_key: String,
+        object_version: String,
+        sha256: String,
+        size: u64,
+        content_type: String,
+    ) -> Result<Self, ResultManifestError> {
+        validate_result_object_key(&object_key).map_err(ResultManifestError::from)?;
+        validate_identifier(
+            &object_version,
+            MAX_OBJECT_VERSION_BYTES,
+            "invalid_result_object_version",
+            "result object_version must be a bounded ASCII identifier",
+        )
+        .map_err(ResultManifestError::from)?;
+        validate_sha256(&sha256, "invalid_result_sha256").map_err(ResultManifestError::from)?;
+        if size > MAX_INPUT_BYTES {
+            return Err(ResultManifestError::new(
+                "invalid_result_size",
+                "result size exceeds the 64 MiB operation limit",
+            ));
+        }
+        validate_visible_ascii(
+            &content_type,
+            MAX_CONTENT_TYPE_BYTES,
+            "invalid_result_content_type",
+            "result content_type must be bounded visible ASCII",
+            true,
+        )
+        .map_err(ResultManifestError::from)?;
+        if !valid_content_type(&content_type) {
+            return Err(ResultManifestError::new(
+                "invalid_result_content_type",
+                "result content_type must be a valid bounded media type",
+            ));
+        }
+
+        Ok(Self {
+            object_key,
+            object_version,
+            sha256,
+            size,
+            content_type,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperationResultManifestWire {
+    object_key: String,
+    object_version: String,
+    sha256: String,
+    size: u64,
+    content_type: String,
+}
+
+impl<'de> Deserialize<'de> for OperationResultManifest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = OperationResultManifestWire::deserialize(deserializer)?;
+        Self::try_new(
+            wire.object_key,
+            wire.object_version,
+            wire.sha256,
+            wire.size,
+            wire.content_type,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResultManifestError {
+    code: &'static str,
+    message: &'static str,
+}
+
+impl ResultManifestError {
+    const fn new(code: &'static str, message: &'static str) -> Self {
+        Self { code, message }
+    }
+
+    pub const fn code(self) -> &'static str {
+        self.code
+    }
+}
+
+impl From<ValidationError> for ResultManifestError {
+    fn from(error: ValidationError) -> Self {
+        Self::new(error.code, error.message)
+    }
+}
+
+impl fmt::Display for ResultManifestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl Error for ResultManifestError {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperationResponse {
     protocol_version: u32,
     operation_id: String,
-    status: &'static str,
+    status: OperationOutcomeStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<&'static str>,
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<OperationResultManifest>,
     trace_id: String,
+}
+
+impl OperationResponse {
+    pub fn completed(operation_id: String, trace_id: String) -> Self {
+        Self::new(
+            operation_id,
+            trace_id,
+            OperationOutcomeStatus::Completed,
+            None,
+            None,
+        )
+    }
+
+    pub fn completed_with_result(
+        operation_id: String,
+        trace_id: String,
+        result: OperationResultManifest,
+    ) -> Self {
+        Self::new(
+            operation_id,
+            trace_id,
+            OperationOutcomeStatus::Completed,
+            None,
+            Some(result),
+        )
+    }
+
+    pub fn rejected_execution_not_enabled(operation_id: String, trace_id: String) -> Self {
+        Self::new(
+            operation_id,
+            trace_id,
+            OperationOutcomeStatus::Rejected,
+            Some(EXECUTION_NOT_ENABLED_CODE.to_string()),
+            None,
+        )
+    }
+
+    pub fn recovery_required_for_ambiguous_execution(
+        operation_id: String,
+        trace_id: String,
+    ) -> Self {
+        Self::new(
+            operation_id,
+            trace_id,
+            OperationOutcomeStatus::RecoveryRequired,
+            Some(AMBIGUOUS_EXECUTION_CODE.to_string()),
+            None,
+        )
+    }
+
+    fn new(
+        operation_id: String,
+        trace_id: String,
+        status: OperationOutcomeStatus,
+        code: Option<String>,
+        result: Option<OperationResultManifest>,
+    ) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            operation_id,
+            status,
+            code,
+            result,
+            trace_id,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperationResponseWire {
+    protocol_version: u32,
+    operation_id: String,
+    status: OperationOutcomeStatus,
+    #[serde(default)]
+    code: WireField<String>,
+    #[serde(default)]
+    result: WireField<OperationResultManifest>,
+    trace_id: String,
+}
+
+#[derive(Debug)]
+enum WireField<T> {
+    Missing,
+    Present(T),
+}
+
+impl<T> Default for WireField<T> {
+    fn default() -> Self {
+        Self::Missing
+    }
+}
+
+impl<'de, T> Deserialize<'de> for WireField<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        T::deserialize(deserializer).map(Self::Present)
+    }
+}
+
+impl<'de> Deserialize<'de> for OperationResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = OperationResponseWire::deserialize(deserializer)?;
+        if wire.protocol_version != PROTOCOL_VERSION {
+            return Err(serde::de::Error::custom("protocol_version must be 1"));
+        }
+        validate_identifier(
+            &wire.operation_id,
+            MAX_OPERATION_ID_BYTES,
+            "invalid_operation_id",
+            "operation_id must be a bounded ASCII identifier",
+        )
+        .map_err(|error| serde::de::Error::custom(error.message))?;
+        validate_identifier(
+            &wire.trace_id,
+            MAX_TRACE_ID_BYTES,
+            "invalid_trace_id",
+            "trace_id must be a bounded ASCII identifier",
+        )
+        .map_err(|error| serde::de::Error::custom(error.message))?;
+
+        let valid_presence = match (&wire.status, &wire.code, &wire.result) {
+            (OperationOutcomeStatus::Completed, WireField::Missing, _) => true,
+            (
+                OperationOutcomeStatus::Rejected | OperationOutcomeStatus::RecoveryRequired,
+                WireField::Present(code),
+                WireField::Missing,
+            ) => valid_outcome_code(code),
+            _ => false,
+        };
+        if !valid_presence {
+            return Err(serde::de::Error::custom(
+                "operation outcome fields do not match status",
+            ));
+        }
+
+        Ok(Self {
+            protocol_version: wire.protocol_version,
+            operation_id: wire.operation_id,
+            status: wire.status,
+            code: match wire.code {
+                WireField::Missing => None,
+                WireField::Present(code) => Some(code),
+            },
+            result: match wire.result {
+                WireField::Missing => None,
+                WireField::Present(result) => Some(result),
+            },
+            trace_id: wire.trace_id,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -453,6 +736,29 @@ fn validate_object_key(value: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+fn validate_result_object_key(value: &str) -> Result<(), ValidationError> {
+    if value.is_empty()
+        || value.len() > MAX_OBJECT_KEY_BYTES
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'.' | b':' | b'-')
+        })
+    {
+        return Err(ValidationError::new(
+            "invalid_result_object_key",
+            "result object_key must be a bounded storage key",
+        ));
+    }
+    Ok(())
+}
+
+fn valid_outcome_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_OPERATION_KIND_BYTES
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
+}
+
 fn valid_content_type(value: &str) -> bool {
     let essence = value.split(';').next().unwrap_or_default().trim();
     let Some((kind, subtype)) = essence.split_once('/') else {
@@ -661,5 +967,114 @@ mod tests {
         for invalid in ["", "0", "65536", " 8080", "not-a-port"] {
             assert_eq!(parse_port(OsString::from(invalid)), Err(PortConfigError));
         }
+    }
+
+    fn result_manifest() -> OperationResultManifest {
+        OperationResultManifest::try_new(
+            "container-results/v1/operation-123/1/result".to_string(),
+            "version-123".to_string(),
+            "c".repeat(64),
+            42,
+            "application/json".to_string(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn serializes_exact_completed_and_recovery_required_outcomes() {
+        let completed = OperationResponse::completed_with_result(
+            "operation-123".to_string(),
+            "trace-123".to_string(),
+            result_manifest(),
+        );
+        assert_eq!(
+            serde_json::to_value(completed).unwrap(),
+            serde_json::json!({
+                "protocol_version": 1,
+                "operation_id": "operation-123",
+                "status": "completed",
+                "result": {
+                    "object_key": "container-results/v1/operation-123/1/result",
+                    "object_version": "version-123",
+                    "sha256": "c".repeat(64),
+                    "size": 42,
+                    "content_type": "application/json"
+                },
+                "trace_id": "trace-123"
+            })
+        );
+
+        let recovery = OperationResponse::recovery_required_for_ambiguous_execution(
+            "operation-123".to_string(),
+            "trace-123".to_string(),
+        );
+        assert_eq!(
+            serde_json::to_value(recovery).unwrap(),
+            serde_json::json!({
+                "protocol_version": 1,
+                "operation_id": "operation-123",
+                "status": "recovery_required",
+                "code": "ambiguous_execution",
+                "trace_id": "trace-123"
+            })
+        );
+    }
+
+    #[test]
+    fn response_deserialization_denies_unknown_and_invalid_presence() {
+        let completed = serde_json::json!({
+            "protocol_version": 1,
+            "operation_id": "operation-123",
+            "status": "completed",
+            "trace_id": "trace-123"
+        });
+        assert!(serde_json::from_value::<OperationResponse>(completed.clone()).is_ok());
+
+        let mut with_code = completed.clone();
+        with_code["code"] = serde_json::json!("unexpected_code");
+        assert!(serde_json::from_value::<OperationResponse>(with_code).is_err());
+
+        let mut with_null_result = completed.clone();
+        with_null_result["result"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<OperationResponse>(with_null_result).is_err());
+
+        let mut with_unknown = completed;
+        with_unknown["unknown"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<OperationResponse>(with_unknown).is_err());
+
+        let rejected_without_code = serde_json::json!({
+            "protocol_version": 1,
+            "operation_id": "operation-123",
+            "status": "rejected",
+            "trace_id": "trace-123"
+        });
+        assert!(serde_json::from_value::<OperationResponse>(rejected_without_code).is_err());
+
+        let rejected_with_result = serde_json::json!({
+            "protocol_version": 1,
+            "operation_id": "operation-123",
+            "status": "rejected",
+            "code": "execution_not_enabled",
+            "result": serde_json::to_value(result_manifest()).unwrap(),
+            "trace_id": "trace-123"
+        });
+        assert!(serde_json::from_value::<OperationResponse>(rejected_with_result).is_err());
+    }
+
+    #[test]
+    fn result_manifest_is_validated_and_denies_unknown_fields() {
+        let mut manifest = serde_json::to_value(result_manifest()).unwrap();
+        manifest["unknown"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<OperationResultManifest>(manifest).is_err());
+
+        let error = OperationResultManifest::try_new(
+            "container-results/v1/result".to_string(),
+            "version-123".to_string(),
+            "C".repeat(64),
+            42,
+            "application/json".to_string(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "invalid_result_sha256");
     }
 }

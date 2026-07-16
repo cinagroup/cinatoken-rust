@@ -6,15 +6,24 @@ export type OperationStatus =
   | "claimed"
   | "running"
   | "completed"
-  | "failed";
+  | "failed"
+  | "recovery_required";
 
 export interface OperationRow {
   [key: string]: SqlStorageValue;
   operation_id: string;
   owner_generation: number;
+  operation_kind: string;
+  trace_id: string;
   envelope_sha256: string;
   status: OperationStatus;
   response_status: number | null;
+  response_code: string | null;
+  result_object_key: string | null;
+  result_object_version: string | null;
+  result_sha256: string | null;
+  result_size: number | null;
+  result_content_type: string | null;
 }
 
 export interface StorageAccessGrant {
@@ -155,7 +164,7 @@ interface StorageOperationRow {
   result_content_type: string | null;
 }
 
-const TERMINAL_STATUS_SQL = "'completed', 'failed'";
+const TERMINAL_STATUS_SQL = "'completed', 'failed', 'recovery_required'";
 
 export class RelayShardLedger {
   private schemaReady = false;
@@ -182,10 +191,12 @@ export class RelayShardLedger {
         operation_kind TEXT NOT NULL DEFAULT '',
         provider_operation_id TEXT NOT NULL,
         admission_sha256 TEXT NOT NULL DEFAULT '',
+        trace_id TEXT NOT NULL DEFAULT '',
         envelope_sha256 TEXT NOT NULL,
         dispatch_id TEXT NOT NULL,
         status TEXT NOT NULL,
         response_status INTEGER,
+        response_code TEXT,
         deadline_at INTEGER NOT NULL,
         input_mode TEXT NOT NULL DEFAULT '',
         input_sha256 TEXT NOT NULL DEFAULT '',
@@ -353,6 +364,83 @@ export class RelayShardLedger {
     });
   }
 
+  readOperationOutcome(operationId: string): OperationRow | null {
+    this.ensureSchema();
+    return firstRow<OperationRow>(
+      this.storage.sql.exec<OperationRow>(
+        `SELECT operation_id, owner_generation, operation_kind, trace_id, envelope_sha256,
+                status, response_status, response_code, result_object_key,
+                result_object_version, result_sha256, result_size, result_content_type
+           FROM cinatoken_shard_operations WHERE operation_id = ?1`,
+        operationId,
+      ),
+    );
+  }
+
+  finalizeOperation(
+    operationId: string,
+    ownerGeneration: number,
+    expectedStatus: "claimed" | "running",
+    status: "completed" | "failed" | "recovery_required",
+    responseStatus: number,
+    responseCode: string | null,
+    now: number,
+    requireBeforeDeadline: boolean,
+  ): OperationRow {
+    this.ensureSchema();
+    if (
+      !Number.isSafeInteger(responseStatus) ||
+      responseStatus < 100 ||
+      responseStatus > 599 ||
+      !Number.isSafeInteger(now) ||
+      now < 1 ||
+      (status === "completed" && responseCode !== null) ||
+      (status === "completed" && (responseStatus < 200 || responseStatus > 299)) ||
+      (status === "failed" && responseStatus < 400) ||
+      (status !== "completed" && !validResponseCode(responseCode)) ||
+      (status === "recovery_required" && responseStatus !== 202)
+    ) {
+      throw new ProtocolError("invalid_operation_outcome", 500);
+    }
+    const deadlineGuard = requireBeforeDeadline ? " AND deadline_at > ?4" : "";
+    return this.storage.transactionSync(() => {
+      const current = this.readOperationOutcome(operationId);
+      if (
+        current === null ||
+        current.owner_generation !== ownerGeneration ||
+        current.status !== expectedStatus
+      ) {
+        throw new ProtocolError("operation_completion_conflict", 409);
+      }
+      const result = operationStorageResult(current);
+      if (
+        status === "completed" &&
+        ((current.operation_kind === "health_probe" && result !== null) ||
+          (current.operation_kind !== "health_probe" && result === null))
+      ) {
+        throw new ProtocolError("operation_result_required", 409);
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_operations
+            SET status = ?1, response_status = ?2, response_code = ?3, updated_at = ?4
+          WHERE operation_id = ?5 AND owner_generation = ?6 AND status = ?7${deadlineGuard}`,
+        status,
+        responseStatus,
+        responseCode,
+        now,
+        operationId,
+        ownerGeneration,
+        expectedStatus,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("operation_completion_conflict", 409);
+      }
+      const row = this.readOperationOutcome(operationId);
+      if (row === null) throw new ProtocolError("operation_outcome_unavailable", 503);
+      return row;
+    });
+  }
+
   claimOperation(
     envelope: OperationEnvelope,
     envelopeSha256: string,
@@ -378,13 +466,7 @@ export class RelayShardLedger {
       ) {
         throw new ProtocolError("dispatch_replay_conflict", 409);
       }
-      const existing = firstRow<OperationRow>(
-        this.storage.sql.exec<OperationRow>(
-          `SELECT operation_id, owner_generation, envelope_sha256, status, response_status
-             FROM cinatoken_shard_operations WHERE operation_id = ?1`,
-          envelope.operation_id,
-        ),
-      );
+      const existing = this.readOperationOutcome(envelope.operation_id);
       if (existing !== null) {
         if (
           existing.owner_generation !== envelope.owner_generation ||
@@ -460,14 +542,26 @@ export class RelayShardLedger {
     return this.storage.transactionSync(() => {
       this.storage.sql.exec(
         `UPDATE cinatoken_shard_operations
-            SET status = 'failed', response_status = 504, updated_at = ?1
+            SET status = 'failed', response_status = 504,
+                response_code = 'container_execution_deadline_expired', updated_at = ?1
           WHERE operation_id = ?2 AND owner_generation = ?3
-            AND status IN ('claimed', 'running') AND deadline_at <= ?1`,
+            AND status = 'claimed' AND deadline_at <= ?1`,
         now,
         operationId,
         ownerGeneration,
       );
-      return changedRowCount(this.storage) === 1;
+      const claimedExpired = changedRowCount(this.storage) === 1;
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_operations
+            SET status = 'recovery_required', response_status = 202,
+                response_code = 'container_execution_ambiguous', updated_at = ?1
+          WHERE operation_id = ?2 AND owner_generation = ?3
+            AND status = 'running' AND deadline_at <= ?1`,
+        now,
+        operationId,
+        ownerGeneration,
+      );
+      return claimedExpired || changedRowCount(this.storage) === 1;
     });
   }
 
@@ -657,8 +751,16 @@ export class RelayShardLedger {
   private runMaintenance(policy: RelayShardLedgerPolicy, now: number): void {
     this.storage.sql.exec(
       `UPDATE cinatoken_shard_operations
-          SET status = 'failed', response_status = 504, updated_at = ?1
-        WHERE status IN ('claimed', 'running') AND deadline_at <= ?1`,
+          SET status = 'failed', response_status = 504,
+              response_code = 'container_execution_deadline_expired', updated_at = ?1
+        WHERE status = 'claimed' AND deadline_at <= ?1`,
+      now,
+    );
+    this.storage.sql.exec(
+      `UPDATE cinatoken_shard_operations
+          SET status = 'recovery_required', response_status = 202,
+              response_code = 'container_execution_ambiguous', updated_at = ?1
+        WHERE status = 'running' AND deadline_at <= ?1`,
       now,
     );
     this.storage.sql.exec(
@@ -713,6 +815,8 @@ export class RelayShardLedger {
     const additions: ReadonlyArray<readonly [string, string]> = [
       ["operation_kind", "TEXT NOT NULL DEFAULT ''"],
       ["admission_sha256", "TEXT NOT NULL DEFAULT ''"],
+      ["trace_id", "TEXT NOT NULL DEFAULT ''"],
+      ["response_code", "TEXT"],
       ["input_mode", "TEXT NOT NULL DEFAULT ''"],
       ["input_sha256", "TEXT NOT NULL DEFAULT ''"],
       ["input_size", "INTEGER NOT NULL DEFAULT -1"],
@@ -862,16 +966,18 @@ export class RelayShardLedger {
     this.storage.sql.exec(
       `INSERT INTO cinatoken_shard_operations
          (operation_id, owner_generation, operation_kind, provider_operation_id,
-          admission_sha256, envelope_sha256, dispatch_id, status, response_status, deadline_at,
+          admission_sha256, trace_id, envelope_sha256, dispatch_id, status, response_status,
+          deadline_at,
           input_mode, input_sha256, input_size, input_content_type, request_object_key,
           object_version, created_at, updated_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-               ?17, ?17)`,
+               ?17, ?18, ?18)`,
       envelope.operation_id,
       envelope.owner_generation,
       envelope.operation_kind,
       envelope.provider_operation_id,
       envelope.admission_sha256,
+      envelope.trace_id,
       envelopeSha256,
       dispatchId,
       status,
@@ -956,6 +1062,36 @@ function readinessSnapshot(row: ReadinessRow | null): PersistedReadinessSnapshot
 }
 
 function storageGrant(row: StorageOperationRow): StorageAccessGrant {
+  const result = operationStorageResult(row);
+  return {
+    operation_id: row.operation_id,
+    owner_generation: row.owner_generation,
+    operation_kind: row.operation_kind,
+    provider_operation_id: row.provider_operation_id,
+    admission_sha256: row.admission_sha256,
+    deadline_at: row.deadline_at,
+    input: {
+      mode: row.input_mode as "inline" | "r2",
+      sha256: row.input_sha256,
+      size: row.input_size,
+      content_type: row.input_content_type,
+      request_object_key: row.request_object_key,
+      object_version: row.object_version,
+    },
+    result,
+  };
+}
+
+export function operationStorageResult(
+  row: Pick<
+    OperationRow,
+    | "result_object_key"
+    | "result_object_version"
+    | "result_sha256"
+    | "result_size"
+    | "result_content_type"
+  >,
+): StorageResultRecord | null {
   const resultValues = [
     row.result_object_key,
     row.result_object_version,
@@ -978,23 +1114,7 @@ function storageGrant(row: StorageOperationRow): StorageAccessGrant {
       }
     : null;
   if (result !== null) validateStorageResult(result);
-  return {
-    operation_id: row.operation_id,
-    owner_generation: row.owner_generation,
-    operation_kind: row.operation_kind,
-    provider_operation_id: row.provider_operation_id,
-    admission_sha256: row.admission_sha256,
-    deadline_at: row.deadline_at,
-    input: {
-      mode: row.input_mode as "inline" | "r2",
-      sha256: row.input_sha256,
-      size: row.input_size,
-      content_type: row.input_content_type,
-      request_object_key: row.request_object_key,
-      object_version: row.object_version,
-    },
-    result,
-  };
+  return result;
 }
 
 function validateStorageResult(result: StorageResultRecord): void {
@@ -1031,6 +1151,10 @@ function storageResultMatches(
     left.size === right.size &&
     left.content_type === right.content_type
   );
+}
+
+function validResponseCode(value: string | null): value is string {
+  return value !== null && value.length >= 1 && value.length <= 64 && /^[a-z0-9_:-]+$/.test(value);
 }
 
 function validatePolicy(policy: RelayShardLedgerPolicy): void {

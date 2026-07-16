@@ -66,7 +66,7 @@
     "generate:container-controller:types": "wrangler types services/container-controller/worker-configuration.d.ts --config services/container-controller/wrangler.jsonc --env-interface ContainerControllerEnv",
     "check:container-controller:types": "wrangler types services/container-controller/worker-configuration.d.ts --config services/container-controller/wrangler.jsonc --env-interface ContainerControllerEnv --check",
     "build:container-controller": "tsc -p services/container-controller/tsconfig.json --noEmit && wrangler deploy --config services/container-controller/wrangler.jsonc --dry-run --containers-rollout none --outdir .wrangler/container-controller-build",
-    "test:container-controller": "bun test services/container-controller/tests/protocol.test.ts services/container-controller/tests/storage_gateway.test.ts tests/container-controller-config.test.mjs",
+    "test:container-controller": "bun test services/container-controller/tests/protocol.test.ts services/container-controller/tests/operation_outcome.test.ts services/container-controller/tests/storage_gateway.test.ts tests/container-controller-config.test.mjs",
     "test:container-controller:protocol-portable": "vitest run --config vitest.container-controller-protocol.config.mjs",
     "test:container-controller:runtime": "vitest run --config vitest.container-controller.config.mjs",
     "check:container-controller": "bun run check:container-controller:types && bun run build:container-controller && bun run test:container-controller && bun run test:container-controller:protocol-portable && bun run test:container-controller:runtime",

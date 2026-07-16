@@ -95,12 +95,23 @@ pub struct ContainerLocalContracts {
 pub fn container_local_contracts() -> ContainerLocalContracts {
     let controller = include_str!("../../../services/container-controller/src/index.ts");
     let ledger = include_str!("../../../services/container-controller/src/ledger.ts");
+    let operation_outcome =
+        include_str!("../../../services/container-controller/src/operation_outcome.ts");
     let storage_gateway =
         include_str!("../../../services/container-controller/src/storage_gateway.ts");
     let controller_config =
         include_str!("../../../services/container-controller/wrangler.production.jsonc");
     let runtime = include_str!("../../container-runtime/src/lib.rs");
     let dockerfile = include_str!("../../container-runtime/Dockerfile");
+    let operation_fetch = controller
+        .split_once("override async fetch(request: Request)")
+        .map(|(_, source)| source)
+        .unwrap_or_default();
+    let recovery_is_persisted_before_execution = operation_fetch
+        .find("\"reconcileOperationDeadline\"")
+        .zip(operation_fetch.find("this.ledger.transitionOperation("))
+        .zip(operation_fetch.find("this.containerFetch(\"http://container/v1/operations\""))
+        .is_some_and(|((schedule, running), dispatch)| schedule < running && running < dispatch);
     ContainerLocalContracts {
         runtime_compiled: runtime.contains("/v1/operations")
             && runtime.contains("execution_not_enabled")
@@ -114,8 +125,15 @@ pub fn container_local_contracts() -> ContainerLocalContracts {
         shared_storage_compiled: controller.contains("outboundByHost")
             && controller.contains("authorizeStorageAccess")
             && controller.contains("recordStorageResult")
+            && controller.contains("reconcileOperationDeadline")
+            && controller.contains("container_recovery_schedule_unavailable")
+            && recovery_is_persisted_before_execution
             && ledger.contains("storage_access_denied")
             && ledger.contains("result_object_version")
+            && ledger.contains("recovery_required")
+            && ledger.contains("operation_result_required")
+            && operation_outcome.contains("operationOutcomeResponse")
+            && operation_outcome.contains("operation_outcome_corrupt")
             && storage_gateway.contains("R2_INPUT_GET")
             && storage_gateway.contains("R2_RESULT_PUT")
             && storage_gateway.contains("KV_CONFIG_GET")

@@ -880,6 +880,22 @@ deadlines, remote fault injection, invoice reconciliation, alert/load evidence,
 credential rotation, and signed rollback still block Task v2 and production.
 Go/VPS remains authoritative and production remains **NO-GO**.
 
+## 2026-07-16 Durable Operation Recovery Status
+
+The local operation state now distinguishes claimed, running, completed,
+failed, and recovery_required. Trace and stable response code survive DO
+eviction; exact R2 result identity is mandatory before non-health completion;
+running deadline and post-dispatch response ambiguity never become an
+automatically retryable failure. A persisted Container schedule drives
+deadline reconciliation, and D1 admission is reserved/lease/deadline fenced.
+
+Current evidence is 32 portable protocol tests, 15 Workerd/SQLite scenarios,
+9 runtime unit tests, and 7 runtime HTTP tests, with TypeScript passing. This is
+outcome-manifest replay only. Edge business dispatch, provider execution,
+original response bytes, billing terminalization, Docker E2E, N/N-1, remote
+faults, load/cost, canary, and rollback remain open. No deployment or secret
+operation occurred. Production remains **NO-GO**.
+
 ## 2026-07-16 Container Shared Storage Gateway Status
 
 The local Controller now has four deny-by-default, owner-fenced storage

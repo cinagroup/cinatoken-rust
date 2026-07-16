@@ -10,6 +10,7 @@ export default defineConfig({
     environment: "node",
     include: [
       "services/container-controller/tests/protocol.test.ts",
+      "services/container-controller/tests/operation_outcome.test.ts",
       "services/container-controller/tests/storage_gateway.test.ts",
     ],
   },

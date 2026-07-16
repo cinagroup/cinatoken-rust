@@ -5651,9 +5651,9 @@ node node_modules/wrangler/bin/wrangler.js types services/container-controller/w
 node node_modules/wrangler/bin/wrangler.js deploy --config services/container-controller/wrangler.jsonc --dry-run --containers-rollout none
 ```
 
-Current local evidence is TypeScript PASS, 22/22 portable protocol tests,
-14/14 Workerd/SQLite scenarios, 720/720 Worker library tests, 12 authority
-tests, 6 runtime library tests, 7 runtime HTTP tests, 6 sharding tests, wasm
+Current local evidence is TypeScript PASS, 32/32 portable protocol tests,
+15/15 Workerd/SQLite scenarios, 720/720 Worker library tests, 12 authority
+tests, 9 runtime library tests, 7 runtime HTTP tests, 6 sharding tests, wasm
 check PASS, formatting PASS, generated types current, and Wrangler dry-run
 PASS with every storage gate false. Bun is not installed in this environment,
 so the equivalent checked-in TypeScript, Vitest, and Workerd entry points were
@@ -5676,3 +5676,28 @@ inventory/cleanup before enabling R2 writes. For D1, prove that `operation_id`
 is the exact billing reservation key and that generation changes deny stale
 Container reads.
 No local test or dry run may change an action flag or production verdict.
+
+## Durable Operation Recovery Verification (2026-07-16)
+
+Current focused evidence:
+
+- TypeScript Controller check: PASS.
+- Portable protocol/outcome/storage suite: 32/32.
+- Workerd/SQLite ledger suite: 15/15.
+- Native Container runtime unit suite: 9/9.
+- Native Container runtime HTTP suite: 7/7.
+
+The outcome suite rejects legacy accepted responses, unknown fields, explicit
+nulls, contradictory status/code/result combinations, incomplete durable
+result columns, result-free relay completion, terminal/expired D1 admission,
+and stale owner generation. Workerd proves that running expiry becomes
+recovery_required, claimed expiry remains definite, result attachment survives
+eviction, and relay completion fails before attachment.
+
+The finalized local gate also passed the full 720/720 Worker library suite,
+wasm32 check, formatting check, generated Controller type check, and Wrangler
+4.110.0 dry run. Wrangler's optional user-profile log write reported a
+non-fatal EPERM, while both Wrangler commands exited successfully and exposed
+every execution/storage gate as false. Docker and Bun are not installed, so a
+real Container, multi-Worker local E2E, and the Bun aggregate remain
+unverified. Local PASS cannot change any tracked gate or production verdict.

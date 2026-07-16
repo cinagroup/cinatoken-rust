@@ -14002,9 +14002,56 @@ ready. Both routes are pure D1 reads. There is still no retry, preview, apply,
 settlement, refund, operation update, DO mutation, R2 mutation, provider call,
 or public relay integration behind these endpoints.
 
-R2 orphan inventory, a provider-attempt journal, authenticated retry preview,
-a separately gated apply protocol, exact edge replay, the Linux canary, N/N-1,
-remote faults, old-writer drain, and 0044 enforcement remain open. All eight
+R2 orphan inventory, a provider-attempt journal, authenticated retry apply,
+a separately gated resolution protocol, exact edge replay, the Linux canary,
+N/N-1, remote faults, old-writer drain, and 0044 enforcement remain open. All eight
 Container gates and both cutover-compiled claims remain false. No remote
 migration or deployment occurred; Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 22.231 Container Reconciliation Retry Preview (2026-07-17)
+
+The source audit was refreshed against cinaVibeSDK commit `918e9748` and Go
+cinaToken commit `73652508`. cinaVibeSDK keeps named Durable Object state and
+isolated workspace ownership behind RPC, while the Go relay still performs
+request-local channel retries. The Container recovery contract therefore does
+not reinterpret an operator retry as permission for another provider attempt.
+It may only propose re-observing already durable D1/DO/R2 evidence.
+
+The RootAuth operator list now returns a stable `ctrec1-<sequence>-<digest>`
+target. The sequence enables one indexed D1 lookup; the domain-separated digest
+binds that sequence to the immutable operation identity, owner generation, and
+reconciliation identity. It is an integrity reference, not an authorization
+credential. The route always re-authorizes the session, reloads canonical D1
+state, recomputes the digest, and returns the same 404 for a missing row or a
+digest mismatch.
+
+`POST /api/platform/container/reconciliations/:target/retry/preview` now:
+
+1. requires RootAuth and a strict JSON decision containing one allowlisted
+   remediation reason plus a bounded evidence reference;
+2. accepts only a structurally valid `dead_letter` observation whose reason is
+   either its exact divergence class or `retry_horizon_exhausted`;
+3. returns 409 for pending, leased, retry, or converged records because those
+   are already owned by the automatic observer lifecycle;
+4. hashes the evidence reference instead of returning it, and produces a
+   domain-separated preview token bound to the full observer generation,
+   timestamps, class/error/dead-letter state, target, action, reason, and
+   evidence digest; and
+5. returns `Cache-Control: no-store` on success and every error path.
+
+The preview explicitly reports `apply_compiled=false`, `apply_enabled=false`,
+and `retry_apply_not_compiled`. It also fixes provider, operation, financial,
+Durable Object, and R2 mutation permissions to false. No apply route, secure
+step-up consumption, idempotency ledger, observer transition, operation update,
+billing/quota mutation, provider call, DO call, or R2 access was added. Status
+exposes retry preview as compiled and retry apply as not compiled.
+
+R2 orphan inventory remains the next expand-only observer slice. A future
+retry apply must be a separate migration and protocol with fresh step-up,
+idempotency, immutable audit, preview-token comparison, generation fencing,
+observer-state-only mutation, and explicit default-false readiness. Provider
+attempt journaling, exact edge replay, the Linux canary, N/N-1, remote faults,
+old-writer drain, and enforcement migration 0044 remain open. All Container
+gates stay false; no remote action occurred; Go/VPS remains authoritative and
+production remains **NO-GO**.

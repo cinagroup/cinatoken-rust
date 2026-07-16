@@ -1781,9 +1781,33 @@ inconsistent stored counters or unknown state/class values fail closed. A
 Workerd test applies all 43 migrations and verifies unauthenticated denial,
 Root access, no-store headers, filters, aggregates, and response redaction.
 
-These routes perform only parameterized D1 reads and do not add a retry or
-apply endpoint. R2 orphan inventory, retry preview, provider-attempt journal,
-generation-fenced apply, edge replay, Linux canary, remote faults/N/N-1,
+These status/list routes perform only parameterized D1 reads. At that
+checkpoint no retry or apply endpoint existed; the next increment below adds
+preview only. R2 orphan inventory, retry apply, provider-attempt journal,
+generation-fenced resolution, edge replay, Linux canary, remote faults/N/N-1,
 old-writer drain, and 0044 enforcement remain open. All Container gates stay
 false, no remote action occurred, Go/VPS remains authoritative, and production
 remains **NO-GO**.
+
+## 2026-07-17 Phase 1 Container Reconciliation Retry Preview Gate
+
+The RootAuth observation list now emits a stable target made from immutable
+sequence plus a domain-separated identity digest. A new RootAuth, no-store
+preview route resolves the sequence through a parameterized D1 lookup and
+recomputes the digest before returning any result. Missing and digest-mismatched
+targets share the same 404 response.
+
+Preview accepts only an allowlisted remediation reason and bounded evidence
+reference for a valid dead-letter row. The response hashes rather than echoes
+the evidence reference, contains only redacted operation/reconciliation
+references, and binds its preview token to all generation, lifecycle, class,
+error, timestamp, reason, action, and evidence fields. Non-dead-letter records
+return 409 because the automatic observer already owns them.
+
+This is intentionally not an execution surface. The contract reports retry
+apply as uncompiled and disabled, requires future step-up, and forbids provider,
+operation, billing, DO, and R2 mutation. No apply route or runtime flag exists.
+Next are bounded R2 orphan inventory, a separately migrated observer-only retry
+apply protocol, provider-attempt journaling, edge replay, Linux canary, remote
+fault/N/N-1 evidence, old-writer drain, and enforcement migration 0044. All
+Container gates remain false and production remains **NO-GO**.

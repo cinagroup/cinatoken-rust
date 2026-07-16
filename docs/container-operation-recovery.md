@@ -268,8 +268,24 @@ read a no-store observation queue through an immutable sequence cursor with
 strict status/class filters and a 50-row hard limit. Both surfaces replace raw
 operation, reconciliation, cursor, and high-watermark identities with
 domain-separated SHA-256 references and never select the claim owner. Stored
-contract drift fails the request closed. Operator retry and any apply workflow
-still require separate preview, idempotency, audit, and default-false gates.
+contract drift fails the request closed. Operator retry apply and any other
+resolution workflow still require separate idempotency, audit, and
+default-false gates.
+
+The list also returns a state-bound target for the RootAuth retry preview. The
+target combines immutable observation sequence with a domain-separated digest
+of operation identity, owner generation, and reconciliation identity. Preview
+reloads the row by sequence, verifies the digest, accepts only a valid
+dead-letter state and an allowlisted remediation reason/evidence reference,
+then returns a full-state-bound preview token. Evidence reference text is not
+echoed. Pending, leased, retry, and converged rows remain under automatic
+observer ownership and return 409.
+
+Preview is read-only. It reports apply as uncompiled/disabled and explicitly
+forbids provider retry, operation/billing mutation, DO mutation, and R2
+mutation. Any future observer requeue requires a separate migration, RootAuth
+plus fresh step-up, idempotency, immutable audit, generation fencing, exact
+preview comparison, and a default-false gate.
 
 ## Edge Integration Order
 
@@ -313,9 +329,9 @@ The following are still mandatory:
 - derive the implemented tenant/user/token/route-scoped client idempotency HMAC
   at admission, require it for the canary, and map the implemented same-key/
   different-request lookup conflict to 409;
-- add bounded R2 orphan inventory plus authenticated retry preview around the
-  implemented status/list surface, then design any resolution/apply workflow
-  as a separately gated generation-fenced protocol with audit;
+- add bounded R2 orphan inventory, then implement authenticated observer-only
+  retry apply as a separately migrated, gated, generation-fenced protocol with
+  step-up, idempotency, and audit;
 - dispatch-before-send provider attempt journal and one retry owner;
 - deterministic local provider canary in the actual Linux image;
 - wire the implemented create-only exact client-response R2 write and verified

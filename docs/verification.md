@@ -5954,3 +5954,46 @@ No retry/apply endpoint, financial mutation, operation mutation, DO/R2 write,
 provider call, remote migration, deployment, or traffic switch is claimed.
 All eight Container gates remain false; Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## Container Reconciliation Retry Preview Verification (2026-07-17)
+
+This overlay adds only a RootAuth-protected preview for a dead-letter
+observation. It does not compile or enable retry apply.
+
+```powershell
+cargo test -p cinatoken-worker --lib container_reconciliation
+# PASS: 14 passed; 0 failed.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 761 passed; 0 failed.
+
+node node_modules/vitest/vitest.mjs run --config vitest.do.config.mjs
+# PASS: 44 passed; 0 failed.
+
+python tools/verify_sqlite.py
+# PASS: 43 migrations, 40 tables, 360 incremental columns, 57 key indexes.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo fmt --all -- --check
+bun run check
+# PASS, including frontend, route ownership, workspace, and wasm checks.
+```
+
+Rust tests prove the versioned target binds the immutable observation sequence,
+operation identity, owner generation, and reconciliation identity through a
+domain-separated digest. Target tampering or digest mismatch shares the same
+404 response as a missing observation. The preview accepts only one of four
+bounded reasons and a strict evidence reference, returns only a separate
+SHA-256 evidence fingerprint, and binds the complete observed state and proposed
+action into a domain-separated preview token.
+
+Workerd proves anonymous access is 401, active observer-managed states are 409,
+and only a contract-valid dead-letter observation returns a no-store preview.
+The response omits raw evidence and authority-bearing identities. A before/after
+D1 read proves the preview does not change observer state.
+
+`apply_compiled=false`, `apply_enabled=false`, and
+`retry_apply_not_compiled` remain explicit. No apply route, provider attempt,
+financial or operation mutation, DO/R2 write, remote migration, deployment, or
+traffic switch was added. All eight Container gates remain false; Go/VPS
+remains authoritative and production remains **NO-GO**.

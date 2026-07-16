@@ -212,6 +212,13 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             },
         )
         .post_async(
+            "/api/platform/container/reconciliations/:target/retry/preview",
+            |req, ctx| async move {
+                let target = ctx.param("target").cloned();
+                container_reconciliation_admin::retry_preview(req, ctx.env, target).await
+            },
+        )
+        .post_async(
             "/api/platform/quota-coordinator/reconciliation",
             |req, ctx| async move {
                 quota_coordinator::quota_coordinator_reconciliation(req, ctx.env).await
@@ -2282,6 +2289,7 @@ mod tests {
             "/api/platform/container/shards/readiness",
             "/api/platform/container/reconciliation/status",
             "/api/platform/container/reconciliations",
+            "/api/platform/container/reconciliations/:target/retry/preview",
             "/api/platform/quota-coordinator/reconciliation",
             "/api/platform/relay-billing/ledger/status",
             "/api/platform/task-runner/task-smoke/status",

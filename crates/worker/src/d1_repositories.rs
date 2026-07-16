@@ -4061,6 +4061,36 @@ pub async fn list_relay_container_reconciliation_observations(
     .results::<RelayContainerReconciliationObservationRow>()
 }
 
+pub async fn relay_container_reconciliation_observation_by_sequence(
+    db: &D1Database,
+    observation_sequence: i64,
+) -> worker::Result<Option<RelayContainerReconciliationObservationRow>> {
+    if observation_sequence <= 0 {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation observation sequence is invalid".to_string(),
+        ));
+    }
+    let observation_sequence = observation_sequence.to_string();
+    db.prepare(
+        r#"
+        SELECT rowid AS observation_sequence, operation_id,
+               operation_created_at, owner_generation, reconciliation_id,
+               status, claim_generation, claim_lease_expires_at,
+               available_at, attempt_count, consecutive_failures,
+               first_observed_at, last_attempt_at, last_observed_at,
+               last_class, last_error_code, recovery_deadline_at,
+               converged_at, dead_lettered_at, dead_letter_reason,
+               created_at, updated_at
+        FROM relay_container_reconciliation_observations
+        WHERE rowid = CAST(?1 AS INTEGER)
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&D1Type::Text(&observation_sequence))?
+    .first::<RelayContainerReconciliationObservationRow>(None)
+    .await
+}
+
 #[derive(Debug, Deserialize)]
 struct RelayContainerReconciliationHighWatermark {
     created_at: i64,

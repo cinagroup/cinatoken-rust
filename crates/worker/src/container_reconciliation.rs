@@ -38,6 +38,14 @@ const CONTAINER_RECONCILIATION_RETRY_BASE_SECONDS: i64 = 15;
 const CONTAINER_RECONCILIATION_RETRY_MAX_SECONDS: i64 = 900;
 const CONTAINER_RECONCILIATION_BACKOFF_DOMAIN: &[u8] =
     b"cinatoken:container-reconciliation-backoff:v1\0";
+pub(crate) const CONTAINER_RECONCILIATION_DEAD_LETTER_REASONS: &[&str] = &[
+    "retry_horizon_exhausted",
+    "terminal_conflict",
+    "terminal_response_divergent",
+    "response_r2_orphan",
+    "legacy_terminal_without_receipt",
+    "contract_violation",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainerD1Observation {

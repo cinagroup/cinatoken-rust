@@ -1900,6 +1900,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
         observer_compiled: true,
         schema_ready: true,
         runtime_enabled: false,
+        retry_preview_compiled: true,
+        retry_apply_compiled: false,
         scan_limit: 4,
         run: {
           owner_present: false,
@@ -1912,7 +1914,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
           retry: 2,
           converged: 0,
           dead_letter: 0,
-          due: 0,
+          due: 1,
           expired_leases: 0,
         },
         classes: [{ class: "store_unavailable", count: 2 }],
@@ -1971,6 +1973,24 @@ describe("Rust Durable Object lifecycle contracts", () => {
       /^[a-f0-9]{64}$/u,
     );
     expect(list.data.next_cursor).toMatch(/^[1-9][0-9]*$/u);
+    const previewBody = JSON.stringify({
+      reason: "operator_reinspection_approved",
+      evidence_reference: "incident:CT-runtime-1",
+    });
+    const managedPreview = await SELF.fetch(
+      "https://cinatoken.test/api/platform/container/reconciliations/" +
+        `${list.data.records[0].target}/retry/preview`,
+      {
+        method: "POST",
+        headers: {
+          cookie,
+          "content-type": "application/json",
+        },
+        body: previewBody,
+      },
+    );
+    expect(managedPreview.status).toBe(409);
+    expect(managedPreview.headers.get("cache-control")).toBe("no-store");
 
     const secondPageResponse = await SELF.fetch(
       `${listUrl}&cursor=${list.data.next_cursor}`,
@@ -2001,6 +2021,108 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(secondPage.data.records[0].operation_reference).not.toBe(
       list.data.records[0].operation_reference,
     );
+
+    await deadLetterContainerReconciliationObservation(seeded[0].operationId);
+    const deadLetterListResponse = await SELF.fetch(
+      "https://cinatoken.test/api/platform/container/reconciliations" +
+        "?status=dead_letter&limit=1",
+      { headers: { cookie } },
+    );
+    const deadLetterList = await deadLetterListResponse.json();
+    expect(deadLetterListResponse.status).toBe(200);
+    expect(deadLetterList.data.records).toHaveLength(1);
+    const previewTarget = deadLetterList.data.records[0].target;
+    expect(previewTarget).toMatch(/^ctrec1-[1-9][0-9]*-[a-f0-9]{64}$/u);
+    const previewUrl =
+      "https://cinatoken.test/api/platform/container/reconciliations/" +
+      `${previewTarget}/retry/preview`;
+
+    const anonymousPreview = await SELF.fetch(previewUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: previewBody,
+    });
+    expect(anonymousPreview.status).toBe(401);
+    expect(anonymousPreview.headers.get("cache-control")).toBe("no-store");
+    const previewResponse = await SELF.fetch(previewUrl, {
+      method: "POST",
+      headers: {
+        cookie,
+        "content-type": "application/json",
+      },
+      body: previewBody,
+    });
+    const previewText = await previewResponse.text();
+    expect(previewResponse.status).toBe(200);
+    expect(previewResponse.headers.get("cache-control")).toBe("no-store");
+    expect(previewText).not.toContain(seeded[0].operationId);
+    expect(previewText).not.toContain(seeded[0].reconciliationId);
+    expect(previewText).not.toContain(seeded[0].claimOwner);
+    expect(previewText).not.toContain("incident:CT-runtime-1");
+    const preview = JSON.parse(previewText);
+    expect(preview).toMatchObject({
+      success: true,
+      data: {
+        contract_version: 1,
+        target: previewTarget,
+        owner_generation: 2,
+        status: "dead_letter",
+        class: "terminal_conflict",
+        last_error_code: "controller_contract_violation",
+        claim_generation: 2,
+        attempt_count: 2,
+        consecutive_failures: 1,
+        dead_letter_reason: "terminal_conflict",
+        action: "reobserve_container_state",
+        reason: "operator_reinspection_approved",
+        candidate_retryable: true,
+        apply_compiled: false,
+        apply_enabled: false,
+        apply_blocker: "retry_apply_not_compiled",
+        step_up_required_for_apply: true,
+        observer_state_mutation_only: true,
+        provider_retry_allowed: false,
+        operation_mutation_allowed: false,
+        financial_mutation_allowed: false,
+        durable_object_mutation_allowed: false,
+        r2_mutation_allowed: false,
+      },
+    });
+    expect(preview.data.operation_reference).toMatch(/^[a-f0-9]{64}$/u);
+    expect(preview.data.reconciliation_reference).toMatch(/^[a-f0-9]{64}$/u);
+    expect(preview.data.evidence_sha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(preview.data.preview_token).toMatch(/^[a-f0-9]{64}$/u);
+
+    const tamperedTarget = `${previewTarget.slice(0, -1)}${
+      previewTarget.endsWith("0") ? "1" : "0"
+    }`;
+    const tamperedPreview = await SELF.fetch(
+      "https://cinatoken.test/api/platform/container/reconciliations/" +
+        `${tamperedTarget}/retry/preview`,
+      {
+        method: "POST",
+        headers: {
+          cookie,
+          "content-type": "application/json",
+        },
+        body: previewBody,
+      },
+    );
+    expect(tamperedPreview.status).toBe(404);
+    expect(tamperedPreview.headers.get("cache-control")).toBe("no-store");
+    const deadLetterState = await env.DB.prepare(
+      `SELECT status, claim_generation, attempt_count, dead_letter_reason
+       FROM relay_container_reconciliation_observations
+       WHERE operation_id = ?1`,
+    )
+      .bind(seeded[0].operationId)
+      .first();
+    expect(deadLetterState).toEqual({
+      status: "dead_letter",
+      claim_generation: 2,
+      attempt_count: 2,
+      dead_letter_reason: "terminal_conflict",
+    });
   });
 
   it("quarantines and queue-replays one billing DLQ incident under root step-up", async () => {
@@ -4071,10 +4193,42 @@ async function seedContainerReconciliationObservation(suffix) {
          last_error_code = 'controller_status_unavailable', updated_at = ?2
      WHERE operation_id = ?1`,
   )
-    .bind(operationId, observationCreatedAt + 2, now + 300)
+    .bind(
+      operationId,
+      observationCreatedAt + 2,
+      suffix === "1" ? now - 1 : now + 300,
+    )
     .run();
 
   return { operationId, reconciliationId, claimOwner };
+}
+
+async function deadLetterContainerReconciliationObservation(operationId) {
+  const now = Math.floor(Date.now() / 1000);
+  const claimAt = now - 1;
+  const deadLetterAt = now;
+  await env.DB.prepare(
+    `UPDATE relay_container_reconciliation_observations
+     SET status = 'leased', claim_generation = claim_generation + 1,
+         claim_owner = ?2, claim_lease_expires_at = ?4, available_at = 0,
+         attempt_count = attempt_count + 1, last_attempt_at = ?3,
+         updated_at = ?3
+     WHERE operation_id = ?1 AND status = 'retry'`,
+  )
+    .bind(operationId, "d".repeat(32), claimAt, claimAt + 60)
+    .run();
+  await env.DB.prepare(
+    `UPDATE relay_container_reconciliation_observations
+     SET status = 'dead_letter', claim_owner = '', claim_lease_expires_at = 0,
+         available_at = 0, last_observed_at = ?2,
+         last_class = 'terminal_conflict',
+         last_error_code = 'controller_contract_violation',
+         dead_lettered_at = ?2, dead_letter_reason = 'terminal_conflict',
+         updated_at = ?2
+     WHERE operation_id = ?1 AND status = 'leased'`,
+  )
+    .bind(operationId, deadLetterAt)
+    .run();
 }
 
 async function seedRelayBillingReservation({

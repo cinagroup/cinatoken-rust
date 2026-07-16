@@ -77,7 +77,8 @@ The Rust Container now emits one strict v1 outcome:
 - completed: 2xx, no code, and a validated R2 result manifest for every
   non-health operation;
 - rejected: non-2xx, a bounded stable code, and no result;
-- recovery_required: exactly 202, a bounded stable code, and no result.
+- recovery_required: exactly 202, a bounded stable code, and either no result
+  or the exact already-attached R2 result manifest for reconciliation.
 
 The result manifest contains only object_key, object_version, sha256, size, and
 content_type. Unknown fields, explicit nulls, invalid media types, oversized
@@ -152,6 +153,38 @@ row only through an `INSERT ... SELECT` CAS against the live selected billing
 owner. Exact retries match immutable identity even after lifecycle advancement;
 collisions never overwrite an existing provider operation.
 
+### Global lifecycle CAS and status-only query
+
+The edge repository now persists `prepared -> dispatched` only while the exact
+operation/admission digest, billing owner generation, selected channel/group,
+lease, owner deadline, and execution deadline still match. Its outcome is a
+dedicated type: `AlreadyDispatched` means query the same operation and must
+never be interpreted as permission for another provider call.
+
+Operation-side terminal evidence is also generation/status fenced. Completed
+requires a deterministic result manifest; failed forbids one; ambiguous
+execution may retain an exact result manifest while entering
+`recovery_required`. A replay is matching only when status, HTTP code, bounded
+response code, and every result object field are identical. An authorized
+reconciler may resolve `recovery_required -> completed|failed`; normal dispatch
+may not reactivate it. The append-only lifecycle enforcement migration forbids
+same-state timestamp or outcome rewrites in D1.
+
+The Controller exposes a signed status-only route that binds operation ID,
+owner generation, full shard fence, and trace ID. It reads the existing named
+DO ledger by RPC and remains valid after the execution deadline. It never runs
+active D1 admission, claims capacity, schedules work, wakes the Container, or
+calls `containerFetch`. A bounded D1 candidate query supplies expired
+`prepared`/`dispatched` rows and `recovery_required` rows to the future
+reconciler.
+
+These writes are not yet financial terminal authority. A client-visible
+success still requires one D1 transaction containing operation terminal CAS,
+billing terminal CAS, quota/request/channel mutation, and immutable audit/outbox
+evidence. Until that transaction and exact R2 response replay exist, the
+operation terminal API is evidence-only and all operation-write, terminal,
+reconciliation, chat-canary, and staging-verified gates remain false.
+
 ## Edge Integration Order
 
 The first real business canary must preserve the existing relay lifecycle:
@@ -189,11 +222,18 @@ The following are still mandatory:
 
 - wire the default-off Rust envelope/R2/Controller foundation into the narrow
   non-streaming chat canary after all admission records are committed;
-- add generation-fenced global D1 `prepared -> dispatched -> terminal` CAS and
-  reconciliation between the global row and the per-shard DO ledger;
+- combine the implemented operation-side terminal CAS with billing, quota,
+  request/channel accounting, and immutable audit/outbox in one guarded D1
+  batch before any client response;
+- add a tenant/user/route-scoped HMAC of the explicit client idempotency key and
+  a canonical request digest, so the same key plus different request is 409 and
+  an automatically generated request ID cannot masquerade as client replay;
+- implement the default-off reconciler using the bounded D1 candidate reader
+  and signed status-only DO query, including divergence metrics and operator
+  resolution authorization;
 - dispatch-before-send provider attempt journal and one retry owner;
 - deterministic local provider canary in the actual Linux image;
-- original status/header/body storage and byte replay;
+- original status/allowlisted-header/body storage and byte-identical replay;
 - reconciliation for R2 write success followed by DO attach failure;
 - current/previous protocol parsers and N/N-1 mixed Controller/image tests;
 - real cold/warm/sleep/restart/OOM and network fault evidence;

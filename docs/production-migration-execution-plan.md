@@ -325,18 +325,50 @@ Corrected production rules:
 - Canary is driven primarily by Workers gradual deployments (version-percentage
   split) plus token-group gating, not DNS swaps.
 
+### Container operation terminal-commit overlay (2026-07-16)
+
+For the four-layer Worker -> sharded DO -> Linux Container -> KV/D1/R2 design,
+D1 is the only global operation and financial authority. The DO is the durable
+execution supervisor and the Container is disposable compute; neither a DO
+terminal row nor an R2 result can authorize a client-visible response alone.
+
+The mandatory order for the first non-streaming chat canary is:
+
+1. freeze the normal billing snapshot and selected channel/group at the edge;
+2. create immutable R2 input and bind the exact 0040 operation to the live
+   billing owner;
+3. win the global `prepared -> dispatched` CAS before the first Service Binding
+   send; `AlreadyDispatched` is status-query-only and never sends again;
+4. execute or query the same named shard and verify the exact R2 result;
+5. in one guarded D1 batch commit operation terminal state, billing terminal
+   state, quota/request/channel mutations, and immutable audit/outbox evidence;
+6. only after matching canonical readback, read the version-pinned R2 response
+   and return its exact status, allowlisted headers, and bytes;
+7. on ambiguity, query the same operation and reconcile; never switch provider,
+   create a new provider identity, settle, or refund by timeout alone.
+
+Five independent flags must remain false until their own evidence exists:
+`CONTAINER_OPERATION_WRITE_ENABLED`, `CONTAINER_TERMINAL_CAS_ENABLED`,
+`CONTAINER_OPERATION_RECONCILIATION_ENABLED`,
+`CONTAINER_CHAT_CANARY_ENABLED`, and
+`CONTAINER_OPERATION_STAGING_VERIFIED`. They are mandatory inputs to Container
+cutover readiness, not operational hints. The local lifecycle CAS and signed
+status-only query do not open G4 or G7 because the cross-ledger terminal batch,
+exact response replay, Linux image, remote fault matrix, and C1-C5 approvals are
+still incomplete.
+
 ## Production Gates
 
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0030, `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 30/30 and 30-table replay are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0041, `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 41/41 and 36-table replay are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
-| G4 | Billing parity | Billing expression and quota deltas match Go for production-shaped inputs | Golden fixtures, shadow settlement reports, delta threshold report | Paid traffic ownership |
+| G4 | Billing parity | Billing expression and quota deltas match Go, and Container operation/billing/quota/audit terminal state commits atomically | Golden fixtures, cross-ledger D1 batch rollback faults, exact replay, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
 | G6 | Observability and security | SLO dashboards, alerts, WAF/rate limits, secret policy, and runbooks exist | G6 report from `docs/observability-slo-security-runbook.md`, logs/traces, alert drill, redaction smoke, incident template | Canary above internal traffic |
-| G7 | Canary | Rust Worker handles selected safe traffic with Go rollback ready | 1%/5%/25% reports, no unexplained billing deltas, rollback rehearsal | Full cutover |
+| G7 | Canary | Rust Worker handles selected safe traffic with Go rollback ready and every Container operation/canary/reconciliation/staging gate true from archived evidence | 1%/5%/25% reports, no unexplained billing or DO/D1/R2 deltas, duplicate-operation proof, rollback rehearsal | Full cutover |
 | G8 | Cutover | All P0 gates pass and freeze window is approved | Final checklist, backup/export, DNS/route plan, owner approval | Retiring Go/VPS |
 | G9 | Post-cutover hardening | Rust is primary and stable for the agreed window | Post-cutover audit, cost report, cleanup plan | VPS decommission |
 
@@ -345,7 +377,7 @@ Corrected production rules:
 | Workstream | Current Status | Production Target | Next Evidence |
 | --- | --- | --- | --- |
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
-| Data migration | Partial: local exact-set SQLite replay passes 30/30 migrations, 30 tables, 139 checked columns, and 27 indexes; historical local Wrangler evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 30/30 staging apply, immutable-contract negative probes, real source inventory, staging import report, and rollback point |
+| Data migration | Partial: local exact-set SQLite replay passes 41/41 migrations, 36 tables, 277 checked incremental columns, and 48 key indexes; 0041 append-only hardening freezes same-state Container lifecycle outcomes; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 41/41 staging apply with every Container writer gate false, immutable-contract negative probes, real source inventory, staging import report, and rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
 | Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers plus bounded commit-watermark compaction and a 1.5 MB local JSON guard, but no deployed retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, deployed hot-token window/structured-clone/load/cost report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |

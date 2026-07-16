@@ -25,6 +25,9 @@ pub(crate) const RELAY_BILLING_FINALIZATION_INCIDENT_MIGRATION: &str =
 pub(crate) const RELAY_BILLING_OWNER_GENERATION_MIGRATION: &str =
     "0026_relay_billing_owner_generation.sql";
 pub(crate) const RELAY_CONTAINER_OPERATION_MIGRATION: &str = "0040_relay_container_operations.sql";
+pub(crate) const RELAY_CONTAINER_OPERATION_LIFECYCLE_MIGRATION: &str =
+    "0041_relay_container_operation_lifecycle_hardening.sql";
+const RELAY_CONTAINER_OPERATION_RECOVERY_MAX_LIMIT: i64 = 64;
 pub(crate) const RELAY_FLAT_BILLING_INTENT_MIGRATION: &str = "0029_flat_billing_intents.sql";
 pub(crate) const REALTIME_USAGE_RECONCILIATION_MIGRATION: &str =
     "0027_realtime_usage_reconciliation.sql";
@@ -163,6 +166,113 @@ pub enum RelayContainerOperationWriteOutcome {
     StaleGeneration,
     SelectedAttemptConflict,
     DeadlineExpired,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerOperationExpectedStatus {
+    Prepared,
+    Dispatched,
+    RecoveryRequired,
+}
+
+impl RelayContainerOperationExpectedStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Prepared => "prepared",
+            Self::Dispatched => "dispatched",
+            Self::RecoveryRequired => "recovery_required",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayContainerOperationResultRecord<'a> {
+    pub object_key: &'a str,
+    pub object_version: &'a str,
+    pub sha256: &'a str,
+    pub size: i64,
+    pub content_type: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerOperationTerminalRecord<'a> {
+    Completed {
+        response_status: i64,
+        result: RelayContainerOperationResultRecord<'a>,
+    },
+    Failed {
+        response_status: i64,
+        response_code: &'a str,
+    },
+    RecoveryRequired {
+        response_code: &'a str,
+        result: Option<RelayContainerOperationResultRecord<'a>>,
+    },
+}
+
+impl<'a> RelayContainerOperationTerminalRecord<'a> {
+    fn status(self) -> &'static str {
+        match self {
+            Self::Completed { .. } => "completed",
+            Self::Failed { .. } => "failed",
+            Self::RecoveryRequired { .. } => "recovery_required",
+        }
+    }
+
+    fn response_status(self) -> i64 {
+        match self {
+            Self::Completed {
+                response_status, ..
+            }
+            | Self::Failed {
+                response_status, ..
+            } => response_status,
+            Self::RecoveryRequired { .. } => 202,
+        }
+    }
+
+    fn response_code(self) -> Option<&'a str> {
+        match self {
+            Self::Completed { .. } => None,
+            Self::Failed { response_code, .. } | Self::RecoveryRequired { response_code, .. } => {
+                Some(response_code)
+            }
+        }
+    }
+
+    fn result(self) -> Option<RelayContainerOperationResultRecord<'a>> {
+        match self {
+            Self::Completed { result, .. } => Some(result),
+            Self::Failed { .. } => None,
+            Self::RecoveryRequired { result, .. } => result,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerOperationDispatchOutcome {
+    Applied,
+    AlreadyDispatched,
+    NotFound,
+    ReservationNotFound,
+    ReservationNotReserved,
+    StaleGeneration,
+    DeadlineExpired,
+    AlreadyTerminal,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerOperationTerminalOutcome {
+    Applied,
+    MatchingTerminal,
+    NotFound,
+    ReservationNotFound,
+    ReservationNotReserved,
+    StaleGeneration,
+    LeaseExpired,
+    AlreadyTerminal,
     Conflict,
 }
 
@@ -1716,6 +1826,234 @@ pub async fn bind_relay_container_operation(
     }
 }
 
+pub async fn mark_relay_container_operation_dispatched(
+    db: &D1Database,
+    reservation_key: &str,
+    operation_id: &str,
+    expected_owner_generation: i64,
+    admission_sha256: &str,
+    dispatched_at: i64,
+) -> worker::Result<RelayContainerOperationDispatchOutcome> {
+    validate_relay_container_lifecycle_identity(
+        reservation_key,
+        operation_id,
+        expected_owner_generation,
+        admission_sha256,
+        dispatched_at,
+    )?;
+    let Some(current) = relay_container_operation(db, reservation_key).await? else {
+        return Ok(RelayContainerOperationDispatchOutcome::NotFound);
+    };
+    let reservation = relay_billing_reservation(db, reservation_key).await?;
+    if let Some(outcome) = classify_relay_container_dispatch(
+        &current,
+        reservation.as_ref(),
+        operation_id,
+        expected_owner_generation,
+        admission_sha256,
+        dispatched_at,
+    ) {
+        return Ok(outcome);
+    }
+
+    let args = [
+        D1Type::Text(reservation_key),
+        D1Type::Text(operation_id),
+        relay_container_d1_integer(expected_owner_generation, "owner generation")?,
+        D1Type::Text(admission_sha256),
+        relay_container_d1_integer(dispatched_at, "dispatched at")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_container_operations
+            SET status = 'dispatched', updated_at = ?5
+            WHERE reservation_key = ?1
+              AND operation_id = ?2
+              AND owner_generation = ?3
+              AND admission_sha256 = ?4
+              AND status = 'prepared'
+              AND updated_at <= ?5
+              AND ?5 < execution_deadline_at
+              AND ?5 < owner_lease_expires_at
+              AND EXISTS (
+                SELECT 1
+                FROM relay_billing_reservations AS reservation
+                WHERE reservation.reservation_key = relay_container_operations.reservation_key
+                  AND reservation.status = 'reserved'
+                  AND reservation.owner_generation = relay_container_operations.owner_generation
+                  AND reservation.channel_id = relay_container_operations.channel_id
+                  AND reservation.selected_group = relay_container_operations.selected_group
+                  AND reservation.lease_expires_at = relay_container_operations.owner_lease_expires_at
+                  AND reservation.owner_deadline_at >= relay_container_operations.execution_deadline_at
+              )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await;
+    if let Ok(result) = &result {
+        if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+            return Ok(RelayContainerOperationDispatchOutcome::Applied);
+        }
+    }
+
+    let Some(current) = relay_container_operation(db, reservation_key).await? else {
+        return Ok(RelayContainerOperationDispatchOutcome::NotFound);
+    };
+    let reservation = relay_billing_reservation(db, reservation_key).await?;
+    let conflict = classify_relay_container_dispatch(
+        &current,
+        reservation.as_ref(),
+        operation_id,
+        expected_owner_generation,
+        admission_sha256,
+        dispatched_at,
+    );
+    match (result, conflict) {
+        (Err(err), None) => Err(err),
+        (_, Some(outcome)) => Ok(outcome),
+        (Ok(_), None) => Ok(RelayContainerOperationDispatchOutcome::Conflict),
+    }
+}
+
+/// Persists only the operation-side terminal evidence.
+///
+/// A client-visible success still requires the operation transition, billing
+/// finalization, quota mutations, and audit outbox to commit in one D1 batch.
+pub async fn record_relay_container_operation_terminal_evidence(
+    db: &D1Database,
+    reservation_key: &str,
+    operation_id: &str,
+    expected_owner_generation: i64,
+    admission_sha256: &str,
+    expected_status: RelayContainerOperationExpectedStatus,
+    terminal: RelayContainerOperationTerminalRecord<'_>,
+    terminal_at: i64,
+) -> worker::Result<RelayContainerOperationTerminalOutcome> {
+    validate_relay_container_terminal_record(
+        reservation_key,
+        operation_id,
+        expected_owner_generation,
+        admission_sha256,
+        expected_status,
+        terminal,
+        terminal_at,
+    )?;
+    let Some(current) = relay_container_operation(db, reservation_key).await? else {
+        return Ok(RelayContainerOperationTerminalOutcome::NotFound);
+    };
+    let reservation = relay_billing_reservation(db, reservation_key).await?;
+    if let Some(outcome) = classify_relay_container_terminal(
+        &current,
+        reservation.as_ref(),
+        operation_id,
+        expected_owner_generation,
+        admission_sha256,
+        expected_status,
+        terminal,
+        terminal_at,
+    ) {
+        return Ok(outcome);
+    }
+
+    let result_record = terminal.result();
+    let args = [
+        D1Type::Text(reservation_key),
+        D1Type::Text(operation_id),
+        relay_container_d1_integer(expected_owner_generation, "owner generation")?,
+        D1Type::Text(admission_sha256),
+        D1Type::Text(expected_status.as_str()),
+        D1Type::Text(terminal.status()),
+        relay_container_d1_integer(terminal.response_status(), "response status")?,
+        terminal
+            .response_code()
+            .map(D1Type::Text)
+            .unwrap_or(D1Type::Null),
+        result_record
+            .map(|result| D1Type::Text(result.object_key))
+            .unwrap_or(D1Type::Null),
+        result_record
+            .map(|result| D1Type::Text(result.object_version))
+            .unwrap_or(D1Type::Null),
+        result_record
+            .map(|result| D1Type::Text(result.sha256))
+            .unwrap_or(D1Type::Null),
+        match result_record {
+            Some(result) => relay_container_d1_integer(result.size, "result size")?,
+            None => D1Type::Null,
+        },
+        result_record
+            .map(|result| D1Type::Text(result.content_type))
+            .unwrap_or(D1Type::Null),
+        relay_container_d1_integer(terminal_at, "terminal at")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_container_operations
+            SET status = ?6,
+                response_status = ?7,
+                response_code = ?8,
+                result_object_key = ?9,
+                result_object_version = ?10,
+                result_sha256 = ?11,
+                result_size = ?12,
+                result_content_type = ?13,
+                updated_at = ?14
+            WHERE reservation_key = ?1
+              AND operation_id = ?2
+              AND owner_generation = ?3
+              AND admission_sha256 = ?4
+              AND status = ?5
+              AND updated_at <= ?14
+              AND (
+                ?5 = 'recovery_required'
+                OR ?6 = 'recovery_required'
+                OR ?14 <= owner_lease_expires_at
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM relay_billing_reservations AS reservation
+                WHERE reservation.reservation_key = relay_container_operations.reservation_key
+                  AND reservation.status = 'reserved'
+                  AND reservation.owner_generation = relay_container_operations.owner_generation
+                  AND reservation.channel_id = relay_container_operations.channel_id
+                  AND reservation.selected_group = relay_container_operations.selected_group
+                  AND reservation.lease_expires_at = relay_container_operations.owner_lease_expires_at
+              )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await;
+    if let Ok(result) = &result {
+        if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+            return Ok(RelayContainerOperationTerminalOutcome::Applied);
+        }
+    }
+
+    let Some(current) = relay_container_operation(db, reservation_key).await? else {
+        return Ok(RelayContainerOperationTerminalOutcome::NotFound);
+    };
+    let reservation = relay_billing_reservation(db, reservation_key).await?;
+    let conflict = classify_relay_container_terminal(
+        &current,
+        reservation.as_ref(),
+        operation_id,
+        expected_owner_generation,
+        admission_sha256,
+        expected_status,
+        terminal,
+        terminal_at,
+    );
+    match (result, conflict) {
+        (Err(err), None) => Err(err),
+        (_, Some(outcome)) => Ok(outcome),
+        (Ok(_), None) => Ok(RelayContainerOperationTerminalOutcome::Conflict),
+    }
+}
+
 pub(crate) async fn relay_container_operation(
     db: &D1Database,
     reservation_key: &str,
@@ -1745,6 +2083,314 @@ pub(crate) async fn relay_container_operation(
     .bind_refs(&args)?
     .first::<RelayContainerOperation>(None)
     .await
+}
+
+pub async fn relay_container_operation_recovery_candidates(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<Vec<RelayContainerOperation>> {
+    if now <= 0 || now > i64::from(i32::MAX) {
+        return Err(worker::Error::RustError(
+            "relay container operation recovery time is invalid".to_string(),
+        ));
+    }
+    let args = [
+        relay_container_d1_integer(now, "recovery time")?,
+        relay_container_d1_integer(
+            limit.clamp(1, RELAY_CONTAINER_OPERATION_RECOVERY_MAX_LIMIT),
+            "recovery limit",
+        )?,
+    ];
+    db.prepare(
+        r#"
+        SELECT reservation_key, operation_id,
+               owner_generation, owner_lease_expires_at,
+               channel_id, selected_group,
+               operation_kind, provider_operation_id, admission_sha256,
+               protocol_version, shard_contract_version,
+               ring_generation, shard_count, shard_index, instance_name,
+               execution_deadline_at,
+               input_mode, input_object_key, input_object_version,
+               input_sha256, input_size, input_content_type, trace_id,
+               status, response_status, response_code,
+               result_object_key, result_object_version, result_sha256,
+               result_size, result_content_type,
+               created_at, updated_at
+        FROM relay_container_operations
+        WHERE (status IN ('prepared', 'dispatched') AND execution_deadline_at <= ?1)
+           OR status = 'recovery_required'
+        ORDER BY execution_deadline_at ASC, reservation_key ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RelayContainerOperation>()
+}
+
+pub async fn relay_container_operation_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(RELAY_CONTAINER_OPERATION_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_OPERATION_LIFECYCLE_MIGRATION),
+    ];
+    let row = db
+        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2)")
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 2).unwrap_or(false))
+}
+
+fn classify_relay_container_dispatch(
+    current: &RelayContainerOperation,
+    reservation: Option<&RelayBillingReservation>,
+    operation_id: &str,
+    expected_owner_generation: i64,
+    admission_sha256: &str,
+    dispatched_at: i64,
+) -> Option<RelayContainerOperationDispatchOutcome> {
+    if current.owner_generation != expected_owner_generation {
+        return Some(RelayContainerOperationDispatchOutcome::StaleGeneration);
+    }
+    if current.operation_id != operation_id || current.admission_sha256 != admission_sha256 {
+        return Some(RelayContainerOperationDispatchOutcome::Conflict);
+    }
+    match current.status.as_str() {
+        "dispatched" => return Some(RelayContainerOperationDispatchOutcome::AlreadyDispatched),
+        "completed" | "failed" | "recovery_required" => {
+            return Some(RelayContainerOperationDispatchOutcome::AlreadyTerminal)
+        }
+        "prepared" => {}
+        _ => return Some(RelayContainerOperationDispatchOutcome::Conflict),
+    }
+    if current.updated_at > dispatched_at {
+        return Some(RelayContainerOperationDispatchOutcome::Conflict);
+    }
+    if dispatched_at >= current.execution_deadline_at
+        || dispatched_at >= current.owner_lease_expires_at
+    {
+        return Some(RelayContainerOperationDispatchOutcome::DeadlineExpired);
+    }
+    let Some(reservation) = reservation else {
+        return Some(RelayContainerOperationDispatchOutcome::ReservationNotFound);
+    };
+    if reservation.status != "reserved" {
+        return Some(RelayContainerOperationDispatchOutcome::ReservationNotReserved);
+    }
+    if reservation.owner_generation != expected_owner_generation {
+        return Some(RelayContainerOperationDispatchOutcome::StaleGeneration);
+    }
+    if !relay_container_billing_owner_matches(current, reservation) {
+        return Some(RelayContainerOperationDispatchOutcome::Conflict);
+    }
+    if reservation.owner_deadline_at < current.execution_deadline_at {
+        return Some(RelayContainerOperationDispatchOutcome::DeadlineExpired);
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn classify_relay_container_terminal(
+    current: &RelayContainerOperation,
+    reservation: Option<&RelayBillingReservation>,
+    operation_id: &str,
+    expected_owner_generation: i64,
+    admission_sha256: &str,
+    expected_status: RelayContainerOperationExpectedStatus,
+    terminal: RelayContainerOperationTerminalRecord<'_>,
+    terminal_at: i64,
+) -> Option<RelayContainerOperationTerminalOutcome> {
+    if current.owner_generation != expected_owner_generation {
+        return Some(RelayContainerOperationTerminalOutcome::StaleGeneration);
+    }
+    if current.operation_id != operation_id || current.admission_sha256 != admission_sha256 {
+        return Some(RelayContainerOperationTerminalOutcome::Conflict);
+    }
+    if current.status == terminal.status()
+        && relay_container_operation_matches_terminal(current, terminal)
+    {
+        return Some(RelayContainerOperationTerminalOutcome::MatchingTerminal);
+    }
+    if matches!(current.status.as_str(), "completed" | "failed")
+        || (current.status == "recovery_required"
+            && expected_status != RelayContainerOperationExpectedStatus::RecoveryRequired)
+    {
+        return Some(RelayContainerOperationTerminalOutcome::AlreadyTerminal);
+    }
+    if current.status != expected_status.as_str() || current.updated_at > terminal_at {
+        return Some(RelayContainerOperationTerminalOutcome::Conflict);
+    }
+    if expected_status != RelayContainerOperationExpectedStatus::RecoveryRequired
+        && terminal.status() != "recovery_required"
+        && terminal_at > current.owner_lease_expires_at
+    {
+        return Some(RelayContainerOperationTerminalOutcome::LeaseExpired);
+    }
+    let Some(reservation) = reservation else {
+        return Some(RelayContainerOperationTerminalOutcome::ReservationNotFound);
+    };
+    if reservation.status != "reserved" {
+        return Some(RelayContainerOperationTerminalOutcome::ReservationNotReserved);
+    }
+    if reservation.owner_generation != expected_owner_generation {
+        return Some(RelayContainerOperationTerminalOutcome::StaleGeneration);
+    }
+    if !relay_container_billing_owner_matches(current, reservation) {
+        return Some(RelayContainerOperationTerminalOutcome::Conflict);
+    }
+    None
+}
+
+fn relay_container_billing_owner_matches(
+    current: &RelayContainerOperation,
+    reservation: &RelayBillingReservation,
+) -> bool {
+    reservation.reservation_key == current.reservation_key
+        && reservation.channel_id == current.channel_id
+        && reservation.selected_group == current.selected_group
+        && reservation.lease_expires_at == current.owner_lease_expires_at
+}
+
+fn relay_container_operation_matches_terminal(
+    current: &RelayContainerOperation,
+    terminal: RelayContainerOperationTerminalRecord<'_>,
+) -> bool {
+    let result = terminal.result();
+    current.status == terminal.status()
+        && current.response_status == Some(terminal.response_status())
+        && current.response_code.as_deref() == terminal.response_code()
+        && current.result_object_key.as_deref() == result.map(|result| result.object_key)
+        && current.result_object_version.as_deref() == result.map(|result| result.object_version)
+        && current.result_sha256.as_deref() == result.map(|result| result.sha256)
+        && current.result_size == result.map(|result| result.size)
+        && current.result_content_type.as_deref() == result.map(|result| result.content_type)
+}
+
+fn validate_relay_container_lifecycle_identity(
+    reservation_key: &str,
+    operation_id: &str,
+    expected_owner_generation: i64,
+    admission_sha256: &str,
+    transition_at: i64,
+) -> worker::Result<()> {
+    validate_relay_container_id(reservation_key, "reservation key", 1, 128)?;
+    validate_relay_container_id(operation_id, "operation id", 1, 128)?;
+    validate_relay_container_sha256(admission_sha256, "admission sha256")?;
+    if reservation_key != operation_id
+        || expected_owner_generation <= 0
+        || expected_owner_generation > i64::from(i32::MAX)
+        || transition_at <= 0
+        || transition_at > i64::from(i32::MAX)
+    {
+        return Err(worker::Error::RustError(
+            "relay container operation lifecycle identity is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_relay_container_terminal_record(
+    reservation_key: &str,
+    operation_id: &str,
+    expected_owner_generation: i64,
+    admission_sha256: &str,
+    expected_status: RelayContainerOperationExpectedStatus,
+    terminal: RelayContainerOperationTerminalRecord<'_>,
+    terminal_at: i64,
+) -> worker::Result<()> {
+    validate_relay_container_lifecycle_identity(
+        reservation_key,
+        operation_id,
+        expected_owner_generation,
+        admission_sha256,
+        terminal_at,
+    )?;
+    let transition_allowed = match expected_status {
+        RelayContainerOperationExpectedStatus::Prepared => {
+            matches!(
+                terminal,
+                RelayContainerOperationTerminalRecord::Failed { .. }
+                    | RelayContainerOperationTerminalRecord::RecoveryRequired { .. }
+            )
+        }
+        RelayContainerOperationExpectedStatus::Dispatched => true,
+        RelayContainerOperationExpectedStatus::RecoveryRequired => matches!(
+            terminal,
+            RelayContainerOperationTerminalRecord::Completed { .. }
+                | RelayContainerOperationTerminalRecord::Failed { .. }
+        ),
+    };
+    if !transition_allowed {
+        return Err(worker::Error::RustError(
+            "relay container operation terminal transition is invalid".to_string(),
+        ));
+    }
+    match terminal {
+        RelayContainerOperationTerminalRecord::Completed {
+            response_status,
+            result,
+        } => {
+            if !(200..=299).contains(&response_status) || response_status == 202 {
+                return Err(worker::Error::RustError(
+                    "relay container operation completed status is invalid".to_string(),
+                ));
+            }
+            validate_relay_container_result_record(
+                operation_id,
+                expected_owner_generation,
+                result,
+            )?;
+        }
+        RelayContainerOperationTerminalRecord::Failed {
+            response_status,
+            response_code,
+        } => {
+            if !(400..=599).contains(&response_status) {
+                return Err(worker::Error::RustError(
+                    "relay container operation failure status is invalid".to_string(),
+                ));
+            }
+            validate_relay_container_lower_id(response_code, "response code", 1, 64)?;
+        }
+        RelayContainerOperationTerminalRecord::RecoveryRequired {
+            response_code,
+            result,
+        } => {
+            validate_relay_container_lower_id(response_code, "response code", 1, 64)?;
+            if let Some(result) = result {
+                validate_relay_container_result_record(
+                    operation_id,
+                    expected_owner_generation,
+                    result,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_relay_container_result_record(
+    operation_id: &str,
+    owner_generation: i64,
+    result: RelayContainerOperationResultRecord<'_>,
+) -> worker::Result<()> {
+    validate_relay_container_object_key(result.object_key, "result object key")?;
+    validate_relay_container_id(result.object_version, "result object version", 1, 128)?;
+    validate_relay_container_sha256(result.sha256, "result sha256")?;
+    validate_relay_container_content_type(result.content_type, "result content type")?;
+    let expected_key = format!(
+        "container-results/v1/{operation_id}/{owner_generation}/{}",
+        result.sha256
+    );
+    if result.object_key != expected_key || !(0..=64 * 1024 * 1024).contains(&result.size) {
+        return Err(worker::Error::RustError(
+            "relay container operation result manifest is invalid".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn classify_relay_container_operation_reservation(
@@ -1820,10 +2466,10 @@ fn validate_relay_container_operation_record(
     )?;
     validate_relay_container_sha256(record.admission_sha256, "admission sha256")?;
     validate_relay_container_id(record.trace_id, "trace id", 1, 128)?;
-    validate_relay_container_object_key(record.input_object_key)?;
+    validate_relay_container_object_key(record.input_object_key, "input object key")?;
     validate_relay_container_id(record.input_object_version, "input object version", 1, 128)?;
     validate_relay_container_sha256(record.input_sha256, "input sha256")?;
-    validate_relay_container_content_type(record.input_content_type)?;
+    validate_relay_container_content_type(record.input_content_type, "input content type")?;
     let selected_group = record.selected_group;
     let expected_instance = format!("cinatoken-relay-shard-v1-{:04}", record.shard_index);
     let expected_input_key = format!(
@@ -1888,8 +2534,8 @@ fn validate_relay_container_lower_id(
     })
 }
 
-fn validate_relay_container_object_key(value: &str) -> worker::Result<()> {
-    validate_relay_container_token(value, "input object key", 8, 512, |byte| {
+fn validate_relay_container_object_key(value: &str, field: &str) -> worker::Result<()> {
+    validate_relay_container_token(value, field, 8, 512, |byte| {
         byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'.' | b':' | b'-')
     })
 }
@@ -1919,7 +2565,7 @@ fn validate_relay_container_sha256(value: &str, field: &str) -> worker::Result<(
     })
 }
 
-fn validate_relay_container_content_type(value: &str) -> worker::Result<()> {
+fn validate_relay_container_content_type(value: &str, field: &str) -> worker::Result<()> {
     let token_byte = |byte: u8| {
         byte.is_ascii_alphanumeric()
             || matches!(
@@ -1946,9 +2592,9 @@ fn validate_relay_container_content_type(value: &str) -> worker::Result<()> {
             parameters.is_empty() || !parameters.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
         })
     {
-        return Err(worker::Error::RustError(
-            "relay container operation input content type is invalid".to_string(),
-        ));
+        return Err(worker::Error::RustError(format!(
+            "relay container operation {field} is invalid"
+        )));
     }
     Ok(())
 }
@@ -13351,6 +13997,19 @@ mod tests {
         }
     }
 
+    fn relay_container_test_result() -> RelayContainerOperationResultRecord<'static> {
+        RelayContainerOperationResultRecord {
+            object_key: concat!(
+                "container-results/v1/relayreserve-test/2/",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ),
+            object_version: "result-version-001",
+            sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            size: 256,
+            content_type: "application/json",
+        }
+    }
+
     #[test]
     fn relay_container_operation_migration_has_global_immutable_authority() {
         let migration = include_str!("../../../migrations/d1/0040_relay_container_operations.sql");
@@ -13380,6 +14039,14 @@ mod tests {
         assert!(migration.contains("relay_container_operation_lifecycle_guard"));
         assert!(migration.contains("idx_relay_container_operations_recovery"));
         assert!(!migration.contains("OR REPLACE"));
+
+        let lifecycle = include_str!(
+            "../../../migrations/d1/0041_relay_container_operation_lifecycle_hardening.sql"
+        );
+        assert!(lifecycle.contains("DROP TRIGGER relay_container_operation_lifecycle_guard"));
+        assert!(lifecycle.contains("OLD.status IN ('completed', 'failed')"));
+        assert!(lifecycle.contains("NEW.status = OLD.status"));
+        assert!(lifecycle.contains("NEW.updated_at IS NOT OLD.updated_at"));
     }
 
     #[test]
@@ -13481,6 +14148,248 @@ mod tests {
         assert!(!relay_container_operation_matches_record(
             &operation, &record
         ));
+    }
+
+    #[test]
+    fn relay_container_operation_dispatch_classification_is_generation_and_deadline_fenced() {
+        let record = relay_container_test_record();
+        let mut operation = relay_container_test_operation();
+        let mut reservation = relay_billing_test_reservation("reserved");
+        reservation.lease_expires_at = record.owner_lease_expires_at;
+        reservation.owner_deadline_at = record.owner_lease_expires_at;
+        assert_eq!(
+            classify_relay_container_dispatch(
+                &operation,
+                Some(&reservation),
+                record.operation_id,
+                record.owner_generation,
+                record.admission_sha256,
+                100,
+            ),
+            None
+        );
+
+        operation.status = "dispatched".to_string();
+        operation.updated_at = 100;
+        assert_eq!(
+            classify_relay_container_dispatch(
+                &operation,
+                Some(&reservation),
+                record.operation_id,
+                record.owner_generation,
+                record.admission_sha256,
+                100,
+            ),
+            Some(RelayContainerOperationDispatchOutcome::AlreadyDispatched)
+        );
+
+        operation.status = "prepared".to_string();
+        assert_eq!(
+            classify_relay_container_dispatch(
+                &operation,
+                Some(&reservation),
+                record.operation_id,
+                record.owner_generation,
+                record.admission_sha256,
+                record.execution_deadline_at,
+            ),
+            Some(RelayContainerOperationDispatchOutcome::DeadlineExpired)
+        );
+        reservation.status = "settled".to_string();
+        assert_eq!(
+            classify_relay_container_dispatch(
+                &operation,
+                Some(&reservation),
+                record.operation_id,
+                record.owner_generation,
+                record.admission_sha256,
+                100,
+            ),
+            Some(RelayContainerOperationDispatchOutcome::ReservationNotReserved)
+        );
+    }
+
+    #[test]
+    fn relay_container_operation_terminal_contract_requires_exact_outcome_manifest() {
+        let record = relay_container_test_record();
+        let result = relay_container_test_result();
+        let completed = RelayContainerOperationTerminalRecord::Completed {
+            response_status: 200,
+            result,
+        };
+        validate_relay_container_terminal_record(
+            record.reservation_key,
+            record.operation_id,
+            record.owner_generation,
+            record.admission_sha256,
+            RelayContainerOperationExpectedStatus::Dispatched,
+            completed,
+            150,
+        )
+        .unwrap();
+        assert!(validate_relay_container_terminal_record(
+            record.reservation_key,
+            record.operation_id,
+            record.owner_generation,
+            record.admission_sha256,
+            RelayContainerOperationExpectedStatus::Prepared,
+            completed,
+            150,
+        )
+        .is_err());
+
+        let invalid = RelayContainerOperationTerminalRecord::Completed {
+            response_status: 202,
+            result,
+        };
+        assert!(validate_relay_container_terminal_record(
+            record.reservation_key,
+            record.operation_id,
+            record.owner_generation,
+            record.admission_sha256,
+            RelayContainerOperationExpectedStatus::Dispatched,
+            invalid,
+            150,
+        )
+        .is_err());
+
+        let recovery = RelayContainerOperationTerminalRecord::RecoveryRequired {
+            response_code: "container_execution_ambiguous",
+            result: Some(result),
+        };
+        validate_relay_container_terminal_record(
+            record.reservation_key,
+            record.operation_id,
+            record.owner_generation,
+            record.admission_sha256,
+            RelayContainerOperationExpectedStatus::Dispatched,
+            recovery,
+            181,
+        )
+        .unwrap();
+
+        let failed = RelayContainerOperationTerminalRecord::Failed {
+            response_status: 503,
+            response_code: "container_not_dispatched",
+        };
+        validate_relay_container_terminal_record(
+            record.reservation_key,
+            record.operation_id,
+            record.owner_generation,
+            record.admission_sha256,
+            RelayContainerOperationExpectedStatus::Prepared,
+            failed,
+            150,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn relay_container_operation_terminal_replay_is_exact_and_recovery_is_resolvable() {
+        let record = relay_container_test_record();
+        let result = relay_container_test_result();
+        let terminal = RelayContainerOperationTerminalRecord::Completed {
+            response_status: 200,
+            result,
+        };
+        let mut operation = relay_container_test_operation();
+        operation.status = "dispatched".to_string();
+        operation.updated_at = 100;
+        let mut reservation = relay_billing_test_reservation("reserved");
+        reservation.lease_expires_at = record.owner_lease_expires_at;
+        reservation.owner_generation = record.owner_generation;
+        assert_eq!(
+            classify_relay_container_terminal(
+                &operation,
+                Some(&reservation),
+                record.operation_id,
+                record.owner_generation,
+                record.admission_sha256,
+                RelayContainerOperationExpectedStatus::Dispatched,
+                terminal,
+                record.owner_lease_expires_at + 1,
+            ),
+            Some(RelayContainerOperationTerminalOutcome::LeaseExpired)
+        );
+
+        operation.status = "completed".to_string();
+        operation.response_status = Some(200);
+        operation.result_object_key = Some(result.object_key.to_string());
+        operation.result_object_version = Some(result.object_version.to_string());
+        operation.result_sha256 = Some(result.sha256.to_string());
+        operation.result_size = Some(result.size);
+        operation.result_content_type = Some(result.content_type.to_string());
+        operation.updated_at = 150;
+        reservation.status = "settled".to_string();
+        assert_eq!(
+            classify_relay_container_terminal(
+                &operation,
+                Some(&reservation),
+                record.operation_id,
+                record.owner_generation,
+                record.admission_sha256,
+                RelayContainerOperationExpectedStatus::Dispatched,
+                terminal,
+                160,
+            ),
+            Some(RelayContainerOperationTerminalOutcome::MatchingTerminal)
+        );
+
+        operation.result_object_version = Some("forged-version".to_string());
+        assert_eq!(
+            classify_relay_container_terminal(
+                &operation,
+                Some(&reservation),
+                record.operation_id,
+                record.owner_generation,
+                record.admission_sha256,
+                RelayContainerOperationExpectedStatus::Dispatched,
+                terminal,
+                160,
+            ),
+            Some(RelayContainerOperationTerminalOutcome::AlreadyTerminal)
+        );
+
+        operation = relay_container_test_operation();
+        operation.status = "recovery_required".to_string();
+        operation.response_status = Some(202);
+        operation.response_code = Some("container_execution_ambiguous".to_string());
+        operation.updated_at = 181;
+        reservation.status = "reserved".to_string();
+        reservation.owner_generation = record.owner_generation;
+        assert_eq!(
+            classify_relay_container_terminal(
+                &operation,
+                Some(&reservation),
+                record.operation_id,
+                record.owner_generation,
+                record.admission_sha256,
+                RelayContainerOperationExpectedStatus::RecoveryRequired,
+                terminal,
+                190,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn relay_container_operation_lifecycle_sql_repeats_global_owner_fences() {
+        let source = include_str!("d1_repositories.rs");
+        assert!(source.contains("SET status = 'dispatched', updated_at = ?5"));
+        assert!(source.contains("AND status = 'prepared'"));
+        assert!(source.contains("AND ?5 < execution_deadline_at"));
+        assert!(source.contains(
+            "reservation.owner_generation = relay_container_operations.owner_generation"
+        ));
+        assert!(source.contains("SET status = ?6,"));
+        assert!(source.contains("AND status = ?5"));
+        assert!(source.contains("AND updated_at <= ?14"));
+        assert!(source.contains("OR ?14 <= owner_lease_expires_at"));
+        assert!(source.contains(
+            "WHERE (status IN ('prepared', 'dispatched') AND execution_deadline_at <= ?1)"
+        ));
+        assert!(source.contains("OR status = 'recovery_required'"));
+        assert!(source.contains("LIMIT ?2"));
     }
 
     #[test]

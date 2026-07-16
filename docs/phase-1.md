@@ -1663,3 +1663,27 @@ non-streaming chat canary in the real Linux image with exact response replay,
 normal frozen-snapshot settlement/audit, duplicate-operation proof, and the
 remote lifecycle/storage fault matrix. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-16 Phase 1 Container Lifecycle CAS And Recovery Query
+
+The Rust repository now implements the operation-side lifecycle boundary:
+exact billing-owner `prepared -> dispatched`, exact terminal evidence from
+`dispatched`, authorized recovery resolution, canonical readback after
+ambiguous D1 results, and a bounded recovery-candidate query. Dispatch replay is
+typed as `AlreadyDispatched` and is query-only; terminal replay is a separate
+`MatchingTerminal` outcome and requires every persisted field to match.
+
+The Controller and Rust private client now share a signed operation-status
+query that remains usable after deadline expiry. It reads only the named DO
+ledger and cannot perform admission, claim, schedule, wake, or Container I/O.
+An append-only lifecycle migration prevents same-state rewriting of prepared,
+dispatched, recovery-required, completed, or failed records. Independent
+operation-write, terminal-CAS, reconciliation, chat-canary, and staging-proof
+flags are default false and are new mandatory cutover inputs.
+
+This closes the local operation-state CAS, not the financial terminal commit.
+Next is one guarded D1 batch for operation terminal state plus frozen billing
+settlement/refund/recovery, quota/request/channel accounting, and immutable
+audit/outbox, followed by exact R2 client-response replay and the deterministic
+Linux canary. No public route or production flag is enabled; Go/VPS remains
+authoritative and production remains **NO-GO**.

@@ -559,9 +559,9 @@ def main() -> int:
     if relay_owner_guard_verified:
         message += " + 0026 relay-owner drain guard"
     if relay_container_operation_verified:
-        message += " + 0040 relay Container operation authority"
+        message += " + 0040/0041 relay Container operation authority"
     if relay_container_operation_rollout_verified:
-        message += " + 0040 default-inert expand rollout"
+        message += " + 0040/0041 default-inert expand/hardening rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -630,7 +630,26 @@ def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
         "relay_container_operation_lifecycle_guard",
     ):
         if not trigger_exists(conn, trigger):
-            raise SystemExit(f"0040 relay Container operation trigger missing: {trigger}")
+            raise SystemExit(
+                f"0040/0041 relay Container operation trigger missing: {trigger}"
+            )
+
+    lifecycle_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_lifecycle_guard"
+    )
+    for fragment in (
+        "OLD.status IN ('completed', 'failed')",
+        "OLD.status = 'prepared'",
+        "OLD.status = 'dispatched'",
+        "OLD.status = 'recovery_required'",
+        "NEW.status IN ('completed', 'failed')",
+        "NEW.status = OLD.status",
+        "NEW.response_status IS NOT OLD.response_status",
+        "NEW.result_object_key IS NOT OLD.result_object_key",
+        "NEW.updated_at IS NOT OLD.updated_at",
+    ):
+        if lifecycle_sql is None or fragment not in lifecycle_sql:
+            raise SystemExit(f"0041 lifecycle hardening missing: {fragment}")
 
     recovery_index_sql = sqlite_object_sql(
         conn, "index", "idx_relay_container_operations_recovery"
@@ -786,6 +805,15 @@ def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
     expect_integrity_error(
         lambda: conn.execute(
             "UPDATE relay_container_operations "
+            "SET status = 'dispatched', updated_at = 4101 "
+            "WHERE reservation_key = '0040-operation'"
+        ),
+        "0041 dispatched same-state writes must not refresh updated_at",
+        "relay container operation lifecycle transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations "
             "SET status = 'completed', response_status = 200, updated_at = 4200 "
             "WHERE reservation_key = '0040-operation'"
         ),
@@ -811,6 +839,14 @@ def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if completed != ("completed", 200, "r2-result-version-1", "c" * 64):
         raise SystemExit(f"0040 completed operation shape was not persisted: {completed}")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations SET status = status "
+            "WHERE reservation_key = '0040-operation'"
+        ),
+        "0041 completed operations must reject every update",
+        "relay container operation lifecycle transition is invalid",
+    )
     expect_integrity_error(
         lambda: conn.execute(
             "UPDATE relay_container_operations "
@@ -848,6 +884,150 @@ def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
         None,
     ):
         raise SystemExit(f"0040 recovery operation shape was not persisted: {recovery}")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations SET updated_at = 4300 "
+            "WHERE reservation_key = '0040-recovery'"
+        ),
+        "0041 recovery same-state writes must not refresh updated_at",
+        "relay container operation lifecycle transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations "
+            "SET response_code = 'container_execution_rewritten' "
+            "WHERE reservation_key = '0040-recovery'"
+        ),
+        "0041 recovery same-state writes must not rewrite response fields",
+        "relay container operation lifecycle transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_operations
+            SET result_object_key = 'container-results/v1/0040-recovery/2/' || ?,
+                result_object_version = 'r2-rewritten-result-version',
+                result_sha256 = ?, result_size = 512,
+                result_content_type = 'application/json'
+            WHERE reservation_key = '0040-recovery'
+            """,
+            ("d" * 64, "d" * 64),
+        ),
+        "0041 recovery same-state writes must not rewrite result fields",
+        "relay container operation lifecycle transition is invalid",
+    )
+
+    conn.execute(
+        """
+        UPDATE relay_container_operations
+        SET status = 'completed', response_status = 200, response_code = NULL,
+            result_object_key = 'container-results/v1/0040-recovery/2/' || ?,
+            result_object_version = 'r2-recovered-result-version',
+            result_sha256 = ?, result_size = 384,
+            result_content_type = 'application/json', updated_at = 4400
+        WHERE reservation_key = '0040-recovery'
+        """,
+        ("e" * 64, "e" * 64),
+    )
+    recovered_completed = conn.execute(
+        "SELECT status, response_status, response_code, result_sha256 "
+        "FROM relay_container_operations WHERE reservation_key = '0040-recovery'"
+    ).fetchone()
+    if recovered_completed != ("completed", 200, None, "e" * 64):
+        raise SystemExit(
+            "0041 recovery-to-completed transition was not persisted: "
+            f"{recovered_completed}"
+        )
+
+    insert_operation("0041-recovery-failed", "provider:0041-recovery-failed", 5)
+    conn.execute(
+        """
+        UPDATE relay_container_operations
+        SET status = 'recovery_required', response_status = 202,
+            response_code = 'container_execution_ambiguous', updated_at = 4100
+        WHERE reservation_key = '0041-recovery-failed'
+        """
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations "
+            "SET status = 'dispatched', response_status = NULL, response_code = NULL, "
+            "updated_at = 4150 WHERE reservation_key = '0041-recovery-failed'"
+        ),
+        "0041 recovery operations must only transition to completed or failed",
+        "relay container operation lifecycle transition is invalid",
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_operations
+        SET status = 'failed', response_status = 503,
+            response_code = 'container_recovery_failed', updated_at = 4200
+        WHERE reservation_key = '0041-recovery-failed'
+        """
+    )
+    recovered_failed = conn.execute(
+        "SELECT status, response_status, response_code, result_object_key "
+        "FROM relay_container_operations "
+        "WHERE reservation_key = '0041-recovery-failed'"
+    ).fetchone()
+    if recovered_failed != ("failed", 503, "container_recovery_failed", None):
+        raise SystemExit(
+            "0041 recovery-to-failed transition was not persisted: "
+            f"{recovered_failed}"
+        )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations "
+            "SET status = 'prepared', response_status = NULL, response_code = NULL, "
+            "updated_at = 4300 WHERE reservation_key = '0041-recovery-failed'"
+        ),
+        "0041 failed operations must not reactivate",
+        "relay container operation lifecycle transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations SET status = status "
+            "WHERE reservation_key = '0041-recovery-failed'"
+        ),
+        "0041 failed operations must reject every update",
+        "relay container operation lifecycle transition is invalid",
+    )
+
+    insert_operation("0041-prepared-failed", "provider:0041-prepared-failed", 6)
+    conn.execute(
+        """
+        UPDATE relay_container_operations
+        SET status = 'failed', response_status = 500,
+            response_code = 'container_preparation_failed', updated_at = 4100
+        WHERE reservation_key = '0041-prepared-failed'
+        """
+    )
+    insert_operation("0041-dispatched-failed", "provider:0041-dispatched-failed", 7)
+    conn.execute(
+        "UPDATE relay_container_operations "
+        "SET status = 'dispatched', updated_at = 4100 "
+        "WHERE reservation_key = '0041-dispatched-failed'"
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_operations
+        SET status = 'failed', response_status = 502,
+            response_code = 'container_dispatch_failed', updated_at = 4200
+        WHERE reservation_key = '0041-dispatched-failed'
+        """
+    )
+    preserved_transitions = conn.execute(
+        "SELECT reservation_key, status FROM relay_container_operations "
+        "WHERE reservation_key IN ('0041-prepared-failed', '0041-dispatched-failed') "
+        "ORDER BY reservation_key"
+    ).fetchall()
+    if preserved_transitions != [
+        ("0041-dispatched-failed", "failed"),
+        ("0041-prepared-failed", "failed"),
+    ]:
+        raise SystemExit(
+            f"0041 changed legal prepared/dispatched transitions: {preserved_transitions}"
+        )
 
 
 def verify_flat_billing_intent_guard(conn: sqlite3.Connection) -> None:
@@ -2557,13 +2737,27 @@ def verify_relay_container_operation_rollout(schema_paths: list[Path]) -> None:
     )
     if operation_path is None:
         raise SystemExit("0040 relay Container operation migration not found")
+    hardening_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0041_relay_container_operation_lifecycle_hardening.sql"
+        ),
+        None,
+    )
+    if hardening_path is None:
+        raise SystemExit("0041 relay Container lifecycle hardening migration not found")
     operation_index = schema_paths.index(operation_path)
     if operation_index == 0 or schema_paths[operation_index - 1].name != (
         "0039_task_submit_operation_enforce.sql"
     ):
         raise SystemExit("0040 must immediately follow the 0039 Task enforcement boundary")
-    if operation_index != len(schema_paths) - 1:
-        raise SystemExit("0040 must be the current D1 migration head")
+    hardening_index = schema_paths.index(hardening_path)
+    if hardening_index != operation_index + 1:
+        raise SystemExit("0041 lifecycle hardening must immediately follow 0040")
+    if hardening_index != len(schema_paths) - 1:
+        raise SystemExit("0041 lifecycle hardening must be the current D1 migration head")
 
     operation_sql = operation_path.read_text(encoding="utf-8")
     for fragment in (
@@ -2584,6 +2778,22 @@ def verify_relay_container_operation_rollout(schema_paths: list[Path]) -> None:
     ):
         if fragment not in operation_sql:
             raise SystemExit(f"0040 operation authority contract missing: {fragment}")
+    hardening_sql = hardening_path.read_text(encoding="utf-8")
+    for fragment in (
+        "DROP TRIGGER relay_container_operation_lifecycle_guard",
+        "CREATE TRIGGER relay_container_operation_lifecycle_guard",
+        "OLD.status IN ('completed', 'failed')",
+        "NEW.status = OLD.status",
+        "NEW.response_status IS NOT OLD.response_status",
+        "NEW.result_object_key IS NOT OLD.result_object_key",
+        "NEW.updated_at IS NOT OLD.updated_at",
+        "OLD.status = 'prepared'",
+        "OLD.status = 'dispatched'",
+        "OLD.status = 'recovery_required'",
+        "NEW.status IN ('completed', 'failed')",
+    ):
+        if fragment not in hardening_sql:
+            raise SystemExit(f"0041 lifecycle hardening contract missing: {fragment}")
 
     conn = sqlite3.connect(":memory:")
     for schema_path in schema_paths:
@@ -2614,6 +2824,56 @@ def verify_relay_container_operation_rollout(schema_paths: list[Path]) -> None:
         0,
     ):
         raise SystemExit("0040 expand migration must not synthesize operation rows")
+
+    conn.execute(
+        """
+        INSERT INTO relay_container_operations (
+          reservation_key, operation_id,
+          owner_generation, owner_lease_expires_at, channel_id, selected_group,
+          operation_kind, provider_operation_id, admission_sha256,
+          protocol_version, shard_contract_version,
+          ring_generation, shard_count, shard_index, instance_name,
+          execution_deadline_at, input_mode, input_object_key,
+          input_object_version, input_sha256, input_size,
+          input_content_type, trace_id, created_at, updated_at
+        ) VALUES (
+          '0041-existing-operation', '0041-existing-operation',
+          1, 5100, 40, 'default',
+          'relay_chat', 'provider:0041-existing-operation', lower(hex(zeroblob(32))),
+          1, 1,
+          7, 8, 2, 'cinatoken-relay-shard-v1-0002',
+          5000, 'r2',
+          'container-inputs/v1/0041-existing-operation/1/' || lower(hex(zeroblob(32))),
+          'r2-version-1', lower(hex(zeroblob(32))), 128,
+          'application/json', 'trace:0041-existing-operation', 4000, 4000
+        )
+        """
+    )
+    columns_before_hardening = conn.execute(
+        "PRAGMA table_info(relay_container_operations)"
+    ).fetchall()
+    row_before_hardening = conn.execute(
+        "SELECT * FROM relay_container_operations "
+        "WHERE reservation_key = '0041-existing-operation'"
+    ).fetchone()
+    conn.executescript(hardening_sql)
+    columns_after_hardening = conn.execute(
+        "PRAGMA table_info(relay_container_operations)"
+    ).fetchall()
+    row_after_hardening = conn.execute(
+        "SELECT * FROM relay_container_operations "
+        "WHERE reservation_key = '0041-existing-operation'"
+    ).fetchone()
+    if columns_after_hardening != columns_before_hardening:
+        raise SystemExit("0041 hardening must not change operation table columns")
+    if row_after_hardening != row_before_hardening:
+        raise SystemExit(
+            f"0041 hardening changed an existing default-inert row: {row_after_hardening}"
+        )
+    if conn.execute("SELECT COUNT(*) FROM relay_container_operations").fetchone() != (
+        1,
+    ):
+        raise SystemExit("0041 hardening must not synthesize operation rows")
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

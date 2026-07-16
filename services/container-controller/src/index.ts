@@ -12,6 +12,7 @@ import {
 import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
+  INTERNAL_OPERATION_STATUS_PATH,
   INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
   MAX_OPERATION_BODY_BYTES,
@@ -19,6 +20,7 @@ import {
   type AuthorityEnvironment,
   type OperationEnvelope,
   type OperationShard,
+  type OperationStatusQuery,
   type ShardReadinessProbe,
   verifyOperationRequest,
   verifyReadinessRequest,
@@ -28,6 +30,10 @@ import {
   operationOutcomeResponse,
   parseContainerOperationResponse,
 } from "./operation_outcome";
+import {
+  handleOperationStatusRequest,
+  type ShardOperationStatusRpcResult,
+} from "./operation_status";
 import {
   CONTENT_SHA256_HEADER,
   D1_ADMISSION_HOST,
@@ -122,6 +128,8 @@ export type ShardStorageResultRpcResult =
   | { ok: true; result: RecordStorageResultOutcome }
   | { ok: false; error: { code: string; status: number } };
 
+export type { ShardOperationStatusRpcResult } from "./operation_status";
+
 export class RelayShardContainer extends Container<ControllerEnv> {
   override defaultPort = 8080;
   override requiredPorts = [8080];
@@ -183,6 +191,19 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         return { ok: false, error: { code: error.code, status: error.status } };
       }
       return { ok: false, error: { code: "storage_result_unavailable", status: 503 } };
+    }
+  }
+
+  async readOperationStatus(
+    query: OperationStatusQuery,
+  ): Promise<ShardOperationStatusRpcResult> {
+    try {
+      return { ok: true, row: this.ledger.readOperationStatus(query) };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return { ok: false, error: { code: "operation_status_unavailable", status: 503 } };
     }
   }
 
@@ -530,6 +551,9 @@ const handler: ExportedHandler<ControllerEnv> = {
   async fetch(request, env): Promise<Response> {
     try {
       const path = new URL(request.url).pathname;
+      if (path === INTERNAL_OPERATION_STATUS_PATH) {
+        return handleOperationStatusRequest(request, env);
+      }
       if (path === INTERNAL_STATUS_PATH) {
         await verifyStatusRequest(request, env);
         return new Response(

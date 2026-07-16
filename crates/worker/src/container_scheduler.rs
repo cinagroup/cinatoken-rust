@@ -14,6 +14,12 @@ use worker::Env;
 
 pub const CONTAINER_SCHEDULER_ENABLED_ENV: &str = "CONTAINER_SCHEDULER_ENABLED";
 pub const CONTAINER_SCHEDULER_STAGING_VERIFIED_ENV: &str = "CONTAINER_SCHEDULER_STAGING_VERIFIED";
+pub const CONTAINER_OPERATION_WRITE_ENABLED_ENV: &str = "CONTAINER_OPERATION_WRITE_ENABLED";
+pub const CONTAINER_TERMINAL_CAS_ENABLED_ENV: &str = "CONTAINER_TERMINAL_CAS_ENABLED";
+pub const CONTAINER_OPERATION_RECONCILIATION_ENABLED_ENV: &str =
+    "CONTAINER_OPERATION_RECONCILIATION_ENABLED";
+pub const CONTAINER_CHAT_CANARY_ENABLED_ENV: &str = "CONTAINER_CHAT_CANARY_ENABLED";
+pub const CONTAINER_OPERATION_STAGING_VERIFIED_ENV: &str = "CONTAINER_OPERATION_STAGING_VERIFIED";
 pub const CONTAINER_SHARD_READINESS_STAGING_VERIFIED_ENV: &str =
     "CONTAINER_SHARD_READINESS_STAGING_VERIFIED";
 pub const CONTAINER_SCHEDULER_RING_GENERATION_ENV: &str = "CONTAINER_SCHEDULER_RING_GENERATION";
@@ -37,6 +43,11 @@ const CONTAINER_SCHEDULER_CUTOVER_GUARDS: &[&str] = &[
     "container_runtime",
     "deny_by_default_egress",
     "shared_storage_contract",
+    "operation_write_enabled",
+    "terminal_cas_enabled",
+    "operation_reconciliation_enabled",
+    "chat_canary_enabled",
+    "operation_staging_verified",
     "n_minus_one_protocol",
     "capacity_rejection",
     "remote_fault_matrix",
@@ -51,10 +62,45 @@ pub struct ContainerSchedulerRuntimeStatus {
     pub shard_count: u16,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContainerOperationRuntimeStatus {
+    pub operation_write_enabled: bool,
+    pub terminal_cas_enabled: bool,
+    pub operation_reconciliation_enabled: bool,
+    pub chat_canary_enabled: bool,
+    pub operation_staging_verified: bool,
+}
+
+impl ContainerOperationRuntimeStatus {
+    pub fn cutover_ready(self) -> bool {
+        self.operation_write_enabled
+            && self.terminal_cas_enabled
+            && self.operation_reconciliation_enabled
+            && self.chat_canary_enabled
+            && self.operation_staging_verified
+    }
+}
+
 pub fn container_scheduler_runtime_status(env: &Env) -> ContainerSchedulerRuntimeStatus {
     let generation = runtime_value(env, CONTAINER_SCHEDULER_RING_GENERATION_ENV);
     let shard_count = runtime_value(env, CONTAINER_SCHEDULER_SHARD_COUNT_ENV);
     parse_container_scheduler_runtime_status(generation.as_deref(), shard_count.as_deref())
+}
+
+pub fn container_operation_runtime_status(env: &Env) -> ContainerOperationRuntimeStatus {
+    let operation_write_enabled = runtime_value(env, CONTAINER_OPERATION_WRITE_ENABLED_ENV);
+    let terminal_cas_enabled = runtime_value(env, CONTAINER_TERMINAL_CAS_ENABLED_ENV);
+    let operation_reconciliation_enabled =
+        runtime_value(env, CONTAINER_OPERATION_RECONCILIATION_ENABLED_ENV);
+    let chat_canary_enabled = runtime_value(env, CONTAINER_CHAT_CANARY_ENABLED_ENV);
+    let operation_staging_verified = runtime_value(env, CONTAINER_OPERATION_STAGING_VERIFIED_ENV);
+    parse_container_operation_runtime_status([
+        operation_write_enabled.as_deref(),
+        terminal_cas_enabled.as_deref(),
+        operation_reconciliation_enabled.as_deref(),
+        chat_canary_enabled.as_deref(),
+        operation_staging_verified.as_deref(),
+    ])
 }
 
 pub fn container_scheduler_routing_secret_configured(env: &Env) -> bool {
@@ -205,6 +251,7 @@ pub fn container_scheduler_cutover_ready(
     container_runtime_compiled: bool,
     deny_by_default_egress_compiled: bool,
     shared_storage_contract_compiled: bool,
+    operation_runtime_ready: bool,
     n_minus_one_protocol_compiled: bool,
     capacity_rejection_compiled: bool,
     remote_fault_matrix_verified: bool,
@@ -220,6 +267,7 @@ pub fn container_scheduler_cutover_ready(
         && container_runtime_compiled
         && deny_by_default_egress_compiled
         && shared_storage_contract_compiled
+        && operation_runtime_ready
         && n_minus_one_protocol_compiled
         && capacity_rejection_compiled
         && remote_fault_matrix_verified
@@ -250,6 +298,22 @@ fn parse_container_scheduler_runtime_status(
             .map(|value| value.shard_count)
             .unwrap_or(DEFAULT_CONTAINER_SCHEDULER_SHARD_COUNT),
     }
+}
+
+fn parse_container_operation_runtime_status(
+    values: [Option<&str>; 5],
+) -> ContainerOperationRuntimeStatus {
+    ContainerOperationRuntimeStatus {
+        operation_write_enabled: runtime_gate_enabled(values[0]),
+        terminal_cas_enabled: runtime_gate_enabled(values[1]),
+        operation_reconciliation_enabled: runtime_gate_enabled(values[2]),
+        chat_canary_enabled: runtime_gate_enabled(values[3]),
+        operation_staging_verified: runtime_gate_enabled(values[4]),
+    }
+}
+
+fn runtime_gate_enabled(value: Option<&str>) -> bool {
+    value == Some("true")
 }
 
 fn runtime_value(env: &Env, name: &str) -> Option<String> {
@@ -351,17 +415,92 @@ mod tests {
         );
     }
 
+    fn cutover_with_operation_runtime(operation_runtime: ContainerOperationRuntimeStatus) -> bool {
+        container_scheduler_cutover_ready(
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            operation_runtime.cutover_ready(),
+            true,
+            true,
+            true,
+            true,
+        )
+    }
+
     #[test]
     fn cutover_requires_every_remote_and_runtime_proof() {
         let guards = container_scheduler_cutover_guards();
-        assert_eq!(guards.len(), 14);
+        assert_eq!(guards.len(), 19);
         assert!(guards.contains(&"remote_fault_matrix"));
+        for guard in [
+            "operation_write_enabled",
+            "terminal_cas_enabled",
+            "operation_reconciliation_enabled",
+            "chat_canary_enabled",
+            "operation_staging_verified",
+        ] {
+            assert!(guards.contains(&guard));
+        }
         assert!(!container_scheduler_cutover_ready(
             true, true, true, true, true, true, false, true, true, true, true, true, true, true,
+            true,
         ));
-        assert!(container_scheduler_cutover_ready(
-            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-        ));
+        let operation_runtime = parse_container_operation_runtime_status([Some("true"); 5]);
+        assert!(cutover_with_operation_runtime(operation_runtime));
+    }
+
+    #[test]
+    fn every_container_operation_gate_is_independently_fail_closed() {
+        let all_enabled = [Some("true"); 5];
+        for missing_index in 0..all_enabled.len() {
+            let mut missing_one = all_enabled;
+            missing_one[missing_index] = None;
+            let operation_runtime = parse_container_operation_runtime_status(missing_one);
+            assert!(!cutover_with_operation_runtime(operation_runtime));
+        }
+
+        for disabled_value in ["false", "1", "TRUE", "yes", "on", "", " true "] {
+            let mut disabled_one = all_enabled;
+            disabled_one[0] = Some(disabled_value);
+            assert!(!parse_container_operation_runtime_status(disabled_one).cutover_ready());
+        }
+    }
+
+    #[test]
+    fn operation_gates_do_not_change_ring_validity() {
+        let ring = parse_container_scheduler_runtime_status(Some("1"), Some("8"));
+        let operation_runtime = parse_container_operation_runtime_status([None; 5]);
+        assert!(ring.valid);
+        assert!(!operation_runtime.cutover_ready());
+    }
+
+    #[test]
+    fn tracked_wrangler_operation_gates_are_all_false() {
+        let config = include_str!("../../../wrangler.toml").replace("\r\n", "\n");
+        let (default, environment_overrides) = config.split_once("\n[env.staging]\n").unwrap();
+        let (staging, production) = environment_overrides
+            .split_once("\n[env.production]\n")
+            .unwrap();
+        for scope in [default, staging, production] {
+            for gate in [
+                CONTAINER_OPERATION_WRITE_ENABLED_ENV,
+                CONTAINER_TERMINAL_CAS_ENABLED_ENV,
+                CONTAINER_OPERATION_RECONCILIATION_ENABLED_ENV,
+                CONTAINER_CHAT_CANARY_ENABLED_ENV,
+                CONTAINER_OPERATION_STAGING_VERIFIED_ENV,
+            ] {
+                assert!(scope.contains(&format!("{gate} = \"false\"")));
+                assert!(!scope.contains(&format!("{gate} = \"true\"")));
+            }
+        }
     }
 
     #[test]

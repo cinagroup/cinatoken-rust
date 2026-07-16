@@ -95,8 +95,13 @@ export function serializeOperationOutcome(row: OperationRow): SerializedOperatio
   let httpStatus: number;
   switch (row.status) {
     case "claimed":
-    case "running":
       if (row.response_status !== null || row.response_code !== null || result !== null) {
+        throw corruptOutcome();
+      }
+      httpStatus = 202;
+      break;
+    case "running":
+      if (row.response_status !== null || row.response_code !== null) {
         throw corruptOutcome();
       }
       httpStatus = 202;

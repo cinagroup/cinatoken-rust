@@ -1,4 +1,10 @@
-import { ProtocolError, type OperationEnvelope, type OperationShard } from "./protocol";
+import {
+  ProtocolError,
+  validateOperationStatusQuery,
+  type OperationEnvelope,
+  type OperationShard,
+  type OperationStatusQuery,
+} from "./protocol";
 
 export const DISPATCH_REPLAY_RETENTION_SECONDS = 600;
 
@@ -410,6 +416,32 @@ export class RelayShardLedger {
         operationId,
       ),
     );
+  }
+
+  readOperationStatus(queryValue: unknown): OperationRow {
+    const query: OperationStatusQuery = validateOperationStatusQuery(queryValue);
+    const row = firstRow<OperationRow>(
+      this.storage.sql.exec<OperationRow>(
+        `SELECT operation_id, owner_generation, operation_kind, trace_id, envelope_sha256,
+                status, response_status, response_code, result_object_key,
+                result_object_version, result_sha256, result_size, result_content_type
+           FROM cinatoken_shard_operations
+          WHERE protocol_version = ?1 AND operation_id = ?2 AND owner_generation = ?3
+            AND shard_contract_version = ?4 AND ring_generation = ?5 AND shard_count = ?6
+            AND shard_index = ?7 AND instance_name = ?8 AND trace_id = ?9`,
+        query.protocol_version,
+        query.operation_id,
+        query.owner_generation,
+        query.shard.contract_version,
+        query.shard.ring_generation,
+        query.shard.shard_count,
+        query.shard.shard_index,
+        query.shard.instance_name,
+        query.trace_id,
+      ),
+    );
+    if (row === null) throw new ProtocolError("operation_status_not_found", 404);
+    return row;
   }
 
   finalizeOperation(

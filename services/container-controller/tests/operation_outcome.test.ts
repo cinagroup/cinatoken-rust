@@ -155,6 +155,23 @@ describe("durable container operation outcomes", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("returns a validated result manifest already persisted while running", () => {
+    const outcome = serializeOperationOutcome(operationRow(storedResult));
+    expect(outcome).toMatchObject({
+      http_status: 202,
+      payload: {
+        status: "running",
+        result: {
+          object_key: storedResult.result_object_key,
+          object_version: storedResult.result_object_version,
+          sha256: storedResult.result_sha256,
+          size: storedResult.result_size,
+          content_type: storedResult.result_content_type,
+        },
+      },
+    });
+  });
+
   it("allows a result-free completed health probe", () => {
     expect(
       serializeOperationOutcome(

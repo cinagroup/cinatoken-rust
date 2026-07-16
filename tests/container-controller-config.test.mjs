@@ -10,6 +10,9 @@ const controllerSource = await Bun.file(
 const storageGatewaySource = await Bun.file(
   new URL("../services/container-controller/src/storage_gateway.ts", import.meta.url),
 ).text();
+const operationStatusSource = await Bun.file(
+  new URL("../services/container-controller/src/operation_status.ts", import.meta.url),
+).text();
 const configFiles = [
   "wrangler.jsonc",
   "wrangler.staging.jsonc",
@@ -81,6 +84,20 @@ describe("isolated container controller configuration", () => {
     expect(controllerSource.indexOf("await requireD1OperationAdmission(")).toBeGreaterThan(-1);
     expect(controllerSource.indexOf("await requireD1OperationAdmission(")).toBeLessThan(
       controllerSource.indexOf("const claim = this.ledger.claimOperation("),
+    );
+  });
+
+  test("operation status is routed through a ledger-only RPC", () => {
+    const statusBranch = controllerSource.indexOf(
+      "if (path === INTERNAL_OPERATION_STATUS_PATH)",
+    );
+    expect(statusBranch).toBeGreaterThan(-1);
+    expect(statusBranch).toBeLessThan(
+      controllerSource.indexOf("if (path !== INTERNAL_OPERATION_PATH)"),
+    );
+    expect(operationStatusSource).toContain("stub.readOperationStatus(verified.query)");
+    expect(operationStatusSource).not.toMatch(
+      /containerFetch|requireD1OperationAdmission|claimOperation|\.schedule\(|wake_container/,
     );
   });
 });

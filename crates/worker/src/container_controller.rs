@@ -37,11 +37,15 @@ const AUTHORITY_HEADER: &str = "x-cinatoken-container-authority";
 const OPERATION_PATH: &str = "/internal/v1/operations";
 const OPERATION_URL: &str =
     "https://cinatoken-container-controller.internal/internal/v1/operations";
+const OPERATION_STATUS_PATH: &str = "/internal/v1/operations/status";
+const OPERATION_STATUS_URL: &str =
+    "https://cinatoken-container-controller.internal/internal/v1/operations/status";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(12);
 const STATUS_MAX_BYTES: usize = 4 * 1024;
 const READINESS_MAX_BYTES: usize = 4 * 1024;
 const OPERATION_RESPONSE_MAX_BYTES: usize = 8 * 1024;
+const OPERATION_STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Serialize)]
 struct ShardReadinessRequest<'a> {
@@ -75,6 +79,15 @@ pub struct ContainerOperationEnvelope {
     pub input: ContainerOperationInput,
     pub shard: ShardPlan,
     pub trace_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ContainerOperationStatusQuery<'a> {
+    protocol_version: u32,
+    operation_id: &'a str,
+    owner_generation: i64,
+    shard: &'a ShardPlan,
+    trace_id: &'a str,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -366,6 +379,48 @@ pub async fn dispatch_operation(
     }
 }
 
+pub async fn query_operation_status(
+    env: &Env,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerOperationOutcome, &'static str> {
+    validate_operation_identity(envelope)?;
+    let fetcher = env
+        .service(CONTAINER_CONTROLLER_BINDING)
+        .map_err(|_| "binding_unavailable")?;
+    let authority = authority_config(env).ok_or("authority_unavailable")?;
+    if envelope.protocol_version != authority.protocol_version {
+        return Err("protocol_mismatch");
+    }
+    let dispatch_id = random_dispatch_id("operation-status").ok_or("entropy_unavailable")?;
+    let body = serde_json::to_vec(&ContainerOperationStatusQuery {
+        protocol_version: envelope.protocol_version,
+        operation_id: &envelope.operation_id,
+        owner_generation: envelope.owner_generation,
+        shard: &envelope.shard,
+        trace_id: &envelope.trace_id,
+    })
+    .map_err(|_| "request_encode_failed")?;
+    let now = (worker::Date::now().as_millis() / 1000) as i64;
+    let token = sign_bound_authority(
+        &authority,
+        &dispatch_id,
+        "POST",
+        OPERATION_STATUS_PATH,
+        &body,
+        now,
+    )
+    .ok_or("authority_sign_failed")?;
+    let request = operation_status_request(&token, &body).map_err(|_| "request_build_failed")?;
+    let operation = execute_operation(&fetcher, request, envelope);
+    let delay = Delay::from(OPERATION_STATUS_TIMEOUT);
+    futures_util::pin_mut!(operation);
+    futures_util::pin_mut!(delay);
+    match select(operation, delay).await {
+        Either::Left((result, _)) => result,
+        Either::Right(((), _)) => Err("timeout"),
+    }
+}
+
 async fn execute_status_probe(
     fetcher: &Fetcher,
     request: Request,
@@ -506,11 +561,16 @@ fn operation_outcome(
     }
     let code_valid = payload.code.as_deref().is_some_and(valid_response_code);
     let (status, result) = match payload.status.as_str() {
-        "claimed" | "running"
-            if http_status == 202 && payload.code.is_none() && payload.result.is_none() =>
-        {
+        "claimed" if http_status == 202 && payload.code.is_none() && payload.result.is_none() => {
             (ContainerOperationStatus::InFlight, None)
         }
+        "running" if http_status == 202 && payload.code.is_none() => (
+            ContainerOperationStatus::InFlight,
+            payload
+                .result
+                .map(|result| result_manifest(result, envelope))
+                .transpose()?,
+        ),
         "completed"
             if (200..=299).contains(&http_status)
                 && http_status != 202
@@ -575,6 +635,7 @@ fn classify_operation_error(
 ) -> &'static str {
     match (http_status, payload.error.as_str(), payload.retryable) {
         (403, _, _) => "authority_rejected",
+        (404, "operation_status_not_found", _) => "operation_status_not_found",
         (404, "route_not_found", _) => "route_not_found",
         (409, "stale_shard_fence" | "admission_authority_mismatch", _) => {
             "operation_fence_rejected"
@@ -591,6 +652,17 @@ fn validate_operation_envelope_at(
     envelope: &ContainerOperationEnvelope,
     now: i64,
 ) -> Result<(), &'static str> {
+    validate_operation_identity(envelope)?;
+    if envelope.owner_lease_expires_at <= now
+        || envelope.execution_deadline_at <= now
+        || envelope.execution_deadline_at - now > 300
+    {
+        return Err("invalid_operation_envelope");
+    }
+    Ok(())
+}
+
+fn validate_operation_identity(envelope: &ContainerOperationEnvelope) -> Result<(), &'static str> {
     let input = ContainerArtifactManifest {
         object_key: envelope.input.request_object_key.clone(),
         object_version: envelope.input.object_version.clone(),
@@ -609,11 +681,10 @@ fn validate_operation_envelope_at(
         || !valid_operation_kind(&envelope.operation_kind)
         || envelope.owner_generation <= 0
         || envelope.owner_generation > i64::from(i32::MAX)
-        || envelope.owner_lease_expires_at <= now
+        || envelope.owner_lease_expires_at <= 0
         || envelope.owner_lease_expires_at > i64::from(i32::MAX)
-        || envelope.execution_deadline_at <= now
+        || envelope.execution_deadline_at <= 0
         || envelope.execution_deadline_at >= envelope.owner_lease_expires_at
-        || envelope.execution_deadline_at - now > 300
         || !valid_identifier(&envelope.provider_operation_id, 128)
         || !valid_sha256(&envelope.admission_sha256)
         || !valid_identifier(&envelope.trace_id, 128)
@@ -875,6 +946,19 @@ fn operation_request(token: &str, body: &[u8]) -> worker::Result<Request> {
     Request::new_with_init(OPERATION_URL, &init)
 }
 
+fn operation_status_request(token: &str, body: &[u8]) -> worker::Result<Request> {
+    let mut headers = Headers::new();
+    headers.set("accept", "application/json")?;
+    headers.set("content-type", "application/json")?;
+    headers.set(AUTHORITY_HEADER, token)?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(js_sys::Uint8Array::from(body).buffer().into()))
+        .with_redirect(RequestRedirect::Error);
+    Request::new_with_init(OPERATION_STATUS_URL, &init)
+}
+
 fn status_matches(
     payload: &ControllerStatusPayload,
     authority: &AuthorityConfig,
@@ -1121,6 +1205,52 @@ mod tests {
     }
 
     #[test]
+    fn operation_status_query_is_identity_fenced_but_deadline_independent() {
+        let envelope = test_operation();
+        validate_operation_identity(&envelope).unwrap();
+        assert_eq!(
+            validate_operation_envelope_at(&envelope, envelope.execution_deadline_at + 1),
+            Err("invalid_operation_envelope")
+        );
+
+        let query = ContainerOperationStatusQuery {
+            protocol_version: envelope.protocol_version,
+            operation_id: &envelope.operation_id,
+            owner_generation: envelope.owner_generation,
+            shard: &envelope.shard,
+            trace_id: &envelope.trace_id,
+        };
+        let body = serde_json::to_vec(&query).unwrap();
+        let authority = test_authority();
+        let token = sign_bound_authority(
+            &authority,
+            "operation-status-test-1",
+            "POST",
+            OPERATION_STATUS_PATH,
+            &body,
+            envelope.execution_deadline_at + 1,
+        )
+        .unwrap();
+        let body_hash = body_sha256(&body);
+        let claims = verify_authority(
+            authority.secret.as_bytes(),
+            &authority.kid,
+            &token,
+            AuthorityExpectation {
+                issuer: &authority.issuer,
+                audience: &authority.audience,
+                protocol_version: envelope.protocol_version,
+                body_sha256: &body_hash,
+                method: "POST",
+                path: OPERATION_STATUS_PATH,
+                now: envelope.execution_deadline_at + 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(claims.dispatch_id, "operation-status-test-1");
+    }
+
+    #[test]
     fn operation_outcome_requires_exact_identity_and_terminal_shape() {
         let envelope = test_operation();
         let in_flight = ControllerOperationPayload {
@@ -1156,6 +1286,17 @@ mod tests {
         assert_eq!(outcome.status, ContainerOperationStatus::Completed);
         assert!(outcome.result.is_some());
 
+        let mut running_with_result = completed.clone();
+        running_with_result.status = "running".to_string();
+        let outcome = operation_outcome(202, running_with_result.clone(), &envelope).unwrap();
+        assert_eq!(outcome.status, ContainerOperationStatus::InFlight);
+        assert!(outcome.result.is_some());
+        running_with_result.status = "claimed".to_string();
+        assert_eq!(
+            operation_outcome(202, running_with_result, &envelope),
+            Err("contract_mismatch")
+        );
+
         let mut forged = completed.clone();
         forged.trace_id = "trace-forged".to_string();
         assert_eq!(
@@ -1184,6 +1325,16 @@ mod tests {
 
     #[test]
     fn controller_errors_preserve_capacity_and_fence_classification() {
+        assert_eq!(
+            classify_operation_error(
+                404,
+                &ControllerOperationErrorPayload {
+                    error: "operation_status_not_found".to_string(),
+                    retryable: None,
+                },
+            ),
+            "operation_status_not_found"
+        );
         assert_eq!(
             classify_operation_error(
                 503,

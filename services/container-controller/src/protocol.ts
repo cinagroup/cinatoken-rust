@@ -1,9 +1,11 @@
 const AUTHORITY_DOMAIN = "cinatoken-container-authority:v1\0";
 export const AUTHORITY_HEADER = "x-cinatoken-container-authority";
 export const INTERNAL_OPERATION_PATH = "/internal/v1/operations";
+export const INTERNAL_OPERATION_STATUS_PATH = "/internal/v1/operations/status";
 export const INTERNAL_READINESS_PATH = "/internal/v1/shards/readiness";
 export const INTERNAL_STATUS_PATH = "/internal/v1/status";
 export const MAX_OPERATION_BODY_BYTES = 64 * 1024;
+export const MAX_OPERATION_STATUS_BODY_BYTES = 4 * 1024;
 export const MAX_READINESS_BODY_BYTES = 4 * 1024;
 export const MAX_EXECUTION_WINDOW_SECONDS = 300;
 const MAX_TOKEN_BYTES = 4096;
@@ -84,6 +86,20 @@ export interface VerifiedOperation {
   body: Uint8Array;
 }
 
+export interface OperationStatusQuery {
+  protocol_version: number;
+  operation_id: string;
+  owner_generation: number;
+  shard: OperationShard;
+  trace_id: string;
+}
+
+export interface VerifiedOperationStatusQuery {
+  query: OperationStatusQuery;
+  claims: AuthorityClaims;
+  body: Uint8Array;
+}
+
 export interface ShardReadinessProbe {
   protocol_version: number;
   shard: OperationShard;
@@ -127,6 +143,39 @@ export async function verifyOperationRequest(
     throw new ProtocolError("protocol_mismatch", 426);
   }
   return { envelope, claims, body };
+}
+
+export async function verifyOperationStatusRequest(
+  request: Request,
+  env: AuthorityEnvironment,
+  now = Math.floor(Date.now() / 1000),
+): Promise<VerifiedOperationStatusQuery> {
+  if (
+    request.method !== "POST" ||
+    new URL(request.url).pathname !== INTERNAL_OPERATION_STATUS_PATH
+  ) {
+    throw new ProtocolError("route_not_found", 404);
+  }
+  const body = await readBoundedBody(
+    request,
+    true,
+    MAX_OPERATION_STATUS_BODY_BYTES,
+    "operation_status_query_too_large",
+    "invalid_operation_status_query",
+  );
+  const claims = await verifyAuthority(
+    requiredAuthority(request),
+    request.method,
+    INTERNAL_OPERATION_STATUS_PATH,
+    body,
+    env,
+    now,
+  );
+  const query = parseOperationStatusQuery(body);
+  if (query.protocol_version !== claims.protocol_version) {
+    throw new ProtocolError("protocol_mismatch", 426);
+  }
+  return { query, claims, body };
 }
 
 export async function verifyStatusRequest(
@@ -383,6 +432,50 @@ export function parseOperationEnvelope(
     throw new ProtocolError("invalid_operation_deadline", 409);
   }
   return envelope;
+}
+
+export function parseOperationStatusQuery(body: Uint8Array): OperationStatusQuery {
+  return validateOperationStatusQuery(
+    parseJsonObject(body, "invalid_operation_status_query"),
+  );
+}
+
+export function validateOperationStatusQuery(value: unknown): OperationStatusQuery {
+  const code = "invalid_operation_status_query";
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProtocolError(code, 400);
+  }
+  const record = value as Record<string, unknown>;
+  assertExactKeys(
+    record,
+    ["protocol_version", "operation_id", "owner_generation", "shard", "trace_id"],
+    code,
+  );
+  const shardValue = readObject(record, "shard", code);
+  assertExactKeys(
+    shardValue,
+    ["contract_version", "ring_generation", "shard_count", "shard_index", "instance_name"],
+    code,
+  );
+  const shard: OperationShard = {
+    contract_version: readInteger(shardValue, "contract_version", 1, 1, code),
+    ring_generation: readInteger(shardValue, "ring_generation", 1, MAX_SAFE_INTEGER, code),
+    shard_count: readInteger(shardValue, "shard_count", 1, 1024, code),
+    shard_index: readInteger(shardValue, "shard_index", 0, 1023, code),
+    instance_name: readString(shardValue, "instance_name", 29, 64, /^[a-z0-9-]+$/, code),
+  };
+  const expectedName =
+    `cinatoken-relay-shard-v1-${shard.shard_index.toString().padStart(4, "0")}`;
+  if (shard.shard_index >= shard.shard_count || shard.instance_name !== expectedName) {
+    throw new ProtocolError(code, 400);
+  }
+  return {
+    protocol_version: readInteger(record, "protocol_version", 1, 255, code),
+    operation_id: readString(record, "operation_id", 1, 128, ID, code),
+    owner_generation: readInteger(record, "owner_generation", 1, MAX_SAFE_INTEGER, code),
+    shard,
+    trace_id: readString(record, "trace_id", 1, 128, ID, code),
+  };
 }
 
 export function parseReadinessProbe(

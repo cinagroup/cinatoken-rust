@@ -3,8 +3,10 @@ import goldenVector from "../../../tests/fixtures/container-authority-v1.json";
 import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
+  INTERNAL_OPERATION_STATUS_PATH,
   INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
+  MAX_OPERATION_STATUS_BODY_BYTES,
   MAX_READINESS_BODY_BYTES,
   MAX_EXECUTION_WINDOW_SECONDS,
   ProtocolError,
@@ -12,12 +14,18 @@ import {
   parseOperationEnvelope,
   sha256Hex,
   verifyOperationRequest,
+  verifyOperationStatusRequest,
   verifyReadinessRequest,
   verifyStatusRequest,
   type AuthorityClaims,
   type AuthorityEnvironment,
   type OperationEnvelope,
+  type OperationStatusQuery,
 } from "../src/protocol";
+import {
+  handleOperationStatusRequest,
+  type OperationStatusEnvironment,
+} from "../src/operation_status";
 
 const secret = "0123456789abcdef0123456789abcdef";
 const now = 1_800_000_000;
@@ -68,6 +76,20 @@ function readinessProbe(wakeContainer = false) {
   };
 }
 
+function operationStatusQuery(
+  overrides: Partial<OperationStatusQuery> = {},
+): OperationStatusQuery {
+  const operation = envelope();
+  return {
+    protocol_version: operation.protocol_version,
+    operation_id: operation.operation_id,
+    owner_generation: operation.owner_generation,
+    shard: operation.shard,
+    trace_id: operation.trace_id,
+    ...overrides,
+  };
+}
+
 async function signedReadinessRequest(
   value = readinessProbe(),
   overrides: Partial<AuthorityClaims> = {},
@@ -92,6 +114,36 @@ async function signedReadinessRequest(
     claims,
   );
   return new Request(`https://controller.internal${INTERNAL_READINESS_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", [AUTHORITY_HEADER]: token },
+    body,
+  });
+}
+
+async function signedOperationStatusRequest(
+  value = operationStatusQuery(),
+  overrides: Partial<AuthorityClaims> = {},
+): Promise<Request> {
+  const body = new TextEncoder().encode(JSON.stringify(value));
+  const claims: AuthorityClaims = {
+    authority_version: 1,
+    issuer: env.CONTAINER_AUTHORITY_ISSUER,
+    audience: env.CONTAINER_AUTHORITY_AUDIENCE,
+    protocol_version: 1,
+    dispatch_id: "operation-status-test-1",
+    method: "POST",
+    path: INTERNAL_OPERATION_STATUS_PATH,
+    body_sha256: await sha256Hex(body),
+    issued_at: now,
+    expires_at: now + 30,
+    ...overrides,
+  };
+  const token = await createAuthorityTokenForTest(
+    secret,
+    env.CONTAINER_AUTHORITY_CURRENT_KID,
+    claims,
+  );
+  return new Request(`https://controller.internal${INTERNAL_OPERATION_STATUS_PATH}`, {
     method: "POST",
     headers: { "content-type": "application/json", [AUTHORITY_HEADER]: token },
     body,
@@ -188,6 +240,127 @@ describe("container controller private protocol", () => {
     expect(verified.envelope.operation_id).toBe("op-test-1");
     expect(verified.envelope.shard.instance_name).toBe("cinatoken-relay-shard-v1-0003");
     expect(verified.claims.dispatch_id).toBe("dispatch-test-1");
+  });
+
+  test("verifies a signed status query without applying the operation deadline", async () => {
+    const historicalQuery = operationStatusQuery({
+      shard: {
+        ...operationStatusQuery().shard,
+        ring_generation: 7,
+        shard_count: 16,
+      },
+    });
+    const verified = await verifyOperationStatusRequest(
+      await signedOperationStatusRequest(historicalQuery),
+      env,
+      now + 1,
+    );
+    expect(verified.query).toEqual(historicalQuery);
+    expect(verified.claims.dispatch_id).toBe("operation-status-test-1");
+
+    const signed = await signedOperationStatusRequest();
+    const tampered = new Request(signed.url, {
+      method: "POST",
+      headers: signed.headers,
+      body: JSON.stringify(operationStatusQuery({ owner_generation: 2 })),
+    });
+    await expect(
+      verifyOperationStatusRequest(tampered, env, now + 1),
+    ).rejects.toMatchObject({ code: "authority_claim_mismatch", status: 403 });
+  });
+
+  test("status query rejects malformed fences and oversized bodies", async () => {
+    await expect(
+      verifyOperationStatusRequest(
+        await signedOperationStatusRequest({
+          ...operationStatusQuery(),
+          shard: {
+            ...operationStatusQuery().shard,
+            instance_name: "cinatoken-relay-shard-v1-0004",
+          },
+        }),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_operation_status_query", status: 400 });
+
+    const oversized = new Request(
+      `https://controller.internal${INTERNAL_OPERATION_STATUS_PATH}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", [AUTHORITY_HEADER]: "not-used" },
+        body: "x".repeat(MAX_OPERATION_STATUS_BODY_BYTES + 1),
+      },
+    );
+    await expect(
+      verifyOperationStatusRequest(oversized, env, now),
+    ).rejects.toMatchObject({ code: "operation_status_query_too_large", status: 413 });
+  });
+
+  test("status replays use only the ledger RPC and return the existing bounded outcome", async () => {
+    const seen: OperationStatusQuery[] = [];
+    let forbiddenCalls = 0;
+    const routeEnv: OperationStatusEnvironment & { DB: { prepare(): never } } = {
+      ...env,
+      DB: {
+        prepare(): never {
+          forbiddenCalls += 1;
+          throw new Error("D1 admission must not run");
+        },
+      },
+      RELAY_SHARDS: {
+        getByName(name: string) {
+          expect(name).toBe(operationStatusQuery().shard.instance_name);
+          return {
+            async readOperationStatus(query: OperationStatusQuery) {
+              seen.push(query);
+              return {
+                ok: true as const,
+                row: {
+                  operation_id: query.operation_id,
+                  owner_generation: query.owner_generation,
+                  operation_kind: "health_probe",
+                  trace_id: query.trace_id,
+                  envelope_sha256: "a".repeat(64),
+                  status: "running" as const,
+                  response_status: null,
+                  response_code: null,
+                  result_object_key: null,
+                  result_object_version: null,
+                  result_sha256: null,
+                  result_size: null,
+                  result_content_type: null,
+                },
+              };
+            },
+            async fetch(): Promise<never> {
+              forbiddenCalls += 1;
+              throw new Error("Container fetch must not run");
+            },
+            async containerFetch(): Promise<never> {
+              forbiddenCalls += 1;
+              throw new Error("containerFetch must not run");
+            },
+          };
+        },
+      },
+    };
+
+    const first = await handleOperationStatusRequest(
+      await signedOperationStatusRequest(),
+      routeEnv,
+      now + 1,
+    );
+    const replay = await handleOperationStatusRequest(
+      await signedOperationStatusRequest(),
+      routeEnv,
+      now + 1,
+    );
+    expect(first.status).toBe(202);
+    expect(first.headers.get("cache-control")).toBe("no-store");
+    expect(await first.json()).toEqual(await replay.json());
+    expect(seen).toEqual([operationStatusQuery(), operationStatusQuery()]);
+    expect(forbiddenCalls).toBe(0);
   });
 
   test("verifies signed ledger and live readiness probes", async () => {

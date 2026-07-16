@@ -34,11 +34,11 @@ use crate::container_controller::{
     CONTAINER_SHARD_READINESS_PROBE_ENABLED_ENV, CONTAINER_SHARD_READINESS_WAKE_ENABLED_ENV,
 };
 use crate::container_scheduler::{
-    container_local_contracts, container_scheduler_cutover_guards,
-    container_scheduler_cutover_ready, container_scheduler_foundation_compiled,
-    container_scheduler_routing_secret_configured, container_scheduler_runtime_status,
-    CONTAINER_SCHEDULER_ENABLED_ENV, CONTAINER_SCHEDULER_STAGING_VERIFIED_ENV,
-    CONTAINER_SHARD_READINESS_STAGING_VERIFIED_ENV,
+    container_local_contracts, container_operation_runtime_status,
+    container_scheduler_cutover_guards, container_scheduler_cutover_ready,
+    container_scheduler_foundation_compiled, container_scheduler_routing_secret_configured,
+    container_scheduler_runtime_status, CONTAINER_SCHEDULER_ENABLED_ENV,
+    CONTAINER_SCHEDULER_STAGING_VERIFIED_ENV, CONTAINER_SHARD_READINESS_STAGING_VERIFIED_ENV,
 };
 use crate::quota_coordinator::{
     quota_coordinator_contract_version, quota_coordinator_finalization_observation_compiled,
@@ -186,7 +186,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0040_relay_container_operations.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0041_relay_container_operation_lifecycle_hardening.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -264,6 +264,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0038_task_submit_operation_expand.sql",
     "0039_task_submit_operation_enforce.sql",
     "0040_relay_container_operations.sql",
+    "0041_relay_container_operation_lifecycle_hardening.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -409,6 +410,12 @@ struct PlatformCapabilities {
     container_scheduler_container_runtime_compiled: bool,
     container_scheduler_deny_by_default_egress_compiled: bool,
     container_scheduler_shared_storage_contract_compiled: bool,
+    container_operation_write_enabled: bool,
+    container_terminal_cas_enabled: bool,
+    container_operation_reconciliation_enabled: bool,
+    container_chat_canary_enabled: bool,
+    container_operation_staging_verified: bool,
+    container_operation_runtime_ready: bool,
     container_scheduler_n_minus_one_protocol_compiled: bool,
     container_scheduler_capacity_rejection_compiled: bool,
     container_scheduler_remote_fault_matrix_verified: bool,
@@ -1074,6 +1081,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     );
     let realtime_sessions_do_available = env.durable_object("REALTIME_SESSIONS").is_ok();
     let container_scheduler_status = container_scheduler_runtime_status(&env);
+    let container_operation_runtime = container_operation_runtime_status(&env);
+    let container_operation_runtime_ready = container_operation_runtime.cutover_ready();
     let container_scheduler_contract_version = CONTAINER_SHARD_CONTRACT_VERSION;
     let container_scheduler_foundation_compiled = container_scheduler_foundation_compiled();
     let container_scheduler_enabled = env_flag(&env, CONTAINER_SCHEDULER_ENABLED_ENV);
@@ -1128,6 +1137,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduler_container_runtime_compiled,
         container_scheduler_deny_by_default_egress_compiled,
         container_scheduler_shared_storage_contract_compiled,
+        container_operation_runtime_ready,
         container_scheduler_n_minus_one_protocol_compiled,
         container_scheduler_capacity_rejection_compiled,
         container_scheduler_remote_fault_matrix_verified,
@@ -1722,6 +1732,14 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduler_container_runtime_compiled,
         container_scheduler_deny_by_default_egress_compiled,
         container_scheduler_shared_storage_contract_compiled,
+        container_operation_write_enabled: container_operation_runtime.operation_write_enabled,
+        container_terminal_cas_enabled: container_operation_runtime.terminal_cas_enabled,
+        container_operation_reconciliation_enabled: container_operation_runtime
+            .operation_reconciliation_enabled,
+        container_chat_canary_enabled: container_operation_runtime.chat_canary_enabled,
+        container_operation_staging_verified: container_operation_runtime
+            .operation_staging_verified,
+        container_operation_runtime_ready,
         container_scheduler_n_minus_one_protocol_compiled,
         container_scheduler_capacity_rejection_compiled,
         container_scheduler_remote_fault_matrix_verified,
@@ -4665,7 +4683,10 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(EXPECTED_D1_MIGRATION, "0040_relay_container_operations.sql");
+        assert_eq!(
+            EXPECTED_D1_MIGRATION,
+            "0041_relay_container_operation_lifecycle_hardening.sql"
+        );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")
@@ -4761,6 +4782,14 @@ mod tests {
         assert!(relay_container_operations
             .contains("relay_container_operation_identity_immutable_guard"));
         assert!(relay_container_operations.contains("idx_relay_container_operations_recovery"));
+        let relay_container_operation_lifecycle_hardening = include_str!(
+            "../../../migrations/d1/0041_relay_container_operation_lifecycle_hardening.sql"
+        );
+        assert!(relay_container_operation_lifecycle_hardening
+            .contains("DROP TRIGGER relay_container_operation_lifecycle_guard"));
+        assert!(relay_container_operation_lifecycle_hardening
+            .contains("OLD.status IN ('completed', 'failed')"));
+        assert!(relay_container_operation_lifecycle_hardening.contains("NEW.status = OLD.status"));
     }
 
     #[test]

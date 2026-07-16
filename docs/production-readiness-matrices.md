@@ -135,17 +135,17 @@ required for G1-G8 decisions.
 | Remote staging | Not run: Wrangler unauthenticated | G1, G2, G7, and production Realtime gates remain closed |
 | Exposed token | Must be revoked/rotated; must not be used | Security blocker until replacement credential and rotation evidence exist |
 
-Current 2026-07-15 schema evidence supersedes the migration-count rows above:
-the current candidate expects 37 contiguous migrations through
-`0037_task_poll_recovery.sql`, 35 tables, 241 checked incremental columns, and
-42 key indexes. The audit-driven hard-timeout field and three recovery indexes
-supersede the pre-audit 240/39 estimate. Migration 0030 rejects mutation of frozen HTTP reservation
-identity and financial-contract fields; 0031 adds the fail-closed Task submit
-and financial state machine. The prior 20/20 local
-Wrangler apply remains historical and
-must be refreshed. Realtime response binding, settlement, terminal refund, and
-lease handoff are now bridge-segment scoped; remote reconnect and cross-segment
-no-double-charge evidence remains a production blocker.
+Current 2026-07-16 schema evidence supersedes the migration-count rows above:
+the current candidate expects 41 contiguous migrations through
+`0041_relay_container_operation_lifecycle_hardening.sql`, 36 tables, 277
+checked incremental columns, and 48 key indexes. Migration 0040 adds the
+default-inert global Container operation authority; append-only 0041 tightens
+same-state lifecycle and terminal immutability without changing columns or
+rows. The prior remote/local Wrangler snapshots remain historical and must be
+refreshed. Realtime response binding, settlement, terminal refund, and lease
+handoff are bridge-segment scoped; Container operation/billing atomic terminal
+commit, remote reconnect, and cross-segment no-double-charge evidence remain
+production blockers.
 
 ## Gate Evidence Matrix
 
@@ -153,7 +153,7 @@ no-double-charge evidence remains a production blocker.
 | --- | --- | --- | --- |
 | G0 | Route, provider, table, secret, config inventory | Partial | Canonical route inventory (`docs/source-route-inventory.md`), provider/channel mapping (`docs/source-provider-channel-matrix.md`), and deployment env inventory (Environment And Config Inventory below) landed 2026-06-25. Remaining: real production per-table row counts and a redacted secret-name inventory from the production `options` table. |
 | G1 | Cloudflare binding/config checklist | Partial | Local D1 config/full-chain checks pass, but staging IDs are not authenticated evidence. Revoke/rotate the exposed token, authenticate Wrangler with a replacement credential, verify the account/resources, deploy staging, and archive generated types, status, logs, and traces. |
-| G2 | Table migration matrix | Partial | Current local replay passes migrations 0001-0037 with 35 tables, 241 checked incremental columns, and 42 key indexes. Migrations 0034/0035 fence Task poll ownership, 0036 persists due/backoff/quarantine/cursors, and 0037 adds immutable, one-per-revision audited recovery with exact partial quarantine indexes. Remaining: reconcile active reservations and quarantines, apply all 37 to remote staging with every mutation gate off, then run source export/import/verify with row counts, hashes, and rollback evidence. |
+| G2 | Table migration matrix | Partial | Current local replay passes migrations 0001-0041 with 36 tables, 277 checked incremental columns, and 48 key indexes. Migrations 0040/0041 add default-inert Container operation authority and append-only lifecycle hardening. Remaining: reconcile active reservations/quarantines, apply all 41 to remote staging with every Container mutation gate off, then run source export/import/verify with row counts, hashes, Time Travel/rollback evidence, and exact trigger readback. |
 | G3 | Relay route and provider matrices | Partial | Route inventory, provider/channel mapping, and channel-selection algorithm captured (`docs/source-route-inventory.md`, `docs/source-provider-channel-matrix.md`, `docs/source-channel-selection-parity.md`). Weighted selection is wired into the retry loop with a Worker CSPRNG-backed bounded RNG and deterministic tests. Remaining: staging weighted-random/affinity/cross-group-retry evidence, retry/auto-ban/recovery parity (`docs/source-retry-autoban-parity.md`), and a redacted G3 report from `docs/route-provider-parity-runbook.md`. |
 | G4 | Billing matrix | Partial | Tiered expression fixtures and flat intent/admission are locally implemented. Flat terminal decimal rounding, option-map replacement, site/user unset-model admission, frozen Queue/D1 settlement, D1 contract immutability, and a hash-bound Go-generated flat manifest pass local tests. Remaining: provider actual-image/count, image-edit/free-model runtime and usage-source semantics; remote direct/Gateway/WFP/provider-invoice shadow settlement and signed delta report. |
 | G5 | Admin/frontend route, auth/session, operator CRUD, cache, and audit matrix | Partial | Auth/session and core operator CRUD have landed, and session-guard authorization now re-fetches current D1 user role/status/group, rejects non-enabled or soft-deleted users before admin/root decisions, and enforces `users.session_epoch` all-devices revocation for stale Rust cookies. The tracked React/Bun workspace now passes type/build, Prettier, and strict ESLint with a zero-debt no-regression baseline enforced during `bun run check`; the built frontend bundle is scanned for high-confidence secret/token leakage; an executable bundle-size ratchet budget is enforced; `/api/status` + `/api/setup` match the frontend contract; and the broadened frontend route audit baseline is down to 0 missing calls / 0 visible-admin / 0 operations-debt / 0 payment-debt / 0 capability-hidden-product gaps across 223 Worker-facing frontend calls. Subscription funding preferences now fail closed to wallet-only until runtime parity exists. Remaining: remote D1 migration application through `0037`, deployed root/step-up recovery browser smoke, Passkey real-authenticator/import/replay/session-isolation evidence, real EMAIL/WeChat Server smoke, custom OAuth staging replay/access-policy smoke, session revocation replay evidence, and provider/deployment replay/reconciliation evidence. See `docs/migration-progress-audit-2026-07-02.md`. |
@@ -820,9 +820,15 @@ rollback target without recording credentials or request bodies.
 | Result-required completion | Non-health completed CAS fails without attached R2 descriptor | PASS (Workerd) |
 | Terminal manifest replay | Initial and duplicate outcome reconstructed from persisted trace/status/code/result | PASS (local only) |
 | Ambiguous execution | Running timeout and post-dispatch response loss become recovery_required with no retry | PASS (local ledger/controller) |
+| Global dispatch CAS | Exact operation/admission, billing owner generation, selected attempt, lease, and deadline gate `prepared -> dispatched`; replay is query-only | PASS (local Rust contract only) |
+| Global operation terminal CAS | Exact completed/failed/recovery-required operation evidence and authorized recovery resolution; same-state rewrites rejected | PASS (local operation evidence only) |
+| Query-only DO recovery | Signed operation/owner/shard/trace query remains valid after deadline and performs no claim, schedule, wake, or Container I/O | PASS (local portable/Workerd only) |
+| Atomic financial terminal batch | Operation terminal + billing settle/refund/recovery + quota/request/channel mutation + immutable audit/outbox commit together | Blocked |
+| Recovery reconciler | Bounded candidate scan, DO/D1 convergence, divergence metrics, authorization, retry horizon, and operator resolution | Blocked: reader/query foundation only |
 | Cold-shard recovery | Persistent schedule invokes owner/deadline CAS in real Container DO | Blocked: no Docker/remote evidence |
 | Reserved admission | D1 status, generation, lease, and owner deadline all pass | PASS (local binding test) |
 | Original response replay | Exact status, allowlisted headers, and byte-identical R2 body | Blocked |
 | Edge billing order | Selected-attempt D1 bind and frozen billing inputs precede Container dispatch | Blocked |
 | Provider attempt journal | Dispatch-before-send identity and one durable retry owner | Blocked |
+| Independent cutover gates | Operation write, terminal CAS, reconciliation, chat canary, and staging proof are all explicit false-by-default prerequisites | PASS (local config contract only) |
 | Cutover | Real Container, N/N-1, remote faults, billing convergence, load/cost, rollback, C1-C5 | **NO-GO** |

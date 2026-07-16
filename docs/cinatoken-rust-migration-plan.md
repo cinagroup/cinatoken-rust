@@ -13754,3 +13754,56 @@ remain false. Next is global lifecycle/terminal CAS, the deterministic Linux
 canary adapter, exact response replay through normal billing/audit, and remote
 cold/warm/restart/OOM/storage fault evidence. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.226 Global Lifecycle CAS And Query-Only Recovery (2026-07-16)
+
+The source audit was repeated against `cinatoken` and `cinaVibeSDK` before this
+increment. The retained architecture is stricter than either source alone: D1
+is the only global operation and financial authority; a named Durable Object is
+the execution supervisor; the Linux Container is disposable compute; and R2 is
+immutable evidence. A DO terminal row or R2 object by itself can never authorize
+a client-visible success, settlement, refund, or provider retry.
+
+The Rust D1 repository now has separate typed transitions for:
+
+1. `prepared -> dispatched`, fenced by exact operation/admission identity,
+   owner generation, selected channel/group, billing `reserved` state, owner
+   lease, owner deadline, and execution deadline;
+2. `dispatched -> completed|failed|recovery_required` operation evidence;
+3. authorized `recovery_required -> completed|failed` evidence resolution; and
+4. a bounded read-only scan of expired `prepared`/`dispatched` rows and all
+   `recovery_required` rows for a future reconciler.
+
+Dispatch and terminal outcomes are deliberately different Rust types.
+`AlreadyDispatched` is query-only and never grants permission to call the
+provider again. `MatchingTerminal` means every response/result field is byte-
+for-byte identical to the canonical D1 row. Conflicting terminal results,
+stale generations, inactive billing owners, expired dispatch deadlines, and
+unexplained D1 failures fail closed. A D1 error is converted to an idempotent
+outcome only after canonical readback proves it.
+
+The Controller now exposes a separately signed
+`POST /internal/v1/operations/status` path. Its HMAC covers operation ID, owner
+generation, full shard fence, trace ID, method, path, and body. The route calls
+only a DO RPC that reads the existing SQLite ledger; it does not perform active
+D1 admission, claim capacity, schedule work, wake/start a Container, or call
+`containerFetch`. It remains available after the execution deadline so the
+edge reconciler can converge D1 from claimed, running, or terminal DO evidence.
+The Rust private Service Binding client implements the same query contract and
+separates immutable identity validation from first-execution liveness checks.
+
+An append-only migration after 0040 hardens lifecycle replay so same-state
+updates cannot rewrite timestamps or outcome fields, including
+`recovery_required`. Independent default-false gates now cover global operation
+writes, terminal CAS, reconciliation, the narrow chat canary, and staging
+verification; all are required by the Container cutover predicate.
+
+This is still not the financial terminal commit. The operation-side terminal
+writer is evidence-only until a single D1 batch atomically commits operation
+terminal state, billing settlement/refund/recovery, quota/request/channel
+mutations, and an immutable audit/outbox record. Exact client response status,
+allowlisted headers, and body must also be stored and version/hash verified in
+R2 before that batch can authorize a response. Until those pieces, the Linux
+canary, remote lifecycle/fault evidence, and C1-C5 approvals all pass, every new
+gate remains false, Go/VPS remains authoritative, and production remains
+**NO-GO**.

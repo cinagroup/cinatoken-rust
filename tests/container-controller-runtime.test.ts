@@ -2,10 +2,15 @@ import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { OperationEnvelope } from "../services/container-controller/src/protocol";
-import type {
-  OperationStatus,
-  RelayShardLedgerPolicy,
+import {
+  ProtocolError,
+  type OperationEnvelope,
+  type OperationStatusQuery,
+} from "../services/container-controller/src/protocol";
+import {
+  RelayShardLedger,
+  type OperationStatus,
+  type RelayShardLedgerPolicy,
 } from "../services/container-controller/src/ledger";
 import type { ContainerControllerLedgerTestObject } from "./fixtures/container-controller-ledger-worker";
 
@@ -66,6 +71,20 @@ function operationEnvelope(
       instance_name: "cinatoken-relay-shard-v1-0003",
     },
     trace_id: `trace-${operationId}`,
+    ...overrides,
+  };
+}
+
+function operationStatusQuery(
+  operation: OperationEnvelope,
+  overrides: Partial<OperationStatusQuery> = {},
+): OperationStatusQuery {
+  return {
+    protocol_version: operation.protocol_version,
+    operation_id: operation.operation_id,
+    owner_generation: operation.owner_generation,
+    shard: operation.shard,
+    trace_id: operation.trace_id,
     ...overrides,
   };
 }
@@ -205,6 +224,112 @@ describe("RelayShardLedger in Workerd", () => {
         .one().count;
       expect({ operationCount, dispatchCount }).toEqual({ operationCount: 1, dispatchCount: 2 });
     });
+  });
+
+  it("reads claimed, running, and post-deadline terminal outcomes without ledger writes", async () => {
+    const stub = ledgerStub("operation-status-read-only");
+    const operation = operationEnvelope("operation-status", {
+      operation_kind: "health_probe",
+      execution_deadline_at: BASE_NOW + 10,
+    });
+    const query = operationStatusQuery(operation);
+    await stub.claim(operation, sha256("f"), "dispatch-operation-status", ledgerPolicy(), BASE_NOW);
+
+    const claimed = await runInDurableObject(stub, (_instance, state) => {
+      const ledger = new RelayShardLedger(state.storage);
+      return ledger.readOperationStatus(query);
+    });
+    expect(claimed.status).toBe("claimed");
+
+    await stub.transition(
+      operation.operation_id,
+      operation.owner_generation,
+      "claimed",
+      "running",
+      null,
+      BASE_NOW + 1,
+      true,
+    );
+    const running = await runInDurableObject(stub, (_instance, state) => {
+      const ledger = new RelayShardLedger(state.storage);
+      return ledger.readOperationStatus(query);
+    });
+    expect(running.status).toBe("running");
+
+    await expect(
+      stub.finalizeOutcome(
+        operation.operation_id,
+        operation.owner_generation,
+        "running",
+        "completed",
+        200,
+        null,
+        BASE_NOW + 5,
+        true,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: { status: "completed" } });
+    const observedAt = BASE_NOW + 11;
+    expect(observedAt).toBeGreaterThan(operation.execution_deadline_at);
+
+    const terminalRead = await runInDurableObject(stub, (_instance, state) => {
+      const totalChanges = () =>
+        state.storage.sql
+          .exec<{ count: number }>("SELECT total_changes() AS count")
+          .toArray()[0]?.count ?? -1;
+      const before = totalChanges();
+      const ledger = new RelayShardLedger(state.storage);
+      const first = ledger.readOperationStatus(query);
+      const replay = ledger.readOperationStatus(query);
+      const after = totalChanges();
+      return { before, after, first, replay };
+    });
+    expect(terminalRead.first).toEqual(terminalRead.replay);
+    expect(terminalRead.first).toMatchObject({
+      operation_id: operation.operation_id,
+      owner_generation: operation.owner_generation,
+      status: "completed",
+      response_status: 200,
+      trace_id: operation.trace_id,
+    });
+    expect(terminalRead.after).toBe(terminalRead.before);
+  });
+
+  it("fails closed when an operation status owner, shard fence, or trace does not match", async () => {
+    const stub = ledgerStub("operation-status-authority");
+    const operation = operationEnvelope("operation-status-authority");
+    const query = operationStatusQuery(operation);
+    await stub.claim(operation, sha256("e"), "dispatch-status-authority", ledgerPolicy(), BASE_NOW);
+
+    const denied = await runInDurableObject(stub, (_instance, state) => {
+      const ledger = new RelayShardLedger(state.storage);
+      const attempt = (candidate: OperationStatusQuery) => {
+        try {
+          ledger.readOperationStatus(candidate);
+          return { code: "unexpected_success", status: 200 };
+        } catch (error) {
+          return error instanceof ProtocolError
+            ? { code: error.code, status: error.status }
+            : { code: "unexpected_error", status: 500 };
+        }
+      };
+      return [
+        attempt({ ...query, owner_generation: query.owner_generation + 1 }),
+        attempt({
+          ...query,
+          shard: {
+            ...query.shard,
+            shard_index: 4,
+            instance_name: "cinatoken-relay-shard-v1-0004",
+          },
+        }),
+        attempt({ ...query, trace_id: "trace-other-operation" }),
+      ];
+    });
+    expect(denied).toEqual([
+      { code: "operation_status_not_found", status: 404 },
+      { code: "operation_status_not_found", status: 404 },
+      { code: "operation_status_not_found", status: 404 },
+    ]);
   });
 
   it("rejects a dispatch replay that targets a different operation", async () => {

@@ -12,6 +12,11 @@ const expected = {
   CONTAINER_SCHEDULER_SHARD_COUNT: "8",
   CONTAINER_SCHEDULER_ENABLED: "false",
   CONTAINER_SCHEDULER_STAGING_VERIFIED: "false",
+  CONTAINER_OPERATION_WRITE_ENABLED: "false",
+  CONTAINER_TERMINAL_CAS_ENABLED: "false",
+  CONTAINER_OPERATION_RECONCILIATION_ENABLED: "false",
+  CONTAINER_CHAT_CANARY_ENABLED: "false",
+  CONTAINER_OPERATION_STAGING_VERIFIED: "false",
   CONTAINER_CONTROLLER_PROBE_ENABLED: "false",
   CONTAINER_SHARD_READINESS_PROBE_ENABLED: "false",
   CONTAINER_SHARD_READINESS_WAKE_ENABLED: "false",
@@ -37,6 +42,14 @@ const environments = [
   ],
 ];
 
+const operationGates = [
+  "CONTAINER_OPERATION_WRITE_ENABLED",
+  "CONTAINER_TERMINAL_CAS_ENABLED",
+  "CONTAINER_OPERATION_RECONCILIATION_ENABLED",
+  "CONTAINER_CHAT_CANARY_ENABLED",
+  "CONTAINER_OPERATION_STAGING_VERIFIED",
+];
+
 describe("container scheduler Wrangler foundation", () => {
   for (const [environment, scope, vars, controllerService, authorityEnvironment] of environments) {
     test(`${environment} keeps the ring valid and runtime fail-closed`, () => {
@@ -48,6 +61,14 @@ describe("container scheduler Wrangler foundation", () => {
       ).toEqual(expected);
       expect(Number(vars.CONTAINER_SCHEDULER_RING_GENERATION)).toBe(1);
       expect(Number(vars.CONTAINER_SCHEDULER_SHARD_COUNT)).toBe(8);
+      expect(operationGates.map((name) => vars[name])).toEqual([
+        "false",
+        "false",
+        "false",
+        "false",
+        "false",
+      ]);
+      expect(operationGates.some((name) => vars[name] === "true")).toBeFalse();
       expect(vars.CONTAINER_SCHEDULER_ROUTING_SECRET).toBeUndefined();
       expect(vars.CONTAINER_AUTHORITY_CURRENT_SECRET).toBeUndefined();
       expect(vars.CONTAINER_AUTHORITY_ISSUER).toBe(

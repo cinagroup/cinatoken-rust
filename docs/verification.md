@@ -5702,25 +5702,25 @@ every execution/storage gate as false. Docker and Bun are not installed, so a
 real Container, multi-Worker local E2E, and the Bun aggregate remain
 unverified. Local PASS cannot change any tracked gate or production verdict.
 
-## Global Container Operation Authority Verification (2026-07-16)
+## Global Container Lifecycle CAS Verification (2026-07-16)
 
 Current local evidence:
 
 ```powershell
 python tools/verify_sqlite.py
-# PASS: 40 migrations, 36 tables, 277 incremental columns, 48 key indexes
+# PASS: 41 migrations, 36 tables, 277 incremental columns, 48 key indexes
 
 node tools/audit_d1_migration_config.mjs --json
-# PASS: 40 contiguous migrations; runtime/config head is 0040
+# PASS: 41 contiguous migrations; runtime/config head is 0041
 
 node node_modules/typescript/bin/tsc -p services/container-controller/tsconfig.json --noEmit
 node node_modules/vitest/vitest.mjs run --config vitest.container-controller-protocol.config.mjs
-# PASS: 35/35
+# PASS: 39/39
 node node_modules/vitest/vitest.mjs run --config vitest.container-controller.config.mjs
-# PASS: 15/15 Workerd/SQLite
+# PASS: 17/17 Workerd/SQLite
 
 cargo test -p cinatoken-worker --lib
-# PASS: 731/731
+# PASS: 739/739; focused Container contract 28/28
 cargo check -p cinatoken-worker --target wasm32-unknown-unknown
 cargo fmt --all -- --check
 # PASS
@@ -5731,22 +5731,33 @@ node node_modules/wrangler/bin/wrangler.js deploy \
 # PASS: private DO/D1/KV/R2/Container bindings; every action gate false
 ```
 
-The 0040 verifier executes null-primary-key, nullable-terminal,
+The 0040/0041 verifier executes null-primary-key, nullable-terminal,
 text-as-integer, operation/reservation mismatch, provider-ID collision,
 identity rewrite, timestamp rollback, missing-result completion, terminal
-reactivation, and valid dispatched/completed/recovery transitions. The Rust
-tests cover guarded reservation classification, immutable replay matching,
-checked protocol bounds, content-addressed R2 manifests, HMAC shard routing,
-strict private operation outcomes, and capacity/fence error classification.
+reactivation, dispatched/recovery same-state rewrites, completed/failed updates,
+and valid dispatched/completed/recovery-resolution transitions. It also proves
+that append-only 0041 changes no columns or rows and synthesizes no operation.
+The Rust tests cover guarded dispatch and terminal evidence CAS, distinct
+`AlreadyDispatched`/`MatchingTerminal` outcomes, owner-lease expiry, canonical
+readback, bounded recovery candidates, schema readiness, content-addressed R2
+manifests, HMAC shard routing, strict private outcomes, and capacity/fence error
+classification.
 
-The Controller portable suite proves admission before ledger claim and rejects
-every immutable 0040/envelope mismatch. Workerd proves that the expanded
-authority survives SQLite persistence and eviction. Wrangler 4.110.0 again
-reported the known non-fatal EPERM while attempting its optional user-profile
-log write; the dry run exited zero.
+The Controller portable suite proves admission before ledger claim, rejects
+every immutable 0040/envelope mismatch, and verifies the separately signed
+operation-status contract. Workerd proves owner/shard/trace mismatch denial,
+deadline-independent terminal lookup, read-only replay, and no Container
+execution from status queries. The Rust private client accepts an attached
+result only for `running`, never `claimed`, and verifies the same deterministic
+manifest. Wrangler 4.110.0 dry-run exited zero after its log/output paths were
+redirected into the writable workspace; all Controller action gates and all
+five edge operation/canary/reconciliation gates remain false.
 
 This is default-off local evidence. No remote D1 migration, R2 write,
 Controller deployment, Container execution, provider call, billing settlement,
-or traffic cutover occurred. Global terminal CAS, the Linux canary, remote
-fault/lifecycle evidence, N/N-1, supply-chain, load/cost, rollback, and approval
-gates remain open. Production remains **NO-GO**.
+or traffic cutover occurred. The operation-side terminal writer is evidence
+only: operation terminal state, billing terminal state, quota/request/channel
+mutations, and immutable audit/outbox are not yet one D1 batch. Exact client
+response replay, the Linux canary, remote fault/lifecycle evidence, N/N-1,
+supply-chain, load/cost, rollback, and approval gates remain open. Production
+remains **NO-GO**.

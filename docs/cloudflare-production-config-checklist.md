@@ -1184,6 +1184,9 @@ production configuration:
 | `CONTAINER_SCHEDULER_ENABLED` | `false` | Must remain false until controller, image, egress, storage, capacity, and fault gates pass |
 | `CONTAINER_SCHEDULER_STAGING_VERIFIED` | `false` | Remote evidence only; local tests cannot promote it |
 | `CONTAINER_CONTROLLER_PROBE_ENABLED` | `false` | Enables only the signed status probe; it is not execution or cutover authority |
+| `CONTAINER_SHARD_READINESS_PROBE_ENABLED` | `false` | Enables admin-only ledger inspection; does not authorize a Container wake by itself |
+| `CONTAINER_SHARD_READINESS_WAKE_ENABLED` | `false` | Separately authorizes an explicitly confirmed targeted cold/warm probe |
+| `CONTAINER_SHARD_READINESS_STAGING_VERIFIED` | `false` | Remote evidence only; production wake rejects requests until this reviewed marker is true |
 | `CONTAINER_PROTOCOL_VERSION` | `1` | Must match the Controller and native runtime contract |
 | `CONTAINER_AUTHORITY_ISSUER` | `cinatoken-edge` | Exact signed-request issuer in every environment |
 | `CONTAINER_AUTHORITY_AUDIENCE` | `cinatoken-container-controller` | Exact private Controller audience |
@@ -1197,6 +1200,8 @@ Controller configs:
 | `CONTAINER_MAX_IN_FLIGHT_PER_SHARD` | `2` | Integer 1..64; max+1 Workerd admission must return retryable capacity without persisting a poisoned rejection |
 | `CONTAINER_TERMINAL_RETENTION_SECONDS` | `604800` | At least the 600-second dispatch replay window; old terminal history is age-pruned |
 | `CONTAINER_MAX_TERMINAL_OPERATIONS` | `10000` | Positive bounded history target; protected replay rows use ledger backpressure instead of unsafe eviction |
+| `CONTAINER_READINESS_PROBE_ENABLED` | `false` | Controller-side gate for both readiness modes; edge enablement alone is insufficient |
+| `CONTAINER_READINESS_WAKE_ENABLED` | `false` | Controller-side cold-start authority; must be enabled only for an isolated canary |
 
 `CONTAINER_SCHEDULER_ROUTING_SECRET` is a future secret, not a tracked variable.
 `CONTAINER_AUTHORITY_CURRENT_SECRET` is a Worker secret in both the edge signer
@@ -1209,6 +1214,14 @@ operator provision matching secrets, enable the probe in isolated staging, and
 archive authenticated status readback. No environment may add `[[containers]]`
 to the edge Rust Worker; Container ownership belongs to the isolated Controller
 configuration.
+
+Promotion order for readiness is strict: deploy Controller first with both
+gates false; deploy edge binding and all three edge gates false; verify signed
+status; enable only ledger inspection in isolated staging; archive the
+non-waking result; enable Controller and edge wake gates for one named canary;
+run cold, warm, malformed, timeout, concurrent, replay, drain, sleep, restart,
+OOM, and rollback probes; review evidence in a new candidate; only then may the
+staging marker change. Capabilities must never perform a targeted shard probe.
 
 The isolated controller has separate local, staging, and production configs.
 All keep `CONTAINER_CONTROLLER_ENABLED=false` and

@@ -3,13 +3,16 @@ import goldenVector from "../../../tests/fixtures/container-authority-v1.json";
 import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
+  INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
+  MAX_READINESS_BODY_BYTES,
   MAX_EXECUTION_WINDOW_SECONDS,
   ProtocolError,
   createAuthorityTokenForTest,
   parseOperationEnvelope,
   sha256Hex,
   verifyOperationRequest,
+  verifyReadinessRequest,
   verifyStatusRequest,
   type AuthorityClaims,
   type AuthorityEnvironment,
@@ -55,6 +58,44 @@ function envelope(): OperationEnvelope {
     },
     trace_id: "trace-test-1",
   };
+}
+
+function readinessProbe(wakeContainer = false) {
+  return {
+    protocol_version: 1,
+    shard: envelope().shard,
+    wake_container: wakeContainer,
+  };
+}
+
+async function signedReadinessRequest(
+  value = readinessProbe(),
+  overrides: Partial<AuthorityClaims> = {},
+): Promise<Request> {
+  const body = new TextEncoder().encode(JSON.stringify(value));
+  const claims: AuthorityClaims = {
+    authority_version: 1,
+    issuer: env.CONTAINER_AUTHORITY_ISSUER,
+    audience: env.CONTAINER_AUTHORITY_AUDIENCE,
+    protocol_version: 1,
+    dispatch_id: "readiness-test-1",
+    method: "POST",
+    path: INTERNAL_READINESS_PATH,
+    body_sha256: await sha256Hex(body),
+    issued_at: now,
+    expires_at: now + 30,
+    ...overrides,
+  };
+  const token = await createAuthorityTokenForTest(
+    secret,
+    env.CONTAINER_AUTHORITY_CURRENT_KID,
+    claims,
+  );
+  return new Request(`https://controller.internal${INTERNAL_READINESS_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", [AUTHORITY_HEADER]: token },
+    body,
+  });
 }
 
 async function signedRequest(value = envelope(), overrides: Partial<AuthorityClaims> = {}): Promise<Request> {
@@ -147,6 +188,59 @@ describe("container controller private protocol", () => {
     expect(verified.envelope.operation_id).toBe("op-test-1");
     expect(verified.envelope.shard.instance_name).toBe("cinatoken-relay-shard-v1-0003");
     expect(verified.claims.dispatch_id).toBe("dispatch-test-1");
+  });
+
+  test("verifies signed ledger and live readiness probes", async () => {
+    const ledger = await verifyReadinessRequest(await signedReadinessRequest(), env, now + 1);
+    expect(ledger.probe.wake_container).toBe(false);
+    expect(ledger.claims.dispatch_id).toBe("readiness-test-1");
+
+    const live = await verifyReadinessRequest(
+      await signedReadinessRequest(readinessProbe(true), { dispatch_id: "readiness-live-1" }),
+      env,
+      now + 1,
+    );
+    expect(live.probe.wake_container).toBe(true);
+    expect(live.probe.shard.instance_name).toBe("cinatoken-relay-shard-v1-0003");
+  });
+
+  test("readiness rejects body tampering, unknown fields, stale fences, and oversized bodies", async () => {
+    const signed = await signedReadinessRequest();
+    const tampered = new Request(signed.url, {
+      method: "POST",
+      headers: signed.headers,
+      body: (await signed.text()).replace("false", "true"),
+    });
+    await expect(verifyReadinessRequest(tampered, env, now + 1)).rejects.toMatchObject({
+      code: "authority_claim_mismatch",
+      status: 403,
+    });
+    await expect(
+      verifyReadinessRequest(
+        await signedReadinessRequest({ ...readinessProbe(), unexpected: true }),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_readiness_probe", status: 400 });
+    await expect(
+      verifyReadinessRequest(
+        await signedReadinessRequest({
+          ...readinessProbe(),
+          shard: { ...readinessProbe().shard, ring_generation: 2 },
+        }),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "stale_shard_fence", status: 409 });
+    const oversized = new Request(`https://controller.internal${INTERNAL_READINESS_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", [AUTHORITY_HEADER]: "not-used" },
+      body: "x".repeat(MAX_READINESS_BODY_BYTES + 1),
+    });
+    await expect(verifyReadinessRequest(oversized, env, now)).rejects.toMatchObject({
+      code: "readiness_probe_too_large",
+      status: 413,
+    });
   });
 
   test("rejects signature, body, audience, and expiry violations", async () => {

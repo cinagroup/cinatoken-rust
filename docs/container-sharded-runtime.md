@@ -472,3 +472,32 @@ staging/canary/cutover authorization. The local host has no Docker engine, so
 no image or real Container was started. See
 `docs/container-execution-plane-source-audit.md` for the cinaVibeSDK and Go
 cinatoken source-to-target contract.
+
+## 2026-07-16 Targeted Readiness Contract
+
+The local control plane now exposes an admin-only targeted shard probe through
+the edge Worker. The edge derives `ShardPlan` from the active ring and signs a
+bounded POST over the private `CONTAINER_CONTROLLER` Service Binding. No public
+Controller URL or caller-supplied instance name exists.
+
+Readiness has two non-interchangeable modes:
+
+- `ledger`: read persisted lifecycle, active versus expired in-flight counts,
+  terminal count, and the last probe record. It never invokes a Container API,
+  always returns `ready=false`, and labels its verdict `unknown`.
+- `live`: explicitly cold-start-capable. It records a one-time dispatch and
+  monotonic probe generation before `containerFetch('/readyz')`, consumes a
+  bounded response, samples `getState`, and commits only through generation
+  CAS. A concurrent probe receives a stable conflict and a recently completed
+  probe is subject to a short cooldown.
+
+`process_ready` means the strict runtime response and Cloudflare Container
+health agree. `execution_ready` additionally requires runtime and Controller
+execution gates, a non-draining shard, and free admission capacity. The current
+runtime reports execution disabled, so a healthy local process must still
+produce top-level `ready=false`.
+
+All edge and Controller read/wake/staging switches remain false. This contract
+does not replace actual Container lifecycle, N/N-1, provider, storage, billing,
+load, cost, image supply-chain, canary, or rollback evidence. Production stays
+**NO-GO**.

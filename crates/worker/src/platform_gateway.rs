@@ -14,9 +14,10 @@ use cinatoken_providers::ai_gateway::{
     MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS,
 };
 use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
-use cinatoken_sharding::CONTAINER_SHARD_CONTRACT_VERSION;
+use cinatoken_sharding::{ShardRing, CONTAINER_SHARD_CONTRACT_VERSION};
 use cinatoken_storage::RelayAuditLog;
 use cinatoken_wfp_authority::{OutboundInvocationContext, OUTBOUND_CONTEXT_BINDING};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -28,12 +29,16 @@ use worker::{
 use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
 };
-use crate::container_controller::probe as probe_container_controller;
+use crate::container_controller::{
+    probe as probe_container_controller, probe_shard_readiness,
+    CONTAINER_SHARD_READINESS_PROBE_ENABLED_ENV, CONTAINER_SHARD_READINESS_WAKE_ENABLED_ENV,
+};
 use crate::container_scheduler::{
     container_local_contracts, container_scheduler_cutover_guards,
     container_scheduler_cutover_ready, container_scheduler_foundation_compiled,
     container_scheduler_routing_secret_configured, container_scheduler_runtime_status,
     CONTAINER_SCHEDULER_ENABLED_ENV, CONTAINER_SCHEDULER_STAGING_VERIFIED_ENV,
+    CONTAINER_SHARD_READINESS_STAGING_VERIFIED_ENV,
 };
 use crate::quota_coordinator::{
     quota_coordinator_contract_version, quota_coordinator_finalization_observation_compiled,
@@ -396,6 +401,10 @@ struct PlatformCapabilities {
     container_scheduler_controller_enabled: bool,
     container_scheduler_controller_execution_enabled: bool,
     container_scheduler_controller_previous_secret_configured: bool,
+    container_scheduler_shard_readiness_probe_compiled: bool,
+    container_scheduler_shard_readiness_probe_enabled: bool,
+    container_scheduler_shard_readiness_wake_enabled: bool,
+    container_scheduler_shard_readiness_staging_verified: bool,
     container_scheduler_container_runtime_compiled: bool,
     container_scheduler_deny_by_default_egress_compiled: bool,
     container_scheduler_shared_storage_contract_compiled: bool,
@@ -771,6 +780,192 @@ enum RealtimeBillingRecoveryState {
     Unknown,
 }
 
+const CONTAINER_READINESS_ADMIN_BODY_LIMIT_BYTES: usize = 1_024;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContainerShardReadinessRequest {
+    shard_index: u16,
+    expected_ring_generation: u64,
+    wake_container: bool,
+    confirm_wake: bool,
+}
+
+/// Admin-only targeted shard inspection. Ledger mode is side-effect free;
+/// live mode is separately gated because it can cold-start a Container.
+pub async fn container_shard_readiness(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let admin = match require_admin_auth(&req, &env).await? {
+        Ok(admin) => admin,
+        Err(response) => return Ok(response),
+    };
+    if !env_flag(&env, CONTAINER_SHARD_READINESS_PROBE_ENABLED_ENV) {
+        return Ok(envelope_error_response(
+            503,
+            "container shard readiness probe is disabled",
+        ));
+    }
+    let content_type = req
+        .headers()
+        .get("content-type")?
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if content_type != "application/json" {
+        return Ok(envelope_error_response(
+            415,
+            "container shard readiness requires application/json",
+        ));
+    }
+    if let Some(content_length) = req.headers().get("content-length")? {
+        let valid = content_length
+            .parse::<usize>()
+            .ok()
+            .is_some_and(|length| length <= CONTAINER_READINESS_ADMIN_BODY_LIMIT_BYTES);
+        if !valid {
+            return Ok(envelope_error_response(
+                413,
+                "container shard readiness request body too large",
+            ));
+        }
+    }
+    let mut stream = match req.stream() {
+        Ok(stream) => stream,
+        Err(_) => {
+            return Ok(envelope_error_response(
+                400,
+                "failed to read container shard readiness request",
+            ));
+        }
+    };
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                return Ok(envelope_error_response(
+                    400,
+                    "failed to read container shard readiness request",
+                ));
+            }
+        };
+        if body.len().saturating_add(chunk.len()) > CONTAINER_READINESS_ADMIN_BODY_LIMIT_BYTES {
+            return Ok(envelope_error_response(
+                413,
+                "container shard readiness request body too large",
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let input: ContainerShardReadinessRequest = match serde_json::from_slice(&body) {
+        Ok(input) => input,
+        Err(_) => {
+            return Ok(envelope_error_response(
+                400,
+                "invalid container shard readiness request",
+            ));
+        }
+    };
+    if input.wake_container != input.confirm_wake {
+        return Ok(envelope_error_response(
+            400,
+            "confirm_wake must exactly match wake_container",
+        ));
+    }
+    let runtime = container_scheduler_runtime_status(&env);
+    if !runtime.valid {
+        return Ok(envelope_error_response(
+            503,
+            "container shard ring is misconfigured",
+        ));
+    }
+    if input.expected_ring_generation != runtime.ring_generation {
+        return Ok(envelope_error_response(
+            409,
+            "container shard ring generation changed",
+        ));
+    }
+    if input.wake_container {
+        if !env_flag(&env, CONTAINER_SHARD_READINESS_WAKE_ENABLED_ENV) {
+            return Ok(envelope_error_response(
+                503,
+                "container shard readiness wake is disabled",
+            ));
+        }
+        let production = runtime_value(&env, "ENVIRONMENT")
+            .is_some_and(|value| matches!(value.as_str(), "production" | "prod"));
+        if production && !env_flag(&env, CONTAINER_SHARD_READINESS_STAGING_VERIFIED_ENV) {
+            return Ok(envelope_error_response(
+                403,
+                "container shard readiness wake is not staging-verified",
+            ));
+        }
+    }
+    let shard = match ShardRing::new(runtime.ring_generation, runtime.shard_count)
+        .and_then(|ring| ring.shard(input.shard_index))
+    {
+        Ok(shard) => shard,
+        Err(_) => {
+            return Ok(envelope_error_response(
+                400,
+                "container shard index is outside the active ring",
+            ));
+        }
+    };
+    let result = match probe_shard_readiness(&env, &shard, input.wake_container).await {
+        Ok(result) => result,
+        Err(error) => {
+            worker::console_warn!(
+                "{}",
+                json!({
+                    "event": "container_shard_readiness_failed",
+                    "admin_id": admin.id,
+                    "shard_index": input.shard_index,
+                    "wake_container": input.wake_container,
+                    "error_code": error,
+                })
+            );
+            let (status, message) = match error {
+                "shard_fence_rejected" => (409, "container shard fence rejected"),
+                "readiness_conflict" => (
+                    409,
+                    "container shard readiness conflicts with an active or replayed probe",
+                ),
+                "readiness_rate_limited" => (429, "container shard readiness rate limited"),
+                "timeout" => (504, "container shard readiness timed out"),
+                "authority_rejected"
+                | "contract_mismatch"
+                | "invalid_content_type"
+                | "invalid_response_body"
+                | "invalid_response_size" => (
+                    502,
+                    "container controller returned an invalid readiness response",
+                ),
+                _ => (503, "container shard readiness is unavailable"),
+            };
+            return Ok(envelope_error_response(status, message));
+        }
+    };
+    worker::console_log!(
+        "{}",
+        json!({
+            "event": "container_shard_readiness_completed",
+            "admin_id": admin.id,
+            "probe_id": &result.probe_id,
+            "shard_index": result.shard.shard_index,
+            "wake_container": result.wake_requested,
+            "mode": &result.mode,
+            "ready": result.ready,
+            "result_code": &result.result_code,
+        })
+    );
+    let mut response = envelope_ok_response(&result)?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
+}
+
 /// Admin-only capability probe for the production migration cockpit.
 pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     if let Err(response) = require_admin_auth(&req, &env).await? {
@@ -903,6 +1098,13 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_controller_probe.execution_enabled;
     let container_scheduler_controller_previous_secret_configured =
         container_controller_probe.previous_secret_configured;
+    let container_scheduler_shard_readiness_probe_compiled = true;
+    let container_scheduler_shard_readiness_probe_enabled =
+        env_flag(&env, CONTAINER_SHARD_READINESS_PROBE_ENABLED_ENV);
+    let container_scheduler_shard_readiness_wake_enabled =
+        env_flag(&env, CONTAINER_SHARD_READINESS_WAKE_ENABLED_ENV);
+    let container_scheduler_shard_readiness_staging_verified =
+        env_flag(&env, CONTAINER_SHARD_READINESS_STAGING_VERIFIED_ENV);
     let container_scheduler_container_runtime_compiled = container_local_contracts.runtime_compiled;
     let container_scheduler_deny_by_default_egress_compiled =
         container_local_contracts.deny_by_default_egress_compiled;
@@ -920,6 +1122,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduler_routing_secret_configured,
         container_scheduler_controller_service_binding_available,
         container_scheduler_controller_ready,
+        container_scheduler_shard_readiness_staging_verified,
         container_scheduler_container_runtime_compiled,
         container_scheduler_deny_by_default_egress_compiled,
         container_scheduler_shared_storage_contract_compiled,
@@ -1510,6 +1713,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduler_controller_enabled,
         container_scheduler_controller_execution_enabled,
         container_scheduler_controller_previous_secret_configured,
+        container_scheduler_shard_readiness_probe_compiled,
+        container_scheduler_shard_readiness_probe_enabled,
+        container_scheduler_shard_readiness_wake_enabled,
+        container_scheduler_shard_readiness_staging_verified,
         container_scheduler_container_runtime_compiled,
         container_scheduler_deny_by_default_egress_compiled,
         container_scheduler_shared_storage_contract_compiled,

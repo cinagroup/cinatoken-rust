@@ -85,6 +85,19 @@ function ledgerStub(name: string): DurableObjectStub<ContainerControllerLedgerTe
   return env.CONTAINER_CONTROLLER_LEDGER.getByName(name);
 }
 
+function readinessCompletion(resultCode: string, processReady = false) {
+  return {
+    resultCode,
+    containerStatus: processReady ? "healthy" : "stopped",
+    containerLastChangeMs: BASE_NOW * 1_000,
+    containerExitCode: null,
+    runtimeProtocolVersion: processReady ? 1 : null,
+    runtimeContractVersion: processReady ? 1 : null,
+    runtimeExecutionEnabled: processReady ? false : null,
+    processReady,
+  };
+}
+
 describe("RelayShardLedger in Workerd", () => {
   it("serializes max + 1 concurrent claims without exceeding capacity", async () => {
     const stub = ledgerStub("concurrent-capacity");
@@ -630,6 +643,125 @@ describe("RelayShardLedger in Workerd", () => {
         lifecycle_detail: "container-123",
         updated_at: BASE_NOW + 2,
       });
+    });
+  });
+
+  it("keeps ledger-only readiness inspection side-effect free", async () => {
+    const stub = ledgerStub("readiness-ledger-only");
+    await expect(
+      stub.readinessSnapshot(operationEnvelope("readiness-ledger").shard, BASE_NOW),
+    ).resolves.toEqual({
+      initialized: false,
+      lifecycle_state: null,
+      lifecycle_detail: null,
+      lifecycle_updated_at: null,
+      active_in_flight_operations: 0,
+      expired_in_flight_operations: 0,
+      terminal_operations: 0,
+      readiness: {
+        generation: 0,
+        phase: "idle",
+        last_probe_id: null,
+        started_at_ms: null,
+        deadline_at_ms: null,
+        completed_at_ms: null,
+        result_code: null,
+        container_status: null,
+        container_last_change_ms: null,
+        container_exit_code: null,
+        runtime_protocol_version: null,
+        runtime_contract_version: null,
+        runtime_execution_enabled: null,
+        last_ready_at_ms: null,
+      },
+    });
+  });
+
+  it("serializes live readiness generations, rejects replay, and CAS-protects completion", async () => {
+    const stub = ledgerStub("readiness-generation-cas");
+    const shard = operationEnvelope("readiness-generation").shard;
+    const nowMs = BASE_NOW * 1_000;
+    await stub.initializeReadiness(shard, BASE_NOW);
+    await expect(
+      stub.beginReadinessOutcome(shard, "probe-1", nowMs, nowMs + 10_000, 5_000),
+    ).resolves.toEqual({ ok: true, generation: 1 });
+    await expect(
+      stub.beginReadinessOutcome(shard, "probe-2", nowMs + 1, nowMs + 10_001, 5_000),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "readiness_probe_in_progress", status: 409 },
+    });
+    await expect(
+      stub.completeReadiness(1, nowMs + 100, readinessCompletion("process_ready", true)),
+    ).resolves.toBe(true);
+    await expect(
+      stub.completeReadiness(1, nowMs + 101, readinessCompletion("stale")),
+    ).resolves.toBe(false);
+    await expect(
+      stub.beginReadinessOutcome(shard, "probe-1", nowMs + 5_100, nowMs + 15_100, 5_000),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "readiness_probe_replay", status: 409 },
+    });
+    await expect(
+      stub.beginReadinessOutcome(shard, "probe-3", nowMs + 4_999, nowMs + 14_999, 5_000),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "readiness_probe_cooldown", status: 429 },
+    });
+    await expect(
+      stub.beginReadinessOutcome(shard, "probe-4", nowMs + 5_100, nowMs + 15_100, 5_000),
+    ).resolves.toEqual({ ok: true, generation: 2 });
+  });
+
+  it("rejects new claims while draining and advances readiness fences only when drained", async () => {
+    const stub = ledgerStub("readiness-fence-and-drain");
+    const policy = ledgerPolicy();
+    const oldShard = operationEnvelope("old-ring").shard;
+    await stub.claim(operationEnvelope("old-ring"), sha256("a"), "dispatch-old", policy, BASE_NOW);
+    await stub.lifecycle("draining", null, BASE_NOW + 1);
+    await expect(
+      stub.beginReadinessOutcome(
+        oldShard,
+        "probe-during-drain",
+        (BASE_NOW + 1) * 1_000,
+        (BASE_NOW + 11) * 1_000,
+        5_000,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "shard_draining", status: 503 },
+    });
+    await expect(
+      stub.claimOutcome(
+        operationEnvelope("old-ring"),
+        sha256("a"),
+        "dispatch-old",
+        policy,
+        BASE_NOW + 2,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: { kind: "existing" } });
+    await expect(
+      stub.claimOutcome(
+        operationEnvelope("blocked-during-drain"),
+        sha256("b"),
+        "dispatch-blocked",
+        policy,
+        BASE_NOW + 2,
+      ),
+    ).resolves.toEqual({ ok: false, error: { code: "shard_draining", status: 503 } });
+    const newShard = { ...oldShard, ring_generation: 2, shard_count: 16 };
+    await expect(stub.initializeReadinessOutcome(newShard, BASE_NOW + 3)).resolves.toEqual({
+      ok: false,
+      error: { code: "ring_generation_in_flight", status: 409 },
+    });
+    await stub.transition("old-ring", 1, "claimed", "completed", 200, BASE_NOW + 4);
+    await expect(stub.initializeReadinessOutcome(newShard, BASE_NOW + 5)).resolves.toEqual({
+      ok: true,
+    });
+    await expect(stub.readinessSnapshot(newShard, BASE_NOW + 5)).resolves.toMatchObject({
+      initialized: true,
+      lifecycle_state: "draining",
     });
   });
 });

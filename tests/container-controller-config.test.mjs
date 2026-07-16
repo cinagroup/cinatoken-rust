@@ -21,6 +21,8 @@ describe("isolated container controller configuration", () => {
       expect(config.routes).toBeUndefined();
       expect(config.vars.CONTAINER_CONTROLLER_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_EXECUTION_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_READINESS_PROBE_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_READINESS_WAKE_ENABLED).toBe("false");
       expect(Number(config.vars.CONTAINER_TERMINAL_RETENTION_SECONDS)).toBeGreaterThanOrEqual(600);
       expect(Number(config.vars.CONTAINER_MAX_TERMINAL_OPERATIONS)).toBeGreaterThan(0);
       expect(config.vars.CONTAINER_AUTHORITY_CURRENT_SECRET).toBeUndefined();

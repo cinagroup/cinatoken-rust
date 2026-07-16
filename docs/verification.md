@@ -5604,3 +5604,36 @@ Authenticated remote status readback, a targeted shard readiness probe, actual
 Container lifecycle, N/N-1, provider/billing integration, fault/load/cost,
 canary, rollback, and C1-C5 approval remain required. Production remains
 **NO-GO**.
+
+## Targeted Container Readiness Verification (2026-07-16)
+
+Required local commands:
+
+```powershell
+node node_modules/typescript/bin/tsc -p services/container-controller/tsconfig.json --noEmit
+node node_modules/vitest/vitest.mjs run --config vitest.container-controller-protocol.config.mjs
+node node_modules/vitest/vitest.mjs run --config vitest.container-controller.config.mjs
+cargo test -p cinatoken-container-runtime --test http
+cargo test -p cinatoken-worker --lib container_controller
+cargo test -p cinatoken-worker --lib container_scheduler
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+```
+
+The protocol suite must prove signed ledger/live bodies, tamper rejection,
+unknown-field rejection, stale fence, and 4 KiB bounds. The Workerd suite must
+prove ledger-only inspection leaves the shard uninitialized, active and
+expired counts are distinct, live probe generation is serialized, dispatch is
+single-use, cooldown is enforced, stale completion loses CAS, draining rejects
+new claims, and a new ring advances only after old in-flight work drains.
+
+Rust response tests must reject a ledger response that claims health and a live
+response that equates healthy process state with disabled execution. Runtime
+HTTP tests must assert the exact `/readyz` protocol and
+`execution_enabled=false`. Config tests and generated Controller types must
+show all readiness gates false.
+
+Remote acceptance remains separate: shallow status, non-waking ledger, one
+explicit cold probe, warm probe, malformed/timeout/rate-limit, concurrency,
+replay, draining, sleep/restart/OOM, N/N-1, image provenance, load/cost, and
+rollback evidence must be archived without secrets. Local PASS cannot promote
+the staging marker or production gate.

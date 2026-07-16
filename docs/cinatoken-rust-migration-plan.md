@@ -13578,3 +13578,52 @@ a targeted shard `/readyz` deep probe. Actual Container lifecycle, replayable
 results, streaming/large responses, shared storage, provider and billing,
 N/N-1, image supply chain, remote faults/load/cost, canary, domain cutover, and
 rollback evidence remain mandatory. Production remains **NO-GO**.
+
+## 22.222 Fenced Targeted Shard Readiness Contract (2026-07-16)
+
+This increment completes the local edge -> private Controller -> named shard DO
+readiness contract without enabling a Container or production route. It keeps
+inspection and cold-start authority deliberately separate.
+
+Implemented local contract:
+
+1. `POST /api/platform/container/shards/readiness` is admin-only, accepts a
+   strict 1 KiB JSON body, derives the canonical instance name from the active
+   ring, and rejects a stale `expected_ring_generation` before private dispatch.
+2. `wake_container=false` is ledger mode. It does not call `getState`,
+   `containerFetch`, or mutate lifecycle/readiness state; Container and runtime
+   fields are null and the verdict is explicitly `unknown`.
+3. `wake_container=true` requires a matching `confirm_wake`, a separate edge
+   wake gate, the Controller wake gate, and, in production, an independently
+   reviewed staging marker. All committed values remain false.
+4. The Rust edge signs a non-empty POST body and binds issuer, audience, kid,
+   protocol, dispatch ID, method, path, body SHA-256, and time window. The
+   Controller verifies the full canonical shard fence before selecting the
+   deterministic DO.
+5. Live probes persist a single-consumption dispatch, probe generation,
+   absolute deadline, cooldown, result, Container state, runtime protocol, and
+   last process-ready timestamp in DO SQLite. Generation-and-phase CAS prevents
+   a late probe from overwriting a newer result.
+6. `/readyz` reports process capability and execution capability separately.
+   Top-level `ready=true` requires a healthy Container, exact runtime contract,
+   runtime execution enabled, Controller execution enabled, non-draining
+   lifecycle, and available per-shard admission capacity.
+7. Draining is now an operation admission fence. A new claim receives a stable
+   retryable failure after `onActivityExpired` records draining and before the
+   Container is stopped.
+8. Non-200 Container readiness bodies are bounded and consumed before
+   classification. Request and response bodies are capped at 4 KiB, Controller
+   probing is bounded to 10 seconds, and the edge applies a 12-second absolute
+   envelope.
+
+Local tests cover strict signed ledger/live requests, tamper/size/unknown-field
+and stale-fence negatives, read-only snapshots, active/expired operation
+counts, generation serialization, replay, cooldown, stale completion CAS,
+draining admission, zero-in-flight ring advancement, process-versus-execution
+semantics, and the non-empty Rust authority body.
+
+This is still a local contract. A real `RelayShardContainer`, Docker image,
+Container startup/sleep/restart/OOM, N/N-1 mixed rollout, image digest/SBOM/
+signature/scan, remote SQLite, load/cost, shared D1/KV/R2, provider execution,
+billing, rollback, and C1-C5 approval remain mandatory. Go/VPS remains
+authoritative and production remains **NO-GO**.

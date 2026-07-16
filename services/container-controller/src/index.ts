@@ -9,12 +9,16 @@ import {
 import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
+  INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
   MAX_OPERATION_BODY_BYTES,
   ProtocolError,
   type AuthorityEnvironment,
   type OperationEnvelope,
+  type OperationShard,
+  type ShardReadinessProbe,
   verifyOperationRequest,
+  verifyReadinessRequest,
   verifyStatusRequest,
 } from "./protocol";
 
@@ -23,6 +27,8 @@ export { ContainerProxy };
 interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
   CONTAINER_CONTROLLER_ENABLED: string;
   CONTAINER_EXECUTION_ENABLED: string;
+  CONTAINER_READINESS_PROBE_ENABLED: string;
+  CONTAINER_READINESS_WAKE_ENABLED: string;
   CONTAINER_MAX_IN_FLIGHT_PER_SHARD: string;
   CONTAINER_TERMINAL_RETENTION_SECONDS: string;
   CONTAINER_MAX_TERMINAL_OPERATIONS: string;
@@ -38,6 +44,40 @@ type ControllerEnv = Omit<
 };
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
+const READINESS_TIMEOUT_MS = 10_000;
+const READINESS_COOLDOWN_MS = 5_000;
+const READINESS_RESPONSE_MAX_BYTES = 1024;
+
+interface ContainerStateSnapshot {
+  status: "running" | "healthy" | "stopping" | "stopped" | "stopped_with_code";
+  last_change_ms: number;
+  exit_code: number | null;
+}
+
+interface RuntimeReadinessSnapshot {
+  process_ready: boolean;
+  execution_ready: boolean;
+  protocol_version: number;
+  shard_contract_version: number;
+  execution_enabled: boolean;
+}
+
+export interface ShardReadinessResult {
+  checked_at: number;
+  mode: "ledger" | "live";
+  ready: boolean;
+  verdict: "unknown" | "ready" | "not_ready";
+  result_code: string;
+  shard: OperationShard;
+  wake_requested: boolean;
+  container_state: ContainerStateSnapshot | null;
+  ledger: import("./ledger").ShardReadinessSnapshot;
+  runtime: RuntimeReadinessSnapshot | null;
+}
+
+type ShardReadinessRpcResult =
+  | { ok: true; result: ShardReadinessResult }
+  | { ok: false; error: { code: string; status: number } };
 
 export class RelayShardContainer extends Container<ControllerEnv> {
   override defaultPort = 8080;
@@ -53,6 +93,158 @@ export class RelayShardContainer extends Container<ControllerEnv> {
   static override outbound = (): Response => jsonError("container_egress_denied", 403);
 
   private readonly ledger = new RelayShardLedger(this.ctx.storage);
+
+  async readinessProbe(
+    probe: ShardReadinessProbe,
+    probeId: string,
+  ): Promise<ShardReadinessRpcResult> {
+    const startedAtMs = Date.now();
+    try {
+      if (!probe.wake_container) {
+        return {
+          ok: true,
+          result: {
+            checked_at: Math.floor(startedAtMs / 1000),
+            mode: "ledger",
+            ready: false,
+            verdict: "unknown",
+            result_code: "ledger_snapshot",
+            shard: probe.shard,
+            wake_requested: false,
+            container_state: null,
+            ledger: this.ledger.readShardReadiness(probe.shard, Math.floor(startedAtMs / 1000)),
+            runtime: null,
+          },
+        };
+      }
+
+      this.ledger.initializeShardForReadiness(probe.shard, Math.floor(startedAtMs / 1000));
+      const generation = this.ledger.beginReadinessProbe(
+        probe.shard,
+        probeId,
+        startedAtMs,
+        startedAtMs + READINESS_TIMEOUT_MS,
+        READINESS_COOLDOWN_MS,
+      );
+      let containerState: ContainerStateSnapshot | null = null;
+      let runtime: RuntimeReadinessSnapshot | null = null;
+      let resultCode = "container_readiness_unavailable";
+      try {
+        const deadlineAtMs = startedAtMs + READINESS_TIMEOUT_MS;
+        const response = await this.containerFetch("http://container/readyz", {
+          method: "GET",
+          headers: { accept: "application/json" },
+          signal: AbortSignal.timeout(Math.max(1, deadlineAtMs - Date.now())),
+        });
+        const body = await readBoundedResponse(
+          response,
+          READINESS_RESPONSE_MAX_BYTES,
+          deadlineAtMs,
+        );
+        if (response.status !== 200) {
+          throw new ProtocolError(
+            response.status === 429
+              ? "container_start_rate_limited"
+              : response.status === 503
+                ? "container_start_unavailable"
+                : "container_readiness_rejected",
+            response.status === 429 ? 429 : 503,
+          );
+        }
+        const readiness = validateRuntimeReadinessResponse(response, body);
+        containerState = containerStateSnapshot(
+          await withAbsoluteDeadline(
+            this.getState(),
+            deadlineAtMs,
+            "container_readiness_timeout",
+            504,
+          ),
+        );
+        const processReady = containerState.status === "healthy";
+        const ledgerBeforeCompletion = this.ledger.readShardReadiness(
+          probe.shard,
+          Math.floor(Date.now() / 1000),
+        );
+        const lifecycleAccepting = !["draining", "stopped", "error"].includes(
+          ledgerBeforeCompletion.lifecycle_state ?? "",
+        );
+        const capacityAvailable =
+          ledgerBeforeCompletion.active_in_flight_operations <
+          controllerLedgerPolicy(this.env).maxInFlight;
+        const executionReady =
+          processReady &&
+          readiness.execution_enabled &&
+          this.env.CONTAINER_EXECUTION_ENABLED === "true" &&
+          lifecycleAccepting &&
+          capacityAvailable;
+        runtime = {
+          process_ready: processReady,
+          execution_ready: executionReady,
+          protocol_version: readiness.protocol_version,
+          shard_contract_version: readiness.shard_contract_version,
+          execution_enabled: readiness.execution_enabled,
+        };
+        resultCode = !processReady
+          ? "container_not_healthy"
+          : !readiness.execution_enabled
+            ? "process_ready_execution_disabled"
+            : this.env.CONTAINER_EXECUTION_ENABLED !== "true"
+              ? "controller_execution_disabled"
+              : !lifecycleAccepting
+                ? "shard_not_accepting"
+                : !capacityAvailable
+                  ? "shard_capacity_exhausted"
+                  : "execution_ready";
+      } catch (error) {
+        resultCode = error instanceof ProtocolError ? error.code : "container_readiness_unavailable";
+        try {
+          containerState = containerStateSnapshot(await this.getState());
+        } catch {
+          containerState = null;
+        }
+      }
+
+      const completedAtMs = Date.now();
+      const completed = this.ledger.completeReadinessProbe(generation, completedAtMs, {
+        resultCode,
+        containerStatus: containerState?.status ?? null,
+        containerLastChangeMs: containerState?.last_change_ms ?? null,
+        containerExitCode: containerState?.exit_code ?? null,
+        runtimeProtocolVersion: runtime?.protocol_version ?? null,
+        runtimeContractVersion: runtime?.shard_contract_version ?? null,
+        runtimeExecutionEnabled: runtime?.execution_enabled ?? null,
+        processReady: runtime?.process_ready ?? false,
+      });
+      if (!completed) throw new ProtocolError("readiness_probe_superseded", 409);
+      const executionReady = runtime?.execution_ready ?? false;
+      return {
+        ok: true,
+        result: {
+          checked_at: Math.floor(completedAtMs / 1000),
+          mode: "live",
+          ready: executionReady,
+          verdict: executionReady ? "ready" : "not_ready",
+          result_code: resultCode,
+          shard: probe.shard,
+          wake_requested: true,
+          container_state: containerState,
+          ledger: this.ledger.readShardReadiness(
+            probe.shard,
+            Math.floor(completedAtMs / 1000),
+          ),
+          runtime,
+        },
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return {
+        ok: false,
+        error: { code: "container_readiness_unavailable", status: 504 },
+      };
+    }
+  }
 
   override async fetch(request: Request): Promise<Response> {
     try {
@@ -212,6 +404,35 @@ const handler: ExportedHandler<ControllerEnv> = {
           { status: 200, headers: jsonHeaders },
         );
       }
+      if (path === INTERNAL_READINESS_PATH) {
+        const verified = await verifyReadinessRequest(request, env);
+        if (env.CONTAINER_CONTROLLER_ENABLED !== "true") {
+          return jsonError("container_controller_disabled", 503);
+        }
+        if (env.CONTAINER_READINESS_PROBE_ENABLED !== "true") {
+          return jsonError("container_readiness_probe_disabled", 503);
+        }
+        if (
+          verified.probe.wake_container &&
+          env.CONTAINER_READINESS_WAKE_ENABLED !== "true"
+        ) {
+          return jsonError("container_readiness_wake_disabled", 503);
+        }
+        const stub = env.RELAY_SHARDS.getByName(verified.probe.shard.instance_name);
+        const outcome = await stub.readinessProbe(
+          verified.probe,
+          verified.claims.dispatch_id,
+        );
+        if (!outcome.ok) return jsonError(outcome.error.code, outcome.error.status);
+        return new Response(
+          JSON.stringify({
+            protocol_version: verified.probe.protocol_version,
+            probe_id: verified.claims.dispatch_id,
+            ...outcome.result,
+          }),
+          { status: 200, headers: jsonHeaders },
+        );
+      }
       if (path !== INTERNAL_OPERATION_PATH) return jsonError("route_not_found", 404);
       const verified = await verifyOperationRequest(request, env);
       if (env.CONTAINER_CONTROLLER_ENABLED !== "true") {
@@ -285,7 +506,11 @@ function copyArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return copy.buffer;
 }
 
-async function readBoundedResponse(response: Response, limit: number): Promise<Uint8Array> {
+async function readBoundedResponse(
+  response: Response,
+  limit: number,
+  deadlineAtMs?: number,
+): Promise<Uint8Array> {
   const contentLength = response.headers.get("content-length");
   if (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) > limit)) {
     throw new ProtocolError("container_response_too_large", 502);
@@ -296,7 +521,20 @@ async function readBoundedResponse(response: Response, limit: number): Promise<U
   let total = 0;
   try {
     while (true) {
-      const next = await reader.read();
+      let next: ReadableStreamReadResult<Uint8Array>;
+      try {
+        next = deadlineAtMs === undefined
+          ? await reader.read()
+          : await withAbsoluteDeadline(
+              reader.read(),
+              deadlineAtMs,
+              "container_readiness_timeout",
+              504,
+            );
+      } catch (error) {
+        await reader.cancel("container_response_aborted").catch(() => undefined);
+        throw error;
+      }
       if (next.done) break;
       total += next.value.byteLength;
       if (total > limit) {
@@ -315,6 +553,27 @@ async function readBoundedResponse(response: Response, limit: number): Promise<U
     offset += chunk.byteLength;
   }
   return body;
+}
+
+async function withAbsoluteDeadline<T>(
+  operation: Promise<T>,
+  deadlineAtMs: number,
+  code: string,
+  status: number,
+): Promise<T> {
+  const remainingMs = deadlineAtMs - Date.now();
+  if (remainingMs <= 0) throw new ProtocolError(code, status);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new ProtocolError(code, status)), remainingMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
 }
 
 function boundedLogValue(value: unknown): string {
@@ -360,4 +619,52 @@ function validateContainerOperationResponse(
 
 function authoritySecretConfigured(secret: string): boolean {
   return new TextEncoder().encode(secret).length >= 32;
+}
+
+function containerStateSnapshot(state: Awaited<ReturnType<RelayShardContainer["getState"]>>): ContainerStateSnapshot {
+  return {
+    status: state.status,
+    last_change_ms: state.lastChange,
+    exit_code: "exitCode" in state ? state.exitCode ?? null : null,
+  };
+}
+
+function validateRuntimeReadinessResponse(
+  response: Response,
+  body: Uint8Array,
+): {
+  protocol_version: number;
+  shard_contract_version: number;
+  execution_enabled: boolean;
+} {
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") {
+    throw new ProtocolError("invalid_container_readiness", 502);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body));
+  } catch {
+    throw new ProtocolError("invalid_container_readiness", 502);
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProtocolError("invalid_container_readiness", 502);
+  }
+  const record = value as Record<string, unknown>;
+  const expectedKeys = ["status", "protocol_version", "shard_contract_version", "execution_enabled"];
+  if (
+    Object.keys(record).length !== expectedKeys.length ||
+    expectedKeys.some((key) => !(key in record)) ||
+    record.status !== "ready" ||
+    record.protocol_version !== 1 ||
+    record.shard_contract_version !== 1 ||
+    typeof record.execution_enabled !== "boolean"
+  ) {
+    throw new ProtocolError("invalid_container_readiness", 502);
+  }
+  return {
+    protocol_version: record.protocol_version,
+    shard_contract_version: record.shard_contract_version,
+    execution_enabled: record.execution_enabled,
+  };
 }

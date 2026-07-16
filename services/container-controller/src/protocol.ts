@@ -1,8 +1,10 @@
 const AUTHORITY_DOMAIN = "cinatoken-container-authority:v1\0";
 export const AUTHORITY_HEADER = "x-cinatoken-container-authority";
 export const INTERNAL_OPERATION_PATH = "/internal/v1/operations";
+export const INTERNAL_READINESS_PATH = "/internal/v1/shards/readiness";
 export const INTERNAL_STATUS_PATH = "/internal/v1/status";
 export const MAX_OPERATION_BODY_BYTES = 64 * 1024;
+export const MAX_READINESS_BODY_BYTES = 4 * 1024;
 export const MAX_EXECUTION_WINDOW_SECONDS = 300;
 const MAX_TOKEN_BYTES = 4096;
 const MAX_JSON_SEGMENT_BYTES = 2048;
@@ -82,6 +84,18 @@ export interface VerifiedOperation {
   body: Uint8Array;
 }
 
+export interface ShardReadinessProbe {
+  protocol_version: number;
+  shard: OperationShard;
+  wake_container: boolean;
+}
+
+export interface VerifiedShardReadinessProbe {
+  probe: ShardReadinessProbe;
+  claims: AuthorityClaims;
+  body: Uint8Array;
+}
+
 export class ProtocolError extends Error {
   constructor(
     readonly code: string,
@@ -132,6 +146,36 @@ export async function verifyStatusRequest(
     env,
     now,
   );
+}
+
+export async function verifyReadinessRequest(
+  request: Request,
+  env: AuthorityEnvironment,
+  now = Math.floor(Date.now() / 1000),
+): Promise<VerifiedShardReadinessProbe> {
+  if (request.method !== "POST" || new URL(request.url).pathname !== INTERNAL_READINESS_PATH) {
+    throw new ProtocolError("route_not_found", 404);
+  }
+  const body = await readBoundedBody(
+    request,
+    true,
+    MAX_READINESS_BODY_BYTES,
+    "readiness_probe_too_large",
+    "invalid_readiness_probe",
+  );
+  const claims = await verifyAuthority(
+    requiredAuthority(request),
+    request.method,
+    INTERNAL_READINESS_PATH,
+    body,
+    env,
+    now,
+  );
+  const probe = parseReadinessProbe(body, env);
+  if (probe.protocol_version !== claims.protocol_version) {
+    throw new ProtocolError("protocol_mismatch", 426);
+  }
+  return { probe, claims, body };
 }
 
 export async function verifyAuthority(
@@ -341,6 +385,68 @@ export function parseOperationEnvelope(
   return envelope;
 }
 
+export function parseReadinessProbe(
+  body: Uint8Array,
+  env: Pick<
+    AuthorityEnvironment,
+    "CONTAINER_PROTOCOL_VERSION" | "CONTAINER_RING_GENERATION" | "CONTAINER_SHARD_COUNT"
+  >,
+): ShardReadinessProbe {
+  const code = "invalid_readiness_probe";
+  const value = parseJsonObject(body, code);
+  assertExactKeys(value, ["protocol_version", "shard", "wake_container"], code);
+  const shardValue = readObject(value, "shard", code);
+  assertExactKeys(
+    shardValue,
+    ["contract_version", "ring_generation", "shard_count", "shard_index", "instance_name"],
+    code,
+  );
+  const protocolVersion = readInteger(value, "protocol_version", 1, 255, code);
+  const shard: OperationShard = {
+    contract_version: readInteger(shardValue, "contract_version", 1, 1, code),
+    ring_generation: readInteger(shardValue, "ring_generation", 1, MAX_SAFE_INTEGER, code),
+    shard_count: readInteger(shardValue, "shard_count", 1, 1024, code),
+    shard_index: readInteger(shardValue, "shard_index", 0, 1023, code),
+    instance_name: readString(shardValue, "instance_name", 29, 64, /^[a-z0-9-]+$/, code),
+  };
+  validateShardFence(protocolVersion, shard, env);
+  return {
+    protocol_version: protocolVersion,
+    shard,
+    wake_container: readBoolean(value, "wake_container", code),
+  };
+}
+
+function validateShardFence(
+  protocolVersion: number,
+  shard: OperationShard,
+  env: Pick<
+    AuthorityEnvironment,
+    "CONTAINER_PROTOCOL_VERSION" | "CONTAINER_RING_GENERATION" | "CONTAINER_SHARD_COUNT"
+  >,
+): void {
+  const expectedProtocol = parseConfiguredInteger(env.CONTAINER_PROTOCOL_VERSION, 1, 255);
+  const expectedGeneration = parseConfiguredInteger(
+    env.CONTAINER_RING_GENERATION,
+    1,
+    MAX_SAFE_INTEGER,
+  );
+  const expectedShardCount = parseConfiguredInteger(env.CONTAINER_SHARD_COUNT, 1, 1024);
+  const expectedName = `cinatoken-relay-shard-v1-${shard.shard_index.toString().padStart(4, "0")}`;
+  if (protocolVersion !== expectedProtocol) {
+    throw new ProtocolError("unsupported_protocol", 426);
+  }
+  if (
+    shard.contract_version !== 1 ||
+    shard.ring_generation !== expectedGeneration ||
+    shard.shard_count !== expectedShardCount ||
+    shard.shard_index >= shard.shard_count ||
+    shard.instance_name !== expectedName
+  ) {
+    throw new ProtocolError("stale_shard_fence", 409);
+  }
+}
+
 export async function createAuthorityTokenForTest(
   secret: string,
   kid: string,
@@ -366,15 +472,21 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function readBoundedBody(request: Request, requireJson: boolean): Promise<Uint8Array> {
+async function readBoundedBody(
+  request: Request,
+  requireJson: boolean,
+  limit = MAX_OPERATION_BODY_BYTES,
+  tooLargeCode = "operation_too_large",
+  invalidCode = "invalid_operation",
+): Promise<Uint8Array> {
   const length = request.headers.get("content-length");
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_OPERATION_BODY_BYTES)) {
-    throw new ProtocolError("operation_too_large", 413);
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > limit)) {
+    throw new ProtocolError(tooLargeCode, 413);
   }
   if (requireJson && request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
     throw new ProtocolError("invalid_content_type", 415);
   }
-  if (request.body === null) throw new ProtocolError("invalid_operation", 400);
+  if (request.body === null) throw new ProtocolError(invalidCode, 400);
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -383,16 +495,16 @@ async function readBoundedBody(request: Request, requireJson: boolean): Promise<
       const next = await reader.read();
       if (next.done) break;
       total += next.value.byteLength;
-      if (total > MAX_OPERATION_BODY_BYTES) {
-        await reader.cancel("operation_too_large");
-        throw new ProtocolError("operation_too_large", 413);
+      if (total > limit) {
+        await reader.cancel(tooLargeCode);
+        throw new ProtocolError(tooLargeCode, 413);
       }
       chunks.push(next.value);
     }
   } finally {
     reader.releaseLock();
   }
-  if (total === 0) throw new ProtocolError("invalid_operation", 400);
+  if (total === 0) throw new ProtocolError(invalidCode, 400);
   const body = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
@@ -514,12 +626,22 @@ function assertExactKeys(
   }
 }
 
-function readObject(value: Record<string, unknown>, name: string): Record<string, unknown> {
+function readObject(
+  value: Record<string, unknown>,
+  name: string,
+  code = "invalid_operation",
+): Record<string, unknown> {
   const member = value[name];
   if (member === null || typeof member !== "object" || Array.isArray(member)) {
-    throw new ProtocolError("invalid_operation", 400);
+    throw new ProtocolError(code, 400);
   }
   return member as Record<string, unknown>;
+}
+
+function readBoolean(value: Record<string, unknown>, name: string, code: string): boolean {
+  const member = value[name];
+  if (typeof member !== "boolean") throw new ProtocolError(code, 400);
+  return member;
 }
 
 function readString(

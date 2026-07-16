@@ -75,18 +75,32 @@ async fn operation_endpoint_requires_the_controller_protocol_header() {
 
 #[tokio::test]
 async fn health_and_readiness_endpoints_are_live() {
-    for (path, expected) in [("/healthz", "ok"), ("/readyz", "ready")] {
-        let response = app()
-            .oneshot(Request::get(path).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(
-            serde_json::from_slice::<Value>(&body).unwrap()["status"],
-            expected
-        );
-    }
+    let health = app()
+        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::OK);
+    let body = to_bytes(health.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap(),
+        json!({ "status": "ok" })
+    );
+
+    let readiness = app()
+        .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(readiness.status(), StatusCode::OK);
+    let body = to_bytes(readiness.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap(),
+        json!({
+            "status": "ready",
+            "protocol_version": 1,
+            "shard_contract_version": 1,
+            "execution_enabled": false,
+        })
+    );
 }
 
 #[tokio::test]

@@ -62,13 +62,24 @@ impl ShardRing {
                 .expect("routing key prefix has a fixed width"),
         );
         let shard_index = jump_consistent_hash(hash, self.shard_count);
-        ShardPlan {
+        self.shard(shard_index)
+            .expect("jump hash always returns an index inside the validated ring")
+    }
+
+    pub fn shard(&self, shard_index: u16) -> Result<ShardPlan, ShardPlanError> {
+        if shard_index >= self.shard_count {
+            return Err(ShardPlanError::InvalidShardIndex {
+                actual: shard_index,
+                shard_count: self.shard_count,
+            });
+        }
+        Ok(ShardPlan {
             contract_version: self.contract_version,
             ring_generation: self.generation,
             shard_count: self.shard_count,
             shard_index,
             instance_name: format!("{CONTAINER_SHARD_INSTANCE_PREFIX}-{shard_index:04}"),
-        }
+        })
     }
 }
 
@@ -129,6 +140,8 @@ pub enum ShardPlanError {
     InvalidGeneration,
     #[error("container shard count {actual} must be between 1 and {MAX_CONTAINER_SHARDS}")]
     InvalidShardCount { actual: u16 },
+    #[error("container shard index {actual} is outside the configured {shard_count}-shard ring")]
+    InvalidShardIndex { actual: u16, shard_count: u16 },
     #[error("container shard routing key must be a non-zero 32-byte keyed digest")]
     InvalidRoutingKey,
 }
@@ -168,6 +181,28 @@ mod tests {
             format!("{CONTAINER_SHARD_INSTANCE_PREFIX}-{:04}", first.shard_index)
         );
         first.validate_fence(ring).unwrap();
+    }
+
+    #[test]
+    fn explicit_shard_probe_uses_the_same_canonical_fence() {
+        let ring = ShardRing::new(7, 32).unwrap();
+        assert_eq!(
+            ring.shard(3).unwrap(),
+            ShardPlan {
+                contract_version: 1,
+                ring_generation: 7,
+                shard_count: 32,
+                shard_index: 3,
+                instance_name: "cinatoken-relay-shard-v1-0003".to_string(),
+            }
+        );
+        assert_eq!(
+            ring.shard(32),
+            Err(ShardPlanError::InvalidShardIndex {
+                actual: 32,
+                shard_count: 32,
+            })
+        );
     }
 
     #[test]

@@ -21,8 +21,8 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 pub const MAX_EXECUTION_WINDOW_SECONDS: u64 = 300;
 pub const CONTAINER_PROTOCOL_HEADER: &str = "x-cinatoken-container-protocol";
 
-const PROTOCOL_VERSION: u32 = 1;
-const SHARD_CONTRACT_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 1;
+pub const SHARD_CONTRACT_VERSION: u32 = 1;
 const SHARD_INSTANCE_PREFIX: &str = "cinatoken-relay-shard-v1";
 const MAX_OPERATION_ID_BYTES: usize = 128;
 const MAX_OPERATION_KIND_BYTES: usize = 64;
@@ -73,8 +73,13 @@ async fn healthz() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
-async fn readyz() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ready" })
+async fn readyz() -> Json<ReadinessResponse> {
+    Json(ReadinessResponse {
+        status: "ready",
+        protocol_version: PROTOCOL_VERSION,
+        shard_contract_version: SHARD_CONTRACT_VERSION,
+        execution_enabled: false,
+    })
 }
 
 async fn operations(headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Response {
@@ -180,6 +185,14 @@ fn error_response(status: StatusCode, code: &'static str, message: &'static str)
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct ReadinessResponse {
+    status: &'static str,
+    protocol_version: u32,
+    shard_contract_version: u32,
+    execution_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]

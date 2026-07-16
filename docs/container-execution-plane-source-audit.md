@@ -151,7 +151,8 @@ digest. Routing-key HMAC and controller authority use separate secrets.
 - No actual Docker/Container process has run on this host.
 - The native runtime accepts only `health_probe`; provider execution remains
   fail-closed.
-- A status probe does not yet wake a canary shard or prove `/readyz`.
+- The targeted signed probe exists locally, but no deployed canary shard has
+  been woken and no remote `/readyz` evidence exists.
 - Operation replay stores terminal state, not the original response body.
 - Streaming and responses over 64 KiB are unsupported by the Container
   transport.
@@ -160,3 +161,24 @@ digest. Routing-key HMAC and controller authority use separate secrets.
   domain cutover, and rollback evidence remain absent.
 
 No Cloudflare secret was used or persisted by this audit.
+
+## Targeted Readiness Audit Closure
+
+The implementation now applies the retained source patterns with stricter
+authority boundaries: deterministic named DO ownership, a short readiness
+request separate from business execution, persisted lifecycle evidence, and
+graceful stop. It rejects log-derived health, mutable modulo pools, public
+runner URLs, in-memory-only recovery, and Container disk as truth.
+
+The probe cannot authenticate users, select channels, read provider
+credentials, reserve or settle quota, issue provider retries, or mutate global
+business D1 state. Ledger inspection is non-waking; live inspection is
+separately confirmed and gated. Persistent dispatch replay, probe generation,
+deadline, cooldown, and completion CAS bound duplicate and late results.
+
+Two audited constraints remain explicit production blockers. First, the
+runtime/Controller protocol is exact v1 rather than proven N/N-1 compatible.
+Second, local Workerd tests exercise the production SQLite ledger but not the
+actual Cloudflare Container process or lifecycle callbacks. Those gaps must be
+closed by Controller-first staging rollout and mixed-version/lifecycle fault
+evidence before any operation route can use the execution plane.

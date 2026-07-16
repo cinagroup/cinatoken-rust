@@ -1580,3 +1580,29 @@ eviction, linux/amd64 build/SBOM/sign/scan, Container lifecycle faults,
 D1/KV/R2 contracts, provider deny/allow/injection negatives, and N/N-1 rollout.
 No relay or Task route may use the binding before those pass. Production
 remains **NO-GO**.
+
+## 2026-07-16 Phase 1 Targeted Container Readiness Gate
+
+- The admin-only edge route accepts only a canonical shard index, active ring
+  generation, explicit wake choice, and matching confirmation. It signs a
+  bounded private POST; callers cannot provide an instance name or authority
+  material.
+- Ledger inspection is enabled separately from wake. Ledger mode does not call
+  `getState` or `containerFetch`, does not extend Container activity, and never
+  claims readiness.
+- Live mode persists one-time dispatch and generation state before Container
+  I/O. It separates process readiness from execution readiness and requires
+  healthy state, exact runtime contract, execution gates, non-draining
+  lifecycle, and capacity before top-level ready can become true.
+- Draining now rejects new operation claims. Ring generation may advance for a
+  readiness probe only when the old generation has zero in-flight operations.
+- `CONTAINER_SHARD_READINESS_PROBE_ENABLED`,
+  `CONTAINER_SHARD_READINESS_WAKE_ENABLED`, and
+  `CONTAINER_SHARD_READINESS_STAGING_VERIFIED` are false in every edge scope;
+  both Controller readiness switches are also false.
+
+Next is Controller-first isolated staging deployment with shallow status
+readback first, ledger-only inspection second, and one explicitly approved
+cold/warm shard probe third. N/N-1, real lifecycle/fault, image supply-chain,
+storage/provider/billing, load/cost, rollback, and approval evidence remain
+hard blockers. Production remains **NO-GO**.

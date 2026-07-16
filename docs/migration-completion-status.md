@@ -978,3 +978,19 @@ provisioned, and no remote deployment is claimed. D1/KV/R2 Controller
 operations, provider egress and credential injection, provider idempotency,
 image supply-chain evidence, fault/load/cost evidence, and C1-C5 promotion
 remain open. Go/VPS stays authoritative and production remains **NO-GO**.
+
+## 2026-07-16 Targeted Container Readiness Status
+
+Local code now includes an admin-only targeted shard readiness route, signed
+private edge-to-Controller POST, non-waking ledger mode, separately gated live
+mode, strict runtime response, process/execution readiness split, persistent
+dispatch replay, generation/deadline/cooldown/result state, stale-completion
+CAS, draining admission rejection, and zero-in-flight ring advancement.
+
+Strict TypeScript, portable protocol, Rust authority/response, native runtime
+HTTP, and thirteen Workerd/SQLite scenarios pass locally. Every read, wake,
+execution, scheduler, and staging marker remains false. The local tests do not
+instantiate a real Cloudflare Container or prove Docker, lifecycle callbacks,
+N/N-1 rollout, remote storage, provider/billing behavior, image provenance,
+load/cost, canary, or rollback. No deployment or secret operation occurred.
+Go/VPS remains authoritative and production remains **NO-GO**.

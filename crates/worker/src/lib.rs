@@ -191,6 +191,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             platform_gateway::capabilities(req, ctx.env).await
         })
         .post_async(
+            "/api/platform/container/shards/readiness",
+            |req, ctx| async move {
+                platform_gateway::container_shard_readiness(req, ctx.env).await
+            },
+        )
+        .post_async(
             "/api/platform/quota-coordinator/reconciliation",
             |req, ctx| async move {
                 quota_coordinator::quota_coordinator_reconciliation(req, ctx.env).await
@@ -2240,6 +2246,7 @@ mod tests {
             "/api/status",
             "/api/setup",
             "/api/platform/capabilities",
+            "/api/platform/container/shards/readiness",
             "/api/platform/quota-coordinator/reconciliation",
             "/api/platform/relay-billing/ledger/status",
             "/api/platform/task-runner/task-smoke/status",

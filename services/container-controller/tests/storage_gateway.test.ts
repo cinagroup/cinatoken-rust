@@ -52,6 +52,7 @@ function resultGrant(overrides: Partial<R2ResultPutGrant> = {}): R2ResultPutGran
     owner_generation: 7,
     provider_operation_id: "provider-op-123",
     admission_sha256: "b".repeat(64),
+    attempt_generation: null,
     sha256: resultSha256,
     size: inputBytes.byteLength,
     content_type: "application/json",
@@ -205,11 +206,14 @@ function r2Object(options: R2ObjectOptions): R2ObjectBody {
 
 function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
   return {
-    gateway_version: "1",
+    gateway_version: grant.attempt_generation === null ? "1" : "2",
     operation_id: grant.operation_id,
     owner_generation: String(grant.owner_generation),
     provider_operation_id: grant.provider_operation_id,
     admission_sha256: grant.admission_sha256,
+    ...(grant.attempt_generation === null
+      ? {}
+      : { attempt_generation: String(grant.attempt_generation) }),
     sha256: grant.sha256,
     size: String(grant.size),
     content_type: grant.content_type,
@@ -428,6 +432,40 @@ describe("container storage gateway", () => {
     expect((calls[0]?.options.onlyIf as Headers).get("if-none-match")).toBe("*");
     expect(calls[0]?.options.httpMetadata).toEqual({ contentType: grant.content_type });
     expect(calls[0]?.options.customMetadata).toEqual(metadata);
+  });
+
+  test("fences a journaled R2 result with provider-attempt metadata", async () => {
+    const grant = resultGrant({ attempt_generation: 1 });
+    let customMetadata: Record<string, string> | undefined;
+    const bucket = {
+      async put(key: string, _value: unknown, options: R2PutOptions) {
+        customMetadata = options.customMetadata;
+        return r2Object({
+          key,
+          version: "result-version-attempt-1",
+          size: grant.size,
+          contentType: grant.content_type,
+          sha256: grant.sha256,
+          customMetadata: resultMetadata(grant),
+        });
+      },
+      async head() {
+        throw new Error("head must not run after a successful create");
+      },
+    } as unknown as Pick<R2Bucket, "head" | "put">;
+
+    const response = await handleStorageGatewayRequest(
+      enabledEnv({ CONTAINER_STORAGE_RESULT_R2: bucket }),
+      resultRequest(grant),
+      grant,
+    );
+
+    expect(response.status).toBe(201);
+    expect(customMetadata).toEqual({
+      ...resultMetadata(grant),
+      gateway_version: "2",
+      attempt_generation: "1",
+    });
   });
 
   test("treats an identical create-only replay as idempotent", async () => {

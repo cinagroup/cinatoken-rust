@@ -14187,3 +14187,84 @@ enforcement remain open. All eight Container cutover gates remain false. No
 remote migration, deployment, provider call, object mutation, financial
 mutation, or traffic switch occurred. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.234 Default-Off Durable Provider Attempt Journal (2026-07-17)
+
+This increment establishes the local provider-attempt correctness boundary
+without enabling a provider call or a retry. The source audit was refreshed at
+Go cinaToken commit `73652508` and cinaVibeSDK commit `918e9748`. It retains
+Go's model/group/channel selection, credential policy, pre-reservation, and
+usage-settlement semantics, while rejecting request-local channel rotation
+after an ambiguous transport result. It retains cinaVibeSDK's deterministic
+named Durable Object and persisted phase checkpoint ideas, while rejecting
+Promise locks, `Promise.race` timeout retry, interval ownership, local-disk
+metadata authority, modulo sharding, and swallowed cleanup failures.
+
+The shard Durable Object is now the only component that may create an attempt.
+After the recovery schedule has been durably registered, one SQLite
+transaction changes `claimed -> running`, freezes retry policy version 1 and
+deadline, creates attempt generation 1 as `prepared`, and appends immutable
+event 1. The Container-facing virtual host has dispatch and terminal routes
+only; it has no prepare or retry route. Dispatch is one-shot: only
+`prepared -> dispatched` returns `send_authorized=true`; every replay returns
+the persisted row with false authority. Durable Object writes are committed
+before the RPC response in accordance with Cloudflare's documented
+[Durable Object output gate](https://developers.cloudflare.com/durable-objects/reference/glossary/#output-gate)
+and [SQLite storage](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)
+contracts.
+
+The local journal consists of three DO SQLite structures:
+
+1. an immutable-identity attempt projection with generations 1 through 3 and
+   legal transitions `prepared -> dispatched|cancelled` and
+   `dispatched -> succeeded|definite_reject|ambiguous`;
+2. an append-only event ledger whose initial and transition events cannot be
+   updated or deleted; and
+3. a frozen retry-policy row with active/waiting/terminal state, generation,
+   next-attempt time, deadline, and future global-terminal acknowledgement
+   fields.
+
+Only a definite rejection can make an internally tested later generation due.
+Ambiguous execution immediately moves the operation to `recovery_required`.
+A prepared attempt that reaches its deadline is provably unsent and becomes
+`cancelled` plus operation `failed`; a dispatched attempt at deadline becomes
+`ambiguous` plus operation `recovery_required`. A succeeded attempt requires
+an exact result already attached to the operation, while a definite rejection
+forbids a result. Operation and attempt states and result manifests are checked
+again in both the TypeScript v2 serializer and Rust parser.
+
+The existing `/internal/v1/operations/status` response remains byte-shape
+compatible and never gains an unknown field. A separately signed
+`/internal/v2/operations/status` returns the latest attempt snapshot. The new
+Rust Worker calls v2 first and falls back to v1 only for exact
+`route_not_found`, which provides new-Worker/old-Controller compatibility;
+old Workers continue to call unchanged v1. R2 result metadata remains schema 1
+for legacy operations and becomes schema 2 with the exact attempt generation
+for journaled operations. The Container must present the same generation, and
+the DO attaches the manifest only while that exact attempt is dispatched.
+
+All three tracked Controller environments keep:
+
+- `CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED=false`;
+- `CONTAINER_PROVIDER_RETRY_ENABLED=false`;
+- `CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED=false`; and
+- `CONTAINER_MAX_PROVIDER_ATTEMPTS=1`.
+
+The runtime additionally rejects every retry-enabled or max-attempts-above-one
+configuration even if an operator changes environment values. The staging
+verification flag is reserved and currently grants no authority. This is
+intentional because the atomic provider Service Binding egress broker, DO-owned
+retry scheduler, attempt-aware multi-generation R2 key/manifest contract,
+global D1 terminal acknowledgement, actual Linux Container client, and remote
+fault evidence do not exist yet. Cloudflare
+[Service Bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/)
+remain the planned private provider-broker transport; direct Container internet
+access stays disabled.
+
+No D1 migration was consumed: 0046 remains reserved for the previously planned
+legacy identity/event enforcement after old-writer drain. Journaled terminal
+operations are not compacted while global acknowledgement is absent, so a
+premature staging enablement would eventually apply bounded backpressure
+rather than discard evidence. No remote migration, deployment, provider call,
+R2 mutation, financial mutation, or traffic switch occurred. Go/VPS remains
+authoritative and production remains **NO-GO**.

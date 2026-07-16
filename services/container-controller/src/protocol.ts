@@ -2,6 +2,7 @@ const AUTHORITY_DOMAIN = "cinatoken-container-authority:v1\0";
 export const AUTHORITY_HEADER = "x-cinatoken-container-authority";
 export const INTERNAL_OPERATION_PATH = "/internal/v1/operations";
 export const INTERNAL_OPERATION_STATUS_PATH = "/internal/v1/operations/status";
+export const INTERNAL_OPERATION_STATUS_V2_PATH = "/internal/v2/operations/status";
 export const INTERNAL_READINESS_PATH = "/internal/v1/shards/readiness";
 export const INTERNAL_STATUS_PATH = "/internal/v1/status";
 export const MAX_OPERATION_BODY_BYTES = 64 * 1024;
@@ -150,9 +151,36 @@ export async function verifyOperationStatusRequest(
   env: AuthorityEnvironment,
   now = Math.floor(Date.now() / 1000),
 ): Promise<VerifiedOperationStatusQuery> {
+  return verifyOperationStatusRequestForPath(
+    request,
+    env,
+    INTERNAL_OPERATION_STATUS_PATH,
+    now,
+  );
+}
+
+export async function verifyOperationStatusV2Request(
+  request: Request,
+  env: AuthorityEnvironment,
+  now = Math.floor(Date.now() / 1000),
+): Promise<VerifiedOperationStatusQuery> {
+  return verifyOperationStatusRequestForPath(
+    request,
+    env,
+    INTERNAL_OPERATION_STATUS_V2_PATH,
+    now,
+  );
+}
+
+async function verifyOperationStatusRequestForPath(
+  request: Request,
+  env: AuthorityEnvironment,
+  path: string,
+  now: number,
+): Promise<VerifiedOperationStatusQuery> {
   if (
     request.method !== "POST" ||
-    new URL(request.url).pathname !== INTERNAL_OPERATION_STATUS_PATH
+    new URL(request.url).pathname !== path
   ) {
     throw new ProtocolError("route_not_found", 404);
   }
@@ -166,7 +194,7 @@ export async function verifyOperationStatusRequest(
   const claims = await verifyAuthority(
     requiredAuthority(request),
     request.method,
-    INTERNAL_OPERATION_STATUS_PATH,
+    path,
     body,
     env,
     now,

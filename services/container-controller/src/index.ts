@@ -4,6 +4,10 @@ import {
   RelayShardLedger,
   operationStorageResult,
   type OperationRow,
+  type DispatchProviderAttemptOutcome,
+  type ProviderAttemptTerminal,
+  type ProviderRetryPolicy,
+  type RecordProviderAttemptOutcome,
   type RecordStorageResultOutcome,
   type RelayShardLedgerPolicy,
   type StorageAccessGrant,
@@ -13,6 +17,7 @@ import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
   INTERNAL_OPERATION_STATUS_PATH,
+  INTERNAL_OPERATION_STATUS_V2_PATH,
   INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
   MAX_OPERATION_BODY_BYTES,
@@ -32,13 +37,20 @@ import {
 } from "./operation_outcome";
 import {
   handleOperationStatusRequest,
+  handleOperationStatusV2Request,
   type ShardOperationStatusRpcResult,
+  type ShardOperationStatusV2RpcResult,
 } from "./operation_status";
+import {
+  PROVIDER_ATTEMPT_HOST,
+  handleProviderAttemptGatewayRequest,
+} from "./provider_attempt_gateway";
 import {
   CONTENT_SHA256_HEADER,
   D1_ADMISSION_HOST,
   KV_CONFIG_HOST,
   MAX_R2_OBJECT_BYTES,
+  PROVIDER_ATTEMPT_GENERATION_HEADER,
   R2_INPUT_HOST,
   R2_OBJECT_VERSION_HEADER,
   R2_RESULT_HOST,
@@ -63,6 +75,10 @@ interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
   CONTAINER_STORAGE_R2_WRITE_ENABLED: string;
   CONTAINER_STORAGE_KV_READ_ENABLED: string;
   CONTAINER_STORAGE_D1_READ_ENABLED: string;
+  CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED: string;
+  CONTAINER_PROVIDER_RETRY_ENABLED: string;
+  CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED: string;
+  CONTAINER_MAX_PROVIDER_ATTEMPTS: string;
   CONTAINER_MAX_IN_FLIGHT_PER_SHARD: string;
   CONTAINER_TERMINAL_RETENTION_SECONDS: string;
   CONTAINER_MAX_TERMINAL_OPERATIONS: string;
@@ -128,7 +144,18 @@ export type ShardStorageResultRpcResult =
   | { ok: true; result: RecordStorageResultOutcome }
   | { ok: false; error: { code: string; status: number } };
 
-export type { ShardOperationStatusRpcResult } from "./operation_status";
+export type ShardDispatchProviderAttemptRpcResult =
+  | { ok: true; result: DispatchProviderAttemptOutcome }
+  | { ok: false; error: { code: string; status: number } };
+
+export type ShardRecordProviderAttemptRpcResult =
+  | { ok: true; result: RecordProviderAttemptOutcome }
+  | { ok: false; error: { code: string; status: number } };
+
+export type {
+  ShardOperationStatusRpcResult,
+  ShardOperationStatusV2RpcResult,
+} from "./operation_status";
 
 export class RelayShardContainer extends Container<ControllerEnv> {
   override defaultPort = 8080;
@@ -143,6 +170,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     R2_RESULT_HOST,
     KV_CONFIG_HOST,
     D1_ADMISSION_HOST,
+    PROVIDER_ATTEMPT_HOST,
   ];
   override pingEndpoint = "/healthz";
 
@@ -161,6 +189,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           operationId,
           ownerGeneration,
           Math.floor(Date.now() / 1000),
+          this.env.CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED === "true",
         ),
       };
     } catch (error) {
@@ -175,6 +204,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     operationId: string,
     ownerGeneration: number,
     result: StorageResultRecord,
+    providerAttemptGeneration?: number,
   ): Promise<ShardStorageResultRpcResult> {
     try {
       return {
@@ -184,6 +214,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           ownerGeneration,
           result,
           Math.floor(Date.now() / 1000),
+          providerAttemptGeneration,
         ),
       };
     } catch (error) {
@@ -194,11 +225,78 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     }
   }
 
+  async dispatchProviderAttempt(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+  ): Promise<ShardDispatchProviderAttemptRpcResult> {
+    if (this.env.CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED !== "true") {
+      return {
+        ok: false,
+        error: { code: "provider_attempt_journal_disabled", status: 503 },
+      };
+    }
+    try {
+      return {
+        ok: true,
+        result: this.ledger.dispatchProviderAttempt(
+          operationId,
+          ownerGeneration,
+          attemptGeneration,
+          Math.floor(Date.now() / 1000),
+        ),
+      };
+    } catch (error) {
+      return providerAttemptRpcError(error);
+    }
+  }
+
+  async recordProviderAttemptOutcome(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    terminal: ProviderAttemptTerminal,
+  ): Promise<ShardRecordProviderAttemptRpcResult> {
+    if (this.env.CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED !== "true") {
+      return {
+        ok: false,
+        error: { code: "provider_attempt_journal_disabled", status: 503 },
+      };
+    }
+    try {
+      return {
+        ok: true,
+        result: this.ledger.recordProviderAttemptOutcome(
+          operationId,
+          ownerGeneration,
+          attemptGeneration,
+          terminal,
+          Math.floor(Date.now() / 1000),
+        ),
+      };
+    } catch (error) {
+      return providerAttemptRpcError(error);
+    }
+  }
+
   async readOperationStatus(
     query: OperationStatusQuery,
   ): Promise<ShardOperationStatusRpcResult> {
     try {
       return { ok: true, row: this.ledger.readOperationStatus(query) };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return { ok: false, error: { code: "operation_status_unavailable", status: 503 } };
+    }
+  }
+
+  async readOperationStatusV2(
+    query: OperationStatusQuery,
+  ): Promise<ShardOperationStatusV2RpcResult> {
+    try {
+      return { ok: true, snapshot: this.ledger.readOperationStatusSnapshot(query) };
     } catch (error) {
       if (error instanceof ProtocolError) {
         return { ok: false, error: { code: error.code, status: error.status } };
@@ -440,15 +538,25 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         );
         return operationOutcomeResponse(outcome);
       }
-      const started = this.ledger.transitionOperation(
-        verified.envelope.operation_id,
-        verified.envelope.owner_generation,
-        "claimed",
-        "running",
-        null,
-        now,
-        true,
-      );
+      const providerAttemptJournalEnabled =
+        this.env.CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED === "true" &&
+        verified.envelope.operation_kind !== "health_probe";
+      const started = providerAttemptJournalEnabled
+        ? this.ledger.startOperationWithProviderAttempt(
+            verified.envelope.operation_id,
+            verified.envelope.owner_generation,
+            controllerProviderRetryPolicy(this.env),
+            now,
+          ).kind === "prepared"
+        : this.ledger.transitionOperation(
+            verified.envelope.operation_id,
+            verified.envelope.owner_generation,
+            "claimed",
+            "running",
+            null,
+            now,
+            true,
+          );
       if (!started) {
         this.ledger.expireOperation(
           verified.envelope.operation_id,
@@ -545,6 +653,7 @@ RelayShardContainer.outboundByHost = {
   [R2_RESULT_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.R2_RESULT_PUT),
   [KV_CONFIG_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET),
   [D1_ADMISSION_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET),
+  [PROVIDER_ATTEMPT_HOST]: providerAttemptOutboundHandler,
 };
 
 const handler: ExportedHandler<ControllerEnv> = {
@@ -553,6 +662,9 @@ const handler: ExportedHandler<ControllerEnv> = {
       const path = new URL(request.url).pathname;
       if (path === INTERNAL_OPERATION_STATUS_PATH) {
         return handleOperationStatusRequest(request, env);
+      }
+      if (path === INTERNAL_OPERATION_STATUS_V2_PATH) {
+        return handleOperationStatusV2Request(request, env);
       }
       if (path === INTERNAL_STATUS_PATH) {
         await verifyStatusRequest(request, env);
@@ -708,6 +820,30 @@ function finalizeOperationOutcome(
 const STORAGE_OPERATION_ID_HEADER = "x-cinatoken-operation-id";
 const STORAGE_OWNER_GENERATION_HEADER = "x-cinatoken-owner-generation";
 
+async function providerAttemptOutboundHandler(
+  request: Request,
+  env: Cloudflare.Env,
+  context: { containerId: string },
+): Promise<Response> {
+  if (String(env.CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED) !== "true") {
+    await cancelRequestBody(request);
+    return jsonError("provider_attempt_journal_disabled", 503);
+  }
+  const identity = storageOperationIdentity(request);
+  if (identity === null) {
+    await cancelRequestBody(request);
+    return jsonError("provider_attempt_access_denied", 403);
+  }
+  let id: DurableObjectId;
+  try {
+    id = env.RELAY_SHARDS.idFromString(context.containerId);
+  } catch {
+    await cancelRequestBody(request);
+    return jsonError("provider_attempt_access_denied", 403);
+  }
+  return handleProviderAttemptGatewayRequest(request, env.RELAY_SHARDS.get(id), identity);
+}
+
 function storageOutboundHandler(action: StorageGatewayAction) {
   return async (
     request: Request,
@@ -806,6 +942,18 @@ function gatewayStorageGrant(
           }
         : null;
     case STORAGE_GATEWAY_ACTIONS.R2_RESULT_PUT: {
+      const attemptGeneration = grant.provider_attempt?.attempt_generation ?? null;
+      if (grant.provider_attempt !== null) {
+        const requestedGeneration = request.headers.get(PROVIDER_ATTEMPT_GENERATION_HEADER);
+        if (
+          grant.provider_attempt.status !== "dispatched" ||
+          requestedGeneration === null ||
+          !/^[1-9]\d{0,2}$/.test(requestedGeneration) ||
+          Number(requestedGeneration) !== attemptGeneration
+        ) {
+          return null;
+        }
+      }
       if (grant.result !== null) {
         return {
           action,
@@ -813,6 +961,7 @@ function gatewayStorageGrant(
           owner_generation: grant.owner_generation,
           provider_operation_id: grant.provider_operation_id,
           admission_sha256: grant.admission_sha256,
+          attempt_generation: attemptGeneration,
           sha256: grant.result.sha256,
           size: grant.result.size,
           content_type: grant.result.content_type,
@@ -838,6 +987,7 @@ function gatewayStorageGrant(
         owner_generation: grant.owner_generation,
         provider_operation_id: grant.provider_operation_id,
         admission_sha256: grant.admission_sha256,
+        attempt_generation: attemptGeneration,
         sha256,
         size,
         content_type: contentType,
@@ -939,7 +1089,7 @@ async function persistStorageResultResponse(
     sha256: grant.sha256,
     size: grant.size,
     content_type: grant.content_type,
-  });
+  }, grant.attempt_generation ?? undefined);
   if (!persisted.ok) return jsonError(persisted.error.code, persisted.error.status);
   headers.set("content-length", String(body.byteLength));
   return new Response(body, { status, headers });
@@ -948,6 +1098,15 @@ async function persistStorageResultResponse(
 async function cancelRequestBody(request: Request): Promise<void> {
   if (request.body === null || request.bodyUsed) return;
   await request.body.cancel("storage_request_rejected").catch(() => undefined);
+}
+
+function providerAttemptRpcError(
+  error: unknown,
+): { ok: false; error: { code: string; status: number } } {
+  if (error instanceof ProtocolError) {
+    return { ok: false, error: { code: error.code, status: error.status } };
+  }
+  return { ok: false, error: { code: "provider_attempt_unavailable", status: 503 } };
 }
 
 function protocolErrorResponse(error: unknown): Response {
@@ -980,6 +1139,18 @@ function controllerLedgerPolicy(env: ControllerRuntimeEnvironment): RelayShardLe
     ),
     maxTerminalOperations: configuredInteger(env.CONTAINER_MAX_TERMINAL_OPERATIONS, 1, 1_000_000),
   };
+}
+
+function controllerProviderRetryPolicy(
+  env: ControllerRuntimeEnvironment,
+): ProviderRetryPolicy {
+  const maxAttempts = configuredInteger(env.CONTAINER_MAX_PROVIDER_ATTEMPTS, 1, 3);
+  const retryEnabled = env.CONTAINER_PROVIDER_RETRY_ENABLED === "true";
+  // The DO retry scheduler and atomic provider egress broker are not live yet.
+  if (retryEnabled || maxAttempts !== 1) {
+    throw new ProtocolError("controller_misconfigured", 503);
+  }
+  return { maxAttempts, retryEnabled };
 }
 
 function copyArrayBuffer(bytes: Uint8Array): ArrayBuffer {

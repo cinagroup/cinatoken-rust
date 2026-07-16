@@ -13,6 +13,9 @@ const storageGatewaySource = await Bun.file(
 const operationStatusSource = await Bun.file(
   new URL("../services/container-controller/src/operation_status.ts", import.meta.url),
 ).text();
+const providerAttemptGatewaySource = await Bun.file(
+  new URL("../services/container-controller/src/provider_attempt_gateway.ts", import.meta.url),
+).text();
 const configFiles = [
   "wrangler.jsonc",
   "wrangler.staging.jsonc",
@@ -36,6 +39,10 @@ describe("isolated container controller configuration", () => {
       expect(config.vars.CONTAINER_STORAGE_R2_WRITE_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_STORAGE_KV_READ_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_STORAGE_D1_READ_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_PROVIDER_RETRY_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED).toBe("false");
+      expect(config.vars.CONTAINER_MAX_PROVIDER_ATTEMPTS).toBe("1");
       expect(Number(config.vars.CONTAINER_TERMINAL_RETENTION_SECONDS)).toBeGreaterThanOrEqual(600);
       expect(Number(config.vars.CONTAINER_MAX_TERMINAL_OPERATIONS)).toBeGreaterThan(0);
       expect(config.vars.CONTAINER_AUTHORITY_CURRENT_SECRET).toBeUndefined();
@@ -85,6 +92,10 @@ describe("isolated container controller configuration", () => {
     expect(controllerSource.indexOf("await requireD1OperationAdmission(")).toBeLessThan(
       controllerSource.indexOf("const claim = this.ledger.claimOperation("),
     );
+    expect(controllerSource).toContain("PROVIDER_ATTEMPT_HOST");
+    expect(providerAttemptGatewaySource).toContain('"provider-attempt.cinatoken.internal"');
+    expect(providerAttemptGatewaySource).not.toContain("prepareProviderAttempt(");
+    expect(controllerSource).toContain("if (retryEnabled || maxAttempts !== 1)");
   });
 
   test("operation status is routed through a ledger-only RPC", () => {

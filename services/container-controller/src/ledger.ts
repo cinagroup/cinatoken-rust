@@ -52,6 +52,10 @@ export interface StorageAccessGrant {
   shard: OperationShard;
   trace_id: string;
   result: StorageResultRecord | null;
+  provider_attempt: {
+    attempt_generation: number;
+    status: ProviderAttemptStatus;
+  } | null;
 }
 
 export interface StorageResultRecord {
@@ -63,6 +67,83 @@ export interface StorageResultRecord {
 }
 
 export type RecordStorageResultOutcome = "recorded" | "duplicate";
+
+export type ProviderAttemptStatus =
+  | "prepared"
+  | "dispatched"
+  | "succeeded"
+  | "definite_reject"
+  | "ambiguous"
+  | "cancelled";
+
+export interface ProviderAttemptRow {
+  [key: string]: SqlStorageValue;
+  operation_id: string;
+  owner_generation: number;
+  attempt_generation: number;
+  provider_operation_id: string;
+  admission_sha256: string;
+  request_sha256: string;
+  status: ProviderAttemptStatus;
+  response_status: number | null;
+  response_code: string | null;
+  result_object_key: string | null;
+  result_object_version: string | null;
+  result_sha256: string | null;
+  result_size: number | null;
+  result_content_type: string | null;
+  prepared_at: number;
+  dispatched_at: number | null;
+  terminal_at: number | null;
+  updated_at: number;
+}
+
+export type PrepareProviderAttemptOutcome =
+  | { kind: "prepared"; row: ProviderAttemptRow }
+  | { kind: "existing"; row: ProviderAttemptRow };
+
+export type DispatchProviderAttemptOutcome =
+  | { kind: "dispatched"; row: ProviderAttemptRow }
+  | { kind: "existing"; row: ProviderAttemptRow };
+
+export type RecordProviderAttemptOutcome =
+  | { kind: "recorded"; row: ProviderAttemptRow }
+  | { kind: "duplicate"; row: ProviderAttemptRow };
+
+export interface ProviderAttemptTerminal {
+  status: "succeeded" | "definite_reject" | "ambiguous";
+  response_status: number;
+  response_code: string | null;
+}
+
+export interface ProviderRetryPolicy {
+  maxAttempts: number;
+  retryEnabled: boolean;
+}
+
+interface ProviderRetryStateRow {
+  [key: string]: SqlStorageValue;
+  operation_id: string;
+  owner_generation: number;
+  policy_version: number;
+  max_attempts: number;
+  retry_enabled: number;
+  state: "active" | "waiting" | "terminal";
+  active_attempt_generation: number | null;
+  last_attempt_generation: number;
+  schedule_generation: number;
+  next_attempt_at: number | null;
+  retry_deadline_at: number;
+  global_terminal_event_id: string | null;
+  global_terminal_acked_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface OperationStatusSnapshot {
+  operation: OperationRow;
+  provider_attempt: ProviderAttemptRow | null;
+}
 
 export type ClaimResult =
   | { kind: "new" }
@@ -249,6 +330,277 @@ export class RelayShardLedger {
       );
       CREATE INDEX IF NOT EXISTS cinatoken_shard_dispatches_created
         ON cinatoken_shard_dispatches(created_at);
+      CREATE TABLE IF NOT EXISTS cinatoken_shard_provider_attempts (
+        operation_id TEXT NOT NULL,
+        owner_generation INTEGER NOT NULL,
+        attempt_generation INTEGER NOT NULL,
+        provider_operation_id TEXT NOT NULL,
+        admission_sha256 TEXT NOT NULL,
+        request_sha256 TEXT NOT NULL,
+        status TEXT NOT NULL,
+        response_status INTEGER,
+        response_code TEXT,
+        result_object_key TEXT,
+        result_object_version TEXT,
+        result_sha256 TEXT,
+        result_size INTEGER,
+        result_content_type TEXT,
+        prepared_at INTEGER NOT NULL,
+        dispatched_at INTEGER,
+        terminal_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (operation_id, owner_generation, attempt_generation),
+        CHECK (length(operation_id) BETWEEN 1 AND 128),
+        CHECK (owner_generation > 0),
+        CHECK (attempt_generation BETWEEN 1 AND 3),
+        CHECK (length(provider_operation_id) BETWEEN 1 AND 128),
+        CHECK (length(admission_sha256) = 64),
+        CHECK (length(request_sha256) = 64),
+        CHECK (status IN ('prepared', 'dispatched', 'succeeded', 'definite_reject', 'ambiguous', 'cancelled')),
+        CHECK (prepared_at > 0 AND updated_at >= prepared_at),
+        CHECK (
+          (status = 'prepared'
+            AND dispatched_at IS NULL AND terminal_at IS NULL
+            AND response_status IS NULL AND response_code IS NULL
+            AND result_object_key IS NULL AND result_object_version IS NULL
+            AND result_sha256 IS NULL AND result_size IS NULL AND result_content_type IS NULL
+            AND updated_at = prepared_at)
+          OR
+          (status = 'dispatched'
+            AND dispatched_at IS NOT NULL AND dispatched_at >= prepared_at
+            AND terminal_at IS NULL AND response_status IS NULL AND response_code IS NULL
+            AND result_object_key IS NULL AND result_object_version IS NULL
+            AND result_sha256 IS NULL AND result_size IS NULL AND result_content_type IS NULL
+            AND updated_at = dispatched_at)
+          OR
+          (status = 'succeeded'
+            AND dispatched_at IS NOT NULL AND terminal_at IS NOT NULL
+            AND terminal_at >= dispatched_at AND updated_at = terminal_at
+            AND response_status BETWEEN 200 AND 299 AND response_code IS NULL
+            AND result_object_key IS NOT NULL AND result_object_version IS NOT NULL
+            AND result_sha256 IS NOT NULL AND result_size IS NOT NULL
+            AND result_content_type IS NOT NULL)
+          OR
+          (status = 'definite_reject'
+            AND dispatched_at IS NOT NULL AND terminal_at IS NOT NULL
+            AND terminal_at >= dispatched_at AND updated_at = terminal_at
+            AND response_status BETWEEN 400 AND 599 AND response_code IS NOT NULL
+            AND result_object_key IS NULL AND result_object_version IS NULL
+            AND result_sha256 IS NULL AND result_size IS NULL AND result_content_type IS NULL)
+          OR
+          (status = 'ambiguous'
+            AND dispatched_at IS NOT NULL AND terminal_at IS NOT NULL
+            AND terminal_at >= dispatched_at AND updated_at = terminal_at
+            AND response_status = 202 AND response_code IS NOT NULL)
+          OR
+          (status = 'cancelled'
+            AND dispatched_at IS NULL AND terminal_at IS NOT NULL
+            AND terminal_at >= prepared_at AND updated_at = terminal_at
+            AND response_status BETWEEN 400 AND 599 AND response_code IS NOT NULL
+            AND result_object_key IS NULL AND result_object_version IS NULL
+            AND result_sha256 IS NULL AND result_size IS NULL AND result_content_type IS NULL)
+        )
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS cinatoken_shard_provider_attempts_active
+        ON cinatoken_shard_provider_attempts(operation_id, owner_generation)
+        WHERE status IN ('prepared', 'dispatched');
+      CREATE INDEX IF NOT EXISTS cinatoken_shard_provider_attempts_latest
+        ON cinatoken_shard_provider_attempts(
+          operation_id,
+          owner_generation,
+          attempt_generation DESC
+        );
+      CREATE TABLE IF NOT EXISTS cinatoken_shard_provider_retry_state (
+        operation_id TEXT NOT NULL,
+        owner_generation INTEGER NOT NULL,
+        policy_version INTEGER NOT NULL,
+        max_attempts INTEGER NOT NULL,
+        retry_enabled INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        active_attempt_generation INTEGER,
+        last_attempt_generation INTEGER NOT NULL,
+        schedule_generation INTEGER NOT NULL,
+        next_attempt_at INTEGER,
+        retry_deadline_at INTEGER NOT NULL,
+        global_terminal_event_id TEXT,
+        global_terminal_acked_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (operation_id, owner_generation),
+        CHECK (policy_version = 1),
+        CHECK (max_attempts BETWEEN 1 AND 3),
+        CHECK (retry_enabled IN (0, 1)),
+        CHECK (retry_enabled = 1 OR max_attempts = 1),
+        CHECK (state IN ('active', 'waiting', 'terminal')),
+        CHECK (last_attempt_generation BETWEEN 1 AND max_attempts),
+        CHECK (schedule_generation >= 0),
+        CHECK (retry_deadline_at > created_at),
+        CHECK (updated_at >= created_at),
+        CHECK (
+          (state = 'active'
+            AND active_attempt_generation = last_attempt_generation
+            AND next_attempt_at IS NULL)
+          OR
+          (state = 'waiting'
+            AND active_attempt_generation IS NULL
+            AND next_attempt_at IS NOT NULL
+            AND next_attempt_at < retry_deadline_at)
+          OR
+          (state = 'terminal'
+            AND active_attempt_generation IS NULL
+            AND next_attempt_at IS NULL)
+        ),
+        CHECK (
+          global_terminal_acked_at IS NULL OR global_terminal_event_id IS NOT NULL
+        )
+      );
+      CREATE TABLE IF NOT EXISTS cinatoken_shard_provider_attempt_events (
+        event_id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL,
+        owner_generation INTEGER NOT NULL,
+        attempt_generation INTEGER NOT NULL,
+        event_sequence INTEGER NOT NULL,
+        from_status TEXT,
+        to_status TEXT NOT NULL,
+        response_status INTEGER,
+        response_code TEXT,
+        observed_at INTEGER NOT NULL,
+        UNIQUE (operation_id, owner_generation, attempt_generation, event_sequence),
+        CHECK (event_sequence BETWEEN 1 AND 4),
+        CHECK (to_status IN ('prepared', 'dispatched', 'succeeded', 'definite_reject', 'ambiguous', 'cancelled')),
+        CHECK (observed_at > 0)
+      );
+      CREATE INDEX IF NOT EXISTS cinatoken_shard_provider_attempt_events_operation
+        ON cinatoken_shard_provider_attempt_events(
+          operation_id,
+          owner_generation,
+          attempt_generation,
+          event_sequence
+        );
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_attempt_event_update_guard
+      BEFORE UPDATE ON cinatoken_shard_provider_attempt_events
+      FOR EACH ROW
+      BEGIN
+        SELECT RAISE(ABORT, 'provider attempt event is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_attempt_event_delete_guard
+      BEFORE DELETE ON cinatoken_shard_provider_attempt_events
+      FOR EACH ROW
+      BEGIN
+        SELECT RAISE(ABORT, 'provider attempt event is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_retry_policy_guard
+      BEFORE UPDATE ON cinatoken_shard_provider_retry_state
+      FOR EACH ROW
+      WHEN
+        NEW.operation_id IS NOT OLD.operation_id OR
+        NEW.owner_generation IS NOT OLD.owner_generation OR
+        NEW.policy_version IS NOT OLD.policy_version OR
+        NEW.max_attempts IS NOT OLD.max_attempts OR
+        NEW.retry_enabled IS NOT OLD.retry_enabled OR
+        NEW.retry_deadline_at IS NOT OLD.retry_deadline_at OR
+        NEW.created_at IS NOT OLD.created_at
+      BEGIN
+        SELECT RAISE(ABORT, 'provider retry policy is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_attempt_insert_guard
+      BEFORE INSERT ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      BEGIN
+        SELECT CASE WHEN NOT EXISTS (
+          SELECT 1
+            FROM cinatoken_shard_operations AS operation
+           WHERE operation.operation_id = NEW.operation_id
+             AND operation.owner_generation = NEW.owner_generation
+             AND operation.provider_operation_id = NEW.provider_operation_id
+             AND operation.admission_sha256 = NEW.admission_sha256
+             AND operation.input_sha256 = NEW.request_sha256
+             AND operation.operation_kind != 'health_probe'
+             AND operation.status = 'running'
+             AND operation.deadline_at > NEW.prepared_at
+             AND operation.owner_lease_expires_at > NEW.prepared_at
+        ) THEN RAISE(ABORT, 'provider attempt operation authority mismatch') END;
+        SELECT CASE WHEN NEW.attempt_generation != COALESCE((
+          SELECT MAX(existing.attempt_generation) + 1
+            FROM cinatoken_shard_provider_attempts AS existing
+           WHERE existing.operation_id = NEW.operation_id
+             AND existing.owner_generation = NEW.owner_generation
+        ), 1) THEN RAISE(ABORT, 'provider attempt generation mismatch') END;
+        SELECT CASE WHEN NEW.attempt_generation > 1 AND NOT EXISTS (
+          SELECT 1
+            FROM cinatoken_shard_provider_attempts AS previous
+           WHERE previous.operation_id = NEW.operation_id
+             AND previous.owner_generation = NEW.owner_generation
+             AND previous.attempt_generation = NEW.attempt_generation - 1
+             AND previous.status = 'definite_reject'
+        ) THEN RAISE(ABORT, 'provider attempt retry authority mismatch') END;
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_attempt_identity_guard
+      BEFORE UPDATE ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      WHEN
+        NEW.operation_id IS NOT OLD.operation_id OR
+        NEW.owner_generation IS NOT OLD.owner_generation OR
+        NEW.attempt_generation IS NOT OLD.attempt_generation OR
+        NEW.provider_operation_id IS NOT OLD.provider_operation_id OR
+        NEW.admission_sha256 IS NOT OLD.admission_sha256 OR
+        NEW.request_sha256 IS NOT OLD.request_sha256 OR
+        NEW.prepared_at IS NOT OLD.prepared_at
+      BEGIN
+        SELECT RAISE(ABORT, 'provider attempt identity is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_attempt_lifecycle_guard
+      BEFORE UPDATE ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      WHEN NOT (
+        (OLD.status = 'prepared' AND NEW.status IN ('dispatched', 'cancelled')) OR
+        (OLD.status = 'dispatched'
+          AND NEW.status IN ('succeeded', 'definite_reject', 'ambiguous'))
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'provider attempt lifecycle transition is invalid');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_attempt_event_append
+      AFTER UPDATE ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      BEGIN
+        INSERT INTO cinatoken_shard_provider_attempt_events
+          (event_id, operation_id, owner_generation, attempt_generation, event_sequence,
+           from_status, to_status, response_status, response_code, observed_at)
+        VALUES (
+          'provider-attempt-v1:' || NEW.operation_id || ':' || NEW.owner_generation || ':' ||
+            NEW.attempt_generation || ':' ||
+            CASE WHEN OLD.status = 'prepared' THEN 2 ELSE 3 END,
+          NEW.operation_id,
+          NEW.owner_generation,
+          NEW.attempt_generation,
+          CASE WHEN OLD.status = 'prepared' THEN 2 ELSE 3 END,
+          OLD.status,
+          NEW.status,
+          NEW.response_status,
+          NEW.response_code,
+          NEW.updated_at
+        );
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_attempt_delete_guard
+      BEFORE DELETE ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1 FROM cinatoken_shard_operations AS operation
+         WHERE operation.operation_id = OLD.operation_id
+           AND operation.owner_generation = OLD.owner_generation
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'provider attempt cannot be deleted before its operation');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_operation_attempt_cleanup
+      AFTER DELETE ON cinatoken_shard_operations
+      FOR EACH ROW
+      BEGIN
+        DELETE FROM cinatoken_shard_provider_attempts
+         WHERE operation_id = OLD.operation_id
+           AND owner_generation = OLD.owner_generation;
+      END;
       CREATE TABLE IF NOT EXISTS cinatoken_shard_readiness (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         probe_generation INTEGER NOT NULL,
@@ -286,6 +638,7 @@ export class RelayShardLedger {
     operationId: string,
     ownerGeneration: number,
     now: number,
+    requireProviderAttempt = false,
   ): StorageAccessGrant {
     this.ensureSchema();
     if (
@@ -351,7 +704,11 @@ export class RelayShardLedger {
     ) {
       throw new ProtocolError("storage_access_denied", 403);
     }
-    return storageGrant(row);
+    const providerAttempt = this.readLatestProviderAttempt(operationId, ownerGeneration);
+    if (requireProviderAttempt && providerAttempt === null) {
+      throw new ProtocolError("provider_attempt_required", 409);
+    }
+    return storageGrant(row, providerAttempt);
   }
 
   recordStorageResult(
@@ -359,6 +716,7 @@ export class RelayShardLedger {
     ownerGeneration: number,
     result: StorageResultRecord,
     now: number,
+    providerAttemptGeneration?: number,
   ): RecordStorageResultOutcome {
     this.ensureSchema();
     validateStorageResult(result);
@@ -369,7 +727,27 @@ export class RelayShardLedger {
       throw new ProtocolError("invalid_storage_result", 400);
     }
     return this.storage.transactionSync(() => {
-      const grant = this.authorizeStorageAccess(operationId, ownerGeneration, now);
+      if (
+        providerAttemptGeneration !== undefined &&
+        (!Number.isSafeInteger(providerAttemptGeneration) ||
+          providerAttemptGeneration < 1 ||
+          providerAttemptGeneration > 3)
+      ) {
+        throw new ProtocolError("invalid_provider_attempt", 400);
+      }
+      const grant = this.authorizeStorageAccess(
+        operationId,
+        ownerGeneration,
+        now,
+        providerAttemptGeneration !== undefined,
+      );
+      if (
+        providerAttemptGeneration !== undefined &&
+        (grant.provider_attempt?.attempt_generation !== providerAttemptGeneration ||
+          grant.provider_attempt.status !== "dispatched")
+      ) {
+        throw new ProtocolError("provider_attempt_result_conflict", 409);
+      }
       if (grant.result !== null) {
         if (storageResultMatches(grant.result, result)) return "duplicate";
         throw new ProtocolError("storage_result_conflict", 409);
@@ -395,7 +773,7 @@ export class RelayShardLedger {
           current !== null &&
           current.owner_generation === ownerGeneration &&
           current.result_object_key !== null &&
-          storageResultMatches(storageGrant(current).result, result)
+          storageResultMatches(operationStorageResult(current), result)
         ) {
           return "duplicate";
         }
@@ -444,6 +822,298 @@ export class RelayShardLedger {
     return row;
   }
 
+  readOperationStatusSnapshot(queryValue: unknown): OperationStatusSnapshot {
+    const operation = this.readOperationStatus(queryValue);
+    return {
+      operation,
+      provider_attempt: this.readLatestProviderAttempt(
+        operation.operation_id,
+        operation.owner_generation,
+      ),
+    };
+  }
+
+  prepareProviderAttempt(
+    operationId: string,
+    ownerGeneration: number,
+    maxAttempts: number,
+    now: number,
+  ): PrepareProviderAttemptOutcome {
+    this.ensureSchema();
+    validateProviderAttemptCommand(operationId, ownerGeneration, now);
+    if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) {
+      throw new ProtocolError("controller_misconfigured", 503);
+    }
+    return this.storage.transactionSync(() => {
+      const operation = this.readStorageOperation(operationId);
+      if (
+        operation === null ||
+        operation.owner_generation !== ownerGeneration ||
+        operation.operation_kind === "health_probe" ||
+        operation.status !== "running" ||
+        operation.deadline_at <= now ||
+        operation.owner_lease_expires_at <= now
+      ) {
+        throw new ProtocolError("provider_attempt_not_authorized", 409);
+      }
+      const current = this.readLatestProviderAttempt(operationId, ownerGeneration);
+      const retryState = this.readProviderRetryState(operationId, ownerGeneration);
+      if (current !== null && matchesActiveProviderAttempt(current.status)) {
+        if (
+          retryState === null ||
+          retryState.max_attempts !== maxAttempts ||
+          retryState.state !== "active" ||
+          retryState.active_attempt_generation !== current.attempt_generation
+        ) {
+          throw new ProtocolError("provider_retry_state_conflict", 409);
+        }
+        return { kind: "existing", row: current };
+      }
+      if (current !== null && current.status !== "definite_reject") {
+        throw new ProtocolError("provider_attempt_terminal", 409);
+      }
+      const nextGeneration = (current?.attempt_generation ?? 0) + 1;
+      if (nextGeneration > maxAttempts) {
+        throw new ProtocolError("provider_attempt_limit_exhausted", 409);
+      }
+      if (
+        retryState === null ||
+        retryState.retry_enabled !== 1 ||
+        retryState.max_attempts !== maxAttempts ||
+        retryState.state !== "waiting" ||
+        retryState.next_attempt_at === null ||
+        retryState.next_attempt_at > now ||
+        retryState.last_attempt_generation + 1 !== nextGeneration
+      ) {
+        throw new ProtocolError("provider_retry_not_due", 409);
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_retry_state
+            SET state = 'active', active_attempt_generation = ?1,
+                last_attempt_generation = ?1, next_attempt_at = NULL, updated_at = ?2
+          WHERE operation_id = ?3 AND owner_generation = ?4
+            AND state = 'waiting' AND active_attempt_generation IS NULL
+            AND next_attempt_at <= ?2`,
+        nextGeneration,
+        now,
+        operationId,
+        ownerGeneration,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("provider_retry_state_conflict", 409);
+      }
+      this.insertPreparedProviderAttempt(operation, nextGeneration, now);
+      this.insertProviderAttemptEvent(
+        operationId,
+        ownerGeneration,
+        nextGeneration,
+        1,
+        null,
+        "prepared",
+        null,
+        null,
+        now,
+      );
+      const created = this.readProviderAttempt(operationId, ownerGeneration, nextGeneration);
+      if (created === null) throw new ProtocolError("provider_attempt_unavailable", 503);
+      return { kind: "prepared", row: created };
+    });
+  }
+
+  dispatchProviderAttempt(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    now: number,
+  ): DispatchProviderAttemptOutcome {
+    this.ensureSchema();
+    validateProviderAttemptCommand(operationId, ownerGeneration, now, attemptGeneration);
+    return this.storage.transactionSync(() => {
+      const current = this.readProviderAttempt(
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (current === null) throw new ProtocolError("provider_attempt_not_found", 404);
+      if (current.status !== "prepared") return { kind: "existing", row: current };
+      const retryState = this.readProviderRetryState(operationId, ownerGeneration);
+      if (
+        retryState === null ||
+        retryState.state !== "active" ||
+        retryState.active_attempt_generation !== attemptGeneration ||
+        retryState.last_attempt_generation !== attemptGeneration
+      ) {
+        throw new ProtocolError("provider_retry_state_conflict", 409);
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_attempts
+            SET status = 'dispatched', dispatched_at = ?1, updated_at = ?1
+          WHERE operation_id = ?2 AND owner_generation = ?3 AND attempt_generation = ?4
+            AND status = 'prepared'
+            AND EXISTS (
+              SELECT 1 FROM cinatoken_shard_operations AS operation
+               WHERE operation.operation_id = ?2
+                 AND operation.owner_generation = ?3
+                 AND operation.status = 'running'
+                 AND operation.deadline_at > ?1
+                 AND operation.owner_lease_expires_at > ?1
+            )`,
+        now,
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        const replay = this.readProviderAttempt(
+          operationId,
+          ownerGeneration,
+          attemptGeneration,
+        );
+        if (replay !== null && replay.status !== "prepared") {
+          return { kind: "existing", row: replay };
+        }
+        throw new ProtocolError("provider_attempt_dispatch_conflict", 409);
+      }
+      const dispatched = this.readProviderAttempt(
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (dispatched === null) throw new ProtocolError("provider_attempt_unavailable", 503);
+      return { kind: "dispatched", row: dispatched };
+    });
+  }
+
+  recordProviderAttemptOutcome(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    terminal: ProviderAttemptTerminal,
+    now: number,
+  ): RecordProviderAttemptOutcome {
+    this.ensureSchema();
+    validateProviderAttemptCommand(operationId, ownerGeneration, now, attemptGeneration);
+    validateProviderAttemptTerminal(terminal);
+    return this.storage.transactionSync(() => {
+      const current = this.readProviderAttempt(
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (current === null) throw new ProtocolError("provider_attempt_not_found", 404);
+      if (!matchesActiveProviderAttempt(current.status)) {
+        if (providerAttemptTerminalMatches(current, terminal)) {
+          return { kind: "duplicate", row: current };
+        }
+        throw new ProtocolError("provider_attempt_outcome_conflict", 409);
+      }
+      if (current.status !== "dispatched") {
+        throw new ProtocolError("provider_attempt_not_dispatched", 409);
+      }
+      const operation = this.readStorageOperation(operationId);
+      if (
+        operation === null ||
+        operation.owner_generation !== ownerGeneration ||
+        (operation.status !== "running" &&
+          !(terminal.status === "ambiguous" && operation.status === "recovery_required"))
+      ) {
+        throw new ProtocolError("provider_attempt_outcome_conflict", 409);
+      }
+      if (
+        terminal.status !== "ambiguous" &&
+        (operation.deadline_at <= now || operation.owner_lease_expires_at <= now)
+      ) {
+        throw new ProtocolError("provider_attempt_deadline_expired", 409);
+      }
+      const result = operationStorageResult(operation);
+      if (
+        (terminal.status === "succeeded" && result === null) ||
+        (terminal.status === "definite_reject" && result !== null)
+      ) {
+        throw new ProtocolError("provider_attempt_result_conflict", 409);
+      }
+      const retryState = this.readProviderRetryState(operationId, ownerGeneration);
+      if (
+        retryState === null ||
+        retryState.state !== "active" ||
+        retryState.active_attempt_generation !== attemptGeneration ||
+        retryState.last_attempt_generation !== attemptGeneration
+      ) {
+        throw new ProtocolError("provider_retry_state_conflict", 409);
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_attempts
+            SET status = ?1, response_status = ?2, response_code = ?3,
+                result_object_key = ?4, result_object_version = ?5, result_sha256 = ?6,
+                result_size = ?7, result_content_type = ?8,
+                terminal_at = ?9, updated_at = ?9
+          WHERE operation_id = ?10 AND owner_generation = ?11 AND attempt_generation = ?12
+            AND status = 'dispatched'`,
+        terminal.status,
+        terminal.response_status,
+        terminal.response_code,
+        result?.object_key ?? null,
+        result?.object_version ?? null,
+        result?.sha256 ?? null,
+        result?.size ?? null,
+        result?.content_type ?? null,
+        now,
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("provider_attempt_outcome_conflict", 409);
+      }
+      const retryAt = now + 15;
+      const waiting =
+        terminal.status === "definite_reject" &&
+        retryState.retry_enabled === 1 &&
+        attemptGeneration < retryState.max_attempts &&
+        retryAt < retryState.retry_deadline_at;
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_retry_state
+            SET state = ?1, active_attempt_generation = NULL,
+                schedule_generation = schedule_generation + ?2,
+                next_attempt_at = ?3, updated_at = ?4
+          WHERE operation_id = ?5 AND owner_generation = ?6
+            AND state = 'active' AND active_attempt_generation = ?7`,
+        waiting ? "waiting" : "terminal",
+        waiting ? 1 : 0,
+        waiting ? retryAt : null,
+        now,
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("provider_retry_state_conflict", 409);
+      }
+      if (terminal.status === "ambiguous" && operation.status === "running") {
+        this.storage.sql.exec(
+          `UPDATE cinatoken_shard_operations
+              SET status = 'recovery_required', response_status = 202,
+                  response_code = ?1, updated_at = ?2
+            WHERE operation_id = ?3 AND owner_generation = ?4 AND status = 'running'`,
+          terminal.response_code,
+          now,
+          operationId,
+          ownerGeneration,
+        );
+        if (changedRowCount(this.storage) !== 1) {
+          throw new ProtocolError("provider_attempt_outcome_conflict", 409);
+        }
+      }
+      const recorded = this.readProviderAttempt(
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (recorded === null) throw new ProtocolError("provider_attempt_unavailable", 503);
+      return { kind: "recorded", row: recorded };
+    });
+  }
+
   finalizeOperation(
     operationId: string,
     ownerGeneration: number,
@@ -480,6 +1150,7 @@ export class RelayShardLedger {
         throw new ProtocolError("operation_completion_conflict", 409);
       }
       const result = operationStorageResult(current);
+      const providerAttempt = this.readLatestProviderAttempt(operationId, ownerGeneration);
       if (
         status === "completed" &&
         ((current.operation_kind === "health_probe" && result !== null) ||
@@ -487,13 +1158,87 @@ export class RelayShardLedger {
       ) {
         throw new ProtocolError("operation_result_required", 409);
       }
+      if (
+        providerAttempt !== null &&
+        ((status === "completed" && providerAttempt.status !== "succeeded") ||
+          (status === "failed" && providerAttempt.status !== "definite_reject"))
+      ) {
+        throw new ProtocolError("provider_attempt_outcome_required", 409);
+      }
+      let effectiveStatus = status;
+      let effectiveResponseStatus = responseStatus;
+      let effectiveResponseCode = responseCode;
+      if (status === "recovery_required" && providerAttempt?.status === "prepared") {
+        this.storage.sql.exec(
+          `UPDATE cinatoken_shard_provider_attempts
+              SET status = 'cancelled', response_status = 503,
+                  response_code = 'provider_attempt_not_dispatched',
+                  terminal_at = ?1, updated_at = ?1
+            WHERE operation_id = ?2 AND owner_generation = ?3
+              AND attempt_generation = ?4 AND status = 'prepared'`,
+          now,
+          operationId,
+          ownerGeneration,
+          providerAttempt.attempt_generation,
+        );
+        if (changedRowCount(this.storage) !== 1) {
+          throw new ProtocolError("provider_attempt_outcome_conflict", 409);
+        }
+        effectiveStatus = "failed";
+        effectiveResponseStatus = 503;
+        effectiveResponseCode = "provider_attempt_not_dispatched";
+      }
+      if (status === "recovery_required" && providerAttempt?.status === "dispatched") {
+        this.storage.sql.exec(
+          `UPDATE cinatoken_shard_provider_attempts
+              SET status = 'ambiguous', response_status = 202, response_code = ?1,
+                  result_object_key = ?2, result_object_version = ?3, result_sha256 = ?4,
+                  result_size = ?5, result_content_type = ?6,
+                  terminal_at = ?7, updated_at = ?7
+            WHERE operation_id = ?8 AND owner_generation = ?9
+              AND attempt_generation = ?10 AND status = 'dispatched'`,
+          responseCode,
+          result?.object_key ?? null,
+          result?.object_version ?? null,
+          result?.sha256 ?? null,
+          result?.size ?? null,
+          result?.content_type ?? null,
+          now,
+          operationId,
+          ownerGeneration,
+          providerAttempt.attempt_generation,
+        );
+        if (changedRowCount(this.storage) !== 1) {
+          throw new ProtocolError("provider_attempt_outcome_conflict", 409);
+        }
+      }
+      if (
+        status === "recovery_required" &&
+        providerAttempt !== null &&
+        (providerAttempt.status === "prepared" || providerAttempt.status === "dispatched")
+      ) {
+        this.storage.sql.exec(
+          `UPDATE cinatoken_shard_provider_retry_state
+              SET state = 'terminal', active_attempt_generation = NULL,
+                  next_attempt_at = NULL, updated_at = ?1
+            WHERE operation_id = ?2 AND owner_generation = ?3
+              AND state = 'active' AND active_attempt_generation = ?4`,
+          now,
+          operationId,
+          ownerGeneration,
+          providerAttempt.attempt_generation,
+        );
+        if (changedRowCount(this.storage) !== 1) {
+          throw new ProtocolError("provider_retry_state_conflict", 409);
+        }
+      }
       this.storage.sql.exec(
         `UPDATE cinatoken_shard_operations
             SET status = ?1, response_status = ?2, response_code = ?3, updated_at = ?4
           WHERE operation_id = ?5 AND owner_generation = ?6 AND status = ?7${deadlineGuard}`,
-        status,
-        responseStatus,
-        responseCode,
+        effectiveStatus,
+        effectiveResponseStatus,
+        effectiveResponseCode,
         now,
         operationId,
         ownerGeneration,
@@ -578,6 +1323,96 @@ export class RelayShardLedger {
     });
   }
 
+  startOperationWithProviderAttempt(
+    operationId: string,
+    ownerGeneration: number,
+    policy: ProviderRetryPolicy,
+    now: number,
+  ): PrepareProviderAttemptOutcome {
+    this.ensureSchema();
+    validateProviderAttemptCommand(operationId, ownerGeneration, now);
+    validateProviderRetryPolicy(policy);
+    return this.storage.transactionSync(() => {
+      const operation = this.readStorageOperation(operationId);
+      if (
+        operation === null ||
+        operation.owner_generation !== ownerGeneration ||
+        operation.operation_kind === "health_probe"
+      ) {
+        throw new ProtocolError("provider_attempt_not_authorized", 409);
+      }
+      const retryState = this.readProviderRetryState(operationId, ownerGeneration);
+      const existingAttempt = this.readLatestProviderAttempt(operationId, ownerGeneration);
+      if (operation.status === "running" && retryState !== null && existingAttempt !== null) {
+        if (
+          retryState.policy_version !== 1 ||
+          retryState.max_attempts !== policy.maxAttempts ||
+          retryState.retry_enabled !== (policy.retryEnabled ? 1 : 0) ||
+          retryState.retry_deadline_at !== operation.deadline_at ||
+          retryState.state !== "active" ||
+          retryState.active_attempt_generation !== 1 ||
+          retryState.last_attempt_generation !== 1 ||
+          existingAttempt.attempt_generation !== 1 ||
+          !matchesActiveProviderAttempt(existingAttempt.status)
+        ) {
+          throw new ProtocolError("provider_retry_policy_conflict", 409);
+        }
+        return { kind: "existing", row: existingAttempt };
+      }
+      if (
+        operation.status !== "claimed" ||
+        retryState !== null ||
+        existingAttempt !== null ||
+        operation.deadline_at <= now ||
+        operation.owner_lease_expires_at <= now
+      ) {
+        throw new ProtocolError("provider_attempt_not_authorized", 409);
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_operations
+            SET status = 'running', response_status = NULL, updated_at = ?1
+          WHERE operation_id = ?2 AND owner_generation = ?3 AND status = 'claimed'
+            AND deadline_at > ?1 AND owner_lease_expires_at > ?1`,
+        now,
+        operationId,
+        ownerGeneration,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("operation_completion_conflict", 409);
+      }
+      this.storage.sql.exec(
+        `INSERT INTO cinatoken_shard_provider_retry_state
+           (operation_id, owner_generation, policy_version, max_attempts, retry_enabled,
+            state, active_attempt_generation, last_attempt_generation, schedule_generation,
+            next_attempt_at, retry_deadline_at, global_terminal_event_id,
+            global_terminal_acked_at, created_at, updated_at)
+         VALUES (?1, ?2, 1, ?3, ?4, 'active', 1, 1, 0, NULL, ?5,
+                 NULL, NULL, ?6, ?6)`,
+        operationId,
+        ownerGeneration,
+        policy.maxAttempts,
+        policy.retryEnabled ? 1 : 0,
+        operation.deadline_at,
+        now,
+      );
+      this.insertPreparedProviderAttempt(operation, 1, now);
+      this.insertProviderAttemptEvent(
+        operationId,
+        ownerGeneration,
+        1,
+        1,
+        null,
+        "prepared",
+        null,
+        null,
+        now,
+      );
+      const created = this.readProviderAttempt(operationId, ownerGeneration, 1);
+      if (created === null) throw new ProtocolError("provider_attempt_unavailable", 503);
+      return { kind: "prepared", row: created };
+    });
+  }
+
   transitionOperation(
     operationId: string,
     ownerGeneration: number,
@@ -619,6 +1454,98 @@ export class RelayShardLedger {
       );
       const claimedExpired = changedRowCount(this.storage) === 1;
       this.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_attempts
+            SET status = 'cancelled', response_status = 504,
+                response_code = 'provider_attempt_not_dispatched',
+                terminal_at = ?1, updated_at = ?1
+          WHERE operation_id = ?2 AND owner_generation = ?3 AND status = 'prepared'
+            AND EXISTS (
+              SELECT 1 FROM cinatoken_shard_operations AS operation
+               WHERE operation.operation_id = ?2 AND operation.owner_generation = ?3
+                 AND operation.status = 'running' AND operation.deadline_at <= ?1
+            )`,
+        now,
+        operationId,
+        ownerGeneration,
+      );
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_attempts
+            SET status = 'ambiguous', response_status = 202,
+                response_code = 'provider_attempt_deadline_expired',
+                result_object_key = (
+                  SELECT result_object_key FROM cinatoken_shard_operations
+                   WHERE operation_id = ?2 AND owner_generation = ?3
+                ),
+                result_object_version = (
+                  SELECT result_object_version FROM cinatoken_shard_operations
+                   WHERE operation_id = ?2 AND owner_generation = ?3
+                ),
+                result_sha256 = (
+                  SELECT result_sha256 FROM cinatoken_shard_operations
+                   WHERE operation_id = ?2 AND owner_generation = ?3
+                ),
+                result_size = (
+                  SELECT result_size FROM cinatoken_shard_operations
+                   WHERE operation_id = ?2 AND owner_generation = ?3
+                ),
+                result_content_type = (
+                  SELECT result_content_type FROM cinatoken_shard_operations
+                   WHERE operation_id = ?2 AND owner_generation = ?3
+                ),
+                terminal_at = ?1, updated_at = ?1
+          WHERE operation_id = ?2 AND owner_generation = ?3 AND status = 'dispatched'
+            AND EXISTS (
+              SELECT 1 FROM cinatoken_shard_operations AS operation
+               WHERE operation.operation_id = ?2 AND operation.owner_generation = ?3
+                 AND operation.status = 'running' AND operation.deadline_at <= ?1
+            )`,
+        now,
+        operationId,
+        ownerGeneration,
+      );
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_retry_state
+            SET state = 'terminal', active_attempt_generation = NULL,
+                next_attempt_at = NULL, updated_at = ?1
+          WHERE operation_id = ?2 AND owner_generation = ?3
+            AND state IN ('active', 'waiting')`,
+        now,
+        operationId,
+        ownerGeneration,
+      );
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_operations
+            SET status = 'recovery_required', response_status = 202,
+                response_code = 'container_execution_ambiguous', updated_at = ?1
+          WHERE operation_id = ?2 AND owner_generation = ?3
+            AND status = 'running' AND deadline_at <= ?1
+            AND EXISTS (
+              SELECT 1 FROM cinatoken_shard_provider_attempts AS attempt
+               WHERE attempt.operation_id = ?2 AND attempt.owner_generation = ?3
+                 AND attempt.status = 'ambiguous'
+            )`,
+        now,
+        operationId,
+        ownerGeneration,
+      );
+      const ambiguousExpired = changedRowCount(this.storage) === 1;
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_operations
+            SET status = 'failed', response_status = 504,
+                response_code = 'provider_attempt_not_dispatched', updated_at = ?1
+          WHERE operation_id = ?2 AND owner_generation = ?3
+            AND status = 'running' AND deadline_at <= ?1
+            AND EXISTS (
+              SELECT 1 FROM cinatoken_shard_provider_attempts AS attempt
+               WHERE attempt.operation_id = ?2 AND attempt.owner_generation = ?3
+                 AND attempt.status = 'cancelled'
+            )`,
+        now,
+        operationId,
+        ownerGeneration,
+      );
+      const cancelledExpired = changedRowCount(this.storage) === 1;
+      this.storage.sql.exec(
         `UPDATE cinatoken_shard_operations
             SET status = 'recovery_required', response_status = 202,
                 response_code = 'container_execution_ambiguous', updated_at = ?1
@@ -628,7 +1555,12 @@ export class RelayShardLedger {
         operationId,
         ownerGeneration,
       );
-      return claimedExpired || changedRowCount(this.storage) === 1;
+      return (
+        claimedExpired ||
+        ambiguousExpired ||
+        cancelledExpired ||
+        changedRowCount(this.storage) === 1
+      );
     });
   }
 
@@ -824,6 +1756,98 @@ export class RelayShardLedger {
       now,
     );
     this.storage.sql.exec(
+      `UPDATE cinatoken_shard_provider_attempts
+          SET status = 'cancelled', response_status = 504,
+              response_code = 'provider_attempt_not_dispatched',
+              terminal_at = ?1, updated_at = ?1
+        WHERE status = 'prepared'
+          AND EXISTS (
+            SELECT 1 FROM cinatoken_shard_operations AS operation
+             WHERE operation.operation_id = cinatoken_shard_provider_attempts.operation_id
+               AND operation.owner_generation = cinatoken_shard_provider_attempts.owner_generation
+               AND operation.status = 'running' AND operation.deadline_at <= ?1
+          )`,
+      now,
+    );
+    this.storage.sql.exec(
+      `UPDATE cinatoken_shard_provider_attempts
+          SET status = 'ambiguous', response_status = 202,
+              response_code = 'provider_attempt_deadline_expired',
+              result_object_key = (
+                SELECT operation.result_object_key FROM cinatoken_shard_operations AS operation
+                 WHERE operation.operation_id = cinatoken_shard_provider_attempts.operation_id
+                   AND operation.owner_generation = cinatoken_shard_provider_attempts.owner_generation
+              ),
+              result_object_version = (
+                SELECT operation.result_object_version FROM cinatoken_shard_operations AS operation
+                 WHERE operation.operation_id = cinatoken_shard_provider_attempts.operation_id
+                   AND operation.owner_generation = cinatoken_shard_provider_attempts.owner_generation
+              ),
+              result_sha256 = (
+                SELECT operation.result_sha256 FROM cinatoken_shard_operations AS operation
+                 WHERE operation.operation_id = cinatoken_shard_provider_attempts.operation_id
+                   AND operation.owner_generation = cinatoken_shard_provider_attempts.owner_generation
+              ),
+              result_size = (
+                SELECT operation.result_size FROM cinatoken_shard_operations AS operation
+                 WHERE operation.operation_id = cinatoken_shard_provider_attempts.operation_id
+                   AND operation.owner_generation = cinatoken_shard_provider_attempts.owner_generation
+              ),
+              result_content_type = (
+                SELECT operation.result_content_type FROM cinatoken_shard_operations AS operation
+                 WHERE operation.operation_id = cinatoken_shard_provider_attempts.operation_id
+                   AND operation.owner_generation = cinatoken_shard_provider_attempts.owner_generation
+              ),
+              terminal_at = ?1, updated_at = ?1
+        WHERE status = 'dispatched'
+          AND EXISTS (
+            SELECT 1 FROM cinatoken_shard_operations AS operation
+             WHERE operation.operation_id = cinatoken_shard_provider_attempts.operation_id
+               AND operation.owner_generation = cinatoken_shard_provider_attempts.owner_generation
+               AND operation.status = 'running' AND operation.deadline_at <= ?1
+          )`,
+      now,
+    );
+    this.storage.sql.exec(
+      `UPDATE cinatoken_shard_provider_retry_state
+          SET state = 'terminal', active_attempt_generation = NULL,
+              next_attempt_at = NULL, updated_at = ?1
+        WHERE state IN ('active', 'waiting')
+          AND EXISTS (
+            SELECT 1 FROM cinatoken_shard_operations AS operation
+             WHERE operation.operation_id = cinatoken_shard_provider_retry_state.operation_id
+               AND operation.owner_generation = cinatoken_shard_provider_retry_state.owner_generation
+               AND operation.status = 'running' AND operation.deadline_at <= ?1
+          )`,
+      now,
+    );
+    this.storage.sql.exec(
+      `UPDATE cinatoken_shard_operations
+          SET status = 'recovery_required', response_status = 202,
+              response_code = 'container_execution_ambiguous', updated_at = ?1
+        WHERE status = 'running' AND deadline_at <= ?1
+          AND EXISTS (
+            SELECT 1 FROM cinatoken_shard_provider_attempts AS attempt
+             WHERE attempt.operation_id = cinatoken_shard_operations.operation_id
+               AND attempt.owner_generation = cinatoken_shard_operations.owner_generation
+               AND attempt.status = 'ambiguous'
+          )`,
+      now,
+    );
+    this.storage.sql.exec(
+      `UPDATE cinatoken_shard_operations
+          SET status = 'failed', response_status = 504,
+              response_code = 'provider_attempt_not_dispatched', updated_at = ?1
+        WHERE status = 'running' AND deadline_at <= ?1
+          AND EXISTS (
+            SELECT 1 FROM cinatoken_shard_provider_attempts AS attempt
+             WHERE attempt.operation_id = cinatoken_shard_operations.operation_id
+               AND attempt.owner_generation = cinatoken_shard_operations.owner_generation
+               AND attempt.status = 'cancelled'
+          )`,
+      now,
+    );
+    this.storage.sql.exec(
       `UPDATE cinatoken_shard_operations
           SET status = 'recovery_required', response_status = 202,
               response_code = 'container_execution_ambiguous', updated_at = ?1
@@ -841,6 +1865,12 @@ export class RelayShardLedger {
             SELECT 1 FROM cinatoken_shard_dispatches AS dispatch
               WHERE dispatch.operation_id = cinatoken_shard_operations.operation_id
                 AND dispatch.created_at >= ?2
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM cinatoken_shard_provider_retry_state AS retry
+              WHERE retry.operation_id = cinatoken_shard_operations.operation_id
+                AND retry.owner_generation = cinatoken_shard_operations.owner_generation
+                AND retry.global_terminal_acked_at IS NULL
           )`,
       now - policy.terminalRetentionSeconds,
       now - policy.dispatchRetentionSeconds,
@@ -863,6 +1893,12 @@ export class RelayShardLedger {
                 SELECT 1 FROM cinatoken_shard_dispatches AS dispatch
                   WHERE dispatch.operation_id = cinatoken_shard_operations.operation_id
                     AND dispatch.created_at >= ?1
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM cinatoken_shard_provider_retry_state AS retry
+                  WHERE retry.operation_id = cinatoken_shard_operations.operation_id
+                    AND retry.owner_generation = cinatoken_shard_operations.owner_generation
+                    AND retry.global_terminal_acked_at IS NULL
               )
             ORDER BY updated_at ASC, operation_id ASC
             LIMIT ?2
@@ -924,6 +1960,127 @@ export class RelayShardLedger {
            FROM cinatoken_shard_operations WHERE operation_id = ?1`,
         operationId,
       ),
+    );
+  }
+
+  private readProviderAttempt(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+  ): ProviderAttemptRow | null {
+    const row = firstRow<ProviderAttemptRow>(
+      this.storage.sql.exec<ProviderAttemptRow>(
+        `SELECT operation_id, owner_generation, attempt_generation, provider_operation_id,
+                admission_sha256, request_sha256, status, response_status, response_code,
+                result_object_key, result_object_version, result_sha256, result_size,
+                result_content_type, prepared_at, dispatched_at, terminal_at, updated_at
+           FROM cinatoken_shard_provider_attempts
+          WHERE operation_id = ?1 AND owner_generation = ?2 AND attempt_generation = ?3`,
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      ),
+    );
+    if (row !== null) validateProviderAttemptRow(row);
+    return row;
+  }
+
+  private readLatestProviderAttempt(
+    operationId: string,
+    ownerGeneration: number,
+  ): ProviderAttemptRow | null {
+    const row = firstRow<ProviderAttemptRow>(
+      this.storage.sql.exec<ProviderAttemptRow>(
+        `SELECT operation_id, owner_generation, attempt_generation, provider_operation_id,
+                admission_sha256, request_sha256, status, response_status, response_code,
+                result_object_key, result_object_version, result_sha256, result_size,
+                result_content_type, prepared_at, dispatched_at, terminal_at, updated_at
+           FROM cinatoken_shard_provider_attempts
+          WHERE operation_id = ?1 AND owner_generation = ?2
+          ORDER BY attempt_generation DESC
+          LIMIT 1`,
+        operationId,
+        ownerGeneration,
+      ),
+    );
+    if (row !== null) validateProviderAttemptRow(row);
+    return row;
+  }
+
+  private readProviderRetryState(
+    operationId: string,
+    ownerGeneration: number,
+  ): ProviderRetryStateRow | null {
+    return firstRow<ProviderRetryStateRow>(
+      this.storage.sql.exec<ProviderRetryStateRow>(
+        `SELECT operation_id, owner_generation, policy_version, max_attempts, retry_enabled,
+                state, active_attempt_generation, last_attempt_generation, schedule_generation,
+                next_attempt_at, retry_deadline_at, global_terminal_event_id,
+                global_terminal_acked_at, created_at, updated_at
+           FROM cinatoken_shard_provider_retry_state
+          WHERE operation_id = ?1 AND owner_generation = ?2`,
+        operationId,
+        ownerGeneration,
+      ),
+    );
+  }
+
+  private insertPreparedProviderAttempt(
+    operation: StorageOperationRow,
+    attemptGeneration: number,
+    now: number,
+  ): void {
+    this.storage.sql.exec(
+      `INSERT INTO cinatoken_shard_provider_attempts
+         (operation_id, owner_generation, attempt_generation, provider_operation_id,
+          admission_sha256, request_sha256, status, response_status, response_code,
+          result_object_key, result_object_version, result_sha256, result_size,
+          result_content_type, prepared_at, dispatched_at, terminal_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'prepared', NULL, NULL,
+               NULL, NULL, NULL, NULL, NULL, ?7, NULL, NULL, ?7)`,
+      operation.operation_id,
+      operation.owner_generation,
+      attemptGeneration,
+      operation.provider_operation_id,
+      operation.admission_sha256,
+      operation.input_sha256,
+      now,
+    );
+  }
+
+  private insertProviderAttemptEvent(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    eventSequence: number,
+    fromStatus: ProviderAttemptStatus | null,
+    toStatus: ProviderAttemptStatus,
+    responseStatus: number | null,
+    responseCode: string | null,
+    observedAt: number,
+  ): void {
+    const eventId = [
+      "provider-attempt-v1",
+      operationId,
+      ownerGeneration,
+      attemptGeneration,
+      eventSequence,
+    ].join(":");
+    this.storage.sql.exec(
+      `INSERT INTO cinatoken_shard_provider_attempt_events
+         (event_id, operation_id, owner_generation, attempt_generation, event_sequence,
+          from_status, to_status, response_status, response_code, observed_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+      eventId,
+      operationId,
+      ownerGeneration,
+      attemptGeneration,
+      eventSequence,
+      fromStatus,
+      toStatus,
+      responseStatus,
+      responseCode,
+      observedAt,
     );
   }
 
@@ -1145,7 +2302,10 @@ function readinessSnapshot(row: ReadinessRow | null): PersistedReadinessSnapshot
   };
 }
 
-function storageGrant(row: StorageOperationRow): StorageAccessGrant {
+function storageGrant(
+  row: StorageOperationRow,
+  providerAttempt: ProviderAttemptRow | null,
+): StorageAccessGrant {
   const result = operationStorageResult(row);
   return {
     protocol_version: row.protocol_version,
@@ -1173,6 +2333,13 @@ function storageGrant(row: StorageOperationRow): StorageAccessGrant {
     },
     trace_id: row.trace_id,
     result,
+    provider_attempt:
+      providerAttempt === null
+        ? null
+        : {
+            attempt_generation: providerAttempt.attempt_generation,
+            status: providerAttempt.status,
+          },
   };
 }
 
@@ -1244,6 +2411,155 @@ function storageResultMatches(
     left.sha256 === right.sha256 &&
     left.size === right.size &&
     left.content_type === right.content_type
+  );
+}
+
+function validateProviderAttemptCommand(
+  operationId: string,
+  ownerGeneration: number,
+  now: number,
+  attemptGeneration?: number,
+): void {
+  if (
+    operationId.length < 1 ||
+    operationId.length > 128 ||
+    !/^[A-Za-z0-9._:-]+$/.test(operationId) ||
+    !Number.isSafeInteger(ownerGeneration) ||
+    ownerGeneration < 1 ||
+    !Number.isSafeInteger(now) ||
+    now < 1 ||
+    (attemptGeneration !== undefined &&
+      (!Number.isSafeInteger(attemptGeneration) ||
+        attemptGeneration < 1 ||
+        attemptGeneration > 3))
+  ) {
+    throw new ProtocolError("invalid_provider_attempt", 400);
+  }
+}
+
+function validateProviderAttemptTerminal(terminal: ProviderAttemptTerminal): void {
+  if (
+    (terminal.status === "succeeded" &&
+      (!Number.isSafeInteger(terminal.response_status) ||
+        terminal.response_status < 200 ||
+        terminal.response_status > 299 ||
+        terminal.response_code !== null)) ||
+    (terminal.status === "definite_reject" &&
+      (!Number.isSafeInteger(terminal.response_status) ||
+        terminal.response_status < 400 ||
+        terminal.response_status > 599 ||
+        !validResponseCode(terminal.response_code))) ||
+    (terminal.status === "ambiguous" &&
+      (terminal.response_status !== 202 || !validResponseCode(terminal.response_code)))
+  ) {
+    throw new ProtocolError("invalid_provider_attempt_outcome", 400);
+  }
+}
+
+function validateProviderRetryPolicy(policy: ProviderRetryPolicy): void {
+  if (
+    !Number.isSafeInteger(policy.maxAttempts) ||
+    policy.maxAttempts < 1 ||
+    policy.maxAttempts > 3 ||
+    (!policy.retryEnabled && policy.maxAttempts !== 1)
+  ) {
+    throw new ProtocolError("controller_misconfigured", 503);
+  }
+}
+
+function validateProviderAttemptRow(row: ProviderAttemptRow): void {
+  validateProviderAttemptCommand(
+    row.operation_id,
+    row.owner_generation,
+    row.prepared_at,
+    row.attempt_generation,
+  );
+  if (
+    row.provider_operation_id.length < 1 ||
+    row.provider_operation_id.length > 128 ||
+    !/^[A-Za-z0-9._:-]+$/.test(row.provider_operation_id) ||
+    !/^[0-9a-f]{64}$/.test(row.admission_sha256) ||
+    !/^[0-9a-f]{64}$/.test(row.request_sha256) ||
+    !Number.isSafeInteger(row.updated_at) ||
+    row.updated_at < row.prepared_at ||
+    (row.dispatched_at !== null &&
+      (!Number.isSafeInteger(row.dispatched_at) || row.dispatched_at < row.prepared_at)) ||
+    (row.terminal_at !== null &&
+      (!Number.isSafeInteger(row.terminal_at) ||
+        row.terminal_at < row.prepared_at ||
+        (row.dispatched_at !== null && row.terminal_at < row.dispatched_at)))
+  ) {
+    throw new ProtocolError("provider_attempt_corrupt", 503);
+  }
+  const result = operationStorageResult(row);
+  if (
+    (result !== null &&
+      result.object_key !==
+        `container-results/v1/${row.operation_id}/${row.owner_generation}/${result.sha256}`) ||
+    (row.status === "prepared" &&
+      (row.dispatched_at !== null ||
+        row.terminal_at !== null ||
+        row.response_status !== null ||
+        row.response_code !== null ||
+        result !== null ||
+        row.updated_at !== row.prepared_at)) ||
+    (row.status === "dispatched" &&
+      (row.dispatched_at === null ||
+        row.terminal_at !== null ||
+        row.response_status !== null ||
+        row.response_code !== null ||
+        result !== null ||
+        row.updated_at !== row.dispatched_at)) ||
+    (row.status === "succeeded" &&
+      (row.dispatched_at === null ||
+        row.terminal_at === null ||
+        row.updated_at !== row.terminal_at ||
+        row.response_status === null ||
+        row.response_status < 200 ||
+        row.response_status > 299 ||
+        row.response_code !== null ||
+        result === null)) ||
+    (row.status === "definite_reject" &&
+      (row.dispatched_at === null ||
+        row.terminal_at === null ||
+        row.updated_at !== row.terminal_at ||
+        row.response_status === null ||
+        row.response_status < 400 ||
+        row.response_status > 599 ||
+        !validResponseCode(row.response_code) ||
+        result !== null)) ||
+    (row.status === "ambiguous" &&
+      (row.dispatched_at === null ||
+        row.terminal_at === null ||
+        row.updated_at !== row.terminal_at ||
+        row.response_status !== 202 ||
+        !validResponseCode(row.response_code))) ||
+    (row.status === "cancelled" &&
+      (row.dispatched_at !== null ||
+        row.terminal_at === null ||
+        row.updated_at !== row.terminal_at ||
+        row.response_status === null ||
+        row.response_status < 400 ||
+        row.response_status > 599 ||
+        !validResponseCode(row.response_code) ||
+        result !== null))
+  ) {
+    throw new ProtocolError("provider_attempt_corrupt", 503);
+  }
+}
+
+function matchesActiveProviderAttempt(status: ProviderAttemptStatus): boolean {
+  return status === "prepared" || status === "dispatched";
+}
+
+function providerAttemptTerminalMatches(
+  row: ProviderAttemptRow,
+  terminal: ProviderAttemptTerminal,
+): boolean {
+  return (
+    row.status === terminal.status &&
+    row.response_status === terminal.response_status &&
+    row.response_code === terminal.response_code
   );
 }
 

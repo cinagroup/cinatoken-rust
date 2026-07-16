@@ -3,9 +3,14 @@ import { DurableObject } from "cloudflare:workers";
 import {
   RelayShardLedger,
   type ClaimResult,
+  type DispatchProviderAttemptOutcome,
   type OperationRow,
   type OperationStatus,
+  type PrepareProviderAttemptOutcome,
+  type ProviderAttemptTerminal,
+  type ProviderRetryPolicy,
   type ReadinessCompletion,
+  type RecordProviderAttemptOutcome,
   type RecordStorageResultOutcome,
   type RelayShardLedgerPolicy,
   type ShardReadinessSnapshot,
@@ -36,6 +41,18 @@ type StorageResultOutcome =
 
 type FinalizeOperationOutcome =
   | { ok: true; result: OperationRow }
+  | { ok: false; error: { code: string; status: number } };
+
+type PrepareProviderAttemptRpcOutcome =
+  | { ok: true; result: PrepareProviderAttemptOutcome }
+  | { ok: false; error: { code: string; status: number } };
+
+type DispatchProviderAttemptRpcOutcome =
+  | { ok: true; result: DispatchProviderAttemptOutcome }
+  | { ok: false; error: { code: string; status: number } };
+
+type RecordProviderAttemptRpcOutcome =
+  | { ok: true; result: RecordProviderAttemptOutcome }
   | { ok: false; error: { code: string; status: number } };
 
 interface LedgerWorkerEnv {
@@ -137,6 +154,112 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
     return this.ledger.readOperationOutcome(operationId);
   }
 
+  async prepareProviderAttemptOutcome(
+    operationId: string,
+    ownerGeneration: number,
+    maxAttempts: number,
+    now: number,
+  ): Promise<PrepareProviderAttemptRpcOutcome> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.prepareProviderAttempt(
+          operationId,
+          ownerGeneration,
+          maxAttempts,
+          now,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
+  }
+
+  async startOperationWithProviderAttemptOutcome(
+    operationId: string,
+    ownerGeneration: number,
+    policy: ProviderRetryPolicy,
+    now: number,
+  ): Promise<PrepareProviderAttemptRpcOutcome> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.startOperationWithProviderAttempt(
+          operationId,
+          ownerGeneration,
+          policy,
+          now,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
+  }
+
+  async expireOperation(
+    operationId: string,
+    ownerGeneration: number,
+    now: number,
+  ): Promise<boolean> {
+    return this.ledger.expireOperation(operationId, ownerGeneration, now);
+  }
+
+  async dispatchProviderAttemptOutcome(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    now: number,
+  ): Promise<DispatchProviderAttemptRpcOutcome> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.dispatchProviderAttempt(
+          operationId,
+          ownerGeneration,
+          attemptGeneration,
+          now,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
+  }
+
+  async recordProviderAttemptOutcome(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    terminal: ProviderAttemptTerminal,
+    now: number,
+  ): Promise<RecordProviderAttemptRpcOutcome> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.recordProviderAttemptOutcome(
+          operationId,
+          ownerGeneration,
+          attemptGeneration,
+          terminal,
+          now,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
+  }
+
   async lifecycle(state: string, detail: string | null, now: number): Promise<void> {
     this.ledger.recordLifecycle(state, detail, now);
   }
@@ -221,11 +344,18 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
     ownerGeneration: number,
     result: StorageResultRecord,
     now: number,
+    providerAttemptGeneration?: number,
   ): Promise<StorageResultOutcome> {
     try {
       return {
         ok: true,
-        result: this.ledger.recordStorageResult(operationId, ownerGeneration, result, now),
+        result: this.ledger.recordStorageResult(
+          operationId,
+          ownerGeneration,
+          result,
+          now,
+          providerAttemptGeneration,
+        ),
       };
     } catch (error) {
       if (error instanceof ProtocolError) {

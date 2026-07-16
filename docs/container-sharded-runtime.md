@@ -554,3 +554,55 @@ expired-deadline, object-version drift, checksum mismatch, duplicate replay,
 conflict, KV lag, D1 ambiguity, Container restart, and N/N-1 cases. Until that
 remote evidence exists, this is a compiled local contract and production is
 **NO-GO**.
+
+## 2026-07-17 Provider Attempt Journal Topology
+
+The provider-attempt virtual host is a fifth named outbound handler, but it is
+not a provider proxy yet. Its trust path is:
+
+```text
+Container
+  -> provider-attempt.cinatoken.internal
+  -> Controller outbound handler (ctx.containerId)
+  -> exact named RelayShardContainer DO
+  -> DO SQLite attempt projection + immutable events + frozen retry state
+```
+
+The Container supplies only operation ID, owner generation, and attempt
+generation. The outbound handler derives the DO from `ctx.containerId`; the DO
+rereads its own operation and policy rows. Exact host, path, method, body shape,
+size, and content type are enforced. Query strings, alternate hosts, ports,
+credentials, unknown fields, and attempt generations outside 1..3 fail closed.
+
+The control order is persist-before-send:
+
+1. The Controller schedules deadline recovery through the Container class.
+2. The DO atomically starts the operation and writes prepared attempt 1.
+3. The Container asks the DO to consume dispatch authority.
+4. Only the first committed prepared-to-dispatched transition may authorize a
+   future provider send; replay receives false authority.
+5. The Container reports one strict terminal classification. Success is not
+   accepted until the exact R2 result has been attached under the same attempt
+   generation.
+6. The Worker reads signed status v2 for reconciliation and falls back to
+   unchanged v1 only when talking to an older Controller.
+
+Step 4 currently stops at a dispatch grant. There is no atomic private provider
+Service Binding broker that combines grant consumption with provider fetch,
+and the Linux image does not call these routes. Consequently the journal gate
+must stay false. `enableInternet=false` and the deny-all fallback continue to
+prevent a direct internet bypass.
+
+The future broker must own credential injection, provider allowlist, absolute
+deadline, bounded request/response streaming, provider-native idempotency or
+lookup, terminal classification, and redacted metrics. It must be a private
+Service Binding reached only after the DO output gate releases the committed
+dispatch transition. A timeout after that point is recovery evidence, never
+permission for another request-local send.
+
+Retry state is present only to freeze policy and prove later lifecycle rules.
+Tracked runtime config and code both prohibit actual retry. Enabling retry will
+remain invalid until a DO-owned schedule callback, generation-fenced alarm or
+Container schedule contract, versioned multi-attempt R2 manifest, global D1
+terminal ack, and restart/duplicate fault campaign are implemented and
+reviewed. Production remains **NO-GO**.

@@ -833,6 +833,23 @@ rollback target without recording credentials or request bodies.
 | Reserved admission | D1 status, generation, lease, and owner deadline all pass | PASS (local binding test) |
 | Original response replay | Exact status, allowlisted headers, and byte-identical R2 body | PASS for default-off local create-only writer and verified bounded read/replay contract; blocked for edge wiring, remote R2 faults, and public canary proof |
 | Edge billing order | Selected-attempt D1 bind and frozen billing inputs precede Container dispatch | Blocked |
-| Provider attempt journal | Dispatch-before-send identity and one durable retry owner | Blocked |
+| Provider attempt journal | Dispatch-before-send identity and one durable retry owner | PASS for default-off local DO journal, immutable events, v2 status, one-shot dispatch grant, and attempt-fenced R2 attach; blocked for provider broker/image wiring, global ack, remote faults, and any retry |
 | Independent cutover gates | Operation write, terminal CAS, reconciliation, chat canary, staging proof, financial terminal, exact response, and divergence proof are explicit false-by-default prerequisites | PASS (local config contract only) |
 | Cutover | Real Container, N/N-1, remote faults, billing convergence, load/cost, rollback, C1-C5 | **NO-GO** |
+
+## 2026-07-17 Provider Attempt Journal Matrix
+
+| Gate | Current local state | Production acceptance | Status |
+| --- | --- | --- | --- |
+| Attempt owner | Recovery schedule precedes one DO transaction that starts operation, freezes policy, and creates attempt 1 | Remote output-gate proof across DO eviction/redeploy and duplicate calls | Local only |
+| Container authority | Exact virtual host has dispatch and terminal only; no prepare/retry route | Signed image uses only these routes and cannot bypass through direct internet or another binding | Local only |
+| Dispatch uniqueness | First prepared-to-dispatched transition returns send authority; replay returns false | One provider invocation under concurrent/retried dispatch and lost response | Local only |
+| Immutable evidence | Attempt identity/policy frozen; transition events update/delete denied | Remote SQLite readback, retention ownership, export/alert path, and restoration drill | Local only |
+| Deadline classification | Prepared cancels/fails; dispatched becomes ambiguous/recovery; ambiguous cannot retry | Real timeout, OOM, sleep, restart, and network fault correlation with provider invoice | Local only |
+| Result fence | Journaled R2 metadata carries exact attempt generation and DO requires latest dispatched generation | Real R2 create/attach ambiguity, stale generation, conflict, replay, and orphan convergence | Local only |
+| Protocol rollout | v1 shape unchanged; signed v2 plus new-Worker fallback on exact route-not-found | Controller-first N/N-1 deployment and rollback with long in-flight operations | Local only |
+| Retry | Projection supports bounded definite-reject-only policy tests, but runtime rejects retry=true and max above one | Separate DO scheduler, versioned multi-attempt R2 contract, max-2 canary, duplicate alarm and horizon proof | Blocked |
+| Provider egress | No atomic private broker and no Linux client; dispatch grant does not perform provider fetch | Service Binding broker with credential isolation, allowlist, absolute deadline, bounded I/O, native idempotency/lookup, and terminal classification | Blocked |
+| Global terminal ack | Null ack prevents journaled operation compaction and therefore preserves evidence through backpressure | D1 terminal/outbox correlation, exactly-once ack, no-ack alert, compaction and disaster-recovery proof | Blocked |
+| Configuration | All tracked flags false, max attempts one; runtime hard-rejects retry misconfiguration | Exact deployed readback, separate scoped secrets, approved candidate and disable-first rollback | Local only |
+| Cutover | No remote action or provider call occurred | Linux lifecycle, provider/accounting convergence, load/cost, rollback, and C1-C5 approval | **NO-GO** |

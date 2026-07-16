@@ -4,6 +4,7 @@ import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
   INTERNAL_OPERATION_STATUS_PATH,
+  INTERNAL_OPERATION_STATUS_V2_PATH,
   INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
   MAX_OPERATION_STATUS_BODY_BYTES,
@@ -15,6 +16,7 @@ import {
   sha256Hex,
   verifyOperationRequest,
   verifyOperationStatusRequest,
+  verifyOperationStatusV2Request,
   verifyReadinessRequest,
   verifyStatusRequest,
   type AuthorityClaims,
@@ -24,6 +26,7 @@ import {
 } from "../src/protocol";
 import {
   handleOperationStatusRequest,
+  handleOperationStatusV2Request,
   type OperationStatusEnvironment,
 } from "../src/operation_status";
 
@@ -123,6 +126,7 @@ async function signedReadinessRequest(
 async function signedOperationStatusRequest(
   value = operationStatusQuery(),
   overrides: Partial<AuthorityClaims> = {},
+  path = INTERNAL_OPERATION_STATUS_PATH,
 ): Promise<Request> {
   const body = new TextEncoder().encode(JSON.stringify(value));
   const claims: AuthorityClaims = {
@@ -132,7 +136,7 @@ async function signedOperationStatusRequest(
     protocol_version: 1,
     dispatch_id: "operation-status-test-1",
     method: "POST",
-    path: INTERNAL_OPERATION_STATUS_PATH,
+    path,
     body_sha256: await sha256Hex(body),
     issued_at: now,
     expires_at: now + 30,
@@ -143,11 +147,18 @@ async function signedOperationStatusRequest(
     env.CONTAINER_AUTHORITY_CURRENT_KID,
     claims,
   );
-  return new Request(`https://controller.internal${INTERNAL_OPERATION_STATUS_PATH}`, {
+  return new Request(`https://controller.internal${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", [AUTHORITY_HEADER]: token },
     body,
   });
+}
+
+async function signedOperationStatusV2Request(
+  value = operationStatusQuery(),
+  overrides: Partial<AuthorityClaims> = {},
+): Promise<Request> {
+  return signedOperationStatusRequest(value, overrides, INTERNAL_OPERATION_STATUS_V2_PATH);
 }
 
 async function signedRequest(value = envelope(), overrides: Partial<AuthorityClaims> = {}): Promise<Request> {
@@ -258,6 +269,16 @@ describe("container controller private protocol", () => {
     expect(verified.query).toEqual(historicalQuery);
     expect(verified.claims.dispatch_id).toBe("operation-status-test-1");
 
+    const verifiedV2 = await verifyOperationStatusV2Request(
+      await signedOperationStatusV2Request(historicalQuery),
+      env,
+      now + 1,
+    );
+    expect(verifiedV2.query).toEqual(historicalQuery);
+    await expect(
+      verifyOperationStatusRequest(await signedOperationStatusV2Request(), env, now + 1),
+    ).rejects.toMatchObject({ code: "route_not_found", status: 404 });
+
     const signed = await signedOperationStatusRequest();
     const tampered = new Request(signed.url, {
       method: "POST",
@@ -299,6 +320,7 @@ describe("container controller private protocol", () => {
 
   test("status replays use only the ledger RPC and return the existing bounded outcome", async () => {
     const seen: OperationStatusQuery[] = [];
+    const seenV2: OperationStatusQuery[] = [];
     let forbiddenCalls = 0;
     const routeEnv: OperationStatusEnvironment & { DB: { prepare(): never } } = {
       ...env,
@@ -333,6 +355,49 @@ describe("container controller private protocol", () => {
                 },
               };
             },
+            async readOperationStatusV2(query: OperationStatusQuery) {
+              seenV2.push(query);
+              return {
+                ok: true as const,
+                snapshot: {
+                  operation: {
+                    operation_id: query.operation_id,
+                    owner_generation: query.owner_generation,
+                    operation_kind: "health_probe",
+                    trace_id: query.trace_id,
+                    envelope_sha256: "a".repeat(64),
+                    status: "running" as const,
+                    response_status: null,
+                    response_code: null,
+                    result_object_key: null,
+                    result_object_version: null,
+                    result_sha256: null,
+                    result_size: null,
+                    result_content_type: null,
+                  },
+                  provider_attempt: {
+                    operation_id: query.operation_id,
+                    owner_generation: query.owner_generation,
+                    attempt_generation: 1,
+                    provider_operation_id: envelope().provider_operation_id,
+                    admission_sha256: envelope().admission_sha256,
+                    request_sha256: envelope().input.sha256,
+                    status: "dispatched" as const,
+                    response_status: null,
+                    response_code: null,
+                    result_object_key: null,
+                    result_object_version: null,
+                    result_sha256: null,
+                    result_size: null,
+                    result_content_type: null,
+                    prepared_at: now + 1,
+                    dispatched_at: now + 2,
+                    terminal_at: null,
+                    updated_at: now + 2,
+                  },
+                },
+              };
+            },
             async fetch(): Promise<never> {
               forbiddenCalls += 1;
               throw new Error("Container fetch must not run");
@@ -358,8 +423,21 @@ describe("container controller private protocol", () => {
     );
     expect(first.status).toBe(202);
     expect(first.headers.get("cache-control")).toBe("no-store");
-    expect(await first.json()).toEqual(await replay.json());
+    const firstPayload = (await first.json()) as Record<string, unknown>;
+    expect(firstPayload).toEqual(await replay.json());
+    expect("provider_attempt" in firstPayload).toBe(false);
+
+    const v2 = await handleOperationStatusV2Request(
+      await signedOperationStatusV2Request(),
+      routeEnv,
+      now + 1,
+    );
+    expect(v2.status).toBe(202);
+    expect(await v2.json()).toMatchObject({
+      provider_attempt: { attempt_generation: 1, status: "dispatched" },
+    });
     expect(seen).toEqual([operationStatusQuery(), operationStatusQuery()]);
+    expect(seenV2).toEqual([operationStatusQuery()]);
     expect(forbiddenCalls).toBe(0);
   });
 

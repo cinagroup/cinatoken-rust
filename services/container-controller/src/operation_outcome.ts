@@ -1,6 +1,8 @@
 import {
   operationStorageResult,
   type OperationRow,
+  type OperationStatusSnapshot,
+  type ProviderAttemptRow,
   type StorageResultRecord,
 } from "./ledger";
 import { ProtocolError, type OperationEnvelope } from "./protocol";
@@ -18,6 +20,24 @@ export interface OperationOutcomePayload {
   code?: string;
   trace_id: string;
   result?: StorageResultRecord;
+}
+
+export interface ProviderAttemptStatusPayload {
+  attempt_generation: number;
+  provider_operation_id: string;
+  admission_sha256: string;
+  request_sha256: string;
+  status: ProviderAttemptRow["status"];
+  response_status: number | null;
+  response_code: string | null;
+  result: StorageResultRecord | null;
+  prepared_at: number;
+  dispatched_at: number | null;
+  terminal_at: number | null;
+}
+
+export interface OperationStatusPayload extends OperationOutcomePayload {
+  provider_attempt: ProviderAttemptStatusPayload | null;
 }
 
 export interface SerializedOperationOutcome {
@@ -163,6 +183,70 @@ export function operationOutcomeResponse(row: OperationRow): Response {
       "content-type": "application/json; charset=utf-8",
     },
   });
+}
+
+export function operationStatusResponse(snapshot: OperationStatusSnapshot): Response {
+  const outcome = serializeOperationOutcome(snapshot.operation);
+  const attempt = snapshot.provider_attempt;
+  if (
+    attempt !== null &&
+    (attempt.operation_id !== snapshot.operation.operation_id ||
+      attempt.owner_generation !== snapshot.operation.owner_generation ||
+      snapshot.operation.status === "claimed" ||
+      (snapshot.operation.status === "running" &&
+        (attempt.status === "ambiguous" || attempt.status === "cancelled")) ||
+      (snapshot.operation.status === "completed" && attempt.status !== "succeeded") ||
+      (snapshot.operation.status === "failed" &&
+        attempt.status !== "definite_reject" &&
+        attempt.status !== "cancelled") ||
+      (snapshot.operation.status === "recovery_required" && attempt.status !== "ambiguous"))
+  ) {
+    throw corruptOutcome();
+  }
+  const attemptResult = attempt === null ? null : operationStorageResult(attempt);
+  const operationResult = outcome.payload.result ?? null;
+  if (
+    attemptResult !== null &&
+    (operationResult === null || !storageResultsMatch(attemptResult, operationResult))
+  ) {
+    throw corruptOutcome();
+  }
+  const payload: OperationStatusPayload = {
+    ...outcome.payload,
+    provider_attempt:
+      attempt === null
+        ? null
+        : {
+            attempt_generation: attempt.attempt_generation,
+            provider_operation_id: attempt.provider_operation_id,
+            admission_sha256: attempt.admission_sha256,
+            request_sha256: attempt.request_sha256,
+            status: attempt.status,
+            response_status: attempt.response_status,
+            response_code: attempt.response_code,
+            result: attemptResult,
+            prepared_at: attempt.prepared_at,
+            dispatched_at: attempt.dispatched_at,
+            terminal_at: attempt.terminal_at,
+          },
+  };
+  return new Response(JSON.stringify(payload), {
+    status: outcome.http_status,
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
+}
+
+function storageResultsMatch(left: StorageResultRecord, right: StorageResultRecord): boolean {
+  return (
+    left.object_key === right.object_key &&
+    left.object_version === right.object_version &&
+    left.sha256 === right.sha256 &&
+    left.size === right.size &&
+    left.content_type === right.content_type
+  );
 }
 
 function validateOperationIdentity(row: OperationRow): void {

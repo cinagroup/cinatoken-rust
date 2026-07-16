@@ -6138,7 +6138,112 @@ audit, full Workerd, Rust/workspace, SQLite, wasm32, and release build checks
 passed.
 
 Remote 0045 application, isolated staging Root + fresh-step-up evidence,
-alerting, rollback, real R2/Container faults, provider-attempt journaling,
+alerting, rollback, real R2/Container faults, provider-broker/journal wiring,
 exact edge replay, Linux canary, N/N-1, old-writer drain, and 0046 enforcement
 remain mandatory. All eight Container cutover gates remain false. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## Provider Attempt Journal Verification (2026-07-17)
+
+This overlay verifies a default-off DO-local journal and protocol compatibility.
+It does not verify a provider network call, Container image, remote deployment,
+retry scheduler, global terminal acknowledgement, or production readiness.
+
+```powershell
+node node_modules/typescript/bin/tsc -p services/container-controller/tsconfig.json --noEmit
+# PASS.
+
+node node_modules/vitest/vitest.mjs run --config vitest.container-controller-protocol.config.mjs
+# PASS: 45 tests across operation outcomes, signed v1/v2 protocol, storage, and provider gateway.
+
+node node_modules/vitest/vitest.mjs run --config vitest.container-controller.config.mjs
+# PASS: 22 Workerd/DO SQLite tests.
+
+cargo test -p cinatoken-worker --lib container_controller
+# PASS: 10 tests; 0 failed.
+```
+
+Portable tests prove the provider virtual host accepts only exact host/path,
+POST JSON, bounded body, known fields, and attempt generations 1..3. The first
+dispatch response alone authorizes send; replay does not. Terminal success,
+definite rejection, and ambiguity have disjoint response shapes. Storage tests
+prove legacy R2 metadata remains version 1 and journaled metadata is version 2
+with the exact attempt generation.
+
+Workerd exercises the real DO SQLite schema and transactions. Coverage proves
+atomic operation start plus attempt creation, concurrent-start convergence,
+prepared/dispatched persistence across eviction, one-shot dispatch, immutable
+events, prepared deadline cancellation, dispatched ambiguity, definite-
+reject-only bounded retry policy, retry due-time and maximum, ambiguous
+operation recovery, exact attempt generation for result attach, and result-
+required success. It also reads a cancelled attempt through the production row
+validator so the safe-cancellation path cannot be write-only.
+
+Protocol coverage proves status v1 omits `provider_attempt`, v2 includes it
+under a separately signed path, and the two paths are not authority-
+interchangeable. TypeScript and Rust reject contradictory operation/attempt
+states and independently valid but unequal result manifests. Rust accepts a
+missing attempt field from v1, supports cancelled status, checks immutable
+provider/admission/request identity and generation bounds, and rejects malformed
+success, forged generation, or prepare/dispatch timestamps at or beyond the
+operation execution deadline.
+
+The full local release matrix passed on the final source:
+
+```powershell
+python tools/verify_sqlite.py
+# PASS: 45 migrations, 43 tables, 434 incremental columns, 64 key indexes.
+
+node tools/audit_d1_migration_config.mjs --json
+node --check tests/do-lifecycle-runtime.test.mjs
+# PASS: migration head remains 0045; syntax is valid.
+
+cargo fmt --all -- --check
+cargo test -p cinatoken-worker --lib
+# PASS: 771 passed; 0 failed.
+
+cargo test --workspace --exclude cinatoken-worker
+# PASS: 751 non-Worker unit/integration tests; all doc tests passed.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo check -p cinatoken-wfp-tenant --target wasm32-unknown-unknown
+cargo check -p cinatoken-wfp-outbound --target wasm32-unknown-unknown
+# PASS: all three wasm32 targets.
+
+node node_modules/vitest/vitest.mjs run --config vitest.do.config.mjs
+# PASS: 45 Workerd lifecycle tests.
+
+node node_modules/wrangler/bin/wrangler.js types `
+  services/container-controller/worker-configuration.d.ts `
+  --config services/container-controller/wrangler.jsonc `
+  --env-interface ContainerControllerEnv --check
+node node_modules/wrangler/bin/wrangler.js deploy `
+  --config services/container-controller/wrangler.jsonc `
+  --dry-run --containers-rollout none `
+  --outdir .wrangler/container-controller-build
+# PASS: generated types are current and the private Controller dry-run bundles.
+```
+
+An independent Node assertion parsed all three Controller JSON configs and
+proved every execution/storage/journal/retry/staging flag remains false,
+`CONTAINER_MAX_PROVIDER_ATTEMPTS=1`, no authority secret is committed, and
+Container capacity matches shard count. The optimized Worker build passed from
+`crates/worker` after explicitly injecting the Cargo.lock-matched global
+`wasm-bindgen 0.2.125` and the repository-local esbuild binary. A preliminary
+raw `worker-build` invocation exposed its private cached `wasm-bindgen 0.2.105`
+and correctly failed schema compatibility before packaging; no dependency was
+downgraded. Wrangler could not write its optional user-profile debug log under
+the filesystem sandbox, but both commands completed with exit code 0.
+
+Bun is unavailable in this shell, so the aggregate `bun run check` and the
+Bun-native config wrapper were not run and are not inferred from the Node
+substitutes. The underlying changed Controller suites, Workerd suites, Rust
+workspace, SQLite chain, wasm targets, release package, dry-run, formatter, and
+diff checks all passed.
+
+Remote evidence remains empty. Required next proof is an atomic private
+provider egress broker plus actual Linux Container client, followed by disabled
+deployment readback, N/N-1, one deterministic non-provider canary, real R2 and
+Container faults, global terminal ack/compaction, accounting convergence, load,
+cost, alerts, and rollback. Go/VPS remains authoritative and production remains
+**NO-GO**.

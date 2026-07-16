@@ -1167,3 +1167,41 @@ chain, fault/load/cost, canary, rollback, and approval evidence remain open.
 The detailed source mapping is in
 `docs/container-execution-plane-source-audit.md`. Production remains
 **NO-GO**.
+
+## 2026-07-17 Provider Attempt Ownership Mapping
+
+The refreshed cinaVibeSDK audit retains deterministic named Durable Object
+ownership and a persisted phase checkpoint, but does not copy its in-memory
+Promise locks, `Promise.race` timeout handling, interval scheduling, local
+workspace metadata, modulo shard choice, or best-effort cleanup. Those
+mechanisms cannot prove global uniqueness after eviction, redeploy, timeout,
+or split ownership.
+
+The refreshed Go cinaToken audit retains model mapping, group resolution,
+channel/credential policy, pre-reservation, usage parsing, and terminal billing
+semantics. It does not copy request-local channel switching after transport
+ambiguity or process-local BillingSession idempotency. A Cloudflare timeout can
+outlive the Worker that observed it, so a second local loop is not evidence
+that the first provider request was unsent.
+
+The target mapping is therefore:
+
+| Source concern | Rust/Cloudflare owner |
+| --- | --- |
+| Business admission and frozen billing | Edge Worker plus D1 |
+| Deterministic execution identity and deadline | D1 operation plus shard plan |
+| Attempt creation, generation, send grant, and classification | Named shard DO SQLite |
+| Provider credentials and actual network call | Future private provider Service Binding broker |
+| Disposable execution process | Linux Container |
+| Immutable input/result bytes | R2, fenced by operation and attempt |
+| Settlement/refund/accounting | Existing D1 financial terminal batch |
+| Recovery observation and operator re-observation | D1 reconciliation observer |
+
+The landed journal closes only the DO row in this mapping. It creates attempt
+1 atomically with operation start, appends immutable transition events, issues
+one dispatch grant, exposes a signed v2 snapshot, and fences R2 attachment by
+generation. The provider broker and Container client are not implemented;
+retry is hard disabled; global D1 terminal acknowledgement is absent. This is
+local architecture evidence, not cinaVibeSDK production proof and not a
+cinatoken traffic migration authorization. Go/VPS remains authoritative and
+production remains **NO-GO**.

@@ -1310,3 +1310,49 @@ expired deadline, R2 version/checksum drift, duplicate result, conflicting
 result, KV lag, D1 contention, and Container restart. Do not archive object
 bodies, caller keys, provider credentials, reservation secrets, or raw SQL.
 Customer traffic remains disabled until the broader production matrix passes.
+
+## Provider Attempt Journal Configuration Checklist
+
+The current approved tracked values are identical in default, staging, and
+production Controller JSONC:
+
+```text
+CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED=false
+CONTAINER_PROVIDER_RETRY_ENABLED=false
+CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED=false
+CONTAINER_MAX_PROVIDER_ATTEMPTS=1
+```
+
+Treat any other deployed value as configuration drift. The runtime also
+rejects retry=true or max attempts above one; the staging-verified variable is
+reserved and grants no current capability. Do not weaken this compiled guard
+to work around a failed canary.
+
+Before a disabled Controller deployment, verify:
+
+- `RelayShardContainer` remains a SQLite Durable Object with the expected
+  migration tag and Container class;
+- `provider-attempt.cinatoken.internal` is present only in `allowedHosts` and
+  `outboundByHost`, with no public route or DNS dependency;
+- Container internet remains disabled and the deny-all outbound fallback is
+  intact;
+- status v1 and v2 paths are separately authority-bound and neither accepts a
+  query string or public fallback;
+- journaled R2 result requests require the attempt-generation header and write
+  custom metadata version 2; and
+- no secret appears in JSONC, generated types, image layers, logs, status, or
+  archived evidence.
+
+Before any future journal-only staging drill, additionally require exact
+remote readback of Controller/Worker versions, DO class/migration, image digest,
+Service Bindings, D1/KV/R2 resources, compatibility date/flags, and all false
+gates. Verify old Worker/new Controller v1 and new Worker/old Controller v2-to-
+v1 fallback before allowing a single operation.
+
+Journal activation is prohibited until the actual Container client and atomic
+private provider egress broker are deployed and reviewed. Retry activation is
+prohibited beyond that until the DO scheduler, global terminal ack, and
+versioned multi-attempt R2 contract land in a separate candidate. Rollback is
+gate-off first; retain unacknowledged attempts/events and classify every
+dispatched operation before Controller or image rollback. Never delete journal
+evidence to clear capacity.

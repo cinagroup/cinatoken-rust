@@ -1014,6 +1014,7 @@ mod tests {
                 size: 256,
                 content_type: "application/json".to_string(),
             }),
+            provider_attempt: None,
         }
     }
 
@@ -1200,6 +1201,7 @@ mod tests {
                     http_status: 202,
                     code: None,
                     result: None,
+                    provider_attempt: None,
                 },
             ),
             ContainerDoObservation::Claimed
@@ -1220,6 +1222,7 @@ mod tests {
                     http_status: 202,
                     code: None,
                     result: None,
+                    provider_attempt: None,
                 },
             ),
             ContainerDoObservation::Running

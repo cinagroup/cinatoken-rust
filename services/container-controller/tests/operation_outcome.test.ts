@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { OperationRow } from "../src/ledger";
+import type { OperationRow, ProviderAttemptRow } from "../src/ledger";
 import {
   operationOutcomeResponse,
+  operationStatusResponse,
   parseContainerOperationResponse,
   serializeOperationOutcome,
 } from "../src/operation_outcome";
@@ -49,6 +50,30 @@ function operationRow(overrides: Partial<OperationRow> = {}): OperationRow {
     result_sha256: null,
     result_size: null,
     result_content_type: null,
+    ...overrides,
+  };
+}
+
+function providerAttemptRow(overrides: Partial<ProviderAttemptRow> = {}): ProviderAttemptRow {
+  return {
+    operation_id: "relayreserve-v2-operation",
+    owner_generation: 3,
+    attempt_generation: 1,
+    provider_operation_id: "provider-operation-1",
+    admission_sha256: "a".repeat(64),
+    request_sha256: "b".repeat(64),
+    status: "dispatched",
+    response_status: null,
+    response_code: null,
+    result_object_key: null,
+    result_object_version: null,
+    result_sha256: null,
+    result_size: null,
+    result_content_type: null,
+    prepared_at: 1_800_000_001,
+    dispatched_at: 1_800_000_002,
+    terminal_at: null,
+    updated_at: 1_800_000_002,
     ...overrides,
   };
 }
@@ -153,6 +178,66 @@ describe("durable container operation outcomes", () => {
     const response = operationOutcomeResponse(row);
     expect(response.status).toBe(202);
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("keeps v1 unchanged and exposes the attempt only in the v2 status payload", async () => {
+    const operation = operationRow();
+    const legacy = (await operationOutcomeResponse(operation).json()) as Record<string, unknown>;
+    expect("provider_attempt" in legacy).toBe(false);
+
+    const response = operationStatusResponse({
+      operation,
+      provider_attempt: providerAttemptRow(),
+    });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({
+      operation_id: operation.operation_id,
+      status: "running",
+      provider_attempt: {
+        attempt_generation: 1,
+        provider_operation_id: "provider-operation-1",
+        status: "dispatched",
+        response_status: null,
+        result: null,
+      },
+    });
+    expect(() =>
+      operationStatusResponse({
+        operation,
+        provider_attempt: providerAttemptRow({ operation_id: "other-operation" }),
+      }),
+    ).toThrowError("operation_outcome_corrupt");
+  });
+
+  it("rejects contradictory operation and attempt states or result manifests", () => {
+    const operation = operationRow({
+      status: "completed",
+      response_status: 200,
+      ...storedResult,
+    });
+    expect(() =>
+      operationStatusResponse({ operation, provider_attempt: providerAttemptRow() }),
+    ).toThrowError("operation_outcome_corrupt");
+
+    const succeeded = providerAttemptRow({
+      status: "succeeded",
+      response_status: 200,
+      ...storedResult,
+      terminal_at: 1_800_000_003,
+      updated_at: 1_800_000_003,
+    });
+    expect(
+      operationStatusResponse({ operation, provider_attempt: succeeded }).status,
+    ).toBe(200);
+    expect(() =>
+      operationStatusResponse({
+        operation,
+        provider_attempt: {
+          ...succeeded,
+          result_object_version: "different-r2-version",
+        },
+      }),
+    ).toThrowError("operation_outcome_corrupt");
   });
 
   it("returns a validated result manifest already persisted while running", () => {

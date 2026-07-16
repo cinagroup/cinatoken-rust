@@ -226,6 +226,338 @@ describe("RelayShardLedger in Workerd", () => {
     });
   });
 
+  it("persists one-shot provider dispatch authority across retries and eviction", async () => {
+    const stub = ledgerStub("provider-attempt-one-shot");
+    const operation = operationEnvelope("provider-attempt-one-shot", {
+      operation_kind: "chat_completion",
+    });
+    await stub.claim(operation, sha256("c"), "dispatch-provider-attempt", ledgerPolicy(), BASE_NOW);
+    await expect(
+      stub.prepareProviderAttemptOutcome(operation.operation_id, 1, 1, BASE_NOW + 1),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_attempt_not_authorized", status: 409 },
+    });
+    await expect(
+      stub.startOperationWithProviderAttemptOutcome(
+        operation.operation_id,
+        1,
+        { maxAttempts: 1, retryEnabled: false },
+        BASE_NOW + 1,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { kind: "prepared", row: { attempt_generation: 1, status: "prepared" } },
+    });
+    await expect(
+      stub.startOperationWithProviderAttemptOutcome(
+        operation.operation_id,
+        1,
+        { maxAttempts: 1, retryEnabled: false },
+        BASE_NOW + 2,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { kind: "existing", row: { attempt_generation: 1, status: "prepared" } },
+    });
+    await expect(
+      stub.dispatchProviderAttemptOutcome(operation.operation_id, 1, 1, BASE_NOW + 4),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { kind: "dispatched", row: { attempt_generation: 1, status: "dispatched" } },
+    });
+    await expect(
+      stub.dispatchProviderAttemptOutcome(operation.operation_id, 1, 1, BASE_NOW + 5),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { kind: "existing", row: { attempt_generation: 1, status: "dispatched" } },
+    });
+
+    await evictDurableObject(stub);
+    const snapshot = await runInDurableObject(stub, (_instance, state) => {
+      const ledger = new RelayShardLedger(state.storage);
+      return ledger.readOperationStatusSnapshot(operationStatusQuery(operation));
+    });
+    expect(snapshot.provider_attempt).toMatchObject({
+      operation_id: operation.operation_id,
+      owner_generation: 1,
+      attempt_generation: 1,
+      provider_operation_id: operation.provider_operation_id,
+      admission_sha256: operation.admission_sha256,
+      request_sha256: operation.input.sha256,
+      status: "dispatched",
+      prepared_at: BASE_NOW + 1,
+      dispatched_at: BASE_NOW + 4,
+    });
+  });
+
+  it("atomically starts the DO-owned attempt and safely cancels it before provider dispatch", async () => {
+    const stub = ledgerStub("provider-attempt-do-owner");
+    const operation = operationEnvelope("provider-attempt-do-owner", {
+      operation_kind: "chat_completion",
+      execution_deadline_at: BASE_NOW + 10,
+    });
+    await stub.claim(operation, sha256("1"), "dispatch-provider-do-owner", ledgerPolicy(), BASE_NOW);
+    const starts = await Promise.all([
+      stub.startOperationWithProviderAttemptOutcome(
+        operation.operation_id,
+        1,
+        { maxAttempts: 1, retryEnabled: false },
+        BASE_NOW + 1,
+      ),
+      stub.startOperationWithProviderAttemptOutcome(
+        operation.operation_id,
+        1,
+        { maxAttempts: 1, retryEnabled: false },
+        BASE_NOW + 1,
+      ),
+    ]);
+    expect(starts.map((outcome) => (outcome.ok ? outcome.result.kind : "error")).sort()).toEqual([
+      "existing",
+      "prepared",
+    ]);
+
+    await expect(
+      stub.expireOperation(operation.operation_id, 1, BASE_NOW + 11),
+    ).resolves.toBe(true);
+    await expect(stub.readOutcome(operation.operation_id)).resolves.toMatchObject({
+      status: "failed",
+      response_status: 504,
+      response_code: "provider_attempt_not_dispatched",
+    });
+    const persisted = await runInDurableObject(stub, (_instance, state) => {
+      const attempt = state.storage.sql
+        .exec<{
+          status: string;
+          dispatched_at: number | null;
+          terminal_at: number | null;
+        }>(
+          `SELECT status, dispatched_at, terminal_at
+             FROM cinatoken_shard_provider_attempts
+            WHERE operation_id = ?1 AND owner_generation = 1 AND attempt_generation = 1`,
+          operation.operation_id,
+        )
+        .one();
+      const retry = state.storage.sql
+        .exec<{ state: string; active_attempt_generation: number | null }>(
+          `SELECT state, active_attempt_generation
+             FROM cinatoken_shard_provider_retry_state
+            WHERE operation_id = ?1 AND owner_generation = 1`,
+          operation.operation_id,
+        )
+        .one();
+      const events = state.storage.sql
+        .exec<{ event_sequence: number; from_status: string | null; to_status: string }>(
+          `SELECT event_sequence, from_status, to_status
+             FROM cinatoken_shard_provider_attempt_events
+            WHERE operation_id = ?1 AND owner_generation = 1
+            ORDER BY event_sequence`,
+          operation.operation_id,
+        )
+        .toArray();
+      let immutable = false;
+      try {
+        state.storage.sql.exec(
+          `UPDATE cinatoken_shard_provider_attempt_events
+              SET to_status = 'ambiguous'
+            WHERE operation_id = ?1`,
+          operation.operation_id,
+        );
+      } catch {
+        immutable = true;
+      }
+      const statusAttempt = new RelayShardLedger(state.storage).readOperationStatusSnapshot(
+        operationStatusQuery(operation),
+      ).provider_attempt;
+      return { attempt, retry, events, immutable, statusAttempt };
+    });
+    expect(persisted).toEqual({
+      attempt: {
+        status: "cancelled",
+        dispatched_at: null,
+        terminal_at: BASE_NOW + 11,
+      },
+      retry: { state: "terminal", active_attempt_generation: null },
+      events: [
+        { event_sequence: 1, from_status: null, to_status: "prepared" },
+        { event_sequence: 2, from_status: "prepared", to_status: "cancelled" },
+      ],
+      immutable: true,
+      statusAttempt: expect.objectContaining({
+        attempt_generation: 1,
+        status: "cancelled",
+        dispatched_at: null,
+        terminal_at: BASE_NOW + 11,
+      }),
+    });
+  });
+
+  it("allows a bounded retry only after a definite rejection", async () => {
+    const stub = ledgerStub("provider-attempt-bounded-retry");
+    const operation = operationEnvelope("provider-attempt-bounded-retry", {
+      operation_kind: "chat_completion",
+    });
+    await stub.claim(operation, sha256("d"), "dispatch-provider-retry", ledgerPolicy(), BASE_NOW);
+    await expect(
+      stub.startOperationWithProviderAttemptOutcome(
+        operation.operation_id,
+        1,
+        { maxAttempts: 2, retryEnabled: true },
+        BASE_NOW + 1,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: { kind: "prepared" } });
+    await stub.dispatchProviderAttemptOutcome(operation.operation_id, 1, 1, BASE_NOW + 2);
+    const rejection = {
+      status: "definite_reject" as const,
+      response_status: 429,
+      response_code: "provider_rate_limited",
+    };
+    await expect(
+      stub.recordProviderAttemptOutcome(operation.operation_id, 1, 1, rejection, BASE_NOW + 4),
+    ).resolves.toMatchObject({ ok: true, result: { kind: "recorded" } });
+    await expect(
+      stub.recordProviderAttemptOutcome(operation.operation_id, 1, 1, rejection, BASE_NOW + 5),
+    ).resolves.toMatchObject({ ok: true, result: { kind: "duplicate" } });
+    await expect(
+      stub.recordProviderAttemptOutcome(
+        operation.operation_id,
+        1,
+        1,
+        { status: "ambiguous", response_status: 202, response_code: "provider_unknown" },
+        BASE_NOW + 6,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_attempt_outcome_conflict", status: 409 },
+    });
+    await expect(
+      stub.prepareProviderAttemptOutcome(operation.operation_id, 1, 2, BASE_NOW + 18),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_retry_not_due", status: 409 },
+    });
+    await expect(
+      stub.prepareProviderAttemptOutcome(operation.operation_id, 1, 2, BASE_NOW + 19),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { kind: "prepared", row: { attempt_generation: 2 } },
+    });
+    await stub.dispatchProviderAttemptOutcome(operation.operation_id, 1, 2, BASE_NOW + 20);
+    await stub.recordProviderAttemptOutcome(operation.operation_id, 1, 2, rejection, BASE_NOW + 21);
+    await expect(
+      stub.prepareProviderAttemptOutcome(operation.operation_id, 1, 2, BASE_NOW + 22),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_attempt_limit_exhausted", status: 409 },
+    });
+  });
+
+  it("moves an ambiguous provider attempt and its operation into recovery", async () => {
+    const stub = ledgerStub("provider-attempt-ambiguous");
+    const operation = operationEnvelope("provider-attempt-ambiguous", {
+      operation_kind: "chat_completion",
+    });
+    await stub.claim(operation, sha256("e"), "dispatch-provider-ambiguous", ledgerPolicy(), BASE_NOW);
+    await stub.startOperationWithProviderAttemptOutcome(
+      operation.operation_id,
+      1,
+      { maxAttempts: 1, retryEnabled: false },
+      BASE_NOW + 1,
+    );
+    await stub.dispatchProviderAttemptOutcome(operation.operation_id, 1, 1, BASE_NOW + 2);
+    await expect(
+      stub.recordProviderAttemptOutcome(
+        operation.operation_id,
+        1,
+        1,
+        {
+          status: "ambiguous",
+          response_status: 202,
+          response_code: "provider_response_unknown",
+        },
+        BASE_NOW + 3,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { kind: "recorded", row: { status: "ambiguous" } },
+    });
+    await expect(stub.readOutcome(operation.operation_id)).resolves.toMatchObject({
+      status: "recovery_required",
+      response_status: 202,
+      response_code: "provider_response_unknown",
+    });
+    await expect(
+      stub.prepareProviderAttemptOutcome(operation.operation_id, 1, 1, BASE_NOW + 4),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_attempt_not_authorized", status: 409 },
+    });
+  });
+
+  it("requires a durable result before a provider success can complete", async () => {
+    const stub = ledgerStub("provider-attempt-success");
+    const operation = operationEnvelope("provider-attempt-success", {
+      operation_kind: "chat_completion",
+    });
+    const result = {
+      object_key: `container-results/v1/${operation.operation_id}/1/${sha256("f")}`,
+      object_version: "result-version-provider-attempt",
+      sha256: sha256("f"),
+      size: 256,
+      content_type: "application/json",
+    };
+    await stub.claim(operation, sha256("f"), "dispatch-provider-success", ledgerPolicy(), BASE_NOW);
+    await stub.startOperationWithProviderAttemptOutcome(
+      operation.operation_id,
+      1,
+      { maxAttempts: 1, retryEnabled: false },
+      BASE_NOW + 1,
+    );
+    await stub.dispatchProviderAttemptOutcome(operation.operation_id, 1, 1, BASE_NOW + 2);
+    await expect(
+      stub.recordProviderAttemptOutcome(
+        operation.operation_id,
+        1,
+        1,
+        { status: "succeeded", response_status: 200, response_code: null },
+        BASE_NOW + 3,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_attempt_result_conflict", status: 409 },
+    });
+    await expect(
+      stub.recordStorageResultOutcome(operation.operation_id, 1, result, BASE_NOW + 4, 2),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_attempt_result_conflict", status: 409 },
+    });
+    await expect(
+      stub.recordStorageResultOutcome(operation.operation_id, 1, result, BASE_NOW + 4, 1),
+    ).resolves.toMatchObject({ ok: true, result: "recorded" });
+    await expect(
+      stub.recordProviderAttemptOutcome(
+        operation.operation_id,
+        1,
+        1,
+        { status: "succeeded", response_status: 200, response_code: null },
+        BASE_NOW + 5,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: { kind: "recorded" } });
+    await expect(
+      stub.finalizeOutcome(
+        operation.operation_id,
+        1,
+        "running",
+        "completed",
+        200,
+        null,
+        BASE_NOW + 6,
+        true,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: { status: "completed" } });
+  });
+
   it("reads claimed, running, and post-deadline terminal outcomes without ledger writes", async () => {
     const stub = ledgerStub("operation-status-read-only");
     const operation = operationEnvelope("operation-status", {

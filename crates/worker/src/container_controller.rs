@@ -40,6 +40,9 @@ const OPERATION_URL: &str =
 const OPERATION_STATUS_PATH: &str = "/internal/v1/operations/status";
 const OPERATION_STATUS_URL: &str =
     "https://cinatoken-container-controller.internal/internal/v1/operations/status";
+const OPERATION_STATUS_V2_PATH: &str = "/internal/v2/operations/status";
+const OPERATION_STATUS_V2_URL: &str =
+    "https://cinatoken-container-controller.internal/internal/v2/operations/status";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(12);
 const STATUS_MAX_BYTES: usize = 4 * 1024;
@@ -99,6 +102,7 @@ struct ControllerOperationPayload {
     code: Option<String>,
     trace_id: String,
     result: Option<ControllerOperationResult>,
+    provider_attempt: Option<ControllerProviderAttempt>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -109,6 +113,22 @@ struct ControllerOperationResult {
     sha256: String,
     size: u64,
     content_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerProviderAttempt {
+    attempt_generation: u32,
+    provider_operation_id: String,
+    admission_sha256: String,
+    request_sha256: String,
+    status: String,
+    response_status: Option<u16>,
+    response_code: Option<String>,
+    result: Option<ControllerOperationResult>,
+    prepared_at: i64,
+    dispatched_at: Option<i64>,
+    terminal_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -128,11 +148,34 @@ pub enum ContainerOperationStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerProviderAttemptStatus {
+    Prepared,
+    Dispatched,
+    Succeeded,
+    DefiniteReject,
+    Ambiguous,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerProviderAttemptOutcome {
+    pub attempt_generation: u32,
+    pub status: ContainerProviderAttemptStatus,
+    pub response_status: Option<u16>,
+    pub response_code: Option<String>,
+    pub result: Option<ContainerArtifactManifest>,
+    pub prepared_at: i64,
+    pub dispatched_at: Option<i64>,
+    pub terminal_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerOperationOutcome {
     pub status: ContainerOperationStatus,
     pub http_status: u16,
     pub code: Option<String>,
     pub result: Option<ContainerArtifactManifest>,
+    pub provider_attempt: Option<ContainerProviderAttemptOutcome>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -392,7 +435,6 @@ pub async fn query_operation_status(
     if envelope.protocol_version != authority.protocol_version {
         return Err("protocol_mismatch");
     }
-    let dispatch_id = random_dispatch_id("operation-status").ok_or("entropy_unavailable")?;
     let body = serde_json::to_vec(&ContainerOperationStatusQuery {
         protocol_version: envelope.protocol_version,
         operation_id: &envelope.operation_id,
@@ -401,18 +443,46 @@ pub async fn query_operation_status(
         trace_id: &envelope.trace_id,
     })
     .map_err(|_| "request_encode_failed")?;
-    let now = (worker::Date::now().as_millis() / 1000) as i64;
-    let token = sign_bound_authority(
+    match query_operation_status_path(
+        &fetcher,
         &authority,
-        &dispatch_id,
-        "POST",
-        OPERATION_STATUS_PATH,
+        envelope,
         &body,
-        now,
+        OPERATION_STATUS_V2_PATH,
+        OPERATION_STATUS_V2_URL,
     )
-    .ok_or("authority_sign_failed")?;
-    let request = operation_status_request(&token, &body).map_err(|_| "request_build_failed")?;
-    let operation = execute_operation(&fetcher, request, envelope);
+    .await
+    {
+        Err("route_not_found") => {
+            query_operation_status_path(
+                &fetcher,
+                &authority,
+                envelope,
+                &body,
+                OPERATION_STATUS_PATH,
+                OPERATION_STATUS_URL,
+            )
+            .await
+        }
+        result => result,
+    }
+}
+
+async fn query_operation_status_path(
+    fetcher: &Fetcher,
+    authority: &AuthorityConfig,
+    envelope: &ContainerOperationEnvelope,
+    body: &[u8],
+    path: &'static str,
+    url: &'static str,
+) -> Result<ContainerOperationOutcome, &'static str> {
+    let dispatch_id = random_dispatch_id("operation-status").ok_or("entropy_unavailable")?;
+    let now = (worker::Date::now().as_millis() / 1000) as i64;
+    let token = sign_bound_authority(authority, &dispatch_id, "POST", path, body, now)
+        .ok_or("authority_sign_failed")?;
+    let request =
+        operation_status_request(url, &token, body).map_err(|_| "request_build_failed")?;
+    let operation = execute_operation(fetcher, request, envelope);
     let delay = Delay::from(OPERATION_STATUS_TIMEOUT);
     futures_util::pin_mut!(operation);
     futures_util::pin_mut!(delay);
@@ -600,11 +670,156 @@ fn operation_outcome(
         ),
         _ => return Err("contract_mismatch"),
     };
+    let provider_attempt = payload
+        .provider_attempt
+        .map(|attempt| provider_attempt_outcome(attempt, envelope))
+        .transpose()?;
+    if provider_attempt.as_ref().is_some_and(|attempt| {
+        matches!(status, ContainerOperationStatus::Claimed)
+            || (matches!(status, ContainerOperationStatus::Running)
+                && matches!(
+                    attempt.status,
+                    ContainerProviderAttemptStatus::Ambiguous
+                        | ContainerProviderAttemptStatus::Cancelled
+                ))
+            || (matches!(status, ContainerOperationStatus::Completed)
+                && !matches!(attempt.status, ContainerProviderAttemptStatus::Succeeded))
+            || (matches!(status, ContainerOperationStatus::Failed)
+                && !matches!(
+                    attempt.status,
+                    ContainerProviderAttemptStatus::DefiniteReject
+                        | ContainerProviderAttemptStatus::Cancelled
+                ))
+            || (matches!(status, ContainerOperationStatus::RecoveryRequired)
+                && !matches!(attempt.status, ContainerProviderAttemptStatus::Ambiguous))
+    }) {
+        return Err("contract_mismatch");
+    }
+    if provider_attempt
+        .as_ref()
+        .and_then(|attempt| attempt.result.as_ref())
+        .is_some_and(|attempt_result| result.as_ref() != Some(attempt_result))
+    {
+        return Err("contract_mismatch");
+    }
     Ok(ContainerOperationOutcome {
         status,
         http_status,
         code: payload.code,
         result,
+        provider_attempt,
+    })
+}
+
+fn provider_attempt_outcome(
+    attempt: ControllerProviderAttempt,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerProviderAttemptOutcome, &'static str> {
+    if attempt.attempt_generation < 1
+        || attempt.attempt_generation > 3
+        || attempt.provider_operation_id != envelope.provider_operation_id
+        || attempt.admission_sha256 != envelope.admission_sha256
+        || attempt.request_sha256 != envelope.input.sha256
+        || attempt.prepared_at < 1
+        || attempt.prepared_at >= envelope.execution_deadline_at
+        || attempt.prepared_at >= envelope.owner_lease_expires_at
+        || attempt.dispatched_at.is_some_and(|value| {
+            value < attempt.prepared_at || value >= envelope.execution_deadline_at
+        })
+        || attempt.terminal_at.is_some_and(|value| {
+            value < attempt.prepared_at
+                || attempt
+                    .dispatched_at
+                    .is_some_and(|dispatched_at| value < dispatched_at)
+        })
+    {
+        return Err("contract_mismatch");
+    }
+    let result = attempt
+        .result
+        .map(|result| result_manifest(result, envelope))
+        .transpose()?;
+    let code_valid = attempt
+        .response_code
+        .as_deref()
+        .is_some_and(valid_response_code);
+    let status = match attempt.status.as_str() {
+        "prepared"
+            if attempt.response_status.is_none()
+                && attempt.response_code.is_none()
+                && result.is_none()
+                && attempt.dispatched_at.is_none()
+                && attempt.terminal_at.is_none() =>
+        {
+            ContainerProviderAttemptStatus::Prepared
+        }
+        "dispatched"
+            if attempt.response_status.is_none()
+                && attempt.response_code.is_none()
+                && result.is_none()
+                && attempt.dispatched_at.is_some()
+                && attempt.terminal_at.is_none() =>
+        {
+            ContainerProviderAttemptStatus::Dispatched
+        }
+        "succeeded"
+            if attempt
+                .response_status
+                .is_some_and(|status| (200..=299).contains(&status))
+                && attempt.response_code.is_none()
+                && result.is_some()
+                && attempt.dispatched_at.is_some()
+                && attempt.terminal_at.is_some_and(|value| {
+                    value < envelope.execution_deadline_at
+                        && value < envelope.owner_lease_expires_at
+                }) =>
+        {
+            ContainerProviderAttemptStatus::Succeeded
+        }
+        "definite_reject"
+            if attempt
+                .response_status
+                .is_some_and(|status| (400..=599).contains(&status))
+                && code_valid
+                && result.is_none()
+                && attempt.dispatched_at.is_some()
+                && attempt.terminal_at.is_some_and(|value| {
+                    value < envelope.execution_deadline_at
+                        && value < envelope.owner_lease_expires_at
+                }) =>
+        {
+            ContainerProviderAttemptStatus::DefiniteReject
+        }
+        "ambiguous"
+            if attempt.response_status == Some(202)
+                && code_valid
+                && attempt.dispatched_at.is_some()
+                && attempt.terminal_at.is_some() =>
+        {
+            ContainerProviderAttemptStatus::Ambiguous
+        }
+        "cancelled"
+            if attempt
+                .response_status
+                .is_some_and(|status| (400..=599).contains(&status))
+                && code_valid
+                && result.is_none()
+                && attempt.dispatched_at.is_none()
+                && attempt.terminal_at.is_some() =>
+        {
+            ContainerProviderAttemptStatus::Cancelled
+        }
+        _ => return Err("contract_mismatch"),
+    };
+    Ok(ContainerProviderAttemptOutcome {
+        attempt_generation: attempt.attempt_generation,
+        status,
+        response_status: attempt.response_status,
+        response_code: attempt.response_code,
+        result,
+        prepared_at: attempt.prepared_at,
+        dispatched_at: attempt.dispatched_at,
+        terminal_at: attempt.terminal_at,
     })
 }
 
@@ -947,7 +1162,7 @@ fn operation_request(token: &str, body: &[u8]) -> worker::Result<Request> {
     Request::new_with_init(OPERATION_URL, &init)
 }
 
-fn operation_status_request(token: &str, body: &[u8]) -> worker::Result<Request> {
+fn operation_status_request(url: &str, token: &str, body: &[u8]) -> worker::Result<Request> {
     let mut headers = Headers::new();
     headers.set("accept", "application/json")?;
     headers.set("content-type", "application/json")?;
@@ -957,7 +1172,7 @@ fn operation_status_request(token: &str, body: &[u8]) -> worker::Result<Request>
         .with_headers(headers)
         .with_body(Some(js_sys::Uint8Array::from(body).buffer().into()))
         .with_redirect(RequestRedirect::Error);
-    Request::new_with_init(OPERATION_STATUS_URL, &init)
+    Request::new_with_init(url, &init)
 }
 
 fn status_matches(
@@ -1261,6 +1476,7 @@ mod tests {
             code: None,
             trace_id: envelope.trace_id.clone(),
             result: None,
+            provider_attempt: None,
         };
         assert_eq!(
             operation_outcome(202, claimed.clone(), &envelope)
@@ -1291,6 +1507,7 @@ mod tests {
                 size: 256,
                 content_type: "application/json".to_string(),
             }),
+            provider_attempt: None,
         };
         let outcome = operation_outcome(200, completed.clone(), &envelope).unwrap();
         assert_eq!(outcome.status, ContainerOperationStatus::Completed);
@@ -1328,9 +1545,141 @@ mod tests {
             code: Some("container_execution_ambiguous".to_string()),
             trace_id: envelope.trace_id.clone(),
             result: None,
+            provider_attempt: None,
         };
         let recovery = operation_outcome(202, recovery, &envelope).unwrap();
         assert_eq!(recovery.status, ContainerOperationStatus::RecoveryRequired);
+    }
+
+    #[test]
+    fn provider_attempt_status_is_fenced_and_supports_safe_cancellation() {
+        let envelope = test_operation();
+        let result = ControllerOperationResult {
+            object_key: format!(
+                "container-results/v1/relayreserve-test/2/{}",
+                "c".repeat(64)
+            ),
+            object_version: "version-result-attempt-1".to_string(),
+            sha256: "c".repeat(64),
+            size: 256,
+            content_type: "application/json".to_string(),
+        };
+        let succeeded = ControllerProviderAttempt {
+            attempt_generation: 1,
+            provider_operation_id: envelope.provider_operation_id.clone(),
+            admission_sha256: envelope.admission_sha256.clone(),
+            request_sha256: envelope.input.sha256.clone(),
+            status: "succeeded".to_string(),
+            response_status: Some(200),
+            response_code: None,
+            result: Some(result.clone()),
+            prepared_at: 1_800_000_100,
+            dispatched_at: Some(1_800_000_101),
+            terminal_at: Some(1_800_000_102),
+        };
+        let completed = ControllerOperationPayload {
+            protocol_version: 1,
+            operation_id: envelope.operation_id.clone(),
+            status: "completed".to_string(),
+            code: None,
+            trace_id: envelope.trace_id.clone(),
+            result: Some(result.clone()),
+            provider_attempt: Some(succeeded.clone()),
+        };
+        let completed = operation_outcome(200, completed, &envelope).unwrap();
+        assert_eq!(
+            completed.provider_attempt.unwrap().status,
+            ContainerProviderAttemptStatus::Succeeded
+        );
+
+        let cancelled = ControllerProviderAttempt {
+            attempt_generation: 1,
+            provider_operation_id: envelope.provider_operation_id.clone(),
+            admission_sha256: envelope.admission_sha256.clone(),
+            request_sha256: envelope.input.sha256.clone(),
+            status: "cancelled".to_string(),
+            response_status: Some(504),
+            response_code: Some("provider_attempt_not_dispatched".to_string()),
+            result: None,
+            prepared_at: 1_800_000_100,
+            dispatched_at: None,
+            terminal_at: Some(1_800_000_120),
+        };
+        let failed = ControllerOperationPayload {
+            protocol_version: 1,
+            operation_id: envelope.operation_id.clone(),
+            status: "failed".to_string(),
+            code: Some("provider_attempt_not_dispatched".to_string()),
+            trace_id: envelope.trace_id.clone(),
+            result: None,
+            provider_attempt: Some(cancelled.clone()),
+        };
+        let failed = operation_outcome(504, failed, &envelope).unwrap();
+        assert_eq!(
+            failed.provider_attempt.unwrap().status,
+            ContainerProviderAttemptStatus::Cancelled
+        );
+
+        let mut forged_generation = cancelled;
+        forged_generation.attempt_generation = 4;
+        assert_eq!(
+            provider_attempt_outcome(forged_generation, &envelope),
+            Err("contract_mismatch")
+        );
+        let mut missing_result = succeeded.clone();
+        missing_result.result = None;
+        assert_eq!(
+            provider_attempt_outcome(missing_result, &envelope),
+            Err("contract_mismatch")
+        );
+        let mut late_prepare = succeeded.clone();
+        late_prepare.prepared_at = envelope.execution_deadline_at;
+        late_prepare.dispatched_at = Some(envelope.execution_deadline_at + 1);
+        late_prepare.terminal_at = Some(envelope.execution_deadline_at + 2);
+        assert_eq!(
+            provider_attempt_outcome(late_prepare, &envelope),
+            Err("contract_mismatch")
+        );
+        let mut late_terminal = succeeded.clone();
+        late_terminal.terminal_at = Some(envelope.execution_deadline_at);
+        assert_eq!(
+            provider_attempt_outcome(late_terminal, &envelope),
+            Err("contract_mismatch")
+        );
+
+        let mut mismatched_attempt = succeeded;
+        mismatched_attempt.result = Some(ControllerOperationResult {
+            object_key: format!(
+                "container-results/v1/relayreserve-test/2/{}",
+                "d".repeat(64)
+            ),
+            object_version: "version-result-attempt-other".to_string(),
+            sha256: "d".repeat(64),
+            size: 256,
+            content_type: "application/json".to_string(),
+        });
+        let mismatched = ControllerOperationPayload {
+            protocol_version: 1,
+            operation_id: envelope.operation_id.clone(),
+            status: "completed".to_string(),
+            code: None,
+            trace_id: envelope.trace_id.clone(),
+            result: Some(result),
+            provider_attempt: Some(mismatched_attempt),
+        };
+        assert_eq!(
+            operation_outcome(200, mismatched, &envelope),
+            Err("contract_mismatch")
+        );
+
+        let legacy: ControllerOperationPayload = serde_json::from_value(serde_json::json!({
+            "protocol_version": 1,
+            "operation_id": envelope.operation_id,
+            "status": "running",
+            "trace_id": envelope.trace_id
+        }))
+        .unwrap();
+        assert!(legacy.provider_attempt.is_none());
     }
 
     #[test]

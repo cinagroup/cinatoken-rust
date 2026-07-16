@@ -1300,3 +1300,61 @@ not staging evidence and does not change the production **NO-GO** decision.
 
 No authenticated remote evidence is currently archived. This sequence is a
 runbook, not a release authorization; production remains **NO-GO**.
+
+## 2026-07-17 Provider Attempt Journal Rollout Order
+
+This rollout is blocked at step 0. The landed code is a default-off local
+contract, not permission to deploy provider execution.
+
+0. Complete the missing atomic provider egress broker, Container client,
+   global terminal acknowledgement, and attempt-aware multi-generation R2
+   contract. Keep retry hard disabled. Review the broker's credential,
+   allowlist, absolute-deadline, response-bound, idempotency/lookup, terminal-
+   classification, and redaction design before any remote journal drill.
+1. Build and sign the real linux/amd64 image. Archive digest, SBOM, signature,
+   vulnerability scan, non-root/no-SSH/no-internet configuration, and exact
+   Controller commit. Do not use a mutable image tag as evidence.
+2. Deploy the Controller first with journal, retry, staging proof, execution,
+   storage actions, readiness wake, and edge routing all false. Verify private
+   Service Bindings, DO class/migration, Container class, image digest, D1/KV/R2
+   resource IDs, account/zone, compatibility date, and secret names without
+   recording secret values.
+3. Prove N/N-1 before execution: old Worker -> new Controller uses unchanged
+   status v1; new Worker -> old Controller receives exact v2 route-not-found
+   and falls back to v1; new Worker -> new Controller accepts v2; malformed or
+   contradictory attempt snapshots fail closed. Roll Controller forward first
+   and back last.
+4. In an isolated non-provider fixture, exercise DO start/dispatch/terminal
+   persistence across eviction, duplicate dispatch, stale generation, prepared
+   deadline cancellation, dispatched deadline ambiguity, R2 write followed by
+   attach failure, and capacity retention with missing global ack. The journal
+   flag remains false for real Container operations during this proof.
+5. After the broker and Container client exist, enable only journal plus the
+   minimum storage gates for one deterministic local provider fixture. Keep
+   retry false and max attempts 1. Prove one schedule, one prepared row, one
+   send grant, one provider invocation, one result object, one terminal event,
+   one global ack, and one exact replay under client retry and Worker/DO/image
+   restart races.
+6. Run the provider fault matrix: definite pre-send rejection, connection
+   failure before known send, timeout after dispatch, partial response,
+   oversized response, provider 429/5xx, result PUT ambiguity, DO attach
+   ambiguity, Container OOM, host restart, sleep/wake, Controller redeploy, and
+   mixed protocol versions. Any dispatched uncertainty must converge through
+   recovery without a second provider call.
+7. Reconcile provider invoice, operation, R2, terminal/outbox, reservation,
+   settlement/refund, request count, channel usage, and audit identity. Require
+   zero unexplained rows, alerts and retention ownership, measured load/cost,
+   and a disable-first rollback rehearsal before setting any staging-proof
+   value.
+8. Retry remains a separate later release. It requires a DO-owned scheduler,
+   exact definite-reject allowlist, bounded delay/horizon, max 2 for initial
+   rollout, a versioned R2 key/manifest, generation-fenced result attachment,
+   global terminal acknowledgement, duplicate alarm proof, and its own signed
+   candidate and approvals. The current runtime intentionally rejects retry.
+
+Rollback order is edge Container routing off, journal admission off, execution
+off, storage writes off, then Controller/image rollback after in-flight
+operations are classified and globally acknowledged. Preserve DO attempts,
+events, R2 objects, D1 operation/financial rows, and provider evidence. Never
+delete an unacknowledged attempt to regain capacity. Go/VPS remains the traffic
+and financial authority throughout these steps; production remains **NO-GO**.

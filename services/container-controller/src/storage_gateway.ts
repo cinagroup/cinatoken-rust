@@ -17,6 +17,8 @@ export const D1_ADMISSION_PATH = "/v1/admission";
 
 export const CONTENT_SHA256_HEADER = "x-cinatoken-content-sha256";
 export const R2_OBJECT_VERSION_HEADER = "x-cinatoken-r2-version";
+export const PROVIDER_ATTEMPT_GENERATION_HEADER =
+  "x-cinatoken-provider-attempt-generation";
 export const MAX_R2_OBJECT_BYTES = 64 * 1024 * 1024;
 export const MAX_KV_CONFIG_BYTES = 32 * 1024;
 export const KV_OPERATION_CONFIG_PREFIX = "container-operation-config/v1/";
@@ -47,6 +49,7 @@ export interface R2ResultPutGrant {
   owner_generation: number;
   provider_operation_id: string;
   admission_sha256: string;
+  attempt_generation: number | null;
   sha256: string;
   size: number;
   content_type: string;
@@ -529,6 +532,7 @@ function isStorageAccessGrant(value: unknown): value is StorageAccessGrant {
           "owner_generation",
           "provider_operation_id",
           "admission_sha256",
+          "attempt_generation",
           "sha256",
           "size",
           "content_type",
@@ -537,6 +541,8 @@ function isStorageAccessGrant(value: unknown): value is StorageAccessGrant {
         isPositiveInteger(value.owner_generation) &&
         validIdentifier(value.provider_operation_id, 128) &&
         validSha256(value.admission_sha256) &&
+        (value.attempt_generation === null ||
+          (isPositiveInteger(value.attempt_generation) && value.attempt_generation <= 3)) &&
         validSha256(value.sha256) &&
         isNonNegativeInteger(value.size) &&
         validContentType(value.content_type)
@@ -720,11 +726,14 @@ function r2ResultMatches(
 
 function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
   return {
-    gateway_version: "1",
+    gateway_version: grant.attempt_generation === null ? "1" : "2",
     operation_id: grant.operation_id,
     owner_generation: String(grant.owner_generation),
     provider_operation_id: grant.provider_operation_id,
     admission_sha256: grant.admission_sha256,
+    ...(grant.attempt_generation === null
+      ? {}
+      : { attempt_generation: String(grant.attempt_generation) }),
     sha256: grant.sha256,
     size: String(grant.size),
     content_type: grant.content_type,

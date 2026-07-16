@@ -1879,3 +1879,35 @@ journaling, edge replay, Linux canary, real R2/Container faults, N/N-1,
 old-writer drain, remote 0042-0045 proof, 0046 enforcement, rollback, and C1-C5
 remain open. All eight cutover gates stay false; Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+## 2026-07-17 Phase 1 Default-Off Provider Attempt Journal Gate
+
+The isolated Controller now has a Durable Object-owned provider-attempt
+journal, but the gate remains closed. After deadline recovery is scheduled,
+one DO SQLite transaction starts the operation, freezes a versioned retry
+policy, creates attempt 1 as `prepared`, and appends the first immutable event.
+The Container-facing host exposes only strict dispatch and terminal actions.
+It cannot create attempt 1, prepare a retry, select a new channel, or mutate
+financial state.
+
+Dispatch authority is consumed once and survives DO eviction. Exact replay
+returns `send_authorized=false`. A prepared deadline becomes a safe
+`cancelled`/failed outcome; a dispatched deadline or explicit ambiguous result
+becomes `recovery_required`. Success requires an attempt-fenced R2 manifest
+already attached to the operation. Definite rejection forbids a result and is
+the only classification that can enter the internally tested retry waiting
+state.
+
+Status v1 is unchanged. Status v2 adds the attempt snapshot under a separately
+signed path, and the Rust Worker falls back to v1 only when an older Controller
+returns exact `route_not_found`. R2 result custom metadata carries gateway
+schema 2 plus `attempt_generation` for journaled operations; stale or missing
+generations cannot attach the result.
+
+Tracked development, staging, and production config keeps journal, retry, and
+staging verification false and max attempts at one. Runtime code additionally
+rejects retry enablement or a larger maximum. The provider Service Binding
+egress broker, DO retry scheduler, global D1 terminal ack, multi-attempt R2
+contract, actual Linux Container client, N/N-1 deployment drill, and remote
+fault evidence are still absent. Migration 0046 remains reserved for legacy
+enforcement. Go/VPS remains authoritative and production remains **NO-GO**.

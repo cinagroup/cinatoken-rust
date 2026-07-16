@@ -57,10 +57,10 @@ Shard DO execution:
          -> recovery_required(ambiguous execution)
       -> failed(deadline before dispatch)
 
-Future provider-attempt journal:
+Provider-attempt journal foundation (implemented locally, activation prohibited):
 
     prepared -> dispatched -> succeeded
-                           -> definite_reject
+             -> cancelled  -> definite_reject
                            -> ambiguous
 
 recovery_required is terminal for automatic execution: normal requests may
@@ -429,7 +429,9 @@ The following are still mandatory:
   default, then one approved Root + fresh-step-up drill, exact duplicate
   readback, same-batch audit, zero protected-state delta, alerts, and
   disable-first rollback;
-- dispatch-before-send provider attempt journal and one retry owner;
+- wire the implemented dispatch-before-send journal to an atomic private
+  provider egress broker, then add the DO-owned retry scheduler without
+  exposing prepare or retry authority to the Container;
 - deterministic local provider canary in the actual Linux image;
 - wire the implemented create-only exact client-response R2 write and verified
   byte replay into the narrow edge canary without enabling any broader route;
@@ -464,3 +466,72 @@ execute null-primary-key, nullable-terminal, type-affinity, identity rewrite,
 timestamp rollback, and terminal-reactivation negatives. Workerd must cover
 running timeout to recovery, result-required completion, exact result
 persistence across eviction, stale owner denial, and terminal storage denial.
+
+## Provider Attempt Journal Boundary
+
+The local journal narrows the ambiguous interval between durable admission and
+provider I/O. It does not yet perform provider I/O. Ownership is fixed as
+follows:
+
+| Action | Sole owner | Durable precondition | Result |
+| --- | --- | --- | --- |
+| Create attempt 1 | Shard DO | Recovery schedule persisted; claimed operation and live owner/deadline | Atomic running state, frozen policy, prepared row, immutable event |
+| Consume send authority | Shard DO through Container outbound handler | Exact operation/owner/attempt; policy state active; attempt prepared | One dispatched transition; only first response authorizes send |
+| Persist provider classification | Shard DO | Exact dispatched attempt and active policy generation | succeeded, definite_reject, or ambiguous event |
+| Attach R2 result | Shard DO after create-only R2 write | Exact latest dispatched attempt generation | Operation manifest CAS; stale generation rejected |
+| Create later attempt | Future DO scheduler only | Prior definite reject, frozen policy, due time, remaining deadline | Not reachable from Container; runtime retry gate currently hard closed |
+
+The attempt projection and append-only event ledger have separate purposes.
+The projection supports bounded current-state reads. Events preserve the
+transition evidence required for reconciliation and later global terminal
+acknowledgement. Attempt identity, provider operation ID, admission digest,
+request digest, generation, and prepared time cannot change. Retry policy,
+maximum attempts, enabled bit, deadline, and creation time are also immutable.
+
+### Deadline and terminal classification
+
+| Durable attempt state | Deadline action | Operation action | Retry permission |
+| --- | --- | --- | --- |
+| No attempt, claimed | failed 504 | `container_execution_deadline_expired` | none |
+| prepared | cancelled 504 | failed `provider_attempt_not_dispatched` | none; send was never authorized |
+| dispatched | ambiguous 202 | `recovery_required` | none |
+| succeeded with exact result | no reinterpretation | completion may finalize | none |
+| definite_reject without result | no reinterpretation | failure may finalize | future policy may schedule, currently disabled |
+| ambiguous | no reinterpretation | `recovery_required` in the same transaction | none |
+
+A timeout never creates a new provider attempt. `cancelled` is deliberately
+different from ambiguous: dispatch authority was not consumed, so the failure
+is definite. Once authority is consumed, absence of a terminal response is
+ambiguous even when no response bytes were observed.
+
+### Protocol compatibility and R2 fencing
+
+`/internal/v1/operations/status` remains unchanged for old Workers. The signed
+v2 route adds one nullable provider-attempt snapshot. A new Worker tries v2,
+falls back to v1 only for `route_not_found`, and strictly checks attempt
+identity, generation, timestamps, state/operation combination, response shape,
+and result equality. A result present on both operation and attempt must match
+key, version, digest, size, and content type exactly.
+
+Legacy R2 result writes retain gateway metadata version 1. Journaled writes use
+version 2 and include `attempt_generation`. The Container must send the same
+generation header, the latest attempt must still be dispatched, and the DO
+records the same generation when attaching the R2 manifest. This only supports
+max attempts 1 today because the object key remains the v1 operation/owner/hash
+shape; a future multi-attempt rollout needs an independently versioned key and
+manifest contract.
+
+### Activation prohibition
+
+Every tracked environment keeps the journal, retry, and staging-proof flags
+false with max attempts 1. The runtime rejects retry=true and max attempts
+above one regardless of environment values. Journal enablement is also
+prohibited until the Container image actually uses the dispatch/terminal
+protocol and provider calls are mediated by an atomic private Service Binding
+broker. Direct internet egress remains disabled.
+
+Terminal journal rows are retained while global D1 acknowledgement is absent.
+This can fill the bounded ledger and return capacity backpressure; it must not
+be bypassed by deleting attempts or events. Global terminal/outbox integration,
+alerting, compaction acknowledgement, Linux lifecycle faults, and remote mixed-
+version proof remain mandatory before any isolated staging enablement.

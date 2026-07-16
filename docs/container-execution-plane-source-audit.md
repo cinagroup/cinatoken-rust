@@ -222,6 +222,49 @@ must use its returned owner generation. It must not assume a generation or
 recompute billing expressions in the Container. The full implementation order
 and invariants are in docs/container-operation-recovery.md.
 
-No edge business operation, provider attempt journal, actual Container storage
-client, byte replay, or settlement connection exists yet. Those remain the next
-P0 implementation boundary, and production remains **NO-GO**.
+At that audit checkpoint, no edge business operation, provider attempt journal,
+actual Container storage client, byte replay, or settlement connection existed.
+The delta below records the subsequent local journal foundation; the other P0
+connections remain open and production remains **NO-GO**.
+
+## Provider Attempt Audit Delta (2026-07-17)
+
+The audit was refreshed against Go cinaToken commit `73652508` and
+cinaVibeSDK commit `918e9748` before adding the local journal.
+
+Go's relay loop is request-local: `controller/relay.go`,
+`relay/channel/api_request.go`, and the Task path may classify a transport
+failure as retryable and switch channel inside the same process. Its
+BillingSession idempotency is also process-local, and some response paths can
+precede final settlement. Those behaviors are valid source observations but
+cannot be copied as Cloudflare global ownership after Worker loss, timeout, DO
+eviction, or Controller rollout. The target retains Go's upstream selection,
+credential, model/group, pre-consume, usage, and settlement policy while
+replacing local retry authority with durable attempt state.
+
+cinaVibeSDK demonstrates deterministic named Durable Objects and useful
+persistent phase checkpoints. Its Promise-based locks, timeout races,
+`setInterval` ownership, local workspace metadata, modulo shard selection, and
+best-effort cleanup are not durable uniqueness or recovery contracts. The
+target uses Jump Hash routing already defined by the shard planner, DO SQLite
+transactions and immutable events, one deadline schedule, and explicit
+terminal/recovery state.
+
+The resulting local closure is intentionally narrower than the previous P0:
+
+- the DO alone creates attempt 1 and freezes policy;
+- the Container can consume one dispatch grant and report a terminal class but
+  cannot prepare another attempt;
+- prepared timeout is cancelled as definitely unsent;
+- dispatched timeout and explicit ambiguity require recovery with no retry;
+- status v2 and R2 result attachment carry the exact attempt generation; and
+- TypeScript and Rust independently reject cross-state or manifest divergence.
+
+The actual provider-call boundary remains open. The current outbound route
+returns a dispatch grant but does not atomically forward to a provider Service
+Binding, inject credentials, or classify network results. The current Linux
+image does not call the journal. Retry and max attempts above one are rejected
+at runtime, global D1 terminal ack is not wired, and no remote lifecycle or
+provider invoice evidence exists. Therefore the audit finding moves from
+"journal absent" to "journal foundation local only"; production remains
+**NO-GO**.

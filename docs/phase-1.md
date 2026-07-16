@@ -1606,3 +1606,20 @@ readback first, ledger-only inspection second, and one explicitly approved
 cold/warm shard probe third. N/N-1, real lifecycle/fault, image supply-chain,
 storage/provider/billing, load/cost, rollback, and approval evidence remain
 hard blockers. Production remains **NO-GO**.
+
+## 2026-07-16 Phase 1 Container Shared Storage Gate
+
+The Controller now compiles a narrow shared-storage contract for the sharded
+execution plane. A Container may request only an exact R2 input, create an
+immutable R2 result, read bounded operation configuration from KV, or read a
+minimal owner-fenced admission snapshot from D1. The owning DO authorizes each
+action only for the current running generation before its deadline and
+generation-CAS records the R2 result identity for replay.
+
+All four storage action flags are false in local, staging, and production
+configuration. Local protocol, Workerd ledger, TypeScript, Rust capability,
+type-generation, and Wrangler dry-run evidence can qualify the contract for an
+isolated remote canary, but cannot enable customer traffic. Remote binding
+readback, real Container calls, R2/KV/D1 fault cases, N/N-1, provider recovery,
+billing convergence, image provenance, load/cost, and rollback evidence remain
+hard blockers. Production remains **NO-GO**.

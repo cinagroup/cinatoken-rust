@@ -764,4 +764,84 @@ describe("RelayShardLedger in Workerd", () => {
       lifecycle_state: "draining",
     });
   });
+
+  it("fences shared-storage access by running owner generation and persists result identity", async () => {
+    const stub = ledgerStub("storage-owner-fence");
+    const operation = operationEnvelope("storage-operation", {
+      operation_kind: "chat_completion",
+      input: {
+        mode: "r2",
+        sha256: sha256("c"),
+        size: 4096,
+        content_type: "application/json",
+        request_object_key: `container-inputs/v1/${sha256("c")}`,
+        object_version: "input-version-1",
+      },
+    });
+    const result = {
+      object_key: `container-results/v1/${operation.operation_id}/1/${sha256("d")}`,
+      object_version: "result-version-1",
+      sha256: sha256("d"),
+      size: 8192,
+      content_type: "application/json",
+    };
+
+    await stub.claim(operation, sha256("e"), "dispatch-storage", ledgerPolicy(), BASE_NOW);
+    await expect(
+      stub.authorizeStorageOutcome(operation.operation_id, 1, BASE_NOW),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "storage_access_denied", status: 403 },
+    });
+    await stub.transition(operation.operation_id, 1, "claimed", "running", null, BASE_NOW, true);
+    await expect(
+      stub.authorizeStorageOutcome(operation.operation_id, 2, BASE_NOW + 1),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "storage_access_denied", status: 403 },
+    });
+    await expect(
+      stub.authorizeStorageOutcome(operation.operation_id, 1, BASE_NOW + 1),
+    ).resolves.toMatchObject({
+      ok: true,
+      grant: {
+        operation_id: operation.operation_id,
+        owner_generation: 1,
+        operation_kind: "chat_completion",
+        provider_operation_id: operation.provider_operation_id,
+        admission_sha256: operation.admission_sha256,
+        input: operation.input,
+        result: null,
+      },
+    });
+    await expect(
+      stub.recordStorageResultOutcome(operation.operation_id, 1, result, BASE_NOW + 2),
+    ).resolves.toEqual({ ok: true, result: "recorded" });
+    await expect(
+      stub.recordStorageResultOutcome(operation.operation_id, 1, result, BASE_NOW + 3),
+    ).resolves.toEqual({ ok: true, result: "duplicate" });
+    await expect(
+      stub.recordStorageResultOutcome(
+        operation.operation_id,
+        1,
+        { ...result, content_type: "application/octet-stream" },
+        BASE_NOW + 4,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "storage_result_conflict", status: 409 },
+    });
+
+    await evictDurableObject(stub);
+    await expect(
+      stub.authorizeStorageOutcome(operation.operation_id, 1, BASE_NOW + 5),
+    ).resolves.toMatchObject({ ok: true, grant: { result } });
+    await stub.transition(operation.operation_id, 1, "running", "completed", 200, BASE_NOW + 6);
+    await expect(
+      stub.authorizeStorageOutcome(operation.operation_id, 1, BASE_NOW + 7),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "storage_access_denied", status: 403 },
+    });
+  });
 });

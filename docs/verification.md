@@ -5637,3 +5637,42 @@ explicit cold probe, warm probe, malformed/timeout/rate-limit, concurrency,
 replay, draining, sleep/restart/OOM, N/N-1, image provenance, load/cost, and
 rollback evidence must be archived without secrets. Local PASS cannot promote
 the staging marker or production gate.
+
+## Container Shared Storage Gateway Verification (2026-07-16)
+
+Run the local contract gates with all storage flags false:
+
+```powershell
+node node_modules/typescript/bin/tsc -p services/container-controller/tsconfig.json --noEmit
+node node_modules/vitest/vitest.mjs run --config vitest.container-controller-protocol.config.mjs
+node node_modules/vitest/vitest.mjs run --config vitest.container-controller.config.mjs
+cargo test -p cinatoken-worker --lib container_scheduler
+node node_modules/wrangler/bin/wrangler.js types services/container-controller/worker-configuration.d.ts --config services/container-controller/wrangler.jsonc --env-interface ContainerControllerEnv --check
+node node_modules/wrangler/bin/wrangler.js deploy --config services/container-controller/wrangler.jsonc --dry-run --containers-rollout none
+```
+
+Current local evidence is TypeScript PASS, 22/22 portable protocol tests,
+14/14 Workerd/SQLite scenarios, 720/720 Worker library tests, 12 authority
+tests, 6 runtime library tests, 7 runtime HTTP tests, 6 sharding tests, wasm
+check PASS, formatting PASS, generated types current, and Wrangler dry-run
+PASS with every storage gate false. Bun is not installed in this environment,
+so the equivalent checked-in TypeScript, Vitest, and Workerd entry points were
+used. Wrangler also reports a non-fatal EPERM while attempting to write its
+optional user-profile log; both the type check and dry run exit successfully.
+
+The portable protocol suite must cover default deny, exact route/method/host,
+R2 input version/digest/size/type, result size/type/checksum/create-only key,
+exact replay, conflicting result, bounded KV, and D1 owner fencing. The
+Workerd suite must prove running-only grants, wrong-generation denial, result
+CAS/idempotency/conflict, DO eviction persistence, and terminal-state denial.
+Generated types and dry-run binding output must contain `DB`, `CONFIG_KV`,
+`FILE_BUCKET`, and all four false action gates.
+
+Remote acceptance is separate: exercise the same cases from a real Container,
+include cold/warm/sleep/restart/OOM and N/N-1, and archive exact deployment,
+image, binding, R2 version, operation, and rollback identities without secrets.
+Exercise simultaneous different-result uploads and prove bounded orphan-object
+inventory/cleanup before enabling R2 writes. For D1, prove that `operation_id`
+is the exact billing reservation key and that generation changes deny stale
+Container reads.
+No local test or dry run may change an action flag or production verdict.

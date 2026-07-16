@@ -1260,3 +1260,33 @@ Do not store caller keys, raw request bodies, provider IDs, credentials, or
 frozen contracts in capability archives. Record only candidate/config hashes,
 aggregate counts, redacted digests, status transitions, provider request
 counts, and invoice reconciliation. Production remains **NO-GO**.
+
+## Container Shared Storage Binding Checklist
+
+The Container Controller requires three least-privilege bindings: `DB` for the
+admission reservation projection, `CONFIG_KV` for bounded operation config,
+and `FILE_BUCKET` for immutable operation inputs/results. Confirm the resource
+IDs and bucket name by remote deployment readback; tracked JSONC values alone
+are not production evidence.
+The operation envelope's `operation_id` must be the exact D1
+`relay_billing_reservations.reservation_key`; do not add another Container-
+supplied reservation identifier.
+
+Keep all four action flags false on the first deployment:
+
+- `CONTAINER_STORAGE_R2_READ_ENABLED`
+- `CONTAINER_STORAGE_R2_WRITE_ENABLED`
+- `CONTAINER_STORAGE_KV_READ_ENABLED`
+- `CONTAINER_STORAGE_D1_READ_ENABLED`
+
+Promote in this order: disabled Controller deployment, binding readback, one
+isolated R2 read canary, KV and D1 read canaries, then one create-only R2 result
+canary with DO replay. Never enable all actions together. Roll back the action
+flag before changing bindings or image versions, and retain the prior
+Controller version and image digest until restart/replay evidence is complete.
+
+Archive allow/deny results for wrong operation, wrong owner generation,
+expired deadline, R2 version/checksum drift, duplicate result, conflicting
+result, KV lag, D1 contention, and Container restart. Do not archive object
+bodies, caller keys, provider credentials, reservation secrets, or raw SQL.
+Customer traffic remains disabled until the broader production matrix passes.

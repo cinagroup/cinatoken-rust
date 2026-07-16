@@ -8,6 +8,9 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["services/container-controller/tests/protocol.test.ts"],
+    include: [
+      "services/container-controller/tests/protocol.test.ts",
+      "services/container-controller/tests/storage_gateway.test.ts",
+    ],
   },
 });

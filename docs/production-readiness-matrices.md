@@ -792,3 +792,22 @@ The audit follows Cloudflare Workers binding/Promise guidance, Durable Object
 alarm semantics, and D1 batch rollback behavior. It does not close remote WFP
 namespace upload/readback or paid-canary evidence. Production remains
 **NO-GO**.
+
+## 2026-07-16 Container Shared Storage Gate Matrix
+
+| Gate | Required evidence | Current verdict |
+| --- | --- | --- |
+| Local authority contract | Exact operation/owner/deadline grant, narrow hosts, no generic CRUD, persisted result CAS | PASS (local only) |
+| Remote binding identity | Deployed Controller binding readback matches approved D1, KV, and R2 resources in the target account | Blocked |
+| R2 input | Real Container proves exact version/digest/size/type read and drift rejection | Blocked |
+| R2 result and replay | Create-only result, returned object version, exact duplicate replay, concurrent conflict/orphan cleanup, and restart recovery | Blocked |
+| KV behavior | Bounded config read plus propagation-lag and stale-value policy evidence | Blocked |
+| D1 behavior | Owner-fenced admission under contention, timeout, and ambiguous commit evidence | Blocked |
+| Container lifecycle | Cold/warm/sleep/restart/OOM and N/N-1 calls through `outboundByHost` | Blocked |
+| Operation cutover | Provider recovery, usage evidence, billing convergence, load/cost, rollback, and C1-C5 approval | **NO-GO** |
+
+A local PASS may only permit a disabled Controller artifact to enter isolated
+staging. It may not turn on a storage action flag, execution gate, scheduler,
+or customer route. Promotion evidence must identify the exact deployment,
+binding resources, image digest, protocol versions, test operation IDs, and
+rollback target without recording credentials or request bodies.

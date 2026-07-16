@@ -1081,7 +1081,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let container_controller_probe =
         probe_container_controller(&env, container_scheduler_status).await;
     // Local source contracts are reported separately from deployed bindings,
-    // shared storage, rolling compatibility, and remote fault evidence.
+    // rolling compatibility, and remote fault evidence.
     let container_local_contracts = container_local_contracts();
     let container_scheduler_controller_service_binding_available =
         container_controller_probe.binding_available;
@@ -1108,7 +1108,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let container_scheduler_container_runtime_compiled = container_local_contracts.runtime_compiled;
     let container_scheduler_deny_by_default_egress_compiled =
         container_local_contracts.deny_by_default_egress_compiled;
-    let container_scheduler_shared_storage_contract_compiled = false;
+    let container_scheduler_shared_storage_contract_compiled =
+        container_local_contracts.shared_storage_compiled;
     let container_scheduler_n_minus_one_protocol_compiled = false;
     let container_scheduler_capacity_rejection_compiled =
         container_local_contracts.capacity_rejection_compiled;

@@ -5,8 +5,11 @@ import {
   type ClaimResult,
   type OperationStatus,
   type ReadinessCompletion,
+  type RecordStorageResultOutcome,
   type RelayShardLedgerPolicy,
   type ShardReadinessSnapshot,
+  type StorageAccessGrant,
+  type StorageResultRecord,
 } from "../../services/container-controller/src/ledger";
 import {
   ProtocolError,
@@ -20,6 +23,14 @@ type ClaimOutcome =
 
 type ReadinessBeginOutcome =
   | { ok: true; generation: number }
+  | { ok: false; error: { code: string; status: number } };
+
+type StorageAccessOutcome =
+  | { ok: true; grant: StorageAccessGrant }
+  | { ok: false; error: { code: string; status: number } };
+
+type StorageResultOutcome =
+  | { ok: true; result: RecordStorageResultOutcome }
   | { ok: false; error: { code: string; status: number } };
 
 interface LedgerWorkerEnv {
@@ -144,6 +155,43 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
 
   async readinessSnapshot(shard: OperationShard, now: number): Promise<ShardReadinessSnapshot> {
     return this.ledger.readShardReadiness(shard, now);
+  }
+
+  async authorizeStorageOutcome(
+    operationId: string,
+    ownerGeneration: number,
+    now: number,
+  ): Promise<StorageAccessOutcome> {
+    try {
+      return {
+        ok: true,
+        grant: this.ledger.authorizeStorageAccess(operationId, ownerGeneration, now),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
+  }
+
+  async recordStorageResultOutcome(
+    operationId: string,
+    ownerGeneration: number,
+    result: StorageResultRecord,
+    now: number,
+  ): Promise<StorageResultOutcome> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.recordStorageResult(operationId, ownerGeneration, result, now),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
   }
 }
 

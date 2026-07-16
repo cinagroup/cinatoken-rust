@@ -880,6 +880,23 @@ deadlines, remote fault injection, invoice reconciliation, alert/load evidence,
 credential rotation, and signed rollback still block Task v2 and production.
 Go/VPS remains authoritative and production remains **NO-GO**.
 
+## 2026-07-16 Container Shared Storage Gateway Status
+
+The local Controller now has four deny-by-default, owner-fenced storage
+actions: exact R2 input, immutable R2 result, bounded KV config, and minimal D1
+admission state. The DO ledger persists operation/input identity and records an
+exact R2 result version through owner-generation CAS. Portable tests cover
+route/method restrictions, integrity bounds, create-only writes, exact replay,
+conflict, KV bounds, and D1 fencing; Workerd covers eviction persistence and
+terminal-state denial.
+
+This changes the shared-storage line item from absent to local-only. It does
+not change the production verdict: every storage action flag remains false,
+the real Container and remote bindings are untested, and edge operation,
+provider, billing, N/N-1, image, fault, load/cost, canary, and rollback gates
+remain open. No deployment or secret operation occurred. Go/VPS remains
+authoritative and production remains **NO-GO**.
+
 ## 2026-07-15 Audited Task Poll Recovery Status
 
 The current local D1 head is `0037_task_poll_recovery.sql`. It creates an

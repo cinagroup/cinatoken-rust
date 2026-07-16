@@ -182,3 +182,27 @@ Second, local Workerd tests exercise the production SQLite ledger but not the
 actual Cloudflare Container process or lifecycle callbacks. Those gaps must be
 closed by Controller-first staging rollout and mixed-version/lifecycle fault
 evidence before any operation route can use the execution plane.
+
+## Shared Storage Audit Delta
+
+The earlier absence of a Container-side D1/KV/R2 contract is now narrowed, not
+fully closed. The Controller has a local action-specific gateway for exact R2
+input, immutable R2 result, bounded KV configuration, and minimal D1 admission
+state. Every request is authorized against the owning DO's persisted running
+operation, owner generation, and deadline. The gateway cannot enumerate data,
+select arbitrary keys, issue arbitrary SQL, or overwrite a result.
+
+This applies the useful source patterns from `cinavibesdk`: named DO ownership,
+a durable supervisor around a disposable executor, narrow storage interfaces,
+and persistent generation/CAS state. It also retains the important Go relay
+constraint: admission and billing authority stay outside provider execution,
+and one stable provider operation identity must survive retries and recovery.
+
+The remaining gap is now concrete. No edge business route submits an operation
+to this plane; no real Container image calls these hosts; no provider request,
+usage evidence, settlement, ambiguous-timeout reconciliation, or response
+replay reaches the client. A local Workerd DO and in-memory binding test cannot
+substitute for remote R2 versioning, KV propagation, D1 contention, actual
+Container lifecycle, or N/N-1 evidence. The next execution milestone must add
+one end-to-end non-billable provider canary while all customer traffic remains
+on Go/VPS.

@@ -14,6 +14,10 @@
     "CONTAINER_EXECUTION_ENABLED": "false",
     "CONTAINER_READINESS_PROBE_ENABLED": "false",
     "CONTAINER_READINESS_WAKE_ENABLED": "false",
+    "CONTAINER_STORAGE_R2_READ_ENABLED": "false",
+    "CONTAINER_STORAGE_R2_WRITE_ENABLED": "false",
+    "CONTAINER_STORAGE_KV_READ_ENABLED": "false",
+    "CONTAINER_STORAGE_D1_READ_ENABLED": "false",
     "CONTAINER_PROTOCOL_VERSION": "1",
     "CONTAINER_RING_GENERATION": "1",
     "CONTAINER_SHARD_COUNT": "8",
@@ -25,6 +29,25 @@
     "CONTAINER_AUTHORITY_CURRENT_KID": "staging-v1",
     "CONTAINER_AUTHORITY_PREVIOUS_KID": ""
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cinatoken-rust-staging",
+      "database_id": "c285553f-7f98-4ec2-b4d6-f84a3b409f3e"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CONFIG_KV",
+      "id": "ff7fe9b7ff5d469d946a43e9d3ff6224"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILE_BUCKET",
+      "bucket_name": "cinatoken-rust-files-staging"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {

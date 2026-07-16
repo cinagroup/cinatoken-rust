@@ -501,3 +501,35 @@ All edge and Controller read/wake/staging switches remain false. This contract
 does not replace actual Container lifecycle, N/N-1, provider, storage, billing,
 load, cost, image supply-chain, canary, or rollback evidence. Production stays
 **NO-GO**.
+
+## 2026-07-16 Owner-Fenced Shared Storage Gateway
+
+`RelayShardContainer.outboundByHost` now exposes four internal-only storage
+actions. Cloudflare evaluates `allowedHosts` before the handlers, and each
+handler runs in the Worker trust domain with bindings plus `ctx.containerId`.
+The Controller converts that opaque Container ID to exactly one `RELAY_SHARDS`
+Durable Object and asks its durable ledger for an operation grant. A grant is
+valid only for the current owner generation while the operation is running and
+before its deadline.
+
+| Action | Container request | Durable effect |
+| --- | --- | --- |
+| Input | Exact R2 object read | Body streams only after version/digest/size/type verification |
+| Result | Immutable R2 object create | R2 version and object identity are generation-CAS attached to the operation |
+| Config | Fixed KV snapshot read | Bounded operation-kind configuration only |
+| Admission | Fixed D1 reservation read | Minimal owner-fenced reservation state only |
+
+There is deliberately no generic storage proxy: no R2 list/delete/overwrite,
+no arbitrary KV key, and no caller-supplied SQL. Result replay is exact and
+idempotent; conflicting content fails closed. The Worker cancels or consumes
+bounded bodies on rejection so failed authorization does not become an
+unbounded memory or connection path.
+
+Activation order is Controller deployment with all four gates false, remote
+binding readback, one isolated R2 input canary, KV and D1 read canaries, then a
+create-only R2 result canary with DO replay verification. Actual operation
+traffic remains later and separately gated. Evidence must include wrong-owner,
+expired-deadline, object-version drift, checksum mismatch, duplicate replay,
+conflict, KV lag, D1 ambiguity, Container restart, and N/N-1 cases. Until that
+remote evidence exists, this is a compiled local contract and production is
+**NO-GO**.

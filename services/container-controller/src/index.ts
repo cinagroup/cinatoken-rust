@@ -4,7 +4,10 @@ import {
   RelayShardLedger,
   type OperationRow,
   type OperationStatus,
+  type RecordStorageResultOutcome,
   type RelayShardLedgerPolicy,
+  type StorageAccessGrant,
+  type StorageResultRecord,
 } from "./ledger";
 import {
   AUTHORITY_HEADER,
@@ -21,6 +24,22 @@ import {
   verifyReadinessRequest,
   verifyStatusRequest,
 } from "./protocol";
+import {
+  CONTENT_SHA256_HEADER,
+  D1_ADMISSION_HOST,
+  KV_CONFIG_HOST,
+  MAX_R2_OBJECT_BYTES,
+  R2_INPUT_HOST,
+  R2_OBJECT_VERSION_HEADER,
+  R2_RESULT_HOST,
+  STORAGE_GATEWAY_ACTIONS,
+  deriveR2ResultKey,
+  handleStorageGatewayRequest,
+  type R2ResultPutGrant,
+  type StorageAccessGrant as GatewayStorageAccessGrant,
+  type StorageGatewayAction,
+  type StorageGatewayEnvironment,
+} from "./storage_gateway";
 
 export { ContainerProxy };
 
@@ -29,6 +48,10 @@ interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
   CONTAINER_EXECUTION_ENABLED: string;
   CONTAINER_READINESS_PROBE_ENABLED: string;
   CONTAINER_READINESS_WAKE_ENABLED: string;
+  CONTAINER_STORAGE_R2_READ_ENABLED: string;
+  CONTAINER_STORAGE_R2_WRITE_ENABLED: string;
+  CONTAINER_STORAGE_KV_READ_ENABLED: string;
+  CONTAINER_STORAGE_D1_READ_ENABLED: string;
   CONTAINER_MAX_IN_FLIGHT_PER_SHARD: string;
   CONTAINER_TERMINAL_RETENTION_SECONDS: string;
   CONTAINER_MAX_TERMINAL_OPERATIONS: string;
@@ -42,6 +65,13 @@ type ControllerEnv = Omit<
 > & ControllerRuntimeEnvironment & {
   RELAY_SHARDS: DurableObjectNamespace<RelayShardContainer>;
 };
+
+interface ContainerStorageRuntimeEnvironment {
+  CONTAINER_STORAGE_R2_READ_ENABLED: string;
+  CONTAINER_STORAGE_R2_WRITE_ENABLED: string;
+  CONTAINER_STORAGE_KV_READ_ENABLED: string;
+  CONTAINER_STORAGE_D1_READ_ENABLED: string;
+}
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const READINESS_TIMEOUT_MS = 10_000;
@@ -79,6 +109,14 @@ type ShardReadinessRpcResult =
   | { ok: true; result: ShardReadinessResult }
   | { ok: false; error: { code: string; status: number } };
 
+export type ShardStorageAccessRpcResult =
+  | { ok: true; grant: StorageAccessGrant }
+  | { ok: false; error: { code: string; status: number } };
+
+export type ShardStorageResultRpcResult =
+  | { ok: true; result: RecordStorageResultOutcome }
+  | { ok: false; error: { code: string; status: number } };
+
 export class RelayShardContainer extends Container<ControllerEnv> {
   override defaultPort = 8080;
   override requiredPorts = [8080];
@@ -87,12 +125,61 @@ export class RelayShardContainer extends Container<ControllerEnv> {
   override envVars: Record<string, string> = { CINATOKEN_CONTAINER_PORT: "8080" };
   override enableInternet = false;
   override interceptHttps = true;
-  override allowedHosts: string[] = [];
+  override allowedHosts: string[] = [
+    R2_INPUT_HOST,
+    R2_RESULT_HOST,
+    KV_CONFIG_HOST,
+    D1_ADMISSION_HOST,
+  ];
   override pingEndpoint = "/healthz";
 
   static override outbound = (): Response => jsonError("container_egress_denied", 403);
 
   private readonly ledger = new RelayShardLedger(this.ctx.storage);
+
+  async authorizeStorageAccess(
+    operationId: string,
+    ownerGeneration: number,
+  ): Promise<ShardStorageAccessRpcResult> {
+    try {
+      return {
+        ok: true,
+        grant: this.ledger.authorizeStorageAccess(
+          operationId,
+          ownerGeneration,
+          Math.floor(Date.now() / 1000),
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return { ok: false, error: { code: "storage_access_unavailable", status: 503 } };
+    }
+  }
+
+  async recordStorageResult(
+    operationId: string,
+    ownerGeneration: number,
+    result: StorageResultRecord,
+  ): Promise<ShardStorageResultRpcResult> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.recordStorageResult(
+          operationId,
+          ownerGeneration,
+          result,
+          Math.floor(Date.now() / 1000),
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return { ok: false, error: { code: "storage_result_unavailable", status: 503 } };
+    }
+  }
 
   async readinessProbe(
     probe: ShardReadinessProbe,
@@ -381,6 +468,13 @@ export class RelayShardContainer extends Container<ControllerEnv> {
   }
 }
 
+RelayShardContainer.outboundByHost = {
+  [R2_INPUT_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.R2_INPUT_GET),
+  [R2_RESULT_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.R2_RESULT_PUT),
+  [KV_CONFIG_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET),
+  [D1_ADMISSION_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET),
+};
+
 const handler: ExportedHandler<ControllerEnv> = {
   async fetch(request, env): Promise<Response> {
     try {
@@ -466,6 +560,229 @@ function responseForExisting(row: OperationRow): Response {
     JSON.stringify({ operation_id: row.operation_id, status: row.status, duplicate: true }),
     { status, headers: jsonHeaders },
   );
+}
+
+const STORAGE_OPERATION_ID_HEADER = "x-cinatoken-operation-id";
+const STORAGE_OWNER_GENERATION_HEADER = "x-cinatoken-owner-generation";
+
+function storageOutboundHandler(action: StorageGatewayAction) {
+  return async (
+    request: Request,
+    env: Cloudflare.Env,
+    context: { containerId: string },
+  ): Promise<Response> => {
+    if (!storageActionEnabled(action, env)) {
+      await cancelRequestBody(request);
+      return jsonError("storage_gateway_disabled", 503);
+    }
+    const identity = storageOperationIdentity(request);
+    if (identity === null) {
+      await cancelRequestBody(request);
+      return jsonError("storage_access_denied", 403);
+    }
+    let id: DurableObjectId;
+    try {
+      id = env.RELAY_SHARDS.idFromString(context.containerId);
+    } catch {
+      await cancelRequestBody(request);
+      return jsonError("storage_access_denied", 403);
+    }
+    const stub = env.RELAY_SHARDS.get(id);
+    const access = await stub.authorizeStorageAccess(
+      identity.operationId,
+      identity.ownerGeneration,
+    );
+    if (!access.ok) {
+      await cancelRequestBody(request);
+      return jsonError(access.error.code, access.error.status);
+    }
+    const gatewayGrant = gatewayStorageGrant(action, request, access.grant);
+    if (gatewayGrant === null) {
+      await cancelRequestBody(request);
+      return jsonError("storage_access_denied", 403);
+    }
+    const response = await handleStorageGatewayRequest(storageGatewayEnv(env), request, gatewayGrant);
+    if (gatewayGrant.action !== STORAGE_GATEWAY_ACTIONS.R2_RESULT_PUT || !response.ok) {
+      return response;
+    }
+    return persistStorageResultResponse(stub, response, gatewayGrant);
+  };
+}
+
+function storageActionEnabled(
+  action: StorageGatewayAction,
+  env: ContainerStorageRuntimeEnvironment,
+): boolean {
+  const value =
+    action === STORAGE_GATEWAY_ACTIONS.R2_INPUT_GET
+      ? env.CONTAINER_STORAGE_R2_READ_ENABLED
+      : action === STORAGE_GATEWAY_ACTIONS.R2_RESULT_PUT
+        ? env.CONTAINER_STORAGE_R2_WRITE_ENABLED
+        : action === STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET
+          ? env.CONTAINER_STORAGE_KV_READ_ENABLED
+          : env.CONTAINER_STORAGE_D1_READ_ENABLED;
+  return value === "true";
+}
+
+function storageOperationIdentity(
+  request: Request,
+): { operationId: string; ownerGeneration: number } | null {
+  const operationId = request.headers.get(STORAGE_OPERATION_ID_HEADER);
+  const generation = request.headers.get(STORAGE_OWNER_GENERATION_HEADER);
+  if (
+    operationId === null ||
+    operationId.length < 1 ||
+    operationId.length > 128 ||
+    !/^[A-Za-z0-9._:-]+$/.test(operationId) ||
+    generation === null ||
+    !/^[1-9]\d{0,15}$/.test(generation)
+  ) {
+    return null;
+  }
+  const ownerGeneration = Number(generation);
+  return Number.isSafeInteger(ownerGeneration) ? { operationId, ownerGeneration } : null;
+}
+
+function gatewayStorageGrant(
+  action: StorageGatewayAction,
+  request: Request,
+  grant: StorageAccessGrant,
+): GatewayStorageAccessGrant | null {
+  switch (action) {
+    case STORAGE_GATEWAY_ACTIONS.R2_INPUT_GET:
+      return grant.input.mode === "r2" &&
+        grant.input.request_object_key !== null &&
+        grant.input.object_version !== null
+        ? {
+            action,
+            key: grant.input.request_object_key,
+            version: grant.input.object_version,
+            sha256: grant.input.sha256,
+            size: grant.input.size,
+            content_type: grant.input.content_type,
+          }
+        : null;
+    case STORAGE_GATEWAY_ACTIONS.R2_RESULT_PUT: {
+      if (grant.result !== null) {
+        return {
+          action,
+          operation_id: grant.operation_id,
+          owner_generation: grant.owner_generation,
+          provider_operation_id: grant.provider_operation_id,
+          admission_sha256: grant.admission_sha256,
+          sha256: grant.result.sha256,
+          size: grant.result.size,
+          content_type: grant.result.content_type,
+        };
+      }
+      const sha256 = request.headers.get(CONTENT_SHA256_HEADER);
+      const contentLength = request.headers.get("content-length");
+      const contentType = request.headers.get("content-type");
+      if (
+        sha256 === null ||
+        !/^[0-9a-f]{64}$/.test(sha256) ||
+        contentLength === null ||
+        !/^\d+$/.test(contentLength) ||
+        contentType === null
+      ) {
+        return null;
+      }
+      const size = Number(contentLength);
+      if (!Number.isSafeInteger(size) || size < 0 || size > MAX_R2_OBJECT_BYTES) return null;
+      return {
+        action,
+        operation_id: grant.operation_id,
+        owner_generation: grant.owner_generation,
+        provider_operation_id: grant.provider_operation_id,
+        admission_sha256: grant.admission_sha256,
+        sha256,
+        size,
+        content_type: contentType,
+      };
+    }
+    case STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET:
+      return { action, operation_kind: grant.operation_kind };
+    case STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET:
+      return {
+        action,
+        operation_id: grant.operation_id,
+        owner_generation: grant.owner_generation,
+      };
+  }
+}
+
+function storageGatewayEnv(env: Cloudflare.Env): StorageGatewayEnvironment {
+  return {
+    CONTAINER_STORAGE_GATEWAY_ENABLED: "true",
+    CONTAINER_STORAGE_INPUT_R2: env.FILE_BUCKET,
+    CONTAINER_STORAGE_RESULT_R2: env.FILE_BUCKET,
+    CONTAINER_STORAGE_CONFIG_KV: env.CONFIG_KV,
+    CONTAINER_STORAGE_ADMISSION_DB: env.DB,
+  };
+}
+
+async function persistStorageResultResponse(
+  stub: DurableObjectStub<RelayShardContainer>,
+  response: Response,
+  grant: R2ResultPutGrant,
+): Promise<Response> {
+  const status = response.status;
+  const headers = new Headers(response.headers);
+  const objectVersion = response.headers.get(R2_OBJECT_VERSION_HEADER);
+  if (
+    objectVersion === null ||
+    objectVersion.length < 1 ||
+    objectVersion.length > 256 ||
+    !/^[A-Za-z0-9._:-]+$/.test(objectVersion)
+  ) {
+    await response.body?.cancel("storage_result_invalid").catch(() => undefined);
+    return jsonError("storage_result_invalid", 502);
+  }
+  let body: Uint8Array;
+  try {
+    body = await readBoundedResponse(response, 1024);
+  } catch {
+    return jsonError("storage_result_invalid", 502);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
+    );
+  } catch {
+    return jsonError("storage_result_invalid", 502);
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return jsonError("storage_result_invalid", 502);
+  }
+  const record = value as Record<string, unknown>;
+  const expectedKey = deriveR2ResultKey(grant);
+  if (
+    record.key !== expectedKey ||
+    record.sha256 !== grant.sha256 ||
+    record.size !== grant.size ||
+    typeof record.replayed !== "boolean" ||
+    Object.keys(record).some(
+      (key) => !["key", "sha256", "size", "replayed"].includes(key),
+    )
+  ) {
+    return jsonError("storage_result_invalid", 502);
+  }
+  const persisted = await stub.recordStorageResult(grant.operation_id, grant.owner_generation, {
+    object_key: expectedKey,
+    object_version: objectVersion,
+    sha256: grant.sha256,
+    size: grant.size,
+    content_type: grant.content_type,
+  });
+  if (!persisted.ok) return jsonError(persisted.error.code, persisted.error.status);
+  headers.set("content-length", String(body.byteLength));
+  return new Response(body, { status, headers });
+}
+
+async function cancelRequestBody(request: Request): Promise<void> {
+  if (request.body === null || request.bodyUsed) return;
+  await request.body.cancel("storage_request_rejected").catch(() => undefined);
 }
 
 function protocolErrorResponse(error: unknown): Response {

@@ -87,6 +87,7 @@ pub fn container_scheduler_foundation_compiled() -> bool {
 pub struct ContainerLocalContracts {
     pub runtime_compiled: bool,
     pub deny_by_default_egress_compiled: bool,
+    pub shared_storage_compiled: bool,
     pub capacity_rejection_compiled: bool,
     pub bounded_terminal_retention_compiled: bool,
 }
@@ -94,6 +95,8 @@ pub struct ContainerLocalContracts {
 pub fn container_local_contracts() -> ContainerLocalContracts {
     let controller = include_str!("../../../services/container-controller/src/index.ts");
     let ledger = include_str!("../../../services/container-controller/src/ledger.ts");
+    let storage_gateway =
+        include_str!("../../../services/container-controller/src/storage_gateway.ts");
     let controller_config =
         include_str!("../../../services/container-controller/wrangler.production.jsonc");
     let runtime = include_str!("../../container-runtime/src/lib.rs");
@@ -108,6 +111,20 @@ pub fn container_local_contracts() -> ContainerLocalContracts {
             && controller.contains("container_egress_denied")
             && controller.contains("export { ContainerProxy }")
             && controller_config.contains("\"enabled\": false"),
+        shared_storage_compiled: controller.contains("outboundByHost")
+            && controller.contains("authorizeStorageAccess")
+            && controller.contains("recordStorageResult")
+            && ledger.contains("storage_access_denied")
+            && ledger.contains("result_object_version")
+            && storage_gateway.contains("R2_INPUT_GET")
+            && storage_gateway.contains("R2_RESULT_PUT")
+            && storage_gateway.contains("KV_CONFIG_GET")
+            && storage_gateway.contains("D1_ADMISSION_GET")
+            && storage_gateway.contains("if-none-match")
+            && controller_config.contains("CONTAINER_STORAGE_R2_READ_ENABLED")
+            && controller_config.contains("\"binding\": \"DB\"")
+            && controller_config.contains("\"binding\": \"CONFIG_KV\"")
+            && controller_config.contains("\"binding\": \"FILE_BUCKET\""),
         capacity_rejection_compiled: controller.contains("claim.kind === \"capacity\"")
             && controller.contains("CONTAINER_MAX_IN_FLIGHT_PER_SHARD")
             && controller.contains("retry-after"),
@@ -234,6 +251,7 @@ mod tests {
         let contracts = container_local_contracts();
         assert!(contracts.runtime_compiled);
         assert!(contracts.deny_by_default_egress_compiled);
+        assert!(contracts.shared_storage_compiled);
         assert!(contracts.capacity_rejection_compiled);
         assert!(contracts.bounded_terminal_retention_compiled);
     }

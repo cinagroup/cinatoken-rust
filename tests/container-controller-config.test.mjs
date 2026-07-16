@@ -4,6 +4,12 @@ const rootConfig = Bun.TOML.parse(
   await Bun.file(new URL("../wrangler.toml", import.meta.url)).text(),
 );
 const packageJson = await Bun.file(new URL("../package.json", import.meta.url)).json();
+const controllerSource = await Bun.file(
+  new URL("../services/container-controller/src/index.ts", import.meta.url),
+).text();
+const storageGatewaySource = await Bun.file(
+  new URL("../services/container-controller/src/storage_gateway.ts", import.meta.url),
+).text();
 const configFiles = [
   "wrangler.jsonc",
   "wrangler.staging.jsonc",
@@ -23,10 +29,20 @@ describe("isolated container controller configuration", () => {
       expect(config.vars.CONTAINER_EXECUTION_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_READINESS_PROBE_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_READINESS_WAKE_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_STORAGE_R2_READ_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_STORAGE_R2_WRITE_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_STORAGE_KV_READ_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_STORAGE_D1_READ_ENABLED).toBe("false");
       expect(Number(config.vars.CONTAINER_TERMINAL_RETENTION_SECONDS)).toBeGreaterThanOrEqual(600);
       expect(Number(config.vars.CONTAINER_MAX_TERMINAL_OPERATIONS)).toBeGreaterThan(0);
       expect(config.vars.CONTAINER_AUTHORITY_CURRENT_SECRET).toBeUndefined();
       expect(config.vars.CONTAINER_AUTHORITY_PREVIOUS_SECRET).toBeUndefined();
+      expect(config.d1_databases).toHaveLength(1);
+      expect(config.d1_databases[0].binding).toBe("DB");
+      expect(config.kv_namespaces).toHaveLength(1);
+      expect(config.kv_namespaces[0].binding).toBe("CONFIG_KV");
+      expect(config.r2_buckets).toHaveLength(1);
+      expect(config.r2_buckets[0].binding).toBe("FILE_BUCKET");
       expect(config.durable_objects.bindings).toEqual([
         { name: "RELAY_SHARDS", class_name: "RelayShardContainer" },
       ]);
@@ -45,5 +61,20 @@ describe("isolated container controller configuration", () => {
     expect(rootConfig.containers).toBeUndefined();
     expect(packageJson.scripts["check:container-controller"]).toContain("container-controller");
     expect(packageJson.scripts.check).toContain("bun run check:container-controller");
+  });
+
+  test("container storage uses named outbound handlers and never exposes generic binding CRUD", () => {
+    expect(controllerSource).toContain("RelayShardContainer.outboundByHost");
+    for (const host of [
+      "r2-input.cinatoken.internal",
+      "r2-result.cinatoken.internal",
+      "kv-config.cinatoken.internal",
+      "d1-admission.cinatoken.internal",
+    ]) {
+      expect(controllerSource).toContain(host.split(".")[0].replaceAll("-", "_").toUpperCase());
+      expect(storageGatewaySource).toContain(`\"${host}\"`);
+    }
+    expect(storageGatewaySource).not.toMatch(/\.list\(|\.delete\(/);
+    expect(storageGatewaySource).toContain("reservation_key = ?1 AND owner_generation = ?2");
   });
 });

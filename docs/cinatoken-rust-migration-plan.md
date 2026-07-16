@@ -13627,3 +13627,52 @@ Container startup/sleep/restart/OOM, N/N-1 mixed rollout, image digest/SBOM/
 signature/scan, remote SQLite, load/cost, shared D1/KV/R2, provider execution,
 billing, rollback, and C1-C5 approval remain mandatory. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.223 Owner-Fenced Container Shared Storage Gateway (2026-07-16)
+
+The execution-plane source audit identified recoverable provider operations,
+not direct database access from a disposable Container, as the next durable
+boundary. The Controller now contains a local, deny-by-default shared-storage
+gateway behind four private virtual hosts:
+
+| Host | Allowed operation | Authority and bounds |
+| --- | --- | --- |
+| `r2-input.cinatoken.internal` | `GET /v1/input` | Exact persisted key, R2 version, SHA-256, size, and content type only |
+| `r2-result.cinatoken.internal` | `PUT /v1/result` | Server-derived immutable key, 64 MiB maximum, create-only write, checksum and metadata verification |
+| `kv-config.cinatoken.internal` | `GET /v1/config` | Fixed operation-kind key, 32 KiB maximum, no listing or caller-selected key |
+| `d1-admission.cinatoken.internal` | `GET /v1/admission` | One parameterized reservation lookup returning only status, lease, and generation |
+
+Cloudflare invokes these handlers in the Worker trust domain. The handler uses
+`ctx.containerId` to address the owning named Durable Object and obtains a
+short-lived grant only while the operation is `running`, its owner generation
+matches, and its deadline has not expired. The Container cannot choose another
+shard, operation, input, result key, KV key, D1 query, or storage method.
+Internet egress remains disabled and the catch-all outbound path remains deny.
+The future edge operation builder must set `operation_id` to the exact billing
+reservation key; the gateway does not accept a second caller-selected D1 key.
+
+Input reads fail closed on R2 version, digest, length, and media-type drift.
+Result writes use `If-None-Match: *`, R2 SHA-256 verification, and immutable
+operation/provider/admission metadata. The returned R2 object version and
+identity are persisted to the DO ledger through generation-fenced CAS. An
+exact replay succeeds; a different result for the same generation conflicts.
+This provides local response-replay material without making Container disk,
+an in-memory promise, or a late completion authoritative.
+
+The bindings `DB`, `CONFIG_KV`, and `FILE_BUCKET` are declared for every
+Controller environment. The four action gates
+`CONTAINER_STORAGE_R2_READ_ENABLED`,
+`CONTAINER_STORAGE_R2_WRITE_ENABLED`,
+`CONTAINER_STORAGE_KV_READ_ENABLED`, and
+`CONTAINER_STORAGE_D1_READ_ENABLED` are committed false everywhere. Promotion
+must be action-by-action after remote binding readback, not a single broad
+storage switch.
+
+This milestone proves the local authority and replay contract only. It does
+not prove that a real Container image can call the gateway, that remote
+D1/KV/R2 preserve the expected semantics, that a provider operation executes
+or reconciles, or that N/N-1, lifecycle faults, image supply chain, load, cost,
+billing, canary, and rollback gates pass. Go/VPS remains authoritative and
+production remains **NO-GO**.
+Concurrent conflicting uploads and deterministic orphan-object retention or
+cleanup must also be proven remotely before the R2 write gate can be enabled.

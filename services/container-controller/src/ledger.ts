@@ -17,6 +17,34 @@ export interface OperationRow {
   response_status: number | null;
 }
 
+export interface StorageAccessGrant {
+  operation_id: string;
+  owner_generation: number;
+  operation_kind: string;
+  provider_operation_id: string;
+  admission_sha256: string;
+  deadline_at: number;
+  input: {
+    mode: "inline" | "r2";
+    sha256: string;
+    size: number;
+    content_type: string;
+    request_object_key: string | null;
+    object_version: string | null;
+  };
+  result: StorageResultRecord | null;
+}
+
+export interface StorageResultRecord {
+  object_key: string;
+  object_version: string;
+  sha256: string;
+  size: number;
+  content_type: string;
+}
+
+export type RecordStorageResultOutcome = "recorded" | "duplicate";
+
 export type ClaimResult =
   | { kind: "new" }
   | { kind: "existing"; row: OperationRow }
@@ -105,6 +133,28 @@ interface ReadinessRow {
   last_ready_at_ms: number | null;
 }
 
+interface StorageOperationRow {
+  [key: string]: SqlStorageValue;
+  operation_id: string;
+  owner_generation: number;
+  operation_kind: string;
+  provider_operation_id: string;
+  admission_sha256: string;
+  status: OperationStatus;
+  deadline_at: number;
+  input_mode: string;
+  input_sha256: string;
+  input_size: number;
+  input_content_type: string;
+  request_object_key: string | null;
+  object_version: string | null;
+  result_object_key: string | null;
+  result_object_version: string | null;
+  result_sha256: string | null;
+  result_size: number | null;
+  result_content_type: string | null;
+}
+
 const TERMINAL_STATUS_SQL = "'completed', 'failed'";
 
 export class RelayShardLedger {
@@ -129,12 +179,25 @@ export class RelayShardLedger {
       CREATE TABLE IF NOT EXISTS cinatoken_shard_operations (
         operation_id TEXT PRIMARY KEY,
         owner_generation INTEGER NOT NULL,
+        operation_kind TEXT NOT NULL DEFAULT '',
         provider_operation_id TEXT NOT NULL,
+        admission_sha256 TEXT NOT NULL DEFAULT '',
         envelope_sha256 TEXT NOT NULL,
         dispatch_id TEXT NOT NULL,
         status TEXT NOT NULL,
         response_status INTEGER,
         deadline_at INTEGER NOT NULL,
+        input_mode TEXT NOT NULL DEFAULT '',
+        input_sha256 TEXT NOT NULL DEFAULT '',
+        input_size INTEGER NOT NULL DEFAULT -1,
+        input_content_type TEXT NOT NULL DEFAULT '',
+        request_object_key TEXT,
+        object_version TEXT,
+        result_object_key TEXT,
+        result_object_version TEXT,
+        result_sha256 TEXT,
+        result_size INTEGER,
+        result_content_type TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -174,12 +237,120 @@ export class RelayShardLedger {
       CREATE INDEX IF NOT EXISTS cinatoken_shard_readiness_dispatches_created
         ON cinatoken_shard_readiness_dispatches(created_at_ms);
     `);
+    this.ensureOperationColumns();
     this.storage.sql.exec(
       `UPDATE cinatoken_shard_operations
           SET status = 'failed', response_status = COALESCE(response_status, 503)
         WHERE status = 'capacity_rejected'`,
     );
     this.schemaReady = true;
+  }
+
+  authorizeStorageAccess(
+    operationId: string,
+    ownerGeneration: number,
+    now: number,
+  ): StorageAccessGrant {
+    this.ensureSchema();
+    if (
+      operationId.length < 1 ||
+      operationId.length > 128 ||
+      !/^[A-Za-z0-9._:-]+$/.test(operationId) ||
+      !Number.isSafeInteger(ownerGeneration) ||
+      ownerGeneration < 1 ||
+      !Number.isSafeInteger(now) ||
+      now < 1
+    ) {
+      throw new ProtocolError("storage_access_denied", 403);
+    }
+    const row = this.readStorageOperation(operationId);
+    if (
+      row === null ||
+      row.owner_generation !== ownerGeneration ||
+      row.status !== "running" ||
+      row.deadline_at <= now ||
+      row.operation_kind.length < 1 ||
+      row.operation_kind.length > 64 ||
+      !/^[a-z0-9_:-]+$/.test(row.operation_kind) ||
+      row.provider_operation_id.length < 1 ||
+      row.provider_operation_id.length > 128 ||
+      !/^[A-Za-z0-9._:/@-]+$/.test(row.provider_operation_id) ||
+      !/^[0-9a-f]{64}$/.test(row.admission_sha256) ||
+      !/^[0-9a-f]{64}$/.test(row.input_sha256) ||
+      row.input_size < 0 ||
+      row.input_size > 64 * 1024 * 1024 ||
+      row.input_content_type.length < 3 ||
+      row.input_content_type.length > 128 ||
+      !/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?:;[ -~]+)?$/.test(
+        row.input_content_type,
+      ) ||
+      (row.input_mode !== "inline" && row.input_mode !== "r2") ||
+      (row.input_mode === "inline" &&
+        (row.request_object_key !== null || row.object_version !== null)) ||
+      (row.input_mode === "r2" &&
+        (row.request_object_key === null ||
+          row.request_object_key.length < 1 ||
+          row.request_object_key.length > 512 ||
+          !/^[A-Za-z0-9/_.:-]+$/.test(row.request_object_key) ||
+          row.object_version === null ||
+          row.object_version.length < 1 ||
+          row.object_version.length > 128 ||
+          !/^[A-Za-z0-9._:-]+$/.test(row.object_version)))
+    ) {
+      throw new ProtocolError("storage_access_denied", 403);
+    }
+    return storageGrant(row);
+  }
+
+  recordStorageResult(
+    operationId: string,
+    ownerGeneration: number,
+    result: StorageResultRecord,
+    now: number,
+  ): RecordStorageResultOutcome {
+    this.ensureSchema();
+    validateStorageResult(result);
+    if (
+      result.object_key !==
+      `container-results/v1/${operationId}/${ownerGeneration}/${result.sha256}`
+    ) {
+      throw new ProtocolError("invalid_storage_result", 400);
+    }
+    return this.storage.transactionSync(() => {
+      const grant = this.authorizeStorageAccess(operationId, ownerGeneration, now);
+      if (grant.result !== null) {
+        if (storageResultMatches(grant.result, result)) return "duplicate";
+        throw new ProtocolError("storage_result_conflict", 409);
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_operations
+            SET result_object_key = ?1, result_object_version = ?2, result_sha256 = ?3,
+                result_size = ?4, result_content_type = ?5, updated_at = ?6
+          WHERE operation_id = ?7 AND owner_generation = ?8 AND status = 'running'
+            AND deadline_at > ?6 AND result_object_key IS NULL`,
+        result.object_key,
+        result.object_version,
+        result.sha256,
+        result.size,
+        result.content_type,
+        now,
+        operationId,
+        ownerGeneration,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        const current = this.readStorageOperation(operationId);
+        if (
+          current !== null &&
+          current.owner_generation === ownerGeneration &&
+          current.result_object_key !== null &&
+          storageResultMatches(storageGrant(current).result, result)
+        ) {
+          return "duplicate";
+        }
+        throw new ProtocolError("storage_result_conflict", 409);
+      }
+      return "recorded";
+    });
   }
 
   claimOperation(
@@ -532,6 +703,50 @@ export class RelayShardLedger {
     );
   }
 
+  private ensureOperationColumns(): void {
+    const existing = new Set(
+      this.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(cinatoken_shard_operations)")
+        .toArray()
+        .map(({ name }) => name),
+    );
+    const additions: ReadonlyArray<readonly [string, string]> = [
+      ["operation_kind", "TEXT NOT NULL DEFAULT ''"],
+      ["admission_sha256", "TEXT NOT NULL DEFAULT ''"],
+      ["input_mode", "TEXT NOT NULL DEFAULT ''"],
+      ["input_sha256", "TEXT NOT NULL DEFAULT ''"],
+      ["input_size", "INTEGER NOT NULL DEFAULT -1"],
+      ["input_content_type", "TEXT NOT NULL DEFAULT ''"],
+      ["request_object_key", "TEXT"],
+      ["object_version", "TEXT"],
+      ["result_object_key", "TEXT"],
+      ["result_object_version", "TEXT"],
+      ["result_sha256", "TEXT"],
+      ["result_size", "INTEGER"],
+      ["result_content_type", "TEXT"],
+    ];
+    for (const [name, definition] of additions) {
+      if (!existing.has(name)) {
+        this.storage.sql.exec(
+          `ALTER TABLE cinatoken_shard_operations ADD COLUMN ${name} ${definition}`,
+        );
+      }
+    }
+  }
+
+  private readStorageOperation(operationId: string): StorageOperationRow | null {
+    return firstRow<StorageOperationRow>(
+      this.storage.sql.exec<StorageOperationRow>(
+        `SELECT operation_id, owner_generation, operation_kind, provider_operation_id,
+                admission_sha256, status, deadline_at, input_mode, input_sha256, input_size,
+                input_content_type, request_object_key, object_version, result_object_key,
+                result_object_version, result_sha256, result_size, result_content_type
+           FROM cinatoken_shard_operations WHERE operation_id = ?1`,
+        operationId,
+      ),
+    );
+  }
+
   private assertAndAdvanceShardFence(envelope: OperationEnvelope, now: number): void {
     const state = this.readShardStateRow();
     if (state === null) {
@@ -646,17 +861,28 @@ export class RelayShardLedger {
   ): void {
     this.storage.sql.exec(
       `INSERT INTO cinatoken_shard_operations
-         (operation_id, owner_generation, provider_operation_id, envelope_sha256, dispatch_id,
-          status, response_status, deadline_at, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`,
+         (operation_id, owner_generation, operation_kind, provider_operation_id,
+          admission_sha256, envelope_sha256, dispatch_id, status, response_status, deadline_at,
+          input_mode, input_sha256, input_size, input_content_type, request_object_key,
+          object_version, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+               ?17, ?17)`,
       envelope.operation_id,
       envelope.owner_generation,
+      envelope.operation_kind,
       envelope.provider_operation_id,
+      envelope.admission_sha256,
       envelopeSha256,
       dispatchId,
       status,
       responseStatus,
       envelope.execution_deadline_at,
+      envelope.input.mode,
+      envelope.input.sha256,
+      envelope.input.size,
+      envelope.input.content_type,
+      envelope.input.request_object_key ?? null,
+      envelope.input.object_version ?? null,
       now,
     );
   }
@@ -727,6 +953,84 @@ function readinessSnapshot(row: ReadinessRow | null): PersistedReadinessSnapshot
       row.runtime_execution_enabled === null ? null : row.runtime_execution_enabled === 1,
     last_ready_at_ms: row.last_ready_at_ms,
   };
+}
+
+function storageGrant(row: StorageOperationRow): StorageAccessGrant {
+  const resultValues = [
+    row.result_object_key,
+    row.result_object_version,
+    row.result_sha256,
+    row.result_size,
+    row.result_content_type,
+  ];
+  const resultAbsent = resultValues.every((value) => value === null);
+  const resultComplete = resultValues.every((value) => value !== null);
+  if (!resultAbsent && !resultComplete) {
+    throw new ProtocolError("storage_result_corrupt", 503);
+  }
+  const result = resultComplete
+    ? {
+        object_key: row.result_object_key!,
+        object_version: row.result_object_version!,
+        sha256: row.result_sha256!,
+        size: row.result_size!,
+        content_type: row.result_content_type!,
+      }
+    : null;
+  if (result !== null) validateStorageResult(result);
+  return {
+    operation_id: row.operation_id,
+    owner_generation: row.owner_generation,
+    operation_kind: row.operation_kind,
+    provider_operation_id: row.provider_operation_id,
+    admission_sha256: row.admission_sha256,
+    deadline_at: row.deadline_at,
+    input: {
+      mode: row.input_mode as "inline" | "r2",
+      sha256: row.input_sha256,
+      size: row.input_size,
+      content_type: row.input_content_type,
+      request_object_key: row.request_object_key,
+      object_version: row.object_version,
+    },
+    result,
+  };
+}
+
+function validateStorageResult(result: StorageResultRecord): void {
+  if (
+    result.object_key.length < 1 ||
+    result.object_key.length > 1024 ||
+    !/^[A-Za-z0-9/_.:-]+$/.test(result.object_key) ||
+    result.object_version.length < 1 ||
+    result.object_version.length > 256 ||
+    !/^[A-Za-z0-9._:-]+$/.test(result.object_version) ||
+    !/^[0-9a-f]{64}$/.test(result.sha256) ||
+    !Number.isSafeInteger(result.size) ||
+    result.size < 0 ||
+    result.size > 64 * 1024 * 1024 ||
+    result.content_type.length < 3 ||
+    result.content_type.length > 128 ||
+    !/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?:;[ -~]+)?$/.test(
+      result.content_type,
+    )
+  ) {
+    throw new ProtocolError("invalid_storage_result", 400);
+  }
+}
+
+function storageResultMatches(
+  left: StorageResultRecord | null,
+  right: StorageResultRecord,
+): boolean {
+  return (
+    left !== null &&
+    left.object_key === right.object_key &&
+    left.object_version === right.object_version &&
+    left.sha256 === right.sha256 &&
+    left.size === right.size &&
+    left.content_type === right.content_type
+  );
 }
 
 function validatePolicy(policy: RelayShardLedgerPolicy): void {

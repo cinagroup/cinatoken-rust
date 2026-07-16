@@ -34,6 +34,8 @@ pub(crate) const RELAY_CONTAINER_OPERATION_LIFECYCLE_MIGRATION: &str =
     "0041_relay_container_operation_lifecycle_hardening.sql";
 pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_MIGRATION: &str =
     "0042_relay_container_financial_terminal_expand.sql";
+pub(crate) const RELAY_CONTAINER_RECONCILIATION_MIGRATION: &str =
+    "0043_relay_container_reconciliation_observer.sql";
 const RELAY_CONTAINER_OPERATION_RECOVERY_MAX_LIMIT: i64 = 64;
 const RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION: i64 = 1;
 const RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_BYTES: usize = 64 * 1024;
@@ -170,6 +172,87 @@ pub struct RelayContainerOperation {
     pub result_content_type: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerReconciliationCursor {
+    pub last_created_at: i64,
+    pub last_reservation_key: String,
+    pub round_high_created_at: i64,
+    pub round_high_reservation_key: String,
+    pub scan_generation: i64,
+    pub run_generation: i64,
+    pub run_owner: String,
+    pub run_lease_expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerReconciliationPage {
+    pub cursor: RelayContainerReconciliationCursor,
+    pub operations: Vec<RelayContainerOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerReconciliationRunLease {
+    pub run_generation: i64,
+    pub run_owner: String,
+    pub run_lease_expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayContainerReconciliationRunClaimOutcome {
+    Applied(RelayContainerReconciliationRunLease),
+    AlreadyRunning,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerReconciliationLease {
+    pub operation_id: String,
+    pub reservation_key: String,
+    pub claim_generation: i64,
+    pub claim_owner: String,
+    pub claim_lease_expires_at: i64,
+    pub attempt_count: i64,
+    pub consecutive_failures: i64,
+    pub first_observed_at: i64,
+    pub recovery_deadline_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayContainerReconciliationClaimOutcome {
+    Applied(RelayContainerReconciliationLease),
+    NotDue,
+    AlreadyLeased,
+    Terminal,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerReconciliationRecord<'a> {
+    Retry {
+        class: &'a str,
+        error_code: &'a str,
+        available_at: i64,
+        consecutive_failures: i64,
+    },
+    Converged {
+        class: &'a str,
+    },
+    DeadLetter {
+        class: &'a str,
+        error_code: &'a str,
+        reason: &'a str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerReconciliationRecordOutcome {
+    Applied,
+    StaleOperation,
+    StaleLease,
+    Terminal,
+    Conflict,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3745,6 +3828,897 @@ pub async fn relay_container_operation_schema_ready(db: &D1Database) -> worker::
         .first::<CountRow>(None)
         .await?;
     Ok(row.map(|row| row.count == 3).unwrap_or(false))
+}
+
+pub async fn relay_container_reconciliation_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    let args = [D1Type::Text(RELAY_CONTAINER_RECONCILIATION_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS count
+            FROM d1_migrations
+            WHERE name = ?1
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_reconciliation_observations'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_reconciliation_cursor'
+              )
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
+}
+
+#[derive(Debug, Deserialize)]
+struct RelayContainerReconciliationHighWatermark {
+    created_at: i64,
+    reservation_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelayContainerReconciliationState {
+    operation_id: String,
+    reservation_key: String,
+    owner_generation: i64,
+    reconciliation_id: String,
+    status: String,
+    claim_generation: i64,
+    claim_owner: String,
+    claim_lease_expires_at: i64,
+    available_at: i64,
+    attempt_count: i64,
+    consecutive_failures: i64,
+    first_observed_at: i64,
+    recovery_deadline_at: i64,
+}
+
+pub async fn claim_relay_container_reconciliation_run(
+    db: &D1Database,
+    run_owner: &str,
+    now: i64,
+    lease_seconds: i64,
+) -> worker::Result<RelayContainerReconciliationRunClaimOutcome> {
+    validate_relay_container_token(run_owner, "reconciliation run owner", 32, 32, |byte| {
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+    })?;
+    if now <= 0 || lease_seconds < 15 || lease_seconds > 120 {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation run lease policy is invalid".to_string(),
+        ));
+    }
+    let lease_expires_at = now.saturating_add(lease_seconds);
+    let args = [
+        D1Type::Text(run_owner),
+        relay_container_d1_integer(now, "reconciliation run time")?,
+        relay_container_d1_integer(lease_expires_at, "reconciliation run lease")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_container_reconciliation_cursor
+            SET run_generation = run_generation + 1,
+                run_owner = ?1,
+                run_lease_expires_at = ?3,
+                last_started_at = ?2,
+                last_error_code = '',
+                updated_at = ?2
+            WHERE cursor_name = 'operation_observer_v1'
+              AND (run_owner = '' OR run_lease_expires_at <= ?2)
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let cursor = load_relay_container_reconciliation_cursor(db).await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        if cursor.run_owner == run_owner && cursor.run_lease_expires_at == lease_expires_at {
+            return Ok(RelayContainerReconciliationRunClaimOutcome::Applied(
+                RelayContainerReconciliationRunLease {
+                    run_generation: cursor.run_generation,
+                    run_owner: cursor.run_owner,
+                    run_lease_expires_at: cursor.run_lease_expires_at,
+                },
+            ));
+        }
+        return Ok(RelayContainerReconciliationRunClaimOutcome::Conflict);
+    }
+    Ok(
+        if !cursor.run_owner.is_empty() && cursor.run_lease_expires_at > now {
+            RelayContainerReconciliationRunClaimOutcome::AlreadyRunning
+        } else {
+            RelayContainerReconciliationRunClaimOutcome::Conflict
+        },
+    )
+}
+
+pub async fn complete_relay_container_reconciliation_run(
+    db: &D1Database,
+    lease: &RelayContainerReconciliationRunLease,
+    now: i64,
+    success: bool,
+    error_code: &str,
+) -> worker::Result<bool> {
+    if success {
+        if !error_code.is_empty() {
+            return Err(worker::Error::RustError(
+                "successful relay container reconciliation run has an error".to_string(),
+            ));
+        }
+    } else {
+        validate_relay_container_lower_id(error_code, "reconciliation run error", 1, 64)?;
+    }
+    let generation = lease.run_generation.to_string();
+    let now_text = now.to_string();
+    let success_value = if success { "1" } else { "0" };
+    let args = [
+        D1Type::Text(&lease.run_owner),
+        D1Type::Text(&generation),
+        D1Type::Text(&now_text),
+        D1Type::Text(success_value),
+        D1Type::Text(error_code),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_container_reconciliation_cursor
+            SET run_owner = '', run_lease_expires_at = 0,
+                last_completed_at = CAST(?3 AS INTEGER),
+                last_success_at = CASE WHEN ?4 = '1'
+                  THEN CAST(?3 AS INTEGER) ELSE last_success_at END,
+                last_error_code = ?5,
+                updated_at = CAST(?3 AS INTEGER)
+            WHERE cursor_name = 'operation_observer_v1'
+              AND run_owner = ?1
+              AND run_generation = CAST(?2 AS INTEGER)
+              AND run_lease_expires_at > CAST(?3 AS INTEGER)
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+async fn load_relay_container_reconciliation_cursor(
+    db: &D1Database,
+) -> worker::Result<RelayContainerReconciliationCursor> {
+    db.prepare(
+        r#"
+        SELECT last_created_at, last_reservation_key,
+               round_high_created_at, round_high_reservation_key,
+               scan_generation, run_generation, run_owner,
+               run_lease_expires_at
+        FROM relay_container_reconciliation_cursor
+        WHERE cursor_name = 'operation_observer_v1'
+        "#,
+    )
+    .first::<RelayContainerReconciliationCursor>(None)
+    .await?
+    .ok_or_else(|| {
+        worker::Error::RustError("relay container reconciliation cursor is unavailable".to_string())
+    })
+}
+
+fn relay_container_reconciliation_cursor_in_progress(
+    cursor: &RelayContainerReconciliationCursor,
+) -> bool {
+    cursor.round_high_created_at > 0
+        && (cursor.last_created_at < cursor.round_high_created_at
+            || (cursor.last_created_at == cursor.round_high_created_at
+                && cursor.last_reservation_key < cursor.round_high_reservation_key))
+}
+
+async fn begin_relay_container_reconciliation_round(
+    db: &D1Database,
+    run: &RelayContainerReconciliationRunLease,
+    now: i64,
+) -> worker::Result<RelayContainerReconciliationCursor> {
+    for _ in 0..3 {
+        let cursor = load_relay_container_reconciliation_cursor(db).await?;
+        if cursor.run_generation != run.run_generation
+            || cursor.run_owner != run.run_owner
+            || cursor.run_lease_expires_at != run.run_lease_expires_at
+            || cursor.run_lease_expires_at <= now
+        {
+            return Err(worker::Error::RustError(
+                "relay container reconciliation run lease is stale".to_string(),
+            ));
+        }
+        if relay_container_reconciliation_cursor_in_progress(&cursor) {
+            return Ok(cursor);
+        }
+        let now_arg = relay_container_d1_integer(now, "reconciliation time")?;
+        let high = db
+            .prepare(
+                r#"
+                SELECT operation.created_at, operation.reservation_key
+                FROM relay_container_operations AS operation
+                LEFT JOIN relay_container_reconciliation_observations AS observation
+                  ON observation.operation_id = operation.operation_id
+                WHERE (
+                    (operation.status IN ('prepared', 'dispatched')
+                      AND operation.execution_deadline_at <= ?1)
+                    OR operation.status IN (
+                      'recovery_required', 'completed', 'failed'
+                    )
+                  )
+                  AND (
+                    observation.operation_id IS NULL
+                    OR (
+                      observation.status IN ('pending', 'retry')
+                      AND observation.available_at <= ?1
+                    )
+                    OR (
+                      observation.status = 'leased'
+                      AND observation.claim_lease_expires_at <= ?1
+                    )
+                  )
+                ORDER BY operation.created_at DESC,
+                         operation.reservation_key DESC
+                LIMIT 1
+                "#,
+            )
+            .bind_refs(&now_arg)?
+            .first::<RelayContainerReconciliationHighWatermark>(None)
+            .await?;
+        let Some(high) = high else {
+            return Ok(cursor);
+        };
+        let now_text = now.to_string();
+        let high_created_at = high.created_at.to_string();
+        let previous_last_created_at = cursor.last_created_at.to_string();
+        let previous_high_created_at = cursor.round_high_created_at.to_string();
+        let previous_generation = cursor.scan_generation.to_string();
+        let run_generation = run.run_generation.to_string();
+        let args = [
+            D1Type::Text(&high_created_at),
+            D1Type::Text(&high.reservation_key),
+            D1Type::Text(&now_text),
+            D1Type::Text(&previous_last_created_at),
+            D1Type::Text(&cursor.last_reservation_key),
+            D1Type::Text(&previous_high_created_at),
+            D1Type::Text(&cursor.round_high_reservation_key),
+            D1Type::Text(&previous_generation),
+            D1Type::Text(&run.run_owner),
+            D1Type::Text(&run_generation),
+        ];
+        let result = db
+            .prepare(
+                r#"
+                UPDATE relay_container_reconciliation_cursor
+                SET last_created_at = 0,
+                    last_reservation_key = '',
+                    round_high_created_at = CAST(?1 AS INTEGER),
+                    round_high_reservation_key = ?2,
+                    scan_generation = scan_generation + 1,
+                    updated_at = CAST(?3 AS INTEGER)
+                WHERE cursor_name = 'operation_observer_v1'
+                  AND last_created_at = CAST(?4 AS INTEGER)
+                  AND last_reservation_key = ?5
+                  AND round_high_created_at = CAST(?6 AS INTEGER)
+                  AND round_high_reservation_key = ?7
+                  AND scan_generation = CAST(?8 AS INTEGER)
+                  AND run_owner = ?9
+                  AND run_generation = CAST(?10 AS INTEGER)
+                  AND run_lease_expires_at > CAST(?3 AS INTEGER)
+                "#,
+            )
+            .bind_refs(&args)?
+            .run()
+            .await?;
+        if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+            return load_relay_container_reconciliation_cursor(db).await;
+        }
+    }
+    Err(worker::Error::RustError(
+        "relay container reconciliation cursor contention".to_string(),
+    ))
+}
+
+pub async fn relay_container_reconciliation_candidates(
+    db: &D1Database,
+    run: &RelayContainerReconciliationRunLease,
+    now: i64,
+    limit: i64,
+) -> worker::Result<RelayContainerReconciliationPage> {
+    if now <= 0 || now > i64::from(i32::MAX) {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation time is invalid".to_string(),
+        ));
+    }
+    let limit = limit.clamp(1, RELAY_CONTAINER_OPERATION_RECOVERY_MAX_LIMIT);
+    let cursor = begin_relay_container_reconciliation_round(db, run, now).await?;
+    if !relay_container_reconciliation_cursor_in_progress(&cursor) {
+        return Ok(RelayContainerReconciliationPage {
+            cursor,
+            operations: Vec::new(),
+        });
+    }
+    let args = [
+        relay_container_d1_integer(now, "reconciliation time")?,
+        relay_container_d1_integer(cursor.last_created_at, "reconciliation cursor time")?,
+        D1Type::Text(&cursor.last_reservation_key),
+        relay_container_d1_integer(
+            cursor.round_high_created_at,
+            "reconciliation high watermark time",
+        )?,
+        D1Type::Text(&cursor.round_high_reservation_key),
+        relay_container_d1_integer(limit, "reconciliation limit")?,
+    ];
+    let operations = db
+        .prepare(
+            r#"
+            SELECT operation.reservation_key, operation.operation_id,
+                   operation.owner_generation,
+                   operation.owner_lease_expires_at,
+                   operation.channel_id, operation.selected_group,
+                   operation.operation_kind,
+                   operation.provider_operation_id,
+                   operation.admission_sha256,
+                   operation.protocol_version,
+                   operation.shard_contract_version,
+                   operation.ring_generation, operation.shard_count,
+                   operation.shard_index, operation.instance_name,
+                   operation.execution_deadline_at,
+                   operation.input_mode, operation.input_object_key,
+                   operation.input_object_version, operation.input_sha256,
+                   operation.input_size, operation.input_content_type,
+                   operation.trace_id,
+                   operation.client_idempotency_hmac_sha256,
+                   operation.client_request_sha256,
+                   operation.reconciliation_id,
+                   operation.status, operation.response_status,
+                   operation.response_code, operation.result_object_key,
+                   operation.result_object_version, operation.result_sha256,
+                   operation.result_size, operation.result_content_type,
+                   operation.created_at, operation.updated_at
+            FROM relay_container_operations AS operation
+            LEFT JOIN relay_container_reconciliation_observations AS observation
+              ON observation.operation_id = operation.operation_id
+            WHERE (
+                (operation.status IN ('prepared', 'dispatched')
+                  AND operation.execution_deadline_at <= ?1)
+                OR operation.status IN (
+                  'recovery_required', 'completed', 'failed'
+                )
+              )
+              AND (
+                observation.operation_id IS NULL
+                OR (
+                  observation.status IN ('pending', 'retry')
+                  AND observation.available_at <= ?1
+                )
+                OR (
+                  observation.status = 'leased'
+                  AND observation.claim_lease_expires_at <= ?1
+                )
+              )
+              AND (
+                operation.created_at > ?2
+                OR (
+                  operation.created_at = ?2
+                  AND operation.reservation_key > ?3
+                )
+              )
+              AND (
+                operation.created_at < ?4
+                OR (
+                  operation.created_at = ?4
+                  AND operation.reservation_key <= ?5
+                )
+              )
+            ORDER BY operation.created_at ASC,
+                     operation.reservation_key ASC
+            LIMIT ?6
+            "#,
+        )
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<RelayContainerOperation>()?;
+    if operations.is_empty() {
+        let _ = advance_relay_container_reconciliation_cursor(
+            db,
+            run,
+            &cursor,
+            cursor.round_high_created_at,
+            &cursor.round_high_reservation_key,
+            now,
+        )
+        .await?;
+    }
+    Ok(RelayContainerReconciliationPage { cursor, operations })
+}
+
+pub async fn advance_relay_container_reconciliation_cursor(
+    db: &D1Database,
+    run: &RelayContainerReconciliationRunLease,
+    cursor: &RelayContainerReconciliationCursor,
+    created_at: i64,
+    reservation_key: &str,
+    now: i64,
+) -> worker::Result<bool> {
+    validate_relay_container_id(reservation_key, "reconciliation reservation key", 1, 128)?;
+    let after_current = created_at > cursor.last_created_at
+        || (created_at == cursor.last_created_at
+            && reservation_key > cursor.last_reservation_key.as_str());
+    let before_high = created_at < cursor.round_high_created_at
+        || (created_at == cursor.round_high_created_at
+            && reservation_key <= cursor.round_high_reservation_key.as_str());
+    if !after_current || !before_high {
+        return Ok(false);
+    }
+    let created_at_text = created_at.to_string();
+    let now_text = now.to_string();
+    let generation_text = cursor.scan_generation.to_string();
+    let previous_created_at = cursor.last_created_at.to_string();
+    let high_created_at = cursor.round_high_created_at.to_string();
+    let run_generation = run.run_generation.to_string();
+    let args = [
+        D1Type::Text(&created_at_text),
+        D1Type::Text(reservation_key),
+        D1Type::Text(&now_text),
+        D1Type::Text(&generation_text),
+        D1Type::Text(&previous_created_at),
+        D1Type::Text(&cursor.last_reservation_key),
+        D1Type::Text(&high_created_at),
+        D1Type::Text(&cursor.round_high_reservation_key),
+        D1Type::Text(&run.run_owner),
+        D1Type::Text(&run_generation),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_container_reconciliation_cursor
+            SET last_created_at = CAST(?1 AS INTEGER),
+                last_reservation_key = ?2,
+                updated_at = CAST(?3 AS INTEGER)
+            WHERE cursor_name = 'operation_observer_v1'
+              AND scan_generation = CAST(?4 AS INTEGER)
+              AND last_created_at = CAST(?5 AS INTEGER)
+              AND last_reservation_key = ?6
+              AND round_high_created_at = CAST(?7 AS INTEGER)
+              AND round_high_reservation_key = ?8
+              AND run_owner = ?9
+              AND run_generation = CAST(?10 AS INTEGER)
+              AND run_lease_expires_at > CAST(?3 AS INTEGER)
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(true);
+    }
+    let current = load_relay_container_reconciliation_cursor(db).await?;
+    Ok(current.run_generation == run.run_generation
+        && current.run_owner == run.run_owner
+        && current.run_lease_expires_at > now
+        && current.scan_generation == cursor.scan_generation
+        && (current.last_created_at > created_at
+            || (current.last_created_at == created_at
+                && current.last_reservation_key.as_str() >= reservation_key)))
+}
+
+async fn relay_container_reconciliation_state(
+    db: &D1Database,
+    operation_id: &str,
+) -> worker::Result<Option<RelayContainerReconciliationState>> {
+    let arg = D1Type::Text(operation_id);
+    db.prepare(
+        r#"
+        SELECT operation_id, reservation_key, owner_generation,
+               reconciliation_id, status, claim_generation, claim_owner,
+               claim_lease_expires_at, available_at, attempt_count,
+               consecutive_failures, first_observed_at, recovery_deadline_at
+        FROM relay_container_reconciliation_observations
+        WHERE operation_id = ?1
+        "#,
+    )
+    .bind_refs(&arg)?
+    .first::<RelayContainerReconciliationState>(None)
+    .await
+}
+
+pub async fn claim_relay_container_reconciliation(
+    db: &D1Database,
+    operation: &RelayContainerOperation,
+    claim_owner: &str,
+    now: i64,
+    lease_seconds: i64,
+    retry_horizon_seconds: i64,
+) -> worker::Result<RelayContainerReconciliationClaimOutcome> {
+    validate_relay_container_token(claim_owner, "reconciliation claim owner", 32, 32, |byte| {
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+    })?;
+    validate_relay_container_operation_for_reconciliation(operation)?;
+    if now <= 0
+        || lease_seconds < 5
+        || lease_seconds > 60
+        || retry_horizon_seconds < 300
+        || retry_horizon_seconds > 7 * 86_400
+    {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation lease policy is invalid".to_string(),
+        ));
+    }
+    let lease_expires_at = now.saturating_add(lease_seconds);
+    let recovery_deadline_at = now.saturating_add(retry_horizon_seconds);
+    if recovery_deadline_at > i64::from(i32::MAX) {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation deadline is invalid".to_string(),
+        ));
+    }
+    let args = [
+        D1Type::Text(&operation.operation_id),
+        D1Type::Text(&operation.reservation_key),
+        relay_container_d1_integer(operation.created_at, "operation created at")?,
+        relay_container_d1_integer(operation.owner_generation, "owner generation")?,
+        D1Type::Text(&operation.reconciliation_id),
+        relay_container_d1_integer(now, "reconciliation time")?,
+        relay_container_d1_integer(recovery_deadline_at, "reconciliation deadline")?,
+    ];
+    db.prepare(
+        r#"
+        INSERT OR IGNORE INTO relay_container_reconciliation_observations (
+          operation_id, reservation_key, operation_created_at,
+          owner_generation, reconciliation_id, status, available_at,
+          recovery_deadline_at, created_at, updated_at
+        )
+        SELECT operation_id, reservation_key, created_at, owner_generation,
+               reconciliation_id, 'pending', ?6, ?7, ?6, ?6
+        FROM relay_container_operations
+        WHERE operation_id = ?1
+          AND reservation_key = ?2
+          AND created_at = ?3
+          AND owner_generation = ?4
+          AND reconciliation_id = ?5
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+
+    let claim_args = [
+        D1Type::Text(&operation.operation_id),
+        D1Type::Text(&operation.reservation_key),
+        relay_container_d1_integer(operation.owner_generation, "owner generation")?,
+        D1Type::Text(&operation.reconciliation_id),
+        D1Type::Text(claim_owner),
+        relay_container_d1_integer(now, "reconciliation time")?,
+        relay_container_d1_integer(lease_expires_at, "reconciliation lease")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_container_reconciliation_observations
+            SET status = 'leased',
+                claim_generation = claim_generation + 1,
+                claim_owner = ?5,
+                claim_lease_expires_at = ?7,
+                available_at = 0,
+                attempt_count = attempt_count + 1,
+                first_observed_at = CASE
+                  WHEN first_observed_at = 0 THEN ?6 ELSE first_observed_at END,
+                last_attempt_at = ?6,
+                updated_at = ?6
+            WHERE operation_id = ?1
+              AND reservation_key = ?2
+              AND owner_generation = ?3
+              AND reconciliation_id = ?4
+              AND (
+                (status IN ('pending', 'retry') AND available_at <= ?6)
+                OR (status = 'leased' AND claim_lease_expires_at <= ?6)
+              )
+              AND EXISTS (
+                SELECT 1 FROM relay_container_operations AS operation
+                WHERE operation.operation_id = ?1
+                  AND operation.reservation_key = ?2
+                  AND operation.owner_generation = ?3
+                  AND operation.reconciliation_id = ?4
+                  AND (
+                    (operation.status IN ('prepared', 'dispatched')
+                      AND operation.execution_deadline_at <= ?6)
+                    OR operation.status IN (
+                      'recovery_required', 'completed', 'failed'
+                    )
+                  )
+              )
+            "#,
+        )
+        .bind_refs(&claim_args)?
+        .run()
+        .await?;
+    let state = relay_container_reconciliation_state(db, &operation.operation_id).await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        let state = state.ok_or_else(|| {
+            worker::Error::RustError(
+                "relay container reconciliation claim readback is missing".to_string(),
+            )
+        })?;
+        return Ok(RelayContainerReconciliationClaimOutcome::Applied(
+            RelayContainerReconciliationLease {
+                operation_id: state.operation_id,
+                reservation_key: state.reservation_key,
+                claim_generation: state.claim_generation,
+                claim_owner: state.claim_owner,
+                claim_lease_expires_at: state.claim_lease_expires_at,
+                attempt_count: state.attempt_count,
+                consecutive_failures: state.consecutive_failures,
+                first_observed_at: state.first_observed_at,
+                recovery_deadline_at: state.recovery_deadline_at,
+            },
+        ));
+    }
+    let Some(state) = state else {
+        return Ok(RelayContainerReconciliationClaimOutcome::Conflict);
+    };
+    if state.operation_id != operation.operation_id
+        || state.reservation_key != operation.reservation_key
+        || state.owner_generation != operation.owner_generation
+        || state.reconciliation_id != operation.reconciliation_id
+    {
+        return Ok(RelayContainerReconciliationClaimOutcome::Conflict);
+    }
+    Ok(match state.status.as_str() {
+        "converged" | "dead_letter" => RelayContainerReconciliationClaimOutcome::Terminal,
+        "leased" if state.claim_lease_expires_at > now => {
+            RelayContainerReconciliationClaimOutcome::AlreadyLeased
+        }
+        "pending" | "retry" if state.available_at > now => {
+            RelayContainerReconciliationClaimOutcome::NotDue
+        }
+        _ => RelayContainerReconciliationClaimOutcome::Conflict,
+    })
+}
+
+pub async fn record_relay_container_reconciliation(
+    db: &D1Database,
+    operation: &RelayContainerOperation,
+    lease: &RelayContainerReconciliationLease,
+    record: RelayContainerReconciliationRecord<'_>,
+    now: i64,
+) -> worker::Result<RelayContainerReconciliationRecordOutcome> {
+    validate_relay_container_operation_for_reconciliation(operation)?;
+    validate_relay_container_lower_id(record.class(), "reconciliation class", 1, 64)?;
+    if !record.error_code().is_empty() {
+        validate_relay_container_lower_id(record.error_code(), "reconciliation error code", 1, 64)?;
+    }
+    if let RelayContainerReconciliationRecord::DeadLetter { reason, .. } = record {
+        validate_relay_container_lower_id(reason, "reconciliation dead letter reason", 1, 64)?;
+    }
+    let generation = lease.claim_generation.to_string();
+    let now_text = now.to_string();
+    let operation_updated_at = operation.updated_at.to_string();
+    let result = match record {
+        RelayContainerReconciliationRecord::Retry {
+            class,
+            error_code,
+            available_at,
+            consecutive_failures,
+        } => {
+            let available_at = available_at.to_string();
+            let consecutive_failures = consecutive_failures.to_string();
+            let args = [
+                D1Type::Text(&lease.operation_id),
+                D1Type::Text(&lease.claim_owner),
+                D1Type::Text(&generation),
+                D1Type::Text(class),
+                D1Type::Text(error_code),
+                D1Type::Text(&available_at),
+                D1Type::Text(&consecutive_failures),
+                D1Type::Text(&now_text),
+                D1Type::Text(&operation.status),
+                D1Type::Text(&operation_updated_at),
+            ];
+            db.prepare(
+                r#"
+                UPDATE relay_container_reconciliation_observations
+                SET status = 'retry', claim_owner = '',
+                    claim_lease_expires_at = 0,
+                    available_at = CAST(?6 AS INTEGER),
+                    consecutive_failures = CAST(?7 AS INTEGER),
+                    last_observed_at = CAST(?8 AS INTEGER),
+                    last_class = ?4, last_error_code = ?5,
+                    updated_at = CAST(?8 AS INTEGER)
+                WHERE operation_id = ?1 AND status = 'leased'
+                  AND claim_owner = ?2
+                  AND claim_generation = CAST(?3 AS INTEGER)
+                  AND claim_lease_expires_at > CAST(?8 AS INTEGER)
+                  AND EXISTS (
+                    SELECT 1 FROM relay_container_operations AS operation
+                    WHERE operation.operation_id = ?1
+                      AND operation.status = ?9
+                      AND operation.updated_at = CAST(?10 AS INTEGER)
+                  )
+                "#,
+            )
+            .bind_refs(&args)?
+            .run()
+            .await?
+        }
+        RelayContainerReconciliationRecord::Converged { class } => {
+            let args = [
+                D1Type::Text(&lease.operation_id),
+                D1Type::Text(&lease.claim_owner),
+                D1Type::Text(&generation),
+                D1Type::Text(class),
+                D1Type::Text(&now_text),
+                D1Type::Text(&operation.status),
+                D1Type::Text(&operation_updated_at),
+            ];
+            db.prepare(
+                r#"
+                UPDATE relay_container_reconciliation_observations
+                SET status = 'converged', claim_owner = '',
+                    claim_lease_expires_at = 0, available_at = 0,
+                    consecutive_failures = 0,
+                    last_observed_at = CAST(?5 AS INTEGER),
+                    last_class = ?4, last_error_code = '',
+                    converged_at = CAST(?5 AS INTEGER),
+                    updated_at = CAST(?5 AS INTEGER)
+                WHERE operation_id = ?1 AND status = 'leased'
+                  AND claim_owner = ?2
+                  AND claim_generation = CAST(?3 AS INTEGER)
+                  AND claim_lease_expires_at > CAST(?5 AS INTEGER)
+                  AND EXISTS (
+                    SELECT 1 FROM relay_container_operations AS operation
+                    WHERE operation.operation_id = ?1
+                      AND operation.status = ?6
+                      AND operation.updated_at = CAST(?7 AS INTEGER)
+                  )
+                "#,
+            )
+            .bind_refs(&args)?
+            .run()
+            .await?
+        }
+        RelayContainerReconciliationRecord::DeadLetter {
+            class,
+            error_code,
+            reason,
+        } => {
+            let args = [
+                D1Type::Text(&lease.operation_id),
+                D1Type::Text(&lease.claim_owner),
+                D1Type::Text(&generation),
+                D1Type::Text(class),
+                D1Type::Text(error_code),
+                D1Type::Text(reason),
+                D1Type::Text(&now_text),
+                D1Type::Text(&operation.status),
+                D1Type::Text(&operation_updated_at),
+            ];
+            db.prepare(
+                r#"
+                UPDATE relay_container_reconciliation_observations
+                SET status = 'dead_letter', claim_owner = '',
+                    claim_lease_expires_at = 0, available_at = 0,
+                    last_observed_at = CAST(?7 AS INTEGER),
+                    last_class = ?4, last_error_code = ?5,
+                    dead_lettered_at = CAST(?7 AS INTEGER),
+                    dead_letter_reason = ?6,
+                    updated_at = CAST(?7 AS INTEGER)
+                WHERE operation_id = ?1 AND status = 'leased'
+                  AND claim_owner = ?2
+                  AND claim_generation = CAST(?3 AS INTEGER)
+                  AND claim_lease_expires_at > CAST(?7 AS INTEGER)
+                  AND EXISTS (
+                    SELECT 1 FROM relay_container_operations AS operation
+                    WHERE operation.operation_id = ?1
+                      AND operation.status = ?8
+                      AND operation.updated_at = CAST(?9 AS INTEGER)
+                  )
+                "#,
+            )
+            .bind_refs(&args)?
+            .run()
+            .await?
+        }
+    };
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayContainerReconciliationRecordOutcome::Applied);
+    }
+    let Some(state) = relay_container_reconciliation_state(db, &lease.operation_id).await? else {
+        return Ok(RelayContainerReconciliationRecordOutcome::Conflict);
+    };
+    if matches!(state.status.as_str(), "converged" | "dead_letter") {
+        return Ok(RelayContainerReconciliationRecordOutcome::Terminal);
+    }
+    if state.claim_generation != lease.claim_generation
+        || state.claim_owner != lease.claim_owner
+        || state.claim_lease_expires_at <= now
+    {
+        return Ok(RelayContainerReconciliationRecordOutcome::StaleLease);
+    }
+    let current = relay_container_operation(db, &lease.operation_id).await?;
+    if current.as_ref().is_some_and(|current| {
+        current.status != operation.status || current.updated_at != operation.updated_at
+    }) {
+        return Ok(RelayContainerReconciliationRecordOutcome::StaleOperation);
+    }
+    Ok(RelayContainerReconciliationRecordOutcome::Conflict)
+}
+
+impl<'a> RelayContainerReconciliationRecord<'a> {
+    fn class(self) -> &'a str {
+        match self {
+            Self::Retry { class, .. }
+            | Self::Converged { class }
+            | Self::DeadLetter { class, .. } => class,
+        }
+    }
+
+    fn error_code(self) -> &'a str {
+        match self {
+            Self::Retry { error_code, .. } | Self::DeadLetter { error_code, .. } => error_code,
+            Self::Converged { .. } => "",
+        }
+    }
+}
+
+fn validate_relay_container_operation_for_reconciliation(
+    operation: &RelayContainerOperation,
+) -> worker::Result<()> {
+    let identity_fields = [
+        operation.client_idempotency_hmac_sha256.is_empty(),
+        operation.client_request_sha256.is_empty(),
+        operation.reconciliation_id.is_empty(),
+    ];
+    if !identity_fields.iter().all(|empty| *empty) && !identity_fields.iter().all(|empty| !empty) {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation operation identity is partial".to_string(),
+        ));
+    }
+    let placeholder = "0".repeat(64);
+    validate_relay_container_operation_record(&RelayContainerOperationRecord {
+        reservation_key: &operation.reservation_key,
+        operation_id: &operation.operation_id,
+        owner_generation: operation.owner_generation,
+        owner_lease_expires_at: operation.owner_lease_expires_at,
+        channel_id: operation.channel_id,
+        selected_group: &operation.selected_group,
+        operation_kind: &operation.operation_kind,
+        provider_operation_id: &operation.provider_operation_id,
+        admission_sha256: &operation.admission_sha256,
+        protocol_version: operation.protocol_version,
+        shard_contract_version: operation.shard_contract_version,
+        ring_generation: operation.ring_generation,
+        shard_count: operation.shard_count,
+        shard_index: operation.shard_index,
+        instance_name: &operation.instance_name,
+        execution_deadline_at: operation.execution_deadline_at,
+        input_mode: &operation.input_mode,
+        input_object_key: &operation.input_object_key,
+        input_object_version: &operation.input_object_version,
+        input_sha256: &operation.input_sha256,
+        input_size: operation.input_size,
+        input_content_type: &operation.input_content_type,
+        trace_id: &operation.trace_id,
+        client_idempotency_hmac_sha256: if operation.client_idempotency_hmac_sha256.is_empty() {
+            &placeholder
+        } else {
+            &operation.client_idempotency_hmac_sha256
+        },
+        client_request_sha256: if operation.client_request_sha256.is_empty() {
+            &placeholder
+        } else {
+            &operation.client_request_sha256
+        },
+        reconciliation_id: if operation.reconciliation_id.is_empty() {
+            &placeholder
+        } else {
+            &operation.reconciliation_id
+        },
+        created_at: operation.created_at,
+    })
 }
 
 fn classify_relay_container_dispatch(
@@ -16511,6 +17485,37 @@ mod tests {
         ));
         assert!(source.contains("OR status = 'recovery_required'"));
         assert!(source.contains("LIMIT ?2"));
+    }
+
+    #[test]
+    fn relay_container_reconciliation_observer_is_fair_leased_and_read_only() {
+        let source = include_str!("d1_repositories.rs");
+        let start = source
+            .find("pub async fn claim_relay_container_reconciliation_run")
+            .unwrap();
+        let end = source.find("fn classify_relay_container_dispatch").unwrap();
+        let observer = &source[start..end];
+        assert!(observer.contains("run_generation = run_generation + 1"));
+        assert!(observer.contains("run_lease_expires_at > CAST(?3 AS INTEGER)"));
+        assert!(observer.contains("round_high_created_at"));
+        assert!(observer.contains("operation.created_at > ?2"));
+        assert!(observer.contains("operation.reservation_key > ?3"));
+        assert!(!observer.contains(" OFFSET "));
+        assert!(observer.contains("claim_generation = claim_generation + 1"));
+        assert!(observer.contains("claim_lease_expires_at <= ?6"));
+        assert!(observer.contains("SET status = 'retry'"));
+        assert!(observer.contains("SET status = 'converged'"));
+        assert!(observer.contains("SET status = 'dead_letter'"));
+        assert!(!observer.contains("UPDATE relay_container_operations"));
+        assert!(!observer.contains("UPDATE relay_billing_reservations"));
+
+        let mut legacy = relay_container_test_operation();
+        legacy.client_idempotency_hmac_sha256.clear();
+        legacy.client_request_sha256.clear();
+        legacy.reconciliation_id.clear();
+        validate_relay_container_operation_for_reconciliation(&legacy).unwrap();
+        legacy.reconciliation_id = "a".repeat(64);
+        assert!(validate_relay_container_operation_for_reconciliation(&legacy).is_err());
     }
 
     #[test]

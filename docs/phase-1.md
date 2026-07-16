@@ -1707,7 +1707,7 @@ identities and billing generations.
 
 This does not make D1, Durable Objects, and R2 one transaction. The exact R2
 client-response write/read path, divergence reconciler, deterministic Linux
-canary, old-writer drain, future 0043 enforcement, and remote fault evidence
+canary, old-writer drain, future 0044 enforcement, and remote fault evidence
 remain open. `CONTAINER_FINANCIAL_TERMINAL_ENABLED`,
 `CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED`, and
 `CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED` join the five existing gates and
@@ -1734,7 +1734,33 @@ financial mutation.
 No public relay path calls these helpers, and the bounded reconciliation runner
 still needs fair pagination, durable backoff, metrics, authorization, and
 operator resolution. The Linux canary, provider-attempt journal, remote R2 and
-DO lifecycle faults, old-writer drain, 0043 enforcement, and N/N-1 evidence
+DO lifecycle faults, old-writer drain, 0044 enforcement, and N/N-1 evidence
 also remain open. Exact-response and divergence compiled-readiness claims stay
 false, all eight Container gates remain false, no remote action occurred,
 Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## 2026-07-16 Phase 1 Bounded Container Reconciliation Observer Gate
+
+Migration 0043 adds a default-lazy observation table and a singleton cursor;
+it seeds only that cursor and does not backfill operations. Per-item claim
+leases and the global scheduled-run lease both use owner/generation fencing,
+strict lifecycle triggers, monotonic timestamps, and delete denial. The fair
+reader freezes a high watermark and advances by `(created_at, reservation_key)`
+keyset, so no OFFSET or permanently hot first page can starve later work.
+
+The default-off scheduled observer processes 4 items by default and never more
+than 8, with a 25-second wall budget, 45-second run lease, 30-second item lease,
+deterministic 15-to-900-second jittered backoff, and a 24-hour dead-letter
+horizon. It preserves D1 `prepared`/`dispatched` and DO `claimed`/`running`
+phases, and records only bounded normalized classes and static error codes.
+Its only writes are to the new observer cursor/state tables. It cannot change
+an operation, billing or accounting state, a DO ledger, R2, or provider state,
+and cannot retry provider execution.
+
+The existing reconciliation flag remains false in all tracked environments;
+exact-response and divergence compiled cutover claims remain false as well.
+Next are bounded R2 orphan inventory, authenticated operator status/list/retry,
+provider-attempt journaling, a separately gated generation-fenced apply path,
+edge exact replay, the Linux canary, remote fault/N/N-1 evidence, old-writer
+drain, and enforcement migration 0044. No remote action occurred. Go/VPS
+remains authoritative and production remains **NO-GO**.

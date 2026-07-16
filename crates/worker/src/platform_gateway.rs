@@ -186,7 +186,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0042_relay_container_financial_terminal_expand.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0043_relay_container_reconciliation_observer.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -266,6 +266,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0040_relay_container_operations.sql",
     "0041_relay_container_operation_lifecycle_hardening.sql",
     "0042_relay_container_financial_terminal_expand.sql",
+    "0043_relay_container_reconciliation_observer.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -4707,7 +4708,7 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0042_relay_container_financial_terminal_expand.sql"
+            "0043_relay_container_reconciliation_observer.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -4820,6 +4821,16 @@ mod tests {
         assert!(relay_container_financial_terminal
             .contains("CREATE TABLE relay_container_terminal_outbox_state"));
         assert!(relay_container_financial_terminal.contains("client_idempotency_hmac_sha256"));
+        let relay_container_reconciliation_observer =
+            include_str!("../../../migrations/d1/0043_relay_container_reconciliation_observer.sql");
+        assert!(relay_container_reconciliation_observer
+            .contains("CREATE TABLE relay_container_reconciliation_observations"));
+        assert!(relay_container_reconciliation_observer
+            .contains("CREATE TABLE relay_container_reconciliation_cursor"));
+        assert!(relay_container_reconciliation_observer.contains("operation_observer_v1"));
+        assert!(relay_container_reconciliation_observer.contains("run_generation"));
+        assert!(relay_container_reconciliation_observer.contains("run_lease_expires_at"));
+        assert!(relay_container_reconciliation_observer.contains("last_success_at"));
     }
 
     #[test]

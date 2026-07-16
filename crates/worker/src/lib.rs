@@ -1502,6 +1502,24 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "v1beta".to_string());
     let now = (worker::Date::now().as_millis() / 1000) as i64;
+    if container_scheduler::container_operation_runtime_status(&env)
+        .operation_reconciliation_enabled
+    {
+        match container_reconciliation::run_container_reconciliation_observer(&env, &db, now).await
+        {
+            Ok(summary) => match serde_json::to_string(&summary) {
+                Ok(summary) => {
+                    worker::console_log!("container reconciliation observer: {summary}")
+                }
+                Err(_) => worker::console_error!(
+                    "container reconciliation observer summary serialization failed"
+                ),
+            },
+            Err(err) => {
+                worker::console_error!("container reconciliation observer failed: {err}")
+            }
+        }
+    }
     match task_repository::task_billing_intent_schema_ready(&db).await {
         Ok(true) => match task_repository::sweep_expired_task_billing_intents(&db, now, 64).await {
             Ok(summary) if summary.candidates > 0 => worker::console_log!(

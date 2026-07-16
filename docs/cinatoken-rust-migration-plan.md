@@ -13860,7 +13860,7 @@ cutover ready.
 
 The next slice is the create-only R2 client-response writer/reader and bounded
 D1/DO/R2 divergence reconciler, followed by old-writer drain and a separate
-0043 enforcement migration. No remote migration, deploy, provider call, or
+0044 enforcement migration. No remote migration, deploy, provider call, or
 traffic switch occurred. Go/VPS remains authoritative and production remains
 **NO-GO**.
 
@@ -13914,3 +13914,60 @@ response replay and divergence reconciliation as not compiled for cutover;
 all eight Container gates remain false. No remote migration, R2 write,
 deployment, provider call, or traffic switch occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.229 Bounded Container Reconciliation Observer (2026-07-16)
+
+The source audit was repeated against the cinaVibeSDK execution lifecycle and
+the Go relay/billing paths before implementing this increment. The adopted
+rules are persistence before external I/O, immutable operation identity, one
+durable retry owner, generation-fenced leases, and explicit terminal states.
+In-memory generation promises, swallowed partial commits, OFFSET pagination,
+unbounded retry, best-effort refunds, and a new provider call after an
+ambiguous dispatch are explicitly rejected. The Go billing-expression contract
+was reread; this observer never evaluates pricing, settles, refunds, or changes
+a frozen reservation.
+
+Migration 0043 is an expand-only observer migration. It creates one lazy
+per-operation observation table and one singleton scan/run cursor, but does not
+backfill or rewrite an existing operation. Strict CHECK constraints and
+triggers enforce immutable operation/reconciliation identity, legal
+`pending -> leased -> retry|converged|dead_letter` transitions, generation-
+fenced item takeover, generation-fenced global run ownership, monotonic scan
+state, and delete denial. The previous enforcement migration is therefore
+renumbered to 0044 and remains contingent on old-writer drain and remote 0042/
+0043 invariant evidence.
+
+The Worker now has a bounded scheduled observer with these fixed limits:
+
+1. stable `(created_at, reservation_key)` keyset pagination with a frozen
+   per-round high watermark and no OFFSET;
+2. one 45-second global run lease plus a 30-second per-item lease, both fenced
+   by owner and generation;
+3. default batch size 4, hard maximum 8, and a 25-second wall budget;
+4. deterministic operation-scoped exponential jitter from 15 through 900
+   seconds; and
+5. a 24-hour retry horizon followed by an explicit dead letter.
+
+Each claimed item rereads canonical D1 state, performs only the signed
+query-only DO status call and exact R2 HEAD inspection required by that state,
+then records a normalized class in the observer table. `prepared` and
+`dispatched` remain distinct, as do DO `claimed` and `running`; terminal
+convergence requires an exact D1 receipt, exact DO terminal fields, and an
+exact R2 response manifest. A DO 404 after dispatch is only an observation,
+never proof that no provider work occurred. The runner cannot mutate an
+operation, billing/quota/accounting state, a DO ledger, an R2 object, or a
+provider attempt, and cannot dispatch or replay a request.
+
+The scheduled hook is reachable only when the existing
+`CONTAINER_OPERATION_RECONCILIATION_ENABLED` gate is true. That gate and the
+other seven Container gates remain false in development, staging, and
+production. Platform exact-response and divergence-reconciliation compiled
+cutover flags also remain false. R2 orphan discovery is still incomplete
+because the Worker has no bounded object-inventory cursor for objects lacking
+a D1 manifest; live status/list/operator retry APIs, a provider-attempt
+journal, any resolution/apply workflow, edge exact replay, the Linux canary,
+N/N-1, remote fault evidence, and 0044 enforcement remain open.
+
+No remote migration, deployment, provider call, object mutation, financial
+mutation, or traffic switch occurred. Go/VPS remains authoritative and
+production remains **NO-GO**.

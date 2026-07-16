@@ -195,8 +195,9 @@ generation.
 
 This is D1 atomicity, not a distributed transaction across D1, the shard DO,
 and R2. Those stores converge through deterministic operation/event/object
-identity, version and digest checks, and a future bounded reconciler. The 0042
-migration remains expand-only for old-writer compatibility; it does not enforce
+identity, version and digest checks, and the bounded observer described below.
+The 0042 migration remains expand-only for old-writer compatibility; it does
+not enforce
 that every legacy terminal transition has an event. All eight operation,
 financial, replay, reconciliation, canary, divergence-proof, and staging gates
 therefore remain false.
@@ -224,12 +225,44 @@ present. Candidate selection and all later mutation race windows exclude those
 rows, preventing a legacy refund path from advancing only the billing
 generation.
 
-A pure classifier covers normalized D1, DO, and R2 observations without
-performing mutations. It distinguishes converged replay, pending execution,
-D1 lag, resolvable recovery, terminal conflicts, missing/divergent/orphan R2
-objects, legacy eventless terminal rows, unavailable observations, and contract
-violations. This is a policy foundation only: the bounded runner, fair cursor,
-durable backoff, metrics, authorization, and operator resolution remain open.
+A fail-closed classifier covers normalized D1, DO, and R2 observations. It
+distinguishes converged replay, pending execution, D1 lag, resolvable recovery,
+terminal conflicts, missing/divergent/orphan R2 objects, legacy eventless
+terminal rows, unavailable observations, and contract violations.
+
+### Bounded observer-only reconciliation
+
+Migration 0043 adds durable observer state without changing operation or
+financial authority. The observation row freezes operation ID, reservation
+key, operation creation time, owner generation, and reconciliation identity.
+Its state machine is `pending -> leased -> retry|converged|dead_letter` with
+owner/generation/expiry fencing and explicit takeover only after lease expiry.
+The singleton cursor separately owns a generation-fenced scheduled-run lease
+and stable `(created_at, reservation_key)` scan progress.
+
+Each round freezes the highest currently due key and scans forward without
+OFFSET. The default page is 4 and the hard maximum is 8. A run has a 45-second
+lease and 25-second wall budget; each item has a 30-second lease. Retry uses
+deterministic operation-scoped jittered exponential delay from 15 to 900
+seconds and dead-letters after a 24-hour horizon. Concurrent cron invocations,
+expired workers, and cursor updates are all fenced by owner and generation.
+
+The observer rereads the canonical operation after claim. It distinguishes
+D1 `prepared` from `dispatched`, DO `claimed` from `running`, and accepts a
+terminal convergence only when the D1 receipt, DO outcome, and R2 response
+manifest match exactly. A DO 404 for a dispatched operation remains ambiguous
+because ledger retention can remove a completed row. An R2 orphan class exists
+in policy, but discovering an object with no D1 manifest still requires a
+separate bounded R2 inventory cursor.
+
+The scheduled runner is enabled only by
+`CONTAINER_OPERATION_RECONCILIATION_ENABLED`, which remains false everywhere.
+Its only mutations are the 0043 cursor and observation rows. It cannot update
+`relay_container_operations`, billing, quota, accounting, the DO ledger, R2,
+or provider state; cannot dispatch; and cannot authorize settlement or refund.
+The redacted run summary contains only bounded counts and class names. Future
+operator status/list/retry and any apply workflow require separate
+authorization, idempotency, audit, and default-false gates.
 
 ## Edge Integration Order
 
@@ -273,15 +306,14 @@ The following are still mandatory:
 - derive the implemented tenant/user/token/route-scoped client idempotency HMAC
   at admission, require it for the canary, and map the implemented same-key/
   different-request lookup conflict to 409;
-- complete the default-off reconciler around the implemented classifier,
-  bounded D1 candidate reader, and signed status-only DO query, including a
-  fair durable cursor, retry/backoff horizon, divergence metrics, and operator
-  resolution authorization;
+- add bounded R2 orphan inventory plus authenticated operator status/list/retry
+  around the implemented observer, then design any resolution/apply workflow
+  as a separately gated generation-fenced protocol with audit and preview;
 - dispatch-before-send provider attempt journal and one retry owner;
 - deterministic local provider canary in the actual Linux image;
 - wire the implemented create-only exact client-response R2 write and verified
   byte replay into the narrow edge canary without enabling any broader route;
-- after old writers drain and remote 0042 invariants pass, add a separate 0043
+- after old writers drain and remote 0042/0043 invariants pass, add a separate 0044
   enforcement migration that rejects legacy empty identity and eventless v1
   terminal transitions;
 - reconciliation for R2 write success followed by DO attach failure;

@@ -360,7 +360,7 @@ status-only query, and 0042 cross-ledger terminal batch do not open G4 or G7:
 the batch is not wired into the edge canary, and exact response replay, the
 Linux image, remote fault matrix, and C1-C5 approvals remain incomplete.
 Migration 0042 is an expand-only event/identity contract;
-it does not authorize any of these flags. A later 0043 enforcement migration
+it does not authorize any of these flags. A later 0044 enforcement migration
 requires a drained old-writer cohort and remote proof that every v1 operation
 has non-empty client/reconciliation identity.
 

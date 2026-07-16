@@ -5813,7 +5813,7 @@ conflict; receipt readback recomputes both outbox and nested terminal hashes.
 
 This verification does not claim a D1/DO/R2 distributed transaction. The
 create-only R2 client-response path, actual byte replay, divergence reconciler,
-Linux canary, 0043 enforcement, remote migration/fault matrix, and staging proof
+Linux canary, 0044 enforcement, remote migration/fault matrix, and staging proof
 remain open. All eight Container operation/financial/replay/reconciliation/
 canary/proof gates remain false, and production remains **NO-GO**.
 
@@ -5858,6 +5858,58 @@ Still required are edge integration, live Service Binding and R2 evidence,
 concurrent conflict/orphan fault injection, fair reconciliation pagination,
 durable backoff and metrics, operator authorization, exact DO phase mapping,
 provider-attempt journaling, the Linux non-streaming chat canary, N/N-1,
-old-writer drain, 0043 enforcement, rollback, and C1-C5 approval. No remote
+old-writer drain, 0044 enforcement, rollback, and C1-C5 approval. No remote
 migration, deploy, object write, provider call, or traffic switch occurred;
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Bounded Container Reconciliation Observer Verification (2026-07-16)
+
+This overlay supersedes only the preceding claim that fair pagination and a
+durable observer runner are absent. It does not claim reconciliation apply,
+edge replay, or remote evidence.
+
+```powershell
+python tools/verify_sqlite.py
+# PASS: 43 migrations, 40 tables, 360 incremental columns, 57 key indexes.
+
+node tools/audit_d1_migration_config.mjs --json
+# PASS: 43 contiguous migrations; config/runtime head is 0043.
+
+cargo test -p cinatoken-worker --lib container_reconciliation
+# PASS: 5 passed; 0 failed.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 752 passed; 0 failed.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo fmt --all -- --check
+# PASS.
+
+bun run check
+# PASS: aggregate Worker, Controller, Workerd/DO, frontend, migration,
+# SQLite, workspace-test, and wasm checks.
+```
+
+SQLite executes default-lazy insert, identity/type/lifecycle negatives,
+generation-fenced claim and expired-lease takeover, retry/converged/dead-letter
+transitions, global run-lease exclusion/takeover/completion, and 0042
+compatibility. Rust source-contract tests require keyset/high-watermark
+pagination with no OFFSET, global and item fences, observer-only writes, and no
+operation or billing mutation. Pure tests preserve `prepared` versus
+`dispatched`, DO `claimed` versus `running`, exact terminal matching,
+fail-closed D1/DO/R2 classification, and deterministic bounded backoff.
+
+The scheduled hook remains behind
+`CONTAINER_OPERATION_RECONCILIATION_ENABLED=false` in all three tracked
+environments. The runner writes only 0043 observer state, emits a bounded
+redacted class summary, and performs no provider, financial, operation, DO, or
+R2 mutation. Exact-response and divergence compiled cutover flags remain
+false, so configuration cannot make Container cutover ready.
+
+Still required are bounded R2 orphan inventory, authenticated operator
+status/list/retry, provider-attempt journaling, a separately gated apply
+protocol, public exact replay, the Linux canary, N/N-1, remote migration and
+fault evidence, old-writer drain, enforcement migration 0044, rollback, and
+C1-C5 approval. No remote migration, deployment, provider call, object write,
+financial mutation, or traffic switch occurred. Go/VPS remains authoritative
+and production remains **NO-GO**.

@@ -39,6 +39,8 @@ REQUIRED_TABLES = [
     "relay_container_operations",
     "relay_container_terminal_events",
     "relay_container_terminal_outbox_state",
+    "relay_container_reconciliation_observations",
+    "relay_container_reconciliation_cursor",
     "task_billing_intents",
     "task_billing_reconciliation_events",
     "task_poll_lease_control",
@@ -328,6 +330,47 @@ REQUIRED_COLUMNS = {
         "created_at",
         "updated_at",
     },
+    "relay_container_reconciliation_observations": {
+        "operation_id",
+        "reservation_key",
+        "operation_created_at",
+        "owner_generation",
+        "reconciliation_id",
+        "status",
+        "claim_generation",
+        "claim_owner",
+        "claim_lease_expires_at",
+        "available_at",
+        "attempt_count",
+        "consecutive_failures",
+        "first_observed_at",
+        "last_attempt_at",
+        "last_observed_at",
+        "last_class",
+        "last_error_code",
+        "recovery_deadline_at",
+        "converged_at",
+        "dead_lettered_at",
+        "dead_letter_reason",
+        "created_at",
+        "updated_at",
+    },
+    "relay_container_reconciliation_cursor": {
+        "cursor_name",
+        "last_created_at",
+        "last_reservation_key",
+        "round_high_created_at",
+        "round_high_reservation_key",
+        "scan_generation",
+        "run_generation",
+        "run_owner",
+        "run_lease_expires_at",
+        "last_started_at",
+        "last_completed_at",
+        "last_success_at",
+        "last_error_code",
+        "updated_at",
+    },
     "relay_billing_finalization_incidents": {
         "incident_id",
         "event_id",
@@ -470,6 +513,11 @@ REQUIRED_INDEXES = {
         "idx_relay_container_terminal_outbox_pending": False,
         "idx_relay_container_terminal_outbox_leased": False,
     },
+    "relay_container_reconciliation_observations": {
+        "idx_relay_container_reconciliation_observations_due": False,
+        "idx_relay_container_reconciliation_observations_lease": False,
+        "idx_relay_container_reconciliation_observations_class": False,
+    },
     "task_billing_intents": {
         "idx_task_billing_intents_status_lease": False,
         "idx_task_billing_intents_user_status": False,
@@ -523,6 +571,8 @@ def main() -> int:
     relay_container_operation_rollout_verified = False
     relay_container_financial_terminal_verified = False
     relay_container_financial_terminal_rollout_verified = False
+    relay_container_reconciliation_observer_verified = False
+    relay_container_reconciliation_observer_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -546,6 +596,8 @@ def main() -> int:
         relay_container_operation_rollout_verified = True
         verify_relay_container_financial_terminal_rollout(schema_paths)
         relay_container_financial_terminal_rollout_verified = True
+        verify_relay_container_reconciliation_observer_rollout(schema_paths)
+        relay_container_reconciliation_observer_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -571,6 +623,8 @@ def main() -> int:
         relay_container_operation_verified = True
         verify_relay_container_financial_terminal(conn)
         relay_container_financial_terminal_verified = True
+        verify_relay_container_reconciliation_observer(conn)
+        relay_container_reconciliation_observer_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
@@ -634,6 +688,10 @@ def main() -> int:
         message += " + 0042 immutable financial terminal/outbox contract"
     if relay_container_financial_terminal_rollout_verified:
         message += " + 0042 default-inert expand-only rollout"
+    if relay_container_reconciliation_observer_verified:
+        message += " + 0043 generation-fenced Container reconciliation observer"
+    if relay_container_reconciliation_observer_rollout_verified:
+        message += " + 0043 default-lazy observer expand rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -2109,6 +2167,962 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
     )
     if final_outbox_states != expected_outbox_states:
         raise SystemExit(f"0042 outbox lifecycle did not persist: {final_outbox_states}")
+
+
+def verify_relay_container_reconciliation_observer(
+    conn: sqlite3.Connection,
+) -> None:
+    required_triggers = (
+        "relay_container_reconciliation_observation_insert_guard",
+        "relay_container_reconciliation_observation_identity_immutable_guard",
+        "relay_container_reconciliation_observation_lifecycle_guard",
+        "relay_container_reconciliation_observation_delete_guard",
+        "relay_container_reconciliation_cursor_identity_immutable_guard",
+        "relay_container_reconciliation_cursor_lifecycle_guard",
+        "relay_container_reconciliation_cursor_delete_guard",
+    )
+    for trigger in required_triggers:
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0043 reconciliation observer trigger missing: {trigger}")
+
+    observation_table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_reconciliation_observations"
+    )
+    for fragment in (
+        "operation_id TEXT PRIMARY KEY NOT NULL",
+        "reservation_key TEXT NOT NULL UNIQUE",
+        "status IN ('pending', 'leased', 'retry', 'converged', 'dead_letter')",
+        "claim_generation = attempt_count",
+        "consecutive_failures <= attempt_count",
+        "claim_lease_expires_at > updated_at",
+        "last_observed_at BETWEEN first_observed_at AND updated_at",
+        "reconciliation_id NOT GLOB '*[^0-9a-f]*'",
+        "claim_owner NOT GLOB '*[^0-9a-f]*'",
+        "last_class IN (",
+        "last_error_code NOT GLOB '*[^a-z0-9_:-]*'",
+        "dead_letter_reason NOT GLOB '*[^a-z0-9_:-]*'",
+        "REFERENCES relay_container_operations(operation_id)",
+    ):
+        if observation_table_sql is None or fragment not in observation_table_sql:
+            raise SystemExit(f"0043 reconciliation observation schema missing: {fragment}")
+
+    expected_classes = (
+        "",
+        "converged_replayable",
+        "prepared_do_absent",
+        "dispatched_do_absent",
+        "pending_do_claimed",
+        "pending_do_running",
+        "d1_lagging_dispatch",
+        "d1_lagging_terminal",
+        "recovery_do_absent",
+        "recovery_pending",
+        "recovery_resolvable",
+        "terminal_do_absent",
+        "terminal_conflict",
+        "terminal_response_missing",
+        "terminal_response_divergent",
+        "response_r2_orphan",
+        "legacy_terminal_without_receipt",
+        "store_unavailable",
+        "contract_violation",
+    )
+    class_marker = "last_class IN ("
+    class_start = observation_table_sql.index(class_marker) + len(class_marker)
+    class_end = observation_table_sql.index(")", class_start)
+    actual_classes = tuple(
+        value.strip().strip("'")
+        for value in observation_table_sql[class_start:class_end].split(",")
+    )
+    if actual_classes != expected_classes:
+        raise SystemExit(
+            f"0043 reconciliation class allowlist mismatch: {actual_classes}"
+        )
+
+    insert_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_reconciliation_observation_insert_guard",
+    )
+    for fragment in (
+        "operation.operation_id = NEW.operation_id",
+        "operation.reservation_key = NEW.reservation_key",
+        "operation.created_at = NEW.operation_created_at",
+        "operation.owner_generation = NEW.owner_generation",
+        "operation.reconciliation_id = NEW.reconciliation_id",
+    ):
+        if insert_guard_sql is None or fragment not in insert_guard_sql:
+            raise SystemExit(f"0043 reconciliation identity join missing: {fragment}")
+
+    lifecycle_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_reconciliation_observation_lifecycle_guard",
+    )
+    for fragment in (
+        "OLD.status IN ('pending', 'retry')",
+        "OLD.status = 'leased'",
+        "OLD.claim_lease_expires_at <= NEW.updated_at",
+        "OLD.claim_lease_expires_at > NEW.updated_at",
+        "NEW.status = 'retry'",
+        "NEW.status = 'converged'",
+        "NEW.status = 'dead_letter'",
+        "OLD.status NOT IN ('converged', 'dead_letter')",
+        "NEW.claim_generation = OLD.claim_generation + 1",
+        "NEW.updated_at >= OLD.updated_at",
+    ):
+        if lifecycle_sql is None or fragment not in lifecycle_sql:
+            raise SystemExit(f"0043 reconciliation lifecycle missing: {fragment}")
+
+    cursor_table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_reconciliation_cursor"
+    )
+    for fragment in (
+        "cursor_name = 'operation_observer_v1'",
+        "typeof(last_created_at) = 'integer'",
+        "typeof(round_high_created_at) = 'integer'",
+        "typeof(scan_generation) = 'integer'",
+        "typeof(run_generation) = 'integer'",
+        "run_owner NOT GLOB '*[^0-9a-f]*'",
+        "typeof(run_lease_expires_at) = 'integer'",
+        "typeof(last_started_at) = 'integer'",
+        "typeof(last_completed_at) = 'integer'",
+        "typeof(last_success_at) = 'integer'",
+        "last_error_code NOT GLOB '*[^a-z0-9_:-]*'",
+        "scan_generation = 0",
+        "scan_generation > 0",
+    ):
+        if cursor_table_sql is None or fragment not in cursor_table_sql:
+            raise SystemExit(f"0043 reconciliation cursor schema missing: {fragment}")
+
+    cursor_lifecycle_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_reconciliation_cursor_lifecycle_guard"
+    )
+    for fragment in (
+        "NEW.run_generation = OLD.run_generation + 1",
+        "OLD.run_lease_expires_at <= NEW.updated_at",
+        "OLD.run_lease_expires_at > NEW.updated_at",
+        "NEW.last_started_at = NEW.updated_at",
+        "NEW.last_completed_at = NEW.updated_at",
+        "NEW.last_success_at = NEW.updated_at",
+        "NEW.last_success_at = OLD.last_success_at",
+        "NEW.last_error_code = ''",
+        "length(NEW.last_error_code) > 0",
+    ):
+        if cursor_lifecycle_sql is None or fragment not in cursor_lifecycle_sql:
+            raise SystemExit(f"0043 observer run lifecycle missing: {fragment}")
+
+    partial_indexes = {
+        "idx_relay_container_reconciliation_observations_due": (
+            "WHERE status IN ('pending', 'retry')"
+        ),
+        "idx_relay_container_reconciliation_observations_lease": (
+            "WHERE status = 'leased'"
+        ),
+        "idx_relay_container_reconciliation_observations_class": (
+            "WHERE last_class <> ''"
+        ),
+    }
+    for index_name, predicate in partial_indexes.items():
+        index_sql = sqlite_object_sql(conn, "index", index_name)
+        if index_sql is None or predicate not in index_sql:
+            raise SystemExit(f"0043 reconciliation partial index missing: {index_name}")
+
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_reconciliation_observations"
+    ).fetchone() != (0,):
+        raise SystemExit("0043 observer expand must not backfill observations")
+    cursor = conn.execute(
+        "SELECT cursor_name, last_created_at, last_reservation_key, "
+        "round_high_created_at, round_high_reservation_key, scan_generation, "
+        "run_generation, run_owner, run_lease_expires_at, last_started_at, "
+        "last_completed_at, last_success_at, last_error_code, updated_at "
+        "FROM relay_container_reconciliation_cursor"
+    ).fetchall()
+    if cursor != [
+        ("operation_observer_v1", 0, "", 0, "", 0, 0, "", 0, 0, 0, 0, "", 0)
+    ]:
+        raise SystemExit(f"0043 observer cursor seed is not default-lazy: {cursor}")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "INSERT INTO relay_container_reconciliation_cursor VALUES "
+            "('another_observer', 0, '', 0, '', 0, 0, '', 0, 0, 0, 0, '', 0)"
+        ),
+        "0043 cursor must reject every non-singleton identity",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_cursor "
+            "SET round_high_created_at = 12000, "
+            "round_high_reservation_key = '0043-cursor-z', "
+            "scan_generation = 1, updated_at = 1 "
+            "WHERE cursor_name = 'operation_observer_v1'"
+        ),
+        "0043 cursor must not advance without a global run lease",
+        "relay container reconciliation cursor transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_cursor "
+            "SET run_generation = 1, run_owner = NULL, "
+            "run_lease_expires_at = 100, last_started_at = 10, updated_at = 10 "
+            "WHERE cursor_name = 'operation_observer_v1'"
+        ),
+        "0043 run owner must reject NULL",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_cursor "
+            "SET run_generation = 'one', "
+            "run_owner = '11111111111111111111111111111111', "
+            "run_lease_expires_at = 100, last_started_at = 10, updated_at = 10 "
+            "WHERE cursor_name = 'operation_observer_v1'"
+        ),
+        "0043 run generation must reject text affinity bypasses",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_cursor "
+            "SET run_generation = 1, "
+            "run_owner = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', "
+            "run_lease_expires_at = 100, last_started_at = 10, updated_at = 10 "
+            "WHERE cursor_name = 'operation_observer_v1'"
+        ),
+        "0043 run owners must be lowercase hex tokens",
+    )
+
+    first_run_owner = "1" * 32
+    if conn.execute(
+        """
+        UPDATE relay_container_reconciliation_cursor
+        SET run_generation = 1, run_owner = ?, run_lease_expires_at = 100,
+            last_started_at = 10, updated_at = 10
+        WHERE cursor_name = 'operation_observer_v1'
+          AND run_generation = 0 AND run_owner = ''
+        """,
+        (first_run_owner,),
+    ).rowcount != 1:
+        raise SystemExit("0043 initial global observer run lease was not acquired")
+
+    stale_progress = conn.execute(
+        """
+        UPDATE relay_container_reconciliation_cursor
+        SET round_high_created_at = 12000,
+            round_high_reservation_key = '0043-cursor-z',
+            scan_generation = 1, updated_at = 10
+        WHERE cursor_name = 'operation_observer_v1'
+          AND run_generation = 1 AND run_owner = ?
+        """,
+        ("f" * 32,),
+    ).rowcount
+    if stale_progress != 0:
+        raise SystemExit("0043 stale run owner advanced the cursor")
+    if conn.execute(
+        """
+        UPDATE relay_container_reconciliation_cursor
+        SET round_high_created_at = 12000,
+            round_high_reservation_key = '0043-cursor-z',
+            scan_generation = 1, updated_at = 10
+        WHERE cursor_name = 'operation_observer_v1'
+          AND run_generation = 1 AND run_owner = ?
+          AND run_lease_expires_at > 10
+        """,
+        (first_run_owner,),
+    ).rowcount != 1:
+        raise SystemExit("0043 active run owner did not begin a cursor round")
+    if conn.execute(
+        """
+        UPDATE relay_container_reconciliation_cursor
+        SET last_created_at = 11000,
+            last_reservation_key = '0043-cursor-a', updated_at = 11
+        WHERE cursor_name = 'operation_observer_v1'
+          AND run_generation = 1 AND run_owner = ?
+          AND run_lease_expires_at > 11
+        """,
+        (first_run_owner,),
+    ).rowcount != 1:
+        raise SystemExit("0043 active run owner did not advance the cursor")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_cursor "
+            "SET last_created_at = 10000, last_reservation_key = '0043-cursor-a', "
+            "updated_at = 12 WHERE cursor_name = 'operation_observer_v1'"
+        ),
+        "0043 cursor position must not move backward within a run",
+        "relay container reconciliation cursor transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_cursor "
+            "SET run_generation = 2, "
+            "run_owner = '22222222222222222222222222222222', "
+            "run_lease_expires_at = 110, last_started_at = 20, updated_at = 20 "
+            "WHERE cursor_name = 'operation_observer_v1'"
+        ),
+        "0043 active global run lease must not be taken over before expiry",
+        "relay container reconciliation cursor transition is invalid",
+    )
+    if conn.execute(
+        """
+        UPDATE relay_container_reconciliation_cursor
+        SET run_owner = '', run_lease_expires_at = 0,
+            last_completed_at = 20, last_success_at = 20,
+            last_error_code = '', updated_at = 20
+        WHERE cursor_name = 'operation_observer_v1'
+          AND run_generation = 1 AND run_owner = ?
+          AND run_lease_expires_at > 20
+        """,
+        (first_run_owner,),
+    ).rowcount != 1:
+        raise SystemExit("0043 successful observer run report was not persisted")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_cursor "
+            "SET last_created_at = 11500, last_reservation_key = '0043-cursor-b', "
+            "updated_at = 20 WHERE cursor_name = 'operation_observer_v1'"
+        ),
+        "0043 completed run must not advance cursor state",
+        "relay container reconciliation cursor transition is invalid",
+    )
+
+    second_run_owner = "2" * 32
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_cursor
+        SET run_generation = 2, run_owner = ?, run_lease_expires_at = 30,
+            last_started_at = 21, last_error_code = '', updated_at = 21
+        WHERE cursor_name = 'operation_observer_v1'
+        """,
+        (second_run_owner,),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_cursor "
+            "SET last_created_at = 11500, last_reservation_key = '0043-cursor-b', "
+            "updated_at = 30 WHERE cursor_name = 'operation_observer_v1'"
+        ),
+        "0043 expired run owner must not advance cursor state",
+        "relay container reconciliation cursor transition is invalid",
+    )
+    third_run_owner = "3" * 32
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_cursor
+        SET run_generation = 3, run_owner = ?, run_lease_expires_at = 40,
+            last_started_at = 30, last_error_code = '', updated_at = 30
+        WHERE cursor_name = 'operation_observer_v1'
+        """,
+        (third_run_owner,),
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_cursor
+        SET run_owner = '', run_lease_expires_at = 0,
+            last_completed_at = 35, last_success_at = 20,
+            last_error_code = 'store_unavailable', updated_at = 35
+        WHERE cursor_name = 'operation_observer_v1'
+          AND run_generation = 3 AND run_owner = ?
+        """,
+        (third_run_owner,),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_cursor "
+            "SET run_generation = 4, "
+            "run_owner = '44444444444444444444444444444444', "
+            "run_lease_expires_at = 50, last_started_at = 34, "
+            "last_error_code = '', updated_at = 36 "
+            "WHERE cursor_name = 'operation_observer_v1'"
+        ),
+        "0043 run start timestamps must not precede the last completion",
+    )
+    fourth_run_owner = "4" * 32
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_cursor
+        SET run_generation = 4, run_owner = ?, run_lease_expires_at = 50,
+            last_started_at = 36, last_error_code = '', updated_at = 36
+        WHERE cursor_name = 'operation_observer_v1'
+        """,
+        (fourth_run_owner,),
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_cursor
+        SET run_owner = '', run_lease_expires_at = 0,
+            last_completed_at = 37, last_success_at = 37,
+            last_error_code = '', updated_at = 37
+        WHERE cursor_name = 'operation_observer_v1'
+          AND run_generation = 4 AND run_owner = ?
+        """,
+        (fourth_run_owner,),
+    )
+    run_report = conn.execute(
+        "SELECT run_generation, run_owner, run_lease_expires_at, "
+        "last_started_at, last_completed_at, last_success_at, last_error_code "
+        "FROM relay_container_reconciliation_cursor "
+        "WHERE cursor_name = 'operation_observer_v1'"
+    ).fetchone()
+    if run_report != (4, "", 0, 36, 37, 37, ""):
+        raise SystemExit(f"0043 observer run report did not persist: {run_report}")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_reconciliation_cursor "
+            "WHERE cursor_name = 'operation_observer_v1'"
+        ),
+        "0043 cursor must not be deleted",
+        "relay container reconciliation cursor cannot be deleted",
+    )
+
+    operations: dict[str, dict[str, object]] = {}
+
+    def digest(label: str) -> str:
+        return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+    def insert_operation(
+        key: str,
+        created_at: int,
+        owner_generation: int,
+        *,
+        legacy_identity: bool = False,
+    ) -> None:
+        input_sha256 = digest(f"input:{key}")
+        values: dict[str, object] = {
+            "reservation_key": key,
+            "operation_id": key,
+            "owner_generation": owner_generation,
+            "owner_lease_expires_at": created_at + 3000,
+            "channel_id": 43,
+            "selected_group": "default",
+            "operation_kind": "relay_chat",
+            "provider_operation_id": f"provider:{key}",
+            "admission_sha256": digest(f"admission:{key}"),
+            "protocol_version": 1,
+            "shard_contract_version": 1,
+            "ring_generation": 8,
+            "shard_count": 8,
+            "shard_index": 3,
+            "instance_name": "cinatoken-relay-shard-v1-0003",
+            "execution_deadline_at": created_at + 2000,
+            "input_mode": "r2",
+            "input_object_key": (
+                f"container-inputs/v1/{key}/{owner_generation}/{input_sha256}"
+            ),
+            "input_object_version": "r2-version-0043",
+            "input_sha256": input_sha256,
+            "input_size": 256,
+            "input_content_type": "application/json",
+            "trace_id": f"trace:{key}",
+            "client_idempotency_hmac_sha256": (
+                "" if legacy_identity else digest(f"client:{key}")
+            ),
+            "client_request_sha256": (
+                "" if legacy_identity else digest(f"request:{key}")
+            ),
+            "reconciliation_id": (
+                "" if legacy_identity else digest(f"reconciliation:{key}")
+            ),
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+        conn.execute(
+            """
+            INSERT INTO relay_container_operations (
+              reservation_key, operation_id,
+              owner_generation, owner_lease_expires_at, channel_id, selected_group,
+              operation_kind, provider_operation_id, admission_sha256,
+              protocol_version, shard_contract_version,
+              ring_generation, shard_count, shard_index, instance_name,
+              execution_deadline_at, input_mode, input_object_key,
+              input_object_version, input_sha256, input_size,
+              input_content_type, trace_id,
+              client_idempotency_hmac_sha256, client_request_sha256,
+              reconciliation_id, created_at, updated_at
+            ) VALUES (
+              :reservation_key, :operation_id,
+              :owner_generation, :owner_lease_expires_at, :channel_id, :selected_group,
+              :operation_kind, :provider_operation_id, :admission_sha256,
+              :protocol_version, :shard_contract_version,
+              :ring_generation, :shard_count, :shard_index, :instance_name,
+              :execution_deadline_at, :input_mode, :input_object_key,
+              :input_object_version, :input_sha256, :input_size,
+              :input_content_type, :trace_id,
+              :client_idempotency_hmac_sha256, :client_request_sha256,
+              :reconciliation_id, :created_at, :updated_at
+            )
+            """,
+            values,
+        )
+        operations[key] = values
+
+    def observation_values(
+        key: str,
+        observed_at: int,
+        recovery_deadline_at: int,
+        **overrides: object,
+    ) -> dict[str, object]:
+        operation = operations[key]
+        values: dict[str, object] = {
+            "operation_id": key,
+            "reservation_key": key,
+            "operation_created_at": operation["created_at"],
+            "owner_generation": operation["owner_generation"],
+            "reconciliation_id": operation["reconciliation_id"],
+            "status": "pending",
+            "claim_generation": 0,
+            "claim_owner": "",
+            "claim_lease_expires_at": 0,
+            "available_at": observed_at,
+            "attempt_count": 0,
+            "consecutive_failures": 0,
+            "first_observed_at": 0,
+            "last_attempt_at": 0,
+            "last_observed_at": 0,
+            "last_class": "",
+            "last_error_code": "",
+            "recovery_deadline_at": recovery_deadline_at,
+            "converged_at": 0,
+            "dead_lettered_at": 0,
+            "dead_letter_reason": "",
+            "created_at": observed_at,
+            "updated_at": observed_at,
+        }
+        values.update(overrides)
+        return values
+
+    def insert_observation(values: dict[str, object]) -> None:
+        conn.execute(
+            """
+            INSERT INTO relay_container_reconciliation_observations (
+              operation_id, reservation_key, operation_created_at,
+              owner_generation, reconciliation_id, status,
+              claim_generation, claim_owner, claim_lease_expires_at,
+              available_at, attempt_count, consecutive_failures,
+              first_observed_at, last_attempt_at, last_observed_at,
+              last_class, last_error_code, recovery_deadline_at,
+              converged_at, dead_lettered_at, dead_letter_reason,
+              created_at, updated_at
+            ) VALUES (
+              :operation_id, :reservation_key, :operation_created_at,
+              :owner_generation, :reconciliation_id, :status,
+              :claim_generation, :claim_owner, :claim_lease_expires_at,
+              :available_at, :attempt_count, :consecutive_failures,
+              :first_observed_at, :last_attempt_at, :last_observed_at,
+              :last_class, :last_error_code, :recovery_deadline_at,
+              :converged_at, :dead_lettered_at, :dead_letter_reason,
+              :created_at, :updated_at
+            )
+            """,
+            values,
+        )
+
+    def insert_default_observation(values: dict[str, object]) -> None:
+        conn.execute(
+            """
+            INSERT INTO relay_container_reconciliation_observations (
+              operation_id, reservation_key, operation_created_at,
+              owner_generation, reconciliation_id, status, available_at,
+              recovery_deadline_at, created_at, updated_at
+            ) VALUES (
+              :operation_id, :reservation_key, :operation_created_at,
+              :owner_generation, :reconciliation_id, :status, :available_at,
+              :recovery_deadline_at, :created_at, :updated_at
+            )
+            """,
+            values,
+        )
+
+    insert_operation("0043-observation", 20000, 3)
+    invalid_identity = observation_values("0043-observation", 20100, 22000)
+    invalid_identity["owner_generation"] = 4
+    expect_integrity_error(
+        lambda: insert_observation(invalid_identity),
+        "0043 observations must exactly join the operation owner identity",
+        "relay container reconciliation observation identity or initial state is invalid",
+    )
+    invalid_created_at = observation_values("0043-observation", 20100, 22000)
+    invalid_created_at["operation_created_at"] = 19999
+    expect_integrity_error(
+        lambda: insert_observation(invalid_created_at),
+        "0043 observations must exactly join the operation creation identity",
+        "relay container reconciliation observation identity or initial state is invalid",
+    )
+    invalid_reconciliation = observation_values("0043-observation", 20100, 22000)
+    invalid_reconciliation["reconciliation_id"] = "A" * 64
+    expect_integrity_error(
+        lambda: insert_observation(invalid_reconciliation),
+        "0043 reconciliation identity must be exact lowercase hex",
+    )
+    invalid_initial = observation_values(
+        "0043-observation",
+        20100,
+        22000,
+        status="leased",
+        claim_generation=1,
+        claim_owner="1" * 32,
+        claim_lease_expires_at=20500,
+        available_at=0,
+        attempt_count=1,
+        first_observed_at=20100,
+        last_attempt_at=20100,
+    )
+    expect_integrity_error(
+        lambda: insert_observation(invalid_initial),
+        "0043 observations must begin in the exact pending shape",
+        "relay container reconciliation observation identity or initial state is invalid",
+    )
+    invalid_type = observation_values(
+        "0043-observation", 20100, 22000, attempt_count="one"
+    )
+    expect_integrity_error(
+        lambda: insert_observation(invalid_type),
+        "0043 observation counters must reject text affinity bypasses",
+    )
+    insert_default_observation(
+        observation_values("0043-observation", 20100, 22000)
+    )
+    pending_defaults = conn.execute(
+        "SELECT claim_generation, claim_owner, claim_lease_expires_at, "
+        "attempt_count, consecutive_failures, first_observed_at, "
+        "last_attempt_at, last_observed_at, last_class, last_error_code, "
+        "converged_at, dead_lettered_at, dead_letter_reason "
+        "FROM relay_container_reconciliation_observations "
+        "WHERE operation_id = '0043-observation'"
+    ).fetchone()
+    if pending_defaults != (0, "", 0, 0, 0, 0, 0, 0, "", "", 0, 0, ""):
+        raise SystemExit(f"0043 pending defaults are not inert: {pending_defaults}")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_reconciliation_observations
+            SET status = 'leased', claim_generation = 1,
+                claim_owner = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                claim_lease_expires_at = 20500, available_at = 0,
+                attempt_count = 1, first_observed_at = 20150,
+                last_attempt_at = 20150, updated_at = 20150
+            WHERE operation_id = '0043-observation'
+            """
+        ),
+        "0043 lease owners must be lowercase tokens",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_reconciliation_observations
+            SET status = 'leased', claim_generation = 1,
+                claim_owner = NULL, claim_lease_expires_at = 20500,
+                available_at = 0, attempt_count = 1,
+                first_observed_at = 20150, last_attempt_at = 20150,
+                updated_at = 20150
+            WHERE operation_id = '0043-observation'
+            """
+        ),
+        "0043 lease owner shape must reject NULL",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_reconciliation_observations
+            SET status = 'converged', claim_generation = 1,
+                available_at = 0, attempt_count = 1,
+                consecutive_failures = 0, first_observed_at = 20150,
+                last_attempt_at = 20150,
+                last_observed_at = 20150, last_class = 'converged_replayable',
+                last_error_code = '',
+                converged_at = 20150, updated_at = 20150
+            WHERE operation_id = '0043-observation'
+            """
+        ),
+        "0043 pending observations must not skip directly to terminal",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_observations "
+            "SET owner_generation = 4 WHERE operation_id = '0043-observation'"
+        ),
+        "0043 observation identity must be immutable",
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_observations
+        SET status = 'leased', claim_generation = 1,
+            claim_owner = '11111111111111111111111111111111',
+            claim_lease_expires_at = 20500, available_at = 0,
+            attempt_count = 1, first_observed_at = 20100,
+            last_attempt_at = 20100, updated_at = 20100
+        WHERE operation_id = '0043-observation'
+        """
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_reconciliation_observations
+            SET claim_lease_expires_at = 20600,
+                last_attempt_at = 20300, updated_at = 20300
+            WHERE operation_id = '0043-observation'
+            """
+        ),
+        "0043 active leases must not be renewed in place",
+        "relay container reconciliation observation transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_reconciliation_observations
+            SET claim_generation = 2,
+                claim_owner = '22222222222222222222222222222222',
+                claim_lease_expires_at = 20700, attempt_count = 2,
+                last_attempt_at = 20400, updated_at = 20400
+            WHERE operation_id = '0043-observation'
+            """
+        ),
+        "0043 active leases must not be taken over before expiry",
+        "relay container reconciliation observation transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_reconciliation_observations
+            SET status = 'retry', claim_owner = '',
+                claim_lease_expires_at = 0, available_at = 20600,
+                consecutive_failures = 1, last_observed_at = 20500,
+                last_class = 'store_unavailable',
+                last_error_code = 'lease_expired', updated_at = 20500
+            WHERE operation_id = '0043-observation'
+            """
+        ),
+        "0043 expired lease owners must not record an outcome",
+        "relay container reconciliation observation transition is invalid",
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_observations
+        SET claim_generation = 2,
+            claim_owner = '22222222222222222222222222222222',
+            claim_lease_expires_at = 20800, attempt_count = 2,
+            last_attempt_at = 20500, updated_at = 20500
+        WHERE operation_id = '0043-observation'
+        """
+    )
+    takeover = conn.execute(
+        "SELECT status, claim_generation, claim_owner, attempt_count, "
+        "consecutive_failures, last_attempt_at FROM "
+        "relay_container_reconciliation_observations "
+        "WHERE operation_id = '0043-observation'"
+    ).fetchone()
+    if takeover != ("leased", 2, "2" * 32, 2, 0, 20500):
+        raise SystemExit(f"0043 expired lease takeover did not persist: {takeover}")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_reconciliation_observations
+            SET status = 'retry', claim_owner = '',
+                claim_lease_expires_at = 0, available_at = 20650,
+                consecutive_failures = 1, last_observed_at = 20600,
+                last_class = 'Store_Unavailable',
+                last_error_code = 'controller_timeout', updated_at = 20600
+            WHERE operation_id = '0043-observation'
+            """
+        ),
+        "0043 observation classes must be lowercase tokens",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_reconciliation_observations
+            SET status = 'retry', claim_owner = '',
+                claim_lease_expires_at = 0, available_at = 20650,
+                consecutive_failures = 1, last_observed_at = 20600,
+                last_class = 'unknown_divergence',
+                last_error_code = 'controller_timeout', updated_at = 20600
+            WHERE operation_id = '0043-observation'
+            """
+        ),
+        "0043 observation classes must reject unrecognized lowercase tokens",
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_observations
+        SET status = 'retry', claim_owner = '',
+            claim_lease_expires_at = 0, available_at = 20650,
+            consecutive_failures = 1, last_observed_at = 20600,
+            last_class = 'store_unavailable',
+            last_error_code = 'controller_timeout', updated_at = 20600
+        WHERE operation_id = '0043-observation'
+        """
+    )
+    retry = conn.execute(
+        "SELECT status, claim_generation, claim_owner, available_at, "
+        "attempt_count, consecutive_failures, last_class, last_error_code "
+        "FROM relay_container_reconciliation_observations "
+        "WHERE operation_id = '0043-observation'"
+    ).fetchone()
+    if retry != (
+        "retry",
+        2,
+        "",
+        20650,
+        2,
+        1,
+        "store_unavailable",
+        "controller_timeout",
+    ):
+        raise SystemExit(f"0043 retry transition did not persist: {retry}")
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_reconciliation_observations
+            SET status = 'leased', claim_generation = 3,
+                claim_owner = '33333333333333333333333333333333',
+                claim_lease_expires_at = 20900, available_at = 0,
+                attempt_count = 3, last_attempt_at = 20625, updated_at = 20625
+            WHERE operation_id = '0043-observation'
+            """
+        ),
+        "0043 retry observations must not be leased before available_at",
+        "relay container reconciliation observation transition is invalid",
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_observations
+        SET status = 'leased', claim_generation = 3,
+            claim_owner = '33333333333333333333333333333333',
+            claim_lease_expires_at = 21000, available_at = 0,
+            attempt_count = 3, last_attempt_at = 20650, updated_at = 20650
+        WHERE operation_id = '0043-observation'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_observations
+        SET status = 'converged', claim_owner = '',
+            claim_lease_expires_at = 0, available_at = 0,
+            consecutive_failures = 0, last_observed_at = 20900,
+            last_class = 'converged_replayable', last_error_code = '',
+            converged_at = 20900, updated_at = 20900
+        WHERE operation_id = '0043-observation'
+        """
+    )
+    converged = conn.execute(
+        "SELECT status, claim_generation, attempt_count, consecutive_failures, "
+        "last_class, last_error_code, converged_at, dead_lettered_at "
+        "FROM relay_container_reconciliation_observations "
+        "WHERE operation_id = '0043-observation'"
+    ).fetchone()
+    if converged != (
+        "converged",
+        3,
+        3,
+        0,
+        "converged_replayable",
+        "",
+        20900,
+        0,
+    ):
+        raise SystemExit(f"0043 converged transition did not persist: {converged}")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_observations "
+            "SET status = status WHERE operation_id = '0043-observation'"
+        ),
+        "0043 converged observations must reject every update",
+        "relay container reconciliation observation transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_reconciliation_observations "
+            "WHERE operation_id = '0043-observation'"
+        ),
+        "0043 observations must not be deleted",
+        "relay container reconciliation observation cannot be deleted",
+    )
+
+    insert_operation(
+        "0043-legacy-observation", 21000, 3, legacy_identity=True
+    )
+    insert_default_observation(
+        observation_values("0043-legacy-observation", 21100, 23000)
+    )
+    legacy_identity = conn.execute(
+        "SELECT reconciliation_id, status FROM "
+        "relay_container_reconciliation_observations "
+        "WHERE operation_id = '0043-legacy-observation'"
+    ).fetchone()
+    if legacy_identity != ("", "pending"):
+        raise SystemExit(
+            f"0043 observer rejected exact 0042 legacy identity: {legacy_identity}"
+        )
+
+    insert_operation("0043-dead-letter", 23000, 4)
+    insert_default_observation(
+        observation_values("0043-dead-letter", 23100, 25000)
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_observations
+        SET status = 'leased', claim_generation = 1,
+            claim_owner = 'dddddddddddddddddddddddddddddddd',
+            claim_lease_expires_at = 23500, available_at = 0,
+            attempt_count = 1, first_observed_at = 23200,
+            last_attempt_at = 23200, updated_at = 23200
+        WHERE operation_id = '0043-dead-letter'
+        """
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_reconciliation_observations
+            SET status = 'dead_letter', claim_owner = '',
+                claim_lease_expires_at = 0, available_at = 0,
+                last_observed_at = 23200, last_class = 'contract_violation',
+                last_error_code = 'invalid_manifest',
+                dead_lettered_at = 23200,
+                dead_letter_reason = 'Operator_Review', updated_at = 23200
+            WHERE operation_id = '0043-dead-letter'
+            """
+        ),
+        "0043 dead-letter reasons must be lowercase tokens",
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_reconciliation_observations
+        SET status = 'dead_letter', claim_owner = '',
+            claim_lease_expires_at = 0, available_at = 0,
+            last_observed_at = 23200, last_class = 'contract_violation',
+            last_error_code = 'invalid_manifest',
+            dead_lettered_at = 23200,
+            dead_letter_reason = 'operator_review_required', updated_at = 23200
+        WHERE operation_id = '0043-dead-letter'
+        """
+    )
+    dead_letter = conn.execute(
+        "SELECT status, claim_generation, attempt_count, consecutive_failures, "
+        "last_class, last_error_code, dead_lettered_at, dead_letter_reason "
+        "FROM relay_container_reconciliation_observations "
+        "WHERE operation_id = '0043-dead-letter'"
+    ).fetchone()
+    if dead_letter != (
+        "dead_letter",
+        1,
+        1,
+        0,
+        "contract_violation",
+        "invalid_manifest",
+        23200,
+        "operator_review_required",
+    ):
+        raise SystemExit(f"0043 dead-letter transition did not persist: {dead_letter}")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_observations "
+            "SET updated_at = 23401 WHERE operation_id = '0043-dead-letter'"
+        ),
+        "0043 dead-letter observations must reject every update",
+        "relay container reconciliation observation transition is invalid",
+    )
 
 
 def verify_flat_billing_intent_guard(conn: sqlite3.Connection) -> None:
@@ -3985,8 +4999,10 @@ def verify_relay_container_financial_terminal_rollout(
         "0041_relay_container_operation_lifecycle_hardening.sql"
     ):
         raise SystemExit("0042 financial terminal expand must immediately follow 0041")
-    if terminal_index != len(schema_paths) - 1:
-        raise SystemExit("0042 financial terminal expand must be the current D1 migration head")
+    if terminal_index + 1 >= len(schema_paths) or schema_paths[
+        terminal_index + 1
+    ].name != "0043_relay_container_reconciliation_observer.sql":
+        raise SystemExit("0042 financial terminal expand must immediately precede 0043")
 
     terminal_sql = terminal_path.read_text(encoding="utf-8")
     for fragment in (
@@ -4179,6 +5195,232 @@ def verify_relay_container_financial_terminal_rollout(
             raise SystemExit(
                 f"0042 partial index manifest is incomplete: {index_name}"
             )
+
+
+def verify_relay_container_reconciliation_observer_rollout(
+    schema_paths: list[Path],
+) -> None:
+    observer_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0043_relay_container_reconciliation_observer.sql"
+        ),
+        None,
+    )
+    terminal_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0042_relay_container_financial_terminal_expand.sql"
+        ),
+        None,
+    )
+    if observer_path is None or terminal_path is None:
+        raise SystemExit("0042/0043 relay Container observer rollout migrations not found")
+    observer_index = schema_paths.index(observer_path)
+    if observer_index == 0 or schema_paths[observer_index - 1] != terminal_path:
+        raise SystemExit("0043 reconciliation observer must immediately follow 0042")
+    if observer_index != len(schema_paths) - 1:
+        raise SystemExit("0043 reconciliation observer must be the current D1 migration head")
+
+    observer_sql = observer_path.read_text(encoding="utf-8")
+    if "if not exists" in observer_sql.lower():
+        raise SystemExit("0043 critical observer objects must fail on duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_reconciliation_observations",
+        "operation_id TEXT PRIMARY KEY NOT NULL",
+        "reservation_key TEXT NOT NULL UNIQUE",
+        "operation_created_at INTEGER NOT NULL",
+        "owner_generation INTEGER NOT NULL",
+        "reconciliation_id TEXT NOT NULL",
+        "status IN ('pending', 'leased', 'retry', 'converged', 'dead_letter')",
+        "idx_relay_container_reconciliation_observations_due",
+        "idx_relay_container_reconciliation_observations_lease",
+        "idx_relay_container_reconciliation_observations_class",
+        "relay_container_reconciliation_observation_insert_guard",
+        "relay_container_reconciliation_observation_identity_immutable_guard",
+        "relay_container_reconciliation_observation_lifecycle_guard",
+        "relay_container_reconciliation_observation_delete_guard",
+        "CREATE TABLE relay_container_reconciliation_cursor",
+        "cursor_name = 'operation_observer_v1'",
+        "run_generation INTEGER NOT NULL",
+        "run_owner TEXT NOT NULL",
+        "run_lease_expires_at INTEGER NOT NULL",
+        "last_started_at INTEGER NOT NULL",
+        "last_completed_at INTEGER NOT NULL",
+        "last_success_at INTEGER NOT NULL",
+        "last_error_code TEXT NOT NULL",
+        "NEW.run_generation = OLD.run_generation + 1",
+        "OLD.run_lease_expires_at > NEW.updated_at",
+        "relay_container_reconciliation_cursor_identity_immutable_guard",
+        "relay_container_reconciliation_cursor_lifecycle_guard",
+        "relay_container_reconciliation_cursor_delete_guard",
+    ):
+        if fragment not in observer_sql:
+            raise SystemExit(f"0043 reconciliation observer contract missing: {fragment}")
+    if observer_sql.count("INSERT INTO ") != 1 or (
+        "INSERT INTO relay_container_reconciliation_cursor" not in observer_sql
+    ):
+        raise SystemExit("0043 must seed only the singleton observer cursor")
+    for forbidden in (
+        "INSERT INTO relay_container_reconciliation_observations",
+        "UPDATE relay_container_operations",
+        "UPDATE relay_container_terminal_events",
+        "UPDATE relay_container_terminal_outbox_state",
+        "DELETE FROM relay_container_operations",
+        "DELETE FROM relay_container_terminal_events",
+        "DELETE FROM relay_container_terminal_outbox_state",
+    ):
+        if forbidden in observer_sql:
+            raise SystemExit(f"0043 observer expand must remain default-lazy: {forbidden}")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == observer_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    def insert_0042_operation(key: str, created_at: int, owner_generation: int) -> None:
+        input_sha256 = hashlib.sha256(f"input:{key}".encode("utf-8")).hexdigest()
+        values: dict[str, object] = {
+            "reservation_key": key,
+            "operation_id": key,
+            "owner_generation": owner_generation,
+            "owner_lease_expires_at": created_at + 3000,
+            "channel_id": 43,
+            "selected_group": "default",
+            "operation_kind": "relay_chat",
+            "provider_operation_id": f"provider:{key}",
+            "admission_sha256": hashlib.sha256(
+                f"admission:{key}".encode("utf-8")
+            ).hexdigest(),
+            "protocol_version": 1,
+            "shard_contract_version": 1,
+            "ring_generation": 8,
+            "shard_count": 8,
+            "shard_index": 4,
+            "instance_name": "cinatoken-relay-shard-v1-0004",
+            "execution_deadline_at": created_at + 2000,
+            "input_mode": "r2",
+            "input_object_key": (
+                f"container-inputs/v1/{key}/{owner_generation}/{input_sha256}"
+            ),
+            "input_object_version": "r2-version-0042-compatible",
+            "input_sha256": input_sha256,
+            "input_size": 128,
+            "input_content_type": "application/json",
+            "trace_id": f"trace:{key}",
+            "client_idempotency_hmac_sha256": hashlib.sha256(
+                f"client:{key}".encode("utf-8")
+            ).hexdigest(),
+            "client_request_sha256": hashlib.sha256(
+                f"request:{key}".encode("utf-8")
+            ).hexdigest(),
+            "reconciliation_id": hashlib.sha256(
+                f"reconciliation:{key}".encode("utf-8")
+            ).hexdigest(),
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+        conn.execute(
+            """
+            INSERT INTO relay_container_operations (
+              reservation_key, operation_id,
+              owner_generation, owner_lease_expires_at, channel_id, selected_group,
+              operation_kind, provider_operation_id, admission_sha256,
+              protocol_version, shard_contract_version,
+              ring_generation, shard_count, shard_index, instance_name,
+              execution_deadline_at, input_mode, input_object_key,
+              input_object_version, input_sha256, input_size,
+              input_content_type, trace_id,
+              client_idempotency_hmac_sha256, client_request_sha256,
+              reconciliation_id, created_at, updated_at
+            ) VALUES (
+              :reservation_key, :operation_id,
+              :owner_generation, :owner_lease_expires_at, :channel_id, :selected_group,
+              :operation_kind, :provider_operation_id, :admission_sha256,
+              :protocol_version, :shard_contract_version,
+              :ring_generation, :shard_count, :shard_index, :instance_name,
+              :execution_deadline_at, :input_mode, :input_object_key,
+              :input_object_version, :input_sha256, :input_size,
+              :input_content_type, :trace_id,
+              :client_idempotency_hmac_sha256, :client_request_sha256,
+              :reconciliation_id, :created_at, :updated_at
+            )
+            """,
+            values,
+        )
+
+    insert_0042_operation("0043-existing-operation", 4000, 2)
+    operation_columns_before = table_columns(conn, "relay_container_operations")
+    operation_before = conn.execute(
+        "SELECT * FROM relay_container_operations "
+        "WHERE operation_id = '0043-existing-operation'"
+    ).fetchone()
+    protected_0042_objects = (
+        "relay_container_operation_lifecycle_guard",
+        "relay_container_terminal_event_insert_guard",
+        "relay_container_terminal_outbox_lifecycle_guard",
+    )
+    object_sql_before = {
+        name: sqlite_object_sql(conn, "trigger", name)
+        for name in protected_0042_objects
+    }
+
+    conn.executescript(observer_sql)
+
+    if table_columns(conn, "relay_container_operations") != operation_columns_before:
+        raise SystemExit("0043 observer expand changed the 0042 operation columns")
+    operation_after = conn.execute(
+        "SELECT * FROM relay_container_operations "
+        "WHERE operation_id = '0043-existing-operation'"
+    ).fetchone()
+    if operation_after != operation_before:
+        raise SystemExit("0043 observer expand changed an existing 0042 operation")
+    object_sql_after = {
+        name: sqlite_object_sql(conn, "trigger", name)
+        for name in protected_0042_objects
+    }
+    if object_sql_after != object_sql_before:
+        raise SystemExit("0043 observer expand changed an existing 0042 trigger")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_reconciliation_observations"
+    ).fetchone() != (0,):
+        raise SystemExit("0043 observer expand backfilled existing 0042 operations")
+    seeded_cursor = conn.execute(
+        "SELECT cursor_name, last_created_at, last_reservation_key, "
+        "round_high_created_at, round_high_reservation_key, scan_generation, "
+        "run_generation, run_owner, run_lease_expires_at, last_started_at, "
+        "last_completed_at, last_success_at, last_error_code, updated_at "
+        "FROM relay_container_reconciliation_cursor"
+    ).fetchall()
+    if seeded_cursor != [
+        ("operation_observer_v1", 0, "", 0, "", 0, 0, "", 0, 0, 0, 0, "", 0)
+    ]:
+        raise SystemExit(f"0043 observer expand seeded unexpected control data: {seeded_cursor}")
+
+    insert_0042_operation("0043-post-expand-operation", 8000, 3)
+    conn.execute(
+        "UPDATE relay_container_operations SET status = 'dispatched', "
+        "updated_at = 8100 WHERE operation_id = '0043-post-expand-operation'"
+    )
+    post_expand = conn.execute(
+        "SELECT status, reconciliation_id FROM relay_container_operations "
+        "WHERE operation_id = '0043-post-expand-operation'"
+    ).fetchone()
+    if post_expand is None or post_expand[0] != "dispatched" or len(post_expand[1]) != 64:
+        raise SystemExit(f"0043 broke an unaware 0042 operation writer: {post_expand}")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_reconciliation_observations"
+    ).fetchone() != (0,):
+        raise SystemExit("0043 must remain lazy after 0042-compatible operation writes")
+    for table in (
+        "relay_container_terminal_events",
+        "relay_container_terminal_outbox_state",
+    ):
+        if conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone() != (0,):
+            raise SystemExit(f"0043 observer expand synthesized rows in {table}")
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

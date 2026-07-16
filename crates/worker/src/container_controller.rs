@@ -120,7 +120,8 @@ struct ControllerOperationErrorPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContainerOperationStatus {
-    InFlight,
+    Claimed,
+    Running,
     Completed,
     Failed,
     RecoveryRequired,
@@ -562,10 +563,10 @@ fn operation_outcome(
     let code_valid = payload.code.as_deref().is_some_and(valid_response_code);
     let (status, result) = match payload.status.as_str() {
         "claimed" if http_status == 202 && payload.code.is_none() && payload.result.is_none() => {
-            (ContainerOperationStatus::InFlight, None)
+            (ContainerOperationStatus::Claimed, None)
         }
         "running" if http_status == 202 && payload.code.is_none() => (
-            ContainerOperationStatus::InFlight,
+            ContainerOperationStatus::Running,
             payload
                 .result
                 .map(|result| result_manifest(result, envelope))
@@ -1253,17 +1254,26 @@ mod tests {
     #[test]
     fn operation_outcome_requires_exact_identity_and_terminal_shape() {
         let envelope = test_operation();
-        let in_flight = ControllerOperationPayload {
+        let claimed = ControllerOperationPayload {
             protocol_version: 1,
             operation_id: envelope.operation_id.clone(),
-            status: "running".to_string(),
+            status: "claimed".to_string(),
             code: None,
             trace_id: envelope.trace_id.clone(),
             result: None,
         };
         assert_eq!(
-            operation_outcome(202, in_flight, &envelope).unwrap().status,
-            ContainerOperationStatus::InFlight
+            operation_outcome(202, claimed.clone(), &envelope)
+                .unwrap()
+                .status,
+            ContainerOperationStatus::Claimed
+        );
+
+        let mut running = claimed;
+        running.status = "running".to_string();
+        assert_eq!(
+            operation_outcome(202, running, &envelope).unwrap().status,
+            ContainerOperationStatus::Running
         );
         let completed = ControllerOperationPayload {
             protocol_version: 1,
@@ -1289,7 +1299,7 @@ mod tests {
         let mut running_with_result = completed.clone();
         running_with_result.status = "running".to_string();
         let outcome = operation_outcome(202, running_with_result.clone(), &envelope).unwrap();
-        assert_eq!(outcome.status, ContainerOperationStatus::InFlight);
+        assert_eq!(outcome.status, ContainerOperationStatus::Running);
         assert!(outcome.result.is_some());
         running_with_result.status = "claimed".to_string();
         assert_eq!(

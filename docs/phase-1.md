@@ -1707,7 +1707,7 @@ identities and billing generations.
 
 This does not make D1, Durable Objects, and R2 one transaction. The exact R2
 client-response write/read path, divergence reconciler, deterministic Linux
-canary, old-writer drain, future 0045 enforcement, and remote fault evidence
+canary, old-writer drain, future 0046 enforcement, and remote fault evidence
 remain open. `CONTAINER_FINANCIAL_TERMINAL_ENABLED`,
 `CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED`, and
 `CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED` join the five existing gates and
@@ -1734,7 +1734,7 @@ financial mutation.
 No public relay path calls these helpers, and the bounded reconciliation runner
 still needs fair pagination, durable backoff, metrics, authorization, and
 operator resolution. The Linux canary, provider-attempt journal, remote R2 and
-DO lifecycle faults, old-writer drain, 0045 enforcement, and N/N-1 evidence
+DO lifecycle faults, old-writer drain, 0046 enforcement, and N/N-1 evidence
 also remain open. Exact-response and divergence compiled-readiness claims stay
 false, all eight Container gates remain false, no remote action occurred,
 Go/VPS remains authoritative, and production remains **NO-GO**.
@@ -1762,7 +1762,7 @@ exact-response and divergence compiled cutover claims remain false as well.
 Next are bounded R2 orphan inventory, authenticated retry preview,
 provider-attempt journaling, a separately gated generation-fenced apply path,
 edge exact replay, the Linux canary, remote fault/N/N-1 evidence, old-writer
-drain, and enforcement migration 0045. No remote action occurred. Go/VPS
+drain, and enforcement migration 0046. No remote action occurred. Go/VPS
 remains authoritative and production remains **NO-GO**.
 
 ## 2026-07-17 Phase 1 Container Reconciliation Operator Read Gate
@@ -1786,7 +1786,7 @@ These status/list routes perform only parameterized D1 reads. At that
 checkpoint no retry or apply endpoint existed; the next increment below adds
 preview only. R2 orphan inventory, retry apply, provider-attempt journal,
 generation-fenced resolution, edge replay, Linux canary, remote faults/N/N-1,
-old-writer drain, and 0045 enforcement remain open. All Container gates stay
+old-writer drain, and 0046 enforcement remain open. All Container gates stay
 false, no remote action occurred, Go/VPS remains authoritative, and production
 remains **NO-GO**.
 
@@ -1810,7 +1810,7 @@ apply as uncompiled and disabled, requires future step-up, and forbids provider,
 operation, billing, DO, and R2 mutation. No apply route or runtime flag exists.
 Next are bounded R2 orphan inventory, a separately migrated observer-only retry
 apply protocol, provider-attempt journaling, edge replay, Linux canary, remote
-fault/N/N-1 evidence, old-writer drain, and enforcement migration 0045. All
+fault/N/N-1 evidence, old-writer drain, and enforcement migration 0046. All
 Container gates remain false and production remains **NO-GO**.
 
 ## 2026-07-17 Phase 1 Default-Off R2 Orphan Inventory Gate
@@ -1842,5 +1842,40 @@ financial/operation mutation, provider calls, remote migration, or deployment.
 
 Next are an independently migrated retry-apply protocol, provider-attempt
 journaling, edge replay, the Linux canary, isolated real-R2 fault/cost evidence,
-N/N-1, old-writer drain, and enforcement migration 0045. Go/VPS remains
+N/N-1, old-writer drain, and enforcement migration 0046. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-17 Phase 1 Default-Off Container Retry Apply Gate
+
+Migration 0045 adds an immutable retry-event ledger and one exact
+`dead_letter -> retry` transition for the 0043 observer. It is separately
+gated and does not authorize provider execution, operation or financial
+mutation, Durable Object writes, or R2 access. The trigger preserves immutable
+identity, claim/attempt generation, attempt history, class, and recovery
+deadline; clears only observer error/dead-letter fields; resets consecutive
+failures; and requires at least 60 seconds of retry horizon after scheduling.
+
+The apply route requires RootAuth, fresh step-up, 0045 schema readiness, the
+state-bound preview token, one allowlisted remediation decision, a bounded
+idempotency key, and explicit confirmation. Event insertion and redacted admin
+audit execute in one D1 batch. Exact repeats read back the immutable event and
+return `duplicate`; a stale generation, exhausted horizon, no-op trigger, or
+reused old preview with a new idempotency key fails closed. The raw
+idempotency key is not stored or returned.
+
+Status now separates apply compiled, schema-ready, and runtime-enabled state.
+`CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED=false` in development, staging,
+and production; the flag is true only in the isolated Workerd test. Local
+SQLite and Workerd evidence proves stale/horizon rejection, one event plus one
+audit, exact duplicate readback, and unchanged operation, terminal/outbox,
+billing, user, token, channel, and R2 state.
+
+Remote rollout remains schema-first and disable-first: apply 0045 with the
+flag false, verify exact trigger readback and zero events, then permit one
+approved isolated-staging Root + fresh-step-up drill before disabling it again.
+Because 0045 now owns this expand-only apply protocol, the planned legacy
+identity/event enforcement migration moves to 0046. Provider-attempt
+journaling, edge replay, Linux canary, real R2/Container faults, N/N-1,
+old-writer drain, remote 0042-0045 proof, 0046 enforcement, rollback, and C1-C5
+remain open. All eight cutover gates stay false; Go/VPS remains authoritative
+and production remains **NO-GO**.

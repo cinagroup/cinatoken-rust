@@ -1276,9 +1276,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 44,
+        d1_migration_applied_count: 45,
         d1_expected_migration:
-          "0044_relay_container_r2_orphan_inventory.sql",
+          "0045_relay_container_reconciliation_retry_apply.sql",
         d1_migration_ready: true,
         task_v2_contract_version: 5,
         task_submit_operation_contract_version: 1,
@@ -1866,9 +1866,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   });
 
-  it("exposes only authenticated redacted Container reconciliation observations", async () => {
+  it("applies an authenticated Container reconciliation retry without business mutation", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
-    const { cookie } = await setupAndLoginBillingRoot();
+    const { cookie, password } = await setupAndLoginBillingRoot();
     const seeded = [
       await seedContainerReconciliationObservation("1"),
       await seedContainerReconciliationObservation("2"),
@@ -1901,7 +1901,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
         schema_ready: true,
         runtime_enabled: false,
         retry_preview_compiled: true,
-        retry_apply_compiled: false,
+        retry_apply_compiled: true,
+        retry_apply_schema_ready: true,
+        retry_apply_enabled: true,
         scan_limit: 4,
         run: {
           owner_present: false,
@@ -2076,9 +2078,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
         action: "reobserve_container_state",
         reason: "operator_reinspection_approved",
         candidate_retryable: true,
-        apply_compiled: false,
-        apply_enabled: false,
-        apply_blocker: "retry_apply_not_compiled",
+        apply_compiled: true,
+        apply_enabled: true,
+        apply_blocker: "",
         step_up_required_for_apply: true,
         observer_state_mutation_only: true,
         provider_retry_allowed: false,
@@ -2111,18 +2113,161 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(tamperedPreview.status).toBe(404);
     expect(tamperedPreview.headers.get("cache-control")).toBe("no-store");
     const deadLetterState = await env.DB.prepare(
-      `SELECT status, claim_generation, attempt_count, dead_letter_reason
+      `SELECT status, claim_generation, claim_owner, claim_lease_expires_at,
+              available_at, attempt_count, consecutive_failures,
+              first_observed_at, last_attempt_at, last_observed_at,
+              last_class, last_error_code, recovery_deadline_at,
+              converged_at, dead_lettered_at, dead_letter_reason,
+              created_at, updated_at
        FROM relay_container_reconciliation_observations
        WHERE operation_id = ?1`,
     )
       .bind(seeded[0].operationId)
       .first();
-    expect(deadLetterState).toEqual({
+    expect(deadLetterState).toMatchObject({
       status: "dead_letter",
       claim_generation: 2,
       attempt_count: 2,
       dead_letter_reason: "terminal_conflict",
     });
+    const applyUrl =
+      "https://cinatoken.test/api/platform/container/reconciliations/" +
+      `${previewTarget}/retry/apply`;
+    const applyBody = {
+      reason: "operator_reinspection_approved",
+      evidence_reference: "incident:CT-runtime-1",
+      preview_token: preview.data.preview_token,
+      idempotency_key: "runtime-container-reobserve-1",
+      confirm_reobserve: true,
+    };
+    const unverifiedApply = await SELF.fetch(applyUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(applyBody),
+    });
+    expect(unverifiedApply.status).toBe(403);
+    expect(unverifiedApply.headers.get("cache-control")).toBe("no-store");
+
+    const verified = await SELF.fetch("https://cinatoken.test/api/verify", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ method: "password", password }),
+    });
+    expect(verified.status).toBe(200);
+    const protectedBefore = await snapshotContainerRetryProtectedState();
+    const r2KeysBefore = (await env.FILE_BUCKET.list()).objects.map(
+      (object) => object.key,
+    );
+
+    const appliedResponse = await SELF.fetch(applyUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(applyBody),
+    });
+    const appliedText = await appliedResponse.text();
+    expect(appliedResponse.status, appliedText).toBe(200);
+    expect(appliedResponse.headers.get("cache-control")).toBe("no-store");
+    for (const raw of [
+      seeded[0].operationId,
+      seeded[0].reconciliationId,
+      seeded[0].claimOwner,
+      applyBody.evidence_reference,
+      applyBody.idempotency_key,
+    ]) {
+      expect(appliedText).not.toContain(raw);
+    }
+    const applied = JSON.parse(appliedText);
+    expect(applied).toMatchObject({
+      success: true,
+      data: {
+        contract_version: 1,
+        target: previewTarget,
+        action: "reobserve_container_state",
+        status: "applied",
+        observer_state_mutation_only: true,
+        provider_retry_allowed: false,
+        operation_mutation_allowed: false,
+        financial_mutation_allowed: false,
+        durable_object_mutation_allowed: false,
+        r2_mutation_allowed: false,
+      },
+    });
+    expect(applied.data.resolution_reference).toMatch(/^[a-f0-9]{64}$/u);
+    expect(applied.data.scheduled_at).toBeGreaterThan(deadLetterState.updated_at);
+
+    const duplicateResponse = await SELF.fetch(applyUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(applyBody),
+    });
+    expect(duplicateResponse.status).toBe(200);
+    await expect(duplicateResponse.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        target: previewTarget,
+        status: "duplicate",
+        scheduled_at: applied.data.scheduled_at,
+        resolution_reference: applied.data.resolution_reference,
+      },
+    });
+
+    const retriedState = await env.DB.prepare(
+      `SELECT status, claim_generation, claim_owner, claim_lease_expires_at,
+              available_at, attempt_count, consecutive_failures,
+              first_observed_at, last_attempt_at, last_observed_at,
+              last_class, last_error_code, recovery_deadline_at,
+              converged_at, dead_lettered_at, dead_letter_reason,
+              created_at, updated_at
+       FROM relay_container_reconciliation_observations
+       WHERE operation_id = ?1`,
+    )
+      .bind(seeded[0].operationId)
+      .first();
+    expect(retriedState).toEqual({
+      ...deadLetterState,
+      status: "retry",
+      claim_owner: "",
+      claim_lease_expires_at: 0,
+      available_at: applied.data.scheduled_at,
+      consecutive_failures: 0,
+      last_observed_at: applied.data.scheduled_at - 1,
+      last_error_code: "",
+      dead_lettered_at: 0,
+      dead_letter_reason: "",
+      updated_at: applied.data.scheduled_at - 1,
+    });
+    const retryEvent = await env.DB.prepare(
+      `SELECT COUNT(*) AS count, MIN(scheduled_at) AS scheduled_at,
+              MIN(operator_id) AS operator_id
+       FROM relay_container_reconciliation_retry_events`,
+    ).first();
+    expect(retryEvent).toMatchObject({
+      count: 1,
+      scheduled_at: applied.data.scheduled_at,
+      operator_id: 1,
+    });
+    const auditCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM logs
+       WHERE type = 3
+         AND other LIKE '%container_reconciliation.retry_requeued%'`,
+    ).first();
+    expect(Number(auditCount?.count ?? 0)).toBe(1);
+    expect(await snapshotContainerRetryProtectedState()).toEqual(
+      protectedBefore,
+    );
+    expect(
+      (await env.FILE_BUCKET.list()).objects.map((object) => object.key),
+    ).toEqual(r2KeysBefore);
+
+    const staleApply = await SELF.fetch(applyUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        ...applyBody,
+        idempotency_key: "runtime-container-reobserve-stale",
+      }),
+    });
+    expect(staleApply.status).toBe(409);
   });
 
   it("inventories R2 orphans across fenced generations without mutation authority", async () => {
@@ -4633,6 +4778,26 @@ async function snapshotContainerInventoryBusinessState() {
     "relay_container_terminal_outbox_state",
     "relay_billing_reservations",
     "relay_container_reconciliation_observations",
+    "users",
+    "tokens",
+    "channels",
+  ];
+  const snapshot = {};
+  for (const table of tables) {
+    snapshot[table] = (
+      await env.DB.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()
+    ).results;
+  }
+  return snapshot;
+}
+
+async function snapshotContainerRetryProtectedState() {
+  const tables = [
+    "relay_container_operations",
+    "relay_container_terminal_events",
+    "relay_container_terminal_outbox_state",
+    "relay_billing_reservations",
+    "realtime_billing_reservations",
     "users",
     "tokens",
     "channels",

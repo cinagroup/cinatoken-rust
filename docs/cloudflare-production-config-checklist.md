@@ -1183,6 +1183,19 @@ production configuration:
 | `CONTAINER_SCHEDULER_SHARD_COUNT` | `8` | Integer from 1 through 1024; exact value is shared by edge and controller |
 | `CONTAINER_SCHEDULER_ENABLED` | `false` | Must remain false until controller, image, egress, storage, capacity, and fault gates pass |
 | `CONTAINER_SCHEDULER_STAGING_VERIFIED` | `false` | Remote evidence only; local tests cannot promote it |
+| `CONTAINER_OPERATION_WRITE_ENABLED` | `false` | First global operation writer gate; requires 0040/0041 remote CAS and old-writer evidence |
+| `CONTAINER_TERMINAL_CAS_ENABLED` | `false` | Operation terminal authority only; does not imply financial or response authority |
+| `CONTAINER_FINANCIAL_TERMINAL_ENABLED` | `false` | Requires exact 0042 cross-ledger batch and remote accounting rollback evidence |
+| `CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED` | `false` | Requires version-pinned R2 write/read and byte-exact edge replay evidence |
+| `CONTAINER_OPERATION_RECONCILIATION_ENABLED` | `false` | Runs only the bounded 0043 query/HEAD observer; keep false on first schema deployment |
+| `CONTAINER_RECONCILIATION_SCAN_LIMIT` | `4` | Positive integer with hard maximum 8; does not enable the observer |
+| `CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED` | `false` | Independent Root + fresh-step-up 0045 observer requeue gate; never authorizes provider, operation, billing, DO, or R2 mutation |
+| `CONTAINER_R2_ORPHAN_INVENTORY_ENABLED` | `false` | Observer-only R2 LIST plus 0044 finding state; no object body read or cleanup authority |
+| `CONTAINER_R2_ORPHAN_INVENTORY_SCAN_LIMIT` | `4` | Positive integer with hard maximum 8 per lane and invocation |
+| `CONTAINER_R2_ORPHAN_INVENTORY_GRACE_SECONDS` | `86400` | Nonnegative recent-object deferral; candidate still requires two completed scans |
+| `CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED` | `false` | Reviewed remote D1/DO/R2 convergence evidence, not inferred from compiled code |
+| `CONTAINER_CHAT_CANARY_ENABLED` | `false` | Narrow non-streaming internal-token route only after all earlier authorities pass |
+| `CONTAINER_OPERATION_STAGING_VERIFIED` | `false` | Final remote Container operation proof marker; local tests cannot promote it |
 | `CONTAINER_CONTROLLER_PROBE_ENABLED` | `false` | Enables only the signed status probe; it is not execution or cutover authority |
 | `CONTAINER_SHARD_READINESS_PROBE_ENABLED` | `false` | Enables admin-only ledger inspection; does not authorize a Container wake by itself |
 | `CONTAINER_SHARD_READINESS_WAKE_ENABLED` | `false` | Separately authorizes an explicitly confirmed targeted cold/warm probe |
@@ -1191,6 +1204,13 @@ production configuration:
 | `CONTAINER_AUTHORITY_ISSUER` | `cinatoken-edge` | Exact signed-request issuer in every environment |
 | `CONTAINER_AUTHORITY_AUDIENCE` | `cinatoken-container-controller` | Exact private Controller audience |
 | `CONTAINER_AUTHORITY_CURRENT_KID` | `container-authority-current` | Non-secret key identifier; the corresponding secret is provisioned separately |
+
+The eight Container cutover inputs are operation write, terminal CAS,
+financial terminal, exact response replay, operation reconciliation,
+divergence verification, chat canary, and staging verification. Retry apply and
+R2 inventory are auxiliary operator/observer controls: enabling either can
+never satisfy or bypass a cutover input. First remote application of migrations
+0043-0045 keeps all observer, inventory, retry, and cutover values false.
 
 Controller-only non-secret variables are explicit in all three isolated
 Controller configs:

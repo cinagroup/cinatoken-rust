@@ -268,9 +268,8 @@ read a no-store observation queue through an immutable sequence cursor with
 strict status/class filters and a 50-row hard limit. Both surfaces replace raw
 operation, reconciliation, cursor, and high-watermark identities with
 domain-separated SHA-256 references and never select the claim owner. Stored
-contract drift fails the request closed. Operator retry apply and any other
-resolution workflow still require separate idempotency, audit, and
-default-false gates.
+contract drift fails the request closed. Retry apply remains a separate
+RootAuth + fresh-step-up authority and is never implied by read access.
 
 The list also returns a state-bound target for the RootAuth retry preview. The
 target combines immutable observation sequence with a domain-separated digest
@@ -281,11 +280,68 @@ then returns a full-state-bound preview token. Evidence reference text is not
 echoed. Pending, leased, retry, and converged rows remain under automatic
 observer ownership and return 409.
 
-Preview is read-only. It reports apply as uncompiled/disabled and explicitly
-forbids provider retry, operation/billing mutation, DO mutation, and R2
-mutation. Any future observer requeue requires a separate migration, RootAuth
-plus fresh step-up, idempotency, immutable audit, generation fencing, exact
-preview comparison, and a default-false gate.
+Preview is read-only. It reports whether 0045 apply schema and the independent
+runtime flag are ready, while explicitly fixing provider retry,
+operation/billing mutation, DO mutation, and R2 mutation to false. A
+`retry_horizon_exhausted` row or a row with less than 60 seconds of remaining
+recovery margin is visible but not a retry candidate.
+
+### Default-off observer retry apply
+
+Migration 0045 adds one immutable retry-event ledger and one event-backed
+observer transition. It does not add provider, operation, financial, DO, or R2
+write authority. The only legal mutation is an exact, generation-bound
+`dead_letter -> retry` transition that preserves operation identity, claim and
+attempt generations, first/last attempt timestamps, class, and recovery
+deadline; clears the dead-letter/error fields; resets consecutive failures;
+and schedules the next observation one second after the event timestamp.
+
+`POST /api/platform/container/reconciliations/:target/retry/apply` requires:
+
+1. an active RootAuth session and fresh secure verification;
+2. `CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED=true` in the selected
+   environment;
+3. migration 0045 plus every required table, index, and trigger;
+4. the exact target, preview token, allowlisted reason/evidence reference, a
+   bounded idempotency key, and `confirm_reobserve=true`;
+5. the same immutable dead-letter generation used by preview; and
+6. at least 60 seconds between the new observation schedule and the frozen
+   recovery deadline.
+
+The Worker stores only a domain-separated idempotency digest. Event insertion
+and the redacted admin audit are submitted in one D1 batch, so either both
+commit or both roll back. The insert trigger rereads the exact observation and
+operation identity, and the apply trigger requires exactly one observer row to
+change. The immutable event supports lost-response readback: an exact repeat
+returns `duplicate` with the original schedule and writes no second event or
+audit. A different idempotency key with an old preview returns 409 after the
+observation has moved back under automatic ownership.
+
+This follows Cloudflare's documented
+[D1 batch transaction](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)
+contract: statements execute sequentially and a failure rolls back the batch.
+The Worker reaches D1 through the `DB` binding, awaits the mutation/readback,
+and keeps secrets and credentials out of source in line with
+[Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).
+
+Production rollout is deliberately split:
+
+1. Apply 0045 remotely with the retry flag false and verify exact trigger SQL,
+   zero retry events, and unchanged business tables.
+2. Exercise status/list/preview with the flag false; archive only redacted
+   references and counts.
+3. In isolated staging, enable only the retry-apply flag for one approved
+   dead letter, consume fresh step-up, apply once, repeat the same request, and
+   prove one event, one audit, and no operation/billing/DO/R2/provider delta.
+4. Disable the apply flag immediately after the drill. Observer processing is
+   governed separately by `CONTAINER_OPERATION_RECONCILIATION_ENABLED`.
+5. Do not enable either flag in production until remote fault, alert,
+   rollback, old-writer, and C1-C5 evidence is approved.
+
+Disabling the apply flag prevents new operator events; it does not delete the
+immutable event or silently revert an already queued observation. If automatic
+processing must stop, disable the observer gate as a separate rollback action.
+All tracked environments currently keep the apply flag false.
 
 ### Default-off R2 orphan inventory
 
@@ -368,14 +424,16 @@ The following are still mandatory:
   different-request lookup conflict to 409;
 - prove the default-off R2 orphan inventory against an isolated real bucket,
   including pagination, concurrent creation, metadata drift, cost, alerts, and
-  retention; then implement authenticated observer-only retry apply as a
-  separately migrated, gated, generation-fenced protocol with step-up,
-  idempotency, and audit;
+  retention;
+- prove 0045 observer retry apply in isolated staging with the gate disabled by
+  default, then one approved Root + fresh-step-up drill, exact duplicate
+  readback, same-batch audit, zero protected-state delta, alerts, and
+  disable-first rollback;
 - dispatch-before-send provider attempt journal and one retry owner;
 - deterministic local provider canary in the actual Linux image;
 - wire the implemented create-only exact client-response R2 write and verified
   byte replay into the narrow edge canary without enabling any broader route;
-- after old writers drain and remote 0042/0043/0044 invariants pass, add a separate 0045
+- after old writers drain and remote 0042/0043/0044/0045 invariants pass, add a separate 0046
   enforcement migration that rejects legacy empty identity and eventless v1
   terminal transitions;
 - reconciliation for R2 write success followed by DO attach failure;

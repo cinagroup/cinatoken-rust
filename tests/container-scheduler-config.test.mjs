@@ -75,6 +75,7 @@ describe("container scheduler Wrangler foundation", () => {
         86400,
       );
       expect(vars.CONTAINER_R2_ORPHAN_INVENTORY_ENABLED).toBe("false");
+      expect(vars.CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED).toBe("false");
       expect(operationGates.map((name) => vars[name])).toEqual([
         "false",
         "false",

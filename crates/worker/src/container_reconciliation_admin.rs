@@ -1,4 +1,4 @@
-//! Read-only operator surface for the default-off Container reconciliation observer.
+//! Operator surface for the default-off Container reconciliation observer.
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use worker::{Env, Request, Response, Result as WorkerResult};
 
 use crate::admin::{
-    envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
-    require_root_auth,
+    admin_audit_info, envelope_error_response, envelope_ok_response, read_json_body,
+    require_admin_auth, require_root_auth, require_secure_verification,
 };
 use crate::container_reconciliation::{
     container_reconciliation_observer_compiled, container_reconciliation_scan_limit,
@@ -16,11 +16,15 @@ use crate::container_reconciliation::{
 };
 use crate::container_scheduler::container_operation_runtime_status;
 use crate::d1_repositories::{
-    list_relay_container_reconciliation_observations, relay_container_reconciliation_class_counts,
+    apply_relay_container_reconciliation_retry, list_relay_container_reconciliation_observations,
+    relay_container_reconciliation_class_counts,
     relay_container_reconciliation_observation_by_sequence,
+    relay_container_reconciliation_retry_event, relay_container_reconciliation_retry_schema_ready,
     relay_container_reconciliation_runtime_snapshot, relay_container_reconciliation_schema_ready,
     RelayContainerReconciliationClassCount, RelayContainerReconciliationObservationRow,
-    RelayContainerReconciliationRuntimeSnapshot, RELAY_CONTAINER_RECONCILIATION_CLASSES,
+    RelayContainerReconciliationRetryEvent, RelayContainerReconciliationRetryMutationError,
+    RelayContainerReconciliationRetryMutationOutcome, RelayContainerReconciliationRuntimeSnapshot,
+    RELAY_CONTAINER_RECONCILIATION_CLASSES, RELAY_CONTAINER_RECONCILIATION_RETRY_MIGRATION,
     RELAY_CONTAINER_RECONCILIATION_STATUSES,
 };
 
@@ -35,8 +39,17 @@ const CURSOR_REFERENCE_DOMAIN: &[u8] = b"cinatoken:container-reconciliation-curs
 const TARGET_DOMAIN: &[u8] = b"cinatoken:container-reconciliation-target:v1\0";
 const EVIDENCE_DOMAIN: &[u8] = b"cinatoken:container-reconciliation-retry-evidence:v1\0";
 const PREVIEW_DOMAIN: &[u8] = b"cinatoken:container-reconciliation-retry-preview:v1\0";
+const IDEMPOTENCY_DOMAIN: &[u8] = b"cinatoken:container-reconciliation-retry-idempotency:v1\0";
+const RESOLUTION_DOMAIN: &[u8] = b"cinatoken:container-reconciliation-retry-resolution:v1\0";
+const RESOLUTION_REFERENCE_DOMAIN: &[u8] =
+    b"cinatoken:container-reconciliation-retry-resolution-reference:v1\0";
+const DECISION_DOMAIN: &[u8] = b"cinatoken:container-reconciliation-retry-decision:v1\0";
 const TARGET_PREFIX: &str = "ctrec1";
 const EVIDENCE_REFERENCE_MAX_LEN: usize = 128;
+const IDEMPOTENCY_KEY_MAX_LEN: usize = 96;
+const MIN_RETRY_MARGIN_SECONDS: i64 = 60;
+pub(crate) const CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED_ENV: &str =
+    "CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED";
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 struct ReconciliationStatusResponse {
@@ -46,6 +59,8 @@ struct ReconciliationStatusResponse {
     runtime_enabled: bool,
     retry_preview_compiled: bool,
     retry_apply_compiled: bool,
+    retry_apply_schema_ready: bool,
+    retry_apply_enabled: bool,
     scan_limit: i64,
     scan: Option<ReconciliationScanStatus>,
     run: Option<ReconciliationRunStatus>,
@@ -144,11 +159,41 @@ enum RetryPreviewReason {
     OperatorReinspectionApproved,
 }
 
+impl RetryPreviewReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InfrastructureRecovered => "infrastructure_recovered",
+            Self::StorageRepaired => "storage_repaired",
+            Self::ControllerReconciled => "controller_reconciled",
+            Self::OperatorReinspectionApproved => "operator_reinspection_approved",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct RetryPreviewDecision {
     reason: RetryPreviewReason,
     evidence_reference: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetryApplyRequest {
+    reason: RetryPreviewReason,
+    evidence_reference: String,
+    preview_token: String,
+    idempotency_key: String,
+    confirm_reobserve: bool,
+}
+
+impl RetryApplyRequest {
+    fn decision(&self) -> RetryPreviewDecision {
+        RetryPreviewDecision {
+            reason: self.reason,
+            evidence_reference: self.evidence_reference.clone(),
+        }
+    }
 }
 
 impl RetryPreviewDecision {
@@ -193,6 +238,22 @@ struct RetryPreviewResponse {
     preview_token: String,
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct RetryApplyResponse {
+    contract_version: u32,
+    target: String,
+    resolution_reference: String,
+    action: &'static str,
+    status: &'static str,
+    scheduled_at: i64,
+    observer_state_mutation_only: bool,
+    provider_retry_allowed: bool,
+    operation_mutation_allowed: bool,
+    financial_mutation_allowed: bool,
+    durable_object_mutation_allowed: bool,
+    r2_mutation_allowed: bool,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct ParsedTarget {
     observation_sequence: i64,
@@ -214,11 +275,24 @@ fn retry_preview_compiled() -> bool {
         && CONTAINER_RECONCILIATION_DEAD_LETTER_REASONS.len() == 6
 }
 
+fn retry_apply_compiled() -> bool {
+    retry_preview_compiled()
+        && RELAY_CONTAINER_RECONCILIATION_RETRY_MIGRATION
+            == "0045_relay_container_reconciliation_retry_apply.sql"
+}
+
+pub(crate) fn retry_apply_enabled(env: &Env) -> bool {
+    env.var(CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED_ENV)
+        .ok()
+        .is_some_and(|value| value.to_string() == "true")
+}
+
 pub async fn status(req: Request, env: Env) -> WorkerResult<Response> {
     if let Err(response) = require_admin_auth(&req, &env).await? {
         return no_store(response);
     }
     let runtime_enabled = container_operation_runtime_status(&env).operation_reconciliation_enabled;
+    let retry_apply_enabled = retry_apply_enabled(&env);
     let scan_limit = container_reconciliation_scan_limit(&env);
     let db = match env.d1("DB") {
         Ok(db) => db,
@@ -247,7 +321,9 @@ pub async fn status(req: Request, env: Env) -> WorkerResult<Response> {
             schema_ready: false,
             runtime_enabled,
             retry_preview_compiled: retry_preview_compiled(),
-            retry_apply_compiled: false,
+            retry_apply_compiled: retry_apply_compiled(),
+            retry_apply_schema_ready: false,
+            retry_apply_enabled,
             scan_limit,
             scan: None,
             run: None,
@@ -255,6 +331,19 @@ pub async fn status(req: Request, env: Env) -> WorkerResult<Response> {
             classes: Vec::new(),
         })?);
     }
+    let retry_apply_schema_ready =
+        match relay_container_reconciliation_retry_schema_ready(&db).await {
+            Ok(ready) => ready,
+            Err(err) => {
+                worker::console_error!(
+                    "container reconciliation retry apply schema probe failed: {err}"
+                );
+                return no_store(envelope_error_response(
+                    503,
+                    "Container reconciliation status is unavailable",
+                ));
+            }
+        };
     let now = crate::admin::unix_timestamp();
     let snapshot = match relay_container_reconciliation_runtime_snapshot(&db, now).await {
         Ok(snapshot) => snapshot,
@@ -285,6 +374,8 @@ pub async fn status(req: Request, env: Env) -> WorkerResult<Response> {
     }
     no_store(envelope_ok_response(&status_response(
         runtime_enabled,
+        retry_apply_schema_ready,
+        retry_apply_enabled,
         scan_limit,
         now,
         &snapshot,
@@ -483,12 +574,343 @@ pub async fn retry_preview(
         ));
     }
     no_store(envelope_ok_response(&prepare_retry_preview(
-        &target, &row, decision,
+        &target,
+        &row,
+        decision,
+        retry_apply_enabled(&env),
+        crate::admin::unix_timestamp(),
     ))?)
+}
+
+pub async fn retry_apply(
+    mut req: Request,
+    env: Env,
+    target: Option<String>,
+) -> WorkerResult<Response> {
+    let claims = match require_root_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return no_store(response),
+    };
+    if let Some(response) = require_secure_verification(&req, &env, claims.id).await? {
+        return no_store(response);
+    }
+    if !retry_apply_enabled(&env) {
+        return no_store(envelope_error_response(
+            403,
+            "Container reconciliation retry apply is disabled",
+        ));
+    }
+    let (target, parsed_target) =
+        match target.and_then(|value| parse_target(&value).map(|parsed| (value, parsed))) {
+            Some(target) => target,
+            None => {
+                return no_store(envelope_error_response(
+                    400,
+                    "Invalid Container reconciliation target",
+                ));
+            }
+        };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return no_store(response),
+    };
+    let apply = match serde_json::from_value::<RetryApplyRequest>(body) {
+        Ok(apply) => apply,
+        Err(_) => {
+            return no_store(envelope_error_response(
+                400,
+                "Invalid Container reconciliation retry apply request",
+            ));
+        }
+    };
+    let decision = apply.decision();
+    if let Err(message) = decision.validate() {
+        return no_store(envelope_error_response(400, message));
+    }
+    if !apply.confirm_reobserve {
+        return no_store(envelope_error_response(
+            400,
+            "Container reconciliation retry apply requires confirm_reobserve=true",
+        ));
+    }
+    if !valid_lower_hex(&apply.preview_token, 64) || !valid_idempotency_key(&apply.idempotency_key)
+    {
+        return no_store(envelope_error_response(
+            400,
+            "Invalid Container reconciliation retry preview or idempotency key",
+        ));
+    }
+    let idempotency_sha256 = reference(IDEMPOTENCY_DOMAIN, &apply.idempotency_key);
+    let resolution_key = retry_resolution_key(&target, &apply.preview_token, &idempotency_sha256);
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(err) => {
+            worker::console_error!("container reconciliation retry apply: D1 unavailable: {err}");
+            return no_store(envelope_error_response(
+                503,
+                "Container reconciliation retry apply is unavailable",
+            ));
+        }
+    };
+    match relay_container_reconciliation_retry_schema_ready(&db).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return no_store(envelope_error_response(
+                503,
+                "Container reconciliation retry apply schema is not ready",
+            ));
+        }
+        Err(err) => {
+            worker::console_error!(
+                "container reconciliation retry apply schema probe failed: {err}"
+            );
+            return no_store(envelope_error_response(
+                503,
+                "Container reconciliation retry apply is unavailable",
+            ));
+        }
+    }
+    match relay_container_reconciliation_retry_event(&db, &resolution_key).await {
+        Ok(Some(event))
+            if event.observation_sequence == parsed_target.observation_sequence
+                && constant_time_eq(&event.preview_token, &apply.preview_token)
+                && constant_time_eq(&event.idempotency_sha256, &idempotency_sha256) =>
+        {
+            return retry_apply_result(target, &resolution_key, "duplicate", event.scheduled_at);
+        }
+        Ok(Some(_)) => {
+            return no_store(envelope_error_response(
+                409,
+                "Container reconciliation retry idempotency identity conflicts",
+            ));
+        }
+        Ok(None) => {}
+        Err(err) => {
+            worker::console_error!("container reconciliation retry event lookup failed: {err}");
+            return no_store(envelope_error_response(
+                503,
+                "Container reconciliation retry apply is unavailable",
+            ));
+        }
+    }
+    let row = match relay_container_reconciliation_observation_by_sequence(
+        &db,
+        parsed_target.observation_sequence,
+    )
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return no_store(envelope_error_response(
+                404,
+                "Container reconciliation target was not found",
+            ));
+        }
+        Err(err) => {
+            worker::console_error!("container reconciliation retry apply lookup failed: {err}");
+            return no_store(envelope_error_response(
+                503,
+                "Container reconciliation retry apply is unavailable",
+            ));
+        }
+    };
+    if !observation_contract_valid(&row) {
+        worker::console_error!("container reconciliation retry apply observation is invalid");
+        return no_store(envelope_error_response(
+            503,
+            "Container reconciliation retry apply is unavailable",
+        ));
+    }
+    if !constant_time_eq(&parsed_target.digest, &observation_target_digest(&row)) {
+        return no_store(envelope_error_response(
+            404,
+            "Container reconciliation target was not found",
+        ));
+    }
+    if row.status != "dead_letter" {
+        return no_store(envelope_error_response(
+            409,
+            "Container reconciliation observation is already managed by the observer",
+        ));
+    }
+    if !retry_preview_contract_valid(&row) {
+        worker::console_error!("container reconciliation retry apply contract is invalid");
+        return no_store(envelope_error_response(
+            503,
+            "Container reconciliation retry apply is unavailable",
+        ));
+    }
+    let now = crate::admin::unix_timestamp();
+    let prepared = prepare_retry_preview(&target, &row, decision, true, now);
+    if !prepared.candidate_retryable {
+        return no_store(envelope_error_response(
+            409,
+            "Container reconciliation retry horizon is exhausted",
+        ));
+    }
+    if !constant_time_eq(&apply.preview_token, &prepared.preview_token) {
+        return no_store(envelope_error_response(
+            409,
+            "Container reconciliation retry preview is stale",
+        ));
+    }
+    let (created_at, scheduled_at) = retry_schedule(&row, now);
+    let evidence_sha256 = evidence_digest(&apply.evidence_reference);
+    let decision_json = json!({
+        "contract_version": CONTRACT_VERSION,
+        "target": target,
+        "operation_reference": prepared.operation_reference,
+        "reconciliation_reference": prepared.reconciliation_reference,
+        "operation_created_at": row.operation_created_at,
+        "owner_generation": row.owner_generation,
+        "status": row.status,
+        "class": row.last_class,
+        "last_error_code": row.last_error_code,
+        "claim_generation": row.claim_generation,
+        "attempt_count": row.attempt_count,
+        "consecutive_failures": row.consecutive_failures,
+        "first_observed_at": row.first_observed_at,
+        "last_attempt_at": row.last_attempt_at,
+        "last_observed_at": row.last_observed_at,
+        "recovery_deadline_at": row.recovery_deadline_at,
+        "dead_lettered_at": row.dead_lettered_at,
+        "dead_letter_reason": row.dead_letter_reason,
+        "updated_at": row.updated_at,
+        "action": "reobserve_container_state",
+        "reason": apply.reason.as_str(),
+        "evidence_sha256": evidence_sha256,
+        "preview_token": apply.preview_token,
+    });
+    let decision_sha256 = reference(DECISION_DOMAIN, &decision_json.to_string());
+    let event = RelayContainerReconciliationRetryEvent {
+        resolution_key: &resolution_key,
+        observation_sequence: row.observation_sequence,
+        operation_id: &row.operation_id,
+        operation_created_at: row.operation_created_at,
+        owner_generation: row.owner_generation,
+        reconciliation_id: &row.reconciliation_id,
+        expected_claim_generation: row.claim_generation,
+        expected_attempt_count: row.attempt_count,
+        expected_consecutive_failures: row.consecutive_failures,
+        expected_first_observed_at: row.first_observed_at,
+        expected_last_attempt_at: row.last_attempt_at,
+        expected_last_observed_at: row.last_observed_at,
+        expected_last_class: &row.last_class,
+        expected_last_error_code: &row.last_error_code,
+        expected_recovery_deadline_at: row.recovery_deadline_at,
+        expected_dead_lettered_at: row.dead_lettered_at,
+        expected_dead_letter_reason: &row.dead_letter_reason,
+        expected_updated_at: row.updated_at,
+        reason: apply.reason.as_str(),
+        evidence_reference: &apply.evidence_reference,
+        evidence_sha256: &evidence_sha256,
+        preview_token: &apply.preview_token,
+        idempotency_sha256: &idempotency_sha256,
+        decision_sha256: &decision_sha256,
+        operator_id: claims.id,
+        scheduled_at,
+        created_at,
+    };
+    let params = json!({
+        "target": target,
+        "operation_reference": prepared.operation_reference,
+        "reconciliation_reference": prepared.reconciliation_reference,
+        "owner_generation": row.owner_generation,
+        "claim_generation": row.claim_generation,
+        "attempt_count": row.attempt_count,
+        "dead_lettered_at": row.dead_lettered_at,
+        "dead_letter_reason": row.dead_letter_reason,
+        "reason": apply.reason.as_str(),
+        "evidence_sha256": evidence_sha256,
+        "preview_token": apply.preview_token,
+        "idempotency_sha256": idempotency_sha256,
+        "decision_sha256": decision_sha256,
+        "resolution_reference": reference(RESOLUTION_REFERENCE_DOMAIN, &resolution_key),
+        "scheduled_at": scheduled_at,
+        "observer_state_mutation_only": true,
+    });
+    let admin_info = admin_audit_info(&claims, &req);
+    let admin_audit = crate::d1_repositories::admin_audit_log_statement(
+        &db,
+        None,
+        None,
+        &claims.username,
+        "container_reconciliation.retry_requeued",
+        "Requeued a dead-lettered Container reconciliation observation",
+        &params,
+        &admin_info,
+        created_at,
+    )?;
+    let outcome = match apply_relay_container_reconciliation_retry(&db, &event, admin_audit).await {
+        Ok(outcome) => outcome,
+        Err(RelayContainerReconciliationRetryMutationError::Conflict) => {
+            return no_store(envelope_error_response(
+                409,
+                "Container reconciliation observation changed after preview",
+            ));
+        }
+        Err(RelayContainerReconciliationRetryMutationError::Unavailable(err)) => {
+            worker::console_error!("container reconciliation retry mutation failed: {err}");
+            return no_store(envelope_error_response(
+                503,
+                "Container reconciliation retry apply is unavailable",
+            ));
+        }
+    };
+    match outcome {
+        RelayContainerReconciliationRetryMutationOutcome::Applied => {
+            retry_apply_result(target, &resolution_key, "applied", scheduled_at)
+        }
+        RelayContainerReconciliationRetryMutationOutcome::Duplicate => {
+            match relay_container_reconciliation_retry_event(&db, &resolution_key).await {
+                Ok(Some(applied))
+                    if applied.observation_sequence == row.observation_sequence
+                        && applied.operation_id == row.operation_id
+                        && constant_time_eq(&applied.preview_token, &apply.preview_token)
+                        && constant_time_eq(&applied.idempotency_sha256, &idempotency_sha256)
+                        && constant_time_eq(&applied.decision_sha256, &decision_sha256) =>
+                {
+                    retry_apply_result(target, &resolution_key, "duplicate", applied.scheduled_at)
+                }
+                Ok(Some(_)) => no_store(envelope_error_response(
+                    409,
+                    "Container reconciliation retry duplicate readback is inconsistent",
+                )),
+                Ok(None) | Err(_) => no_store(envelope_error_response(
+                    503,
+                    "Container reconciliation retry duplicate readback is unavailable",
+                )),
+            }
+        }
+    }
+}
+
+fn retry_apply_result(
+    target: String,
+    resolution_key: &str,
+    status: &'static str,
+    scheduled_at: i64,
+) -> WorkerResult<Response> {
+    no_store(envelope_ok_response(&RetryApplyResponse {
+        contract_version: CONTRACT_VERSION,
+        target,
+        resolution_reference: reference(RESOLUTION_REFERENCE_DOMAIN, resolution_key),
+        action: "reobserve_container_state",
+        status,
+        scheduled_at,
+        observer_state_mutation_only: true,
+        provider_retry_allowed: false,
+        operation_mutation_allowed: false,
+        financial_mutation_allowed: false,
+        durable_object_mutation_allowed: false,
+        r2_mutation_allowed: false,
+    })?)
 }
 
 fn status_response(
     runtime_enabled: bool,
+    retry_apply_schema_ready: bool,
+    retry_apply_enabled: bool,
     scan_limit: i64,
     now: i64,
     snapshot: &RelayContainerReconciliationRuntimeSnapshot,
@@ -505,7 +927,9 @@ fn status_response(
         schema_ready: true,
         runtime_enabled,
         retry_preview_compiled: retry_preview_compiled(),
-        retry_apply_compiled: false,
+        retry_apply_compiled: retry_apply_compiled(),
+        retry_apply_schema_ready,
+        retry_apply_enabled,
         scan_limit,
         scan: Some(ReconciliationScanStatus {
             generation: snapshot.scan_generation,
@@ -595,6 +1019,8 @@ fn prepare_retry_preview(
     target: &str,
     row: &RelayContainerReconciliationObservationRow,
     decision: RetryPreviewDecision,
+    apply_enabled: bool,
+    now: i64,
 ) -> RetryPreviewResponse {
     let operation_reference = reference(OPERATION_REFERENCE_DOMAIN, &row.operation_id);
     let reconciliation_reference = (!row.reconciliation_id.is_empty())
@@ -627,9 +1053,17 @@ fn prepare_retry_preview(
         "action": "reobserve_container_state",
         "reason": decision.reason,
         "evidence_sha256": evidence_sha256,
-        "apply_compiled": false,
+        "apply_compiled": true,
     });
     let preview_token = reference(PREVIEW_DOMAIN, &token_payload.to_string());
+    let candidate_retryable = retry_candidate(row, now);
+    let apply_blocker = if !candidate_retryable {
+        "retry_horizon_expired"
+    } else if !apply_enabled {
+        "retry_apply_disabled"
+    } else {
+        ""
+    };
     RetryPreviewResponse {
         contract_version: CONTRACT_VERSION,
         target: target.to_string(),
@@ -648,10 +1082,10 @@ fn prepare_retry_preview(
         action: "reobserve_container_state",
         reason: decision.reason,
         evidence_sha256,
-        candidate_retryable: true,
-        apply_compiled: false,
-        apply_enabled: false,
-        apply_blocker: "retry_apply_not_compiled",
+        candidate_retryable,
+        apply_compiled: retry_apply_compiled(),
+        apply_enabled,
+        apply_blocker,
         step_up_required_for_apply: true,
         observer_state_mutation_only: true,
         provider_retry_allowed: false,
@@ -661,6 +1095,27 @@ fn prepare_retry_preview(
         r2_mutation_allowed: false,
         preview_token,
     }
+}
+
+fn retry_candidate(row: &RelayContainerReconciliationObservationRow, now: i64) -> bool {
+    let (_, scheduled_at) = retry_schedule(row, now);
+    row.dead_letter_reason != "retry_horizon_exhausted"
+        && row.recovery_deadline_at.saturating_sub(scheduled_at) >= MIN_RETRY_MARGIN_SECONDS
+}
+
+fn retry_schedule(row: &RelayContainerReconciliationObservationRow, now: i64) -> (i64, i64) {
+    let created_at = now.max(row.updated_at);
+    (created_at, created_at.saturating_add(1))
+}
+
+fn retry_resolution_key(target: &str, preview_token: &str, idempotency_sha256: &str) -> String {
+    let payload = json!({
+        "contract_version": CONTRACT_VERSION,
+        "target": target,
+        "preview_token": preview_token,
+        "idempotency_sha256": idempotency_sha256,
+    });
+    reference(RESOLUTION_DOMAIN, &payload.to_string())
 }
 
 fn retry_preview_contract_valid(row: &RelayContainerReconciliationObservationRow) -> bool {
@@ -726,6 +1181,14 @@ fn valid_evidence_reference(value: &str) -> bool {
             byte.is_ascii_alphanumeric()
                 || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/' | b'#' | b'@')
         })
+}
+
+fn valid_idempotency_key(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= IDEMPOTENCY_KEY_MAX_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 fn evidence_digest(value: &str) -> String {
@@ -959,6 +1422,8 @@ mod tests {
         let snapshot = test_snapshot();
         let response = status_response(
             false,
+            true,
+            false,
             4,
             350,
             &snapshot,
@@ -993,7 +1458,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_preview_binds_target_state_reason_and_evidence_without_apply_authority() {
+    fn retry_preview_binds_exact_state_and_reports_narrow_apply_authority() {
         let row = dead_letter_row();
         assert!(retry_preview_contract_valid(&row));
         let target = observation_target(&row);
@@ -1001,14 +1466,15 @@ mod tests {
             reason: RetryPreviewReason::OperatorReinspectionApproved,
             evidence_reference: "incident:CT-41".to_string(),
         };
-        let preview = prepare_retry_preview(&target, &row, decision.clone());
+        let preview = prepare_retry_preview(&target, &row, decision.clone(), true, 300);
         let json = serde_json::to_string(&preview).unwrap();
         assert!(!json.contains(&row.operation_id));
         assert!(!json.contains(&row.reconciliation_id));
         assert!(!json.contains(&decision.evidence_reference));
         assert!(preview.candidate_retryable);
-        assert!(!preview.apply_compiled);
-        assert!(!preview.apply_enabled);
+        assert!(preview.apply_compiled);
+        assert!(preview.apply_enabled);
+        assert_eq!(preview.apply_blocker, "");
         assert!(!preview.provider_retry_allowed);
         assert!(!preview.operation_mutation_allowed);
         assert!(!preview.financial_mutation_allowed);
@@ -1022,7 +1488,7 @@ mod tests {
         changed.dead_lettered_at += 1;
         assert_ne!(
             preview.preview_token,
-            prepare_retry_preview(&target, &changed, decision.clone()).preview_token
+            prepare_retry_preview(&target, &changed, decision.clone(), true, 300).preview_token
         );
         assert_ne!(
             preview.preview_token,
@@ -1033,6 +1499,8 @@ mod tests {
                     evidence_reference: "incident:CT-42".to_string(),
                     ..decision
                 },
+                true,
+                300,
             )
             .preview_token
         );
@@ -1076,6 +1544,30 @@ mod tests {
         horizon.last_class = "store_unavailable".to_string();
         horizon.dead_letter_reason = "retry_horizon_exhausted".to_string();
         assert!(retry_preview_contract_valid(&horizon));
+        let horizon_preview = prepare_retry_preview(
+            &observation_target(&horizon),
+            &horizon,
+            RetryPreviewDecision {
+                reason: RetryPreviewReason::StorageRepaired,
+                evidence_reference: "incident:CT-43".to_string(),
+            },
+            true,
+            300,
+        );
+        assert!(!horizon_preview.candidate_retryable);
+        assert_eq!(horizon_preview.apply_blocker, "retry_horizon_expired");
+        let disabled_preview = prepare_retry_preview(
+            &observation_target(&dead_letter_row()),
+            &dead_letter_row(),
+            RetryPreviewDecision {
+                reason: RetryPreviewReason::ControllerReconciled,
+                evidence_reference: "incident:CT-44".to_string(),
+            },
+            false,
+            300,
+        );
+        assert!(disabled_preview.candidate_retryable);
+        assert_eq!(disabled_preview.apply_blocker, "retry_apply_disabled");
         assert!(valid_evidence_reference("incident:CT-41"));
         assert!(!valid_evidence_reference(""));
         assert!(!valid_evidence_reference("contains spaces"));
@@ -1098,7 +1590,7 @@ mod tests {
     }
 
     #[test]
-    fn operator_surface_is_read_only_root_scoped_and_no_store() {
+    fn operator_surface_keeps_retry_apply_root_step_up_scoped_and_no_store() {
         let source = include_str!("container_reconciliation_admin.rs")
             .split("#[cfg(test)]")
             .next()
@@ -1107,14 +1599,16 @@ mod tests {
         assert!(source.contains("require_admin_auth(&req, &env)"));
         assert!(source.contains("require_root_auth(&req, &env)"));
         assert!(source.contains("Cache-Control\", \"no-store"));
-        assert!(!source.contains("require_secure_verification"));
+        assert!(source.contains("require_secure_verification(&req, &env, claims.id)"));
+        assert!(source.contains("CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED"));
+        assert!(source.contains("observer_state_mutation_only: true"));
         assert!(!source.contains("INSERT INTO"));
         assert!(!source.contains("UPDATE relay_container"));
         assert!(!source.contains("DELETE FROM"));
         assert!(router.contains("/api/platform/container/reconciliation/status"));
         assert!(router.contains("/api/platform/container/reconciliations"));
         assert!(router.contains("/api/platform/container/reconciliations/:target/retry/preview"));
-        assert!(!router.contains("/api/platform/container/reconciliations/:target/retry/apply"));
+        assert!(router.contains("/api/platform/container/reconciliations/:target/retry/apply"));
     }
 
     #[test]

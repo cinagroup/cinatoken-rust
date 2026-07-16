@@ -41,6 +41,7 @@ REQUIRED_TABLES = [
     "relay_container_terminal_outbox_state",
     "relay_container_reconciliation_observations",
     "relay_container_reconciliation_cursor",
+    "relay_container_reconciliation_retry_events",
     "relay_container_r2_inventory_cursors",
     "relay_container_r2_inventory_findings",
     "task_billing_intents",
@@ -373,6 +374,36 @@ REQUIRED_COLUMNS = {
         "last_error_code",
         "updated_at",
     },
+    "relay_container_reconciliation_retry_events": {
+        "resolution_key",
+        "observation_sequence",
+        "operation_id",
+        "operation_created_at",
+        "owner_generation",
+        "reconciliation_id",
+        "expected_claim_generation",
+        "expected_attempt_count",
+        "expected_consecutive_failures",
+        "expected_first_observed_at",
+        "expected_last_attempt_at",
+        "expected_last_observed_at",
+        "expected_last_class",
+        "expected_last_error_code",
+        "expected_recovery_deadline_at",
+        "expected_dead_lettered_at",
+        "expected_dead_letter_reason",
+        "expected_updated_at",
+        "action",
+        "reason",
+        "evidence_reference",
+        "evidence_sha256",
+        "preview_token",
+        "idempotency_sha256",
+        "decision_sha256",
+        "operator_id",
+        "scheduled_at",
+        "created_at",
+    },
     "relay_container_r2_inventory_cursors": {
         "lane_name",
         "object_prefix",
@@ -573,6 +604,10 @@ REQUIRED_INDEXES = {
         "idx_relay_container_reconciliation_observations_lease": False,
         "idx_relay_container_reconciliation_observations_class": False,
     },
+    "relay_container_reconciliation_retry_events": {
+        "idx_relay_container_reconciliation_retry_events_operation": False,
+        "idx_relay_container_reconciliation_retry_events_operator": False,
+    },
     "relay_container_r2_inventory_findings": {
         "idx_relay_container_r2_inventory_findings_queue": False,
         "idx_relay_container_r2_inventory_findings_lane_generation": False,
@@ -634,6 +669,8 @@ def main() -> int:
     relay_container_reconciliation_observer_rollout_verified = False
     relay_container_r2_inventory_verified = False
     relay_container_r2_inventory_rollout_verified = False
+    relay_container_reconciliation_retry_apply_verified = False
+    relay_container_reconciliation_retry_apply_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -661,6 +698,8 @@ def main() -> int:
         relay_container_reconciliation_observer_rollout_verified = True
         verify_relay_container_r2_inventory_rollout(schema_paths)
         relay_container_r2_inventory_rollout_verified = True
+        verify_relay_container_reconciliation_retry_apply_rollout(schema_paths)
+        relay_container_reconciliation_retry_apply_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -690,6 +729,8 @@ def main() -> int:
         relay_container_reconciliation_observer_verified = True
         verify_relay_container_r2_inventory(conn)
         relay_container_r2_inventory_verified = True
+        verify_relay_container_reconciliation_retry_apply(conn)
+        relay_container_reconciliation_retry_apply_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
@@ -761,6 +802,10 @@ def main() -> int:
         message += " + 0044 generation-fenced Container R2 orphan inventory"
     if relay_container_r2_inventory_rollout_verified:
         message += " + 0044 default-lazy R2 inventory expand rollout"
+    if relay_container_reconciliation_retry_apply_verified:
+        message += " + 0045 audited Container observer retry apply"
+    if relay_container_reconciliation_retry_apply_rollout_verified:
+        message += " + 0045 default-off observer-only retry rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -3163,7 +3208,7 @@ def verify_relay_container_reconciliation_observer(
             last_observed_at = 23200, last_class = 'contract_violation',
             last_error_code = 'invalid_manifest',
             dead_lettered_at = 23200,
-            dead_letter_reason = 'operator_review_required', updated_at = 23200
+            dead_letter_reason = 'contract_violation', updated_at = 23200
         WHERE operation_id = '0043-dead-letter'
         """
     )
@@ -3181,7 +3226,7 @@ def verify_relay_container_reconciliation_observer(
         "contract_violation",
         "invalid_manifest",
         23200,
-        "operator_review_required",
+        "contract_violation",
     ):
         raise SystemExit(f"0043 dead-letter transition did not persist: {dead_letter}")
     expect_integrity_error(
@@ -3191,6 +3236,253 @@ def verify_relay_container_reconciliation_observer(
         ),
         "0043 dead-letter observations must reject every update",
         "relay container reconciliation observation transition is invalid",
+    )
+
+
+def verify_relay_container_reconciliation_retry_apply(
+    conn: sqlite3.Connection,
+) -> None:
+    for trigger in (
+        "relay_container_reconciliation_retry_event_insert_guard",
+        "relay_container_reconciliation_retry_event_apply",
+        "relay_container_reconciliation_retry_event_update_guard",
+        "relay_container_reconciliation_retry_event_delete_guard",
+        "relay_container_reconciliation_observation_lifecycle_guard",
+    ):
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0045 retry-apply trigger missing: {trigger}")
+
+    before_operation = conn.execute(
+        "SELECT * FROM relay_container_operations "
+        "WHERE operation_id = '0043-dead-letter'"
+    ).fetchone()
+    observation = conn.execute(
+        "SELECT rowid, operation_id, operation_created_at, owner_generation, "
+        "reconciliation_id, claim_generation, attempt_count, "
+        "consecutive_failures, first_observed_at, last_attempt_at, "
+        "last_observed_at, last_class, last_error_code, recovery_deadline_at, "
+        "dead_lettered_at, dead_letter_reason, updated_at "
+        "FROM relay_container_reconciliation_observations "
+        "WHERE operation_id = '0043-dead-letter'"
+    ).fetchone()
+    if observation is None:
+        raise SystemExit("0045 retry-apply fixture dead letter is missing")
+    (
+        observation_sequence,
+        operation_id,
+        operation_created_at,
+        owner_generation,
+        reconciliation_id,
+        claim_generation,
+        attempt_count,
+        consecutive_failures,
+        first_observed_at,
+        last_attempt_at,
+        last_observed_at,
+        last_class,
+        last_error_code,
+        recovery_deadline_at,
+        dead_lettered_at,
+        dead_letter_reason,
+        updated_at,
+    ) = observation
+    event_values = {
+        "resolution_key": hashlib.sha256(b"0045-resolution").hexdigest(),
+        "observation_sequence": observation_sequence,
+        "operation_id": operation_id,
+        "operation_created_at": operation_created_at,
+        "owner_generation": owner_generation,
+        "reconciliation_id": reconciliation_id,
+        "expected_claim_generation": claim_generation,
+        "expected_attempt_count": attempt_count,
+        "expected_consecutive_failures": consecutive_failures,
+        "expected_first_observed_at": first_observed_at,
+        "expected_last_attempt_at": last_attempt_at,
+        "expected_last_observed_at": last_observed_at,
+        "expected_last_class": last_class,
+        "expected_last_error_code": last_error_code,
+        "expected_recovery_deadline_at": recovery_deadline_at,
+        "expected_dead_lettered_at": dead_lettered_at,
+        "expected_dead_letter_reason": dead_letter_reason,
+        "expected_updated_at": updated_at,
+        "reason": "operator_reinspection_approved",
+        "evidence_reference": "incident:0045-runtime",
+        "evidence_sha256": hashlib.sha256(b"0045-evidence").hexdigest(),
+        "preview_token": hashlib.sha256(b"0045-preview").hexdigest(),
+        "idempotency_sha256": hashlib.sha256(b"0045-idempotency").hexdigest(),
+        "decision_sha256": hashlib.sha256(b"0045-decision").hexdigest(),
+        "operator_id": 1,
+        "scheduled_at": 23301,
+        "created_at": 23300,
+    }
+
+    def insert_event(values: dict[str, object]) -> None:
+        conn.execute(
+            """
+            INSERT INTO relay_container_reconciliation_retry_events (
+              resolution_key, observation_sequence, operation_id,
+              operation_created_at, owner_generation, reconciliation_id,
+              expected_claim_generation, expected_attempt_count,
+              expected_consecutive_failures, expected_first_observed_at,
+              expected_last_attempt_at, expected_last_observed_at,
+              expected_last_class, expected_last_error_code,
+              expected_recovery_deadline_at, expected_dead_lettered_at,
+              expected_dead_letter_reason, expected_updated_at,
+              action, reason, evidence_reference, evidence_sha256,
+              preview_token, idempotency_sha256, decision_sha256,
+              operator_id, scheduled_at, created_at
+            ) VALUES (
+              :resolution_key, :observation_sequence, :operation_id,
+              :operation_created_at, :owner_generation, :reconciliation_id,
+              :expected_claim_generation, :expected_attempt_count,
+              :expected_consecutive_failures, :expected_first_observed_at,
+              :expected_last_attempt_at, :expected_last_observed_at,
+              :expected_last_class, :expected_last_error_code,
+              :expected_recovery_deadline_at, :expected_dead_lettered_at,
+              :expected_dead_letter_reason, :expected_updated_at,
+              'reobserve_container_state', :reason, :evidence_reference,
+              :evidence_sha256, :preview_token, :idempotency_sha256,
+              :decision_sha256, :operator_id, :scheduled_at, :created_at
+            )
+            """,
+            values,
+        )
+
+    stale_values = dict(event_values)
+    stale_values["resolution_key"] = hashlib.sha256(b"0045-stale").hexdigest()
+    stale_values["expected_last_error_code"] = "changed"
+    expect_integrity_error(
+        lambda: insert_event(stale_values),
+        "0045 retry apply must reject a stale preview",
+        "relay container reconciliation retry preview is stale",
+    )
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_reconciliation_retry_events"
+    ).fetchone() != (0,):
+        raise SystemExit("0045 stale retry apply left a partial event")
+
+    insert_event(event_values)
+    retry_state = conn.execute(
+        "SELECT status, claim_generation, claim_owner, claim_lease_expires_at, "
+        "available_at, attempt_count, consecutive_failures, first_observed_at, "
+        "last_attempt_at, last_observed_at, last_class, last_error_code, "
+        "recovery_deadline_at, converged_at, dead_lettered_at, "
+        "dead_letter_reason, updated_at "
+        "FROM relay_container_reconciliation_observations "
+        "WHERE operation_id = '0043-dead-letter'"
+    ).fetchone()
+    expected_retry = (
+        "retry",
+        claim_generation,
+        "",
+        0,
+        23301,
+        attempt_count,
+        0,
+        first_observed_at,
+        last_attempt_at,
+        23300,
+        last_class,
+        "",
+        recovery_deadline_at,
+        0,
+        0,
+        "",
+        23300,
+    )
+    if retry_state != expected_retry:
+        raise SystemExit(f"0045 observer requeue did not persist exactly: {retry_state}")
+    if conn.execute(
+        "SELECT * FROM relay_container_operations "
+        "WHERE operation_id = '0043-dead-letter'"
+    ).fetchone() != before_operation:
+        raise SystemExit("0045 observer retry changed Container operation authority")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_reconciliation_retry_events"
+    ).fetchone() != (1,):
+        raise SystemExit("0045 observer retry event was not written exactly once")
+
+    replay_values = dict(event_values)
+    replay_values["resolution_key"] = hashlib.sha256(b"0045-replay").hexdigest()
+    expect_integrity_error(
+        lambda: insert_event(replay_values),
+        "0045 a consumed dead letter must reject another retry event",
+        "relay container reconciliation retry preview is stale",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_retry_events "
+            "SET reason = reason WHERE resolution_key = ?",
+            (event_values["resolution_key"],),
+        ),
+        "0045 retry events must reject every update",
+        "relay container reconciliation retry events are immutable",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_reconciliation_retry_events "
+            "WHERE resolution_key = ?",
+            (event_values["resolution_key"],),
+        ),
+        "0045 retry events must reject deletion",
+        "relay container reconciliation retry events are immutable",
+    )
+
+    conn.execute(
+        "UPDATE relay_container_reconciliation_observations "
+        "SET status = 'leased', claim_generation = 1, "
+        "claim_owner = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', "
+        "claim_lease_expires_at = 23001, available_at = 0, attempt_count = 1, "
+        "first_observed_at = 22000, last_attempt_at = 22000, updated_at = 22000 "
+        "WHERE operation_id = '0043-legacy-observation'"
+    )
+    conn.execute(
+        "UPDATE relay_container_reconciliation_observations "
+        "SET status = 'dead_letter', claim_owner = '', claim_lease_expires_at = 0, "
+        "available_at = 0, last_observed_at = 23000, "
+        "last_class = 'store_unavailable', "
+        "last_error_code = 'retry_horizon_exhausted', "
+        "dead_lettered_at = 23000, "
+        "dead_letter_reason = 'retry_horizon_exhausted', updated_at = 23000 "
+        "WHERE operation_id = '0043-legacy-observation'"
+    )
+    horizon = conn.execute(
+        "SELECT rowid, operation_created_at, owner_generation, reconciliation_id, "
+        "claim_generation, attempt_count, consecutive_failures, "
+        "first_observed_at, last_attempt_at, last_observed_at, last_class, "
+        "last_error_code, recovery_deadline_at, dead_lettered_at, "
+        "dead_letter_reason, updated_at "
+        "FROM relay_container_reconciliation_observations "
+        "WHERE operation_id = '0043-legacy-observation'"
+    ).fetchone()
+    horizon_values = dict(event_values)
+    horizon_values.update(
+        {
+            "resolution_key": hashlib.sha256(b"0045-horizon").hexdigest(),
+            "observation_sequence": horizon[0],
+            "operation_id": "0043-legacy-observation",
+            "operation_created_at": horizon[1],
+            "owner_generation": horizon[2],
+            "reconciliation_id": horizon[3],
+            "expected_claim_generation": horizon[4],
+            "expected_attempt_count": horizon[5],
+            "expected_consecutive_failures": horizon[6],
+            "expected_first_observed_at": horizon[7],
+            "expected_last_attempt_at": horizon[8],
+            "expected_last_observed_at": horizon[9],
+            "expected_last_class": horizon[10],
+            "expected_last_error_code": horizon[11],
+            "expected_recovery_deadline_at": horizon[12],
+            "expected_dead_lettered_at": horizon[13],
+            "expected_dead_letter_reason": horizon[14],
+            "expected_updated_at": horizon[15],
+            "scheduled_at": 23002,
+            "created_at": 23001,
+        }
+    )
+    expect_integrity_error(
+        lambda: insert_event(horizon_values),
+        "0045 horizon-exhausted observations must not be requeued",
     )
 
 
@@ -5834,8 +6126,11 @@ def verify_relay_container_r2_inventory_rollout(schema_paths: list[Path]) -> Non
     inventory_index = schema_paths.index(inventory_path)
     if inventory_index == 0 or schema_paths[inventory_index - 1] != observer_path:
         raise SystemExit("0044 R2 inventory must immediately follow 0043")
-    if inventory_index != len(schema_paths) - 1:
-        raise SystemExit("0044 R2 inventory must be the current D1 migration head")
+    if inventory_index >= len(schema_paths) - 1 or (
+        schema_paths[inventory_index + 1].name
+        != "0045_relay_container_reconciliation_retry_apply.sql"
+    ):
+        raise SystemExit("0044 R2 inventory must immediately precede 0045 retry apply")
 
     inventory_sql = inventory_path.read_text(encoding="utf-8")
     if "if not exists" in inventory_sql.lower():
@@ -5954,6 +6249,141 @@ def verify_relay_container_r2_inventory_rollout(schema_paths: list[Path]) -> Non
         "SELECT COUNT(*) FROM relay_container_r2_inventory_findings"
     ).fetchone() != (0,):
         raise SystemExit("0044 R2 inventory expand backfilled findings")
+
+
+def verify_relay_container_reconciliation_retry_apply_rollout(
+    schema_paths: list[Path],
+) -> None:
+    retry_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0045_relay_container_reconciliation_retry_apply.sql"
+        ),
+        None,
+    )
+    inventory_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0044_relay_container_r2_orphan_inventory.sql"
+        ),
+        None,
+    )
+    if retry_path is None or inventory_path is None:
+        raise SystemExit("0044/0045 relay Container retry-apply rollout migrations not found")
+    retry_index = schema_paths.index(retry_path)
+    if retry_index == 0 or schema_paths[retry_index - 1] != inventory_path:
+        raise SystemExit("0045 retry apply must immediately follow 0044")
+    if retry_index != len(schema_paths) - 1:
+        raise SystemExit("0045 retry apply must be the current D1 migration head")
+
+    retry_sql = retry_path.read_text(encoding="utf-8")
+    if "if not exists" in retry_sql.lower():
+        raise SystemExit("0045 critical retry-apply objects must fail on duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_reconciliation_retry_events",
+        "action = 'reobserve_container_state'",
+        "expected_recovery_deadline_at - scheduled_at >= 60",
+        "relay_container_reconciliation_retry_event_insert_guard",
+        "relay_container_reconciliation_retry_event_apply",
+        "relay container reconciliation retry apply lost its fence",
+        "relay_container_reconciliation_retry_event_update_guard",
+        "relay_container_reconciliation_retry_event_delete_guard",
+        "DROP TRIGGER relay_container_reconciliation_observation_lifecycle_guard",
+        "OLD.status = 'dead_letter'",
+        "NEW.status = 'retry'",
+        "OLD.dead_letter_reason <> 'retry_horizon_exhausted'",
+        "observation.dead_letter_reason = observation.last_class",
+        "idx_relay_container_reconciliation_retry_events_operation",
+        "idx_relay_container_reconciliation_retry_events_operator",
+    ):
+        if fragment not in retry_sql:
+            raise SystemExit(f"0045 retry-apply contract missing: {fragment}")
+    for forbidden in (
+        "UPDATE relay_container_operations",
+        "UPDATE relay_container_terminal_events",
+        "UPDATE relay_container_terminal_outbox_state",
+        "UPDATE relay_billing_reservations",
+        "UPDATE users",
+        "UPDATE tokens",
+        "UPDATE channels",
+        "DELETE FROM",
+    ):
+        if forbidden in retry_sql:
+            raise SystemExit(f"0045 retry apply exceeds observer authority: {forbidden}")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == retry_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+    operation_sha256 = "d" * 64
+    conn.execute(
+        "INSERT INTO relay_container_operations ("
+        "reservation_key, operation_id, owner_generation, owner_lease_expires_at, "
+        "channel_id, selected_group, operation_kind, provider_operation_id, "
+        "admission_sha256, protocol_version, shard_contract_version, "
+        "ring_generation, shard_count, shard_index, instance_name, "
+        "execution_deadline_at, input_mode, input_object_key, "
+        "input_object_version, input_sha256, input_size, input_content_type, "
+        "trace_id, client_idempotency_hmac_sha256, client_request_sha256, "
+        "reconciliation_id, created_at, updated_at) VALUES ("
+        "'0045-existing-operation', '0045-existing-operation', 2, 1000, "
+        "1, 'default', 'health_probe', 'provider-0045-existing', ?, "
+        "1, 1, 1, 8, 4, 'cinatoken-relay-shard-v1-0004', 900, 'r2', ?, "
+        "'version-0045-existing', ?, 42, 'application/json', "
+        "'trace-0045-existing', ?, ?, ?, 800, 800)",
+        (
+            "a" * 64,
+            f"container-inputs/v1/0045-existing-operation/2/{operation_sha256}",
+            operation_sha256,
+            "b" * 64,
+            "c" * 64,
+            hashlib.sha256(b"0045-existing-reconciliation").hexdigest(),
+        ),
+    )
+    reconciliation_id = conn.execute(
+        "SELECT reconciliation_id FROM relay_container_operations "
+        "WHERE operation_id = '0045-existing-operation'"
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT INTO relay_container_reconciliation_observations ("
+        "operation_id, reservation_key, operation_created_at, owner_generation, "
+        "reconciliation_id, available_at, recovery_deadline_at, created_at, updated_at"
+        ") VALUES ("
+        "'0045-existing-operation', '0045-existing-operation', 800, 2, ?, "
+        "810, 900, 810, 810)",
+        (reconciliation_id,),
+    )
+    protected_tables = (
+        "relay_container_operations",
+        "relay_container_terminal_events",
+        "relay_container_terminal_outbox_state",
+        "relay_billing_reservations",
+        "relay_container_reconciliation_observations",
+        "relay_container_reconciliation_cursor",
+        "relay_container_r2_inventory_cursors",
+        "relay_container_r2_inventory_findings",
+        "users",
+        "tokens",
+        "channels",
+    )
+    before_rows = {
+        table: conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+        for table in protected_tables
+    }
+    conn.executescript(retry_sql)
+    after_rows = {
+        table: conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+        for table in protected_tables
+    }
+    if after_rows != before_rows:
+        raise SystemExit("0045 retry-apply expand changed existing durable state")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_reconciliation_retry_events"
+    ).fetchone() != (0,):
+        raise SystemExit("0045 retry-apply expand backfilled command events")
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

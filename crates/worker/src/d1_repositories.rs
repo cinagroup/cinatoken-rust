@@ -38,6 +38,8 @@ pub(crate) const RELAY_CONTAINER_RECONCILIATION_MIGRATION: &str =
     "0043_relay_container_reconciliation_observer.sql";
 pub(crate) const RELAY_CONTAINER_R2_INVENTORY_MIGRATION: &str =
     "0044_relay_container_r2_orphan_inventory.sql";
+pub(crate) const RELAY_CONTAINER_RECONCILIATION_RETRY_MIGRATION: &str =
+    "0045_relay_container_reconciliation_retry_apply.sql";
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
     &["pending", "leased", "retry", "converged", "dead_letter"];
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
@@ -59,6 +61,12 @@ pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
     "legacy_terminal_without_receipt",
     "store_unavailable",
     "contract_violation",
+];
+pub(crate) const RELAY_CONTAINER_RECONCILIATION_RETRY_REASONS: &[&str] = &[
+    "infrastructure_recovered",
+    "storage_repaired",
+    "controller_reconciled",
+    "operator_reinspection_approved",
 ];
 pub(crate) const RELAY_CONTAINER_R2_INVENTORY_LANES: &[&str] =
     &["input", "result", "client_response"];
@@ -277,6 +285,66 @@ pub struct RelayContainerReconciliationObservationRow {
     pub dead_letter_reason: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayContainerReconciliationRetryEvent<'a> {
+    pub resolution_key: &'a str,
+    pub observation_sequence: i64,
+    pub operation_id: &'a str,
+    pub operation_created_at: i64,
+    pub owner_generation: i64,
+    pub reconciliation_id: &'a str,
+    pub expected_claim_generation: i64,
+    pub expected_attempt_count: i64,
+    pub expected_consecutive_failures: i64,
+    pub expected_first_observed_at: i64,
+    pub expected_last_attempt_at: i64,
+    pub expected_last_observed_at: i64,
+    pub expected_last_class: &'a str,
+    pub expected_last_error_code: &'a str,
+    pub expected_recovery_deadline_at: i64,
+    pub expected_dead_lettered_at: i64,
+    pub expected_dead_letter_reason: &'a str,
+    pub expected_updated_at: i64,
+    pub reason: &'a str,
+    pub evidence_reference: &'a str,
+    pub evidence_sha256: &'a str,
+    pub preview_token: &'a str,
+    pub idempotency_sha256: &'a str,
+    pub decision_sha256: &'a str,
+    pub operator_id: i64,
+    pub scheduled_at: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerReconciliationAppliedRetryEvent {
+    pub observation_sequence: i64,
+    pub operation_id: String,
+    pub preview_token: String,
+    pub idempotency_sha256: String,
+    pub decision_sha256: String,
+    pub scheduled_at: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerReconciliationRetryMutationOutcome {
+    Applied,
+    Duplicate,
+}
+
+#[derive(Debug)]
+pub enum RelayContainerReconciliationRetryMutationError {
+    Conflict,
+    Unavailable(worker::Error),
+}
+
+impl From<worker::Error> for RelayContainerReconciliationRetryMutationError {
+    fn from(error: worker::Error) -> Self {
+        Self::Unavailable(error)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4230,6 +4298,385 @@ pub async fn relay_container_reconciliation_observation_by_sequence(
     .bind_refs(&D1Type::Text(&observation_sequence))?
     .first::<RelayContainerReconciliationObservationRow>(None)
     .await
+}
+
+pub async fn relay_container_reconciliation_retry_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    let args = [D1Type::Text(RELAY_CONTAINER_RECONCILIATION_RETRY_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT CASE WHEN
+              EXISTS (SELECT 1 FROM d1_migrations WHERE name = ?1)
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_reconciliation_retry_events'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index'
+                  AND name = 'idx_relay_container_reconciliation_retry_events_operation'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index'
+                  AND name = 'idx_relay_container_reconciliation_retry_events_operator'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'relay_container_reconciliation_retry_event_insert_guard'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'relay_container_reconciliation_retry_event_apply'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'relay_container_reconciliation_retry_event_update_guard'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'relay_container_reconciliation_retry_event_delete_guard'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'relay_container_reconciliation_observation_lifecycle_guard'
+                  AND sql LIKE '%relay_container_reconciliation_retry_events%'
+              )
+            THEN 1 ELSE 0 END AS count
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn relay_container_reconciliation_retry_event(
+    db: &D1Database,
+    resolution_key: &str,
+) -> worker::Result<Option<RelayContainerReconciliationAppliedRetryEvent>> {
+    validate_relay_container_sha256(resolution_key, "reconciliation retry resolution key")?;
+    db.prepare(
+        r#"
+        SELECT observation_sequence, operation_id, preview_token,
+               idempotency_sha256, decision_sha256, scheduled_at, created_at
+        FROM relay_container_reconciliation_retry_events
+        WHERE resolution_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&D1Type::Text(resolution_key))?
+    .first::<RelayContainerReconciliationAppliedRetryEvent>(None)
+    .await
+}
+
+pub async fn apply_relay_container_reconciliation_retry(
+    db: &D1Database,
+    event: &RelayContainerReconciliationRetryEvent<'_>,
+    admin_audit: worker::D1PreparedStatement,
+) -> Result<
+    RelayContainerReconciliationRetryMutationOutcome,
+    RelayContainerReconciliationRetryMutationError,
+> {
+    let insert = relay_container_reconciliation_retry_event_statement(db, event)?;
+    match db.batch(vec![insert, admin_audit]).await {
+        Ok(results) if results.len() == 2 => {
+            Ok(RelayContainerReconciliationRetryMutationOutcome::Applied)
+        }
+        Ok(_) => Err(RelayContainerReconciliationRetryMutationError::Unavailable(
+            worker::Error::RustError(
+                "relay container reconciliation retry batch returned incomplete results"
+                    .to_string(),
+            ),
+        )),
+        Err(err) => {
+            match relay_container_reconciliation_retry_event(db, event.resolution_key).await {
+                Ok(Some(applied))
+                    if relay_container_reconciliation_retry_event_matches(event, &applied) =>
+                {
+                    Ok(RelayContainerReconciliationRetryMutationOutcome::Duplicate)
+                }
+                Ok(Some(_)) => Err(RelayContainerReconciliationRetryMutationError::Conflict),
+                Ok(None) => match relay_container_reconciliation_observation_by_sequence(
+                    db,
+                    event.observation_sequence,
+                )
+                .await
+                {
+                    Ok(Some(row))
+                        if relay_container_reconciliation_retry_observation_matches(
+                            event, &row,
+                        ) =>
+                    {
+                        Err(RelayContainerReconciliationRetryMutationError::Unavailable(
+                            err,
+                        ))
+                    }
+                    Ok(_) => Err(RelayContainerReconciliationRetryMutationError::Conflict),
+                    Err(readback_err) => Err(
+                        RelayContainerReconciliationRetryMutationError::Unavailable(readback_err),
+                    ),
+                },
+                Err(readback_err) => Err(
+                    RelayContainerReconciliationRetryMutationError::Unavailable(readback_err),
+                ),
+            }
+        }
+    }
+}
+
+fn relay_container_reconciliation_retry_event_statement(
+    db: &D1Database,
+    event: &RelayContainerReconciliationRetryEvent<'_>,
+) -> worker::Result<worker::D1PreparedStatement> {
+    validate_relay_container_reconciliation_retry_event(event)?;
+    let observation_sequence = event.observation_sequence.to_string();
+    let operation_created_at = event.operation_created_at.to_string();
+    let owner_generation = event.owner_generation.to_string();
+    let expected_claim_generation = event.expected_claim_generation.to_string();
+    let expected_attempt_count = event.expected_attempt_count.to_string();
+    let expected_consecutive_failures = event.expected_consecutive_failures.to_string();
+    let expected_first_observed_at = event.expected_first_observed_at.to_string();
+    let expected_last_attempt_at = event.expected_last_attempt_at.to_string();
+    let expected_last_observed_at = event.expected_last_observed_at.to_string();
+    let expected_recovery_deadline_at = event.expected_recovery_deadline_at.to_string();
+    let expected_dead_lettered_at = event.expected_dead_lettered_at.to_string();
+    let expected_updated_at = event.expected_updated_at.to_string();
+    let operator_id = event.operator_id.to_string();
+    let scheduled_at = event.scheduled_at.to_string();
+    let created_at = event.created_at.to_string();
+    let args = [
+        D1Type::Text(event.resolution_key),
+        D1Type::Text(&observation_sequence),
+        D1Type::Text(event.operation_id),
+        D1Type::Text(&operation_created_at),
+        D1Type::Text(&owner_generation),
+        D1Type::Text(event.reconciliation_id),
+        D1Type::Text(&expected_claim_generation),
+        D1Type::Text(&expected_attempt_count),
+        D1Type::Text(&expected_consecutive_failures),
+        D1Type::Text(&expected_first_observed_at),
+        D1Type::Text(&expected_last_attempt_at),
+        D1Type::Text(&expected_last_observed_at),
+        D1Type::Text(event.expected_last_class),
+        D1Type::Text(event.expected_last_error_code),
+        D1Type::Text(&expected_recovery_deadline_at),
+        D1Type::Text(&expected_dead_lettered_at),
+        D1Type::Text(event.expected_dead_letter_reason),
+        D1Type::Text(&expected_updated_at),
+        D1Type::Text(event.reason),
+        D1Type::Text(event.evidence_reference),
+        D1Type::Text(event.evidence_sha256),
+        D1Type::Text(event.preview_token),
+        D1Type::Text(event.idempotency_sha256),
+        D1Type::Text(event.decision_sha256),
+        D1Type::Text(&operator_id),
+        D1Type::Text(&scheduled_at),
+        D1Type::Text(&created_at),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO relay_container_reconciliation_retry_events (
+          resolution_key, observation_sequence, operation_id,
+          operation_created_at, owner_generation, reconciliation_id,
+          expected_claim_generation, expected_attempt_count,
+          expected_consecutive_failures, expected_first_observed_at,
+          expected_last_attempt_at, expected_last_observed_at,
+          expected_last_class, expected_last_error_code,
+          expected_recovery_deadline_at, expected_dead_lettered_at,
+          expected_dead_letter_reason, expected_updated_at,
+          action, reason, evidence_reference, evidence_sha256,
+          preview_token, idempotency_sha256, decision_sha256,
+          operator_id, scheduled_at, created_at
+        ) VALUES (
+          ?1, CAST(?2 AS INTEGER), ?3, CAST(?4 AS INTEGER),
+          CAST(?5 AS INTEGER), ?6, CAST(?7 AS INTEGER),
+          CAST(?8 AS INTEGER), CAST(?9 AS INTEGER), CAST(?10 AS INTEGER),
+          CAST(?11 AS INTEGER), CAST(?12 AS INTEGER), ?13, ?14,
+          CAST(?15 AS INTEGER), CAST(?16 AS INTEGER), ?17,
+          CAST(?18 AS INTEGER), 'reobserve_container_state', ?19, ?20,
+          ?21, ?22, ?23, ?24, CAST(?25 AS INTEGER),
+          CAST(?26 AS INTEGER), CAST(?27 AS INTEGER)
+        )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn validate_relay_container_reconciliation_retry_event(
+    event: &RelayContainerReconciliationRetryEvent<'_>,
+) -> worker::Result<()> {
+    validate_relay_container_sha256(event.resolution_key, "reconciliation retry resolution key")?;
+    validate_relay_container_id(
+        event.operation_id,
+        "reconciliation retry operation id",
+        1,
+        128,
+    )?;
+    if !event.reconciliation_id.is_empty() {
+        validate_relay_container_sha256(event.reconciliation_id, "reconciliation retry identity")?;
+    }
+    validate_relay_container_lower_id(
+        event.expected_last_class,
+        "reconciliation retry class",
+        1,
+        64,
+    )?;
+    if !RELAY_CONTAINER_RECONCILIATION_CLASSES.contains(&event.expected_last_class) {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation retry class is unsupported".to_string(),
+        ));
+    }
+    if !event.expected_last_error_code.is_empty() {
+        validate_relay_container_lower_id(
+            event.expected_last_error_code,
+            "reconciliation retry error code",
+            1,
+            64,
+        )?;
+    }
+    validate_relay_container_lower_id(
+        event.expected_dead_letter_reason,
+        "reconciliation retry dead-letter reason",
+        1,
+        64,
+    )?;
+    if event.expected_dead_letter_reason == "retry_horizon_exhausted"
+        || event.expected_dead_letter_reason != event.expected_last_class
+    {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation retry dead-letter state is unsupported".to_string(),
+        ));
+    }
+    if !RELAY_CONTAINER_RECONCILIATION_RETRY_REASONS.contains(&event.reason) {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation retry reason is unsupported".to_string(),
+        ));
+    }
+    validate_relay_container_token(
+        event.evidence_reference,
+        "reconciliation retry evidence reference",
+        1,
+        128,
+        |byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/' | b'#' | b'@')
+        },
+    )?;
+    for (value, field) in [
+        (
+            event.evidence_sha256,
+            "reconciliation retry evidence sha256",
+        ),
+        (event.preview_token, "reconciliation retry preview token"),
+        (
+            event.idempotency_sha256,
+            "reconciliation retry idempotency sha256",
+        ),
+        (
+            event.decision_sha256,
+            "reconciliation retry decision sha256",
+        ),
+    ] {
+        validate_relay_container_sha256(value, field)?;
+    }
+    let integer_values = [
+        event.observation_sequence,
+        event.operation_created_at,
+        event.owner_generation,
+        event.expected_claim_generation,
+        event.expected_attempt_count,
+        event.expected_consecutive_failures,
+        event.expected_first_observed_at,
+        event.expected_last_attempt_at,
+        event.expected_last_observed_at,
+        event.expected_recovery_deadline_at,
+        event.expected_dead_lettered_at,
+        event.expected_updated_at,
+        event.operator_id,
+        event.scheduled_at,
+        event.created_at,
+    ];
+    if integer_values
+        .iter()
+        .any(|value| *value < 0 || *value > i64::from(i32::MAX))
+        || event.observation_sequence == 0
+        || event.operation_created_at == 0
+        || event.owner_generation == 0
+        || event.expected_claim_generation == 0
+        || event.expected_claim_generation != event.expected_attempt_count
+        || event.expected_consecutive_failures > event.expected_attempt_count
+        || event.expected_first_observed_at == 0
+        || event.expected_last_attempt_at == 0
+        || event.expected_last_observed_at == 0
+        || event.expected_recovery_deadline_at == 0
+        || event.expected_dead_lettered_at == 0
+        || event.expected_updated_at == 0
+        || event.operator_id == 0
+        || event.scheduled_at == 0
+        || event.created_at == 0
+        || event.expected_first_observed_at > event.expected_last_attempt_at
+        || event.expected_last_attempt_at > event.expected_last_observed_at
+        || event.expected_last_observed_at != event.expected_updated_at
+        || event.expected_dead_lettered_at != event.expected_updated_at
+        || event.created_at < event.expected_updated_at
+        || event.scheduled_at != event.created_at.saturating_add(1)
+        || event
+            .expected_recovery_deadline_at
+            .saturating_sub(event.scheduled_at)
+            < 60
+    {
+        return Err(worker::Error::RustError(
+            "relay container reconciliation retry event state is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn relay_container_reconciliation_retry_event_matches(
+    expected: &RelayContainerReconciliationRetryEvent<'_>,
+    actual: &RelayContainerReconciliationAppliedRetryEvent,
+) -> bool {
+    actual.observation_sequence == expected.observation_sequence
+        && actual.operation_id == expected.operation_id
+        && actual.preview_token == expected.preview_token
+        && actual.idempotency_sha256 == expected.idempotency_sha256
+        && actual.decision_sha256 == expected.decision_sha256
+}
+
+fn relay_container_reconciliation_retry_observation_matches(
+    event: &RelayContainerReconciliationRetryEvent<'_>,
+    row: &RelayContainerReconciliationObservationRow,
+) -> bool {
+    row.observation_sequence == event.observation_sequence
+        && row.operation_id == event.operation_id
+        && row.operation_created_at == event.operation_created_at
+        && row.owner_generation == event.owner_generation
+        && row.reconciliation_id == event.reconciliation_id
+        && row.status == "dead_letter"
+        && row.claim_generation == event.expected_claim_generation
+        && row.claim_lease_expires_at == 0
+        && row.available_at == 0
+        && row.attempt_count == event.expected_attempt_count
+        && row.consecutive_failures == event.expected_consecutive_failures
+        && row.first_observed_at == event.expected_first_observed_at
+        && row.last_attempt_at == event.expected_last_attempt_at
+        && row.last_observed_at == event.expected_last_observed_at
+        && row.last_class == event.expected_last_class
+        && row.last_error_code == event.expected_last_error_code
+        && row.recovery_deadline_at == event.expected_recovery_deadline_at
+        && row.converged_at == 0
+        && row.dead_lettered_at == event.expected_dead_lettered_at
+        && row.dead_letter_reason == event.expected_dead_letter_reason
+        && row.updated_at == event.expected_updated_at
 }
 
 #[derive(Debug, Deserialize)]
@@ -18804,7 +19251,7 @@ mod tests {
             .find("pub async fn relay_container_reconciliation_runtime_snapshot")
             .unwrap();
         let end = source
-            .find("struct RelayContainerReconciliationHighWatermark")
+            .find("pub async fn relay_container_reconciliation_retry_schema_ready")
             .unwrap();
         let operator_reads = &source[start..end];
         assert!(operator_reads.contains("rowid AS observation_sequence"));
@@ -18816,6 +19263,79 @@ mod tests {
         assert!(!operator_reads.contains("INSERT "));
         assert!(!operator_reads.contains("UPDATE "));
         assert!(!operator_reads.contains("DELETE "));
+    }
+
+    #[test]
+    fn relay_container_reconciliation_retry_repository_is_audited_and_observer_only() {
+        let source = include_str!("d1_repositories.rs");
+        let start = source
+            .find("pub async fn relay_container_reconciliation_retry_schema_ready")
+            .unwrap();
+        let end = source
+            .find("struct RelayContainerReconciliationHighWatermark")
+            .unwrap();
+        let retry = &source[start..end];
+        assert!(retry.contains("INSERT INTO relay_container_reconciliation_retry_events"));
+        assert!(retry.contains("db.batch(vec![insert, admin_audit]).await"));
+        assert!(retry.contains("RelayContainerReconciliationRetryMutationOutcome::Duplicate"));
+        for forbidden in [
+            "UPDATE relay_container_reconciliation_observations",
+            "DELETE FROM relay_container_reconciliation_observations",
+            "UPDATE relay_container_operations",
+            "DELETE FROM relay_container_operations",
+            "UPDATE relay_billing_reservations",
+            "DELETE FROM relay_billing_reservations",
+            "UPDATE users",
+            "UPDATE tokens",
+            "UPDATE channels",
+        ] {
+            assert!(
+                !retry.contains(forbidden),
+                "forbidden retry SQL: {forbidden}"
+            );
+        }
+
+        let valid = RelayContainerReconciliationRetryEvent {
+            resolution_key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            observation_sequence: 9,
+            operation_id: "operation-9",
+            operation_created_at: 100,
+            owner_generation: 2,
+            reconciliation_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            expected_claim_generation: 2,
+            expected_attempt_count: 2,
+            expected_consecutive_failures: 1,
+            expected_first_observed_at: 100,
+            expected_last_attempt_at: 150,
+            expected_last_observed_at: 200,
+            expected_last_class: "terminal_conflict",
+            expected_last_error_code: "controller_contract_violation",
+            expected_recovery_deadline_at: 1_000,
+            expected_dead_lettered_at: 200,
+            expected_dead_letter_reason: "terminal_conflict",
+            expected_updated_at: 200,
+            reason: "operator_reinspection_approved",
+            evidence_reference: "incident:CT-9",
+            evidence_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            preview_token: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            idempotency_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            decision_sha256: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            operator_id: 1,
+            scheduled_at: 301,
+            created_at: 300,
+        };
+        validate_relay_container_reconciliation_retry_event(&valid).unwrap();
+
+        let mut exhausted = valid;
+        exhausted.expected_dead_letter_reason = "retry_horizon_exhausted";
+        assert!(validate_relay_container_reconciliation_retry_event(&exhausted).is_err());
+        let mut invalid_time = valid;
+        invalid_time.expected_last_attempt_at = 0;
+        assert!(validate_relay_container_reconciliation_retry_event(&invalid_time).is_err());
+        let mut insufficient_margin = valid;
+        insufficient_margin.created_at = 949;
+        insufficient_margin.scheduled_at = 950;
+        assert!(validate_relay_container_reconciliation_retry_event(&insufficient_margin).is_err());
     }
 
     #[test]

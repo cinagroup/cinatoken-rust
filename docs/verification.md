@@ -5813,7 +5813,7 @@ conflict; receipt readback recomputes both outbox and nested terminal hashes.
 
 This verification does not claim a D1/DO/R2 distributed transaction. The
 create-only R2 client-response path, actual byte replay, divergence reconciler,
-Linux canary, 0045 enforcement, remote migration/fault matrix, and staging proof
+Linux canary, 0046 enforcement, remote migration/fault matrix, and staging proof
 remain open. All eight Container operation/financial/replay/reconciliation/
 canary/proof gates remain false, and production remains **NO-GO**.
 
@@ -5858,7 +5858,7 @@ Still required are edge integration, live Service Binding and R2 evidence,
 concurrent conflict/orphan fault injection, fair reconciliation pagination,
 durable backoff and metrics, operator authorization, exact DO phase mapping,
 provider-attempt journaling, the Linux non-streaming chat canary, N/N-1,
-old-writer drain, 0045 enforcement, rollback, and C1-C5 approval. No remote
+old-writer drain, 0046 enforcement, rollback, and C1-C5 approval. No remote
 migration, deploy, object write, provider call, or traffic switch occurred;
 Go/VPS remains authoritative and production remains **NO-GO**.
 
@@ -5909,7 +5909,7 @@ false, so configuration cannot make Container cutover ready.
 Still required are bounded R2 orphan inventory, authenticated operator
 status/list/retry, provider-attempt journaling, a separately gated apply
 protocol, public exact replay, the Linux canary, N/N-1, remote migration and
-fault evidence, old-writer drain, enforcement migration 0045, rollback, and
+fault evidence, old-writer drain, enforcement migration 0046, rollback, and
 C1-C5 approval. No remote migration, deployment, provider call, object write,
 financial mutation, or traffic switch occurred. Go/VPS remains authoritative
 and production remains **NO-GO**.
@@ -6064,3 +6064,81 @@ an independent TOML assertion, migration audit, SQLite replay, Rust tests, and
 Wasm compilation passed. The final optimized Worker build also passed. No
 remote D1 migration, R2 access, deployment, provider call, or traffic switch
 occurred; Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Container Reconciliation Retry Apply Verification (2026-07-17)
+
+This overlay adds only the separately gated 0045 observer re-observation
+protocol. It does not add provider retry, operation or financial mutation,
+Durable Object mutation, R2 mutation, remote migration, or Container cutover
+authority.
+
+```powershell
+python tools/verify_sqlite.py
+# PASS: 45 migrations, 43 tables, 434 incremental columns, 64 key indexes.
+
+node tools/audit_d1_migration_config.mjs --json
+# PASS: 45 contiguous migrations; config/runtime head is 0045.
+
+cargo test -p cinatoken-worker --lib container_reconciliation
+# PASS: 15 passed; 0 failed.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 770 passed; 0 failed.
+
+cargo test --workspace --exclude cinatoken-worker
+# PASS: 751 non-Worker unit/integration tests; all doc tests passed.
+
+node node_modules/vitest/vitest.mjs run --config vitest.do.config.mjs
+# PASS: 45 passed; 0 failed.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo fmt --all -- --check
+node --check tests/do-lifecycle-runtime.test.mjs
+# PASS.
+
+worker-build --release
+# PASS: optimized Worker Wasm and bundled JS generated from final source.
+```
+
+SQLite executes stale-preview rejection with zero partial events, one exact
+dead-letter requeue, unchanged operation authority, consumed-dead-letter
+rejection, immutable event update/delete rejection, and exhausted-horizon
+rejection. The migration remains default-lazy: applying 0045 creates no event,
+does not backfill an observation, and changes no existing operation or observer
+state. The schema and runtime verifier require exact class/dead-letter reason,
+at least 60 seconds of remaining recovery margin, event-backed lifecycle
+authority, and one-row trigger assertions.
+
+Rust source and validation tests prove that the repository writes only the
+retry event, batches it with the supplied admin audit, and contains no direct
+operation, billing, user, token, channel, or observer UPDATE. Event validation
+rejects horizon exhaustion, inconsistent class/reason, zero timestamps and
+insufficient margin. Admin tests cover strict target/evidence/idempotency
+inputs, full-state preview binding, deadline eligibility, Root + step-up route
+registration, no-store responses, and fixed false permissions for provider,
+operation, financial, DO, and R2 mutation.
+
+Workerd applies all 45 migrations and exercises the actual HTTP control chain.
+Anonymous preview is 401, active observer-owned state is 409, apply before
+fresh verification is 403, the first verified request is `applied`, an exact
+repeat is `duplicate` with the original schedule, and a new idempotency key
+with the consumed preview is 409. D1 contains exactly one immutable retry event
+and one admin audit. Complete before/after snapshots of operations, terminal
+events/outbox, HTTP and Realtime billing reservations, users, tokens, channels,
+and R2 keys are unchanged; only the expected observer row moves from
+`dead_letter` to `retry`.
+
+Independent config inspection confirms exactly three tracked
+`CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED=false` values and no true value;
+the automatic observer gate is also false in all three environments. The
+Workerd fixture alone enables apply. Bun is unavailable in this shell, so the
+Bun-native scheduler TOML test and aggregate `bun run check` were not rerun;
+the same gate counts were checked directly, while Node syntax, migration
+audit, full Workerd, Rust/workspace, SQLite, wasm32, and release build checks
+passed.
+
+Remote 0045 application, isolated staging Root + fresh-step-up evidence,
+alerting, rollback, real R2/Container faults, provider-attempt journaling,
+exact edge replay, Linux canary, N/N-1, old-writer drain, and 0046 enforcement
+remain mandatory. All eight Container cutover gates remain false. Go/VPS
+remains authoritative and production remains **NO-GO**.

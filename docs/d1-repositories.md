@@ -18,7 +18,13 @@ This module owns Worker-specific storage operations:
 - stable-cursor discovery of open Realtime usage reconciliations;
 - revision-fenced, idempotent Realtime reconciliation settlement/refund batches
   that retain quarantine provenance and write financial plus root audit state
-  atomically.
+  atomically;
+- generation-fenced Container reconciliation status/list reads and observer
+  lifecycle mutations; and
+- the default-off 0045 Container observer retry event, exact dead-letter
+  readback, and event-plus-admin-audit D1 batch. The repository contains no
+  direct operation, billing, user, token, channel, DO, provider, or R2 mutation
+  for this command; the observer transition is owned by the migration trigger.
 
 `relay.rs` remains responsible for request parsing, auth validation policy,
 cache orchestration, upstream forwarding, and audit payload construction. D1

@@ -5701,3 +5701,52 @@ non-fatal EPERM, while both Wrangler commands exited successfully and exposed
 every execution/storage gate as false. Docker and Bun are not installed, so a
 real Container, multi-Worker local E2E, and the Bun aggregate remain
 unverified. Local PASS cannot change any tracked gate or production verdict.
+
+## Global Container Operation Authority Verification (2026-07-16)
+
+Current local evidence:
+
+```powershell
+python tools/verify_sqlite.py
+# PASS: 40 migrations, 36 tables, 277 incremental columns, 48 key indexes
+
+node tools/audit_d1_migration_config.mjs --json
+# PASS: 40 contiguous migrations; runtime/config head is 0040
+
+node node_modules/typescript/bin/tsc -p services/container-controller/tsconfig.json --noEmit
+node node_modules/vitest/vitest.mjs run --config vitest.container-controller-protocol.config.mjs
+# PASS: 35/35
+node node_modules/vitest/vitest.mjs run --config vitest.container-controller.config.mjs
+# PASS: 15/15 Workerd/SQLite
+
+cargo test -p cinatoken-worker --lib
+# PASS: 731/731
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo fmt --all -- --check
+# PASS
+
+node node_modules/wrangler/bin/wrangler.js deploy \
+  --config services/container-controller/wrangler.jsonc --dry-run \
+  --containers-rollout none --outdir .wrangler/container-controller-build
+# PASS: private DO/D1/KV/R2/Container bindings; every action gate false
+```
+
+The 0040 verifier executes null-primary-key, nullable-terminal,
+text-as-integer, operation/reservation mismatch, provider-ID collision,
+identity rewrite, timestamp rollback, missing-result completion, terminal
+reactivation, and valid dispatched/completed/recovery transitions. The Rust
+tests cover guarded reservation classification, immutable replay matching,
+checked protocol bounds, content-addressed R2 manifests, HMAC shard routing,
+strict private operation outcomes, and capacity/fence error classification.
+
+The Controller portable suite proves admission before ledger claim and rejects
+every immutable 0040/envelope mismatch. Workerd proves that the expanded
+authority survives SQLite persistence and eviction. Wrangler 4.110.0 again
+reported the known non-fatal EPERM while attempting its optional user-profile
+log write; the dry run exited zero.
+
+This is default-off local evidence. No remote D1 migration, R2 write,
+Controller deployment, Container execution, provider call, billing settlement,
+or traffic cutover occurred. Global terminal CAS, the Linux canary, remote
+fault/lifecycle evidence, N/N-1, supply-chain, load/cost, rollback, and approval
+gates remain open. Production remains **NO-GO**.

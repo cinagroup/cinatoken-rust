@@ -39,6 +39,7 @@ import {
   STORAGE_GATEWAY_ACTIONS,
   deriveR2ResultKey,
   handleStorageGatewayRequest,
+  requireD1OperationAdmission,
   type R2ResultPutGrant,
   type StorageAccessGrant as GatewayStorageAccessGrant,
   type StorageGatewayAction,
@@ -355,6 +356,16 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     try {
       const verified = await verifyOperationRequest(request, this.env);
       const now = Math.floor(Date.now() / 1000);
+      if (this.env.CONTAINER_EXECUTION_ENABLED === "true") {
+        if (this.env.CONTAINER_STORAGE_D1_READ_ENABLED !== "true") {
+          throw new ProtocolError("admission_gateway_disabled", 503);
+        }
+        await requireD1OperationAdmission(
+          storageGatewayEnv(this.env),
+          verified.envelope,
+          now,
+        );
+      }
       const claim = this.ledger.claimOperation(
         verified.envelope,
         verified.claims.body_sha256,
@@ -813,13 +824,35 @@ function gatewayStorageGrant(
     case STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET:
       return {
         action,
+        protocol_version: grant.protocol_version,
         operation_id: grant.operation_id,
+        operation_kind: grant.operation_kind,
         owner_generation: grant.owner_generation,
+        owner_lease_expires_at: grant.owner_lease_expires_at,
+        execution_deadline_at: grant.deadline_at,
+        provider_operation_id: grant.provider_operation_id,
+        admission_sha256: grant.admission_sha256,
+        input: {
+          mode: grant.input.mode,
+          sha256: grant.input.sha256,
+          size: grant.input.size,
+          content_type: grant.input.content_type,
+          ...(grant.input.request_object_key === null
+            ? {}
+            : { request_object_key: grant.input.request_object_key }),
+          ...(grant.input.object_version === null
+            ? {}
+            : { object_version: grant.input.object_version }),
+        },
+        shard: grant.shard,
+        trace_id: grant.trace_id,
       };
   }
 }
 
-function storageGatewayEnv(env: Cloudflare.Env): StorageGatewayEnvironment {
+function storageGatewayEnv(
+  env: Pick<ControllerEnv, "FILE_BUCKET" | "CONFIG_KV" | "DB">,
+): StorageGatewayEnvironment {
   return {
     CONTAINER_STORAGE_GATEWAY_ENABLED: "true",
     CONTAINER_STORAGE_INPUT_R2: env.FILE_BUCKET,

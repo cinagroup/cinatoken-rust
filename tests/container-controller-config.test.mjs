@@ -75,6 +75,12 @@ describe("isolated container controller configuration", () => {
       expect(storageGatewaySource).toContain(`\"${host}\"`);
     }
     expect(storageGatewaySource).not.toMatch(/\.list\(|\.delete\(/);
-    expect(storageGatewaySource).toContain("reservation_key = ?1 AND owner_generation = ?2");
+    expect(storageGatewaySource).toContain("operation.operation_id = ?1");
+    expect(storageGatewaySource).toContain("operation.owner_generation = ?2");
+    expect(storageGatewaySource).toContain("reservation.owner_generation = ?2");
+    expect(controllerSource.indexOf("await requireD1OperationAdmission(")).toBeGreaterThan(-1);
+    expect(controllerSource.indexOf("await requireD1OperationAdmission(")).toBeLessThan(
+      controllerSource.indexOf("const claim = this.ledger.claimOperation("),
+    );
   });
 });

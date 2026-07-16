@@ -13640,7 +13640,7 @@ gateway behind four private virtual hosts:
 | `r2-input.cinatoken.internal` | `GET /v1/input` | Exact persisted key, R2 version, SHA-256, size, and content type only |
 | `r2-result.cinatoken.internal` | `PUT /v1/result` | Server-derived immutable key, 64 MiB maximum, create-only write, checksum and metadata verification |
 | `kv-config.cinatoken.internal` | `GET /v1/config` | Fixed operation-kind key, 32 KiB maximum, no listing or caller-selected key |
-| `d1-admission.cinatoken.internal` | `GET /v1/admission` | One parameterized reservation lookup returning only status, lease, and generation |
+| `d1-admission.cinatoken.internal` | `GET /v1/admission` | Parameterized 0040 operation/billing join; exact envelope, selected attempt, owner, lease, and shard authority only |
 
 Cloudflare invokes these handlers in the Worker trust domain. The handler uses
 `ctx.containerId` to address the owning named Durable Object and obtains a
@@ -13709,3 +13709,48 @@ replay or billing terminalization. Edge request staging, pre-dispatch billing
 bind, provider attempt journal, actual Container storage client/canary, R2
 response fetch, settlement, N/N-1, Docker, remote faults, and rollout evidence
 remain mandatory. Production remains **NO-GO**.
+
+## 22.225 Global Container Operation Authority And Edge Client (2026-07-16)
+
+This increment adds the global authority required before a relay request may
+enter a named Container shard. Migration 0040 is expand-only and creates no
+rows for existing traffic. `relay_container_operations` binds the exact billing
+reservation/operation identity, selected channel/group, owner lease and
+generation, provider operation ID, admission digest, protocol/shard fence,
+immutable R2 input manifest, trace, lifecycle, result, and recovery fields.
+
+The table is hardened for SQLite semantics: primary identity is explicitly
+non-null; integer authority uses explicit type checks; every terminal branch
+requires non-null typed fields; identity is immutable; timestamps cannot move
+backward; lifecycle transitions are monotonic; completed/failed rows cannot be
+reactivated. The migration verifier executes these negative cases and confirms
+that 0040 remains the current, default-inert head.
+
+The Rust D1 repository creates an operation through one guarded
+`INSERT ... SELECT` against a reserved billing row with exact owner generation,
+lease, selected channel/group, and deadline. Exact identity replays remain
+idempotent after dispatch or completion. Global operation/provider collisions
+are conflicts, and unexplained D1 failures are not converted into application
+conflicts. Bounded protocol values use checked D1 integer conversion rather
+than saturating identity.
+
+The edge foundation now also provides:
+
+1. domain-separated HMAC-SHA256 tenant routing before jump consistent hash;
+2. deterministic R2 input keys, create-only conditional writes, SHA-256 and
+   metadata verification, and version-pinned result reads;
+3. a private Service Binding operation client that signs the complete envelope,
+   bounds the response, rejects redirects, validates exact operation/trace
+   identity, and accepts only coherent completed/failed/recovery-required
+   outcomes;
+4. Controller admission before DO claim, joining 0040 to billing and comparing
+   every immutable envelope field; and
+5. complete authority persistence in the per-shard SQLite ledger so eviction
+   cannot weaken later storage grants.
+
+These components are compiled but not connected to public relay traffic. All
+Container execution, storage-write, scheduler, readiness, and staging gates
+remain false. Next is global lifecycle/terminal CAS, the deterministic Linux
+canary adapter, exact response replay through normal billing/audit, and remote
+cold/warm/restart/OOM/storage fault evidence. Go/VPS remains authoritative and
+production remains **NO-GO**.

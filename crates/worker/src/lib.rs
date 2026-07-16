@@ -24,6 +24,7 @@ mod affinity;
 mod cache;
 mod cache_invalidation;
 mod channel_upstream_update;
+mod container_artifacts;
 mod container_controller;
 mod container_scheduler;
 mod d1_repositories;

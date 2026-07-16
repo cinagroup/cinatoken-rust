@@ -1276,8 +1276,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 39,
-        d1_expected_migration: "0039_task_submit_operation_enforce.sql",
+        d1_migration_applied_count: 40,
+        d1_expected_migration: "0040_relay_container_operations.sql",
         d1_migration_ready: true,
         task_v2_contract_version: 5,
         task_submit_operation_contract_version: 1,

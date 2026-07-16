@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use worker::{Delay, Env, Fetcher, Headers, Method, Request, RequestInit, RequestRedirect};
 
+use crate::container_artifacts::{validate_container_artifact_manifest, ContainerArtifactManifest};
 use crate::container_scheduler::ContainerSchedulerRuntimeStatus;
 
 pub const CONTAINER_CONTROLLER_BINDING: &str = "CONTAINER_CONTROLLER";
@@ -33,16 +34,91 @@ const READINESS_PATH: &str = "/internal/v1/shards/readiness";
 const READINESS_URL: &str =
     "https://cinatoken-container-controller.internal/internal/v1/shards/readiness";
 const AUTHORITY_HEADER: &str = "x-cinatoken-container-authority";
+const OPERATION_PATH: &str = "/internal/v1/operations";
+const OPERATION_URL: &str =
+    "https://cinatoken-container-controller.internal/internal/v1/operations";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(12);
 const STATUS_MAX_BYTES: usize = 4 * 1024;
 const READINESS_MAX_BYTES: usize = 4 * 1024;
+const OPERATION_RESPONSE_MAX_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 struct ShardReadinessRequest<'a> {
     protocol_version: u32,
     shard: &'a ShardPlan,
     wake_container: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerOperationInput {
+    pub mode: &'static str,
+    pub sha256: String,
+    pub size: u64,
+    pub content_type: String,
+    pub request_object_key: String,
+    pub object_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerOperationEnvelope {
+    pub protocol_version: u32,
+    pub operation_id: String,
+    pub operation_kind: String,
+    pub owner_generation: i64,
+    pub owner_lease_expires_at: i64,
+    pub execution_deadline_at: i64,
+    pub provider_operation_id: String,
+    pub admission_sha256: String,
+    pub input: ContainerOperationInput,
+    pub shard: ShardPlan,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerOperationPayload {
+    protocol_version: u32,
+    operation_id: String,
+    status: String,
+    code: Option<String>,
+    trace_id: String,
+    result: Option<ControllerOperationResult>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerOperationResult {
+    object_key: String,
+    object_version: String,
+    sha256: String,
+    size: u64,
+    content_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerOperationErrorPayload {
+    error: String,
+    retryable: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerOperationStatus {
+    InFlight,
+    Completed,
+    Failed,
+    RecoveryRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerOperationOutcome {
+    pub status: ContainerOperationStatus,
+    pub http_status: u16,
+    pub code: Option<String>,
+    pub result: Option<ContainerArtifactManifest>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -257,6 +333,39 @@ pub async fn probe_shard_readiness(
     }
 }
 
+pub async fn dispatch_operation(
+    env: &Env,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerOperationOutcome, &'static str> {
+    let now = (worker::Date::now().as_millis() / 1000) as i64;
+    validate_operation_envelope_at(envelope, now)?;
+    let fetcher = env
+        .service(CONTAINER_CONTROLLER_BINDING)
+        .map_err(|_| "binding_unavailable")?;
+    let authority = authority_config(env).ok_or("authority_unavailable")?;
+    if envelope.protocol_version != authority.protocol_version {
+        return Err("protocol_mismatch");
+    }
+    let dispatch_id = random_dispatch_id("operation").ok_or("entropy_unavailable")?;
+    let body = serde_json::to_vec(envelope).map_err(|_| "request_encode_failed")?;
+    let token = sign_bound_authority(&authority, &dispatch_id, "POST", OPERATION_PATH, &body, now)
+        .ok_or("authority_sign_failed")?;
+    let request = operation_request(&token, &body).map_err(|_| "request_build_failed")?;
+    let operation = execute_operation(&fetcher, request, envelope);
+    let timeout_seconds = envelope
+        .execution_deadline_at
+        .saturating_sub(now)
+        .clamp(1, 300)
+        .saturating_add(5) as u64;
+    let delay = Delay::from(Duration::from_secs(timeout_seconds));
+    futures_util::pin_mut!(operation);
+    futures_util::pin_mut!(delay);
+    match select(operation, delay).await {
+        Either::Left((result, _)) => result,
+        Either::Right(((), _)) => Err("timeout"),
+    }
+}
+
 async fn execute_status_probe(
     fetcher: &Fetcher,
     request: Request,
@@ -348,6 +457,211 @@ async fn execute_readiness_probe(
         return Err("contract_mismatch");
     }
     Ok(payload)
+}
+
+async fn execute_operation(
+    fetcher: &Fetcher,
+    request: Request,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerOperationOutcome, &'static str> {
+    let mut response = fetcher
+        .fetch_request(request)
+        .await
+        .map_err(|_| "request_failed")?;
+    let status = response.status_code();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !content_type.starts_with("application/json") {
+        return Err("invalid_content_type");
+    }
+    let body =
+        crate::relay::read_response_bytes_limited(&mut response, OPERATION_RESPONSE_MAX_BYTES)
+            .await
+            .map_err(|_| "invalid_response_size")?;
+    match serde_json::from_slice::<ControllerOperationPayload>(&body) {
+        Ok(payload) => operation_outcome(status, payload, envelope),
+        Err(_) => {
+            let error = serde_json::from_slice::<ControllerOperationErrorPayload>(&body)
+                .map_err(|_| "invalid_response_body")?;
+            Err(classify_operation_error(status, &error))
+        }
+    }
+}
+
+fn operation_outcome(
+    http_status: u16,
+    payload: ControllerOperationPayload,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerOperationOutcome, &'static str> {
+    if payload.protocol_version != envelope.protocol_version
+        || payload.operation_id != envelope.operation_id
+        || payload.trace_id != envelope.trace_id
+    {
+        return Err("contract_mismatch");
+    }
+    let code_valid = payload.code.as_deref().is_some_and(valid_response_code);
+    let (status, result) = match payload.status.as_str() {
+        "claimed" | "running"
+            if http_status == 202 && payload.code.is_none() && payload.result.is_none() =>
+        {
+            (ContainerOperationStatus::InFlight, None)
+        }
+        "completed"
+            if (200..=299).contains(&http_status)
+                && http_status != 202
+                && payload.code.is_none() =>
+        {
+            let result = payload
+                .result
+                .map(|result| result_manifest(result, envelope))
+                .transpose()?;
+            if (envelope.operation_kind == "health_probe") != result.is_none() {
+                return Err("contract_mismatch");
+            }
+            (ContainerOperationStatus::Completed, result)
+        }
+        "failed"
+            if (400..=599).contains(&http_status) && code_valid && payload.result.is_none() =>
+        {
+            (ContainerOperationStatus::Failed, None)
+        }
+        "recovery_required" if http_status == 202 && code_valid => (
+            ContainerOperationStatus::RecoveryRequired,
+            payload
+                .result
+                .map(|result| result_manifest(result, envelope))
+                .transpose()?,
+        ),
+        _ => return Err("contract_mismatch"),
+    };
+    Ok(ContainerOperationOutcome {
+        status,
+        http_status,
+        code: payload.code,
+        result,
+    })
+}
+
+fn result_manifest(
+    result: ControllerOperationResult,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerArtifactManifest, &'static str> {
+    let manifest = ContainerArtifactManifest {
+        object_key: result.object_key,
+        object_version: result.object_version,
+        sha256: result.sha256,
+        size: result.size,
+        content_type: result.content_type,
+    };
+    validate_container_artifact_manifest(&manifest).map_err(|_| "contract_mismatch")?;
+    let expected_key = format!(
+        "container-results/v1/{}/{}/{}",
+        envelope.operation_id, envelope.owner_generation, manifest.sha256
+    );
+    if manifest.object_key != expected_key {
+        return Err("contract_mismatch");
+    }
+    Ok(manifest)
+}
+
+fn classify_operation_error(
+    http_status: u16,
+    payload: &ControllerOperationErrorPayload,
+) -> &'static str {
+    match (http_status, payload.error.as_str(), payload.retryable) {
+        (403, _, _) => "authority_rejected",
+        (404, "route_not_found", _) => "route_not_found",
+        (409, "stale_shard_fence" | "admission_authority_mismatch", _) => {
+            "operation_fence_rejected"
+        }
+        (409, _, _) => "operation_conflict",
+        (426, _, _) => "protocol_rejected",
+        (503, "container_capacity_exhausted", Some(true)) => "capacity_exhausted",
+        (503, _, _) => "controller_unavailable",
+        _ => "unexpected_status",
+    }
+}
+
+fn validate_operation_envelope_at(
+    envelope: &ContainerOperationEnvelope,
+    now: i64,
+) -> Result<(), &'static str> {
+    let input = ContainerArtifactManifest {
+        object_key: envelope.input.request_object_key.clone(),
+        object_version: envelope.input.object_version.clone(),
+        sha256: envelope.input.sha256.clone(),
+        size: envelope.input.size,
+        content_type: envelope.input.content_type.clone(),
+    };
+    let expected_input_key = format!(
+        "container-inputs/v1/{}/{}/{}",
+        envelope.operation_id, envelope.owner_generation, envelope.input.sha256
+    );
+    if envelope.input.mode != "r2"
+        || envelope.protocol_version == 0
+        || envelope.protocol_version > 255
+        || !valid_identifier(&envelope.operation_id, 128)
+        || !valid_operation_kind(&envelope.operation_kind)
+        || envelope.owner_generation <= 0
+        || envelope.owner_generation > i64::from(i32::MAX)
+        || envelope.owner_lease_expires_at <= now
+        || envelope.owner_lease_expires_at > i64::from(i32::MAX)
+        || envelope.execution_deadline_at <= now
+        || envelope.execution_deadline_at >= envelope.owner_lease_expires_at
+        || envelope.execution_deadline_at - now > 300
+        || !valid_identifier(&envelope.provider_operation_id, 128)
+        || !valid_sha256(&envelope.admission_sha256)
+        || !valid_identifier(&envelope.trace_id, 128)
+        || validate_container_artifact_manifest(&input).is_err()
+        || envelope.input.request_object_key != expected_input_key
+        || envelope.shard.contract_version != 1
+        || envelope.shard.ring_generation == 0
+        || envelope.shard.shard_count == 0
+        || envelope.shard.shard_count > 1_024
+        || envelope.shard.shard_index >= envelope.shard.shard_count
+        || envelope.shard.instance_name
+            != format!("cinatoken-relay-shard-v1-{:04}", envelope.shard.shard_index)
+    {
+        return Err("invalid_operation_envelope");
+    }
+    Ok(())
+}
+
+fn valid_identifier(value: &str, max_len: usize) -> bool {
+    value == value.trim()
+        && !value.is_empty()
+        && value.len() <= max_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn valid_operation_kind(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b':' | b'-')
+        })
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_response_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b':' | b'-')
+        })
 }
 
 fn readiness_response_matches(
@@ -548,6 +862,19 @@ fn readiness_request(token: &str, body: &[u8]) -> worker::Result<Request> {
     Request::new_with_init(READINESS_URL, &init)
 }
 
+fn operation_request(token: &str, body: &[u8]) -> worker::Result<Request> {
+    let mut headers = Headers::new();
+    headers.set("accept", "application/json")?;
+    headers.set("content-type", "application/json")?;
+    headers.set(AUTHORITY_HEADER, token)?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(js_sys::Uint8Array::from(body).buffer().into()))
+        .with_redirect(RequestRedirect::Error);
+    Request::new_with_init(OPERATION_URL, &init)
+}
+
 fn status_matches(
     payload: &ControllerStatusPayload,
     authority: &AuthorityConfig,
@@ -676,6 +1003,32 @@ mod tests {
         }
     }
 
+    fn test_operation() -> ContainerOperationEnvelope {
+        ContainerOperationEnvelope {
+            protocol_version: 1,
+            operation_id: "relayreserve-test".to_string(),
+            operation_kind: "relay_openai".to_string(),
+            owner_generation: 2,
+            owner_lease_expires_at: 1_800_000_200,
+            execution_deadline_at: 1_800_000_120,
+            provider_operation_id: "provider-op-1".to_string(),
+            admission_sha256: "a".repeat(64),
+            input: ContainerOperationInput {
+                mode: "r2",
+                sha256: "b".repeat(64),
+                size: 128,
+                content_type: "application/json".to_string(),
+                request_object_key: format!(
+                    "container-inputs/v1/relayreserve-test/2/{}",
+                    "b".repeat(64)
+                ),
+                object_version: "version-input-1".to_string(),
+            },
+            shard: test_shard(),
+            trace_id: "trace-op-1".to_string(),
+        }
+    }
+
     fn idle_readiness() -> PersistedReadinessSnapshot {
         PersistedReadinessSnapshot {
             generation: 0,
@@ -746,6 +1099,111 @@ mod tests {
         .unwrap();
         assert_eq!(claims.dispatch_id, "readiness-test-1");
         assert_ne!(claims.body_sha256, body_sha256(&[]));
+    }
+
+    #[test]
+    fn operation_envelope_is_strictly_fenced_before_signing() {
+        let valid = test_operation();
+        validate_operation_envelope_at(&valid, 1_800_000_000).unwrap();
+
+        let mut invalid = valid.clone();
+        invalid.execution_deadline_at = invalid.owner_lease_expires_at;
+        assert_eq!(
+            validate_operation_envelope_at(&invalid, 1_800_000_000),
+            Err("invalid_operation_envelope")
+        );
+        invalid = valid.clone();
+        invalid.input.object_version = " version-input-1".to_string();
+        assert!(validate_operation_envelope_at(&invalid, 1_800_000_000).is_err());
+        invalid = valid;
+        invalid.shard.instance_name = "cinatoken-relay-shard-v1-0004".to_string();
+        assert!(validate_operation_envelope_at(&invalid, 1_800_000_000).is_err());
+    }
+
+    #[test]
+    fn operation_outcome_requires_exact_identity_and_terminal_shape() {
+        let envelope = test_operation();
+        let in_flight = ControllerOperationPayload {
+            protocol_version: 1,
+            operation_id: envelope.operation_id.clone(),
+            status: "running".to_string(),
+            code: None,
+            trace_id: envelope.trace_id.clone(),
+            result: None,
+        };
+        assert_eq!(
+            operation_outcome(202, in_flight, &envelope).unwrap().status,
+            ContainerOperationStatus::InFlight
+        );
+        let completed = ControllerOperationPayload {
+            protocol_version: 1,
+            operation_id: envelope.operation_id.clone(),
+            status: "completed".to_string(),
+            code: None,
+            trace_id: envelope.trace_id.clone(),
+            result: Some(ControllerOperationResult {
+                object_key: format!(
+                    "container-results/v1/relayreserve-test/2/{}",
+                    "c".repeat(64)
+                ),
+                object_version: "version-result-1".to_string(),
+                sha256: "c".repeat(64),
+                size: 256,
+                content_type: "application/json".to_string(),
+            }),
+        };
+        let outcome = operation_outcome(200, completed.clone(), &envelope).unwrap();
+        assert_eq!(outcome.status, ContainerOperationStatus::Completed);
+        assert!(outcome.result.is_some());
+
+        let mut forged = completed.clone();
+        forged.trace_id = "trace-forged".to_string();
+        assert_eq!(
+            operation_outcome(200, forged, &envelope),
+            Err("contract_mismatch")
+        );
+        let mut malformed = completed;
+        malformed.status = "failed".to_string();
+        malformed.code = Some("provider_failed".to_string());
+        assert_eq!(
+            operation_outcome(502, malformed, &envelope),
+            Err("contract_mismatch")
+        );
+
+        let recovery = ControllerOperationPayload {
+            protocol_version: 1,
+            operation_id: envelope.operation_id.clone(),
+            status: "recovery_required".to_string(),
+            code: Some("container_execution_ambiguous".to_string()),
+            trace_id: envelope.trace_id.clone(),
+            result: None,
+        };
+        let recovery = operation_outcome(202, recovery, &envelope).unwrap();
+        assert_eq!(recovery.status, ContainerOperationStatus::RecoveryRequired);
+    }
+
+    #[test]
+    fn controller_errors_preserve_capacity_and_fence_classification() {
+        assert_eq!(
+            classify_operation_error(
+                503,
+                &ControllerOperationErrorPayload {
+                    error: "container_capacity_exhausted".to_string(),
+                    retryable: Some(true),
+                },
+            ),
+            "capacity_exhausted"
+        );
+        assert_eq!(
+            classify_operation_error(
+                409,
+                &ControllerOperationErrorPayload {
+                    error: "admission_authority_mismatch".to_string(),
+                    retryable: None,
+                },
+            ),
+            "operation_fence_rejected"
+        );
     }
 
     #[test]

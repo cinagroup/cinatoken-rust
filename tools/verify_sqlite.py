@@ -36,6 +36,7 @@ REQUIRED_TABLES = [
     "relay_billing_reservations",
     "relay_billing_recovery_state",
     "relay_billing_finalization_incidents",
+    "relay_container_operations",
     "task_billing_intents",
     "task_billing_reconciliation_events",
     "task_poll_lease_control",
@@ -240,6 +241,41 @@ REQUIRED_COLUMNS = {
         "last_deferred",
         "updated_at",
     },
+    "relay_container_operations": {
+        "reservation_key",
+        "operation_id",
+        "owner_generation",
+        "owner_lease_expires_at",
+        "channel_id",
+        "selected_group",
+        "operation_kind",
+        "provider_operation_id",
+        "admission_sha256",
+        "protocol_version",
+        "shard_contract_version",
+        "ring_generation",
+        "shard_count",
+        "shard_index",
+        "instance_name",
+        "execution_deadline_at",
+        "input_mode",
+        "input_object_key",
+        "input_object_version",
+        "input_sha256",
+        "input_size",
+        "input_content_type",
+        "trace_id",
+        "status",
+        "response_status",
+        "response_code",
+        "result_object_key",
+        "result_object_version",
+        "result_sha256",
+        "result_size",
+        "result_content_type",
+        "created_at",
+        "updated_at",
+    },
     "relay_billing_finalization_incidents": {
         "incident_id",
         "event_id",
@@ -367,6 +403,11 @@ REQUIRED_INDEXES = {
         "idx_relay_billing_finalization_incidents_event": True,
         "idx_relay_billing_finalization_incidents_status": False,
     },
+    "relay_container_operations": {
+        "idx_relay_container_operations_recovery": False,
+        "idx_relay_container_operations_shard": False,
+        "idx_relay_container_operations_updated": False,
+    },
     "task_billing_intents": {
         "idx_task_billing_intents_status_lease": False,
         "idx_task_billing_intents_user_status": False,
@@ -416,6 +457,8 @@ def main() -> int:
     lease_guard_verified = False
     segment_guard_verified = False
     relay_owner_guard_verified = False
+    relay_container_operation_verified = False
+    relay_container_operation_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -435,6 +478,8 @@ def main() -> int:
         segment_guard_verified = True
         verify_relay_owner_migration_guard(schema_paths)
         relay_owner_guard_verified = True
+        verify_relay_container_operation_rollout(schema_paths)
+        relay_container_operation_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -456,6 +501,8 @@ def main() -> int:
     if not args.schema:
         verify_flat_billing_intent_guard(conn)
         flat_intent_guard_verified = True
+        verify_relay_container_operation(conn)
+        relay_container_operation_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
@@ -511,6 +558,10 @@ def main() -> int:
         message += " + 0021 bridge-segment guard"
     if relay_owner_guard_verified:
         message += " + 0026 relay-owner drain guard"
+    if relay_container_operation_verified:
+        message += " + 0040 relay Container operation authority"
+    if relay_container_operation_rollout_verified:
+        message += " + 0040 default-inert expand rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -571,6 +622,232 @@ def trigger_exists(conn: sqlite3.Connection, trigger: str) -> bool:
         (trigger,),
     ).fetchone()
     return row is not None
+
+
+def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
+    for trigger in (
+        "relay_container_operation_identity_immutable_guard",
+        "relay_container_operation_lifecycle_guard",
+    ):
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0040 relay Container operation trigger missing: {trigger}")
+
+    recovery_index_sql = sqlite_object_sql(
+        conn, "index", "idx_relay_container_operations_recovery"
+    )
+    if recovery_index_sql is None or "WHERE status IN" not in recovery_index_sql:
+        raise SystemExit("0040 recovery index must remain partial and status-bounded")
+
+    def insert_operation(
+        reservation_key: str | None,
+        provider_operation_id: str,
+        shard_index: int,
+        **overrides: object,
+    ) -> None:
+        values: dict[str, object] = {
+            "reservation_key": reservation_key,
+            "operation_id": reservation_key,
+            "owner_generation": 2,
+            "owner_lease_expires_at": 5100,
+            "channel_id": 40,
+            "selected_group": "default",
+            "operation_kind": "relay_chat",
+            "provider_operation_id": provider_operation_id,
+            "admission_sha256": "a" * 64,
+            "protocol_version": 1,
+            "shard_contract_version": 1,
+            "ring_generation": 7,
+            "shard_count": 8,
+            "shard_index": shard_index,
+            "instance_name": f"cinatoken-relay-shard-v1-{shard_index:04d}",
+            "execution_deadline_at": 5000,
+            "input_mode": "r2",
+            "input_object_key": (
+                f"container-inputs/v1/{reservation_key}/2/{'b' * 64}"
+            ),
+            "input_object_version": "r2-version-1",
+            "input_sha256": "b" * 64,
+            "input_size": 128,
+            "input_content_type": "application/json",
+            "trace_id": f"trace:{reservation_key}",
+            "status": "prepared",
+            "response_status": None,
+            "response_code": None,
+            "result_object_key": None,
+            "result_object_version": None,
+            "result_sha256": None,
+            "result_size": None,
+            "result_content_type": None,
+            "created_at": 4000,
+            "updated_at": 4000,
+        }
+        values.update(overrides)
+        conn.execute(
+            """
+            INSERT INTO relay_container_operations (
+              reservation_key, operation_id,
+              owner_generation, owner_lease_expires_at, channel_id, selected_group,
+              operation_kind, provider_operation_id, admission_sha256,
+              protocol_version, shard_contract_version,
+              ring_generation, shard_count, shard_index,
+              instance_name, execution_deadline_at, input_mode, input_object_key,
+              input_object_version, input_sha256, input_size,
+              input_content_type, trace_id, status, response_status, response_code,
+              result_object_key, result_object_version, result_sha256,
+              result_size, result_content_type, created_at, updated_at
+            ) VALUES (
+              :reservation_key, :operation_id,
+              :owner_generation, :owner_lease_expires_at, :channel_id, :selected_group,
+              :operation_kind, :provider_operation_id, :admission_sha256,
+              :protocol_version, :shard_contract_version,
+              :ring_generation, :shard_count, :shard_index,
+              :instance_name, :execution_deadline_at, :input_mode, :input_object_key,
+              :input_object_version, :input_sha256, :input_size,
+              :input_content_type, :trace_id, :status, :response_status, :response_code,
+              :result_object_key, :result_object_version, :result_sha256,
+              :result_size, :result_content_type, :created_at, :updated_at
+            )
+            """,
+            values,
+        )
+
+    insert_operation("0040-operation", "provider:0040-operation", 3)
+    state = conn.execute(
+        "SELECT status, response_status, response_code, result_object_key "
+        "FROM relay_container_operations WHERE reservation_key = '0040-operation'"
+    ).fetchone()
+    if state != ("prepared", None, None, None):
+        raise SystemExit(f"0040 prepared operation shape is not default-inert: {state}")
+
+    expect_integrity_error(
+        lambda: insert_operation(
+            "0040-provider-duplicate", "provider:0040-operation", 4
+        ),
+        "0040 provider operation identity must be globally unique",
+        "UNIQUE constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_operation(None, "provider:0040-null-key", 4),
+        "0040 reservation identity must reject a null primary key",
+        "NOT NULL constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_operation(
+            "0040-operation-id-conflict",
+            "provider:0040-operation-id-conflict",
+            4,
+            operation_id="0040-another-operation",
+        ),
+        "0040 operation identity must equal its reservation identity",
+        "CHECK constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_operation(
+            "0040-text-owner",
+            "provider:0040-text-owner",
+            4,
+            owner_generation="not-an-integer",
+        ),
+        "0040 integer authority must reject text affinity bypasses",
+        "CHECK constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_operation(
+            "0040-null-terminal",
+            "provider:0040-null-terminal",
+            4,
+            status="completed",
+        ),
+        "0040 terminal rows must reject nullable outcome fields",
+        "CHECK constraint failed",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations SET reservation_key = '0040-rewritten' "
+            "WHERE reservation_key = '0040-operation'"
+        ),
+        "0040 operation identity must be immutable",
+        "relay container operation identity is immutable",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations SET updated_at = 3999 "
+            "WHERE reservation_key = '0040-operation'"
+        ),
+        "0040 operation timestamps must remain monotonic",
+        "relay container operation lifecycle transition is invalid",
+    )
+
+    conn.execute(
+        "UPDATE relay_container_operations "
+        "SET status = 'dispatched', updated_at = 4100 "
+        "WHERE reservation_key = '0040-operation'"
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations "
+            "SET status = 'completed', response_status = 200, updated_at = 4200 "
+            "WHERE reservation_key = '0040-operation'"
+        ),
+        "0040 completion must require an exact result object",
+        "CHECK constraint failed",
+    )
+
+    conn.execute(
+        """
+        UPDATE relay_container_operations
+        SET status = 'completed', response_status = 200,
+            result_object_key = 'container-results/v1/0040-operation/2/' || ?,
+            result_object_version = 'r2-result-version-1',
+            result_sha256 = ?, result_size = 256,
+            result_content_type = 'application/json', updated_at = 4300
+        WHERE reservation_key = '0040-operation'
+        """,
+        ("c" * 64, "c" * 64),
+    )
+    completed = conn.execute(
+        "SELECT status, response_status, result_object_version, result_sha256 "
+        "FROM relay_container_operations WHERE reservation_key = '0040-operation'"
+    ).fetchone()
+    if completed != ("completed", 200, "r2-result-version-1", "c" * 64):
+        raise SystemExit(f"0040 completed operation shape was not persisted: {completed}")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations "
+            "SET status = 'prepared', response_status = NULL, "
+            "result_object_key = NULL, result_object_version = NULL, "
+            "result_sha256 = NULL, result_size = NULL, result_content_type = NULL, "
+            "updated_at = 4400 WHERE reservation_key = '0040-operation'"
+        ),
+        "0040 terminal operations must not reactivate",
+        "relay container operation lifecycle transition is invalid",
+    )
+
+    insert_operation("0040-recovery", "provider:0040-recovery", 4)
+    conn.execute(
+        "UPDATE relay_container_operations "
+        "SET status = 'dispatched', updated_at = 4100 "
+        "WHERE reservation_key = '0040-recovery'"
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_operations
+        SET status = 'recovery_required', response_status = 202,
+            response_code = 'container_execution_ambiguous', updated_at = 4200
+        WHERE reservation_key = '0040-recovery'
+        """
+    )
+    recovery = conn.execute(
+        "SELECT status, response_status, response_code, result_object_key "
+        "FROM relay_container_operations WHERE reservation_key = '0040-recovery'"
+    ).fetchone()
+    if recovery != (
+        "recovery_required",
+        202,
+        "container_execution_ambiguous",
+        None,
+    ):
+        raise SystemExit(f"0040 recovery operation shape was not persisted: {recovery}")
 
 
 def verify_flat_billing_intent_guard(conn: sqlite3.Connection) -> None:
@@ -2267,6 +2544,76 @@ def verify_relay_owner_migration_guard(schema_paths: list[Path]) -> None:
             raise SystemExit("0026 migration did not normalize legacy terminal owner")
         return
     raise SystemExit("0026 migration must reject active relay reservations")
+
+
+def verify_relay_container_operation_rollout(schema_paths: list[Path]) -> None:
+    operation_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0040_relay_container_operations.sql"
+        ),
+        None,
+    )
+    if operation_path is None:
+        raise SystemExit("0040 relay Container operation migration not found")
+    operation_index = schema_paths.index(operation_path)
+    if operation_index == 0 or schema_paths[operation_index - 1].name != (
+        "0039_task_submit_operation_enforce.sql"
+    ):
+        raise SystemExit("0040 must immediately follow the 0039 Task enforcement boundary")
+    if operation_index != len(schema_paths) - 1:
+        raise SystemExit("0040 must be the current D1 migration head")
+
+    operation_sql = operation_path.read_text(encoding="utf-8")
+    for fragment in (
+        "CREATE TABLE IF NOT EXISTS relay_container_operations",
+        "reservation_key TEXT PRIMARY KEY NOT NULL",
+        "operation_id TEXT NOT NULL UNIQUE",
+        "owner_lease_expires_at INTEGER NOT NULL",
+        "provider_operation_id TEXT NOT NULL UNIQUE",
+        "shard_contract_version INTEGER NOT NULL",
+        "input_mode TEXT NOT NULL",
+        "trace_id TEXT NOT NULL",
+        "CHECK (operation_id = reservation_key)",
+        "idx_relay_container_operations_recovery",
+        "idx_relay_container_operations_shard",
+        "idx_relay_container_operations_updated",
+        "relay_container_operation_identity_immutable_guard",
+        "relay_container_operation_lifecycle_guard",
+    ):
+        if fragment not in operation_sql:
+            raise SystemExit(f"0040 operation authority contract missing: {fragment}")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == operation_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+    conn.execute(
+        """
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, model_name, lease_expires_at, created_at, updated_at
+        ) VALUES ('0040-existing-reservation', 1, 'guard-model', 5000, 4000, 4000)
+        """
+    )
+    before = conn.execute(
+        "SELECT reservation_key, status, lease_expires_at, owner_generation "
+        "FROM relay_billing_reservations "
+        "WHERE reservation_key = '0040-existing-reservation'"
+    ).fetchone()
+    conn.executescript(operation_sql)
+    after = conn.execute(
+        "SELECT reservation_key, status, lease_expires_at, owner_generation "
+        "FROM relay_billing_reservations "
+        "WHERE reservation_key = '0040-existing-reservation'"
+    ).fetchone()
+    if after != before:
+        raise SystemExit(f"0040 expand migration changed billing authority data: {after}")
+    if conn.execute("SELECT COUNT(*) FROM relay_container_operations").fetchone() != (
+        0,
+    ):
+        raise SystemExit("0040 expand migration must not synthesize operation rows")
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

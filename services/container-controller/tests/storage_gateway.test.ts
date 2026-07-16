@@ -17,6 +17,7 @@ import {
   STORAGE_GATEWAY_ACTIONS,
   deriveR2ResultKey,
   handleStorageGatewayRequest,
+  requireD1OperationAdmission,
   type D1AdmissionGetGrant,
   type KvConfigGetGrant,
   type R2InputGetGrant,
@@ -55,6 +56,74 @@ function resultGrant(overrides: Partial<R2ResultPutGrant> = {}): R2ResultPutGran
     size: inputBytes.byteLength,
     content_type: "application/json",
     ...overrides,
+  };
+}
+
+function admissionGrant(overrides: Partial<D1AdmissionGetGrant> = {}): D1AdmissionGetGrant {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    action: STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET,
+    protocol_version: 1,
+    operation_id: "operation-op-123",
+    operation_kind: "chat_completion",
+    owner_generation: 7,
+    owner_lease_expires_at: now + 180,
+    execution_deadline_at: now + 120,
+    provider_operation_id: "provider-op-123",
+    admission_sha256: "b".repeat(64),
+    input: {
+      mode: "r2",
+      sha256: inputSha256,
+      size: inputBytes.byteLength,
+      content_type: "application/json",
+      request_object_key: `container-inputs/v1/operation-op-123/7/${inputSha256}`,
+      object_version: "version-1",
+    },
+    shard: {
+      contract_version: 1,
+      ring_generation: 3,
+      shard_count: 8,
+      shard_index: 3,
+      instance_name: "cinatoken-relay-shard-v1-0003",
+    },
+    trace_id: "trace-op-123",
+    ...overrides,
+  };
+}
+
+function admissionRow(grant: D1AdmissionGetGrant): Record<string, unknown> {
+  return {
+    reservation_key: "reservation-123",
+    operation_reservation_key: "reservation-123",
+    reservation_status: "reserved",
+    lease_expires_at: grant.owner_lease_expires_at + 30,
+    owner_deadline_at: grant.execution_deadline_at + 10,
+    reservation_owner_generation: grant.owner_generation,
+    reservation_channel_id: 11,
+    reservation_selected_group: "premium",
+    operation_id: grant.operation_id,
+    owner_generation: grant.owner_generation,
+    owner_lease_expires_at: grant.owner_lease_expires_at,
+    channel_id: 11,
+    selected_group: "premium",
+    operation_kind: grant.operation_kind,
+    provider_operation_id: grant.provider_operation_id,
+    admission_sha256: grant.admission_sha256,
+    protocol_version: grant.protocol_version,
+    shard_contract_version: grant.shard.contract_version,
+    ring_generation: grant.shard.ring_generation,
+    shard_count: grant.shard.shard_count,
+    shard_index: grant.shard.shard_index,
+    instance_name: grant.shard.instance_name,
+    execution_deadline_at: grant.execution_deadline_at,
+    input_mode: grant.input.mode,
+    input_object_key: grant.input.request_object_key,
+    input_object_version: grant.input.object_version,
+    input_sha256: grant.input.sha256,
+    input_size: grant.input.size,
+    input_content_type: grant.input.content_type,
+    trace_id: grant.trace_id,
+    operation_status: "prepared",
   };
 }
 
@@ -480,25 +549,18 @@ describe("container storage gateway", () => {
     expect(cancelled).toBe(true);
   });
 
-  test("uses a parameterized owner-fenced D1 query and exposes only the minimal snapshot", async () => {
+  test("joins 0040 by operation id, owner-fences it, and exposes only the active snapshot", async () => {
     const prepared: string[] = [];
     const bound: unknown[][] = [];
-    let currentValues: unknown[] = [];
-    const admission = {
-      status: "reserved",
-      lease_expires_at: 2_000_000_100,
-      owner_deadline_at: 2_000_000_000,
-      owner_generation: 7,
-    };
+    const grant = admissionGrant();
+    let row: Record<string, unknown> | null = admissionRow(grant);
     const statement = {
       bind(...values: unknown[]) {
-        currentValues = values;
         bound.push(values);
         return statement;
       },
       async first<T>() {
-        if (currentValues[1] !== 7) return null;
-        return { ...admission } as T;
+        return row === null ? null : ({ ...row } as T);
       },
     };
     const database = {
@@ -507,11 +569,6 @@ describe("container storage gateway", () => {
         return statement;
       },
     } as unknown as Pick<D1Database, "prepare">;
-    const grant: D1AdmissionGetGrant = {
-      action: STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET,
-      operation_id: "op-123",
-      owner_generation: 7,
-    };
     const request = () => new Request(`https://${D1_ADMISSION_HOST}${D1_ADMISSION_PATH}`);
     const env = enabledEnv({ CONTAINER_STORAGE_ADMISSION_DB: database });
 
@@ -519,33 +576,158 @@ describe("container storage gateway", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       status: "reserved",
-      lease_expires_at: 2_000_000_100,
-      owner_deadline_at: 2_000_000_000,
+      operation_status: "prepared",
+      lease_expires_at: row?.lease_expires_at,
+      owner_deadline_at: row?.owner_deadline_at,
       owner_generation: 7,
     });
-    expect(prepared[0]).toContain("FROM relay_billing_reservations");
-    expect(prepared[0]).toContain("reservation_key = ?1 AND owner_generation = ?2");
-    expect(prepared[0]).not.toMatch(/user_id|quota|channel_id/i);
+    expect(prepared[0]).toContain("FROM relay_container_operations AS operation");
+    expect(prepared[0]).toContain("JOIN relay_billing_reservations AS reservation");
+    expect(prepared[0]).toContain("operation.operation_id = ?1");
+    expect(prepared[0]).toContain("operation.owner_generation = ?2");
+    expect(prepared[0]).toContain("reservation.owner_generation = ?2");
     expect(bound[0]).toEqual([grant.operation_id, grant.owner_generation]);
 
-    const fenced = await handleStorageGatewayRequest(
-      env,
-      request(),
-      { ...grant, owner_generation: 8 },
-    );
-    expect(fenced.status).toBe(404);
-    expect(await errorCode(fenced)).toBe("admission_snapshot_not_found");
-    expect(bound[1]).toEqual([grant.operation_id, 8]);
-
-    admission.status = "refunded";
+    row = { ...admissionRow(grant), reservation_status: "refunded" };
     const terminal = await handleStorageGatewayRequest(env, request(), grant);
     expect(terminal.status).toBe(409);
     expect(await errorCode(terminal)).toBe("admission_not_reserved");
 
-    admission.status = "reserved";
-    admission.owner_deadline_at = 1;
+    row = { ...admissionRow(grant), owner_deadline_at: 1 };
     const expired = await handleStorageGatewayRequest(env, request(), grant);
     expect(expired.status).toBe(409);
     expect(await errorCode(expired)).toBe("admission_lease_expired");
+
+    row = null;
+    const missing = await handleStorageGatewayRequest(env, request(), grant);
+    expect(missing.status).toBe(404);
+    expect(await errorCode(missing)).toBe("admission_snapshot_not_found");
+  });
+
+  test("rejects every immutable 0040 authority field mismatch", async () => {
+    const grant = admissionGrant();
+    let row = admissionRow(grant);
+    const statement = {
+      bind() {
+        return statement;
+      },
+      async first<T>() {
+        return { ...row } as T;
+      },
+    };
+    const database = {
+      prepare() {
+        return statement;
+      },
+    } as unknown as Pick<D1Database, "prepare">;
+    const env = enabledEnv({ CONTAINER_STORAGE_ADMISSION_DB: database });
+    const request = () => new Request(`https://${D1_ADMISSION_HOST}${D1_ADMISSION_PATH}`);
+    const mismatches: Array<[string, unknown]> = [
+      ["operation_reservation_key", "reservation-other"],
+      ["reservation_owner_generation", 8],
+      ["reservation_channel_id", 12],
+      ["reservation_selected_group", "default"],
+      ["operation_id", "operation-other"],
+      ["owner_generation", 8],
+      ["owner_lease_expires_at", grant.owner_lease_expires_at + 1],
+      ["operation_kind", "responses"],
+      ["provider_operation_id", "provider-other"],
+      ["admission_sha256", "c".repeat(64)],
+      ["protocol_version", 2],
+      ["ring_generation", 4],
+      ["shard_count", 16],
+      ["execution_deadline_at", grant.execution_deadline_at + 1],
+      ["input_object_key", "container-inputs/v1/op-other/input.json"],
+      ["input_object_version", "version-2"],
+      ["input_sha256", "d".repeat(64)],
+      ["input_size", inputBytes.byteLength + 1],
+      ["input_content_type", "application/octet-stream"],
+      ["trace_id", "trace-other"],
+    ];
+
+    for (const [field, value] of mismatches) {
+      row = { ...admissionRow(grant), [field]: value };
+      const response = await handleStorageGatewayRequest(env, request(), grant);
+      expect(response.status, field).toBe(409);
+      expect(await errorCode(response), field).toBe("admission_authority_mismatch");
+    }
+
+    row = {
+      ...admissionRow(grant),
+      shard_index: 4,
+      instance_name: "cinatoken-relay-shard-v1-0004",
+    };
+    const shardIndexMismatch = await handleStorageGatewayRequest(env, request(), grant);
+    expect(shardIndexMismatch.status).toBe(409);
+    expect(await errorCode(shardIndexMismatch)).toBe("admission_authority_mismatch");
+
+    for (const [field, value] of [
+      ["shard_contract_version", 2],
+      ["instance_name", "cinatoken-relay-shard-v1-0004"],
+      ["input_mode", "inline"],
+    ] as const) {
+      row = { ...admissionRow(grant), [field]: value };
+      const invalid = await handleStorageGatewayRequest(env, request(), grant);
+      expect(invalid.status, field).toBe(502);
+      expect(await errorCode(invalid), field).toBe("admission_snapshot_invalid");
+    }
+  });
+
+  test("rejects terminal operation authority and malformed D1 rows", async () => {
+    const grant = admissionGrant();
+    let row = { ...admissionRow(grant), operation_status: "completed" };
+    const statement = {
+      bind() {
+        return statement;
+      },
+      async first<T>() {
+        return { ...row } as T;
+      },
+    };
+    const database = {
+      prepare() {
+        return statement;
+      },
+    } as unknown as Pick<D1Database, "prepare">;
+    const env = enabledEnv({ CONTAINER_STORAGE_ADMISSION_DB: database });
+    const request = () => new Request(`https://${D1_ADMISSION_HOST}${D1_ADMISSION_PATH}`);
+
+    const terminal = await handleStorageGatewayRequest(env, request(), grant);
+    expect(terminal.status).toBe(409);
+    expect(await errorCode(terminal)).toBe("admission_operation_not_active");
+
+    row = { ...admissionRow(grant), channel_id: "11" };
+    const malformed = await handleStorageGatewayRequest(env, request(), grant);
+    expect(malformed.status).toBe(502);
+    expect(await errorCode(malformed)).toBe("admission_snapshot_invalid");
+  });
+
+  test("uses the same authoritative D1 check for the pre-execution envelope gate", async () => {
+    const grant = admissionGrant();
+    const { action: _action, ...envelope } = grant;
+    let row = admissionRow(grant);
+    const statement = {
+      bind() {
+        return statement;
+      },
+      async first<T>() {
+        return { ...row } as T;
+      },
+    };
+    const database = {
+      prepare() {
+        return statement;
+      },
+    } as unknown as Pick<D1Database, "prepare">;
+    const env = enabledEnv({ CONTAINER_STORAGE_ADMISSION_DB: database });
+    const now = Math.floor(Date.now() / 1000);
+
+    await expect(requireD1OperationAdmission(env, envelope, now)).resolves.toBeUndefined();
+
+    row = { ...admissionRow(grant), trace_id: "trace-conflict" };
+    await expect(requireD1OperationAdmission(env, envelope, now)).rejects.toMatchObject({
+      code: "admission_authority_mismatch",
+      status: 409,
+    });
   });
 });

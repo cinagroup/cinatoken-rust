@@ -1,3 +1,10 @@
+import {
+  ProtocolError,
+  type OperationEnvelope,
+  type OperationInput,
+  type OperationShard,
+} from "./protocol";
+
 export const R2_INPUT_HOST = "r2-input.cinatoken.internal";
 export const R2_RESULT_HOST = "r2-result.cinatoken.internal";
 export const KV_CONFIG_HOST = "kv-config.cinatoken.internal";
@@ -52,8 +59,17 @@ export interface KvConfigGetGrant {
 
 export interface D1AdmissionGetGrant {
   action: typeof STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET;
+  protocol_version: number;
   operation_id: string;
+  operation_kind: string;
   owner_generation: number;
+  owner_lease_expires_at: number;
+  execution_deadline_at: number;
+  provider_operation_id: string;
+  admission_sha256: string;
+  input: OperationInput;
+  shard: OperationShard;
+  trace_id: string;
 }
 
 export type StorageAccessGrant =
@@ -77,10 +93,37 @@ interface StorageRoute {
 }
 
 interface AdmissionSnapshotRow {
-  status: string;
+  reservation_key: string;
+  operation_reservation_key: string;
+  reservation_status: string;
   lease_expires_at: number;
   owner_deadline_at: number;
+  reservation_owner_generation: number;
+  reservation_channel_id: number;
+  reservation_selected_group: string;
+  operation_id: string;
   owner_generation: number;
+  owner_lease_expires_at: number;
+  channel_id: number;
+  selected_group: string;
+  operation_kind: string;
+  provider_operation_id: string;
+  admission_sha256: string;
+  protocol_version: number;
+  shard_contract_version: number;
+  ring_generation: number;
+  shard_count: number;
+  shard_index: number;
+  instance_name: string;
+  execution_deadline_at: number;
+  input_mode: string;
+  input_object_key: string;
+  input_object_version: string;
+  input_sha256: string;
+  input_size: number;
+  input_content_type: string;
+  trace_id: string;
+  operation_status: string;
 }
 
 const ROUTES: Record<StorageGatewayAction, StorageRoute> = {
@@ -107,9 +150,43 @@ const ROUTES: Record<StorageGatewayAction, StorageRoute> = {
 };
 
 const ADMISSION_SNAPSHOT_SQL = `
-SELECT status, lease_expires_at, owner_deadline_at, owner_generation
-FROM relay_billing_reservations
-WHERE reservation_key = ?1 AND owner_generation = ?2
+SELECT reservation.reservation_key,
+       operation.reservation_key AS operation_reservation_key,
+       reservation.status AS reservation_status,
+       reservation.lease_expires_at,
+       reservation.owner_deadline_at,
+       reservation.owner_generation AS reservation_owner_generation,
+       reservation.channel_id AS reservation_channel_id,
+       reservation.selected_group AS reservation_selected_group,
+       operation.operation_id,
+       operation.owner_generation,
+       operation.owner_lease_expires_at,
+       operation.channel_id,
+       operation.selected_group,
+       operation.operation_kind,
+       operation.provider_operation_id,
+       operation.admission_sha256,
+       operation.protocol_version,
+       operation.shard_contract_version,
+       operation.ring_generation,
+       operation.shard_count,
+       operation.shard_index,
+       operation.instance_name,
+       operation.execution_deadline_at,
+       operation.input_mode,
+       operation.input_object_key,
+       operation.input_object_version,
+       operation.input_sha256,
+       operation.input_size,
+       operation.input_content_type,
+       operation.trace_id,
+       operation.status AS operation_status
+FROM relay_container_operations AS operation
+JOIN relay_billing_reservations AS reservation
+  ON reservation.reservation_key = operation.reservation_key
+WHERE operation.operation_id = ?1
+  AND operation.owner_generation = ?2
+  AND reservation.owner_generation = ?2
 LIMIT 1
 `.trim();
 
@@ -269,6 +346,45 @@ async function getD1Admission(
   env: StorageGatewayEnvironment,
   grant: D1AdmissionGetGrant,
 ): Promise<Response> {
+  const row = await readD1Admission(env, grant, Math.floor(Date.now() / 1000));
+  return admissionResponse(row);
+}
+
+export async function requireD1OperationAdmission(
+  env: StorageGatewayEnvironment,
+  envelope: OperationEnvelope,
+  now = Math.floor(Date.now() / 1000),
+): Promise<void> {
+  const grant: D1AdmissionGetGrant = {
+    action: STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET,
+    protocol_version: envelope.protocol_version,
+    operation_id: envelope.operation_id,
+    operation_kind: envelope.operation_kind,
+    owner_generation: envelope.owner_generation,
+    owner_lease_expires_at: envelope.owner_lease_expires_at,
+    execution_deadline_at: envelope.execution_deadline_at,
+    provider_operation_id: envelope.provider_operation_id,
+    admission_sha256: envelope.admission_sha256,
+    input: envelope.input,
+    shard: envelope.shard,
+    trace_id: envelope.trace_id,
+  };
+  if (!isStorageAccessGrant(grant)) {
+    throw new ProtocolError("admission_authority_mismatch", 409);
+  }
+  try {
+    await readD1Admission(env, grant, now);
+  } catch (error) {
+    if (error instanceof GatewayError) throw new ProtocolError(error.code, error.status);
+    throw new ProtocolError("admission_unavailable", 503);
+  }
+}
+
+async function readD1Admission(
+  env: StorageGatewayEnvironment,
+  grant: D1AdmissionGetGrant,
+  now: number,
+): Promise<AdmissionSnapshotRow> {
   const database = env.CONTAINER_STORAGE_ADMISSION_DB;
   if (database === undefined) throw new GatewayError("storage_binding_unavailable", 503);
 
@@ -277,31 +393,120 @@ async function getD1Admission(
     .bind(grant.operation_id, grant.owner_generation)
     .first<AdmissionSnapshotRow>();
   if (row === null) throw new GatewayError("admission_snapshot_not_found", 404);
-  if (
-    typeof row.status !== "string" ||
-    !isNonNegativeInteger(row.lease_expires_at) ||
-    !isNonNegativeInteger(row.owner_deadline_at) ||
-    row.owner_generation !== grant.owner_generation
-  ) {
+  if (!validAdmissionSnapshot(row)) {
     throw new GatewayError("admission_snapshot_invalid", 502);
   }
-  if (row.status !== "reserved") {
+  if (row.reservation_status !== "reserved") {
     throw new GatewayError("admission_not_reserved", 409);
   }
-  const now = Math.floor(Date.now() / 1000);
+  if (row.operation_status !== "prepared" && row.operation_status !== "dispatched") {
+    throw new GatewayError("admission_operation_not_active", 409);
+  }
   if (
     row.lease_expires_at <= now ||
     row.owner_deadline_at <= now ||
-    row.owner_deadline_at > row.lease_expires_at
+    row.owner_deadline_at > row.lease_expires_at ||
+    row.owner_lease_expires_at <= now ||
+    row.execution_deadline_at <= now
   ) {
     throw new GatewayError("admission_lease_expired", 409);
   }
+  if (!admissionAuthorityMatches(row, grant)) {
+    throw new GatewayError("admission_authority_mismatch", 409);
+  }
+  return row;
+}
+
+function admissionResponse(row: AdmissionSnapshotRow): Response {
   return jsonResponse({
-    status: row.status,
+    status: row.reservation_status,
+    operation_status: row.operation_status,
     lease_expires_at: row.lease_expires_at,
     owner_deadline_at: row.owner_deadline_at,
     owner_generation: row.owner_generation,
   });
+}
+
+function validAdmissionSnapshot(row: AdmissionSnapshotRow): boolean {
+  return (
+    validIdentifier(row.reservation_key, 128) &&
+    validIdentifier(row.operation_reservation_key, 128) &&
+    typeof row.reservation_status === "string" &&
+    isPositiveInteger(row.lease_expires_at) &&
+    isPositiveInteger(row.owner_deadline_at) &&
+    isPositiveInteger(row.reservation_owner_generation) &&
+    isPositiveInteger(row.reservation_channel_id) &&
+    typeof row.reservation_selected_group === "string" &&
+    row.reservation_selected_group.length >= 1 &&
+    row.reservation_selected_group.length <= 64 &&
+    validIdentifier(row.operation_id, 128) &&
+    isPositiveInteger(row.owner_generation) &&
+    isPositiveInteger(row.owner_lease_expires_at) &&
+    isPositiveInteger(row.channel_id) &&
+    typeof row.selected_group === "string" &&
+    row.selected_group.length >= 1 &&
+    row.selected_group.length <= 64 &&
+    typeof row.operation_kind === "string" &&
+    row.operation_kind.length >= 1 &&
+    row.operation_kind.length <= 64 &&
+    OPERATION_KIND.test(row.operation_kind) &&
+    validIdentifier(row.provider_operation_id, 128) &&
+    validSha256(row.admission_sha256) &&
+    isPositiveInteger(row.protocol_version) &&
+    row.protocol_version <= 255 &&
+    row.shard_contract_version === 1 &&
+    isPositiveInteger(row.ring_generation) &&
+    isPositiveInteger(row.shard_count) &&
+    row.shard_count <= 1024 &&
+    isNonNegativeInteger(row.shard_index) &&
+    row.shard_index < row.shard_count &&
+    validShardInstanceName(row.instance_name, row.shard_index) &&
+    isPositiveInteger(row.execution_deadline_at) &&
+    row.input_mode === "r2" &&
+    validStorageKey(row.input_object_key) &&
+    validIdentifier(row.input_object_version, 128) &&
+    validSha256(row.input_sha256) &&
+    isNonNegativeInteger(row.input_size) &&
+    row.input_size <= MAX_R2_OBJECT_BYTES &&
+    validContentType(row.input_content_type) &&
+    validIdentifier(row.trace_id, 128) &&
+    typeof row.operation_status === "string"
+  );
+}
+
+function admissionAuthorityMatches(
+  row: AdmissionSnapshotRow,
+  grant: D1AdmissionGetGrant,
+): boolean {
+  return (
+    row.reservation_key === row.operation_reservation_key &&
+    row.reservation_owner_generation === row.owner_generation &&
+    row.reservation_channel_id === row.channel_id &&
+    row.reservation_selected_group === row.selected_group &&
+    row.owner_generation === grant.owner_generation &&
+    row.operation_id === grant.operation_id &&
+    row.owner_lease_expires_at === grant.owner_lease_expires_at &&
+    row.owner_lease_expires_at <= row.lease_expires_at &&
+    row.execution_deadline_at <= row.owner_deadline_at &&
+    row.execution_deadline_at <= row.owner_lease_expires_at &&
+    row.operation_kind === grant.operation_kind &&
+    row.provider_operation_id === grant.provider_operation_id &&
+    row.admission_sha256 === grant.admission_sha256 &&
+    row.protocol_version === grant.protocol_version &&
+    row.shard_contract_version === grant.shard.contract_version &&
+    row.ring_generation === grant.shard.ring_generation &&
+    row.shard_count === grant.shard.shard_count &&
+    row.shard_index === grant.shard.shard_index &&
+    row.instance_name === grant.shard.instance_name &&
+    row.execution_deadline_at === grant.execution_deadline_at &&
+    row.input_mode === grant.input.mode &&
+    row.input_object_key === grant.input.request_object_key &&
+    row.input_object_version === grant.input.object_version &&
+    row.input_sha256 === grant.input.sha256 &&
+    row.input_size === grant.input.size &&
+    row.input_content_type === grant.input.content_type &&
+    row.trace_id === grant.trace_id
+  );
 }
 
 function isStorageAccessGrant(value: unknown): value is StorageAccessGrant {
@@ -345,13 +550,90 @@ function isStorageAccessGrant(value: unknown): value is StorageAccessGrant {
       );
     case STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET:
       return (
-        hasExactKeys(value, ["action", "operation_id", "owner_generation"]) &&
+        hasExactKeys(value, [
+          "action",
+          "protocol_version",
+          "operation_id",
+          "operation_kind",
+          "owner_generation",
+          "owner_lease_expires_at",
+          "execution_deadline_at",
+          "provider_operation_id",
+          "admission_sha256",
+          "input",
+          "shard",
+          "trace_id",
+        ]) &&
+    isPositiveInteger(value.protocol_version) &&
+    value.protocol_version <= 255 &&
         validIdentifier(value.operation_id, 128) &&
-        isPositiveInteger(value.owner_generation)
+        typeof value.operation_kind === "string" &&
+        value.operation_kind.length >= 1 &&
+        value.operation_kind.length <= 64 &&
+        OPERATION_KIND.test(value.operation_kind) &&
+        isPositiveInteger(value.owner_generation) &&
+        isPositiveInteger(value.owner_lease_expires_at) &&
+        isPositiveInteger(value.execution_deadline_at) &&
+        value.execution_deadline_at <= value.owner_lease_expires_at &&
+        validIdentifier(value.provider_operation_id, 128) &&
+        validSha256(value.admission_sha256) &&
+        validAdmissionInput(value.input) &&
+        validAdmissionShard(value.shard) &&
+        validIdentifier(value.trace_id, 128)
       );
     default:
       return false;
   }
+}
+
+function validAdmissionInput(value: unknown): value is OperationInput {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      "mode",
+      "sha256",
+      "size",
+      "content_type",
+      "request_object_key",
+      "object_version",
+    ]) &&
+    value.mode === "r2" &&
+    validSha256(value.sha256) &&
+    isNonNegativeInteger(value.size) &&
+    value.size <= MAX_R2_OBJECT_BYTES &&
+    validContentType(value.content_type) &&
+    validStorageKey(value.request_object_key) &&
+    validIdentifier(value.object_version, 128)
+  );
+}
+
+function validAdmissionShard(value: unknown): value is OperationShard {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      "contract_version",
+      "ring_generation",
+      "shard_count",
+      "shard_index",
+      "instance_name",
+    ]) &&
+    value.contract_version === 1 &&
+    isPositiveInteger(value.ring_generation) &&
+    isPositiveInteger(value.shard_count) &&
+    value.shard_count <= 1024 &&
+    isNonNegativeInteger(value.shard_index) &&
+    value.shard_index < value.shard_count &&
+    validShardInstanceName(value.instance_name, value.shard_index)
+  );
+}
+
+function validShardInstanceName(value: unknown, shardIndex: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 29 &&
+    value.length <= 64 &&
+    value === `cinatoken-relay-shard-v1-${shardIndex.toString().padStart(4, "0")}`
+  );
 }
 
 function matchesRoute(url: URL, route: StorageRoute): boolean {

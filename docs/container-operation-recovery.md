@@ -128,15 +128,29 @@ multiplexer instead of overriding its alarm handler.
 
 The Container storage gateway now returns admission state only when:
 
-- reservation_key equals the operation ID;
-- owner generation matches;
-- status is exactly reserved;
-- both billing lease and owner deadline are in the future;
-- owner deadline does not exceed the billing lease.
+- migration `0040_relay_container_operations.sql` contains the exact operation
+  ID and joins it to the same billing reservation key;
+- billing and operation owner generations, channel, and selected group match;
+- the billing reservation is `reserved` and the operation is `prepared` or
+  `dispatched`;
+- billing lease, owner lease, owner deadline, and execution deadline are live
+  and consistently ordered;
+- protocol, operation kind, provider operation ID, admission digest, full shard
+  fence, R2 input manifest, and trace ID equal the signed envelope byte for
+  byte.
 
-Terminal, expired, malformed, or stale-generation reservations fail closed.
-The query remains parameterized and does not expose user, quota, channel,
-credential, or pricing-expression fields.
+Terminal, expired, malformed, stale-generation, or partially migrated records
+fail closed before the DO claim or Container call. The query remains
+parameterized and does not expose user, quota, credential, or
+pricing-expression fields.
+
+The 0040 table is an expand-only, default-inert global authority. Its explicit
+type and null checks prevent SQLite affinity/nullable-CHECK bypasses;
+reservation and operation identity are equal and immutable; timestamps are
+monotonic; terminal rows cannot be reactivated. The Rust repository creates a
+row only through an `INSERT ... SELECT` CAS against the live selected billing
+owner. Exact retries match immutable identity even after lifecycle advancement;
+collisions never overwrite an existing provider operation.
 
 ## Edge Integration Order
 
@@ -173,10 +187,10 @@ never recompute group ratios, expression inputs, reservation policy, or quota.
 
 The following are still mandatory:
 
-- edge operation envelope and private Controller client;
-- immutable edge R2 input writer and verified response reader;
-- D1 operation/attempt index binding reservation, shard, admission digest,
-  provider operation ID, result, and recovery state;
+- wire the default-off Rust envelope/R2/Controller foundation into the narrow
+  non-streaming chat canary after all admission records are committed;
+- add generation-fenced global D1 `prepared -> dispatched -> terminal` CAS and
+  reconciliation between the global row and the per-shard DO ledger;
 - dispatch-before-send provider attempt journal and one retry owner;
 - deterministic local provider canary in the actual Linux image;
 - original status/header/body storage and byte replay;
@@ -196,12 +210,15 @@ Go/VPS remains authoritative and production remains **NO-GO**.
     node node_modules/typescript/bin/tsc -p services/container-controller/tsconfig.json --noEmit
     node node_modules/vitest/vitest.mjs run --config vitest.container-controller-protocol.config.mjs
     node node_modules/vitest/vitest.mjs run --config vitest.container-controller.config.mjs
+    python tools/verify_sqlite.py
     cargo test -p cinatoken-container-runtime
-    cargo test -p cinatoken-worker --lib container_scheduler
+    cargo test -p cinatoken-worker --lib container_
     cargo check -p cinatoken-worker --target wasm32-unknown-unknown
 
 The protocol suite must cover strict runtime outcomes, terminal manifest
 reconstruction, contradictory state, exact result matching, reserved/lease
-admission, and unknown/null rejection. Workerd must cover running timeout to
-recovery, result-required completion, exact result persistence across eviction,
-stale owner denial, and terminal storage denial.
+admission, full 0040 envelope mismatch, and unknown/null rejection. SQLite must
+execute null-primary-key, nullable-terminal, type-affinity, identity rewrite,
+timestamp rollback, and terminal-reactivation negatives. Workerd must cover
+running timeout to recovery, result-required completion, exact result
+persistence across eviction, stale owner denial, and terminal storage denial.

@@ -27,8 +27,10 @@ export interface OperationRow {
 }
 
 export interface StorageAccessGrant {
+  protocol_version: number;
   operation_id: string;
   owner_generation: number;
+  owner_lease_expires_at: number;
   operation_kind: string;
   provider_operation_id: string;
   admission_sha256: string;
@@ -41,6 +43,8 @@ export interface StorageAccessGrant {
     request_object_key: string | null;
     object_version: string | null;
   };
+  shard: OperationShard;
+  trace_id: string;
   result: StorageResultRecord | null;
 }
 
@@ -144,8 +148,10 @@ interface ReadinessRow {
 
 interface StorageOperationRow {
   [key: string]: SqlStorageValue;
+  protocol_version: number;
   operation_id: string;
   owner_generation: number;
+  owner_lease_expires_at: number;
   operation_kind: string;
   provider_operation_id: string;
   admission_sha256: string;
@@ -157,6 +163,12 @@ interface StorageOperationRow {
   input_content_type: string;
   request_object_key: string | null;
   object_version: string | null;
+  shard_contract_version: number;
+  ring_generation: number;
+  shard_count: number;
+  shard_index: number;
+  instance_name: string;
+  trace_id: string;
   result_object_key: string | null;
   result_object_version: string | null;
   result_sha256: string | null;
@@ -186,8 +198,10 @@ export class RelayShardLedger {
         updated_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS cinatoken_shard_operations (
+        protocol_version INTEGER NOT NULL DEFAULT 0,
         operation_id TEXT PRIMARY KEY,
         owner_generation INTEGER NOT NULL,
+        owner_lease_expires_at INTEGER NOT NULL DEFAULT 0,
         operation_kind TEXT NOT NULL DEFAULT '',
         provider_operation_id TEXT NOT NULL,
         admission_sha256 TEXT NOT NULL DEFAULT '',
@@ -204,6 +218,11 @@ export class RelayShardLedger {
         input_content_type TEXT NOT NULL DEFAULT '',
         request_object_key TEXT,
         object_version TEXT,
+        shard_contract_version INTEGER NOT NULL DEFAULT 0,
+        ring_generation INTEGER NOT NULL DEFAULT 0,
+        shard_count INTEGER NOT NULL DEFAULT 0,
+        shard_index INTEGER NOT NULL DEFAULT -1,
+        instance_name TEXT NOT NULL DEFAULT '',
         result_object_key TEXT,
         result_object_version TEXT,
         result_sha256 TEXT,
@@ -277,9 +296,13 @@ export class RelayShardLedger {
     const row = this.readStorageOperation(operationId);
     if (
       row === null ||
+      row.protocol_version < 1 ||
+      row.protocol_version > 255 ||
       row.owner_generation !== ownerGeneration ||
+      row.owner_lease_expires_at <= now ||
       row.status !== "running" ||
       row.deadline_at <= now ||
+      row.deadline_at > row.owner_lease_expires_at ||
       row.operation_kind.length < 1 ||
       row.operation_kind.length > 64 ||
       !/^[a-z0-9_:-]+$/.test(row.operation_kind) ||
@@ -306,7 +329,19 @@ export class RelayShardLedger {
           row.object_version === null ||
           row.object_version.length < 1 ||
           row.object_version.length > 128 ||
-          !/^[A-Za-z0-9._:-]+$/.test(row.object_version)))
+          !/^[A-Za-z0-9._:-]+$/.test(row.object_version))) ||
+      row.shard_contract_version !== 1 ||
+      row.ring_generation < 1 ||
+      row.shard_count < 1 ||
+      row.shard_count > 1024 ||
+      row.shard_index < 0 ||
+      row.shard_index >= row.shard_count ||
+      row.instance_name.length < 29 ||
+      row.instance_name.length > 64 ||
+      !/^[a-z0-9-]+$/.test(row.instance_name) ||
+      row.trace_id.length < 1 ||
+      row.trace_id.length > 128 ||
+      !/^[A-Za-z0-9._:-]+$/.test(row.trace_id)
     ) {
       throw new ProtocolError("storage_access_denied", 403);
     }
@@ -813,6 +848,8 @@ export class RelayShardLedger {
         .map(({ name }) => name),
     );
     const additions: ReadonlyArray<readonly [string, string]> = [
+      ["protocol_version", "INTEGER NOT NULL DEFAULT 0"],
+      ["owner_lease_expires_at", "INTEGER NOT NULL DEFAULT 0"],
       ["operation_kind", "TEXT NOT NULL DEFAULT ''"],
       ["admission_sha256", "TEXT NOT NULL DEFAULT ''"],
       ["trace_id", "TEXT NOT NULL DEFAULT ''"],
@@ -823,6 +860,11 @@ export class RelayShardLedger {
       ["input_content_type", "TEXT NOT NULL DEFAULT ''"],
       ["request_object_key", "TEXT"],
       ["object_version", "TEXT"],
+      ["shard_contract_version", "INTEGER NOT NULL DEFAULT 0"],
+      ["ring_generation", "INTEGER NOT NULL DEFAULT 0"],
+      ["shard_count", "INTEGER NOT NULL DEFAULT 0"],
+      ["shard_index", "INTEGER NOT NULL DEFAULT -1"],
+      ["instance_name", "TEXT NOT NULL DEFAULT ''"],
       ["result_object_key", "TEXT"],
       ["result_object_version", "TEXT"],
       ["result_sha256", "TEXT"],
@@ -841,10 +883,12 @@ export class RelayShardLedger {
   private readStorageOperation(operationId: string): StorageOperationRow | null {
     return firstRow<StorageOperationRow>(
       this.storage.sql.exec<StorageOperationRow>(
-        `SELECT operation_id, owner_generation, operation_kind, provider_operation_id,
-                admission_sha256, status, deadline_at, input_mode, input_sha256, input_size,
-                input_content_type, request_object_key, object_version, result_object_key,
-                result_object_version, result_sha256, result_size, result_content_type
+        `SELECT protocol_version, operation_id, owner_generation, owner_lease_expires_at,
+                operation_kind, provider_operation_id, admission_sha256, status, deadline_at,
+                input_mode, input_sha256, input_size, input_content_type, request_object_key,
+                object_version, shard_contract_version, ring_generation, shard_count,
+                shard_index, instance_name, trace_id, result_object_key, result_object_version,
+                result_sha256, result_size, result_content_type
            FROM cinatoken_shard_operations WHERE operation_id = ?1`,
         operationId,
       ),
@@ -965,15 +1009,18 @@ export class RelayShardLedger {
   ): void {
     this.storage.sql.exec(
       `INSERT INTO cinatoken_shard_operations
-         (operation_id, owner_generation, operation_kind, provider_operation_id,
-          admission_sha256, trace_id, envelope_sha256, dispatch_id, status, response_status,
-          deadline_at,
+         (protocol_version, operation_id, owner_generation, owner_lease_expires_at,
+          operation_kind, provider_operation_id, admission_sha256, trace_id, envelope_sha256,
+          dispatch_id, status, response_status, deadline_at,
           input_mode, input_sha256, input_size, input_content_type, request_object_key,
-          object_version, created_at, updated_at)
+          object_version, shard_contract_version, ring_generation, shard_count, shard_index,
+          instance_name, created_at, updated_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-               ?17, ?18, ?18)`,
+               ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?25)`,
+      envelope.protocol_version,
       envelope.operation_id,
       envelope.owner_generation,
+      envelope.owner_lease_expires_at,
       envelope.operation_kind,
       envelope.provider_operation_id,
       envelope.admission_sha256,
@@ -989,6 +1036,11 @@ export class RelayShardLedger {
       envelope.input.content_type,
       envelope.input.request_object_key ?? null,
       envelope.input.object_version ?? null,
+      envelope.shard.contract_version,
+      envelope.shard.ring_generation,
+      envelope.shard.shard_count,
+      envelope.shard.shard_index,
+      envelope.shard.instance_name,
       now,
     );
   }
@@ -1064,8 +1116,10 @@ function readinessSnapshot(row: ReadinessRow | null): PersistedReadinessSnapshot
 function storageGrant(row: StorageOperationRow): StorageAccessGrant {
   const result = operationStorageResult(row);
   return {
+    protocol_version: row.protocol_version,
     operation_id: row.operation_id,
     owner_generation: row.owner_generation,
+    owner_lease_expires_at: row.owner_lease_expires_at,
     operation_kind: row.operation_kind,
     provider_operation_id: row.provider_operation_id,
     admission_sha256: row.admission_sha256,
@@ -1078,6 +1132,14 @@ function storageGrant(row: StorageOperationRow): StorageAccessGrant {
       request_object_key: row.request_object_key,
       object_version: row.object_version,
     },
+    shard: {
+      contract_version: row.shard_contract_version,
+      ring_generation: row.ring_generation,
+      shard_count: row.shard_count,
+      shard_index: row.shard_index,
+      instance_name: row.instance_name,
+    },
+    trace_id: row.trace_id,
     result,
   };
 }

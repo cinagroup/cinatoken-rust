@@ -186,7 +186,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0039_task_submit_operation_enforce.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0040_relay_container_operations.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -263,6 +263,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0037_task_poll_recovery.sql",
     "0038_task_submit_operation_expand.sql",
     "0039_task_submit_operation_enforce.sql",
+    "0040_relay_container_operations.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -4664,10 +4665,7 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(
-            EXPECTED_D1_MIGRATION,
-            "0039_task_submit_operation_enforce.sql"
-        );
+        assert_eq!(EXPECTED_D1_MIGRATION, "0040_relay_container_operations.sql");
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")
@@ -4756,6 +4754,13 @@ mod tests {
         );
         assert!(task_submit_operation_enforce
             .contains("task_billing_intent_submit_operation_immutable_guard"));
+        let relay_container_operations =
+            include_str!("../../../migrations/d1/0040_relay_container_operations.sql");
+        assert!(relay_container_operations
+            .contains("CREATE TABLE IF NOT EXISTS relay_container_operations"));
+        assert!(relay_container_operations
+            .contains("relay_container_operation_identity_immutable_guard"));
+        assert!(relay_container_operations.contains("idx_relay_container_operations_recovery"));
     }
 
     #[test]

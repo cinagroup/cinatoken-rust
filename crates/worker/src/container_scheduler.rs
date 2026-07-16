@@ -8,6 +8,8 @@ use cinatoken_sharding::{
     ShardRing, ShardRoutingKey, CONTAINER_SHARD_CONTRACT_VERSION, CONTAINER_SHARD_INSTANCE_PREFIX,
     MAX_CONTAINER_SHARDS,
 };
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use worker::Env;
 
 pub const CONTAINER_SCHEDULER_ENABLED_ENV: &str = "CONTAINER_SCHEDULER_ENABLED";
@@ -19,6 +21,10 @@ pub const CONTAINER_SCHEDULER_SHARD_COUNT_ENV: &str = "CONTAINER_SCHEDULER_SHARD
 pub const CONTAINER_SCHEDULER_ROUTING_SECRET_ENV: &str = "CONTAINER_SCHEDULER_ROUTING_SECRET";
 pub const DEFAULT_CONTAINER_SCHEDULER_RING_GENERATION: u64 = 1;
 pub const DEFAULT_CONTAINER_SCHEDULER_SHARD_COUNT: u16 = 8;
+
+const CONTAINER_SHARD_ROUTING_DOMAIN: &[u8] = b"cinatoken-container-shard-routing:v1\0";
+const MIN_CONTAINER_SHARD_ROUTING_SECRET_BYTES: usize = 32;
+const MAX_CONTAINER_SHARD_TENANT_ID_BYTES: usize = 256;
 
 const CONTAINER_SCHEDULER_CUTOVER_GUARDS: &[&str] = &[
     "planner_contract",
@@ -57,8 +63,43 @@ pub fn container_scheduler_routing_secret_configured(env: &Env) -> bool {
         .map(|secret| secret.to_string())
         .map(|secret| secret.trim().to_string())
         .filter(|secret| !secret.is_empty())
-        .map(|secret| secret.as_bytes().len() >= 32)
+        .map(|secret| secret.as_bytes().len() >= MIN_CONTAINER_SHARD_ROUTING_SECRET_BYTES)
         .unwrap_or(false)
+}
+
+pub fn container_shard_routing_key(
+    secret: &[u8],
+    tenant_id: &str,
+) -> Result<ShardRoutingKey, &'static str> {
+    if secret.len() < MIN_CONTAINER_SHARD_ROUTING_SECRET_BYTES {
+        return Err("routing_secret_too_short");
+    }
+    if tenant_id != tenant_id.trim()
+        || tenant_id.is_empty()
+        || tenant_id.len() > MAX_CONTAINER_SHARD_TENANT_ID_BYTES
+        || tenant_id.chars().any(char::is_control)
+    {
+        return Err("invalid_tenant_id");
+    }
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| "invalid_routing_secret")?;
+    mac.update(CONTAINER_SHARD_ROUTING_DOMAIN);
+    mac.update(&(tenant_id.len() as u32).to_be_bytes());
+    mac.update(tenant_id.as_bytes());
+    let digest: [u8; 32] = mac.finalize().into_bytes().into();
+    ShardRoutingKey::try_from(digest).map_err(|_| "invalid_routing_key")
+}
+
+pub fn plan_container_shard(
+    runtime: ContainerSchedulerRuntimeStatus,
+    secret: &[u8],
+    tenant_id: &str,
+) -> Result<cinatoken_sharding::ShardPlan, &'static str> {
+    if !runtime.configured || !runtime.valid {
+        return Err("ring_misconfigured");
+    }
+    let ring = ShardRing::new(runtime.ring_generation, runtime.shard_count)
+        .map_err(|_| "ring_misconfigured")?;
+    Ok(ring.plan(container_shard_routing_key(secret, tenant_id)?))
 }
 
 pub fn container_scheduler_foundation_compiled() -> bool {
@@ -249,6 +290,65 @@ mod tests {
             );
             assert_eq!(status.shard_count, DEFAULT_CONTAINER_SCHEDULER_SHARD_COUNT);
         }
+    }
+
+    #[test]
+    fn tenant_routing_is_secret_keyed_stable_and_domain_separated() {
+        let secret = b"0123456789abcdef0123456789abcdef";
+        let first = container_shard_routing_key(secret, "tenant-42").unwrap();
+        let second = container_shard_routing_key(secret, "tenant-42").unwrap();
+        let another = container_shard_routing_key(secret, "tenant-43").unwrap();
+        assert_eq!(first, second);
+        assert_ne!(first, another);
+        assert!(!first
+            .as_bytes()
+            .windows(9)
+            .any(|bytes| bytes == b"tenant-42"));
+
+        let runtime = ContainerSchedulerRuntimeStatus {
+            configured: true,
+            valid: true,
+            ring_generation: 7,
+            shard_count: 16,
+        };
+        let plan = plan_container_shard(runtime, secret, "tenant-42").unwrap();
+        assert_eq!(plan.ring_generation, 7);
+        assert_eq!(plan.shard_count, 16);
+        plan.validate_fence(ShardRing::new(7, 16).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn tenant_routing_rejects_weak_or_ambiguous_inputs() {
+        let secret = b"0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            container_shard_routing_key(b"too-short", "tenant-42"),
+            Err("routing_secret_too_short")
+        );
+        assert_eq!(
+            container_shard_routing_key(secret, " \t "),
+            Err("invalid_tenant_id")
+        );
+        assert_eq!(
+            container_shard_routing_key(secret, "tenant\n42"),
+            Err("invalid_tenant_id")
+        );
+        assert_eq!(
+            container_shard_routing_key(secret, " tenant-42"),
+            Err("invalid_tenant_id")
+        );
+        assert_eq!(
+            plan_container_shard(
+                ContainerSchedulerRuntimeStatus {
+                    configured: false,
+                    valid: false,
+                    ring_generation: 1,
+                    shard_count: 8,
+                },
+                secret,
+                "tenant-42",
+            ),
+            Err("ring_misconfigured")
+        );
     }
 
     #[test]

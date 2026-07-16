@@ -1642,3 +1642,24 @@ isolated remote canary, but cannot enable customer traffic. Remote binding
 readback, real Container calls, R2/KV/D1 fault cases, N/N-1, provider recovery,
 billing convergence, image provenance, load/cost, and rollback evidence remain
 hard blockers. Production remains **NO-GO**.
+
+## 2026-07-16 Phase 1 Global Container Operation Authority
+
+Migration 0040 now provides the default-inert global operation record between
+the financial D1 reservation and the sharded DO ledger. The Rust repository
+binds it through owner/lease/selected-attempt/deadline CAS, while the Controller
+performs the same authority join before claiming or executing work. SQLite
+identity, type, terminal shape, timestamp, and lifecycle bypasses are covered
+by executable verifier cases.
+
+The default-off edge foundation also derives shard ownership from a
+domain-separated tenant HMAC, writes immutable content-addressed R2 input,
+version/hash-verifies R2 result manifests, and signs a bounded operation over
+the private Controller Service Binding. No public relay branch calls these
+functions yet, and no storage or execution flag changed.
+
+Next is generation-fenced global lifecycle/terminal CAS, then one deterministic
+non-streaming chat canary in the real Linux image with exact response replay,
+normal frozen-snapshot settlement/audit, duplicate-operation proof, and the
+remote lifecycle/storage fault matrix. Go/VPS remains authoritative and
+production remains **NO-GO**.

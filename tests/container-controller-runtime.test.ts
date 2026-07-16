@@ -809,12 +809,17 @@ describe("RelayShardLedger in Workerd", () => {
     ).resolves.toMatchObject({
       ok: true,
       grant: {
+        protocol_version: operation.protocol_version,
         operation_id: operation.operation_id,
         owner_generation: 1,
+        owner_lease_expires_at: operation.owner_lease_expires_at,
         operation_kind: "chat_completion",
         provider_operation_id: operation.provider_operation_id,
         admission_sha256: operation.admission_sha256,
+        deadline_at: operation.execution_deadline_at,
         input: operation.input,
+        shard: operation.shard,
+        trace_id: operation.trace_id,
         result: null,
       },
     });

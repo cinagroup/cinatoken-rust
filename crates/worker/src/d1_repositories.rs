@@ -24,6 +24,7 @@ pub(crate) const RELAY_BILLING_FINALIZATION_INCIDENT_MIGRATION: &str =
     "0025_relay_billing_finalization_incidents.sql";
 pub(crate) const RELAY_BILLING_OWNER_GENERATION_MIGRATION: &str =
     "0026_relay_billing_owner_generation.sql";
+pub(crate) const RELAY_CONTAINER_OPERATION_MIGRATION: &str = "0040_relay_container_operations.sql";
 pub(crate) const RELAY_FLAT_BILLING_INTENT_MIGRATION: &str = "0029_flat_billing_intents.sql";
 pub(crate) const REALTIME_USAGE_RECONCILIATION_MIGRATION: &str =
     "0027_realtime_usage_reconciliation.sql";
@@ -86,6 +87,83 @@ pub struct RelayBillingReservation {
     pub recovery_attempt_count: i64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayContainerOperationRecord<'a> {
+    pub reservation_key: &'a str,
+    pub operation_id: &'a str,
+    pub owner_generation: i64,
+    pub owner_lease_expires_at: i64,
+    pub channel_id: i64,
+    pub selected_group: &'a str,
+    pub operation_kind: &'a str,
+    pub provider_operation_id: &'a str,
+    pub admission_sha256: &'a str,
+    pub protocol_version: i64,
+    pub shard_contract_version: i64,
+    pub ring_generation: i64,
+    pub shard_count: i64,
+    pub shard_index: i64,
+    pub instance_name: &'a str,
+    pub execution_deadline_at: i64,
+    pub input_mode: &'a str,
+    pub input_object_key: &'a str,
+    pub input_object_version: &'a str,
+    pub input_sha256: &'a str,
+    pub input_size: i64,
+    pub input_content_type: &'a str,
+    pub trace_id: &'a str,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerOperation {
+    pub reservation_key: String,
+    pub operation_id: String,
+    pub owner_generation: i64,
+    pub owner_lease_expires_at: i64,
+    pub channel_id: i64,
+    pub selected_group: String,
+    pub operation_kind: String,
+    pub provider_operation_id: String,
+    pub admission_sha256: String,
+    pub protocol_version: i64,
+    pub shard_contract_version: i64,
+    pub ring_generation: i64,
+    pub shard_count: i64,
+    pub shard_index: i64,
+    pub instance_name: String,
+    pub execution_deadline_at: i64,
+    pub input_mode: String,
+    pub input_object_key: String,
+    pub input_object_version: String,
+    pub input_sha256: String,
+    pub input_size: i64,
+    pub input_content_type: String,
+    pub trace_id: String,
+    pub status: String,
+    pub response_status: Option<i64>,
+    pub response_code: Option<String>,
+    pub result_object_key: Option<String>,
+    pub result_object_version: Option<String>,
+    pub result_sha256: Option<String>,
+    pub result_size: Option<i64>,
+    pub result_content_type: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerOperationWriteOutcome {
+    Applied,
+    MatchingOperation,
+    ReservationNotFound,
+    ReservationNotReserved,
+    StaleGeneration,
+    SelectedAttemptConflict,
+    DeadlineExpired,
+    Conflict,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1525,6 +1603,362 @@ fn relay_billing_reservation_matches_record(
         && current.owner_generation == 1
         && current.owner_deadline_at == expected.lease_expires_at
         && current.owner_lease_renewed_at == 0
+}
+
+pub async fn bind_relay_container_operation(
+    db: &D1Database,
+    record: RelayContainerOperationRecord<'_>,
+) -> worker::Result<RelayContainerOperationWriteOutcome> {
+    validate_relay_container_operation_record(&record)?;
+    if let Some(current) = relay_container_operation(db, record.reservation_key).await? {
+        return Ok(
+            if relay_container_operation_matches_record(&current, &record) {
+                RelayContainerOperationWriteOutcome::MatchingOperation
+            } else {
+                RelayContainerOperationWriteOutcome::Conflict
+            },
+        );
+    }
+
+    let Some(reservation) = relay_billing_reservation(db, record.reservation_key).await? else {
+        return Ok(RelayContainerOperationWriteOutcome::ReservationNotFound);
+    };
+    if let Some(outcome) = classify_relay_container_operation_reservation(&reservation, &record) {
+        return Ok(outcome);
+    }
+
+    let args = [
+        D1Type::Text(record.reservation_key),
+        D1Type::Text(record.operation_id),
+        relay_container_d1_integer(record.owner_generation, "owner generation")?,
+        relay_container_d1_integer(record.owner_lease_expires_at, "owner lease")?,
+        relay_container_d1_integer(record.channel_id, "channel id")?,
+        D1Type::Text(record.selected_group),
+        D1Type::Text(record.operation_kind),
+        D1Type::Text(record.provider_operation_id),
+        D1Type::Text(record.admission_sha256),
+        relay_container_d1_integer(record.protocol_version, "protocol version")?,
+        relay_container_d1_integer(record.shard_contract_version, "shard contract version")?,
+        relay_container_d1_integer(record.ring_generation, "ring generation")?,
+        relay_container_d1_integer(record.shard_count, "shard count")?,
+        relay_container_d1_integer(record.shard_index, "shard index")?,
+        D1Type::Text(record.instance_name),
+        relay_container_d1_integer(record.execution_deadline_at, "execution deadline")?,
+        D1Type::Text(record.input_mode),
+        D1Type::Text(record.input_object_key),
+        D1Type::Text(record.input_object_version),
+        D1Type::Text(record.input_sha256),
+        relay_container_d1_integer(record.input_size, "input size")?,
+        D1Type::Text(record.input_content_type),
+        D1Type::Text(record.trace_id),
+        relay_container_d1_integer(record.created_at, "created at")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            INSERT INTO relay_container_operations (
+              reservation_key, operation_id,
+              owner_generation, owner_lease_expires_at,
+              channel_id, selected_group,
+              operation_kind, provider_operation_id, admission_sha256,
+              protocol_version, shard_contract_version,
+              ring_generation, shard_count, shard_index, instance_name,
+              execution_deadline_at,
+              input_mode, input_object_key, input_object_version,
+              input_sha256, input_size, input_content_type,
+              trace_id, status, created_at, updated_at
+            )
+            SELECT
+              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+              ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
+              'prepared', ?24, ?24
+            FROM relay_billing_reservations AS reservation
+            WHERE reservation.reservation_key = ?1
+              AND reservation.status = 'reserved'
+              AND reservation.owner_generation = ?3
+              AND reservation.lease_expires_at = ?4
+              AND reservation.channel_id = ?5
+              AND reservation.selected_group = ?6
+              AND reservation.selected_at > 0
+              AND reservation.selected_at <= ?24
+              AND reservation.owner_deadline_at >= ?16
+              AND ?24 <= ?16
+              AND ?16 <= ?4
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await;
+    if let Ok(result) = &result {
+        if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+            return Ok(RelayContainerOperationWriteOutcome::Applied);
+        }
+    }
+
+    if let Some(current) = relay_container_operation(db, record.reservation_key).await? {
+        return Ok(
+            if relay_container_operation_matches_record(&current, &record) {
+                RelayContainerOperationWriteOutcome::MatchingOperation
+            } else {
+                RelayContainerOperationWriteOutcome::Conflict
+            },
+        );
+    }
+    let Some(current) = relay_billing_reservation(db, record.reservation_key).await? else {
+        return Ok(RelayContainerOperationWriteOutcome::ReservationNotFound);
+    };
+    let conflict = classify_relay_container_operation_reservation(&current, &record);
+    match (result, conflict) {
+        (Err(err), None) => Err(err),
+        (_, Some(outcome)) => Ok(outcome),
+        (Ok(_), None) => Ok(RelayContainerOperationWriteOutcome::Conflict),
+    }
+}
+
+pub(crate) async fn relay_container_operation(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<Option<RelayContainerOperation>> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    let args = [D1Type::Text(reservation_key)];
+    db.prepare(
+        r#"
+        SELECT reservation_key, operation_id,
+               owner_generation, owner_lease_expires_at,
+               channel_id, selected_group,
+               operation_kind, provider_operation_id, admission_sha256,
+               protocol_version, shard_contract_version,
+               ring_generation, shard_count, shard_index, instance_name,
+               execution_deadline_at,
+               input_mode, input_object_key, input_object_version,
+               input_sha256, input_size, input_content_type, trace_id,
+               status, response_status, response_code,
+               result_object_key, result_object_version, result_sha256,
+               result_size, result_content_type,
+               created_at, updated_at
+        FROM relay_container_operations
+        WHERE reservation_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerOperation>(None)
+    .await
+}
+
+fn classify_relay_container_operation_reservation(
+    current: &RelayBillingReservation,
+    expected: &RelayContainerOperationRecord<'_>,
+) -> Option<RelayContainerOperationWriteOutcome> {
+    if current.status != "reserved" {
+        return Some(RelayContainerOperationWriteOutcome::ReservationNotReserved);
+    }
+    if current.owner_generation != expected.owner_generation {
+        return Some(RelayContainerOperationWriteOutcome::StaleGeneration);
+    }
+    if current.channel_id != expected.channel_id
+        || current.selected_group != expected.selected_group
+        || current.selected_at <= 0
+        || current.selected_at > expected.created_at
+    {
+        return Some(RelayContainerOperationWriteOutcome::SelectedAttemptConflict);
+    }
+    if current.owner_deadline_at < expected.execution_deadline_at
+        || current.lease_expires_at < expected.execution_deadline_at
+        || expected.created_at > expected.execution_deadline_at
+    {
+        return Some(RelayContainerOperationWriteOutcome::DeadlineExpired);
+    }
+    if current.lease_expires_at != expected.owner_lease_expires_at {
+        return Some(RelayContainerOperationWriteOutcome::Conflict);
+    }
+    None
+}
+
+fn relay_container_operation_matches_record(
+    current: &RelayContainerOperation,
+    expected: &RelayContainerOperationRecord<'_>,
+) -> bool {
+    current.reservation_key == expected.reservation_key
+        && current.operation_id == expected.operation_id
+        && current.owner_generation == expected.owner_generation
+        && current.owner_lease_expires_at == expected.owner_lease_expires_at
+        && current.channel_id == expected.channel_id
+        && current.selected_group == expected.selected_group
+        && current.operation_kind == expected.operation_kind
+        && current.provider_operation_id == expected.provider_operation_id
+        && current.admission_sha256 == expected.admission_sha256
+        && current.protocol_version == expected.protocol_version
+        && current.shard_contract_version == expected.shard_contract_version
+        && current.ring_generation == expected.ring_generation
+        && current.shard_count == expected.shard_count
+        && current.shard_index == expected.shard_index
+        && current.instance_name == expected.instance_name
+        && current.execution_deadline_at == expected.execution_deadline_at
+        && current.input_mode == expected.input_mode
+        && current.input_object_key == expected.input_object_key
+        && current.input_object_version == expected.input_object_version
+        && current.input_sha256 == expected.input_sha256
+        && current.input_size == expected.input_size
+        && current.input_content_type == expected.input_content_type
+        && current.trace_id == expected.trace_id
+        && current.created_at == expected.created_at
+}
+
+fn validate_relay_container_operation_record(
+    record: &RelayContainerOperationRecord<'_>,
+) -> worker::Result<()> {
+    validate_relay_container_id(record.reservation_key, "reservation key", 1, 128)?;
+    validate_relay_container_id(record.operation_id, "operation id", 1, 128)?;
+    validate_relay_container_lower_id(record.operation_kind, "operation kind", 1, 64)?;
+    validate_relay_container_id(
+        record.provider_operation_id,
+        "provider operation id",
+        1,
+        128,
+    )?;
+    validate_relay_container_sha256(record.admission_sha256, "admission sha256")?;
+    validate_relay_container_id(record.trace_id, "trace id", 1, 128)?;
+    validate_relay_container_object_key(record.input_object_key)?;
+    validate_relay_container_id(record.input_object_version, "input object version", 1, 128)?;
+    validate_relay_container_sha256(record.input_sha256, "input sha256")?;
+    validate_relay_container_content_type(record.input_content_type)?;
+    let selected_group = record.selected_group;
+    let expected_instance = format!("cinatoken-relay-shard-v1-{:04}", record.shard_index);
+    let expected_input_key = format!(
+        "container-inputs/v1/{}/{}/{}",
+        record.operation_id, record.owner_generation, record.input_sha256
+    );
+    if record.owner_generation <= 0
+        || record.owner_generation > i64::from(i32::MAX)
+        || record.owner_lease_expires_at <= 0
+        || record.owner_lease_expires_at > i64::from(i32::MAX)
+        || record.channel_id <= 0
+        || record.channel_id > i64::from(i32::MAX)
+        || record.operation_id != record.reservation_key
+        || selected_group.is_empty()
+        || selected_group != selected_group.trim()
+        || selected_group.len() > 64
+        || selected_group.chars().any(char::is_control)
+        || !(1..=255).contains(&record.protocol_version)
+        || record.shard_contract_version != 1
+        || record.ring_generation <= 0
+        || record.ring_generation > i64::from(i32::MAX)
+        || !(1..=1_024).contains(&record.shard_count)
+        || record.shard_index < 0
+        || record.shard_index >= record.shard_count
+        || record.instance_name != expected_instance
+        || record.execution_deadline_at <= 0
+        || record.execution_deadline_at >= record.owner_lease_expires_at
+        || record.execution_deadline_at > i64::from(i32::MAX)
+        || record.created_at <= 0
+        || record.created_at >= record.execution_deadline_at
+        || record.created_at > i64::from(i32::MAX)
+        || record.input_mode != "r2"
+        || record.input_object_key != expected_input_key
+        || !(0..=64 * 1024 * 1024).contains(&record.input_size)
+    {
+        return Err(worker::Error::RustError(
+            "relay container operation identity is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_id(
+    value: &str,
+    field: &str,
+    min_len: usize,
+    max_len: usize,
+) -> worker::Result<()> {
+    validate_relay_container_token(value, field, min_len, max_len, |byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+    })
+}
+
+fn validate_relay_container_lower_id(
+    value: &str,
+    field: &str,
+    min_len: usize,
+    max_len: usize,
+) -> worker::Result<()> {
+    validate_relay_container_token(value, field, min_len, max_len, |byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b':' | b'-')
+    })
+}
+
+fn validate_relay_container_object_key(value: &str) -> worker::Result<()> {
+    validate_relay_container_token(value, "input object key", 8, 512, |byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'.' | b':' | b'-')
+    })
+}
+
+fn validate_relay_container_token(
+    value: &str,
+    field: &str,
+    min_len: usize,
+    max_len: usize,
+    allowed: impl Fn(u8) -> bool,
+) -> worker::Result<()> {
+    let trimmed = value.trim();
+    if value != trimmed
+        || !(min_len..=max_len).contains(&value.len())
+        || !value.bytes().all(allowed)
+    {
+        return Err(worker::Error::RustError(format!(
+            "relay container operation {field} is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_sha256(value: &str, field: &str) -> worker::Result<()> {
+    validate_relay_container_token(value, field, 64, 64, |byte| {
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+    })
+}
+
+fn validate_relay_container_content_type(value: &str) -> worker::Result<()> {
+    let token_byte = |byte: u8| {
+        byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+            )
+    };
+    let (media_type, parameters) = value
+        .split_once(';')
+        .map_or((value, None), |(media_type, parameters)| {
+            (media_type, Some(parameters))
+        });
+    let media_parts = media_type.split_once('/');
+    if !(3..=128).contains(&value.len())
+        || !value.is_ascii()
+        || value != value.trim()
+        || !media_parts.is_some_and(|(kind, subtype)| {
+            !kind.is_empty()
+                && !subtype.is_empty()
+                && kind.bytes().all(token_byte)
+                && subtype.bytes().all(token_byte)
+        })
+        || parameters.is_some_and(|parameters| {
+            parameters.is_empty() || !parameters.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+        })
+    {
+        return Err(worker::Error::RustError(
+            "relay container operation input content type is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn relay_container_d1_integer(value: i64, field: &str) -> worker::Result<D1Type<'static>> {
+    i32::try_from(value).map(D1Type::Integer).map_err(|_| {
+        worker::Error::RustError(format!(
+            "relay container operation {field} is outside the D1 integer contract"
+        ))
+    })
 }
 
 pub async fn bind_relay_billing_selected_attempt(
@@ -12844,6 +13278,209 @@ mod tests {
         assert!(migration.contains("ADD COLUMN owner_deadline_at"));
         assert!(migration.contains("ADD COLUMN owner_lease_renewed_at"));
         assert!(migration.contains("SET owner_generation = 2"));
+    }
+
+    fn relay_container_test_record() -> RelayContainerOperationRecord<'static> {
+        RelayContainerOperationRecord {
+            reservation_key: "relayreserve-test",
+            operation_id: "relayreserve-test",
+            owner_generation: 2,
+            owner_lease_expires_at: 200,
+            channel_id: 7,
+            selected_group: "vip",
+            operation_kind: "relay_openai",
+            provider_operation_id: "provider-op-001",
+            admission_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            protocol_version: 1,
+            shard_contract_version: 1,
+            ring_generation: 1,
+            shard_count: 8,
+            shard_index: 3,
+            instance_name: "cinatoken-relay-shard-v1-0003",
+            execution_deadline_at: 180,
+            input_mode: "r2",
+            input_object_key: concat!(
+                "container-inputs/v1/relayreserve-test/2/",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
+            input_object_version: "version-001",
+            input_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            input_size: 512,
+            input_content_type: "application/json",
+            trace_id: "trace-001",
+            created_at: 20,
+        }
+    }
+
+    fn relay_container_test_operation() -> RelayContainerOperation {
+        let record = relay_container_test_record();
+        RelayContainerOperation {
+            reservation_key: record.reservation_key.to_string(),
+            operation_id: record.operation_id.to_string(),
+            owner_generation: record.owner_generation,
+            owner_lease_expires_at: record.owner_lease_expires_at,
+            channel_id: record.channel_id,
+            selected_group: record.selected_group.to_string(),
+            operation_kind: record.operation_kind.to_string(),
+            provider_operation_id: record.provider_operation_id.to_string(),
+            admission_sha256: record.admission_sha256.to_string(),
+            protocol_version: record.protocol_version,
+            shard_contract_version: record.shard_contract_version,
+            ring_generation: record.ring_generation,
+            shard_count: record.shard_count,
+            shard_index: record.shard_index,
+            instance_name: record.instance_name.to_string(),
+            execution_deadline_at: record.execution_deadline_at,
+            input_mode: record.input_mode.to_string(),
+            input_object_key: record.input_object_key.to_string(),
+            input_object_version: record.input_object_version.to_string(),
+            input_sha256: record.input_sha256.to_string(),
+            input_size: record.input_size,
+            input_content_type: record.input_content_type.to_string(),
+            trace_id: record.trace_id.to_string(),
+            status: "prepared".to_string(),
+            response_status: None,
+            response_code: None,
+            result_object_key: None,
+            result_object_version: None,
+            result_sha256: None,
+            result_size: None,
+            result_content_type: None,
+            created_at: record.created_at,
+            updated_at: record.created_at,
+        }
+    }
+
+    #[test]
+    fn relay_container_operation_migration_has_global_immutable_authority() {
+        let migration = include_str!("../../../migrations/d1/0040_relay_container_operations.sql");
+        for field in [
+            "operation_id",
+            "owner_lease_expires_at",
+            "provider_operation_id",
+            "admission_sha256",
+            "shard_contract_version",
+            "ring_generation",
+            "input_mode",
+            "input_object_version",
+            "trace_id",
+        ] {
+            assert!(
+                migration.contains(field),
+                "missing operation authority field {field}"
+            );
+        }
+        assert!(migration.contains("reservation_key TEXT PRIMARY KEY NOT NULL"));
+        assert!(migration.contains("operation_id TEXT NOT NULL UNIQUE"));
+        assert!(migration.contains("provider_operation_id TEXT NOT NULL UNIQUE"));
+        assert!(migration.contains("CHECK (operation_id = reservation_key)"));
+        assert!(migration.contains("input_mode TEXT NOT NULL"));
+        assert!(migration.contains("input_mode = 'r2'"));
+        assert!(migration.contains("relay_container_operation_identity_immutable_guard"));
+        assert!(migration.contains("relay_container_operation_lifecycle_guard"));
+        assert!(migration.contains("idx_relay_container_operations_recovery"));
+        assert!(!migration.contains("OR REPLACE"));
+    }
+
+    #[test]
+    fn relay_container_operation_identity_validation_matches_protocol_bounds() {
+        let valid = relay_container_test_record();
+        validate_relay_container_operation_record(&valid).unwrap();
+
+        let mut invalid = valid;
+        invalid.operation_kind = "Relay_OpenAI";
+        assert!(validate_relay_container_operation_record(&invalid).is_err());
+        invalid = valid;
+        invalid.instance_name = "cinatoken-relay-shard-v1-0004";
+        assert!(validate_relay_container_operation_record(&invalid).is_err());
+        invalid = valid;
+        invalid.input_mode = "inline";
+        assert!(validate_relay_container_operation_record(&invalid).is_err());
+        invalid = valid;
+        invalid.input_sha256 = "ABC";
+        assert!(validate_relay_container_operation_record(&invalid).is_err());
+        invalid = valid;
+        invalid.execution_deadline_at = 201;
+        assert!(validate_relay_container_operation_record(&invalid).is_err());
+        invalid = valid;
+        invalid.operation_id = " relayreserve-test";
+        assert!(validate_relay_container_operation_record(&invalid).is_err());
+        invalid = valid;
+        invalid.input_content_type = "a/ b";
+        assert!(validate_relay_container_operation_record(&invalid).is_err());
+        invalid = valid;
+        invalid.owner_generation = i64::from(i32::MAX) + 1;
+        assert!(validate_relay_container_operation_record(&invalid).is_err());
+    }
+
+    #[test]
+    fn relay_container_operation_admission_is_owner_and_deadline_fenced() {
+        let record = relay_container_test_record();
+        let mut reservation = relay_billing_test_reservation("reserved");
+        reservation.lease_expires_at = record.owner_lease_expires_at;
+        reservation.owner_deadline_at = record.owner_lease_expires_at;
+        assert_eq!(
+            classify_relay_container_operation_reservation(&reservation, &record),
+            None
+        );
+
+        reservation.status = "settled".to_string();
+        assert_eq!(
+            classify_relay_container_operation_reservation(&reservation, &record),
+            Some(RelayContainerOperationWriteOutcome::ReservationNotReserved)
+        );
+        reservation.status = "reserved".to_string();
+        reservation.owner_generation = 3;
+        assert_eq!(
+            classify_relay_container_operation_reservation(&reservation, &record),
+            Some(RelayContainerOperationWriteOutcome::StaleGeneration)
+        );
+        reservation.owner_generation = record.owner_generation;
+        reservation.channel_id = 8;
+        assert_eq!(
+            classify_relay_container_operation_reservation(&reservation, &record),
+            Some(RelayContainerOperationWriteOutcome::SelectedAttemptConflict)
+        );
+        reservation.channel_id = record.channel_id;
+        reservation.owner_deadline_at = record.execution_deadline_at - 1;
+        assert_eq!(
+            classify_relay_container_operation_reservation(&reservation, &record),
+            Some(RelayContainerOperationWriteOutcome::DeadlineExpired)
+        );
+        reservation.owner_deadline_at = record.owner_lease_expires_at;
+        reservation.lease_expires_at = record.owner_lease_expires_at + 1;
+        assert_eq!(
+            classify_relay_container_operation_reservation(&reservation, &record),
+            Some(RelayContainerOperationWriteOutcome::Conflict)
+        );
+    }
+
+    #[test]
+    fn relay_container_operation_retries_match_immutable_identity_after_dispatch() {
+        let record = relay_container_test_record();
+        let mut operation = relay_container_test_operation();
+        assert!(relay_container_operation_matches_record(
+            &operation, &record
+        ));
+
+        operation.status = "completed".to_string();
+        operation.response_status = Some(200);
+        operation.result_object_key =
+            Some("container-results/v1/op_test_001/result.json".to_string());
+        operation.result_object_version = Some("version-result-001".to_string());
+        operation.result_sha256 =
+            Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string());
+        operation.result_size = Some(256);
+        operation.result_content_type = Some("application/json".to_string());
+        operation.updated_at += 1;
+        assert!(relay_container_operation_matches_record(
+            &operation, &record
+        ));
+
+        operation.trace_id = "trace-forged".to_string();
+        assert!(!relay_container_operation_matches_record(
+            &operation, &record
+        ));
     }
 
     #[test]

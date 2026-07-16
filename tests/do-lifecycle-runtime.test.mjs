@@ -1276,9 +1276,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 43,
+        d1_migration_applied_count: 44,
         d1_expected_migration:
-          "0043_relay_container_reconciliation_observer.sql",
+          "0044_relay_container_r2_orphan_inventory.sql",
         d1_migration_ready: true,
         task_v2_contract_version: 5,
         task_submit_operation_contract_version: 1,
@@ -2124,6 +2124,357 @@ describe("Rust Durable Object lifecycle contracts", () => {
       dead_letter_reason: "terminal_conflict",
     });
   });
+
+  it("inventories R2 orphans across fenced generations without mutation authority", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const { cookie } = await setupAndLoginBillingRoot();
+    const encoder = new TextEncoder();
+    const referencedBody = encoder.encode("inventory-referenced");
+    const referencedSha256 = await sha256Hex(referencedBody);
+    const referencedOperationId = "relaycontainer-runtime-observer-inventory";
+    const referencedKey =
+      `container-inputs/v1/${referencedOperationId}/2/${referencedSha256}`;
+    const referencedObject = await putContainerInventoryObject({
+      key: referencedKey,
+      body: referencedBody,
+      customMetadata: containerInventoryMetadata({
+        operationId: referencedOperationId,
+        ownerGeneration: 2,
+        sha256: referencedSha256,
+        size: referencedBody.byteLength,
+      }),
+      cacheControl: "no-store",
+    });
+    const active = await seedContainerReconciliationObservation("inventory", {
+      inputSha256: referencedSha256,
+      inputObjectVersion: referencedObject.version,
+      inputSize: referencedBody.byteLength,
+    });
+
+    const orphanOperationId = "aaa-inventory-orphan";
+    const orphanBody = encoder.encode("inventory-orphan");
+    const orphanSha256 = await sha256Hex(orphanBody);
+    const orphanKey =
+      `container-inputs/v1/${orphanOperationId}/2/${orphanSha256}`;
+    const orphanObject = await putContainerInventoryObject({
+      key: orphanKey,
+      body: orphanBody,
+      customMetadata: containerInventoryMetadata({
+        operationId: orphanOperationId,
+        ownerGeneration: 2,
+        sha256: orphanSha256,
+        size: orphanBody.byteLength,
+      }),
+      cacheControl: "no-store",
+    });
+
+    const divergentOperationId = "bbb-inventory-divergent";
+    const divergentBody = encoder.encode("inventory-divergent");
+    const divergentSha256 = await sha256Hex(divergentBody);
+    const divergentKey =
+      `container-inputs/v1/${divergentOperationId}/2/${divergentSha256}`;
+    const divergentObject = await putContainerInventoryObject({
+      key: divergentKey,
+      body: divergentBody,
+      customMetadata: containerInventoryMetadata({
+        operationId: divergentOperationId,
+        ownerGeneration: 2,
+        sha256: divergentSha256,
+        size: divergentBody.byteLength,
+      }),
+      cacheControl: "no-store",
+    });
+    await seedContainerInventoryInputOperation({
+      operationId: divergentOperationId,
+      ownerGeneration: 2,
+      inputKey: divergentKey,
+      inputVersion: "version-divergent-reference",
+      inputSha256: divergentSha256,
+      inputSize: divergentBody.byteLength,
+    });
+    const divergentOperationBefore = await env.DB.prepare(
+      `SELECT status, owner_generation, input_object_key, input_object_version,
+              input_sha256, result_object_key, updated_at
+       FROM relay_container_operations WHERE operation_id = ?1`,
+    )
+      .bind(divergentOperationId)
+      .first();
+
+    const resultBody = encoder.encode("active-result");
+    const resultSha256 = await sha256Hex(resultBody);
+    const resultKey =
+      `container-results/v1/${active.operationId}/2/${resultSha256}`;
+    await putContainerInventoryObject({
+      key: resultKey,
+      body: resultBody,
+      customMetadata: {
+        ...containerInventoryMetadata({
+          operationId: active.operationId,
+          ownerGeneration: 2,
+          sha256: resultSha256,
+          size: resultBody.byteLength,
+        }),
+        provider_operation_id: "provider-runtime-observer-inventory",
+        admission_sha256: "a".repeat(64),
+      },
+    });
+
+    const invalidBody = encoder.encode("invalid-client-response");
+    const invalidSha256 = await sha256Hex(invalidBody);
+    const invalidKey =
+      `container-client-responses/v1/zzz-invalid/1/${invalidSha256}`;
+    await putContainerInventoryObject({
+      key: invalidKey,
+      body: invalidBody,
+      customMetadata: {},
+      cacheControl: "no-store",
+    });
+
+    const inventoryKeys = [
+      referencedKey,
+      orphanKey,
+      divergentKey,
+      resultKey,
+      invalidKey,
+    ];
+    const bucketBefore = await snapshotContainerInventoryBucket(inventoryKeys);
+    const businessBefore = await snapshotContainerInventoryBusinessState();
+
+    const observerBefore = await env.DB.prepare(
+      `SELECT status, claim_generation, attempt_count, last_class, updated_at
+       FROM relay_container_reconciliation_observations
+       WHERE operation_id = ?1`,
+    )
+      .bind(active.operationId)
+      .first();
+    const operationBefore = await env.DB.prepare(
+      `SELECT status, owner_generation, input_object_key, input_object_version,
+              result_object_key, updated_at
+       FROM relay_container_operations WHERE operation_id = ?1`,
+    )
+      .bind(active.operationId)
+      .first();
+
+    for (let index = 0; index < 3; index += 1) {
+      await runScheduledRecovery();
+    }
+    const firstGeneration = await env.DB.prepare(
+      `SELECT status, classification, distinct_scan_generations
+       FROM relay_container_r2_inventory_findings
+       WHERE classification IN ('operation_missing', 'divergent_reference')
+       ORDER BY classification`,
+    ).all();
+    expect(firstGeneration.results).toEqual([
+      {
+        status: "observed",
+        classification: "divergent_reference",
+        distinct_scan_generations: 1,
+      },
+      {
+        status: "observed",
+        classification: "operation_missing",
+        distinct_scan_generations: 1,
+      },
+    ]);
+    for (let index = 0; index < 3; index += 1) {
+      await runScheduledRecovery();
+    }
+
+    const candidateRows = await env.DB.prepare(
+      `SELECT status, classification, distinct_scan_generations
+       FROM relay_container_r2_inventory_findings
+       ORDER BY classification`,
+    ).all();
+    expect(candidateRows.results).toEqual([
+      {
+        status: "observed",
+        classification: "divergent_reference",
+        distinct_scan_generations: 2,
+      },
+      {
+        status: "candidate",
+        classification: "invalid_contract",
+        distinct_scan_generations: 6,
+      },
+      {
+        status: "candidate",
+        classification: "operation_missing",
+        distinct_scan_generations: 2,
+      },
+    ]);
+    expect(await snapshotContainerInventoryBusinessState()).toEqual(
+      businessBefore,
+    );
+
+    await seedContainerInventoryInputOperation({
+      operationId: orphanOperationId,
+      ownerGeneration: 2,
+      inputKey: orphanKey,
+      inputVersion: orphanObject.version,
+      inputSha256: orphanSha256,
+      inputSize: orphanBody.byteLength,
+    });
+    const orphanOperationBeforeResolve = await env.DB.prepare(
+      `SELECT status, owner_generation, input_object_key, input_object_version,
+              result_object_key, updated_at
+       FROM relay_container_operations WHERE operation_id = ?1`,
+    )
+      .bind(orphanOperationId)
+      .first();
+    const businessBeforeResolve =
+      await snapshotContainerInventoryBusinessState();
+    await runScheduledRecovery();
+    expect(await snapshotContainerInventoryBusinessState()).toEqual(
+      businessBeforeResolve,
+    );
+
+    const statusUrl =
+      "https://cinatoken.test/api/platform/container/r2-inventory/status";
+    const anonymousStatus = await SELF.fetch(statusUrl);
+    expect(anonymousStatus.status).toBe(401);
+    expect(anonymousStatus.headers.get("cache-control")).toBe("no-store");
+    const statusResponse = await SELF.fetch(statusUrl, { headers: { cookie } });
+    const status = await statusResponse.json();
+    expect(statusResponse.status).toBe(200);
+    expect(statusResponse.headers.get("cache-control")).toBe("no-store");
+    expect(status).toMatchObject({
+      success: true,
+      data: {
+        contract_version: 1,
+        inventory_compiled: true,
+        schema_ready: true,
+        runtime_configured: true,
+        runtime_valid: true,
+        runtime_enabled: true,
+        scan_limit: 1,
+        grace_seconds: 0,
+        candidate_min_completed_generations: 2,
+        r2_read_only: true,
+        apply_compiled: false,
+        delete_compiled: false,
+      },
+    });
+    expect(status.data.lanes).toHaveLength(3);
+    expect(status.data.lanes.every((lane) => lane.owner_present === false)).toBe(
+      true,
+    );
+    expect(
+      status.data.lanes.find((lane) => lane.lane === "result"),
+    ).toMatchObject({
+      scan_generation: 7,
+      last_page_scanned: 1,
+      last_page_deferred: 1,
+      last_page_anomalies: 0,
+      total_scanned: 7,
+      total_deferred: 7,
+      total_anomalies: 0,
+    });
+    expect(status.data.findings).toEqual([
+      { status: "candidate", class: "invalid_contract", count: 1 },
+      { status: "observed", class: "divergent_reference", count: 1 },
+      { status: "resolved", class: "operation_missing", count: 1 },
+    ]);
+
+    const findingsUrl =
+      "https://cinatoken.test/api/platform/container/r2-inventory/findings";
+    const anonymousFindings = await SELF.fetch(findingsUrl);
+    expect(anonymousFindings.status).toBe(401);
+    expect(anonymousFindings.headers.get("cache-control")).toBe("no-store");
+    const findingsResponse = await SELF.fetch(findingsUrl, {
+      headers: { cookie },
+    });
+    const findingsText = await findingsResponse.text();
+    expect(findingsResponse.status).toBe(200);
+    expect(findingsResponse.headers.get("cache-control")).toBe("no-store");
+    for (const raw of [
+      referencedKey,
+      referencedObject.version,
+      orphanKey,
+      orphanObject.version,
+      divergentKey,
+      divergentObject.version,
+      resultKey,
+      invalidKey,
+      active.operationId,
+      orphanOperationId,
+      divergentOperationId,
+      active.reconciliationId,
+      active.claimOwner,
+    ]) {
+      expect(findingsText).not.toContain(raw);
+    }
+    const findings = JSON.parse(findingsText);
+    expect(findings.success).toBe(true);
+    expect(findings.data.records).toHaveLength(3);
+    expect(
+      findings.data.records.map((record) => [record.status, record.class]),
+    ).toEqual([
+      ["observed", "divergent_reference"],
+      ["candidate", "invalid_contract"],
+      ["resolved", "operation_missing"],
+    ]);
+    for (const record of findings.data.records) {
+      expect(record.object_reference).toMatch(/^[a-f0-9]{64}$/u);
+      expect(record.finding_reference).toMatch(/^[a-f0-9]{64}$/u);
+      expect(record.apply_compiled).toBe(false);
+      expect(record.delete_compiled).toBe(false);
+    }
+    const candidateFilter = await SELF.fetch(
+      `${findingsUrl}?status=candidate&class=invalid_contract&lane=client_response&limit=1`,
+      { headers: { cookie } },
+    );
+    const candidateFilterBody = await candidateFilter.json();
+    expect(candidateFilter.status).toBe(200);
+    expect(candidateFilterBody.data.records).toHaveLength(1);
+    expect(candidateFilterBody.data.records[0]).toMatchObject({
+      status: "candidate",
+      class: "invalid_contract",
+      lane: "client_response",
+    });
+
+    expect(await snapshotContainerInventoryBucket(inventoryKeys)).toEqual(
+      bucketBefore,
+    );
+    expect(await snapshotContainerInventoryBusinessState()).toEqual(
+      businessBeforeResolve,
+    );
+    expect(
+      await env.DB.prepare(
+        `SELECT status, claim_generation, attempt_count, last_class, updated_at
+         FROM relay_container_reconciliation_observations
+         WHERE operation_id = ?1`,
+      )
+        .bind(active.operationId)
+        .first(),
+    ).toEqual(observerBefore);
+    expect(
+      await env.DB.prepare(
+        `SELECT status, owner_generation, input_object_key, input_object_version,
+                result_object_key, updated_at
+         FROM relay_container_operations WHERE operation_id = ?1`,
+      )
+        .bind(active.operationId)
+        .first(),
+    ).toEqual(operationBefore);
+    expect(
+      await env.DB.prepare(
+        `SELECT status, owner_generation, input_object_key, input_object_version,
+                result_object_key, updated_at
+         FROM relay_container_operations WHERE operation_id = ?1`,
+      )
+        .bind(orphanOperationId)
+        .first(),
+    ).toEqual(orphanOperationBeforeResolve);
+    expect(
+      await env.DB.prepare(
+        `SELECT status, owner_generation, input_object_key, input_object_version,
+                input_sha256, result_object_key, updated_at
+         FROM relay_container_operations WHERE operation_id = ?1`,
+      )
+        .bind(divergentOperationId)
+        .first(),
+    ).toEqual(divergentOperationBefore);
+  }, 60_000);
 
   it("quarantines and queue-replays one billing DLQ incident under root step-up", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
@@ -4107,7 +4458,14 @@ async function seedRealtimeReservation({
     .run();
 }
 
-async function seedContainerReconciliationObservation(suffix) {
+async function seedContainerReconciliationObservation(
+  suffix,
+  {
+    inputSha256 = "b".repeat(64),
+    inputObjectVersion = `input-version-runtime-${suffix}`,
+    inputSize = 0,
+  } = {},
+) {
   const now = Math.floor(Date.now() / 1000);
   const operationId = `relaycontainer-runtime-observer-${suffix}`;
   const identity =
@@ -4116,7 +4474,6 @@ async function seedContainerReconciliationObservation(suffix) {
       : { client: "1", request: "2", reconciliation: "3" };
   const reconciliationId = identity.reconciliation.repeat(64);
   const claimOwner = "c".repeat(32);
-  const inputSha256 = "b".repeat(64);
   const operationCreatedAt = now - 200;
   const executionDeadlineAt = now - 100;
   const ownerLeaseExpiresAt = now + 600;
@@ -4136,7 +4493,7 @@ async function seedContainerReconciliationObservation(suffix) {
        ?1, ?1, 2, ?2, 42, 'default', 'health_probe',
        ?11, ?3, 1, 1, 1, 8, 3,
        'cinatoken-relay-shard-v1-0003', ?4, 'r2', ?5,
-       ?12, ?6, 0, 'application/json',
+       ?12, ?6, ?14, 'application/json',
        ?13, ?7, ?8, ?9, 'prepared', ?10, ?10
      )`,
   )
@@ -4152,8 +4509,9 @@ async function seedContainerReconciliationObservation(suffix) {
       reconciliationId,
       operationCreatedAt,
       `provider-runtime-observer-${suffix}`,
-      `input-version-runtime-${suffix}`,
+      inputObjectVersion,
       `trace-runtime-observer-${suffix}`,
+      inputSize,
     )
     .run();
   await env.DB.prepare(
@@ -4201,6 +4559,151 @@ async function seedContainerReconciliationObservation(suffix) {
     .run();
 
   return { operationId, reconciliationId, claimOwner };
+}
+
+function containerInventoryMetadata({
+  operationId,
+  ownerGeneration,
+  sha256,
+  size,
+  contentType = "application/json",
+}) {
+  return {
+    gateway_version: "1",
+    operation_id: operationId,
+    owner_generation: String(ownerGeneration),
+    sha256,
+    size: String(size),
+    content_type: contentType,
+  };
+}
+
+async function putContainerInventoryObject({
+  key,
+  body,
+  customMetadata,
+  cacheControl,
+  contentType = "application/json",
+}) {
+  const sha256 = await sha256Hex(body);
+  return env.FILE_BUCKET.put(key, body, {
+    httpMetadata: {
+      contentType,
+      ...(cacheControl === undefined ? {} : { cacheControl }),
+    },
+    customMetadata,
+    sha256,
+  });
+}
+
+async function snapshotContainerInventoryBucket(keys) {
+  const expectedKeys = [...keys].sort();
+  const listedKeys = (await env.FILE_BUCKET.list()).objects
+    .map((object) => object.key)
+    .sort();
+  if (JSON.stringify(listedKeys) !== JSON.stringify(expectedKeys)) {
+    throw new Error("Container inventory fixture key set changed");
+  }
+  const snapshots = [];
+  for (const key of expectedKeys) {
+    const head = await env.FILE_BUCKET.head(key);
+    const object = await env.FILE_BUCKET.get(key);
+    if (!head || !object) {
+      throw new Error(`missing Container inventory fixture: ${key}`);
+    }
+    const body = await object.arrayBuffer();
+    snapshots.push({
+      key,
+      version: head.version,
+      etag: head.etag,
+      size: head.size,
+      uploaded_at: head.uploaded.getTime(),
+      body_sha256: await sha256Hex(body),
+      http_metadata: { ...head.httpMetadata },
+      custom_metadata: { ...head.customMetadata },
+    });
+  }
+  return { keys: listedKeys, objects: snapshots };
+}
+
+async function snapshotContainerInventoryBusinessState() {
+  const tables = [
+    "relay_container_operations",
+    "relay_container_terminal_events",
+    "relay_container_terminal_outbox_state",
+    "relay_billing_reservations",
+    "relay_container_reconciliation_observations",
+    "users",
+    "tokens",
+    "channels",
+  ];
+  const snapshot = {};
+  for (const table of tables) {
+    snapshot[table] = (
+      await env.DB.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()
+    ).results;
+  }
+  return snapshot;
+}
+
+async function seedContainerInventoryInputOperation({
+  operationId,
+  ownerGeneration,
+  inputKey,
+  inputVersion,
+  inputSha256,
+  inputSize,
+}) {
+  const now = Math.floor(Date.now() / 1000);
+  const encoder = new TextEncoder();
+  const clientIdempotencySha256 = await sha256Hex(
+    encoder.encode(`inventory-client-idempotency:${operationId}`),
+  );
+  const clientRequestSha256 = await sha256Hex(
+    encoder.encode(`inventory-client-request:${operationId}`),
+  );
+  const reconciliationId = await sha256Hex(
+    encoder.encode(`inventory-reconciliation:${operationId}`),
+  );
+  const providerOperationId = `provider-${operationId}`;
+  if (providerOperationId.length > 128) {
+    throw new Error("Container inventory provider operation fixture is too long");
+  }
+  await env.DB.prepare(
+    `INSERT INTO relay_container_operations (
+       reservation_key, operation_id, owner_generation,
+       owner_lease_expires_at, channel_id, selected_group, operation_kind,
+       provider_operation_id, admission_sha256, protocol_version,
+       shard_contract_version, ring_generation, shard_count, shard_index,
+       instance_name, execution_deadline_at, input_mode, input_object_key,
+       input_object_version, input_sha256, input_size, input_content_type,
+       trace_id, client_idempotency_hmac_sha256, client_request_sha256,
+       reconciliation_id, status, created_at, updated_at
+     ) VALUES (
+       ?1, ?1, ?2, ?7, 42, 'default', 'health_probe',
+       ?14, ?3, 1, 1, 1, 8, 3,
+       'cinatoken-relay-shard-v1-0003', ?8, 'r2', ?4,
+       ?5, ?6, ?9, 'application/json',
+       'trace-inventory-resolve', ?10, ?11, ?12, 'prepared', ?13, ?13
+     )`,
+  )
+    .bind(
+      operationId,
+      ownerGeneration,
+      "a".repeat(64),
+      inputKey,
+      inputVersion,
+      inputSha256,
+      now + 600,
+      now + 300,
+      inputSize,
+      clientIdempotencySha256,
+      clientRequestSha256,
+      reconciliationId,
+      now - 10,
+      providerOperationId,
+    )
+    .run();
 }
 
 async function deadLetterContainerReconciliationObservation(operationId) {

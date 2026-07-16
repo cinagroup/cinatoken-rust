@@ -45,6 +45,9 @@ export default defineConfig({
           CONTAINER_SCHEDULER_SHARD_COUNT: "8",
           CONTAINER_SCHEDULER_ENABLED: "false",
           CONTAINER_SCHEDULER_STAGING_VERIFIED: "false",
+          CONTAINER_R2_ORPHAN_INVENTORY_ENABLED: "true",
+          CONTAINER_R2_ORPHAN_INVENTORY_SCAN_LIMIT: "1",
+          CONTAINER_R2_ORPHAN_INVENTORY_GRACE_SECONDS: "0",
           REALTIME_SESSION_V1_ENABLED: "true",
           REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED: "true",
           REALTIME_BILLING_RECONCILIATION_ENABLED: "true",
@@ -68,6 +71,7 @@ export default defineConfig({
           TEST_D1_MIGRATIONS: d1Migrations,
         },
         d1Databases: { DB: "do-runtime-test" },
+        r2Buckets: ["FILE_BUCKET"],
         kvNamespaces: ["CACHE_KV"],
         queueProducers: {
           BILLING_QUEUE: "cinatoken-rust-billing-finalization-runtime",

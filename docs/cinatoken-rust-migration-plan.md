@@ -13860,7 +13860,7 @@ cutover ready.
 
 The next slice is the create-only R2 client-response writer/reader and bounded
 D1/DO/R2 divergence reconciler, followed by old-writer drain and a separate
-0044 enforcement migration. No remote migration, deploy, provider call, or
+0045 enforcement migration. No remote migration, deploy, provider call, or
 traffic switch occurred. Go/VPS remains authoritative and production remains
 **NO-GO**.
 
@@ -13934,8 +13934,8 @@ triggers enforce immutable operation/reconciliation identity, legal
 `pending -> leased -> retry|converged|dead_letter` transitions, generation-
 fenced item takeover, generation-fenced global run ownership, monotonic scan
 state, and delete denial. The previous enforcement migration is therefore
-renumbered to 0044 and remains contingent on old-writer drain and remote 0042/
-0043 invariant evidence.
+renumbered to 0045 because 0044 now owns the expand-only R2 inventory, and
+remains contingent on old-writer drain and remote 0042/0043/0044 evidence.
 
 The Worker now has a bounded scheduled observer with these fixed limits:
 
@@ -13966,7 +13966,7 @@ cutover flags also remain false. R2 orphan discovery is still incomplete
 because the Worker has no bounded object-inventory cursor for objects lacking
 a D1 manifest; operator preview/retry APIs, a provider-attempt
 journal, any resolution/apply workflow, edge exact replay, the Linux canary,
-N/N-1, remote fault evidence, and 0044 enforcement remain open.
+N/N-1, remote fault evidence, and 0045 enforcement remain open.
 
 No remote migration, deployment, provider call, object mutation, financial
 mutation, or traffic switch occurred. Go/VPS remains authoritative and
@@ -14004,7 +14004,7 @@ or public relay integration behind these endpoints.
 
 R2 orphan inventory, a provider-attempt journal, authenticated retry apply,
 a separately gated resolution protocol, exact edge replay, the Linux canary,
-N/N-1, remote faults, old-writer drain, and 0044 enforcement remain open. All eight
+N/N-1, remote faults, old-writer drain, and 0045 enforcement remain open. All eight
 Container gates and both cutover-compiled claims remain false. No remote
 migration or deployment occurred; Go/VPS remains authoritative and production
 remains **NO-GO**.
@@ -14052,6 +14052,65 @@ retry apply must be a separate migration and protocol with fresh step-up,
 idempotency, immutable audit, preview-token comparison, generation fencing,
 observer-state-only mutation, and explicit default-false readiness. Provider
 attempt journaling, exact edge replay, the Linux canary, N/N-1, remote faults,
-old-writer drain, and enforcement migration 0044 remain open. All Container
+old-writer drain, and enforcement migration 0045 remain open. All Container
 gates stay false; no remote action occurred; Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.232 Default-Off R2 Orphan Inventory (2026-07-17)
+
+This increment closes the local object-discovery gap without adding cleanup
+authority. The source audit retained cinaVibeSDK's durable named ownership and
+isolation ideas, but not modulo routing, in-memory deployment health, or
+best-effort metadata deletion. The Go audit again rejected request-local retry
+as a model for ambiguous Container dispatch. R2 remains immutable evidence;
+D1 remains the only reference authority.
+
+Migration 0044 is expand-only. It creates independent `input`, `result`, and
+`client_response` cursor rows plus an immutable finding ledger, and adds exact
+manifest lookup indexes. Each lane freezes an opaque R2 cursor, scan generation,
+run generation, random owner, and lease. Finding identity cannot be rewritten
+or deleted. Writes require the active lane fence, and candidate promotion
+rechecks any same-key D1 attachment and active/recovery operation state.
+
+The scheduled Worker is deliberately small and bounded:
+
+1. `CONTAINER_R2_ORPHAN_INVENTORY_ENABLED` is strict and false by default;
+2. each invocation performs at most one R2 LIST page for each fixed prefix;
+3. the page defaults to 4 objects and cannot exceed 8;
+4. the returned cursor is opaque and retained only when `truncated` is true;
+5. HTTP and custom metadata are included, but no object body is read; and
+6. a 24-hour default grace period excludes objects still inside an active or
+   eventually converging write window.
+
+Input, result, and client-response key shapes and metadata are validated
+against the existing immutable artifact contracts. Exact key, version, digest,
+size, content type, result provider/admission identity, and client response
+status/header digest in D1 classify an object as referenced. A canonical but
+unattached object belonging to `prepared`, `dispatched`, or
+`recovery_required` is deferred. Remaining evidence is classified as invalid
+contract, missing operation, known terminal operation without attachment, or
+divergent reference. A divergent key/version attachment remains observed and
+cannot become a cleanup candidate. Other findings must be seen in two completed
+scan generations before candidate status; candidate still means evidence only,
+never permission to delete.
+
+The only writes are to the 0044 observer tables. AdminAuth can read a no-store
+aggregate status and RootAuth can read a no-store, strictly filtered finding
+list. Object keys, R2 versions, operation IDs, and SHA-256 values are replaced
+with domain-separated references. Both APIs report apply/delete as uncompiled,
+and no apply or delete route exists.
+
+This design follows Cloudflare's binding-first Worker guidance and R2 LIST
+contract: use `truncated`, carry the cursor opaquely, and do not infer
+completion from page length. Individual LIST calls are strongly consistent,
+but a multi-page walk is not treated as one transaction snapshot; the repeated
+generation rule supplies conservative evidence across walks.
+
+All tracked environments retain the false runtime flag, all eight Container
+cutover gates stay false, and exact-response/divergence compiled claims remain
+false. No remote migration, deployment, provider call, R2 mutation, business
+D1 mutation, or traffic switch occurred. Next are an independently migrated
+observer retry-apply protocol, provider-attempt journal, exact edge replay,
+the deterministic Linux canary, isolated real-R2 pagination/fault/cost proof,
+N/N-1, old-writer drain, and enforcement migration 0045. Go/VPS remains
+authoritative and production remains **NO-GO**.

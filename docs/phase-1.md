@@ -1707,7 +1707,7 @@ identities and billing generations.
 
 This does not make D1, Durable Objects, and R2 one transaction. The exact R2
 client-response write/read path, divergence reconciler, deterministic Linux
-canary, old-writer drain, future 0044 enforcement, and remote fault evidence
+canary, old-writer drain, future 0045 enforcement, and remote fault evidence
 remain open. `CONTAINER_FINANCIAL_TERMINAL_ENABLED`,
 `CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED`, and
 `CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED` join the five existing gates and
@@ -1734,7 +1734,7 @@ financial mutation.
 No public relay path calls these helpers, and the bounded reconciliation runner
 still needs fair pagination, durable backoff, metrics, authorization, and
 operator resolution. The Linux canary, provider-attempt journal, remote R2 and
-DO lifecycle faults, old-writer drain, 0044 enforcement, and N/N-1 evidence
+DO lifecycle faults, old-writer drain, 0045 enforcement, and N/N-1 evidence
 also remain open. Exact-response and divergence compiled-readiness claims stay
 false, all eight Container gates remain false, no remote action occurred,
 Go/VPS remains authoritative, and production remains **NO-GO**.
@@ -1762,7 +1762,7 @@ exact-response and divergence compiled cutover claims remain false as well.
 Next are bounded R2 orphan inventory, authenticated retry preview,
 provider-attempt journaling, a separately gated generation-fenced apply path,
 edge exact replay, the Linux canary, remote fault/N/N-1 evidence, old-writer
-drain, and enforcement migration 0044. No remote action occurred. Go/VPS
+drain, and enforcement migration 0045. No remote action occurred. Go/VPS
 remains authoritative and production remains **NO-GO**.
 
 ## 2026-07-17 Phase 1 Container Reconciliation Operator Read Gate
@@ -1777,15 +1777,16 @@ and class filters.
 Raw operation/reservation/reconciliation IDs, claim owner, provider identity,
 request data, billing snapshots, quota, and credentials are never returned.
 Domain-separated SHA-256 references replace the operational identities, and
-inconsistent stored counters or unknown state/class values fail closed. A
-Workerd test applies all 43 migrations and verifies unauthenticated denial,
-Root access, no-store headers, filters, aggregates, and response redaction.
+inconsistent stored counters or unknown state/class values fail closed. At
+that checkpoint, a Workerd test applied all 43 then-current migrations and
+verified unauthenticated denial, Root access, no-store headers, filters,
+aggregates, and response redaction.
 
 These status/list routes perform only parameterized D1 reads. At that
 checkpoint no retry or apply endpoint existed; the next increment below adds
 preview only. R2 orphan inventory, retry apply, provider-attempt journal,
 generation-fenced resolution, edge replay, Linux canary, remote faults/N/N-1,
-old-writer drain, and 0044 enforcement remain open. All Container gates stay
+old-writer drain, and 0045 enforcement remain open. All Container gates stay
 false, no remote action occurred, Go/VPS remains authoritative, and production
 remains **NO-GO**.
 
@@ -1809,5 +1810,37 @@ apply as uncompiled and disabled, requires future step-up, and forbids provider,
 operation, billing, DO, and R2 mutation. No apply route or runtime flag exists.
 Next are bounded R2 orphan inventory, a separately migrated observer-only retry
 apply protocol, provider-attempt journaling, edge replay, Linux canary, remote
-fault/N/N-1 evidence, old-writer drain, and enforcement migration 0044. All
+fault/N/N-1 evidence, old-writer drain, and enforcement migration 0045. All
 Container gates remain false and production remains **NO-GO**.
+
+## 2026-07-17 Phase 1 Default-Off R2 Orphan Inventory Gate
+
+Migration 0044 adds three independent, generation-fenced inventory cursors and
+an immutable finding ledger for Container input, result, and client-response
+objects. It seeds only the three lane identities, performs no operation
+backfill, and adds exact lookup indexes for existing D1 manifests. Findings
+have no operation foreign key so a genuinely missing operation can be recorded.
+
+The scheduled Worker uses one binding-level R2 LIST page per lane, defaults to
+four objects with a hard limit of eight, carries the returned opaque cursor only
+when `truncated` is true, requests HTTP/custom metadata, and never reads a body
+or mutates an object. Recent objects are deferred for 24 hours. Key, checksum,
+size, content type, and lane-specific metadata must all match the immutable
+artifact contract. Exact D1 references include result provider/admission and
+client response status/header provenance and resolve findings. Active or
+recovery operations defer unattached artifacts. Divergent key/version
+attachments remain observed; only unattached anomalies can pass the two-
+completed-generation candidate gate.
+
+An AdminAuth no-store status exposes lane progress and bounded class totals.
+A RootAuth no-store list exposes only domain-separated object/operation
+references and strict filters. Apply and delete are explicitly uncompiled and
+no such routes exist. `CONTAINER_R2_ORPHAN_INVENTORY_ENABLED=false` in every
+tracked environment; scan limit is 4 and grace is 86400 seconds. This observer
+is not a Container cutover gate and does not authorize retry, cleanup,
+financial/operation mutation, provider calls, remote migration, or deployment.
+
+Next are an independently migrated retry-apply protocol, provider-attempt
+journaling, edge replay, the Linux canary, isolated real-R2 fault/cost evidence,
+N/N-1, old-writer drain, and enforcement migration 0045. Go/VPS remains
+authoritative and production remains **NO-GO**.

@@ -36,6 +36,8 @@ pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_MIGRATION: &str =
     "0042_relay_container_financial_terminal_expand.sql";
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_MIGRATION: &str =
     "0043_relay_container_reconciliation_observer.sql";
+pub(crate) const RELAY_CONTAINER_R2_INVENTORY_MIGRATION: &str =
+    "0044_relay_container_r2_orphan_inventory.sql";
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
     &["pending", "leased", "retry", "converged", "dead_letter"];
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
@@ -57,6 +59,16 @@ pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
     "legacy_terminal_without_receipt",
     "store_unavailable",
     "contract_violation",
+];
+pub(crate) const RELAY_CONTAINER_R2_INVENTORY_LANES: &[&str] =
+    &["input", "result", "client_response"];
+pub(crate) const RELAY_CONTAINER_R2_INVENTORY_STATUSES: &[&str] =
+    &["observed", "candidate", "resolved"];
+pub(crate) const RELAY_CONTAINER_R2_INVENTORY_CLASSES: &[&str] = &[
+    "invalid_contract",
+    "operation_missing",
+    "operation_known_unattached",
+    "divergent_reference",
 ];
 const RELAY_CONTAINER_OPERATION_RECOVERY_MAX_LIMIT: i64 = 64;
 const RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION: i64 = 1;
@@ -334,6 +346,135 @@ pub enum RelayContainerReconciliationRecordOutcome {
     StaleLease,
     Terminal,
     Conflict,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerR2InventoryCursor {
+    pub lane_name: String,
+    pub object_prefix: String,
+    pub r2_cursor: String,
+    pub round_active: i64,
+    pub scan_generation: i64,
+    pub run_generation: i64,
+    pub run_owner: String,
+    pub run_lease_expires_at: i64,
+    pub round_started_at: i64,
+    pub round_completed_at: i64,
+    pub last_started_at: i64,
+    pub last_completed_at: i64,
+    pub last_success_at: i64,
+    pub last_error_code: String,
+    pub last_page_scanned: i64,
+    pub last_page_deferred: i64,
+    pub last_page_referenced: i64,
+    pub last_page_anomalies: i64,
+    pub last_page_resolved: i64,
+    pub total_scanned: i64,
+    pub total_deferred: i64,
+    pub total_referenced: i64,
+    pub total_anomalies: i64,
+    pub total_resolved: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerR2InventoryFindingCount {
+    pub status: String,
+    pub classification: String,
+    pub finding_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerR2InventoryFindingRow {
+    pub finding_id: i64,
+    pub lane_name: String,
+    pub object_key: String,
+    pub object_version: String,
+    pub operation_id: String,
+    pub owner_generation: i64,
+    pub object_sha256: String,
+    pub object_size: i64,
+    pub uploaded_at: i64,
+    pub status: String,
+    pub classification: String,
+    pub first_scan_generation: i64,
+    pub last_scan_generation: i64,
+    pub distinct_scan_generations: i64,
+    pub observation_count: i64,
+    pub first_observed_at: i64,
+    pub last_observed_at: i64,
+    pub candidate_at: i64,
+    pub resolved_at: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerR2InventoryRunLease {
+    pub lane_name: String,
+    pub object_prefix: String,
+    pub r2_cursor: String,
+    pub round_active: bool,
+    pub scan_generation: i64,
+    pub run_generation: i64,
+    pub run_owner: String,
+    pub run_lease_expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayContainerR2InventoryRunClaimOutcome {
+    Applied(RelayContainerR2InventoryRunLease),
+    AlreadyRunning,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerR2ReferenceState {
+    Referenced,
+    ReferencedOpenFinding,
+    DeferredActiveOperation,
+    OperationMissing,
+    OperationKnownUnattached,
+    DivergentReference,
+}
+
+impl RelayContainerR2ReferenceState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Referenced | Self::ReferencedOpenFinding => "referenced",
+            Self::DeferredActiveOperation => "deferred_active_operation",
+            Self::OperationMissing => "operation_missing",
+            Self::OperationKnownUnattached => "operation_known_unattached",
+            Self::DivergentReference => "divergent_reference",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayContainerR2InventoryObject<'a> {
+    pub lane_name: &'a str,
+    pub object_key: &'a str,
+    pub object_version: &'a str,
+    pub operation_id: &'a str,
+    pub owner_generation: i64,
+    pub object_sha256: &'a str,
+    pub object_size: i64,
+    pub content_type: &'a str,
+    pub provider_operation_id: &'a str,
+    pub admission_sha256: &'a str,
+    pub response_status: i64,
+    pub headers_sha256: &'a str,
+    pub uploaded_at: i64,
+    pub reference_state: Option<RelayContainerR2ReferenceState>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RelayContainerR2InventoryPageStats {
+    pub scanned: i64,
+    pub deferred: i64,
+    pub referenced: i64,
+    pub anomalies: i64,
+    pub resolved: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4954,6 +5095,909 @@ fn validate_relay_container_operation_for_reconciliation(
         },
         created_at: operation.created_at,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct RelayContainerR2ReferenceStateRow {
+    reference_state: String,
+}
+
+pub async fn relay_container_r2_inventory_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    let migration = [D1Type::Text(RELAY_CONTAINER_R2_INVENTORY_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS count
+            FROM d1_migrations
+            WHERE name = ?1
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_r2_inventory_cursors'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_r2_inventory_findings'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index'
+                  AND name = 'idx_relay_container_operations_input_object_identity'
+              )
+            "#,
+        )
+        .bind_refs(&migration)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn relay_container_r2_inventory_cursors(
+    db: &D1Database,
+) -> worker::Result<Vec<RelayContainerR2InventoryCursor>> {
+    db.prepare(
+        r#"
+        SELECT lane_name, object_prefix, r2_cursor, round_active,
+               scan_generation, run_generation, run_owner,
+               run_lease_expires_at, round_started_at, round_completed_at,
+               last_started_at, last_completed_at, last_success_at,
+               last_error_code, last_page_scanned, last_page_deferred,
+               last_page_referenced, last_page_anomalies,
+               last_page_resolved, total_scanned, total_deferred,
+               total_referenced, total_anomalies, total_resolved, updated_at
+        FROM relay_container_r2_inventory_cursors
+        ORDER BY CASE lane_name
+          WHEN 'input' THEN 1
+          WHEN 'result' THEN 2
+          ELSE 3
+        END
+        LIMIT 3
+        "#,
+    )
+    .all()
+    .await?
+    .results::<RelayContainerR2InventoryCursor>()
+}
+
+pub async fn relay_container_r2_inventory_finding_counts(
+    db: &D1Database,
+) -> worker::Result<Vec<RelayContainerR2InventoryFindingCount>> {
+    db.prepare(
+        r#"
+        SELECT status, classification, COUNT(1) AS finding_count
+        FROM relay_container_r2_inventory_findings
+        GROUP BY status, classification
+        ORDER BY status ASC, classification ASC
+        LIMIT 16
+        "#,
+    )
+    .all()
+    .await?
+    .results::<RelayContainerR2InventoryFindingCount>()
+}
+
+pub async fn list_relay_container_r2_inventory_findings(
+    db: &D1Database,
+    before_id: i64,
+    status: &str,
+    classification: &str,
+    lane_name: &str,
+    limit: i64,
+) -> worker::Result<Vec<RelayContainerR2InventoryFindingRow>> {
+    if before_id < 0
+        || (!status.is_empty() && !RELAY_CONTAINER_R2_INVENTORY_STATUSES.contains(&status))
+        || (!classification.is_empty()
+            && !RELAY_CONTAINER_R2_INVENTORY_CLASSES.contains(&classification))
+        || (!lane_name.is_empty() && !RELAY_CONTAINER_R2_INVENTORY_LANES.contains(&lane_name))
+    {
+        return Err(worker::Error::RustError(
+            "relay container R2 inventory finding query is invalid".to_string(),
+        ));
+    }
+    let before_id = before_id.to_string();
+    let limit = limit.clamp(1, 51).to_string();
+    let args = [
+        D1Type::Text(&before_id),
+        D1Type::Text(status),
+        D1Type::Text(classification),
+        D1Type::Text(lane_name),
+        D1Type::Text(&limit),
+    ];
+    db.prepare(
+        r#"
+        SELECT finding_id, lane_name, object_key, object_version,
+               operation_id, owner_generation, object_sha256, object_size,
+               uploaded_at, status, classification, first_scan_generation,
+               last_scan_generation, distinct_scan_generations,
+               observation_count, first_observed_at, last_observed_at,
+               candidate_at, resolved_at, created_at, updated_at
+        FROM relay_container_r2_inventory_findings
+        WHERE (CAST(?1 AS INTEGER) = 0 OR finding_id < CAST(?1 AS INTEGER))
+          AND (?2 = '' OR status = ?2)
+          AND (?3 = '' OR classification = ?3)
+          AND (?4 = '' OR lane_name = ?4)
+        ORDER BY finding_id DESC
+        LIMIT CAST(?5 AS INTEGER)
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RelayContainerR2InventoryFindingRow>()
+}
+
+pub async fn claim_relay_container_r2_inventory_run(
+    db: &D1Database,
+    lane_name: &str,
+    run_owner: &str,
+    now: i64,
+    lease_seconds: i64,
+) -> worker::Result<RelayContainerR2InventoryRunClaimOutcome> {
+    if !RELAY_CONTAINER_R2_INVENTORY_LANES.contains(&lane_name) {
+        return Err(worker::Error::RustError(
+            "relay container R2 inventory lane is invalid".to_string(),
+        ));
+    }
+    validate_relay_container_token(run_owner, "R2 inventory run owner", 32, 32, |byte| {
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+    })?;
+    if now <= 0 || !(15..=120).contains(&lease_seconds) {
+        return Err(worker::Error::RustError(
+            "relay container R2 inventory run lease policy is invalid".to_string(),
+        ));
+    }
+    let lease_expires_at = now.saturating_add(lease_seconds);
+    let now_text = now.to_string();
+    let lease_expires_at_text = lease_expires_at.to_string();
+    let args = [
+        D1Type::Text(lane_name),
+        D1Type::Text(run_owner),
+        D1Type::Text(&now_text),
+        D1Type::Text(&lease_expires_at_text),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_container_r2_inventory_cursors
+            SET run_generation = run_generation + 1,
+                run_owner = ?2,
+                run_lease_expires_at = CAST(?4 AS INTEGER),
+                last_started_at = CAST(?3 AS INTEGER),
+                last_error_code = '',
+                updated_at = CAST(?3 AS INTEGER)
+            WHERE lane_name = ?1
+              AND (run_owner = '' OR run_lease_expires_at <= CAST(?3 AS INTEGER))
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let cursor = load_relay_container_r2_inventory_cursor(db, lane_name).await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        if cursor.run_owner == run_owner && cursor.run_lease_expires_at == lease_expires_at {
+            return Ok(RelayContainerR2InventoryRunClaimOutcome::Applied(
+                relay_container_r2_inventory_lease(cursor),
+            ));
+        }
+        return Ok(RelayContainerR2InventoryRunClaimOutcome::Conflict);
+    }
+    Ok(
+        if !cursor.run_owner.is_empty() && cursor.run_lease_expires_at > now {
+            RelayContainerR2InventoryRunClaimOutcome::AlreadyRunning
+        } else {
+            RelayContainerR2InventoryRunClaimOutcome::Conflict
+        },
+    )
+}
+
+pub async fn begin_relay_container_r2_inventory_round(
+    db: &D1Database,
+    lease: &RelayContainerR2InventoryRunLease,
+    now: i64,
+) -> worker::Result<RelayContainerR2InventoryRunLease> {
+    if lease.round_active {
+        return Ok(lease.clone());
+    }
+    let generation = lease.run_generation.to_string();
+    let now = now.to_string();
+    let args = [
+        D1Type::Text(&lease.lane_name),
+        D1Type::Text(&lease.run_owner),
+        D1Type::Text(&generation),
+        D1Type::Text(&now),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_container_r2_inventory_cursors
+            SET round_active = 1,
+                scan_generation = scan_generation + 1,
+                round_started_at = CAST(?4 AS INTEGER),
+                updated_at = CAST(?4 AS INTEGER)
+            WHERE lane_name = ?1
+              AND run_owner = ?2
+              AND run_generation = CAST(?3 AS INTEGER)
+              AND run_lease_expires_at > CAST(?4 AS INTEGER)
+              AND round_active = 0
+              AND r2_cursor = ''
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) != 1 {
+        return Err(worker::Error::RustError(
+            "relay container R2 inventory round lost its fence".to_string(),
+        ));
+    }
+    let cursor = load_relay_container_r2_inventory_cursor(db, &lease.lane_name).await?;
+    if cursor.run_owner != lease.run_owner
+        || cursor.run_generation != lease.run_generation
+        || cursor.round_active != 1
+        || cursor.scan_generation != lease.scan_generation.saturating_add(1)
+    {
+        return Err(worker::Error::RustError(
+            "relay container R2 inventory round readback conflicted".to_string(),
+        ));
+    }
+    Ok(relay_container_r2_inventory_lease(cursor))
+}
+
+pub async fn classify_relay_container_r2_inventory_objects(
+    db: &D1Database,
+    objects: &[RelayContainerR2InventoryObject<'_>],
+) -> worker::Result<Vec<RelayContainerR2ReferenceState>> {
+    if objects.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut statements = Vec::with_capacity(objects.len());
+    for object in objects {
+        validate_relay_container_r2_inventory_object(object, false)?;
+        let owner_generation = object.owner_generation.to_string();
+        let object_size = object.object_size.to_string();
+        let response_status = object.response_status.to_string();
+        let args = [
+            D1Type::Text(object.lane_name),
+            D1Type::Text(object.object_key),
+            D1Type::Text(object.object_version),
+            D1Type::Text(object.operation_id),
+            D1Type::Text(&owner_generation),
+            D1Type::Text(object.object_sha256),
+            D1Type::Text(&object_size),
+            D1Type::Text(object.content_type),
+            D1Type::Text(object.provider_operation_id),
+            D1Type::Text(object.admission_sha256),
+            D1Type::Text(&response_status),
+            D1Type::Text(object.headers_sha256),
+        ];
+        statements.push(
+            db.prepare(
+                r#"
+                SELECT CASE
+                  WHEN EXISTS (
+                    SELECT 1
+                    FROM relay_container_r2_inventory_findings AS finding
+                    WHERE finding.object_key = ?2
+                      AND finding.object_version = ?3
+                      AND finding.status IN ('observed', 'candidate')
+                  ) AND (
+                    (?1 = 'input' AND EXISTS (
+                      SELECT 1 FROM relay_container_operations
+                      WHERE input_object_key = ?2 AND input_object_version = ?3
+                        AND operation_id = ?4
+                        AND owner_generation = CAST(?5 AS INTEGER)
+                        AND input_sha256 = ?6
+                        AND input_size = CAST(?7 AS INTEGER)
+                        AND input_content_type = ?8
+                    ))
+                    OR (?1 = 'result' AND EXISTS (
+                      SELECT 1 FROM relay_container_operations
+                      WHERE result_object_key = ?2 AND result_object_version = ?3
+                        AND operation_id = ?4
+                        AND owner_generation = CAST(?5 AS INTEGER)
+                        AND result_sha256 = ?6
+                        AND result_size = CAST(?7 AS INTEGER)
+                        AND result_content_type = ?8
+                        AND provider_operation_id = ?9
+                        AND admission_sha256 = ?10
+                    ))
+                    OR (?1 = 'client_response' AND EXISTS (
+                      SELECT 1 FROM relay_container_terminal_events
+                      WHERE client_response_object_key = ?2
+                        AND client_response_object_version = ?3
+                        AND operation_id = ?4
+                        AND owner_generation = CAST(?5 AS INTEGER)
+                        AND client_response_sha256 = ?6
+                        AND client_response_size = CAST(?7 AS INTEGER)
+                        AND client_response_content_type = ?8
+                        AND client_response_status = CAST(?11 AS INTEGER)
+                        AND client_response_headers_sha256 = ?12
+                    ))
+                  ) THEN 'referenced_open_finding'
+                  WHEN
+                    (?1 = 'input' AND EXISTS (
+                      SELECT 1 FROM relay_container_operations
+                      WHERE input_object_key = ?2 AND input_object_version = ?3
+                        AND operation_id = ?4
+                        AND owner_generation = CAST(?5 AS INTEGER)
+                        AND input_sha256 = ?6
+                        AND input_size = CAST(?7 AS INTEGER)
+                        AND input_content_type = ?8
+                    ))
+                    OR (?1 = 'result' AND EXISTS (
+                      SELECT 1 FROM relay_container_operations
+                      WHERE result_object_key = ?2 AND result_object_version = ?3
+                        AND operation_id = ?4
+                        AND owner_generation = CAST(?5 AS INTEGER)
+                        AND result_sha256 = ?6
+                        AND result_size = CAST(?7 AS INTEGER)
+                        AND result_content_type = ?8
+                        AND provider_operation_id = ?9
+                        AND admission_sha256 = ?10
+                    ))
+                    OR (?1 = 'client_response' AND EXISTS (
+                      SELECT 1 FROM relay_container_terminal_events
+                      WHERE client_response_object_key = ?2
+                        AND client_response_object_version = ?3
+                        AND operation_id = ?4
+                        AND owner_generation = CAST(?5 AS INTEGER)
+                        AND client_response_sha256 = ?6
+                        AND client_response_size = CAST(?7 AS INTEGER)
+                        AND client_response_content_type = ?8
+                        AND client_response_status = CAST(?11 AS INTEGER)
+                        AND client_response_headers_sha256 = ?12
+                    ))
+                    THEN 'referenced'
+                  WHEN
+                    (?1 = 'input' AND EXISTS (
+                      SELECT 1 FROM relay_container_operations WHERE input_object_key = ?2
+                    ))
+                    OR (?1 = 'result' AND EXISTS (
+                      SELECT 1 FROM relay_container_operations WHERE result_object_key = ?2
+                    ))
+                    OR (?1 = 'client_response' AND EXISTS (
+                      SELECT 1 FROM relay_container_terminal_events
+                      WHERE client_response_object_key = ?2
+                    ))
+                    THEN 'divergent_reference'
+                  WHEN EXISTS (
+                    SELECT 1 FROM relay_container_operations
+                    WHERE operation_id = ?4
+                      AND owner_generation = CAST(?5 AS INTEGER)
+                      AND status IN ('prepared', 'dispatched', 'recovery_required')
+                  ) THEN 'deferred_active_operation'
+                  WHEN EXISTS (
+                    SELECT 1 FROM relay_container_operations
+                    WHERE operation_id = ?4
+                      AND owner_generation = CAST(?5 AS INTEGER)
+                  ) THEN 'operation_known_unattached'
+                  ELSE 'operation_missing'
+                END AS reference_state
+                "#,
+            )
+            .bind_refs(&args)?,
+        );
+    }
+    let results = db.batch(statements).await?;
+    let mut states = Vec::with_capacity(results.len());
+    for result in results {
+        let row = result
+            .results::<RelayContainerR2ReferenceStateRow>()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                worker::Error::RustError(
+                    "relay container R2 inventory reference readback is missing".to_string(),
+                )
+            })?;
+        states.push(match row.reference_state.as_str() {
+            "referenced" => RelayContainerR2ReferenceState::Referenced,
+            "referenced_open_finding" => RelayContainerR2ReferenceState::ReferencedOpenFinding,
+            "deferred_active_operation" => RelayContainerR2ReferenceState::DeferredActiveOperation,
+            "operation_missing" => RelayContainerR2ReferenceState::OperationMissing,
+            "operation_known_unattached" => {
+                RelayContainerR2ReferenceState::OperationKnownUnattached
+            }
+            "divergent_reference" => RelayContainerR2ReferenceState::DivergentReference,
+            _ => {
+                return Err(worker::Error::RustError(
+                    "relay container R2 inventory reference state is invalid".to_string(),
+                ));
+            }
+        });
+    }
+    Ok(states)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn record_relay_container_r2_inventory_page(
+    db: &D1Database,
+    lease: &RelayContainerR2InventoryRunLease,
+    objects: &[RelayContainerR2InventoryObject<'_>],
+    next_cursor: Option<&str>,
+    stats: RelayContainerR2InventoryPageStats,
+    now: i64,
+) -> worker::Result<bool> {
+    if !lease.round_active
+        || lease.scan_generation <= 0
+        || lease.run_lease_expires_at <= now
+        || stats.scanned != stats.deferred + stats.referenced + stats.anomalies
+        || stats.resolved < 0
+        || stats.resolved > stats.referenced
+        || next_cursor.is_some_and(|cursor| cursor.is_empty() || cursor.len() > 4096)
+    {
+        return Err(worker::Error::RustError(
+            "relay container R2 inventory page contract is invalid".to_string(),
+        ));
+    }
+    let mut statements = Vec::with_capacity(objects.len().saturating_mul(2).saturating_add(4));
+    let generation = lease.scan_generation.to_string();
+    let now_text = now.to_string();
+    for object in objects {
+        validate_relay_container_r2_inventory_object(object, true)?;
+        if object.lane_name != lease.lane_name {
+            return Err(worker::Error::RustError(
+                "relay container R2 inventory object lane is stale".to_string(),
+            ));
+        }
+        let owner_generation = object.owner_generation.to_string();
+        let object_size = object.object_size.to_string();
+        let uploaded_at = object.uploaded_at.to_string();
+        match object.reference_state {
+            Some(RelayContainerR2ReferenceState::Referenced) => {}
+            Some(RelayContainerR2ReferenceState::DeferredActiveOperation) => {}
+            Some(RelayContainerR2ReferenceState::ReferencedOpenFinding) => {
+                let args = [
+                    D1Type::Text(object.object_key),
+                    D1Type::Text(object.object_version),
+                    D1Type::Text(&generation),
+                    D1Type::Text(&now_text),
+                    D1Type::Text(object.lane_name),
+                    D1Type::Text(object.operation_id),
+                    D1Type::Text(&owner_generation),
+                    D1Type::Text(object.object_sha256),
+                    D1Type::Text(&object_size),
+                    D1Type::Text(&uploaded_at),
+                ];
+                let statement = db
+                    .prepare(
+                        r#"
+                        UPDATE relay_container_r2_inventory_findings
+                        SET status = 'resolved',
+                            last_scan_generation = CAST(?3 AS INTEGER),
+                            distinct_scan_generations = distinct_scan_generations +
+                              CASE WHEN last_scan_generation < CAST(?3 AS INTEGER)
+                                THEN 1 ELSE 0 END,
+                            observation_count = observation_count + 1,
+                            last_observed_at = CAST(?4 AS INTEGER),
+                            resolved_at = CAST(?4 AS INTEGER),
+                            updated_at = CAST(?4 AS INTEGER)
+                        WHERE object_key = ?1
+                          AND object_version = ?2
+                          AND status IN ('observed', 'candidate')
+                          AND lane_name = ?5
+                          AND operation_id = ?6
+                          AND owner_generation = CAST(?7 AS INTEGER)
+                          AND object_sha256 = ?8
+                          AND object_size = CAST(?9 AS INTEGER)
+                          AND uploaded_at = CAST(?10 AS INTEGER)
+                        "#,
+                    )
+                    .bind_refs(&args)?;
+                push_relay_container_r2_inventory_guarded_statement(
+                    db,
+                    &mut statements,
+                    statement,
+                    object.lane_name,
+                )?;
+            }
+            reference_state => {
+                if reference_state.is_none()
+                    && (!object.operation_id.is_empty()
+                        || object.owner_generation != 0
+                        || !object.object_sha256.is_empty())
+                {
+                    return Err(worker::Error::RustError(
+                        "relay container R2 inventory reference state is missing".to_string(),
+                    ));
+                }
+                let classification = reference_state
+                    .map(RelayContainerR2ReferenceState::as_str)
+                    .unwrap_or("invalid_contract");
+                if !RELAY_CONTAINER_R2_INVENTORY_CLASSES.contains(&classification) {
+                    return Err(worker::Error::RustError(
+                        "relay container R2 inventory classification is invalid".to_string(),
+                    ));
+                }
+                let args = [
+                    D1Type::Text(object.lane_name),
+                    D1Type::Text(object.object_key),
+                    D1Type::Text(object.object_version),
+                    D1Type::Text(object.operation_id),
+                    D1Type::Text(&owner_generation),
+                    D1Type::Text(object.object_sha256),
+                    D1Type::Text(&object_size),
+                    D1Type::Text(&uploaded_at),
+                    D1Type::Text(classification),
+                    D1Type::Text(&generation),
+                    D1Type::Text(&now_text),
+                ];
+                let statement = db
+                    .prepare(
+                        r#"
+                        INSERT INTO relay_container_r2_inventory_findings (
+                          lane_name, object_key, object_version, operation_id,
+                          owner_generation, object_sha256, object_size, uploaded_at,
+                          status, classification, first_scan_generation,
+                          last_scan_generation, distinct_scan_generations,
+                          observation_count, first_observed_at, last_observed_at,
+                          candidate_at, resolved_at, created_at, updated_at
+                        ) VALUES (
+                          ?1, ?2, ?3, ?4, CAST(?5 AS INTEGER), ?6,
+                          CAST(?7 AS INTEGER), CAST(?8 AS INTEGER),
+                          'observed', ?9, CAST(?10 AS INTEGER),
+                          CAST(?10 AS INTEGER), 1, 1,
+                          CAST(?11 AS INTEGER), CAST(?11 AS INTEGER),
+                          0, 0, CAST(?11 AS INTEGER), CAST(?11 AS INTEGER)
+                        )
+                        ON CONFLICT(object_key, object_version) DO UPDATE SET
+                          status = CASE
+                            WHEN excluded.classification = 'divergent_reference'
+                              THEN 'observed'
+                            ELSE status
+                          END,
+                          classification = excluded.classification,
+                          last_scan_generation = excluded.last_scan_generation,
+                          distinct_scan_generations = distinct_scan_generations +
+                            CASE WHEN last_scan_generation < excluded.last_scan_generation
+                              THEN 1 ELSE 0 END,
+                          observation_count = observation_count + 1,
+                          last_observed_at = excluded.last_observed_at,
+                          candidate_at = CASE
+                            WHEN excluded.classification = 'divergent_reference'
+                              THEN 0
+                            ELSE candidate_at
+                          END,
+                          updated_at = excluded.updated_at
+                        WHERE status IN ('observed', 'candidate')
+                          AND lane_name = excluded.lane_name
+                          AND operation_id = excluded.operation_id
+                          AND owner_generation = excluded.owner_generation
+                          AND object_sha256 = excluded.object_sha256
+                          AND object_size = excluded.object_size
+                          AND uploaded_at = excluded.uploaded_at
+                        "#,
+                    )
+                    .bind_refs(&args)?;
+                push_relay_container_r2_inventory_guarded_statement(
+                    db,
+                    &mut statements,
+                    statement,
+                    object.lane_name,
+                )?;
+            }
+        }
+    }
+    if next_cursor.is_none() {
+        let args = [
+            D1Type::Text(&lease.lane_name),
+            D1Type::Text(&generation),
+            D1Type::Text(&now_text),
+        ];
+        statements.push(
+            db.prepare(
+                r#"
+                UPDATE relay_container_r2_inventory_findings
+                SET status = 'candidate',
+                    candidate_at = CAST(?3 AS INTEGER),
+                    updated_at = CAST(?3 AS INTEGER)
+                WHERE lane_name = ?1
+                  AND status = 'observed'
+                  AND classification <> 'divergent_reference'
+                  AND distinct_scan_generations >= 2
+                  AND last_scan_generation = CAST(?2 AS INTEGER)
+                  AND NOT (
+                    (
+                      lane_name = 'input'
+                      AND EXISTS (
+                        SELECT 1 FROM relay_container_operations
+                        WHERE input_object_key = relay_container_r2_inventory_findings.object_key
+                      )
+                    )
+                    OR (
+                      lane_name = 'result'
+                      AND EXISTS (
+                        SELECT 1 FROM relay_container_operations
+                        WHERE result_object_key = relay_container_r2_inventory_findings.object_key
+                      )
+                    )
+                    OR (
+                      lane_name = 'client_response'
+                      AND EXISTS (
+                        SELECT 1 FROM relay_container_terminal_events
+                        WHERE client_response_object_key = relay_container_r2_inventory_findings.object_key
+                      )
+                    )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM relay_container_operations
+                    WHERE operation_id = relay_container_r2_inventory_findings.operation_id
+                      AND owner_generation = relay_container_r2_inventory_findings.owner_generation
+                      AND status IN ('prepared', 'dispatched', 'recovery_required')
+                  )
+                "#,
+            )
+            .bind_refs(&args)?,
+        );
+    }
+    let run_generation = lease.run_generation.to_string();
+    let scanned = stats.scanned.to_string();
+    let deferred = stats.deferred.to_string();
+    let referenced = stats.referenced.to_string();
+    let anomalies = stats.anomalies.to_string();
+    let resolved = stats.resolved.to_string();
+    let next_cursor = next_cursor.unwrap_or("");
+    let truncated = if next_cursor.is_empty() { "0" } else { "1" };
+    let args = [
+        D1Type::Text(&lease.lane_name),
+        D1Type::Text(&lease.run_owner),
+        D1Type::Text(&run_generation),
+        D1Type::Text(&generation),
+        D1Type::Text(&lease.r2_cursor),
+        D1Type::Text(next_cursor),
+        D1Type::Text(truncated),
+        D1Type::Text(&scanned),
+        D1Type::Text(&deferred),
+        D1Type::Text(&referenced),
+        D1Type::Text(&anomalies),
+        D1Type::Text(&resolved),
+        D1Type::Text(&now_text),
+    ];
+    let cursor_statement = db
+        .prepare(
+            r#"
+            UPDATE relay_container_r2_inventory_cursors
+            SET r2_cursor = ?6,
+                round_active = CAST(?7 AS INTEGER),
+                round_completed_at = CASE WHEN ?7 = '0'
+                  THEN CAST(?13 AS INTEGER) ELSE round_completed_at END,
+                last_page_scanned = CAST(?8 AS INTEGER),
+                last_page_deferred = CAST(?9 AS INTEGER),
+                last_page_referenced = CAST(?10 AS INTEGER),
+                last_page_anomalies = CAST(?11 AS INTEGER),
+                last_page_resolved = CAST(?12 AS INTEGER),
+                total_scanned = total_scanned + CAST(?8 AS INTEGER),
+                total_deferred = total_deferred + CAST(?9 AS INTEGER),
+                total_referenced = total_referenced + CAST(?10 AS INTEGER),
+                total_anomalies = total_anomalies + CAST(?11 AS INTEGER),
+                total_resolved = total_resolved + CAST(?12 AS INTEGER),
+                updated_at = CAST(?13 AS INTEGER)
+            WHERE lane_name = ?1
+              AND run_owner = ?2
+              AND run_generation = CAST(?3 AS INTEGER)
+              AND run_lease_expires_at > CAST(?13 AS INTEGER)
+              AND round_active = 1
+              AND scan_generation = CAST(?4 AS INTEGER)
+              AND r2_cursor = ?5
+            "#,
+        )
+        .bind_refs(&args)?;
+    let cursor_statement_index = push_relay_container_r2_inventory_guarded_statement(
+        db,
+        &mut statements,
+        cursor_statement,
+        &lease.lane_name,
+    )?;
+    let results = db.batch(statements).await?;
+    let cursor_result = results.get(cursor_statement_index).ok_or_else(|| {
+        worker::Error::RustError(
+            "relay container R2 inventory cursor result is missing".to_string(),
+        )
+    })?;
+    Ok(cursor_result
+        .meta()?
+        .and_then(|meta| meta.changes)
+        .unwrap_or(0)
+        == 1)
+}
+
+fn push_relay_container_r2_inventory_guarded_statement(
+    db: &D1Database,
+    statements: &mut Vec<worker::D1PreparedStatement>,
+    statement: worker::D1PreparedStatement,
+    lane_name: &str,
+) -> worker::Result<usize> {
+    let index = statements.len();
+    statements.push(statement);
+    let args = [D1Type::Text(lane_name)];
+    statements.push(
+        db.prepare(
+            r#"
+            INSERT INTO relay_container_r2_inventory_cursors (
+              lane_name, object_prefix
+            )
+            SELECT ?1, ''
+            WHERE changes() != 1
+            "#,
+        )
+        .bind_refs(&args)?,
+    );
+    Ok(index)
+}
+
+pub async fn complete_relay_container_r2_inventory_run(
+    db: &D1Database,
+    lease: &RelayContainerR2InventoryRunLease,
+    now: i64,
+    success: bool,
+    error_code: &str,
+) -> worker::Result<bool> {
+    if success {
+        if !error_code.is_empty() {
+            return Err(worker::Error::RustError(
+                "successful relay container R2 inventory run has an error".to_string(),
+            ));
+        }
+    } else {
+        validate_relay_container_lower_id(error_code, "R2 inventory run error", 1, 64)?;
+    }
+    let generation = lease.run_generation.to_string();
+    let now = now.to_string();
+    let success = if success { "1" } else { "0" };
+    let args = [
+        D1Type::Text(&lease.lane_name),
+        D1Type::Text(&lease.run_owner),
+        D1Type::Text(&generation),
+        D1Type::Text(&now),
+        D1Type::Text(success),
+        D1Type::Text(error_code),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_container_r2_inventory_cursors
+            SET run_owner = '', run_lease_expires_at = 0,
+                last_completed_at = CAST(?4 AS INTEGER),
+                last_success_at = CASE WHEN ?5 = '1'
+                  THEN CAST(?4 AS INTEGER) ELSE last_success_at END,
+                last_error_code = ?6,
+                updated_at = CAST(?4 AS INTEGER)
+            WHERE lane_name = ?1
+              AND run_owner = ?2
+              AND run_generation = CAST(?3 AS INTEGER)
+              AND run_lease_expires_at > CAST(?4 AS INTEGER)
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+async fn load_relay_container_r2_inventory_cursor(
+    db: &D1Database,
+    lane_name: &str,
+) -> worker::Result<RelayContainerR2InventoryCursor> {
+    db.prepare(
+        r#"
+        SELECT lane_name, object_prefix, r2_cursor, round_active,
+               scan_generation, run_generation, run_owner,
+               run_lease_expires_at, round_started_at, round_completed_at,
+               last_started_at, last_completed_at, last_success_at,
+               last_error_code, last_page_scanned, last_page_deferred,
+               last_page_referenced, last_page_anomalies,
+               last_page_resolved, total_scanned, total_deferred,
+               total_referenced, total_anomalies, total_resolved, updated_at
+        FROM relay_container_r2_inventory_cursors
+        WHERE lane_name = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&D1Type::Text(lane_name))?
+    .first::<RelayContainerR2InventoryCursor>(None)
+    .await?
+    .ok_or_else(|| {
+        worker::Error::RustError("relay container R2 inventory cursor is unavailable".to_string())
+    })
+}
+
+fn relay_container_r2_inventory_lease(
+    cursor: RelayContainerR2InventoryCursor,
+) -> RelayContainerR2InventoryRunLease {
+    RelayContainerR2InventoryRunLease {
+        lane_name: cursor.lane_name,
+        object_prefix: cursor.object_prefix,
+        r2_cursor: cursor.r2_cursor,
+        round_active: cursor.round_active == 1,
+        scan_generation: cursor.scan_generation,
+        run_generation: cursor.run_generation,
+        run_owner: cursor.run_owner,
+        run_lease_expires_at: cursor.run_lease_expires_at,
+    }
+}
+
+fn validate_relay_container_r2_inventory_object(
+    object: &RelayContainerR2InventoryObject<'_>,
+    allow_invalid_contract: bool,
+) -> worker::Result<()> {
+    if !RELAY_CONTAINER_R2_INVENTORY_LANES.contains(&object.lane_name)
+        || object.object_key.is_empty()
+        || object.object_key.len() > 1024
+        || object.object_version.is_empty()
+        || object.object_version.len() > 256
+        || object.object_size < 0
+        || object.uploaded_at <= 0
+    {
+        return Err(worker::Error::RustError(
+            "relay container R2 inventory object is invalid".to_string(),
+        ));
+    }
+    let invalid_contract = object.operation_id.is_empty()
+        && object.owner_generation == 0
+        && object.object_sha256.is_empty();
+    if invalid_contract && allow_invalid_contract && object.reference_state.is_none() {
+        return Ok(());
+    }
+    if invalid_contract
+        || object.operation_id.is_empty()
+        || object.owner_generation <= 0
+        || object.object_sha256.len() != 64
+        || object.content_type.len() < 3
+        || object.content_type.len() > 128
+        || !object
+            .object_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(worker::Error::RustError(
+            "relay container R2 inventory object identity is invalid".to_string(),
+        ));
+    }
+    let lane_metadata_valid = match object.lane_name {
+        "input" => {
+            object.provider_operation_id.is_empty()
+                && object.admission_sha256.is_empty()
+                && object.response_status == 0
+                && object.headers_sha256.is_empty()
+        }
+        "result" => {
+            validate_relay_container_token(
+                object.provider_operation_id,
+                "R2 inventory provider operation id",
+                1,
+                128,
+                |byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'),
+            )
+            .is_ok()
+                && validate_relay_container_sha256(
+                    object.admission_sha256,
+                    "R2 inventory admission sha256",
+                )
+                .is_ok()
+                && object.response_status == 0
+                && object.headers_sha256.is_empty()
+        }
+        "client_response" => {
+            object.provider_operation_id.is_empty()
+                && object.admission_sha256.is_empty()
+                && (((200..=299).contains(&object.response_status)
+                    && object.response_status != 202)
+                    || (400..=599).contains(&object.response_status))
+                && validate_relay_container_sha256(
+                    object.headers_sha256,
+                    "R2 inventory headers sha256",
+                )
+                .is_ok()
+        }
+        _ => false,
+    };
+    if !lane_metadata_valid {
+        return Err(worker::Error::RustError(
+            "relay container R2 inventory lane metadata is invalid".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn classify_relay_container_dispatch(
@@ -17772,6 +18816,102 @@ mod tests {
         assert!(!operator_reads.contains("INSERT "));
         assert!(!operator_reads.contains("UPDATE "));
         assert!(!operator_reads.contains("DELETE "));
+    }
+
+    #[test]
+    fn relay_container_r2_inventory_repository_is_fenced_and_observer_only() {
+        let source = include_str!("d1_repositories.rs");
+        let start = source
+            .find("pub async fn relay_container_r2_inventory_schema_ready")
+            .unwrap();
+        let end = source.find("fn classify_relay_container_dispatch").unwrap();
+        let inventory = &source[start..end];
+
+        assert!(inventory.contains("run_generation = run_generation + 1"));
+        assert!(inventory.contains("run_lease_expires_at > CAST(?4 AS INTEGER)"));
+        assert!(inventory.contains("scan_generation = scan_generation + 1"));
+        assert!(inventory.contains("db.batch(statements).await"));
+        assert!(inventory.contains("WHERE changes() != 1"));
+        assert!(inventory.contains("input_object_key = ?2"));
+        assert!(inventory.contains("result_object_key = ?2"));
+        assert!(inventory.contains("client_response_object_key = ?2"));
+        assert!(inventory.contains("provider_operation_id = ?9"));
+        assert!(inventory.contains("admission_sha256 = ?10"));
+        assert!(inventory.contains("client_response_status = CAST(?11 AS INTEGER)"));
+        assert!(inventory.contains("client_response_headers_sha256 = ?12"));
+        assert!(inventory.contains("AND status IN ('prepared', 'dispatched', 'recovery_required')"));
+        assert!(inventory.contains("classification <> 'divergent_reference'"));
+        assert!(inventory.contains("WHEN excluded.classification = 'divergent_reference'"));
+        assert!(inventory.contains("THEN 'observed'"));
+        assert!(inventory
+            .contains("input_object_key = relay_container_r2_inventory_findings.object_key"));
+        assert!(
+            inventory.contains("operation_id = relay_container_r2_inventory_findings.operation_id")
+        );
+        for state in [
+            "referenced",
+            "referenced_open_finding",
+            "deferred_active_operation",
+            "operation_missing",
+            "operation_known_unattached",
+            "divergent_reference",
+        ] {
+            assert!(inventory.contains(state), "missing inventory state {state}");
+        }
+        for forbidden in [
+            "INSERT INTO relay_container_operations",
+            "UPDATE relay_container_operations",
+            "DELETE FROM relay_container_operations",
+            "INSERT INTO relay_billing_reservations",
+            "UPDATE relay_billing_reservations",
+            "DELETE FROM relay_billing_reservations",
+            "INSERT INTO relay_container_reconciliation_observations",
+            "UPDATE relay_container_reconciliation_observations",
+            "DELETE FROM relay_container_reconciliation_observations",
+            "INSERT INTO relay_container_terminal_events",
+            "UPDATE relay_container_terminal_events",
+            "DELETE FROM relay_container_terminal_events",
+            "INSERT INTO relay_container_terminal_outbox_state",
+            "UPDATE relay_container_terminal_outbox_state",
+            "DELETE FROM relay_container_terminal_outbox_state",
+            "UPDATE users",
+            "UPDATE tokens",
+            "UPDATE channels",
+        ] {
+            assert!(
+                !inventory.contains(forbidden),
+                "forbidden inventory SQL: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn relay_container_r2_inventory_migration_is_expand_only_and_two_generation_gated() {
+        let migration =
+            include_str!("../../../migrations/d1/0044_relay_container_r2_orphan_inventory.sql");
+        for object_index in [
+            "idx_relay_container_operations_input_object_identity",
+            "idx_relay_container_operations_result_object_identity",
+            "idx_relay_container_terminal_events_client_response_object_identity",
+        ] {
+            assert!(
+                migration.contains(object_index),
+                "missing exact lookup index {object_index}"
+            );
+        }
+        assert!(migration.contains("distinct_scan_generations >= 2"));
+        assert!(
+            migration.contains("status <> 'candidate' OR classification <> 'divergent_reference'")
+        );
+        assert!(migration.contains("OLD.status = 'candidate'"));
+        assert!(migration.contains("NEW.status = 'observed'"));
+        assert!(migration.contains("status IN ('prepared', 'dispatched', 'recovery_required')"));
+        assert!(migration.contains("R2 inventory finding cannot be deleted"));
+        assert!(migration.contains("R2 inventory cursor cannot be deleted"));
+        assert!(!migration.contains("DELETE FROM"));
+        assert!(!migration.contains("DROP TABLE"));
+        assert!(!migration.contains("ALTER TABLE"));
+        assert!(!migration.contains("REFERENCES relay_container_operations"));
     }
 
     #[test]

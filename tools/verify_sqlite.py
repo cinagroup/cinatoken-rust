@@ -41,6 +41,8 @@ REQUIRED_TABLES = [
     "relay_container_terminal_outbox_state",
     "relay_container_reconciliation_observations",
     "relay_container_reconciliation_cursor",
+    "relay_container_r2_inventory_cursors",
+    "relay_container_r2_inventory_findings",
     "task_billing_intents",
     "task_billing_reconciliation_events",
     "task_poll_lease_control",
@@ -371,6 +373,56 @@ REQUIRED_COLUMNS = {
         "last_error_code",
         "updated_at",
     },
+    "relay_container_r2_inventory_cursors": {
+        "lane_name",
+        "object_prefix",
+        "r2_cursor",
+        "round_active",
+        "scan_generation",
+        "run_generation",
+        "run_owner",
+        "run_lease_expires_at",
+        "round_started_at",
+        "round_completed_at",
+        "last_started_at",
+        "last_completed_at",
+        "last_success_at",
+        "last_error_code",
+        "last_page_scanned",
+        "last_page_deferred",
+        "last_page_referenced",
+        "last_page_anomalies",
+        "last_page_resolved",
+        "total_scanned",
+        "total_deferred",
+        "total_referenced",
+        "total_anomalies",
+        "total_resolved",
+        "updated_at",
+    },
+    "relay_container_r2_inventory_findings": {
+        "finding_id",
+        "lane_name",
+        "object_key",
+        "object_version",
+        "operation_id",
+        "owner_generation",
+        "object_sha256",
+        "object_size",
+        "uploaded_at",
+        "status",
+        "classification",
+        "first_scan_generation",
+        "last_scan_generation",
+        "distinct_scan_generations",
+        "observation_count",
+        "first_observed_at",
+        "last_observed_at",
+        "candidate_at",
+        "resolved_at",
+        "created_at",
+        "updated_at",
+    },
     "relay_billing_finalization_incidents": {
         "incident_id",
         "event_id",
@@ -504,10 +556,13 @@ REQUIRED_INDEXES = {
         "idx_relay_container_operations_updated": False,
         "idx_relay_container_operations_client_idempotency_hmac": True,
         "idx_relay_container_operations_reconciliation_id": True,
+        "idx_relay_container_operations_input_object_identity": False,
+        "idx_relay_container_operations_result_object_identity": False,
     },
     "relay_container_terminal_events": {
         "idx_relay_container_terminal_events_operation_identity": True,
         "idx_relay_container_terminal_events_reconciliation_identity": True,
+        "idx_relay_container_terminal_events_client_response_object_identity": False,
     },
     "relay_container_terminal_outbox_state": {
         "idx_relay_container_terminal_outbox_pending": False,
@@ -517,6 +572,10 @@ REQUIRED_INDEXES = {
         "idx_relay_container_reconciliation_observations_due": False,
         "idx_relay_container_reconciliation_observations_lease": False,
         "idx_relay_container_reconciliation_observations_class": False,
+    },
+    "relay_container_r2_inventory_findings": {
+        "idx_relay_container_r2_inventory_findings_queue": False,
+        "idx_relay_container_r2_inventory_findings_lane_generation": False,
     },
     "task_billing_intents": {
         "idx_task_billing_intents_status_lease": False,
@@ -573,6 +632,8 @@ def main() -> int:
     relay_container_financial_terminal_rollout_verified = False
     relay_container_reconciliation_observer_verified = False
     relay_container_reconciliation_observer_rollout_verified = False
+    relay_container_r2_inventory_verified = False
+    relay_container_r2_inventory_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -598,6 +659,8 @@ def main() -> int:
         relay_container_financial_terminal_rollout_verified = True
         verify_relay_container_reconciliation_observer_rollout(schema_paths)
         relay_container_reconciliation_observer_rollout_verified = True
+        verify_relay_container_r2_inventory_rollout(schema_paths)
+        relay_container_r2_inventory_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -625,6 +688,8 @@ def main() -> int:
         relay_container_financial_terminal_verified = True
         verify_relay_container_reconciliation_observer(conn)
         relay_container_reconciliation_observer_verified = True
+        verify_relay_container_r2_inventory(conn)
+        relay_container_r2_inventory_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
@@ -692,6 +757,10 @@ def main() -> int:
         message += " + 0043 generation-fenced Container reconciliation observer"
     if relay_container_reconciliation_observer_rollout_verified:
         message += " + 0043 default-lazy observer expand rollout"
+    if relay_container_r2_inventory_verified:
+        message += " + 0044 generation-fenced Container R2 orphan inventory"
+    if relay_container_r2_inventory_rollout_verified:
+        message += " + 0044 default-lazy R2 inventory expand rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -3125,6 +3194,328 @@ def verify_relay_container_reconciliation_observer(
     )
 
 
+def verify_relay_container_r2_inventory(conn: sqlite3.Connection) -> None:
+    for trigger in (
+        "relay_container_r2_inventory_cursor_identity_immutable_guard",
+        "relay_container_r2_inventory_cursor_lifecycle_guard",
+        "relay_container_r2_inventory_cursor_delete_guard",
+        "relay_container_r2_inventory_finding_insert_guard",
+        "relay_container_r2_inventory_finding_identity_immutable_guard",
+        "relay_container_r2_inventory_finding_lifecycle_guard",
+        "relay_container_r2_inventory_finding_delete_guard",
+    ):
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0044 R2 inventory trigger missing: {trigger}")
+
+    cursors = conn.execute(
+        "SELECT lane_name, object_prefix, r2_cursor, round_active, "
+        "scan_generation, run_generation, run_owner, run_lease_expires_at, "
+        "updated_at FROM relay_container_r2_inventory_cursors "
+        "ORDER BY lane_name"
+    ).fetchall()
+    if cursors != [
+        ("client_response", "container-client-responses/v1/", "", 0, 0, 0, "", 0, 0),
+        ("input", "container-inputs/v1/", "", 0, 0, 0, "", 0, 0),
+        ("result", "container-results/v1/", "", 0, 0, 0, "", 0, 0),
+    ]:
+        raise SystemExit(f"0044 R2 inventory cursor seed is not inert: {cursors}")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_r2_inventory_findings"
+    ).fetchone() != (0,):
+        raise SystemExit("0044 R2 inventory must not backfill findings")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_r2_inventory_cursors "
+            "SET round_active = 1, scan_generation = 1, round_started_at = 1, "
+            "updated_at = 1 WHERE lane_name = 'input'"
+        ),
+        "0044 inventory cursor must not advance without a run lease",
+        "relay container R2 inventory cursor transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "INSERT INTO relay_container_r2_inventory_findings ("
+            "lane_name, object_key, object_version, operation_id, owner_generation, "
+            "object_sha256, object_size, uploaded_at, classification, "
+            "first_scan_generation, last_scan_generation, first_observed_at, "
+            "last_observed_at, created_at, updated_at) VALUES ("
+            "'input', 'container-inputs/v1/outside/1/' || lower(hex(zeroblob(32))), "
+            "'version-outside', 'outside', 1, lower(hex(zeroblob(32))), 0, 1, "
+            "'operation_missing', 1, 1, 1, 1, 1, 1)"
+        ),
+        "0044 findings must not be written outside an active lane lease",
+        "relay container R2 inventory finding initial state is invalid",
+    )
+
+    owner = "a" * 32
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET run_generation = 1, run_owner = ?, run_lease_expires_at = 145, "
+        "last_started_at = 100, updated_at = 100 WHERE lane_name = 'input'",
+        (owner,),
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET round_active = 1, scan_generation = 1, round_started_at = 101, "
+        "updated_at = 101 WHERE lane_name = 'input'"
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "INSERT INTO relay_container_r2_inventory_findings ("
+            "lane_name, object_key, object_version, operation_id, owner_generation, "
+            "object_sha256, object_size, uploaded_at, classification, "
+            "first_scan_generation, last_scan_generation, first_observed_at, "
+            "last_observed_at, created_at, updated_at) VALUES ("
+            "'input', 'invalid-contract-nonempty', 'version-invalid', "
+            "'must-be-empty', 1, lower(hex(zeroblob(32))), 0, 1, "
+            "'invalid_contract', 1, 1, 101, 101, 101, 101)"
+        ),
+        "0044 invalid-contract findings must use an empty parsed identity",
+    )
+    object_sha256 = hashlib.sha256(b"0044-orphan-object").hexdigest()
+    object_key = f"container-inputs/v1/0044-orphan/1/{object_sha256}"
+    conn.execute(
+        "INSERT INTO relay_container_r2_inventory_findings ("
+        "lane_name, object_key, object_version, operation_id, owner_generation, "
+        "object_sha256, object_size, uploaded_at, classification, "
+        "first_scan_generation, last_scan_generation, first_observed_at, "
+        "last_observed_at, created_at, updated_at) VALUES ("
+        "'input', ?, 'version-0044', '0044-orphan', 1, ?, 42, 1, "
+        "'operation_missing', 1, 1, 102, 102, 102, 102)",
+        (object_key, object_sha256),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_r2_inventory_findings "
+            "SET status = 'candidate', candidate_at = 102, updated_at = 102 "
+            "WHERE object_key = ?",
+            (object_key,),
+        ),
+        "0044 findings need two completed scan generations before candidate",
+        "relay container R2 inventory finding transition is invalid",
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET round_active = 0, round_completed_at = 103, last_page_scanned = 1, "
+        "last_page_anomalies = 1, total_scanned = 1, total_anomalies = 1, "
+        "updated_at = 103 WHERE lane_name = 'input'"
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET run_owner = '', run_lease_expires_at = 0, last_completed_at = 104, "
+        "last_success_at = 104, updated_at = 104 WHERE lane_name = 'input'"
+    )
+
+    owner = "b" * 32
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET run_generation = 2, run_owner = ?, run_lease_expires_at = 245, "
+        "last_started_at = 200, updated_at = 200 WHERE lane_name = 'input'",
+        (owner,),
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET round_active = 1, scan_generation = 2, round_started_at = 201, "
+        "updated_at = 201 WHERE lane_name = 'input'"
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_findings "
+        "SET last_scan_generation = 2, distinct_scan_generations = 2, "
+        "observation_count = 2, last_observed_at = 202, updated_at = 202 "
+        "WHERE object_key = ?",
+        (object_key,),
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_findings "
+        "SET status = 'candidate', candidate_at = 203, updated_at = 203 "
+        "WHERE object_key = ?",
+        (object_key,),
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET round_active = 0, round_completed_at = 203, last_page_scanned = 1, "
+        "last_page_anomalies = 1, total_scanned = 2, total_anomalies = 2, "
+        "updated_at = 203 WHERE lane_name = 'input'"
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET run_owner = '', run_lease_expires_at = 0, last_completed_at = 204, "
+        "last_success_at = 204, updated_at = 204 WHERE lane_name = 'input'"
+    )
+    candidate = conn.execute(
+        "SELECT status, classification, first_scan_generation, "
+        "last_scan_generation, distinct_scan_generations, observation_count, "
+        "candidate_at FROM relay_container_r2_inventory_findings "
+        "WHERE object_key = ?",
+        (object_key,),
+    ).fetchone()
+    if candidate != ("candidate", "operation_missing", 1, 2, 2, 2, 203):
+        raise SystemExit(f"0044 two-generation candidate did not persist: {candidate}")
+
+    owner = "e" * 32
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET run_generation = 3, run_owner = ?, run_lease_expires_at = 345, "
+        "last_started_at = 300, updated_at = 300 WHERE lane_name = 'input'",
+        (owner,),
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET round_active = 1, scan_generation = 3, round_started_at = 301, "
+        "updated_at = 301 WHERE lane_name = 'input'"
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_findings "
+        "SET last_scan_generation = 3, distinct_scan_generations = 3, "
+        "observation_count = 3, last_observed_at = 302, updated_at = 302 "
+        "WHERE object_key = ?",
+        (object_key,),
+    )
+    repeated_candidate = conn.execute(
+        "SELECT status, last_scan_generation, distinct_scan_generations, "
+        "observation_count, last_observed_at, candidate_at "
+        "FROM relay_container_r2_inventory_findings WHERE object_key = ?",
+        (object_key,),
+    ).fetchone()
+    if repeated_candidate != ("candidate", 3, 3, 3, 302, 203):
+        raise SystemExit(
+            f"0044 candidate repeat observation did not persist: {repeated_candidate}"
+        )
+    conn.execute(
+        """
+        INSERT INTO relay_container_operations (
+          reservation_key, operation_id, owner_generation,
+          owner_lease_expires_at, channel_id, selected_group, operation_kind,
+          provider_operation_id, admission_sha256, protocol_version,
+          shard_contract_version, ring_generation, shard_count, shard_index,
+          instance_name, execution_deadline_at, input_mode, input_object_key,
+          input_object_version, input_sha256, input_size, input_content_type,
+          trace_id, status, created_at, updated_at
+        ) VALUES (
+          '0044-orphan', '0044-orphan', 1, 1000, 1, 'default', 'relay_chat',
+          'provider:0044-divergent', ?, 1, 1, 1, 8, 0,
+          'cinatoken-relay-shard-v1-0000', 500, 'r2', ?,
+          'version-divergent-reference', ?, 42, 'application/json',
+          'trace:0044-divergent', 'prepared', 1, 1
+        )
+        """,
+        ("a" * 64, object_key, object_sha256),
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_findings "
+        "SET status = 'observed', classification = 'divergent_reference', "
+        "observation_count = observation_count + 1, last_observed_at = 303, "
+        "candidate_at = 0, updated_at = 303 WHERE object_key = ?",
+        (object_key,),
+    )
+    divergent = conn.execute(
+        "SELECT status, classification, last_scan_generation, "
+        "distinct_scan_generations, observation_count, candidate_at "
+        "FROM relay_container_r2_inventory_findings WHERE object_key = ?",
+        (object_key,),
+    ).fetchone()
+    if divergent != ("observed", "divergent_reference", 3, 3, 4, 0):
+        raise SystemExit(f"0044 divergent candidate was not demoted safely: {divergent}")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_r2_inventory_findings "
+            "SET status = 'candidate', candidate_at = 303, updated_at = 303 "
+            "WHERE object_key = ?",
+            (object_key,),
+        ),
+        "0044 divergent references must never become cleanup candidates",
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET round_active = 0, round_completed_at = 303, last_page_scanned = 1, "
+        "last_page_anomalies = 1, total_scanned = 3, total_anomalies = 3, "
+        "updated_at = 303 WHERE lane_name = 'input'"
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET run_owner = '', run_lease_expires_at = 0, last_completed_at = 304, "
+        "last_success_at = 304, updated_at = 304 WHERE lane_name = 'input'"
+    )
+
+    # Unix-second timestamps can tie across adjacent cron invocations. The
+    # scan generation, not timestamp inequality, is the concurrency fence.
+    owner = "c" * 32
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET run_generation = 1, run_owner = ?, run_lease_expires_at = 345, "
+        "last_started_at = 300, updated_at = 300 WHERE lane_name = 'result'",
+        (owner,),
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET round_active = 1, scan_generation = 1, round_started_at = 301, "
+        "updated_at = 301 WHERE lane_name = 'result'"
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET round_active = 0, round_completed_at = 301, updated_at = 301 "
+        "WHERE lane_name = 'result'"
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET run_owner = '', run_lease_expires_at = 0, last_completed_at = 301, "
+        "last_success_at = 301, updated_at = 301 WHERE lane_name = 'result'"
+    )
+    owner = "d" * 32
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET run_generation = 2, run_owner = ?, run_lease_expires_at = 346, "
+        "last_started_at = 301, updated_at = 301 WHERE lane_name = 'result'",
+        (owner,),
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET round_active = 1, scan_generation = 2, round_started_at = 301, "
+        "updated_at = 301 WHERE lane_name = 'result'"
+    )
+    tied_round = conn.execute(
+        "SELECT scan_generation, round_active, round_started_at, round_completed_at "
+        "FROM relay_container_r2_inventory_cursors WHERE lane_name = 'result'"
+    ).fetchone()
+    if tied_round != (2, 1, 301, 301):
+        raise SystemExit(f"0044 same-second scan generation failed: {tied_round}")
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET round_active = 0, round_completed_at = 301, updated_at = 301 "
+        "WHERE lane_name = 'result'"
+    )
+    conn.execute(
+        "UPDATE relay_container_r2_inventory_cursors "
+        "SET run_owner = '', run_lease_expires_at = 0, last_completed_at = 301, "
+        "last_success_at = 301, updated_at = 301 WHERE lane_name = 'result'"
+    )
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_r2_inventory_findings WHERE object_key = ?",
+            (object_key,),
+        ),
+        "0044 R2 inventory findings must not be deleted",
+        "relay container R2 inventory finding cannot be deleted",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_r2_inventory_findings "
+            "SET object_version = 'rewritten' WHERE object_key = ?",
+            (object_key,),
+        ),
+        "0044 R2 inventory finding identity must be immutable",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_r2_inventory_cursors WHERE lane_name = 'input'"
+        ),
+        "0044 R2 inventory cursors must not be deleted",
+        "relay container R2 inventory cursor cannot be deleted",
+    )
+
+
 def verify_flat_billing_intent_guard(conn: sqlite3.Connection) -> None:
     for trigger in (
         "relay_flat_billing_snapshot_insert_guard",
@@ -5221,8 +5612,6 @@ def verify_relay_container_reconciliation_observer_rollout(
     observer_index = schema_paths.index(observer_path)
     if observer_index == 0 or schema_paths[observer_index - 1] != terminal_path:
         raise SystemExit("0043 reconciliation observer must immediately follow 0042")
-    if observer_index != len(schema_paths) - 1:
-        raise SystemExit("0043 reconciliation observer must be the current D1 migration head")
 
     observer_sql = observer_path.read_text(encoding="utf-8")
     if "if not exists" in observer_sql.lower():
@@ -5421,6 +5810,150 @@ def verify_relay_container_reconciliation_observer_rollout(
     ):
         if conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone() != (0,):
             raise SystemExit(f"0043 observer expand synthesized rows in {table}")
+
+
+def verify_relay_container_r2_inventory_rollout(schema_paths: list[Path]) -> None:
+    inventory_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0044_relay_container_r2_orphan_inventory.sql"
+        ),
+        None,
+    )
+    observer_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0043_relay_container_reconciliation_observer.sql"
+        ),
+        None,
+    )
+    if inventory_path is None or observer_path is None:
+        raise SystemExit("0043/0044 relay Container R2 inventory rollout migrations not found")
+    inventory_index = schema_paths.index(inventory_path)
+    if inventory_index == 0 or schema_paths[inventory_index - 1] != observer_path:
+        raise SystemExit("0044 R2 inventory must immediately follow 0043")
+    if inventory_index != len(schema_paths) - 1:
+        raise SystemExit("0044 R2 inventory must be the current D1 migration head")
+
+    inventory_sql = inventory_path.read_text(encoding="utf-8")
+    if "if not exists" in inventory_sql.lower():
+        raise SystemExit("0044 critical R2 inventory objects must fail on duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_r2_inventory_cursors",
+        "lane_name IN ('input', 'result', 'client_response')",
+        "r2_cursor TEXT NOT NULL DEFAULT ''",
+        "round_active INTEGER NOT NULL DEFAULT 0",
+        "scan_generation INTEGER NOT NULL DEFAULT 0",
+        "run_generation INTEGER NOT NULL DEFAULT 0",
+        "run_owner TEXT NOT NULL DEFAULT ''",
+        "run_lease_expires_at INTEGER NOT NULL DEFAULT 0",
+        "CREATE TABLE relay_container_r2_inventory_findings",
+        "status IN ('observed', 'candidate', 'resolved')",
+        "distinct_scan_generations INTEGER NOT NULL DEFAULT 1",
+        "relay_container_r2_inventory_cursor_lifecycle_guard",
+        "relay_container_r2_inventory_cursor_delete_guard",
+        "relay_container_r2_inventory_finding_insert_guard",
+        "relay_container_r2_inventory_finding_lifecycle_guard",
+        "relay_container_r2_inventory_finding_delete_guard",
+        "idx_relay_container_operations_input_object_identity",
+        "idx_relay_container_operations_result_object_identity",
+        "idx_relay_container_terminal_events_client_response_object_identity",
+        "idx_relay_container_r2_inventory_findings_queue",
+        "idx_relay_container_r2_inventory_findings_lane_generation",
+        "distinct_scan_generations >= 2",
+        "cursor.run_lease_expires_at > NEW.updated_at",
+    ):
+        if fragment not in inventory_sql:
+            raise SystemExit(f"0044 R2 inventory contract missing: {fragment}")
+    if inventory_sql.count("INSERT INTO ") != 1 or (
+        "INSERT INTO relay_container_r2_inventory_cursors" not in inventory_sql
+    ):
+        raise SystemExit("0044 must seed only the three fixed inventory cursors")
+    for forbidden in (
+        "INSERT INTO relay_container_r2_inventory_findings",
+        "UPDATE relay_container_operations",
+        "UPDATE relay_container_terminal_events",
+        "UPDATE relay_container_reconciliation_observations",
+        "DELETE FROM relay_container_operations",
+        "DELETE FROM relay_container_terminal_events",
+        "DELETE FROM relay_container_reconciliation_observations",
+    ):
+        if forbidden in inventory_sql:
+            raise SystemExit(f"0044 inventory expand must remain default-lazy: {forbidden}")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == inventory_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+    existing_sha256 = "b" * 64
+    conn.execute(
+        "INSERT INTO relay_container_operations ("
+        "reservation_key, operation_id, owner_generation, owner_lease_expires_at, "
+        "channel_id, selected_group, operation_kind, provider_operation_id, "
+        "admission_sha256, protocol_version, shard_contract_version, "
+        "ring_generation, shard_count, shard_index, instance_name, "
+        "execution_deadline_at, input_mode, input_object_key, "
+        "input_object_version, input_sha256, input_size, input_content_type, "
+        "trace_id, created_at, updated_at) VALUES ("
+        "'0044-existing-operation', '0044-existing-operation', 2, 1000, "
+        "1, 'default', 'health_probe', 'provider-0044-existing', ?, "
+        "1, 1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003', 900, 'r2', ?, "
+        "'version-0044-existing', ?, 42, 'application/json', "
+        "'trace-0044-existing', 800, 800)",
+        (
+            "a" * 64,
+            f"container-inputs/v1/0044-existing-operation/2/{existing_sha256}",
+            existing_sha256,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO relay_container_reconciliation_observations ("
+        "operation_id, reservation_key, operation_created_at, owner_generation, "
+        "reconciliation_id, available_at, recovery_deadline_at, created_at, updated_at"
+        ") VALUES ("
+        "'0044-existing-operation', '0044-existing-operation', 800, 2, '', "
+        "810, 900, 810, 810)"
+    )
+    business_tables = (
+        "relay_container_operations",
+        "relay_container_terminal_events",
+        "relay_container_reconciliation_observations",
+    )
+    before_rows = {
+        table: conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+        for table in business_tables
+    }
+    observer_cursor_before = conn.execute(
+        "SELECT * FROM relay_container_reconciliation_cursor"
+    ).fetchall()
+    conn.executescript(inventory_sql)
+    after_rows = {
+        table: conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+        for table in business_tables
+    }
+    if after_rows != before_rows:
+        raise SystemExit("0044 R2 inventory expand changed authoritative business rows")
+    if conn.execute(
+        "SELECT * FROM relay_container_reconciliation_cursor"
+    ).fetchall() != observer_cursor_before:
+        raise SystemExit("0044 R2 inventory expand changed the 0043 observer cursor")
+    seeded = conn.execute(
+        "SELECT lane_name, object_prefix, scan_generation, run_generation, updated_at "
+        "FROM relay_container_r2_inventory_cursors ORDER BY lane_name"
+    ).fetchall()
+    if seeded != [
+        ("client_response", "container-client-responses/v1/", 0, 0, 0),
+        ("input", "container-inputs/v1/", 0, 0, 0),
+        ("result", "container-results/v1/", 0, 0, 0),
+    ]:
+        raise SystemExit(f"0044 R2 inventory seeded unexpected cursor data: {seeded}")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_r2_inventory_findings"
+    ).fetchone() != (0,):
+        raise SystemExit("0044 R2 inventory expand backfilled findings")
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

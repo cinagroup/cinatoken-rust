@@ -17,6 +17,9 @@ const expected = {
   CONTAINER_FINANCIAL_TERMINAL_ENABLED: "false",
   CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED: "false",
   CONTAINER_OPERATION_RECONCILIATION_ENABLED: "false",
+  CONTAINER_R2_ORPHAN_INVENTORY_ENABLED: "false",
+  CONTAINER_R2_ORPHAN_INVENTORY_SCAN_LIMIT: "4",
+  CONTAINER_R2_ORPHAN_INVENTORY_GRACE_SECONDS: "86400",
   CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED: "false",
   CONTAINER_CHAT_CANARY_ENABLED: "false",
   CONTAINER_OPERATION_STAGING_VERIFIED: "false",
@@ -67,6 +70,11 @@ describe("container scheduler Wrangler foundation", () => {
       ).toEqual(expected);
       expect(Number(vars.CONTAINER_SCHEDULER_RING_GENERATION)).toBe(1);
       expect(Number(vars.CONTAINER_SCHEDULER_SHARD_COUNT)).toBe(8);
+      expect(Number(vars.CONTAINER_R2_ORPHAN_INVENTORY_SCAN_LIMIT)).toBe(4);
+      expect(Number(vars.CONTAINER_R2_ORPHAN_INVENTORY_GRACE_SECONDS)).toBe(
+        86400,
+      );
+      expect(vars.CONTAINER_R2_ORPHAN_INVENTORY_ENABLED).toBe("false");
       expect(operationGates.map((name) => vars[name])).toEqual([
         "false",
         "false",

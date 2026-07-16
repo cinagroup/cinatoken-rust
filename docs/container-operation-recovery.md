@@ -287,6 +287,43 @@ mutation. Any future observer requeue requires a separate migration, RootAuth
 plus fresh step-up, idempotency, immutable audit, generation fencing, exact
 preview comparison, and a default-false gate.
 
+### Default-off R2 orphan inventory
+
+Migration 0044 adds an observer-only inventory for immutable Container input,
+result, and client-response objects. Each lane owns an independent opaque R2
+cursor, scan generation, run generation, owner, and lease. The scheduled
+Worker performs at most one LIST page per lane per invocation, defaults to four
+objects, and rejects a configured limit above eight. It uses the `FILE_BUCKET`
+binding and requests HTTP plus custom metadata; it never GETs an object body
+and has no PUT or DELETE path.
+
+The scanner trusts `truncated` rather than page length and persists the returned
+cursor without interpreting it. A 24-hour grace period excludes recent
+objects. Because a multi-page walk is not a transaction snapshot, an anomaly
+must appear in two completed scan generations before it can become a candidate.
+An exact D1 key/version/hash/size/content-type and lane-provenance reference
+resolves an earlier finding. Valid but unattached objects for `prepared`,
+`dispatched`, or `recovery_required` operations are deferred, never promoted.
+A divergent object that still has any D1 key/version attachment remains
+observed and cannot become a cleanup candidate.
+
+Every listed object is checked against its lane key shape, R2 checksum, size,
+content type, and exact custom-metadata contract. Non-canonical objects become
+`invalid_contract`; canonical unreferenced objects are separated into
+`operation_missing`, `operation_known_unattached`, or `divergent_reference`.
+The only writes are the new 0044 cursor and finding tables. Triggers fence every
+write to the active lane generation, prohibit identity changes and deletion,
+and recheck D1 references plus active-operation state before candidate
+promotion. Per-object observation writes and cursor advancement have in-batch
+single-row assertions, so a stale/no-op CAS rolls back the whole page.
+
+AdminAuth may read a no-store aggregate status, while RootAuth may read a
+no-store, strictly filtered, newest-first finding list. Raw object keys,
+versions, operation IDs, and SHA-256 values are replaced with domain-separated
+references. Both responses state that apply and delete are not compiled. The
+runtime gate remains false in every tracked environment and is not a ninth
+Container cutover gate.
+
 ## Edge Integration Order
 
 The first real business canary must preserve the existing relay lifecycle:
@@ -329,14 +366,16 @@ The following are still mandatory:
 - derive the implemented tenant/user/token/route-scoped client idempotency HMAC
   at admission, require it for the canary, and map the implemented same-key/
   different-request lookup conflict to 409;
-- add bounded R2 orphan inventory, then implement authenticated observer-only
-  retry apply as a separately migrated, gated, generation-fenced protocol with
-  step-up, idempotency, and audit;
+- prove the default-off R2 orphan inventory against an isolated real bucket,
+  including pagination, concurrent creation, metadata drift, cost, alerts, and
+  retention; then implement authenticated observer-only retry apply as a
+  separately migrated, gated, generation-fenced protocol with step-up,
+  idempotency, and audit;
 - dispatch-before-send provider attempt journal and one retry owner;
 - deterministic local provider canary in the actual Linux image;
 - wire the implemented create-only exact client-response R2 write and verified
   byte replay into the narrow edge canary without enabling any broader route;
-- after old writers drain and remote 0042/0043 invariants pass, add a separate 0044
+- after old writers drain and remote 0042/0043/0044 invariants pass, add a separate 0045
   enforcement migration that rejects legacy empty identity and eventless v1
   terminal transitions;
 - reconciliation for R2 write success followed by DO attach failure;

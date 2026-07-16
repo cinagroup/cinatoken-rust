@@ -26,6 +26,8 @@ mod cache_invalidation;
 mod channel_upstream_update;
 mod container_artifacts;
 mod container_controller;
+mod container_r2_inventory;
+mod container_r2_inventory_admin;
 mod container_reconciliation;
 mod container_reconciliation_admin;
 mod container_scheduler;
@@ -217,6 +219,14 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
                 let target = ctx.param("target").cloned();
                 container_reconciliation_admin::retry_preview(req, ctx.env, target).await
             },
+        )
+        .get_async(
+            "/api/platform/container/r2-inventory/status",
+            |req, ctx| async move { container_r2_inventory_admin::status(req, ctx.env).await },
+        )
+        .get_async(
+            "/api/platform/container/r2-inventory/findings",
+            |req, ctx| async move { container_r2_inventory_admin::list(req, ctx.env).await },
         )
         .post_async(
             "/api/platform/quota-coordinator/reconciliation",
@@ -1540,6 +1550,21 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
             }
         }
     }
+    let container_r2_inventory =
+        container_r2_inventory::container_r2_inventory_runtime_config(&env);
+    if container_r2_inventory.enabled {
+        match container_r2_inventory::run_container_r2_orphan_inventory(&env, &db, now).await {
+            Ok(summary) => match serde_json::to_string(&summary) {
+                Ok(summary) => worker::console_log!("container R2 orphan inventory: {summary}"),
+                Err(_) => worker::console_error!(
+                    "container R2 orphan inventory summary serialization failed"
+                ),
+            },
+            Err(err) => worker::console_error!("container R2 orphan inventory failed: {err}"),
+        }
+    } else if !container_r2_inventory.valid {
+        worker::console_error!("container R2 orphan inventory configuration is invalid");
+    }
     match task_repository::task_billing_intent_schema_ready(&db).await {
         Ok(true) => match task_repository::sweep_expired_task_billing_intents(&db, now, 64).await {
             Ok(summary) if summary.candidates > 0 => worker::console_log!(
@@ -2290,6 +2315,8 @@ mod tests {
             "/api/platform/container/reconciliation/status",
             "/api/platform/container/reconciliations",
             "/api/platform/container/reconciliations/:target/retry/preview",
+            "/api/platform/container/r2-inventory/status",
+            "/api/platform/container/r2-inventory/findings",
             "/api/platform/quota-coordinator/reconciliation",
             "/api/platform/relay-billing/ledger/status",
             "/api/platform/task-runner/task-smoke/status",

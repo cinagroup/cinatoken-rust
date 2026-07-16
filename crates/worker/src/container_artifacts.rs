@@ -60,6 +60,102 @@ pub enum ContainerClientResponseObjectState {
     Divergent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContainerR2InventoryArtifactKind {
+    Input,
+    Result,
+    ClientResponse,
+}
+
+pub(crate) fn container_r2_inventory_object_contract_valid(
+    object: &R2Object,
+    kind: ContainerR2InventoryArtifactKind,
+    expected_key: &str,
+    operation_id: &str,
+    owner_generation: i64,
+    sha256: &str,
+) -> bool {
+    if object.key() != expected_key
+        || expected_key.len() > 512
+        || validate_identifier(operation_id, "operation id").is_err()
+        || !(1..=i64::from(i32::MAX)).contains(&owner_generation)
+        || validate_identifier(&object.version(), "object version").is_err()
+        || validate_sha256(sha256).is_err()
+        || object.size() > container_r2_inventory_max_bytes(kind)
+    {
+        return false;
+    }
+    let checksum = object.checksum().sha256.map(|bytes| {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    });
+    if checksum.as_deref() != Some(sha256) {
+        return false;
+    }
+    let http = object.http_metadata();
+    let Some(content_type) = http.content_type.as_deref() else {
+        return false;
+    };
+    if validate_content_type(content_type).is_err()
+        || matches!(
+            kind,
+            ContainerR2InventoryArtifactKind::Input
+                | ContainerR2InventoryArtifactKind::ClientResponse
+        ) && http.cache_control.as_deref() != Some("no-store")
+    {
+        return false;
+    }
+    let Ok(metadata) = object.custom_metadata() else {
+        return false;
+    };
+    let owner_generation = owner_generation.to_string();
+    let object_size = object.size().to_string();
+    let common_matches = metadata.get("gateway_version").map(String::as_str)
+        == Some(METADATA_VERSION)
+        && metadata.get("operation_id").map(String::as_str) == Some(operation_id)
+        && metadata.get("owner_generation").map(String::as_str) == Some(owner_generation.as_str())
+        && metadata.get("sha256").map(String::as_str) == Some(sha256)
+        && metadata.get("size").map(String::as_str) == Some(object_size.as_str())
+        && metadata.get("content_type").map(String::as_str) == Some(content_type);
+    if !common_matches {
+        return false;
+    }
+    match kind {
+        ContainerR2InventoryArtifactKind::Input => metadata.len() == 6,
+        ContainerR2InventoryArtifactKind::Result => {
+            metadata.len() == 8
+                && metadata.get("provider_operation_id").is_some_and(|value| {
+                    validate_identifier(value, "provider operation id").is_ok()
+                })
+                && metadata
+                    .get("admission_sha256")
+                    .is_some_and(|value| validate_sha256(value).is_ok())
+        }
+        ContainerR2InventoryArtifactKind::ClientResponse => {
+            metadata.len() == 9
+                && metadata.get("artifact_kind").map(String::as_str) == Some("client_response")
+                && metadata
+                    .get("response_status")
+                    .and_then(|value| value.parse::<u16>().ok())
+                    .is_some_and(|status| validate_client_response_status(status).is_ok())
+                && metadata
+                    .get("headers_sha256")
+                    .is_some_and(|value| validate_sha256(value).is_ok())
+        }
+    }
+}
+
+fn container_r2_inventory_max_bytes(kind: ContainerR2InventoryArtifactKind) -> u64 {
+    match kind {
+        ContainerR2InventoryArtifactKind::ClientResponse => {
+            MAX_CONTAINER_CLIENT_RESPONSE_BYTES as u64
+        }
+        _ => MAX_CONTAINER_ARTIFACT_BYTES as u64,
+    }
+}
+
 pub async fn put_container_input(
     env: &Env,
     operation_id: &str,
@@ -750,6 +846,22 @@ fn artifact_error(message: &str) -> worker::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inventory_preserves_lane_specific_artifact_bounds() {
+        assert_eq!(
+            container_r2_inventory_max_bytes(ContainerR2InventoryArtifactKind::Input),
+            64 * 1024 * 1024
+        );
+        assert_eq!(
+            container_r2_inventory_max_bytes(ContainerR2InventoryArtifactKind::Result),
+            64 * 1024 * 1024
+        );
+        assert_eq!(
+            container_r2_inventory_max_bytes(ContainerR2InventoryArtifactKind::ClientResponse),
+            4 * 1024 * 1024
+        );
+    }
 
     #[test]
     fn input_keys_are_deterministic_content_addressed_and_bounded() {

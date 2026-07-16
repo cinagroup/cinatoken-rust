@@ -1,6 +1,6 @@
 # Verification
 
-Last checked: 2026-07-13
+Last checked: 2026-07-17
 
 ## Realtime Local Runtime Suite
 
@@ -5813,7 +5813,7 @@ conflict; receipt readback recomputes both outbox and nested terminal hashes.
 
 This verification does not claim a D1/DO/R2 distributed transaction. The
 create-only R2 client-response path, actual byte replay, divergence reconciler,
-Linux canary, 0044 enforcement, remote migration/fault matrix, and staging proof
+Linux canary, 0045 enforcement, remote migration/fault matrix, and staging proof
 remain open. All eight Container operation/financial/replay/reconciliation/
 canary/proof gates remain false, and production remains **NO-GO**.
 
@@ -5858,7 +5858,7 @@ Still required are edge integration, live Service Binding and R2 evidence,
 concurrent conflict/orphan fault injection, fair reconciliation pagination,
 durable backoff and metrics, operator authorization, exact DO phase mapping,
 provider-attempt journaling, the Linux non-streaming chat canary, N/N-1,
-old-writer drain, 0044 enforcement, rollback, and C1-C5 approval. No remote
+old-writer drain, 0045 enforcement, rollback, and C1-C5 approval. No remote
 migration, deploy, object write, provider call, or traffic switch occurred;
 Go/VPS remains authoritative and production remains **NO-GO**.
 
@@ -5909,7 +5909,7 @@ false, so configuration cannot make Container cutover ready.
 Still required are bounded R2 orphan inventory, authenticated operator
 status/list/retry, provider-attempt journaling, a separately gated apply
 protocol, public exact replay, the Linux canary, N/N-1, remote migration and
-fault evidence, old-writer drain, enforcement migration 0044, rollback, and
+fault evidence, old-writer drain, enforcement migration 0045, rollback, and
 C1-C5 approval. No remote migration, deployment, provider call, object write,
 financial mutation, or traffic switch occurred. Go/VPS remains authoritative
 and production remains **NO-GO**.
@@ -5997,3 +5997,70 @@ D1 read proves the preview does not change observer state.
 financial or operation mutation, DO/R2 write, remote migration, deployment, or
 traffic switch was added. All eight Container gates remain false; Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## Container R2 Orphan Inventory Verification (2026-07-17)
+
+This overlay adds a default-off, observer-only inventory for the three
+Container R2 artifact lanes. It does not add cleanup, retry apply, remote
+migration, or a Container cutover gate.
+
+```powershell
+python tools/verify_sqlite.py
+# PASS: 44 migrations, 42 tables, 406 incremental columns, 62 key indexes.
+
+node tools/audit_d1_migration_config.mjs --json
+# PASS: 44 contiguous migrations; config/runtime head is 0044.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 769 passed; 0 failed.
+
+node node_modules/vitest/vitest.mjs run --config vitest.do.config.mjs
+# PASS: 45 passed; 0 failed.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo fmt --all -- --check
+node --check tests/do-lifecycle-runtime.test.mjs
+# PASS.
+
+worker-build --release
+# PASS: optimized Worker Wasm and JS package generated from final Rust source.
+```
+
+The SQLite verifier covers default-lazy creation, fixed lane identities,
+same-second lease transitions, generation fencing, expired-lease takeover,
+first-generation observation, second-generation candidate promotion,
+repeated candidate observations, exact resolution, and rejection of invalid
+contract identities. Guard statements in each D1 batch require exactly one
+finding or cursor mutation; a failed compare-and-swap aborts the complete
+batch instead of committing partial findings.
+
+Workerd inventories input, result, and client-response objects using bounded
+R2 LIST pages with opaque cursors and metadata included. It proves recent and
+active/recovery artifacts are deferred, divergent references remain observed,
+and only unattached anomalies become candidates after two completed scan
+generations. Coverage includes a same-key/different-version D1 reference and
+the later demotion of an existing candidate when a divergent reference appears;
+neither state can become a cleanup candidate. Result provider/admission
+metadata and client response status/header provenance must match D1 exactly. A
+later exact D1 reference resolves the missing-operation finding.
+
+Before/after snapshots prove complete R2 object identity, version, ETag, size,
+upload time, body digest, HTTP metadata, and custom metadata remain unchanged.
+They also compare complete rows for operations, terminal events/outbox,
+billing, reconciliation observations, users, tokens, and channels. Runtime
+inventory writes are restricted to the 0044 cursor/finding tables and perform
+no R2 GET, HEAD, PUT, or DELETE.
+
+Admin status and Root findings responses are authenticated, no-store, bounded,
+strictly filtered, and expose only domain-separated references. Apply and
+delete are explicitly uncompiled and no routes exist. Independent TOML parsing
+confirmed all three tracked environments keep inventory disabled, use a page
+limit of 4 and a 24-hour grace period, and retain all eight Container cutover
+gates as false.
+
+Bun is unavailable in this shell, so the aggregate `bun run check` and the
+Bun-native scheduler-config test were not rerun. Direct Node Workerd coverage,
+an independent TOML assertion, migration audit, SQLite replay, Rust tests, and
+Wasm compilation passed. The final optimized Worker build also passed. No
+remote D1 migration, R2 access, deployment, provider call, or traffic switch
+occurred; Go/VPS remains authoritative and production remains **NO-GO**.

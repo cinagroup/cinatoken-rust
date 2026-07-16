@@ -186,7 +186,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0043_relay_container_reconciliation_observer.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0044_relay_container_r2_orphan_inventory.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -267,6 +267,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0041_relay_container_operation_lifecycle_hardening.sql",
     "0042_relay_container_financial_terminal_expand.sql",
     "0043_relay_container_reconciliation_observer.sql",
+    "0044_relay_container_r2_orphan_inventory.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -4708,7 +4709,7 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0043_relay_container_reconciliation_observer.sql"
+            "0044_relay_container_r2_orphan_inventory.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -4831,6 +4832,15 @@ mod tests {
         assert!(relay_container_reconciliation_observer.contains("run_generation"));
         assert!(relay_container_reconciliation_observer.contains("run_lease_expires_at"));
         assert!(relay_container_reconciliation_observer.contains("last_success_at"));
+        let relay_container_r2_inventory =
+            include_str!("../../../migrations/d1/0044_relay_container_r2_orphan_inventory.sql");
+        assert!(relay_container_r2_inventory
+            .contains("CREATE TABLE relay_container_r2_inventory_cursors"));
+        assert!(relay_container_r2_inventory
+            .contains("CREATE TABLE relay_container_r2_inventory_findings"));
+        assert!(relay_container_r2_inventory.contains("distinct_scan_generations >= 2"));
+        assert!(relay_container_r2_inventory
+            .contains("relay_container_r2_inventory_finding_delete_guard"));
     }
 
     #[test]

@@ -27,7 +27,12 @@ pub(crate) const RELAY_BILLING_OWNER_GENERATION_MIGRATION: &str =
 pub(crate) const RELAY_CONTAINER_OPERATION_MIGRATION: &str = "0040_relay_container_operations.sql";
 pub(crate) const RELAY_CONTAINER_OPERATION_LIFECYCLE_MIGRATION: &str =
     "0041_relay_container_operation_lifecycle_hardening.sql";
+pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_MIGRATION: &str =
+    "0042_relay_container_financial_terminal_expand.sql";
 const RELAY_CONTAINER_OPERATION_RECOVERY_MAX_LIMIT: i64 = 64;
+const RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION: i64 = 1;
+const RELAY_CONTAINER_RESPONSE_HEADERS_MAX_BYTES: usize = 4 * 1024;
+const RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_BYTES: usize = 64 * 1024;
 pub(crate) const RELAY_FLAT_BILLING_INTENT_MIGRATION: &str = "0029_flat_billing_intents.sql";
 pub(crate) const REALTIME_USAGE_RECONCILIATION_MIGRATION: &str =
     "0027_realtime_usage_reconciliation.sql";
@@ -117,6 +122,9 @@ pub struct RelayContainerOperationRecord<'a> {
     pub input_size: i64,
     pub input_content_type: &'a str,
     pub trace_id: &'a str,
+    pub client_idempotency_hmac_sha256: &'a str,
+    pub client_request_sha256: &'a str,
+    pub reconciliation_id: &'a str,
     pub created_at: i64,
 }
 
@@ -145,6 +153,9 @@ pub struct RelayContainerOperation {
     pub input_size: i64,
     pub input_content_type: String,
     pub trace_id: String,
+    pub client_idempotency_hmac_sha256: String,
+    pub client_request_sha256: String,
+    pub reconciliation_id: String,
     pub status: String,
     pub response_status: Option<i64>,
     pub response_code: Option<String>,
@@ -167,6 +178,13 @@ pub enum RelayContainerOperationWriteOutcome {
     SelectedAttemptConflict,
     DeadlineExpired,
     Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayContainerClientRequestLookup {
+    NotFound,
+    MatchingOperation(RelayContainerOperation),
+    RequestConflict,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,6 +292,113 @@ pub enum RelayContainerOperationTerminalOutcome {
     LeaseExpired,
     AlreadyTerminal,
     Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayContainerClientResponseRecord<'a> {
+    pub status: i64,
+    pub headers_json: &'a str,
+    pub headers_sha256: &'a str,
+    pub object_key: &'a str,
+    pub object_version: &'a str,
+    pub sha256: &'a str,
+    pub size: i64,
+    pub content_type: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerFinancialTerminalAction<'a> {
+    Settle {
+        final_quota: i64,
+        finalization_reason: &'a str,
+    },
+    Refund {
+        finalization_reason: &'a str,
+        request_accounting: RelayBillingRequestAccounting,
+    },
+    RecoveryRequired {
+        finalization_reason: &'a str,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayContainerFinancialTerminalCommand<'a> {
+    pub reservation_key: &'a str,
+    pub operation_id: &'a str,
+    pub operation_owner_generation: i64,
+    pub expected_operation_status: RelayContainerOperationExpectedStatus,
+    pub admission_sha256: &'a str,
+    pub billing_owner_generation: i64,
+    pub terminal: RelayContainerOperationTerminalRecord<'a>,
+    pub action: RelayContainerFinancialTerminalAction<'a>,
+    pub client_response: Option<RelayContainerClientResponseRecord<'a>>,
+    pub audit_payload_json: &'a str,
+    pub audit_payload_sha256: &'a str,
+    pub committed_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerFinancialTerminalReceipt {
+    pub billing_event_id: String,
+    pub reservation_key: String,
+    pub operation_id: String,
+    pub owner_generation: i64,
+    pub operation_from_status: String,
+    pub operation_status: String,
+    pub terminal_contract_sha256: String,
+    pub billing_action: String,
+    pub billing_owner_generation: i64,
+    pub billing_from_status: String,
+    pub billing_final_quota: Option<i64>,
+    pub billing_request_accounted: i64,
+    pub billing_reason: String,
+    pub pre_consumed_quota: i64,
+    pub user_quota_delta: i64,
+    pub token_quota_delta: i64,
+    pub user_used_quota_delta: i64,
+    pub channel_used_quota_delta: i64,
+    pub request_count_delta: i64,
+    pub reconciliation_id: String,
+    pub reconciliation_revision: i64,
+    pub client_response_status: Option<i64>,
+    pub client_response_headers_json: Option<String>,
+    pub client_response_headers_sha256: Option<String>,
+    pub client_response_object_key: Option<String>,
+    pub client_response_object_version: Option<String>,
+    pub client_response_sha256: Option<String>,
+    pub client_response_size: Option<i64>,
+    pub client_response_content_type: Option<String>,
+    pub outbox_payload_json: String,
+    pub outbox_payload_sha256: String,
+    pub outbox_status: String,
+    pub operation_current_status: String,
+    pub operation_client_idempotency_hmac_sha256: String,
+    pub operation_client_request_sha256: String,
+    pub operation_reconciliation_id: String,
+    pub operation_response_status: Option<i64>,
+    pub operation_response_code: Option<String>,
+    pub operation_result_object_key: Option<String>,
+    pub operation_result_object_version: Option<String>,
+    pub operation_result_sha256: Option<String>,
+    pub operation_result_size: Option<i64>,
+    pub operation_result_content_type: Option<String>,
+    pub billing_current_status: String,
+    pub billing_current_owner_generation: i64,
+    pub billing_current_final_quota: i64,
+    pub billing_current_reason: String,
+    pub billing_current_request_accounted: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayContainerFinancialTerminalOutcome {
+    Applied(RelayContainerFinancialTerminalReceipt),
+    MatchingReplay(RelayContainerFinancialTerminalReceipt),
+    NotFound,
+    StaleGeneration,
+    DifferentDecision,
+    Conflict,
+    InvariantViolation,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1761,6 +1886,9 @@ pub async fn bind_relay_container_operation(
         relay_container_d1_integer(record.input_size, "input size")?,
         D1Type::Text(record.input_content_type),
         D1Type::Text(record.trace_id),
+        D1Type::Text(record.client_idempotency_hmac_sha256),
+        D1Type::Text(record.client_request_sha256),
+        D1Type::Text(record.reconciliation_id),
         relay_container_d1_integer(record.created_at, "created at")?,
     ];
     let result = db
@@ -1776,12 +1904,15 @@ pub async fn bind_relay_container_operation(
               execution_deadline_at,
               input_mode, input_object_key, input_object_version,
               input_sha256, input_size, input_content_type,
-              trace_id, status, created_at, updated_at
+              trace_id,
+              client_idempotency_hmac_sha256, client_request_sha256,
+              reconciliation_id,
+              status, created_at, updated_at
             )
             SELECT
               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
               ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
-              'prepared', ?24, ?24
+              ?24, ?25, ?26, 'prepared', ?27, ?27
             FROM relay_billing_reservations AS reservation
             WHERE reservation.reservation_key = ?1
               AND reservation.status = 'reserved'
@@ -1790,9 +1921,9 @@ pub async fn bind_relay_container_operation(
               AND reservation.channel_id = ?5
               AND reservation.selected_group = ?6
               AND reservation.selected_at > 0
-              AND reservation.selected_at <= ?24
+              AND reservation.selected_at <= ?27
               AND reservation.owner_deadline_at >= ?16
-              AND ?24 <= ?16
+              AND ?27 <= ?16
               AND ?16 <= ?4
             ON CONFLICT DO NOTHING
             "#,
@@ -2054,6 +2185,1154 @@ pub async fn record_relay_container_operation_terminal_evidence(
     }
 }
 
+#[derive(Debug, Clone)]
+struct PreparedRelayContainerFinancialTerminal {
+    billing_event_id: String,
+    terminal_contract_sha256: String,
+    client_idempotency_hmac_sha256: String,
+    client_request_sha256: String,
+    reconciliation_id: String,
+    billing_action: &'static str,
+    billing_from_status: &'static str,
+    billing_final_quota: Option<i64>,
+    billing_request_accounted: i64,
+    billing_reason: String,
+    pre_consumed_quota: i64,
+    user_quota_delta: i64,
+    token_quota_delta: i64,
+    user_used_quota_delta: i64,
+    channel_used_quota_delta: i64,
+    request_count_delta: i64,
+    reconciliation_revision: i64,
+    outbox_payload_json: String,
+    outbox_payload_sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RelayContainerTerminalEventFingerprint {
+    terminal_contract_sha256: String,
+    outbox_payload_sha256: String,
+}
+
+/// Commits the Container operation outcome and its financial effects as one D1 transaction.
+///
+/// R2 and the shard Durable Object remain outside this transaction. Their immutable manifests
+/// are evidence inputs; only an exact canonical readback authorizes client response replay.
+pub async fn commit_relay_container_financial_terminal(
+    db: &D1Database,
+    command: RelayContainerFinancialTerminalCommand<'_>,
+) -> worker::Result<RelayContainerFinancialTerminalOutcome> {
+    validate_relay_container_terminal_record(
+        command.reservation_key,
+        command.operation_id,
+        command.operation_owner_generation,
+        command.admission_sha256,
+        command.expected_operation_status,
+        command.terminal,
+        command.committed_at,
+    )?;
+    if command.billing_owner_generation <= 0
+        || command.billing_owner_generation > i64::from(i32::MAX)
+    {
+        return Err(worker::Error::RustError(
+            "relay container billing owner generation is invalid".to_string(),
+        ));
+    }
+
+    let Some(operation) = relay_container_operation(db, command.reservation_key).await? else {
+        return Ok(RelayContainerFinancialTerminalOutcome::NotFound);
+    };
+    let Some(reservation) = relay_billing_reservation(db, command.reservation_key).await? else {
+        return Ok(RelayContainerFinancialTerminalOutcome::NotFound);
+    };
+    let prepared = prepare_relay_container_financial_terminal(&command, &operation, &reservation)?;
+
+    if let Some(outcome) =
+        classify_relay_container_financial_readback(db, &command, &prepared, true).await?
+    {
+        return Ok(outcome);
+    }
+    if operation.owner_generation != command.operation_owner_generation
+        || reservation.owner_generation != command.billing_owner_generation
+    {
+        return Ok(RelayContainerFinancialTerminalOutcome::StaleGeneration);
+    }
+    if operation.operation_id != command.operation_id
+        || operation.admission_sha256 != command.admission_sha256
+        || operation.status != command.expected_operation_status.as_str()
+        || reservation.status != prepared.billing_from_status
+        || operation.channel_id != reservation.channel_id
+        || operation.selected_group != reservation.selected_group
+    {
+        return Ok(RelayContainerFinancialTerminalOutcome::Conflict);
+    }
+
+    let mut statements = Vec::new();
+    let mut checked = Vec::new();
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        relay_container_terminal_event_statement(db, &command, &operation, &prepared)?,
+        command.reservation_key,
+        "relay container terminal event insert failed",
+    )?;
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        relay_container_terminal_outbox_statement(db, &prepared, command.committed_at)?,
+        command.reservation_key,
+        "relay container terminal outbox insert failed",
+    )?;
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        relay_container_financial_operation_terminal_statement(db, &command, &prepared)?,
+        command.reservation_key,
+        "relay container financial operation transition failed",
+    )?;
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        relay_container_financial_billing_terminal_statement(db, &command, &operation, &prepared)?,
+        command.reservation_key,
+        "relay container financial billing transition failed",
+    )?;
+    push_relay_container_financial_accounting_statements(
+        db,
+        &mut statements,
+        &mut checked,
+        command.reservation_key,
+        &reservation,
+        &command,
+        &prepared,
+    )?;
+
+    let results = match db.batch(statements).await {
+        Ok(results) => results,
+        Err(err) => {
+            if let Some(outcome) =
+                classify_relay_container_financial_readback(db, &command, &prepared, true).await?
+            {
+                return Ok(outcome);
+            }
+            let operation = relay_container_operation(db, command.reservation_key).await?;
+            let reservation = relay_billing_reservation(db, command.reservation_key).await?;
+            if operation.as_ref().is_some_and(|current| {
+                current.owner_generation != command.operation_owner_generation
+            }) || reservation
+                .as_ref()
+                .is_some_and(|current| current.owner_generation != command.billing_owner_generation)
+            {
+                return Ok(RelayContainerFinancialTerminalOutcome::StaleGeneration);
+            }
+            if operation
+                .as_ref()
+                .is_some_and(|current| current.status != command.expected_operation_status.as_str())
+                || reservation
+                    .as_ref()
+                    .is_some_and(|current| current.status != prepared.billing_from_status)
+            {
+                return Ok(RelayContainerFinancialTerminalOutcome::Conflict);
+            }
+            return Err(err);
+        }
+    };
+    for (index, message) in checked {
+        require_batch_change(&results, index, message)?;
+    }
+
+    match classify_relay_container_financial_readback(db, &command, &prepared, false).await? {
+        Some(RelayContainerFinancialTerminalOutcome::Applied(receipt)) => {
+            Ok(RelayContainerFinancialTerminalOutcome::Applied(receipt))
+        }
+        Some(outcome) => Ok(outcome),
+        None => Ok(RelayContainerFinancialTerminalOutcome::InvariantViolation),
+    }
+}
+
+fn prepare_relay_container_financial_terminal(
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    operation: &RelayContainerOperation,
+    reservation: &RelayBillingReservation,
+) -> worker::Result<PreparedRelayContainerFinancialTerminal> {
+    if operation.reservation_key != command.reservation_key
+        || operation.operation_id != command.operation_id
+        || operation.admission_sha256 != command.admission_sha256
+        || operation.client_idempotency_hmac_sha256.is_empty()
+        || operation.client_request_sha256.is_empty()
+        || operation.reconciliation_id.is_empty()
+    {
+        return Err(worker::Error::RustError(
+            "relay container financial operation identity is invalid".to_string(),
+        ));
+    }
+    validate_relay_container_sha256(
+        &operation.client_idempotency_hmac_sha256,
+        "client idempotency hmac sha256",
+    )?;
+    validate_relay_container_sha256(&operation.client_request_sha256, "client request sha256")?;
+    validate_relay_container_sha256(&operation.reconciliation_id, "reconciliation id")?;
+    validate_relay_container_sha256(command.audit_payload_sha256, "audit payload sha256")?;
+    let audit_payload = relay_container_canonical_json(
+        command.audit_payload_json,
+        "audit payload",
+        RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_BYTES,
+        true,
+    )?;
+    if relay_container_sha256_hex(command.audit_payload_json.as_bytes())
+        != command.audit_payload_sha256
+    {
+        return Err(worker::Error::RustError(
+            "relay container audit payload digest does not match".to_string(),
+        ));
+    }
+
+    let billing_from_status = match command.expected_operation_status {
+        RelayContainerOperationExpectedStatus::Prepared
+        | RelayContainerOperationExpectedStatus::Dispatched => "reserved",
+        RelayContainerOperationExpectedStatus::RecoveryRequired => "recovery_required",
+    };
+    let reconciliation_revision = if billing_from_status == "recovery_required" {
+        2
+    } else {
+        1
+    };
+    let reason = match command.action {
+        RelayContainerFinancialTerminalAction::Settle {
+            finalization_reason,
+            ..
+        }
+        | RelayContainerFinancialTerminalAction::Refund {
+            finalization_reason,
+            ..
+        }
+        | RelayContainerFinancialTerminalAction::RecoveryRequired {
+            finalization_reason,
+        } => non_empty_relay_reservation_field(finalization_reason, "finalization reason")?,
+    };
+
+    let pre_consumed_quota = i64::from(quota_i32(reservation.pre_consumed_quota)?);
+    let (
+        billing_action,
+        billing_final_quota,
+        billing_request_accounted,
+        user_quota_delta,
+        token_quota_delta,
+        user_used_quota_delta,
+        channel_used_quota_delta,
+        request_count_delta,
+    ) = match (command.action, command.terminal, command.client_response) {
+        (
+            RelayContainerFinancialTerminalAction::Settle { final_quota, .. },
+            RelayContainerOperationTerminalRecord::Completed {
+                response_status, ..
+            },
+            Some(response),
+        ) if response.status == response_status => {
+            let final_quota = i64::from(quota_i32(final_quota)?);
+            validate_relay_container_client_response(command, response)?;
+            let remain_delta = pre_consumed_quota.saturating_sub(final_quota);
+            (
+                "settle",
+                Some(final_quota),
+                1,
+                remain_delta,
+                if reservation.token_id > 0 {
+                    remain_delta
+                } else {
+                    0
+                },
+                final_quota,
+                final_quota,
+                1,
+            )
+        }
+        (
+            RelayContainerFinancialTerminalAction::Refund {
+                request_accounting, ..
+            },
+            RelayContainerOperationTerminalRecord::Failed {
+                response_status, ..
+            },
+            Some(response),
+        ) if response.status == response_status => {
+            validate_relay_container_client_response(command, response)?;
+            let request_count_delta = i64::from(request_accounting.value());
+            (
+                "refund",
+                None,
+                request_count_delta,
+                pre_consumed_quota,
+                if reservation.token_id > 0 {
+                    pre_consumed_quota
+                } else {
+                    0
+                },
+                0,
+                0,
+                request_count_delta,
+            )
+        }
+        (
+            RelayContainerFinancialTerminalAction::RecoveryRequired { .. },
+            RelayContainerOperationTerminalRecord::RecoveryRequired { .. },
+            None,
+        ) if billing_from_status == "reserved" => ("recovery_required", None, 0, 0, 0, 0, 0, 0),
+        _ => {
+            return Err(worker::Error::RustError(
+                "relay container financial terminal action is inconsistent".to_string(),
+            ));
+        }
+    };
+
+    let terminal_result = command.terminal.result();
+    let client_response = command.client_response.map(|response| {
+        serde_json::json!({
+            "content_type": response.content_type,
+            "headers_json": response.headers_json,
+            "headers_sha256": response.headers_sha256,
+            "object_key": response.object_key,
+            "object_version": response.object_version,
+            "sha256": response.sha256,
+            "size": response.size,
+            "status": response.status,
+        })
+    });
+    let terminal_contract = serde_json::json!({
+        "admission_sha256": command.admission_sha256,
+        "audit_payload_sha256": command.audit_payload_sha256,
+        "billing": {
+            "action": billing_action,
+            "channel_used_quota_delta": channel_used_quota_delta,
+            "final_quota": billing_final_quota,
+            "from_status": billing_from_status,
+            "owner_generation": command.billing_owner_generation,
+            "pre_consumed_quota": pre_consumed_quota,
+            "reason": reason,
+            "request_accounted": billing_request_accounted,
+            "request_count_delta": request_count_delta,
+            "token_quota_delta": token_quota_delta,
+            "user_quota_delta": user_quota_delta,
+            "user_used_quota_delta": user_used_quota_delta,
+        },
+        "client_idempotency_hmac_sha256": operation.client_idempotency_hmac_sha256,
+        "client_request_sha256": operation.client_request_sha256,
+        "client_response": client_response,
+        "operation": {
+            "from_status": command.expected_operation_status.as_str(),
+            "id": command.operation_id,
+            "owner_generation": command.operation_owner_generation,
+            "response_code": command.terminal.response_code(),
+            "response_status": command.terminal.response_status(),
+            "result": terminal_result.map(|result| serde_json::json!({
+                "content_type": result.content_type,
+                "object_key": result.object_key,
+                "object_version": result.object_version,
+                "sha256": result.sha256,
+                "size": result.size,
+            })),
+            "to_status": command.terminal.status(),
+        },
+        "reconciliation_id": operation.reconciliation_id,
+        "reconciliation_revision": reconciliation_revision,
+        "schema_version": RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION,
+    });
+    let terminal_contract_json = serde_json::to_string(&terminal_contract).map_err(|err| {
+        worker::Error::RustError(format!(
+            "relay container terminal contract serialization failed: {err}"
+        ))
+    })?;
+    let terminal_contract_sha256 = relay_container_sha256_hex(terminal_contract_json.as_bytes());
+    let event_identity = serde_json::json!({
+        "domain": "cinatoken:relay-container-financial-terminal:v1",
+        "operation_id": command.operation_id,
+        "owner_generation": command.operation_owner_generation,
+        "operation_from_status": command.expected_operation_status.as_str(),
+        "reconciliation_id": operation.reconciliation_id,
+        "reconciliation_revision": reconciliation_revision,
+    });
+    let billing_event_id = relay_container_sha256_hex(
+        serde_json::to_string(&event_identity)
+            .map_err(|err| {
+                worker::Error::RustError(format!(
+                    "relay container terminal identity serialization failed: {err}"
+                ))
+            })?
+            .as_bytes(),
+    );
+    let outbox_payload = serde_json::json!({
+        "audit_payload": audit_payload,
+        "audit_payload_sha256": command.audit_payload_sha256,
+        "billing_event_id": billing_event_id,
+        "schema_version": RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION,
+        "terminal_contract": terminal_contract,
+        "terminal_contract_sha256": terminal_contract_sha256,
+    });
+    let outbox_payload_json = serde_json::to_string(&outbox_payload).map_err(|err| {
+        worker::Error::RustError(format!(
+            "relay container terminal outbox serialization failed: {err}"
+        ))
+    })?;
+    if outbox_payload_json.len() > RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_BYTES {
+        return Err(worker::Error::RustError(
+            "relay container terminal outbox is too large".to_string(),
+        ));
+    }
+    let outbox_payload_sha256 = relay_container_sha256_hex(outbox_payload_json.as_bytes());
+
+    Ok(PreparedRelayContainerFinancialTerminal {
+        billing_event_id,
+        terminal_contract_sha256,
+        client_idempotency_hmac_sha256: operation.client_idempotency_hmac_sha256.clone(),
+        client_request_sha256: operation.client_request_sha256.clone(),
+        reconciliation_id: operation.reconciliation_id.clone(),
+        billing_action,
+        billing_from_status,
+        billing_final_quota,
+        billing_request_accounted,
+        billing_reason: reason.to_string(),
+        pre_consumed_quota,
+        user_quota_delta,
+        token_quota_delta,
+        user_used_quota_delta,
+        channel_used_quota_delta,
+        request_count_delta,
+        reconciliation_revision,
+        outbox_payload_json,
+        outbox_payload_sha256,
+    })
+}
+
+fn validate_relay_container_client_response(
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    response: RelayContainerClientResponseRecord<'_>,
+) -> worker::Result<()> {
+    if response.status != command.terminal.response_status() {
+        return Err(worker::Error::RustError(
+            "relay container client response status is inconsistent".to_string(),
+        ));
+    }
+    validate_relay_container_sha256(response.headers_sha256, "response headers sha256")?;
+    validate_relay_container_object_key(response.object_key, "client response object key")?;
+    validate_relay_container_id(
+        response.object_version,
+        "client response object version",
+        1,
+        128,
+    )?;
+    validate_relay_container_sha256(response.sha256, "client response sha256")?;
+    validate_relay_container_content_type(response.content_type, "client response content type")?;
+    let headers = relay_container_canonical_json(
+        response.headers_json,
+        "client response headers",
+        RELAY_CONTAINER_RESPONSE_HEADERS_MAX_BYTES,
+        true,
+    )?;
+    if relay_container_sha256_hex(response.headers_json.as_bytes()) != response.headers_sha256 {
+        return Err(worker::Error::RustError(
+            "relay container client response header digest does not match".to_string(),
+        ));
+    }
+    let allowed_headers = [
+        "anthropic-request-id",
+        "cache-control",
+        "content-type",
+        "openai-request-id",
+        "retry-after",
+        "x-request-id",
+    ];
+    let Some(headers) = headers.as_object() else {
+        return Err(worker::Error::RustError(
+            "relay container client response headers must be an object".to_string(),
+        ));
+    };
+    for (name, value) in headers {
+        let Some(value) = value.as_str() else {
+            return Err(worker::Error::RustError(
+                "relay container client response header value is invalid".to_string(),
+            ));
+        };
+        if allowed_headers.binary_search(&name.as_str()).is_err()
+            || value.is_empty()
+            || value.len() > 1_024
+            || value.chars().any(char::is_control)
+        {
+            return Err(worker::Error::RustError(
+                "relay container client response header is not replayable".to_string(),
+            ));
+        }
+    }
+    if headers.get("content-type").and_then(Value::as_str) != Some(response.content_type) {
+        return Err(worker::Error::RustError(
+            "relay container client response content type is inconsistent".to_string(),
+        ));
+    }
+    let expected_key = format!(
+        "container-client-responses/v1/{}/{}/{}",
+        command.operation_id, command.operation_owner_generation, response.sha256
+    );
+    if response.object_key != expected_key || !(0..=64 * 1024 * 1024).contains(&response.size) {
+        return Err(worker::Error::RustError(
+            "relay container client response manifest is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn relay_container_canonical_json(
+    value: &str,
+    field: &str,
+    max_bytes: usize,
+    require_object: bool,
+) -> worker::Result<Value> {
+    if value.is_empty() || value.len() > max_bytes {
+        return Err(worker::Error::RustError(format!(
+            "relay container {field} size is invalid"
+        )));
+    }
+    let parsed = serde_json::from_str::<Value>(value).map_err(|err| {
+        worker::Error::RustError(format!("relay container {field} is invalid JSON: {err}"))
+    })?;
+    if require_object && !parsed.is_object() {
+        return Err(worker::Error::RustError(format!(
+            "relay container {field} must be an object"
+        )));
+    }
+    let canonical = serde_json::to_string(&parsed).map_err(|err| {
+        worker::Error::RustError(format!(
+            "relay container {field} canonicalization failed: {err}"
+        ))
+    })?;
+    if canonical != value {
+        return Err(worker::Error::RustError(format!(
+            "relay container {field} must use canonical JSON"
+        )));
+    }
+    Ok(parsed)
+}
+
+fn relay_container_sha256_hex(value: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(value))
+}
+
+fn relay_container_terminal_event_statement(
+    db: &D1Database,
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    operation: &RelayContainerOperation,
+    prepared: &PreparedRelayContainerFinancialTerminal,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let response = command.client_response;
+    let args = vec![
+        D1Type::Text(&prepared.billing_event_id),
+        D1Type::Text(command.reservation_key),
+        D1Type::Text(command.operation_id),
+        relay_container_d1_integer(command.operation_owner_generation, "owner generation")?,
+        D1Type::Text(command.expected_operation_status.as_str()),
+        D1Type::Text(command.terminal.status()),
+        D1Type::Text(&prepared.terminal_contract_sha256),
+        D1Type::Text(prepared.billing_action),
+        relay_container_d1_integer(command.billing_owner_generation, "billing owner generation")?,
+        D1Type::Text(prepared.billing_from_status),
+        match prepared.billing_final_quota {
+            Some(value) => D1Type::Integer(quota_i32(value)?),
+            None => D1Type::Null,
+        },
+        D1Type::Integer(d1_i32(prepared.billing_request_accounted)),
+        D1Type::Text(&prepared.billing_reason),
+        D1Type::Integer(quota_i32(prepared.pre_consumed_quota)?),
+        relay_container_d1_integer(prepared.user_quota_delta, "user quota delta")?,
+        relay_container_d1_integer(prepared.token_quota_delta, "token quota delta")?,
+        relay_container_d1_integer(prepared.user_used_quota_delta, "user used quota delta")?,
+        relay_container_d1_integer(
+            prepared.channel_used_quota_delta,
+            "channel used quota delta",
+        )?,
+        relay_container_d1_integer(prepared.request_count_delta, "request count delta")?,
+        D1Type::Text(&operation.reconciliation_id),
+        relay_container_d1_integer(prepared.reconciliation_revision, "reconciliation revision")?,
+        response
+            .map(|value| D1Type::Integer(d1_i32(value.status)))
+            .unwrap_or(D1Type::Null),
+        response
+            .map(|value| D1Type::Text(value.headers_json))
+            .unwrap_or(D1Type::Null),
+        response
+            .map(|value| D1Type::Text(value.headers_sha256))
+            .unwrap_or(D1Type::Null),
+        response
+            .map(|value| D1Type::Text(value.object_key))
+            .unwrap_or(D1Type::Null),
+        response
+            .map(|value| D1Type::Text(value.object_version))
+            .unwrap_or(D1Type::Null),
+        response
+            .map(|value| D1Type::Text(value.sha256))
+            .unwrap_or(D1Type::Null),
+        match response {
+            Some(value) => relay_container_d1_integer(value.size, "client response size")?,
+            None => D1Type::Null,
+        },
+        response
+            .map(|value| D1Type::Text(value.content_type))
+            .unwrap_or(D1Type::Null),
+        relay_container_d1_integer(
+            RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION,
+            "outbox schema version",
+        )?,
+        D1Type::Text(&prepared.outbox_payload_json),
+        D1Type::Text(&prepared.outbox_payload_sha256),
+        relay_container_d1_integer(command.committed_at, "committed at")?,
+        D1Type::Text(command.admission_sha256),
+        D1Type::Text(&operation.client_idempotency_hmac_sha256),
+        D1Type::Text(&operation.client_request_sha256),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO relay_container_terminal_events (
+          billing_event_id, reservation_key, operation_id,
+          owner_generation, operation_from_status, operation_status,
+          terminal_contract_sha256,
+          billing_action, billing_owner_generation, billing_from_status,
+          billing_final_quota, billing_request_accounted, billing_reason,
+          pre_consumed_quota, user_quota_delta, token_quota_delta,
+          user_used_quota_delta, channel_used_quota_delta, request_count_delta,
+          reconciliation_id, reconciliation_revision,
+          client_response_status,
+          client_response_headers_json, client_response_headers_sha256,
+          client_response_object_key, client_response_object_version,
+          client_response_sha256, client_response_size,
+          client_response_content_type,
+          outbox_schema_version, outbox_payload_json, outbox_payload_sha256,
+          created_at
+        )
+        SELECT
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+          ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+          ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33
+        FROM relay_container_operations AS operation
+        JOIN relay_billing_reservations AS reservation
+          ON reservation.reservation_key = operation.reservation_key
+        WHERE operation.reservation_key = ?2
+          AND operation.operation_id = ?3
+          AND operation.owner_generation = ?4
+          AND operation.status = ?5
+          AND operation.admission_sha256 = ?34
+          AND operation.client_idempotency_hmac_sha256 = ?35
+          AND operation.client_request_sha256 = ?36
+          AND operation.reconciliation_id = ?20
+          AND reservation.status = ?10
+          AND reservation.owner_generation = ?9
+          AND reservation.channel_id = operation.channel_id
+          AND reservation.selected_group = operation.selected_group
+          AND reservation.lease_expires_at = operation.owner_lease_expires_at
+          AND reservation.pre_consumed_quota = ?14
+        ON CONFLICT(billing_event_id) DO NOTHING
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn relay_container_terminal_outbox_statement(
+    db: &D1Database,
+    prepared: &PreparedRelayContainerFinancialTerminal,
+    created_at: i64,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        D1Type::Text(&prepared.billing_event_id),
+        relay_container_d1_integer(created_at, "outbox created at")?,
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO relay_container_terminal_outbox_state (
+          billing_event_id, status, delivery_generation, delivery_attempt_count,
+          lease_expires_at, available_at, delivered_at, last_error,
+          created_at, updated_at
+        )
+        SELECT ?1, 'pending', 0, 0, 0, ?2, 0, '', ?2, ?2
+        FROM relay_container_terminal_events
+        WHERE billing_event_id = ?1
+        ON CONFLICT(billing_event_id) DO NOTHING
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn relay_container_financial_operation_terminal_statement(
+    db: &D1Database,
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    prepared: &PreparedRelayContainerFinancialTerminal,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let result = command.terminal.result();
+    let args = vec![
+        D1Type::Text(command.reservation_key),
+        D1Type::Text(command.operation_id),
+        relay_container_d1_integer(command.operation_owner_generation, "owner generation")?,
+        D1Type::Text(command.admission_sha256),
+        D1Type::Text(command.expected_operation_status.as_str()),
+        D1Type::Text(command.terminal.status()),
+        relay_container_d1_integer(command.terminal.response_status(), "response status")?,
+        command
+            .terminal
+            .response_code()
+            .map(D1Type::Text)
+            .unwrap_or(D1Type::Null),
+        result
+            .map(|value| D1Type::Text(value.object_key))
+            .unwrap_or(D1Type::Null),
+        result
+            .map(|value| D1Type::Text(value.object_version))
+            .unwrap_or(D1Type::Null),
+        result
+            .map(|value| D1Type::Text(value.sha256))
+            .unwrap_or(D1Type::Null),
+        match result {
+            Some(value) => relay_container_d1_integer(value.size, "result size")?,
+            None => D1Type::Null,
+        },
+        result
+            .map(|value| D1Type::Text(value.content_type))
+            .unwrap_or(D1Type::Null),
+        relay_container_d1_integer(command.committed_at, "terminal at")?,
+        D1Type::Text(prepared.billing_from_status),
+        relay_container_d1_integer(command.billing_owner_generation, "billing owner generation")?,
+        D1Type::Text(&prepared.billing_event_id),
+    ];
+    db.prepare(
+        r#"
+        UPDATE relay_container_operations
+        SET status = ?6,
+            response_status = ?7,
+            response_code = ?8,
+            result_object_key = ?9,
+            result_object_version = ?10,
+            result_sha256 = ?11,
+            result_size = ?12,
+            result_content_type = ?13,
+            updated_at = ?14
+        WHERE reservation_key = ?1
+          AND operation_id = ?2
+          AND owner_generation = ?3
+          AND admission_sha256 = ?4
+          AND status = ?5
+          AND updated_at <= ?14
+          AND (?5 = 'recovery_required' OR ?6 = 'recovery_required' OR ?14 <= owner_lease_expires_at)
+          AND EXISTS (
+            SELECT 1 FROM relay_billing_reservations AS reservation
+            WHERE reservation.reservation_key = relay_container_operations.reservation_key
+              AND reservation.status = ?15
+              AND reservation.owner_generation = ?16
+              AND reservation.channel_id = relay_container_operations.channel_id
+              AND reservation.selected_group = relay_container_operations.selected_group
+              AND reservation.lease_expires_at = relay_container_operations.owner_lease_expires_at
+          )
+          AND EXISTS (
+            SELECT 1 FROM relay_container_terminal_events AS event
+            WHERE event.billing_event_id = ?17
+              AND event.operation_id = relay_container_operations.operation_id
+              AND event.operation_from_status = ?5
+              AND event.operation_status = ?6
+          )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn relay_container_financial_billing_terminal_statement(
+    db: &D1Database,
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    operation: &RelayContainerOperation,
+    prepared: &PreparedRelayContainerFinancialTerminal,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        D1Type::Text(command.reservation_key),
+        relay_container_d1_integer(command.billing_owner_generation, "billing owner generation")?,
+        D1Type::Text(prepared.billing_from_status),
+        relay_container_d1_integer(operation.channel_id, "channel id")?,
+        D1Type::Text(&operation.selected_group),
+        match prepared.billing_final_quota {
+            Some(value) => D1Type::Integer(quota_i32(value)?),
+            None => D1Type::Null,
+        },
+        D1Type::Text(&prepared.billing_reason),
+        D1Type::Integer(d1_i32(prepared.billing_request_accounted)),
+        relay_container_d1_integer(command.committed_at, "billing terminal at")?,
+        D1Type::Text(prepared.billing_action),
+        relay_container_d1_integer(
+            RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS,
+            "billing recovery grace",
+        )?,
+        D1Type::Text(&prepared.billing_event_id),
+    ];
+    db.prepare(
+        r#"
+        UPDATE relay_billing_reservations
+        SET status = CASE ?10
+              WHEN 'settle' THEN 'settled'
+              WHEN 'refund' THEN 'refunded'
+              ELSE 'recovery_required'
+            END,
+            owner_generation = owner_generation + 1,
+            final_quota = CASE WHEN ?10 = 'settle' THEN ?6 ELSE 0 END,
+            finalization_reason = ?7,
+            request_accounted = ?8,
+            settled_at = CASE WHEN ?10 = 'settle' THEN ?9 ELSE 0 END,
+            refunded_at = CASE WHEN ?10 = 'refund' THEN ?9 ELSE 0 END,
+            recovery_required_at = CASE
+              WHEN ?10 = 'recovery_required' THEN ?9 ELSE 0 END,
+            recovery_attempt_count = CASE
+              WHEN ?10 = 'recovery_required' THEN recovery_attempt_count + 1
+              ELSE recovery_attempt_count END,
+            recovery_last_attempt_at = CASE
+              WHEN ?10 = 'recovery_required' THEN ?9 ELSE recovery_last_attempt_at END,
+            recovery_next_attempt_at = CASE
+              WHEN ?10 = 'recovery_required' THEN 0 ELSE recovery_next_attempt_at END,
+            updated_at = ?9
+        WHERE reservation_key = ?1
+          AND owner_generation = ?2
+          AND status = ?3
+          AND channel_id = ?4
+          AND selected_group = ?5
+          AND (?3 = 'recovery_required' OR ?10 = 'recovery_required' OR ?9 <= lease_expires_at + ?11)
+          AND EXISTS (
+            SELECT 1 FROM relay_container_terminal_events AS event
+            WHERE event.billing_event_id = ?12
+              AND event.reservation_key = relay_billing_reservations.reservation_key
+              AND event.billing_owner_generation = ?2
+              AND event.billing_from_status = ?3
+              AND event.billing_action = ?10
+          )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_relay_container_financial_accounting_statements(
+    db: &D1Database,
+    statements: &mut Vec<worker::D1PreparedStatement>,
+    checked: &mut Vec<(usize, &'static str)>,
+    reservation_key: &str,
+    reservation: &RelayBillingReservation,
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    prepared: &PreparedRelayContainerFinancialTerminal,
+) -> worker::Result<()> {
+    match command.action {
+        RelayContainerFinancialTerminalAction::Settle { final_quota, .. } => {
+            let final_quota = quota_i32(final_quota)?;
+            let pre_consumed_quota = quota_i32(reservation.pre_consumed_quota)?;
+            let delta = final_quota.saturating_sub(pre_consumed_quota);
+            if delta > 0 {
+                push_relay_reservation_guarded_statement(
+                    db,
+                    statements,
+                    checked,
+                    reserve_user_quota_statement(db, reservation.user_id, delta)?,
+                    reservation_key,
+                    "container user quota settlement failed",
+                )?;
+                if reservation.token_id > 0 {
+                    push_relay_reservation_guarded_statement(
+                        db,
+                        statements,
+                        checked,
+                        debit_token_quota_usage_statement(
+                            db,
+                            reservation.token_id,
+                            delta,
+                            command.committed_at,
+                        )?,
+                        reservation_key,
+                        "container token quota settlement failed",
+                    )?;
+                }
+            } else if delta < 0 {
+                let refund = delta.saturating_abs();
+                push_relay_reservation_guarded_statement(
+                    db,
+                    statements,
+                    checked,
+                    credit_user_quota_statement(db, reservation.user_id, refund)?,
+                    reservation_key,
+                    "container user quota credit failed",
+                )?;
+                if reservation.token_id > 0 {
+                    push_relay_reservation_guarded_statement(
+                        db,
+                        statements,
+                        checked,
+                        credit_token_quota_usage_statement(
+                            db,
+                            reservation.token_id,
+                            refund,
+                            command.committed_at,
+                        )?,
+                        reservation_key,
+                        "container token quota credit failed",
+                    )?;
+                }
+            } else if reservation.token_id > 0 {
+                push_relay_reservation_guarded_statement(
+                    db,
+                    statements,
+                    checked,
+                    touch_token_statement(db, reservation.token_id, command.committed_at)?,
+                    reservation_key,
+                    "container token touch failed",
+                )?;
+            }
+            push_relay_reservation_guarded_statement(
+                db,
+                statements,
+                checked,
+                increment_user_used_quota_and_request_count_statement(
+                    db,
+                    reservation.user_id,
+                    final_quota,
+                )?,
+                reservation_key,
+                "container user usage settlement failed",
+            )?;
+            push_relay_reservation_guarded_statement(
+                db,
+                statements,
+                checked,
+                increment_channel_used_quota_statement(db, reservation.channel_id, final_quota)?,
+                reservation_key,
+                "container channel usage settlement failed",
+            )?;
+        }
+        RelayContainerFinancialTerminalAction::Refund {
+            request_accounting, ..
+        } => {
+            let quota = quota_i32(reservation.pre_consumed_quota)?;
+            push_relay_reservation_guarded_statement(
+                db,
+                statements,
+                checked,
+                credit_user_quota_statement(db, reservation.user_id, quota)?,
+                reservation_key,
+                "container user quota refund failed",
+            )?;
+            if reservation.token_id > 0 {
+                push_relay_reservation_guarded_statement(
+                    db,
+                    statements,
+                    checked,
+                    credit_token_quota_usage_statement(
+                        db,
+                        reservation.token_id,
+                        quota,
+                        command.committed_at,
+                    )?,
+                    reservation_key,
+                    "container token quota refund failed",
+                )?;
+            }
+            if request_accounting == RelayBillingRequestAccounting::Account {
+                push_relay_reservation_guarded_statement(
+                    db,
+                    statements,
+                    checked,
+                    increment_user_request_count_statement(db, reservation.user_id)?,
+                    reservation_key,
+                    "container refund request accounting failed",
+                )?;
+            }
+        }
+        RelayContainerFinancialTerminalAction::RecoveryRequired { .. } => {
+            debug_assert_eq!(prepared.user_quota_delta, 0);
+            debug_assert_eq!(prepared.request_count_delta, 0);
+        }
+    }
+    Ok(())
+}
+
+async fn relay_container_financial_terminal_receipt(
+    db: &D1Database,
+    billing_event_id: &str,
+) -> worker::Result<Option<RelayContainerFinancialTerminalReceipt>> {
+    let args = [D1Type::Text(billing_event_id)];
+    db.prepare(
+        r#"
+        SELECT
+          event.billing_event_id, event.reservation_key, event.operation_id,
+          event.owner_generation, event.operation_from_status,
+          event.operation_status, event.terminal_contract_sha256,
+          event.billing_action, event.billing_owner_generation,
+          event.billing_from_status, event.billing_final_quota,
+          event.billing_request_accounted, event.billing_reason,
+          event.pre_consumed_quota, event.user_quota_delta,
+          event.token_quota_delta, event.user_used_quota_delta,
+          event.channel_used_quota_delta, event.request_count_delta,
+          event.reconciliation_id, event.reconciliation_revision,
+          event.client_response_status, event.client_response_headers_json,
+          event.client_response_headers_sha256, event.client_response_object_key,
+          event.client_response_object_version, event.client_response_sha256,
+          event.client_response_size, event.client_response_content_type,
+          event.outbox_payload_json, event.outbox_payload_sha256,
+          outbox.status AS outbox_status,
+          operation.status AS operation_current_status,
+          operation.client_idempotency_hmac_sha256 AS operation_client_idempotency_hmac_sha256,
+          operation.client_request_sha256 AS operation_client_request_sha256,
+          operation.reconciliation_id AS operation_reconciliation_id,
+          operation.response_status AS operation_response_status,
+          operation.response_code AS operation_response_code,
+          operation.result_object_key AS operation_result_object_key,
+          operation.result_object_version AS operation_result_object_version,
+          operation.result_sha256 AS operation_result_sha256,
+          operation.result_size AS operation_result_size,
+          operation.result_content_type AS operation_result_content_type,
+          reservation.status AS billing_current_status,
+          reservation.owner_generation AS billing_current_owner_generation,
+          reservation.final_quota AS billing_current_final_quota,
+          reservation.finalization_reason AS billing_current_reason,
+          reservation.request_accounted AS billing_current_request_accounted,
+          event.created_at
+        FROM relay_container_terminal_events AS event
+        JOIN relay_container_terminal_outbox_state AS outbox
+          ON outbox.billing_event_id = event.billing_event_id
+        JOIN relay_container_operations AS operation
+          ON operation.operation_id = event.operation_id
+        JOIN relay_billing_reservations AS reservation
+          ON reservation.reservation_key = event.reservation_key
+        WHERE event.billing_event_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerFinancialTerminalReceipt>(None)
+    .await
+}
+
+async fn relay_container_terminal_event_fingerprint(
+    db: &D1Database,
+    billing_event_id: &str,
+) -> worker::Result<Option<RelayContainerTerminalEventFingerprint>> {
+    let args = [D1Type::Text(billing_event_id)];
+    db.prepare(
+        "SELECT terminal_contract_sha256, outbox_payload_sha256 FROM relay_container_terminal_events WHERE billing_event_id = ?1 LIMIT 1",
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerTerminalEventFingerprint>(None)
+    .await
+}
+
+async fn classify_relay_container_financial_readback(
+    db: &D1Database,
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    prepared: &PreparedRelayContainerFinancialTerminal,
+    replay: bool,
+) -> worker::Result<Option<RelayContainerFinancialTerminalOutcome>> {
+    let Some(fingerprint) =
+        relay_container_terminal_event_fingerprint(db, &prepared.billing_event_id).await?
+    else {
+        return Ok(None);
+    };
+    if fingerprint.terminal_contract_sha256 != prepared.terminal_contract_sha256
+        || fingerprint.outbox_payload_sha256 != prepared.outbox_payload_sha256
+    {
+        return Ok(Some(
+            RelayContainerFinancialTerminalOutcome::DifferentDecision,
+        ));
+    }
+    let Some(receipt) =
+        relay_container_financial_terminal_receipt(db, &prepared.billing_event_id).await?
+    else {
+        return Ok(Some(
+            RelayContainerFinancialTerminalOutcome::InvariantViolation,
+        ));
+    };
+    if !relay_container_financial_receipt_matches(&receipt, command, prepared) {
+        return Ok(Some(
+            RelayContainerFinancialTerminalOutcome::InvariantViolation,
+        ));
+    }
+    Ok(Some(if replay {
+        RelayContainerFinancialTerminalOutcome::MatchingReplay(receipt)
+    } else {
+        RelayContainerFinancialTerminalOutcome::Applied(receipt)
+    }))
+}
+
+fn relay_container_financial_receipt_matches(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    prepared: &PreparedRelayContainerFinancialTerminal,
+) -> bool {
+    let response = command.client_response;
+    let result = command.terminal.result();
+    let expected_billing_status = match prepared.billing_action {
+        "settle" => "settled",
+        "refund" => "refunded",
+        _ => "recovery_required",
+    };
+    let expected_current_final_quota = prepared.billing_final_quota.unwrap_or_default();
+    receipt.billing_event_id == prepared.billing_event_id
+        && receipt.reservation_key == command.reservation_key
+        && receipt.operation_id == command.operation_id
+        && receipt.owner_generation == command.operation_owner_generation
+        && receipt.operation_from_status == command.expected_operation_status.as_str()
+        && receipt.operation_status == command.terminal.status()
+        && receipt.terminal_contract_sha256 == prepared.terminal_contract_sha256
+        && receipt.billing_action == prepared.billing_action
+        && receipt.billing_owner_generation == command.billing_owner_generation
+        && receipt.billing_from_status == prepared.billing_from_status
+        && receipt.billing_final_quota == prepared.billing_final_quota
+        && receipt.billing_request_accounted == prepared.billing_request_accounted
+        && receipt.billing_reason == prepared.billing_reason
+        && receipt.pre_consumed_quota == prepared.pre_consumed_quota
+        && receipt.user_quota_delta == prepared.user_quota_delta
+        && receipt.token_quota_delta == prepared.token_quota_delta
+        && receipt.user_used_quota_delta == prepared.user_used_quota_delta
+        && receipt.channel_used_quota_delta == prepared.channel_used_quota_delta
+        && receipt.request_count_delta == prepared.request_count_delta
+        && receipt.reconciliation_revision == prepared.reconciliation_revision
+        && receipt.reconciliation_id == prepared.reconciliation_id
+        && receipt.operation_reconciliation_id == prepared.reconciliation_id
+        && receipt.operation_client_idempotency_hmac_sha256
+            == prepared.client_idempotency_hmac_sha256
+        && receipt.operation_client_request_sha256 == prepared.client_request_sha256
+        && receipt.client_response_status == response.map(|value| value.status)
+        && receipt.client_response_headers_json.as_deref()
+            == response.map(|value| value.headers_json)
+        && receipt.client_response_headers_sha256.as_deref()
+            == response.map(|value| value.headers_sha256)
+        && receipt.client_response_object_key.as_deref() == response.map(|value| value.object_key)
+        && receipt.client_response_object_version.as_deref()
+            == response.map(|value| value.object_version)
+        && receipt.client_response_sha256.as_deref() == response.map(|value| value.sha256)
+        && receipt.client_response_size == response.map(|value| value.size)
+        && receipt.client_response_content_type.as_deref()
+            == response.map(|value| value.content_type)
+        && receipt.outbox_payload_json == prepared.outbox_payload_json
+        && receipt.outbox_payload_sha256 == prepared.outbox_payload_sha256
+        && matches!(
+            receipt.outbox_status.as_str(),
+            "pending" | "leased" | "delivered" | "dead_letter"
+        )
+        && receipt.operation_current_status == command.terminal.status()
+        && receipt.operation_response_status == Some(command.terminal.response_status())
+        && receipt.operation_response_code.as_deref() == command.terminal.response_code()
+        && receipt.operation_result_object_key.as_deref() == result.map(|value| value.object_key)
+        && receipt.operation_result_object_version.as_deref()
+            == result.map(|value| value.object_version)
+        && receipt.operation_result_sha256.as_deref() == result.map(|value| value.sha256)
+        && receipt.operation_result_size == result.map(|value| value.size)
+        && receipt.operation_result_content_type.as_deref()
+            == result.map(|value| value.content_type)
+        && receipt.billing_current_status == expected_billing_status
+        && receipt.billing_current_owner_generation
+            == command.billing_owner_generation.saturating_add(1)
+        && receipt.billing_current_final_quota == expected_current_final_quota
+        && receipt.billing_current_reason == prepared.billing_reason
+        && receipt.billing_current_request_accounted == prepared.billing_request_accounted
+        && receipt.created_at == command.committed_at
+}
+
 pub(crate) async fn relay_container_operation(
     db: &D1Database,
     reservation_key: &str,
@@ -2071,6 +3350,8 @@ pub(crate) async fn relay_container_operation(
                execution_deadline_at,
                input_mode, input_object_key, input_object_version,
                input_sha256, input_size, input_content_type, trace_id,
+               client_idempotency_hmac_sha256, client_request_sha256,
+               reconciliation_id,
                status, response_status, response_code,
                result_object_key, result_object_version, result_sha256,
                result_size, result_content_type,
@@ -2083,6 +3364,320 @@ pub(crate) async fn relay_container_operation(
     .bind_refs(&args)?
     .first::<RelayContainerOperation>(None)
     .await
+}
+
+pub async fn lookup_relay_container_client_request(
+    db: &D1Database,
+    client_idempotency_hmac_sha256: &str,
+    client_request_sha256: &str,
+) -> worker::Result<RelayContainerClientRequestLookup> {
+    validate_relay_container_sha256(
+        client_idempotency_hmac_sha256,
+        "client idempotency hmac sha256",
+    )?;
+    validate_relay_container_sha256(client_request_sha256, "client request sha256")?;
+    let args = [D1Type::Text(client_idempotency_hmac_sha256)];
+    let operation = db
+        .prepare(
+            r#"
+            SELECT reservation_key, operation_id,
+                   owner_generation, owner_lease_expires_at,
+                   channel_id, selected_group,
+                   operation_kind, provider_operation_id, admission_sha256,
+                   protocol_version, shard_contract_version,
+                   ring_generation, shard_count, shard_index, instance_name,
+                   execution_deadline_at,
+                   input_mode, input_object_key, input_object_version,
+                   input_sha256, input_size, input_content_type, trace_id,
+                   client_idempotency_hmac_sha256, client_request_sha256,
+                   reconciliation_id,
+                   status, response_status, response_code,
+                   result_object_key, result_object_version, result_sha256,
+                   result_size, result_content_type,
+                   created_at, updated_at
+            FROM relay_container_operations
+            WHERE client_idempotency_hmac_sha256 = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<RelayContainerOperation>(None)
+        .await?;
+    Ok(classify_relay_container_client_request(
+        operation,
+        client_request_sha256,
+    ))
+}
+
+fn classify_relay_container_client_request(
+    operation: Option<RelayContainerOperation>,
+    client_request_sha256: &str,
+) -> RelayContainerClientRequestLookup {
+    match operation {
+        None => RelayContainerClientRequestLookup::NotFound,
+        Some(operation) if operation.client_request_sha256 == client_request_sha256 => {
+            RelayContainerClientRequestLookup::MatchingOperation(operation)
+        }
+        Some(_) => RelayContainerClientRequestLookup::RequestConflict,
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RelayContainerTerminalEventIdRow {
+    billing_event_id: String,
+}
+
+pub async fn relay_container_financial_terminal_receipt_for_operation(
+    db: &D1Database,
+    operation_id: &str,
+) -> worker::Result<Option<RelayContainerFinancialTerminalReceipt>> {
+    validate_relay_container_id(operation_id, "operation id", 1, 128)?;
+    let args = [D1Type::Text(operation_id)];
+    let Some(row) = db
+        .prepare(
+            r#"
+            SELECT billing_event_id
+            FROM relay_container_terminal_events
+            WHERE operation_id = ?1
+            ORDER BY reconciliation_revision DESC
+            LIMIT 1
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<RelayContainerTerminalEventIdRow>(None)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let receipt = relay_container_financial_terminal_receipt(db, &row.billing_event_id).await?;
+    match receipt {
+        Some(receipt) if relay_container_financial_receipt_integrity_valid(&receipt) => {
+            Ok(Some(receipt))
+        }
+        Some(_) => Err(worker::Error::RustError(
+            "relay container financial terminal receipt is inconsistent".to_string(),
+        )),
+        None => Err(worker::Error::RustError(
+            "relay container financial terminal receipt is incomplete".to_string(),
+        )),
+    }
+}
+
+fn relay_container_financial_receipt_integrity_valid(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+) -> bool {
+    if relay_container_sha256_hex(receipt.outbox_payload_json.as_bytes())
+        != receipt.outbox_payload_sha256
+        || receipt.operation_current_status != receipt.operation_status
+        || receipt.billing_current_owner_generation
+            != receipt.billing_owner_generation.saturating_add(1)
+        || receipt.billing_current_reason != receipt.billing_reason
+        || receipt.billing_current_request_accounted != receipt.billing_request_accounted
+        || !matches!(
+            receipt.outbox_status.as_str(),
+            "pending" | "leased" | "delivered" | "dead_letter"
+        )
+    {
+        return false;
+    }
+    let Ok(payload) = serde_json::from_str::<Value>(&receipt.outbox_payload_json) else {
+        return false;
+    };
+    let Ok(canonical) = serde_json::to_string(&payload) else {
+        return false;
+    };
+    if canonical != receipt.outbox_payload_json
+        || payload.get("schema_version").and_then(Value::as_i64)
+            != Some(RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION)
+        || payload.get("billing_event_id").and_then(Value::as_str)
+            != Some(receipt.billing_event_id.as_str())
+        || payload
+            .get("terminal_contract_sha256")
+            .and_then(Value::as_str)
+            != Some(receipt.terminal_contract_sha256.as_str())
+    {
+        return false;
+    }
+    let Some(contract) = payload.get("terminal_contract") else {
+        return false;
+    };
+    let Ok(contract_json) = serde_json::to_string(contract) else {
+        return false;
+    };
+    if relay_container_sha256_hex(contract_json.as_bytes()) != receipt.terminal_contract_sha256 {
+        return false;
+    }
+    if contract.get("schema_version").and_then(Value::as_i64)
+        != Some(RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION)
+        || contract
+            .get("client_idempotency_hmac_sha256")
+            .and_then(Value::as_str)
+            != Some(receipt.operation_client_idempotency_hmac_sha256.as_str())
+        || contract
+            .get("client_request_sha256")
+            .and_then(Value::as_str)
+            != Some(receipt.operation_client_request_sha256.as_str())
+        || contract.get("reconciliation_id").and_then(Value::as_str)
+            != Some(receipt.reconciliation_id.as_str())
+        || contract
+            .get("reconciliation_revision")
+            .and_then(Value::as_i64)
+            != Some(receipt.reconciliation_revision)
+        || contract.pointer("/operation/id").and_then(Value::as_str)
+            != Some(receipt.operation_id.as_str())
+        || contract
+            .pointer("/operation/owner_generation")
+            .and_then(Value::as_i64)
+            != Some(receipt.owner_generation)
+        || contract
+            .pointer("/operation/from_status")
+            .and_then(Value::as_str)
+            != Some(receipt.operation_from_status.as_str())
+        || contract
+            .pointer("/operation/to_status")
+            .and_then(Value::as_str)
+            != Some(receipt.operation_status.as_str())
+        || contract
+            .pointer("/operation/response_status")
+            .and_then(Value::as_i64)
+            != receipt.operation_response_status
+        || contract
+            .pointer("/operation/response_code")
+            .and_then(Value::as_str)
+            != receipt.operation_response_code.as_deref()
+        || contract.pointer("/billing/action").and_then(Value::as_str)
+            != Some(receipt.billing_action.as_str())
+        || contract
+            .pointer("/billing/from_status")
+            .and_then(Value::as_str)
+            != Some(receipt.billing_from_status.as_str())
+        || contract
+            .pointer("/billing/owner_generation")
+            .and_then(Value::as_i64)
+            != Some(receipt.billing_owner_generation)
+        || contract
+            .pointer("/billing/final_quota")
+            .and_then(Value::as_i64)
+            != receipt.billing_final_quota
+        || contract.pointer("/billing/reason").and_then(Value::as_str)
+            != Some(receipt.billing_reason.as_str())
+        || contract
+            .pointer("/billing/request_accounted")
+            .and_then(Value::as_i64)
+            != Some(receipt.billing_request_accounted)
+        || contract
+            .pointer("/billing/pre_consumed_quota")
+            .and_then(Value::as_i64)
+            != Some(receipt.pre_consumed_quota)
+        || contract
+            .pointer("/billing/user_quota_delta")
+            .and_then(Value::as_i64)
+            != Some(receipt.user_quota_delta)
+        || contract
+            .pointer("/billing/token_quota_delta")
+            .and_then(Value::as_i64)
+            != Some(receipt.token_quota_delta)
+        || contract
+            .pointer("/billing/user_used_quota_delta")
+            .and_then(Value::as_i64)
+            != Some(receipt.user_used_quota_delta)
+        || contract
+            .pointer("/billing/channel_used_quota_delta")
+            .and_then(Value::as_i64)
+            != Some(receipt.channel_used_quota_delta)
+        || contract
+            .pointer("/billing/request_count_delta")
+            .and_then(Value::as_i64)
+            != Some(receipt.request_count_delta)
+    {
+        return false;
+    }
+    let result = contract.pointer("/operation/result");
+    if result
+        .and_then(|value| value.get("object_key"))
+        .and_then(Value::as_str)
+        != receipt.operation_result_object_key.as_deref()
+        || result
+            .and_then(|value| value.get("object_version"))
+            .and_then(Value::as_str)
+            != receipt.operation_result_object_version.as_deref()
+        || result
+            .and_then(|value| value.get("sha256"))
+            .and_then(Value::as_str)
+            != receipt.operation_result_sha256.as_deref()
+        || result
+            .and_then(|value| value.get("size"))
+            .and_then(Value::as_i64)
+            != receipt.operation_result_size
+        || result
+            .and_then(|value| value.get("content_type"))
+            .and_then(Value::as_str)
+            != receipt.operation_result_content_type.as_deref()
+    {
+        return false;
+    }
+    let response = contract.get("client_response");
+    if response
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_i64)
+        != receipt.client_response_status
+        || response
+            .and_then(|value| value.get("headers_json"))
+            .and_then(Value::as_str)
+            != receipt.client_response_headers_json.as_deref()
+        || response
+            .and_then(|value| value.get("headers_sha256"))
+            .and_then(Value::as_str)
+            != receipt.client_response_headers_sha256.as_deref()
+        || response
+            .and_then(|value| value.get("object_key"))
+            .and_then(Value::as_str)
+            != receipt.client_response_object_key.as_deref()
+        || response
+            .and_then(|value| value.get("object_version"))
+            .and_then(Value::as_str)
+            != receipt.client_response_object_version.as_deref()
+        || response
+            .and_then(|value| value.get("sha256"))
+            .and_then(Value::as_str)
+            != receipt.client_response_sha256.as_deref()
+        || response
+            .and_then(|value| value.get("size"))
+            .and_then(Value::as_i64)
+            != receipt.client_response_size
+        || response
+            .and_then(|value| value.get("content_type"))
+            .and_then(Value::as_str)
+            != receipt.client_response_content_type.as_deref()
+    {
+        return false;
+    }
+    let expected_billing_status = match receipt.billing_action.as_str() {
+        "settle" => "settled",
+        "refund" => "refunded",
+        "recovery_required" => "recovery_required",
+        _ => return false,
+    };
+    if receipt.billing_current_status != expected_billing_status
+        || receipt.billing_current_final_quota != receipt.billing_final_quota.unwrap_or_default()
+    {
+        return false;
+    }
+    let response_fields = [
+        receipt.client_response_status.is_some(),
+        receipt.client_response_headers_json.is_some(),
+        receipt.client_response_headers_sha256.is_some(),
+        receipt.client_response_object_key.is_some(),
+        receipt.client_response_object_version.is_some(),
+        receipt.client_response_sha256.is_some(),
+        receipt.client_response_size.is_some(),
+        receipt.client_response_content_type.is_some(),
+    ];
+    if receipt.billing_action == "recovery_required" {
+        response_fields.iter().all(|present| !present)
+    } else {
+        response_fields.iter().all(|present| *present)
+    }
 }
 
 pub async fn relay_container_operation_recovery_candidates(
@@ -2113,6 +3708,8 @@ pub async fn relay_container_operation_recovery_candidates(
                execution_deadline_at,
                input_mode, input_object_key, input_object_version,
                input_sha256, input_size, input_content_type, trace_id,
+               client_idempotency_hmac_sha256, client_request_sha256,
+               reconciliation_id,
                status, response_status, response_code,
                result_object_key, result_object_version, result_sha256,
                result_size, result_content_type,
@@ -2134,13 +3731,14 @@ pub async fn relay_container_operation_schema_ready(db: &D1Database) -> worker::
     let args = [
         D1Type::Text(RELAY_CONTAINER_OPERATION_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_OPERATION_LIFECYCLE_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_FINANCIAL_TERMINAL_MIGRATION),
     ];
     let row = db
-        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2)")
+        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2, ?3)")
         .bind_refs(&args)?
         .first::<CountRow>(None)
         .await?;
-    Ok(row.map(|row| row.count == 2).unwrap_or(false))
+    Ok(row.map(|row| row.count == 3).unwrap_or(false))
 }
 
 fn classify_relay_container_dispatch(
@@ -2449,6 +4047,9 @@ fn relay_container_operation_matches_record(
         && current.input_size == expected.input_size
         && current.input_content_type == expected.input_content_type
         && current.trace_id == expected.trace_id
+        && current.client_idempotency_hmac_sha256 == expected.client_idempotency_hmac_sha256
+        && current.client_request_sha256 == expected.client_request_sha256
+        && current.reconciliation_id == expected.reconciliation_id
         && current.created_at == expected.created_at
 }
 
@@ -2469,6 +4070,12 @@ fn validate_relay_container_operation_record(
     validate_relay_container_object_key(record.input_object_key, "input object key")?;
     validate_relay_container_id(record.input_object_version, "input object version", 1, 128)?;
     validate_relay_container_sha256(record.input_sha256, "input sha256")?;
+    validate_relay_container_sha256(
+        record.client_idempotency_hmac_sha256,
+        "client idempotency hmac sha256",
+    )?;
+    validate_relay_container_sha256(record.client_request_sha256, "client request sha256")?;
+    validate_relay_container_sha256(record.reconciliation_id, "reconciliation id")?;
     validate_relay_container_content_type(record.input_content_type, "input content type")?;
     let selected_group = record.selected_group;
     let expected_instance = format!("cinatoken-relay-shard-v1-{:04}", record.shard_index);
@@ -13954,6 +15561,11 @@ mod tests {
             input_size: 512,
             input_content_type: "application/json",
             trace_id: "trace-001",
+            client_idempotency_hmac_sha256:
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            client_request_sha256:
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            reconciliation_id: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
             created_at: 20,
         }
     }
@@ -13984,6 +15596,9 @@ mod tests {
             input_size: record.input_size,
             input_content_type: record.input_content_type.to_string(),
             trace_id: record.trace_id.to_string(),
+            client_idempotency_hmac_sha256: record.client_idempotency_hmac_sha256.to_string(),
+            client_request_sha256: record.client_request_sha256.to_string(),
+            reconciliation_id: record.reconciliation_id.to_string(),
             status: "prepared".to_string(),
             response_status: None,
             response_code: None,
@@ -14007,6 +15622,91 @@ mod tests {
             sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             size: 256,
             content_type: "application/json",
+        }
+    }
+
+    fn relay_container_test_client_response<'a>(
+        status: i64,
+        headers_sha256: &'a str,
+        object_key: &'a str,
+    ) -> RelayContainerClientResponseRecord<'a> {
+        RelayContainerClientResponseRecord {
+            status,
+            headers_json:
+                "{\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}",
+            headers_sha256,
+            object_key,
+            object_version: "client-response-version-001",
+            sha256: "9999999999999999999999999999999999999999999999999999999999999999",
+            size: 384,
+            content_type: "application/json",
+        }
+    }
+
+    fn relay_container_test_financial_receipt(
+        command: &RelayContainerFinancialTerminalCommand<'_>,
+        operation: &RelayContainerOperation,
+        prepared: &PreparedRelayContainerFinancialTerminal,
+    ) -> RelayContainerFinancialTerminalReceipt {
+        let response = command.client_response;
+        let result = command.terminal.result();
+        RelayContainerFinancialTerminalReceipt {
+            billing_event_id: prepared.billing_event_id.clone(),
+            reservation_key: command.reservation_key.to_string(),
+            operation_id: command.operation_id.to_string(),
+            owner_generation: command.operation_owner_generation,
+            operation_from_status: command.expected_operation_status.as_str().to_string(),
+            operation_status: command.terminal.status().to_string(),
+            terminal_contract_sha256: prepared.terminal_contract_sha256.clone(),
+            billing_action: prepared.billing_action.to_string(),
+            billing_owner_generation: command.billing_owner_generation,
+            billing_from_status: prepared.billing_from_status.to_string(),
+            billing_final_quota: prepared.billing_final_quota,
+            billing_request_accounted: prepared.billing_request_accounted,
+            billing_reason: prepared.billing_reason.clone(),
+            pre_consumed_quota: prepared.pre_consumed_quota,
+            user_quota_delta: prepared.user_quota_delta,
+            token_quota_delta: prepared.token_quota_delta,
+            user_used_quota_delta: prepared.user_used_quota_delta,
+            channel_used_quota_delta: prepared.channel_used_quota_delta,
+            request_count_delta: prepared.request_count_delta,
+            reconciliation_id: operation.reconciliation_id.clone(),
+            reconciliation_revision: prepared.reconciliation_revision,
+            client_response_status: response.map(|value| value.status),
+            client_response_headers_json: response.map(|value| value.headers_json.to_string()),
+            client_response_headers_sha256: response.map(|value| value.headers_sha256.to_string()),
+            client_response_object_key: response.map(|value| value.object_key.to_string()),
+            client_response_object_version: response.map(|value| value.object_version.to_string()),
+            client_response_sha256: response.map(|value| value.sha256.to_string()),
+            client_response_size: response.map(|value| value.size),
+            client_response_content_type: response.map(|value| value.content_type.to_string()),
+            outbox_payload_json: prepared.outbox_payload_json.clone(),
+            outbox_payload_sha256: prepared.outbox_payload_sha256.clone(),
+            outbox_status: "pending".to_string(),
+            operation_current_status: command.terminal.status().to_string(),
+            operation_client_idempotency_hmac_sha256: operation
+                .client_idempotency_hmac_sha256
+                .clone(),
+            operation_client_request_sha256: operation.client_request_sha256.clone(),
+            operation_reconciliation_id: operation.reconciliation_id.clone(),
+            operation_response_status: Some(command.terminal.response_status()),
+            operation_response_code: command.terminal.response_code().map(str::to_string),
+            operation_result_object_key: result.map(|value| value.object_key.to_string()),
+            operation_result_object_version: result.map(|value| value.object_version.to_string()),
+            operation_result_sha256: result.map(|value| value.sha256.to_string()),
+            operation_result_size: result.map(|value| value.size),
+            operation_result_content_type: result.map(|value| value.content_type.to_string()),
+            billing_current_status: match prepared.billing_action {
+                "settle" => "settled",
+                "refund" => "refunded",
+                _ => "recovery_required",
+            }
+            .to_string(),
+            billing_current_owner_generation: command.billing_owner_generation + 1,
+            billing_current_final_quota: prepared.billing_final_quota.unwrap_or_default(),
+            billing_current_reason: prepared.billing_reason.clone(),
+            billing_current_request_accounted: prepared.billing_request_accounted,
+            created_at: command.committed_at,
         }
     }
 
@@ -14047,6 +15747,30 @@ mod tests {
         assert!(lifecycle.contains("OLD.status IN ('completed', 'failed')"));
         assert!(lifecycle.contains("NEW.status = OLD.status"));
         assert!(lifecycle.contains("NEW.updated_at IS NOT OLD.updated_at"));
+
+        let financial = include_str!(
+            "../../../migrations/d1/0042_relay_container_financial_terminal_expand.sql"
+        );
+        for field in [
+            "client_idempotency_hmac_sha256",
+            "client_request_sha256",
+            "reconciliation_id",
+            "billing_from_status",
+            "pre_consumed_quota",
+            "user_quota_delta",
+            "client_response_headers_json",
+            "outbox_payload_sha256",
+        ] {
+            assert!(
+                financial.contains(field),
+                "missing financial terminal field {field}"
+            );
+        }
+        assert!(financial.contains("relay_container_terminal_event_insert_guard"));
+        assert!(financial.contains("relay_container_terminal_event_update_guard"));
+        assert!(financial.contains("relay_container_terminal_outbox_lifecycle_guard"));
+        assert!(financial.contains("container-client-responses/v1/"));
+        assert!(!financial.contains("OR REPLACE"));
     }
 
     #[test]
@@ -14077,6 +15801,12 @@ mod tests {
         assert!(validate_relay_container_operation_record(&invalid).is_err());
         invalid = valid;
         invalid.owner_generation = i64::from(i32::MAX) + 1;
+        assert!(validate_relay_container_operation_record(&invalid).is_err());
+        invalid = valid;
+        invalid.client_idempotency_hmac_sha256 = "ABC";
+        assert!(validate_relay_container_operation_record(&invalid).is_err());
+        invalid = valid;
+        invalid.reconciliation_id = "";
         assert!(validate_relay_container_operation_record(&invalid).is_err());
     }
 
@@ -14369,6 +16099,267 @@ mod tests {
                 190,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn relay_container_financial_settlement_freezes_every_quota_delta() {
+        let headers = "{\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}";
+        let headers_sha256 = relay_container_sha256_hex(headers.as_bytes());
+        let response_key = concat!(
+            "container-client-responses/v1/relayreserve-test/2/",
+            "9999999999999999999999999999999999999999999999999999999999999999"
+        );
+        let response = relay_container_test_client_response(200, &headers_sha256, response_key);
+        let audit_payload = "{\"action\":\"container_terminal\",\"request_id\":\"request-001\"}";
+        let audit_sha256 = relay_container_sha256_hex(audit_payload.as_bytes());
+        let result = relay_container_test_result();
+        let mut operation = relay_container_test_operation();
+        operation.status = "dispatched".to_string();
+
+        for (final_quota, expected_remain_delta) in [(150, -50), (100, 0), (60, 40)] {
+            let mut reservation = relay_billing_test_reservation("reserved");
+            reservation.pre_consumed_quota = 100;
+            reservation.final_quota = 0;
+            reservation.finalization_reason.clear();
+            reservation.request_accounted = 0;
+            reservation.lease_expires_at = operation.owner_lease_expires_at;
+            let command = RelayContainerFinancialTerminalCommand {
+                reservation_key: &operation.reservation_key,
+                operation_id: &operation.operation_id,
+                operation_owner_generation: operation.owner_generation,
+                expected_operation_status: RelayContainerOperationExpectedStatus::Dispatched,
+                admission_sha256: &operation.admission_sha256,
+                billing_owner_generation: reservation.owner_generation,
+                terminal: RelayContainerOperationTerminalRecord::Completed {
+                    response_status: 200,
+                    result,
+                },
+                action: RelayContainerFinancialTerminalAction::Settle {
+                    final_quota,
+                    finalization_reason: "container_usage_settlement",
+                },
+                client_response: Some(response),
+                audit_payload_json: audit_payload,
+                audit_payload_sha256: &audit_sha256,
+                committed_at: 150,
+            };
+            let prepared =
+                prepare_relay_container_financial_terminal(&command, &operation, &reservation)
+                    .unwrap();
+            assert_eq!(prepared.billing_action, "settle");
+            assert_eq!(prepared.billing_final_quota, Some(final_quota));
+            assert_eq!(prepared.user_quota_delta, expected_remain_delta);
+            assert_eq!(prepared.token_quota_delta, expected_remain_delta);
+            assert_eq!(prepared.user_used_quota_delta, final_quota);
+            assert_eq!(prepared.channel_used_quota_delta, final_quota);
+            assert_eq!(prepared.request_count_delta, 1);
+            let receipt = relay_container_test_financial_receipt(&command, &operation, &prepared);
+            assert!(relay_container_financial_receipt_integrity_valid(&receipt));
+            let mut tampered = receipt;
+            tampered.billing_current_reason = "tampered".to_string();
+            assert!(!relay_container_financial_receipt_integrity_valid(
+                &tampered
+            ));
+        }
+    }
+
+    #[test]
+    fn relay_container_financial_refund_handles_tokenless_request_policy() {
+        let headers = "{\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}";
+        let headers_sha256 = relay_container_sha256_hex(headers.as_bytes());
+        let response_key = concat!(
+            "container-client-responses/v1/relayreserve-test/2/",
+            "9999999999999999999999999999999999999999999999999999999999999999"
+        );
+        let response = relay_container_test_client_response(503, &headers_sha256, response_key);
+        let audit_payload = "{\"action\":\"container_refund\"}";
+        let audit_sha256 = relay_container_sha256_hex(audit_payload.as_bytes());
+        let mut operation = relay_container_test_operation();
+        operation.status = "dispatched".to_string();
+        let mut reservation = relay_billing_test_reservation("reserved");
+        reservation.token_id = 0;
+        reservation.pre_consumed_quota = 75;
+        reservation.final_quota = 0;
+        reservation.finalization_reason.clear();
+        reservation.request_accounted = 0;
+        reservation.lease_expires_at = operation.owner_lease_expires_at;
+
+        for (request_accounting, expected_request_delta) in [
+            (RelayBillingRequestAccounting::Skip, 0),
+            (RelayBillingRequestAccounting::Account, 1),
+        ] {
+            let command = RelayContainerFinancialTerminalCommand {
+                reservation_key: &operation.reservation_key,
+                operation_id: &operation.operation_id,
+                operation_owner_generation: operation.owner_generation,
+                expected_operation_status: RelayContainerOperationExpectedStatus::Dispatched,
+                admission_sha256: &operation.admission_sha256,
+                billing_owner_generation: reservation.owner_generation,
+                terminal: RelayContainerOperationTerminalRecord::Failed {
+                    response_status: 503,
+                    response_code: "container_definite_rejection",
+                },
+                action: RelayContainerFinancialTerminalAction::Refund {
+                    finalization_reason: "container_definite_rejection",
+                    request_accounting,
+                },
+                client_response: Some(response),
+                audit_payload_json: audit_payload,
+                audit_payload_sha256: &audit_sha256,
+                committed_at: 150,
+            };
+            let prepared =
+                prepare_relay_container_financial_terminal(&command, &operation, &reservation)
+                    .unwrap();
+            assert_eq!(prepared.billing_action, "refund");
+            assert_eq!(prepared.billing_final_quota, None);
+            assert_eq!(prepared.user_quota_delta, 75);
+            assert_eq!(prepared.token_quota_delta, 0);
+            assert_eq!(prepared.request_count_delta, expected_request_delta);
+            assert_eq!(prepared.billing_request_accounted, expected_request_delta);
+        }
+    }
+
+    #[test]
+    fn relay_container_financial_recovery_has_two_distinct_fenced_events() {
+        let audit_payload = "{\"action\":\"container_recovery\"}";
+        let audit_sha256 = relay_container_sha256_hex(audit_payload.as_bytes());
+        let mut operation = relay_container_test_operation();
+        operation.status = "dispatched".to_string();
+        let mut reservation = relay_billing_test_reservation("reserved");
+        reservation.final_quota = 0;
+        reservation.finalization_reason.clear();
+        reservation.request_accounted = 0;
+        reservation.lease_expires_at = operation.owner_lease_expires_at;
+        let recovery = RelayContainerFinancialTerminalCommand {
+            reservation_key: &operation.reservation_key,
+            operation_id: &operation.operation_id,
+            operation_owner_generation: operation.owner_generation,
+            expected_operation_status: RelayContainerOperationExpectedStatus::Dispatched,
+            admission_sha256: &operation.admission_sha256,
+            billing_owner_generation: reservation.owner_generation,
+            terminal: RelayContainerOperationTerminalRecord::RecoveryRequired {
+                response_code: "container_execution_ambiguous",
+                result: None,
+            },
+            action: RelayContainerFinancialTerminalAction::RecoveryRequired {
+                finalization_reason: "container_execution_ambiguous",
+            },
+            client_response: None,
+            audit_payload_json: audit_payload,
+            audit_payload_sha256: &audit_sha256,
+            committed_at: 181,
+        };
+        let quarantined =
+            prepare_relay_container_financial_terminal(&recovery, &operation, &reservation)
+                .unwrap();
+        assert_eq!(quarantined.billing_from_status, "reserved");
+        assert_eq!(quarantined.reconciliation_revision, 1);
+        assert_eq!(quarantined.user_quota_delta, 0);
+        assert_eq!(quarantined.request_count_delta, 0);
+
+        let headers = "{\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}";
+        let headers_sha256 = relay_container_sha256_hex(headers.as_bytes());
+        let response_key = concat!(
+            "container-client-responses/v1/relayreserve-test/2/",
+            "9999999999999999999999999999999999999999999999999999999999999999"
+        );
+        let response = relay_container_test_client_response(200, &headers_sha256, response_key);
+        operation.status = "recovery_required".to_string();
+        reservation.status = "recovery_required".to_string();
+        reservation.owner_generation = operation.owner_generation + 1;
+        reservation.finalization_reason = "container_execution_ambiguous".to_string();
+        let resolution = RelayContainerFinancialTerminalCommand {
+            reservation_key: &operation.reservation_key,
+            operation_id: &operation.operation_id,
+            operation_owner_generation: operation.owner_generation,
+            expected_operation_status: RelayContainerOperationExpectedStatus::RecoveryRequired,
+            admission_sha256: &operation.admission_sha256,
+            billing_owner_generation: reservation.owner_generation,
+            terminal: RelayContainerOperationTerminalRecord::Completed {
+                response_status: 200,
+                result: relay_container_test_result(),
+            },
+            action: RelayContainerFinancialTerminalAction::Settle {
+                final_quota: 80,
+                finalization_reason: "container_recovery_settlement",
+            },
+            client_response: Some(response),
+            audit_payload_json: audit_payload,
+            audit_payload_sha256: &audit_sha256,
+            committed_at: 250,
+        };
+        let resolved =
+            prepare_relay_container_financial_terminal(&resolution, &operation, &reservation)
+                .unwrap();
+        assert_eq!(resolved.billing_from_status, "recovery_required");
+        assert_eq!(resolved.reconciliation_revision, 2);
+        assert_eq!(resolved.user_quota_delta, 20);
+        assert_ne!(resolved.billing_event_id, quarantined.billing_event_id);
+    }
+
+    #[test]
+    fn relay_container_client_response_rejects_non_allowlisted_headers() {
+        let headers = "{\"content-type\":\"application/json\",\"set-cookie\":\"secret=1\"}";
+        let headers_sha256 = relay_container_sha256_hex(headers.as_bytes());
+        let response_key = concat!(
+            "container-client-responses/v1/relayreserve-test/2/",
+            "9999999999999999999999999999999999999999999999999999999999999999"
+        );
+        let response = RelayContainerClientResponseRecord {
+            status: 200,
+            headers_json: headers,
+            headers_sha256: &headers_sha256,
+            object_key: response_key,
+            object_version: "client-response-version-001",
+            sha256: "9999999999999999999999999999999999999999999999999999999999999999",
+            size: 384,
+            content_type: "application/json",
+        };
+        let operation = relay_container_test_operation();
+        let command = RelayContainerFinancialTerminalCommand {
+            reservation_key: &operation.reservation_key,
+            operation_id: &operation.operation_id,
+            operation_owner_generation: operation.owner_generation,
+            expected_operation_status: RelayContainerOperationExpectedStatus::Dispatched,
+            admission_sha256: &operation.admission_sha256,
+            billing_owner_generation: operation.owner_generation,
+            terminal: RelayContainerOperationTerminalRecord::Completed {
+                response_status: 200,
+                result: relay_container_test_result(),
+            },
+            action: RelayContainerFinancialTerminalAction::Settle {
+                final_quota: 100,
+                finalization_reason: "container_usage_settlement",
+            },
+            client_response: Some(response),
+            audit_payload_json: "{\"action\":\"container_terminal\"}",
+            audit_payload_sha256:
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            committed_at: 150,
+        };
+        assert!(validate_relay_container_client_response(&command, response).is_err());
+    }
+
+    #[test]
+    fn relay_container_client_idempotency_rejects_same_key_different_request() {
+        let operation = relay_container_test_operation();
+        let request_sha256 = operation.client_request_sha256.clone();
+        assert!(matches!(
+            classify_relay_container_client_request(Some(operation.clone()), &request_sha256),
+            RelayContainerClientRequestLookup::MatchingOperation(_)
+        ));
+        assert_eq!(
+            classify_relay_container_client_request(
+                Some(operation),
+                "abababababababababababababababababababababababababababababababab",
+            ),
+            RelayContainerClientRequestLookup::RequestConflict
+        );
+        assert_eq!(
+            classify_relay_container_client_request(None, &request_sha256),
+            RelayContainerClientRequestLookup::NotFound
         );
     }
 

@@ -1687,3 +1687,30 @@ settlement/refund/recovery, quota/request/channel accounting, and immutable
 audit/outbox, followed by exact R2 client-response replay and the deterministic
 Linux canary. No public route or production flag is enabled; Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-16 Phase 1 Container Financial Terminal Expand Gate
+
+Migration 0042 is a default-inert expansion. New operation writers freeze a
+scoped client-idempotency HMAC, canonical request digest, and reconciliation
+identity; legacy rows remain readable with all three fields empty during the
+expand phase. The append-only terminal event freezes the operation transition,
+billing action and owner generation, every accounting delta, exact client
+response manifest, canonical audit/outbox payload, and recovery revision.
+
+The Rust repository now commits event, outbox state, operation terminal CAS,
+billing settle/refund/recovery CAS, and user/token/request/channel accounting in
+one D1 batch. A no-op CAS deliberately fails the batch. Lost-response replay
+requires an exact joined readback, while the explicit idempotency lookup returns
+a distinct conflict for the same scoped key with a different request digest.
+Initial ambiguity and later authorized resolution have separate event
+identities and billing generations.
+
+This does not make D1, Durable Objects, and R2 one transaction. The exact R2
+client-response write/read path, divergence reconciler, deterministic Linux
+canary, old-writer drain, future 0043 enforcement, and remote fault evidence
+remain open. `CONTAINER_FINANCIAL_TERMINAL_ENABLED`,
+`CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED`, and
+`CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED` join the five existing gates and
+remain false in every tracked environment. No public route, remote migration,
+or deployment is enabled; Go/VPS remains authoritative and production remains
+**NO-GO**.

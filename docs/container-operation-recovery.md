@@ -101,10 +101,13 @@ Controller validates the Container result against the DO columns and returns a
 deterministically reconstructed outcome manifest. A terminal duplicate uses
 the same durable columns and does not call the Container.
 
-This is manifest replay, not yet byte-for-byte client response replay. The
-edge still needs a bounded R2 fetch that verifies the stored version, digest,
-size, content type, HTTP status, and replayable header allowlist before
-returning the original bytes.
+The 0042 financial terminal contract stores a separate exact client-response
+manifest: status, canonical allowlisted headers, R2 version, digest, size, and
+content type. It deliberately does not reuse the Container result manifest,
+because failed operations forbid a result object while their deterministic
+client error still needs exact replay. The edge still needs the bounded R2
+fetch and byte return path; persisted manifest replay is not yet a live
+byte-for-byte public response.
 
 ### Ambiguous execution
 
@@ -178,12 +181,24 @@ calls `containerFetch`. A bounded D1 candidate query supplies expired
 `prepared`/`dispatched` rows and `recovery_required` rows to the future
 reconciler.
 
-These writes are not yet financial terminal authority. A client-visible
-success still requires one D1 transaction containing operation terminal CAS,
-billing terminal CAS, quota/request/channel mutation, and immutable audit/outbox
-evidence. Until that transaction and exact R2 response replay exist, the
-operation terminal API is evidence-only and all operation-write, terminal,
-reconciliation, chat-canary, and staging-verified gates remain false.
+Migration 0042 and the Rust repository now provide the financial terminal
+transaction. One D1 batch inserts an immutable terminal event and outbox state,
+transitions the operation, transitions billing, and applies every user/token/
+request/channel accounting statement. Every CAS is followed by an in-batch
+`changes() == 1` assertion so a no-op aborts the whole transaction. A matching
+replay is accepted only after one joined event/outbox/operation/billing
+readback matches every frozen field. The first ambiguous event advances billing
+to `recovery_required`; a separately identified revision may later resolve it
+to completed+settled or failed+refunded without reusing the old billing
+generation.
+
+This is D1 atomicity, not a distributed transaction across D1, the shard DO,
+and R2. Those stores converge through deterministic operation/event/object
+identity, version and digest checks, and a future bounded reconciler. The 0042
+migration remains expand-only for old-writer compatibility; it does not enforce
+that every legacy terminal transition has an event. All eight operation,
+financial, replay, reconciliation, canary, divergence-proof, and staging gates
+therefore remain false.
 
 ## Edge Integration Order
 
@@ -222,18 +237,20 @@ The following are still mandatory:
 
 - wire the default-off Rust envelope/R2/Controller foundation into the narrow
   non-streaming chat canary after all admission records are committed;
-- combine the implemented operation-side terminal CAS with billing, quota,
-  request/channel accounting, and immutable audit/outbox in one guarded D1
-  batch before any client response;
-- add a tenant/user/route-scoped HMAC of the explicit client idempotency key and
-  a canonical request digest, so the same key plus different request is 409 and
-  an automatically generated request ID cannot masquerade as client replay;
+- wire the implemented guarded D1 financial terminal batch into the narrow
+  edge canary only after R2 response verification succeeds;
+- derive the implemented tenant/user/token/route-scoped client idempotency HMAC
+  at admission, require it for the canary, and map the implemented same-key/
+  different-request lookup conflict to 409;
 - implement the default-off reconciler using the bounded D1 candidate reader
   and signed status-only DO query, including divergence metrics and operator
   resolution authorization;
 - dispatch-before-send provider attempt journal and one retry owner;
 - deterministic local provider canary in the actual Linux image;
-- original status/allowlisted-header/body storage and byte-identical replay;
+- create-only exact client-response R2 writes and byte-identical edge replay;
+- after old writers drain and remote 0042 invariants pass, add a separate 0043
+  enforcement migration that rejects legacy empty identity and eventless v1
+  terminal transitions;
 - reconciliation for R2 write success followed by DO attach failure;
 - current/previous protocol parsers and N/N-1 mixed Controller/image tests;
 - real cold/warm/sleep/restart/OOM and network fault evidence;

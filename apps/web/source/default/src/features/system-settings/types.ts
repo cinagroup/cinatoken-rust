@@ -448,6 +448,18 @@ export type PlatformCapabilities = {
   container_scheduler_container_runtime_compiled: boolean
   container_scheduler_deny_by_default_egress_compiled: boolean
   container_scheduler_shared_storage_contract_compiled: boolean
+  container_financial_terminal_compiled: boolean
+  container_exact_response_replay_compiled: boolean
+  container_divergence_reconciliation_compiled: boolean
+  container_operation_write_enabled: boolean
+  container_terminal_cas_enabled: boolean
+  container_financial_terminal_enabled: boolean
+  container_exact_response_replay_enabled: boolean
+  container_operation_reconciliation_enabled: boolean
+  container_divergence_reconciliation_verified: boolean
+  container_chat_canary_enabled: boolean
+  container_operation_staging_verified: boolean
+  container_operation_runtime_ready: boolean
   container_scheduler_n_minus_one_protocol_compiled: boolean
   container_scheduler_capacity_rejection_compiled: boolean
   container_scheduler_remote_fault_matrix_verified: boolean

@@ -5761,3 +5761,58 @@ mutations, and immutable audit/outbox are not yet one D1 batch. Exact client
 response replay, the Linux canary, remote fault/lifecycle evidence, N/N-1,
 supply-chain, load/cost, rollback, and approval gates remain open. Production
 remains **NO-GO**.
+
+## Container Financial Terminal Expand Verification (2026-07-16)
+
+This current-head overlay supersedes the preceding statement that the D1
+financial terminal batch is absent. Current local evidence:
+
+```powershell
+C:\Users\cina\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe tools\verify_sqlite.py
+# PASS: 42 migrations, 38 tables, 323 incremental columns, 54 key indexes
+
+node tools/audit_d1_migration_config.mjs --json
+# PASS: 42 contiguous migrations; config/runtime head is 0042.
+
+cargo test -p cinatoken-worker --lib container_
+# PASS: settlement delta, tokenless refund, two-stage recovery,
+# response-header allowlist, and idempotency conflict coverage.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 744 passed; 0 failed.
+
+node ../../../../node_modules/typescript/bin/tsc -b
+# PASS from apps/web/source/default.
+
+node --input-type=module -e "import { createServer } from 'vite'; const s = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' }); await s.ssrLoadModule('/apps/web/source/default/src/features/system-settings/integrations/cloudflare-platform-readiness.test.ts'); await s.close();"
+# PASS: 37/37 Cloudflare platform readiness tests.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS: wasm32 Worker check; default-off Container code emits expected
+# dead-code warnings until runtime wiring is enabled.
+
+cargo fmt --all -- --check
+# PASS.
+```
+
+The SQLite verifier preserves two legacy all-empty operation identities, then
+rejects mixed/uppercase/duplicate v1 identity, mutable identity, malformed and
+partial response manifests, wrong owner/from-status/billing/channel/group/
+accounting, tokenless token deltas, duplicate transition identity, event
+update/delete, invalid outbox initialization, lease takeover, shortcut
+delivery, terminal rewrite, and deletion. It also persists an initial
+`recovery_required` event with held pre-consume and a separate revision-2
+recovery settlement.
+
+Rust freezes accounting from the existing reservation, never recomputes a
+billing expression, and sends event, outbox, operation CAS, billing CAS, and
+all accounting statements through one D1 batch. Each mutation has an in-batch
+zero-row abort and the result requires joined canonical readback. The exact
+client idempotency lookup separates same-request replay from a different-request
+conflict; receipt readback recomputes both outbox and nested terminal hashes.
+
+This verification does not claim a D1/DO/R2 distributed transaction. The
+create-only R2 client-response path, actual byte replay, divergence reconciler,
+Linux canary, 0043 enforcement, remote migration/fault matrix, and staging proof
+remain open. All eight Container operation/financial/replay/reconciliation/
+canary/proof gates remain false, and production remains **NO-GO**.

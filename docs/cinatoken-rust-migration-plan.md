@@ -13807,3 +13807,59 @@ R2 before that batch can authorize a response. Until those pieces, the Linux
 canary, remote lifecycle/fault evidence, and C1-C5 approvals all pass, every new
 gate remains false, Go/VPS remains authoritative, and production remains
 **NO-GO**.
+
+## 22.227 Atomic Container Financial Terminal Expand (2026-07-16)
+
+The billing-expression contract was reread before this increment. The
+Container still never evaluates a mutable expression or ratio: the terminal
+commit consumes only the reservation's frozen pre-consume snapshot, selected
+channel/group, owner generation, and caller-supplied final usage result.
+
+Migration 0042 expands the global operation authority without enabling a
+writer. New v1 operations freeze a tenant/user/token/route-scoped client
+idempotency HMAC, canonical request digest, and reconciliation identity. The
+new append-only terminal event is also the immutable audit/outbox authority. It
+records the operation transition, billing pre-state/action/generation, final
+quota and request policy, every user/token/used/channel/request delta, recovery
+revision, exact client response status/allowlisted headers/R2 manifest, and a
+canonical versioned payload hash. A separate delivery row owns only mutable
+lease/attempt/delivery state. Existing operation rows are neither rewritten nor
+backfilled, so 0042 remains an old-writer-compatible expand migration.
+
+The Rust repository now executes this order in one D1 batch:
+
+1. insert the exact immutable terminal event;
+2. initialize its outbox delivery state;
+3. transition the generation-fenced operation;
+4. transition the independently generation-fenced billing reservation; and
+5. apply every user, token, request-count, used-quota, and channel-usage
+   statement.
+
+Each write is followed by an in-batch `changes() == 1` assertion. D1 rolls back
+the entire batch when an event identity collides, a generation loses, or an
+accounting target disappears. The post-batch result is still not trusted until
+a joined event/outbox/operation/billing readback matches the complete frozen
+contract. Initial ambiguity commits operation+billing `recovery_required`
+without releasing pre-consumed quota; a separately identified revision may
+later complete+settle or fail+refund using the advanced billing generation.
+
+The explicit client-idempotency lookup returns the same operation only for the
+same canonical request digest; the same scoped key with different bytes is a
+typed conflict. Lost-response lookup returns only a canonical receipt whose
+outbox and nested terminal contract hashes recompute and whose two D1 ledgers
+remain converged. This is not yet public byte replay: the edge still must
+version/hash-read the create-only R2 client-response object before returning
+the original bytes.
+
+Three new independent gates cover financial terminal writes, exact response
+replay, and divergence-reconciliation proof. Together with the existing five
+operation/canary gates they remain false in development, staging, and
+production. Platform readiness also reports exact replay and divergence
+reconciliation as unimplemented, so configuration alone cannot make Container
+cutover ready.
+
+The next slice is the create-only R2 client-response writer/reader and bounded
+D1/DO/R2 divergence reconciler, followed by old-writer drain and a separate
+0043 enforcement migration. No remote migration, deploy, provider call, or
+traffic switch occurred. Go/VPS remains authoritative and production remains
+**NO-GO**.

@@ -186,7 +186,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0041_relay_container_operation_lifecycle_hardening.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0042_relay_container_financial_terminal_expand.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -265,6 +265,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0039_task_submit_operation_enforce.sql",
     "0040_relay_container_operations.sql",
     "0041_relay_container_operation_lifecycle_hardening.sql",
+    "0042_relay_container_financial_terminal_expand.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -410,9 +411,15 @@ struct PlatformCapabilities {
     container_scheduler_container_runtime_compiled: bool,
     container_scheduler_deny_by_default_egress_compiled: bool,
     container_scheduler_shared_storage_contract_compiled: bool,
+    container_financial_terminal_compiled: bool,
+    container_exact_response_replay_compiled: bool,
+    container_divergence_reconciliation_compiled: bool,
     container_operation_write_enabled: bool,
     container_terminal_cas_enabled: bool,
+    container_financial_terminal_enabled: bool,
+    container_exact_response_replay_enabled: bool,
     container_operation_reconciliation_enabled: bool,
+    container_divergence_reconciliation_verified: bool,
     container_chat_canary_enabled: bool,
     container_operation_staging_verified: bool,
     container_operation_runtime_ready: bool,
@@ -1082,7 +1089,13 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let realtime_sessions_do_available = env.durable_object("REALTIME_SESSIONS").is_ok();
     let container_scheduler_status = container_scheduler_runtime_status(&env);
     let container_operation_runtime = container_operation_runtime_status(&env);
-    let container_operation_runtime_ready = container_operation_runtime.cutover_ready();
+    let container_financial_terminal_compiled = true;
+    let container_exact_response_replay_compiled = false;
+    let container_divergence_reconciliation_compiled = false;
+    let container_operation_runtime_ready = container_operation_runtime.cutover_ready()
+        && container_financial_terminal_compiled
+        && container_exact_response_replay_compiled
+        && container_divergence_reconciliation_compiled;
     let container_scheduler_contract_version = CONTAINER_SHARD_CONTRACT_VERSION;
     let container_scheduler_foundation_compiled = container_scheduler_foundation_compiled();
     let container_scheduler_enabled = env_flag(&env, CONTAINER_SCHEDULER_ENABLED_ENV);
@@ -1732,10 +1745,19 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduler_container_runtime_compiled,
         container_scheduler_deny_by_default_egress_compiled,
         container_scheduler_shared_storage_contract_compiled,
+        container_financial_terminal_compiled,
+        container_exact_response_replay_compiled,
+        container_divergence_reconciliation_compiled,
         container_operation_write_enabled: container_operation_runtime.operation_write_enabled,
         container_terminal_cas_enabled: container_operation_runtime.terminal_cas_enabled,
+        container_financial_terminal_enabled: container_operation_runtime
+            .financial_terminal_enabled,
+        container_exact_response_replay_enabled: container_operation_runtime
+            .exact_response_replay_enabled,
         container_operation_reconciliation_enabled: container_operation_runtime
             .operation_reconciliation_enabled,
+        container_divergence_reconciliation_verified: container_operation_runtime
+            .divergence_reconciliation_verified,
         container_chat_canary_enabled: container_operation_runtime.chat_canary_enabled,
         container_operation_staging_verified: container_operation_runtime
             .operation_staging_verified,
@@ -4685,7 +4707,7 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0041_relay_container_operation_lifecycle_hardening.sql"
+            "0042_relay_container_financial_terminal_expand.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -4790,6 +4812,14 @@ mod tests {
         assert!(relay_container_operation_lifecycle_hardening
             .contains("OLD.status IN ('completed', 'failed')"));
         assert!(relay_container_operation_lifecycle_hardening.contains("NEW.status = OLD.status"));
+        let relay_container_financial_terminal = include_str!(
+            "../../../migrations/d1/0042_relay_container_financial_terminal_expand.sql"
+        );
+        assert!(relay_container_financial_terminal
+            .contains("CREATE TABLE relay_container_terminal_events"));
+        assert!(relay_container_financial_terminal
+            .contains("CREATE TABLE relay_container_terminal_outbox_state"));
+        assert!(relay_container_financial_terminal.contains("client_idempotency_hmac_sha256"));
     }
 
     #[test]

@@ -37,6 +37,8 @@ REQUIRED_TABLES = [
     "relay_billing_recovery_state",
     "relay_billing_finalization_incidents",
     "relay_container_operations",
+    "relay_container_terminal_events",
+    "relay_container_terminal_outbox_state",
     "task_billing_intents",
     "task_billing_reconciliation_events",
     "task_poll_lease_control",
@@ -265,6 +267,9 @@ REQUIRED_COLUMNS = {
         "input_size",
         "input_content_type",
         "trace_id",
+        "client_idempotency_hmac_sha256",
+        "client_request_sha256",
+        "reconciliation_id",
         "status",
         "response_status",
         "response_code",
@@ -273,6 +278,53 @@ REQUIRED_COLUMNS = {
         "result_sha256",
         "result_size",
         "result_content_type",
+        "created_at",
+        "updated_at",
+    },
+    "relay_container_terminal_events": {
+        "billing_event_id",
+        "reservation_key",
+        "operation_id",
+        "owner_generation",
+        "operation_from_status",
+        "operation_status",
+        "terminal_contract_sha256",
+        "billing_action",
+        "billing_owner_generation",
+        "billing_from_status",
+        "billing_final_quota",
+        "billing_request_accounted",
+        "billing_reason",
+        "pre_consumed_quota",
+        "user_quota_delta",
+        "token_quota_delta",
+        "user_used_quota_delta",
+        "channel_used_quota_delta",
+        "request_count_delta",
+        "reconciliation_id",
+        "reconciliation_revision",
+        "client_response_status",
+        "client_response_headers_json",
+        "client_response_headers_sha256",
+        "client_response_object_key",
+        "client_response_object_version",
+        "client_response_sha256",
+        "client_response_size",
+        "client_response_content_type",
+        "outbox_schema_version",
+        "outbox_payload_json",
+        "outbox_payload_sha256",
+        "created_at",
+    },
+    "relay_container_terminal_outbox_state": {
+        "billing_event_id",
+        "status",
+        "delivery_generation",
+        "delivery_attempt_count",
+        "lease_expires_at",
+        "available_at",
+        "delivered_at",
+        "last_error",
         "created_at",
         "updated_at",
     },
@@ -407,6 +459,16 @@ REQUIRED_INDEXES = {
         "idx_relay_container_operations_recovery": False,
         "idx_relay_container_operations_shard": False,
         "idx_relay_container_operations_updated": False,
+        "idx_relay_container_operations_client_idempotency_hmac": True,
+        "idx_relay_container_operations_reconciliation_id": True,
+    },
+    "relay_container_terminal_events": {
+        "idx_relay_container_terminal_events_operation_identity": True,
+        "idx_relay_container_terminal_events_reconciliation_identity": True,
+    },
+    "relay_container_terminal_outbox_state": {
+        "idx_relay_container_terminal_outbox_pending": False,
+        "idx_relay_container_terminal_outbox_leased": False,
     },
     "task_billing_intents": {
         "idx_task_billing_intents_status_lease": False,
@@ -459,6 +521,8 @@ def main() -> int:
     relay_owner_guard_verified = False
     relay_container_operation_verified = False
     relay_container_operation_rollout_verified = False
+    relay_container_financial_terminal_verified = False
+    relay_container_financial_terminal_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -480,6 +544,8 @@ def main() -> int:
         relay_owner_guard_verified = True
         verify_relay_container_operation_rollout(schema_paths)
         relay_container_operation_rollout_verified = True
+        verify_relay_container_financial_terminal_rollout(schema_paths)
+        relay_container_financial_terminal_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -503,6 +569,8 @@ def main() -> int:
         flat_intent_guard_verified = True
         verify_relay_container_operation(conn)
         relay_container_operation_verified = True
+        verify_relay_container_financial_terminal(conn)
+        relay_container_financial_terminal_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
@@ -562,6 +630,10 @@ def main() -> int:
         message += " + 0040/0041 relay Container operation authority"
     if relay_container_operation_rollout_verified:
         message += " + 0040/0041 default-inert expand/hardening rollout"
+    if relay_container_financial_terminal_verified:
+        message += " + 0042 immutable financial terminal/outbox contract"
+    if relay_container_financial_terminal_rollout_verified:
+        message += " + 0042 default-inert expand-only rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -1028,6 +1100,1015 @@ def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
         raise SystemExit(
             f"0041 changed legal prepared/dispatched transitions: {preserved_transitions}"
         )
+
+
+def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
+    required_triggers = (
+        "relay_container_operation_identity_immutable_guard",
+        "relay_container_terminal_event_insert_guard",
+        "relay_container_terminal_event_update_guard",
+        "relay_container_terminal_event_delete_guard",
+        "relay_container_terminal_outbox_insert_guard",
+        "relay_container_terminal_outbox_identity_immutable_guard",
+        "relay_container_terminal_outbox_lifecycle_guard",
+        "relay_container_terminal_outbox_delete_guard",
+    )
+    for trigger in required_triggers:
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0042 financial terminal trigger missing: {trigger}")
+
+    identity_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_identity_immutable_guard"
+    )
+    for fragment in (
+        "client_idempotency_hmac_sha256",
+        "client_request_sha256",
+        "reconciliation_id",
+        "relay container operation identity is immutable",
+    ):
+        if identity_sql is None or fragment not in identity_sql:
+            raise SystemExit(f"0042 operation identity trigger missing: {fragment}")
+
+    event_table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_terminal_events"
+    )
+    for fragment in (
+        "typeof(billing_event_id) = 'text'",
+        "billing_from_status IN ('reserved', 'recovery_required')",
+        "typeof(pre_consumed_quota) = 'integer'",
+        "typeof(user_quota_delta) = 'integer'",
+        "typeof(token_quota_delta) = 'integer'",
+        "typeof(user_used_quota_delta) = 'integer'",
+        "typeof(channel_used_quota_delta) = 'integer'",
+        "typeof(request_count_delta) = 'integer'",
+        "json_valid(client_response_headers_json)",
+        "json_valid(outbox_payload_json)",
+        "container-client-responses/v1/",
+        "billing_action = 'settle'",
+        "billing_action = 'refund'",
+        "billing_action = 'recovery_required'",
+    ):
+        if event_table_sql is None or fragment not in event_table_sql:
+            raise SystemExit(f"0042 terminal event schema missing: {fragment}")
+
+    outbox_table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_terminal_outbox_state"
+    )
+    for fragment in (
+        "status IN ('pending', 'leased', 'delivered', 'dead_letter')",
+        "delivery_generation = delivery_attempt_count",
+        "lease_expires_at > updated_at",
+        "delivered_at = updated_at",
+        "REFERENCES relay_container_terminal_events(billing_event_id)",
+    ):
+        if outbox_table_sql is None or fragment not in outbox_table_sql:
+            raise SystemExit(f"0042 terminal outbox schema missing: {fragment}")
+
+    partial_indexes = {
+        "idx_relay_container_operations_client_idempotency_hmac": (
+            "WHERE client_idempotency_hmac_sha256 <> ''"
+        ),
+        "idx_relay_container_operations_reconciliation_id": (
+            "WHERE reconciliation_id <> ''"
+        ),
+        "idx_relay_container_terminal_outbox_pending": "WHERE status = 'pending'",
+        "idx_relay_container_terminal_outbox_leased": "WHERE status = 'leased'",
+    }
+    for index_name, predicate in partial_indexes.items():
+        index_sql = sqlite_object_sql(conn, "index", index_name)
+        if index_sql is None or predicate not in index_sql:
+            raise SystemExit(f"0042 partial index SQL missing: {index_name}")
+
+    user_id = 420042
+    token_id = 420042
+    channel_id = 420042
+    conn.execute(
+        """
+        INSERT INTO users (
+          id, username, password, quota, used_quota, request_count,
+          aff_code, created_at
+        ) VALUES (
+          ?, 'sqlite-0042-user', 'not-used', 1000, 50, 3,
+          'sqlite-0042-aff', 1
+        )
+        """,
+        (user_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO tokens (
+          id, user_id, "key", remain_quota, used_quota, accessed_time
+        ) VALUES (?, ?, 'sqlite-0042-token', 800, 200, 1)
+        """,
+        (token_id, user_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO channels (id, "key", name, used_quota)
+        VALUES (?, 'sqlite-0042-channel-key', 'sqlite-0042-channel', 300)
+        """,
+        (channel_id,),
+    )
+
+    authorities: dict[str, dict[str, object]] = {}
+
+    def digest(label: str) -> str:
+        return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+    def insert_authority(
+        key: str,
+        *,
+        operation_status: str = "dispatched",
+        billing_status: str = "reserved",
+        operation_owner_generation: int = 5,
+        billing_owner_generation: int = 5,
+        billing_token_id: int = token_id,
+        pre_consumed_quota: int = 120,
+        operation_group: str = "default",
+        billing_group: str = "default",
+        client_hmac: str | None = None,
+        client_request: str | None = None,
+        reconciliation_id: str | None = None,
+        legacy_identity: bool = False,
+    ) -> dict[str, object]:
+        if legacy_identity:
+            resolved_client_hmac = "" if client_hmac is None else client_hmac
+            resolved_client_request = "" if client_request is None else client_request
+            resolved_reconciliation_id = (
+                "" if reconciliation_id is None else reconciliation_id
+            )
+        else:
+            resolved_client_hmac = client_hmac or digest(f"client:{key}")
+            resolved_client_request = client_request or digest(f"request:{key}")
+            resolved_reconciliation_id = reconciliation_id or digest(
+                f"reconciliation:{key}"
+            )
+        billing_reason = (
+            "container_execution_ambiguous"
+            if billing_status == "recovery_required"
+            else ""
+        )
+        billing_updated_at = 7200 if billing_status == "recovery_required" else 6600
+        billing_recovery_at = 7200 if billing_status == "recovery_required" else 0
+        conn.execute(
+            """
+            INSERT INTO relay_billing_reservations (
+              reservation_key, user_id, token_id, model_name,
+              pre_consumed_quota, status,
+              channel_id, selected_group, selected_at,
+              final_quota, finalization_reason, request_accounted,
+              lease_expires_at, owner_generation, owner_deadline_at,
+              created_at, updated_at, recovery_required_at
+            ) VALUES (
+              ?, ?, ?, 'sqlite-0042-model', ?, ?,
+              ?, ?, 6550,
+              0, ?, 0,
+              9000, ?, 8000,
+              6500, ?, ?
+            )
+            """,
+            (
+                key,
+                user_id,
+                billing_token_id,
+                pre_consumed_quota,
+                billing_status,
+                channel_id,
+                billing_group,
+                billing_reason,
+                billing_owner_generation,
+                billing_updated_at,
+                billing_recovery_at,
+            ),
+        )
+        response_status = 202 if operation_status == "recovery_required" else None
+        response_code = (
+            "container_execution_ambiguous"
+            if operation_status == "recovery_required"
+            else None
+        )
+        operation_updated_at = 7300 if operation_status == "recovery_required" else 7100
+        values = {
+            "reservation_key": key,
+            "operation_id": key,
+            "owner_generation": operation_owner_generation,
+            "owner_lease_expires_at": 9000,
+            "channel_id": channel_id,
+            "selected_group": operation_group,
+            "operation_kind": "relay_chat",
+            "provider_operation_id": f"provider:{key}",
+            "admission_sha256": digest(f"admission:{key}"),
+            "protocol_version": 1,
+            "shard_contract_version": 1,
+            "ring_generation": 7,
+            "shard_count": 8,
+            "shard_index": 2,
+            "instance_name": "cinatoken-relay-shard-v1-0002",
+            "execution_deadline_at": 8000,
+            "input_mode": "r2",
+            "input_object_key": (
+                f"container-inputs/v1/{key}/{operation_owner_generation}/"
+                f"{digest(f'input:{key}')}"
+            ),
+            "input_object_version": "r2-version-0042",
+            "input_sha256": digest(f"input:{key}"),
+            "input_size": 256,
+            "input_content_type": "application/json",
+            "trace_id": f"trace:{key}",
+            "client_idempotency_hmac_sha256": resolved_client_hmac,
+            "client_request_sha256": resolved_client_request,
+            "reconciliation_id": resolved_reconciliation_id,
+            "status": operation_status,
+            "response_status": response_status,
+            "response_code": response_code,
+            "created_at": 7000,
+            "updated_at": operation_updated_at,
+        }
+        conn.execute(
+            """
+            INSERT INTO relay_container_operations (
+              reservation_key, operation_id,
+              owner_generation, owner_lease_expires_at,
+              channel_id, selected_group,
+              operation_kind, provider_operation_id, admission_sha256,
+              protocol_version, shard_contract_version,
+              ring_generation, shard_count, shard_index, instance_name,
+              execution_deadline_at,
+              input_mode, input_object_key, input_object_version,
+              input_sha256, input_size, input_content_type, trace_id,
+              client_idempotency_hmac_sha256, client_request_sha256,
+              reconciliation_id,
+              status, response_status, response_code,
+              created_at, updated_at
+            ) VALUES (
+              :reservation_key, :operation_id,
+              :owner_generation, :owner_lease_expires_at,
+              :channel_id, :selected_group,
+              :operation_kind, :provider_operation_id, :admission_sha256,
+              :protocol_version, :shard_contract_version,
+              :ring_generation, :shard_count, :shard_index, :instance_name,
+              :execution_deadline_at,
+              :input_mode, :input_object_key, :input_object_version,
+              :input_sha256, :input_size, :input_content_type, :trace_id,
+              :client_idempotency_hmac_sha256, :client_request_sha256,
+              :reconciliation_id,
+              :status, :response_status, :response_code,
+              :created_at, :updated_at
+            )
+            """,
+            values,
+        )
+        authority = {
+            "operation_owner_generation": operation_owner_generation,
+            "billing_owner_generation": billing_owner_generation,
+            "token_id": billing_token_id,
+            "pre_consumed_quota": pre_consumed_quota,
+            "reconciliation_id": resolved_reconciliation_id,
+        }
+        authorities[key] = authority
+        return authority
+
+    insert_authority("0042-legacy-a", legacy_identity=True)
+    insert_authority("0042-legacy-b", legacy_identity=True)
+    legacy_identities = conn.execute(
+        "SELECT COUNT(*) FROM relay_container_operations "
+        "WHERE client_idempotency_hmac_sha256 = '' "
+        "AND client_request_sha256 = '' AND reconciliation_id = '' "
+        "AND reservation_key LIKE '0042-legacy-%'"
+    ).fetchone()
+    if legacy_identities != (2,):
+        raise SystemExit(f"0042 legacy identity compatibility failed: {legacy_identities}")
+
+    expect_integrity_error(
+        lambda: insert_authority(
+            "0042-mixed-identity",
+            legacy_identity=True,
+            client_hmac=digest("0042-mixed-client"),
+        ),
+        "0042 operation identity must be all-empty legacy or all-valid v1",
+        "CHECK constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_authority(
+            "0042-uppercase-identity",
+            client_hmac="A" * 64,
+        ),
+        "0042 operation identity must reject uppercase digests",
+        "CHECK constraint failed",
+    )
+
+    v1_authority = insert_authority("0042-v1-identity")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations "
+            "SET client_request_sha256 = ? "
+            "WHERE reservation_key = '0042-v1-identity'",
+            (digest("rewritten-client-request"),),
+        ),
+        "0042 client request identity must be immutable",
+        "relay container operation identity is immutable",
+    )
+    existing_client_hmac = conn.execute(
+        "SELECT client_idempotency_hmac_sha256 "
+        "FROM relay_container_operations "
+        "WHERE reservation_key = '0042-v1-identity'"
+    ).fetchone()[0]
+    expect_integrity_error(
+        lambda: insert_authority(
+            "0042-duplicate-client",
+            client_hmac=existing_client_hmac,
+        ),
+        "0042 non-empty client idempotency HMAC must be unique",
+        "UNIQUE constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_authority(
+            "0042-duplicate-reconciliation",
+            reconciliation_id=str(v1_authority["reconciliation_id"]),
+        ),
+        "0042 non-empty operation reconciliation identity must be unique",
+        "UNIQUE constraint failed",
+    )
+
+    event_counter = 0
+
+    def terminal_values(
+        key: str,
+        label: str,
+        action: str,
+        *,
+        operation_from_status: str = "dispatched",
+        reconciliation_revision: int = 1,
+        **overrides: object,
+    ) -> dict[str, object]:
+        nonlocal event_counter
+        event_counter += 1
+        authority = authorities[key]
+        pre_consumed_quota = int(authority["pre_consumed_quota"])
+        operation_owner_generation = int(authority["operation_owner_generation"])
+        billing_owner_generation = int(authority["billing_owner_generation"])
+        billing_token_id = int(authority["token_id"])
+        body_sha256 = digest(f"client-response:{label}")
+        if action == "settle":
+            operation_status = "completed"
+            billing_final_quota: object = 80
+            billing_request_accounted = 1
+            frozen_pre_consumed_quota = pre_consumed_quota
+            user_quota_delta = pre_consumed_quota - 80
+            token_quota_delta = 0 if billing_token_id == 0 else user_quota_delta
+            user_used_quota_delta = 80
+            channel_used_quota_delta = 80
+            request_count_delta = 1
+            client_response_status: object = 200
+        elif action == "refund":
+            operation_status = "failed"
+            billing_final_quota = None
+            billing_request_accounted = 1
+            frozen_pre_consumed_quota = pre_consumed_quota
+            user_quota_delta = pre_consumed_quota
+            token_quota_delta = 0 if billing_token_id == 0 else pre_consumed_quota
+            user_used_quota_delta = 0
+            channel_used_quota_delta = 0
+            request_count_delta = 1
+            client_response_status = 503
+        elif action == "recovery_required":
+            operation_status = "recovery_required"
+            billing_final_quota = None
+            billing_request_accounted = 0
+            frozen_pre_consumed_quota = pre_consumed_quota
+            user_quota_delta = 0
+            token_quota_delta = 0
+            user_used_quota_delta = 0
+            channel_used_quota_delta = 0
+            request_count_delta = 0
+            client_response_status = None
+        else:
+            raise AssertionError(f"unsupported 0042 terminal action: {action}")
+
+        has_response = action != "recovery_required"
+        created_at = 7400 + event_counter * 10
+        values: dict[str, object] = {
+            "billing_event_id": digest(f"billing-event:{label}"),
+            "reservation_key": key,
+            "operation_id": key,
+            "owner_generation": operation_owner_generation,
+            "operation_from_status": operation_from_status,
+            "operation_status": operation_status,
+            "terminal_contract_sha256": digest(f"terminal-contract:{label}"),
+            "billing_action": action,
+            "billing_owner_generation": billing_owner_generation,
+            "billing_from_status": (
+                "recovery_required"
+                if operation_from_status == "recovery_required"
+                else "reserved"
+            ),
+            "billing_final_quota": billing_final_quota,
+            "billing_request_accounted": billing_request_accounted,
+            "billing_reason": f"sqlite_{action}",
+            "pre_consumed_quota": frozen_pre_consumed_quota,
+            "user_quota_delta": user_quota_delta,
+            "token_quota_delta": token_quota_delta,
+            "user_used_quota_delta": user_used_quota_delta,
+            "channel_used_quota_delta": channel_used_quota_delta,
+            "request_count_delta": request_count_delta,
+            "reconciliation_id": authority["reconciliation_id"],
+            "reconciliation_revision": reconciliation_revision,
+            "client_response_status": client_response_status,
+            "client_response_headers_json": (
+                '{"content-type":"application/json"}' if has_response else None
+            ),
+            "client_response_headers_sha256": (
+                digest(f"client-headers:{label}") if has_response else None
+            ),
+            "client_response_object_key": (
+                f"container-client-responses/v1/{key}/"
+                f"{operation_owner_generation}/{body_sha256}"
+                if has_response
+                else None
+            ),
+            "client_response_object_version": (
+                f"r2-client-version:{event_counter}" if has_response else None
+            ),
+            "client_response_sha256": body_sha256 if has_response else None,
+            "client_response_size": 512 if has_response else None,
+            "client_response_content_type": (
+                "application/json" if has_response else None
+            ),
+            "outbox_schema_version": 1,
+            "outbox_payload_json": f'{{"event":"{label}"}}',
+            "outbox_payload_sha256": digest(f"outbox-payload:{label}"),
+            "created_at": created_at,
+        }
+        values.update(overrides)
+        return values
+
+    def insert_terminal_event(values: dict[str, object]) -> None:
+        conn.execute(
+            """
+            INSERT INTO relay_container_terminal_events (
+              billing_event_id, reservation_key, operation_id,
+              owner_generation, operation_from_status, operation_status,
+              terminal_contract_sha256,
+              billing_action, billing_owner_generation, billing_from_status,
+              billing_final_quota, billing_request_accounted, billing_reason,
+              pre_consumed_quota, user_quota_delta, token_quota_delta,
+              user_used_quota_delta, channel_used_quota_delta,
+              request_count_delta,
+              reconciliation_id, reconciliation_revision,
+              client_response_status, client_response_headers_json,
+              client_response_headers_sha256, client_response_object_key,
+              client_response_object_version, client_response_sha256,
+              client_response_size, client_response_content_type,
+              outbox_schema_version, outbox_payload_json,
+              outbox_payload_sha256, created_at
+            ) VALUES (
+              :billing_event_id, :reservation_key, :operation_id,
+              :owner_generation, :operation_from_status, :operation_status,
+              :terminal_contract_sha256,
+              :billing_action, :billing_owner_generation, :billing_from_status,
+              :billing_final_quota, :billing_request_accounted, :billing_reason,
+              :pre_consumed_quota, :user_quota_delta, :token_quota_delta,
+              :user_used_quota_delta, :channel_used_quota_delta,
+              :request_count_delta,
+              :reconciliation_id, :reconciliation_revision,
+              :client_response_status, :client_response_headers_json,
+              :client_response_headers_sha256, :client_response_object_key,
+              :client_response_object_version, :client_response_sha256,
+              :client_response_size, :client_response_content_type,
+              :outbox_schema_version, :outbox_payload_json,
+              :outbox_payload_sha256, :created_at
+            )
+            """,
+            values,
+        )
+
+    insert_authority("0042-settle")
+    settle_event = terminal_values("0042-settle", "0042-settle", "settle")
+    insert_terminal_event(settle_event)
+    settle_snapshot = conn.execute(
+        "SELECT billing_action, billing_from_status, billing_final_quota, "
+        "pre_consumed_quota, user_quota_delta, token_quota_delta, "
+        "user_used_quota_delta, channel_used_quota_delta, request_count_delta "
+        "FROM relay_container_terminal_events WHERE billing_event_id = ?",
+        (settle_event["billing_event_id"],),
+    ).fetchone()
+    if settle_snapshot != ("settle", "reserved", 80, 120, 40, 40, 80, 80, 1):
+        raise SystemExit(f"0042 settle event did not freeze accounting: {settle_snapshot}")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_terminal_outbox_state"
+    ).fetchone() != (0,):
+        raise SystemExit("0042 terminal event insert must not synthesize outbox state")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_terminal_events SET billing_reason = 'rewritten' "
+            "WHERE billing_event_id = ?",
+            (settle_event["billing_event_id"],),
+        ),
+        "0042 terminal events must reject every update",
+        "relay container terminal event is append-only",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_terminal_events WHERE billing_event_id = ?",
+            (settle_event["billing_event_id"],),
+        ),
+        "0042 terminal events must reject every delete",
+        "relay container terminal event is append-only",
+    )
+
+    insert_authority("0042-event-negative")
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-event-negative",
+                "0042-uppercase-event",
+                "refund",
+                billing_event_id="A" * 64,
+            )
+        ),
+        "0042 terminal event IDs must be lowercase hex",
+        "CHECK constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-event-negative",
+                "0042-invalid-headers",
+                "refund",
+                client_response_headers_json="not-json",
+            )
+        ),
+        "0042 terminal response headers must be valid JSON objects",
+        "CHECK constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-event-negative",
+                "0042-invalid-response-key",
+                "refund",
+                client_response_object_key="container-client-responses/v1/wrong",
+            )
+        ),
+        "0042 client response object identity must be exact",
+        "CHECK constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-event-negative",
+                "0042-missing-response-status",
+                "refund",
+                client_response_status=None,
+            )
+        ),
+        "0042 refund events must contain a complete client response",
+        "CHECK constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-event-negative",
+                "0042-wrong-accounting",
+                "refund",
+                token_quota_delta=119,
+            )
+        ),
+        "0042 terminal accounting must match the billing token reserve",
+        "relay container terminal event authority mismatch",
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-event-negative",
+                "0042-text-accounting",
+                "refund",
+                user_quota_delta="not-an-integer",
+            )
+        ),
+        "0042 terminal accounting must reject text affinity bypasses",
+        "relay container terminal event authority mismatch",
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-event-negative",
+                "0042-wrong-operation-status",
+                "settle",
+                operation_status="failed",
+            )
+        ),
+        "0042 settle events must target completed operations",
+        "CHECK constraint failed",
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-event-negative",
+                "0042-stale-operation-from",
+                "refund",
+                operation_from_status="prepared",
+            )
+        ),
+        "0042 terminal event guard must match the current operation status",
+        "relay container terminal event authority mismatch",
+    )
+    owner_mismatch = terminal_values(
+        "0042-event-negative", "0042-owner-mismatch", "refund"
+    )
+    owner_mismatch["owner_generation"] = 6
+    owner_mismatch["client_response_object_key"] = (
+        "container-client-responses/v1/0042-event-negative/6/"
+        f"{owner_mismatch['client_response_sha256']}"
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(owner_mismatch),
+        "0042 terminal event guard must fence operation owner generation",
+        "relay container terminal event authority mismatch",
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-event-negative",
+                "0042-reconciliation-mismatch",
+                "refund",
+                reconciliation_id=digest("different-reconciliation"),
+            )
+        ),
+        "0042 terminal event guard must match operation reconciliation identity",
+        "relay container terminal event authority mismatch",
+    )
+
+    refund_event = terminal_values(
+        "0042-event-negative", "0042-valid-refund", "refund"
+    )
+    insert_terminal_event(refund_event)
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-event-negative",
+                "0042-duplicate-operation-terminal",
+                "refund",
+            )
+        ),
+        "0042 terminal identity must include and uniquely fence operation from-status",
+        "UNIQUE constraint failed",
+    )
+
+    insert_authority(
+        "0042-billing-status-mismatch",
+        operation_status="recovery_required",
+        billing_status="reserved",
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-billing-status-mismatch",
+                "0042-billing-status-mismatch",
+                "refund",
+                operation_from_status="recovery_required",
+            )
+        ),
+        "0042 terminal event guard must match the exact current billing status",
+        "relay container terminal event authority mismatch",
+    )
+
+    insert_authority(
+        "0042-channel-group-mismatch",
+        operation_group="default",
+        billing_group="secondary",
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-channel-group-mismatch",
+                "0042-channel-group-mismatch",
+                "refund",
+            )
+        ),
+        "0042 terminal event guard must match operation and billing channel/group",
+        "relay container terminal event authority mismatch",
+    )
+
+    insert_authority("0042-tokenless", billing_token_id=0)
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-tokenless",
+                "0042-tokenless-invalid",
+                "settle",
+                token_quota_delta=40,
+            )
+        ),
+        "0042 token_id=0 terminal accounting must freeze a zero token delta",
+        "relay container terminal event authority mismatch",
+    )
+    tokenless_event = terminal_values(
+        "0042-tokenless", "0042-tokenless-valid", "settle"
+    )
+    insert_terminal_event(tokenless_event)
+    if conn.execute(
+        "SELECT token_quota_delta FROM relay_container_terminal_events "
+        "WHERE billing_event_id = ?",
+        (tokenless_event["billing_event_id"],),
+    ).fetchone() != (0,):
+        raise SystemExit("0042 tokenless settlement did not freeze a zero token delta")
+
+    insert_authority("0042-recovery-resolution")
+    recovery_event = terminal_values(
+        "0042-recovery-resolution",
+        "0042-recovery-required",
+        "recovery_required",
+    )
+    insert_terminal_event(recovery_event)
+    recovery_accounting = conn.execute(
+        "SELECT pre_consumed_quota, user_quota_delta, token_quota_delta, "
+        "user_used_quota_delta, channel_used_quota_delta, request_count_delta, "
+        "client_response_status FROM relay_container_terminal_events "
+        "WHERE billing_event_id = ?",
+        (recovery_event["billing_event_id"],),
+    ).fetchone()
+    if recovery_accounting != (
+        int(authorities["0042-recovery-resolution"]["pre_consumed_quota"]),
+        0,
+        0,
+        0,
+        0,
+        0,
+        None,
+    ):
+        raise SystemExit(
+            f"0042 recovery event must freeze zero accounting: {recovery_accounting}"
+        )
+    conn.execute(
+        """
+        UPDATE relay_container_operations
+        SET status = 'recovery_required', response_status = 202,
+            response_code = 'container_execution_ambiguous', updated_at = 7600
+        WHERE reservation_key = '0042-recovery-resolution'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE relay_billing_reservations
+        SET status = 'recovery_required', owner_generation = owner_generation + 1,
+            finalization_reason = 'container_execution_ambiguous',
+            updated_at = 7600, recovery_required_at = 7600
+        WHERE reservation_key = '0042-recovery-resolution'
+        """
+    )
+    authorities["0042-recovery-resolution"]["billing_owner_generation"] = 6
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0042-recovery-resolution",
+                "0042-recovery-duplicate-revision",
+                "settle",
+                operation_from_status="recovery_required",
+                reconciliation_revision=1,
+            )
+        ),
+        "0042 recovery resolution must advance the reconciliation revision",
+        "CHECK constraint failed",
+    )
+    recovered_event = terminal_values(
+        "0042-recovery-resolution",
+        "0042-recovered-settle",
+        "settle",
+        operation_from_status="recovery_required",
+        reconciliation_revision=2,
+    )
+    insert_terminal_event(recovered_event)
+    recovered_events = conn.execute(
+        "SELECT operation_from_status, operation_status, billing_from_status, "
+        "reconciliation_revision FROM relay_container_terminal_events "
+        "WHERE operation_id = '0042-recovery-resolution' "
+        "ORDER BY reconciliation_revision"
+    ).fetchall()
+    if recovered_events != [
+        ("dispatched", "recovery_required", "reserved", 1),
+        ("recovery_required", "completed", "recovery_required", 2),
+    ]:
+        raise SystemExit(
+            "0042 recovery authorization must allow a second from-status event: "
+            f"{recovered_events}"
+        )
+
+    def insert_outbox(
+        event: dict[str, object],
+        **overrides: object,
+    ) -> None:
+        created_at = int(event["created_at"])
+        values: dict[str, object] = {
+            "billing_event_id": event["billing_event_id"],
+            "status": "pending",
+            "delivery_generation": 0,
+            "delivery_attempt_count": 0,
+            "lease_expires_at": 0,
+            "available_at": created_at,
+            "delivered_at": 0,
+            "last_error": "",
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+        values.update(overrides)
+        conn.execute(
+            """
+            INSERT INTO relay_container_terminal_outbox_state (
+              billing_event_id, status,
+              delivery_generation, delivery_attempt_count,
+              lease_expires_at, available_at, delivered_at, last_error,
+              created_at, updated_at
+            ) VALUES (
+              :billing_event_id, :status,
+              :delivery_generation, :delivery_attempt_count,
+              :lease_expires_at, :available_at, :delivered_at, :last_error,
+              :created_at, :updated_at
+            )
+            """,
+            values,
+        )
+
+    missing_event = {
+        "billing_event_id": digest("0042-missing-outbox-event"),
+        "created_at": 8000,
+    }
+    expect_integrity_error(
+        lambda: insert_outbox(missing_event),
+        "0042 outbox state must reference an immutable terminal event",
+        "relay container terminal outbox initial state is invalid",
+    )
+    expect_integrity_error(
+        lambda: insert_outbox(
+            settle_event,
+            status="leased",
+            delivery_generation=1,
+            delivery_attempt_count=1,
+            lease_expires_at=int(settle_event["created_at"]) + 100,
+        ),
+        "0042 outbox rows must begin in the exact pending state",
+        "relay container terminal outbox initial state is invalid",
+    )
+    expect_integrity_error(
+        lambda: insert_outbox(
+            settle_event,
+            available_at="not-an-integer",
+        ),
+        "0042 outbox timestamps must reject text affinity bypasses",
+        "relay container terminal outbox initial state is invalid",
+    )
+
+    insert_outbox(settle_event)
+    settle_event_id = str(settle_event["billing_event_id"])
+    settle_created_at = int(settle_event["created_at"])
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_terminal_outbox_state
+            SET status = 'delivered', delivery_generation = 1,
+                delivery_attempt_count = 1, delivered_at = ?, updated_at = ?
+            WHERE billing_event_id = ?
+            """,
+            (settle_created_at + 10, settle_created_at + 10, settle_event_id),
+        ),
+        "0042 outbox must reject pending-to-delivered shortcuts",
+        "relay container terminal outbox transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_terminal_outbox_state "
+            "SET billing_event_id = ? WHERE billing_event_id = ?",
+            (digest("0042-rewritten-outbox-event"), settle_event_id),
+        ),
+        "0042 outbox identity must be immutable",
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_terminal_outbox_state
+        SET status = 'leased', delivery_generation = 1,
+            delivery_attempt_count = 1, lease_expires_at = ?, updated_at = ?
+        WHERE billing_event_id = ?
+        """,
+        (settle_created_at + 200, settle_created_at + 20, settle_event_id),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_terminal_outbox_state
+            SET delivery_generation = 2, delivery_attempt_count = 2,
+                lease_expires_at = ?, updated_at = ?
+            WHERE billing_event_id = ?
+            """,
+            (settle_created_at + 300, settle_created_at + 30, settle_event_id),
+        ),
+        "0042 outbox must reject a generation takeover before lease expiry",
+        "relay container terminal outbox transition is invalid",
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_terminal_outbox_state
+        SET lease_expires_at = ?, updated_at = ?
+        WHERE billing_event_id = ?
+        """,
+        (settle_created_at + 300, settle_created_at + 30, settle_event_id),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_terminal_outbox_state
+            SET lease_expires_at = ?, updated_at = ?
+            WHERE billing_event_id = ?
+            """,
+            (settle_created_at + 500, settle_created_at + 350, settle_event_id),
+        ),
+        "0042 outbox must reject same-generation renewal after lease expiry",
+        "relay container terminal outbox transition is invalid",
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_terminal_outbox_state
+        SET status = 'pending', lease_expires_at = 0,
+            available_at = ?, last_error = 'temporary queue failure', updated_at = ?
+        WHERE billing_event_id = ?
+        """,
+        (settle_created_at + 50, settle_created_at + 40, settle_event_id),
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_terminal_outbox_state
+        SET status = 'leased', delivery_generation = 2,
+            delivery_attempt_count = 2, lease_expires_at = ?,
+            last_error = '', updated_at = ?
+        WHERE billing_event_id = ?
+        """,
+        (settle_created_at + 400, settle_created_at + 60, settle_event_id),
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_terminal_outbox_state
+        SET status = 'delivered', lease_expires_at = 0,
+            delivered_at = ?, updated_at = ?
+        WHERE billing_event_id = ?
+        """,
+        (settle_created_at + 70, settle_created_at + 70, settle_event_id),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_terminal_outbox_state
+            SET delivered_at = ?, updated_at = ?
+            WHERE billing_event_id = ?
+            """,
+            (settle_created_at + 80, settle_created_at + 80, settle_event_id),
+        ),
+        "0042 delivered outbox rows must be terminal",
+        "relay container terminal outbox transition is invalid",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_terminal_outbox_state "
+            "WHERE billing_event_id = ?",
+            (settle_event_id,),
+        ),
+        "0042 outbox state must not be deleted",
+        "relay container terminal outbox state cannot be deleted",
+    )
+
+    insert_outbox(refund_event)
+    refund_event_id = str(refund_event["billing_event_id"])
+    refund_created_at = int(refund_event["created_at"])
+    conn.execute(
+        """
+        UPDATE relay_container_terminal_outbox_state
+        SET status = 'leased', delivery_generation = 1,
+            delivery_attempt_count = 1, lease_expires_at = ?, updated_at = ?
+        WHERE billing_event_id = ?
+        """,
+        (refund_created_at + 200, refund_created_at + 10, refund_event_id),
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_terminal_outbox_state
+        SET status = 'dead_letter', lease_expires_at = 0,
+            last_error = 'permanent queue failure', updated_at = ?
+        WHERE billing_event_id = ?
+        """,
+        (refund_created_at + 20, refund_event_id),
+    )
+    final_outbox_states = conn.execute(
+        "SELECT billing_event_id, status, delivery_generation, "
+        "delivery_attempt_count FROM relay_container_terminal_outbox_state "
+        "WHERE billing_event_id IN (?, ?) ORDER BY billing_event_id",
+        (settle_event_id, refund_event_id),
+    ).fetchall()
+    expected_outbox_states = sorted(
+        [
+            (settle_event_id, "delivered", 2, 2),
+            (refund_event_id, "dead_letter", 1, 1),
+        ]
+    )
+    if final_outbox_states != expected_outbox_states:
+        raise SystemExit(f"0042 outbox lifecycle did not persist: {final_outbox_states}")
 
 
 def verify_flat_billing_intent_guard(conn: sqlite3.Connection) -> None:
@@ -2756,8 +3837,18 @@ def verify_relay_container_operation_rollout(schema_paths: list[Path]) -> None:
     hardening_index = schema_paths.index(hardening_path)
     if hardening_index != operation_index + 1:
         raise SystemExit("0041 lifecycle hardening must immediately follow 0040")
-    if hardening_index != len(schema_paths) - 1:
-        raise SystemExit("0041 lifecycle hardening must be the current D1 migration head")
+    terminal_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0042_relay_container_financial_terminal_expand.sql"
+        ),
+        None,
+    )
+    if terminal_path is None:
+        raise SystemExit("0042 relay Container financial terminal migration not found")
+    if schema_paths.index(terminal_path) != hardening_index + 1:
+        raise SystemExit("0042 financial terminal expand must immediately follow 0041")
 
     operation_sql = operation_path.read_text(encoding="utf-8")
     for fragment in (
@@ -2874,6 +3965,220 @@ def verify_relay_container_operation_rollout(schema_paths: list[Path]) -> None:
         1,
     ):
         raise SystemExit("0041 hardening must not synthesize operation rows")
+
+
+def verify_relay_container_financial_terminal_rollout(
+    schema_paths: list[Path],
+) -> None:
+    terminal_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0042_relay_container_financial_terminal_expand.sql"
+        ),
+        None,
+    )
+    if terminal_path is None:
+        raise SystemExit("0042 relay Container financial terminal migration not found")
+    terminal_index = schema_paths.index(terminal_path)
+    if terminal_index == 0 or schema_paths[terminal_index - 1].name != (
+        "0041_relay_container_operation_lifecycle_hardening.sql"
+    ):
+        raise SystemExit("0042 financial terminal expand must immediately follow 0041")
+    if terminal_index != len(schema_paths) - 1:
+        raise SystemExit("0042 financial terminal expand must be the current D1 migration head")
+
+    terminal_sql = terminal_path.read_text(encoding="utf-8")
+    for fragment in (
+        "ADD COLUMN client_idempotency_hmac_sha256 TEXT NOT NULL DEFAULT ''",
+        "ADD COLUMN client_request_sha256 TEXT NOT NULL DEFAULT ''",
+        "ADD COLUMN reconciliation_id TEXT NOT NULL DEFAULT ''",
+        "idx_relay_container_operations_client_idempotency_hmac",
+        "idx_relay_container_operations_reconciliation_id",
+        "DROP TRIGGER relay_container_operation_identity_immutable_guard",
+        "NEW.client_idempotency_hmac_sha256 IS NOT OLD.client_idempotency_hmac_sha256",
+        "NEW.client_request_sha256 IS NOT OLD.client_request_sha256",
+        "NEW.reconciliation_id IS NOT OLD.reconciliation_id",
+        "CREATE TABLE relay_container_terminal_events",
+        "billing_from_status TEXT NOT NULL",
+        "pre_consumed_quota INTEGER NOT NULL",
+        "user_quota_delta INTEGER NOT NULL",
+        "token_quota_delta INTEGER NOT NULL",
+        "user_used_quota_delta INTEGER NOT NULL",
+        "channel_used_quota_delta INTEGER NOT NULL",
+        "request_count_delta INTEGER NOT NULL",
+        "container-client-responses/v1/",
+        "idx_relay_container_terminal_events_operation_identity",
+        "idx_relay_container_terminal_events_reconciliation_identity",
+        "relay_container_terminal_event_insert_guard",
+        "relay_container_terminal_event_update_guard",
+        "relay_container_terminal_event_delete_guard",
+        "CREATE TABLE relay_container_terminal_outbox_state",
+        "relay_container_terminal_outbox_identity_immutable_guard",
+        "relay_container_terminal_outbox_lifecycle_guard",
+    ):
+        if fragment not in terminal_sql:
+            raise SystemExit(f"0042 financial terminal contract missing: {fragment}")
+    for forbidden in (
+        "relay_container_operation_lifecycle_guard",
+        "INSERT INTO relay_container_operations",
+        "INSERT INTO relay_container_terminal_events",
+        "INSERT INTO relay_container_terminal_outbox_state",
+        "UPDATE relay_container_operations",
+        "UPDATE relay_billing_reservations",
+        "enforcement_enabled",
+        "authority_enabled",
+    ):
+        if forbidden in terminal_sql:
+            raise SystemExit(
+                f"0042 expand migration must remain default-inert: {forbidden}"
+            )
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == terminal_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    conn.execute(
+        """
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, token_id, model_name,
+          pre_consumed_quota, channel_id, selected_group, selected_at,
+          lease_expires_at, owner_generation, owner_deadline_at,
+          created_at, updated_at
+        ) VALUES (
+          '0042-existing-operation', 1, 0, 'guard-model',
+          25, 40, 'default', 3900,
+          5100, 1, 5000, 3800, 3900
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO relay_container_operations (
+          reservation_key, operation_id,
+          owner_generation, owner_lease_expires_at, channel_id, selected_group,
+          operation_kind, provider_operation_id, admission_sha256,
+          protocol_version, shard_contract_version,
+          ring_generation, shard_count, shard_index, instance_name,
+          execution_deadline_at, input_mode, input_object_key,
+          input_object_version, input_sha256, input_size,
+          input_content_type, trace_id, created_at, updated_at
+        ) VALUES (
+          '0042-existing-operation', '0042-existing-operation',
+          1, 5100, 40, 'default',
+          'relay_chat', 'provider:0042-existing-operation', lower(hex(zeroblob(32))),
+          1, 1,
+          7, 8, 2, 'cinatoken-relay-shard-v1-0002',
+          5000, 'r2',
+          'container-inputs/v1/0042-existing-operation/1/' || lower(hex(zeroblob(32))),
+          'r2-version-1', lower(hex(zeroblob(32))), 128,
+          'application/json', 'trace:0042-existing-operation', 4000, 4000
+        )
+        """
+    )
+    operation_columns_before = table_columns(conn, "relay_container_operations")
+    operation_before = conn.execute(
+        "SELECT * FROM relay_container_operations "
+        "WHERE reservation_key = '0042-existing-operation'"
+    ).fetchone()
+    billing_before = conn.execute(
+        "SELECT * FROM relay_billing_reservations "
+        "WHERE reservation_key = '0042-existing-operation'"
+    ).fetchone()
+    lifecycle_before = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_lifecycle_guard"
+    )
+
+    conn.executescript(terminal_sql)
+
+    operation_columns_after = table_columns(conn, "relay_container_operations")
+    if operation_columns_after - operation_columns_before != {
+        "client_idempotency_hmac_sha256",
+        "client_request_sha256",
+        "reconciliation_id",
+    }:
+        raise SystemExit(
+            "0042 expand migration added an unexpected operation column set: "
+            f"{sorted(operation_columns_after - operation_columns_before)}"
+        )
+    if operation_columns_before - operation_columns_after:
+        raise SystemExit("0042 expand migration removed operation columns")
+    operation_after = conn.execute(
+        "SELECT * FROM relay_container_operations "
+        "WHERE reservation_key = '0042-existing-operation'"
+    ).fetchone()
+    if operation_after[:-3] != operation_before or operation_after[-3:] != ("", "", ""):
+        raise SystemExit(
+            f"0042 changed an existing legacy operation row: {operation_after}"
+        )
+    billing_after = conn.execute(
+        "SELECT * FROM relay_billing_reservations "
+        "WHERE reservation_key = '0042-existing-operation'"
+    ).fetchone()
+    if billing_after != billing_before:
+        raise SystemExit("0042 expand migration changed existing billing authority data")
+    lifecycle_after = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_lifecycle_guard"
+    )
+    if lifecycle_after != lifecycle_before:
+        raise SystemExit("0042 expand migration changed the 0041 lifecycle graph")
+    for table in (
+        "relay_container_terminal_events",
+        "relay_container_terminal_outbox_state",
+    ):
+        if conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone() != (0,):
+            raise SystemExit(f"0042 expand migration synthesized rows in {table}")
+
+    conn.execute(
+        """
+        INSERT INTO relay_container_operations (
+          reservation_key, operation_id,
+          owner_generation, owner_lease_expires_at, channel_id, selected_group,
+          operation_kind, provider_operation_id, admission_sha256,
+          protocol_version, shard_contract_version,
+          ring_generation, shard_count, shard_index, instance_name,
+          execution_deadline_at, input_mode, input_object_key,
+          input_object_version, input_sha256, input_size,
+          input_content_type, trace_id, created_at, updated_at
+        ) VALUES (
+          '0042-post-expand-legacy', '0042-post-expand-legacy',
+          1, 6100, 40, 'default',
+          'relay_chat', 'provider:0042-post-expand-legacy', lower(hex(zeroblob(32))),
+          1, 1,
+          7, 8, 3, 'cinatoken-relay-shard-v1-0003',
+          6000, 'r2',
+          'container-inputs/v1/0042-post-expand-legacy/1/' || lower(hex(zeroblob(32))),
+          'r2-version-2', lower(hex(zeroblob(32))), 64,
+          'application/json', 'trace:0042-post-expand-legacy', 5200, 5200
+        )
+        """
+    )
+    legacy_defaults = conn.execute(
+        "SELECT client_idempotency_hmac_sha256, client_request_sha256, "
+        "reconciliation_id FROM relay_container_operations "
+        "WHERE reservation_key = '0042-post-expand-legacy'"
+    ).fetchone()
+    if legacy_defaults != ("", "", ""):
+        raise SystemExit(f"0042 broke a legacy operation writer: {legacy_defaults}")
+
+    partial_indexes = {
+        "idx_relay_container_operations_client_idempotency_hmac": (
+            "WHERE client_idempotency_hmac_sha256 <> ''"
+        ),
+        "idx_relay_container_operations_reconciliation_id": (
+            "WHERE reconciliation_id <> ''"
+        ),
+        "idx_relay_container_terminal_outbox_pending": "WHERE status = 'pending'",
+        "idx_relay_container_terminal_outbox_leased": "WHERE status = 'leased'",
+    }
+    for index_name, predicate in partial_indexes.items():
+        index_sql = sqlite_object_sql(conn, "index", index_name)
+        if index_sql is None or predicate not in index_sql:
+            raise SystemExit(
+                f"0042 partial index manifest is incomplete: {index_name}"
+            )
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

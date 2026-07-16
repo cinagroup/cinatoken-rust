@@ -31,6 +31,7 @@ export type PlatformReadinessSignalId =
   | 'relay-billing-implementation'
   | 'relay-flat-billing-intent-implementation'
   | 'relay-billing-owner-generation-compiled'
+  | 'container-operation-implementation'
   | 'quota-coordinator-foundation'
   | 'quota-coordinator-relay-observer'
   | 'realtime-implementation'
@@ -57,6 +58,7 @@ export type PlatformReadinessSignalId =
   | 'quota-coordinator-reconciliation'
   | 'relay-flat-billing-intent-runtime'
   | 'relay-billing-owner-generation-configured'
+  | 'container-operation-runtime'
   | 'ai-gateway-canary'
   | 'ai-gateway-actual-group-billing-smoke'
   | 'ai-gateway-fallback-replay'
@@ -76,6 +78,7 @@ export type PlatformReadinessSignalId =
   | 'relay-billing-recovery-smoke'
   | 'relay-flat-billing-intent-staging-proof'
   | 'relay-billing-owner-generation-staging-proof'
+  | 'container-operation-staging-proof'
   | 'task-runner-cutover'
   | 'task-poll-lease-cutover'
   | 'task-poll-scheduler-cutover'
@@ -85,6 +88,7 @@ export type PlatformReadinessSignalId =
   | 'relay-billing-recovery-cutover'
   | 'relay-flat-billing-intent-cutover'
   | 'relay-billing-owner-generation-cutover'
+  | 'container-operation-cutover'
   | 'quota-coordinator-write-authority'
   | 'quota-coordinator-cutover'
   | 'ai-gateway-fallback-cutover'
@@ -122,6 +126,19 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_billing_prebind_owner_generation_configured'
   | 'relay_billing_prebind_owner_generation_staging_verified'
   | 'relay_billing_prebind_owner_generation_cutover_ready'
+  | 'container_financial_terminal_compiled'
+  | 'container_exact_response_replay_compiled'
+  | 'container_divergence_reconciliation_compiled'
+  | 'container_operation_write_enabled'
+  | 'container_terminal_cas_enabled'
+  | 'container_financial_terminal_enabled'
+  | 'container_exact_response_replay_enabled'
+  | 'container_operation_reconciliation_enabled'
+  | 'container_divergence_reconciliation_verified'
+  | 'container_chat_canary_enabled'
+  | 'container_operation_staging_verified'
+  | 'container_operation_runtime_ready'
+  | 'container_scheduler_cutover_ready'
   | 'relay_billing_stream_lease_renewal_compiled'
   | 'relay_billing_stream_lease_heartbeat_configured'
   | 'relay_billing_stream_lease_heartbeat_valid'
@@ -311,6 +328,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'relay-billing-implementation': 'Relay billing ledger',
   'relay-flat-billing-intent-implementation': 'Relay flat billing intent',
   'relay-billing-owner-generation-compiled': 'Relay billing owner generation',
+  'container-operation-implementation':
+    'Container financial terminal, exact replay, and divergence recovery',
   'quota-coordinator-foundation': 'QuotaCoordinator foundation',
   'quota-coordinator-relay-observer': 'QuotaCoordinator relay observer',
   'realtime-implementation':
@@ -340,6 +359,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'quota-coordinator-reconciliation': 'QuotaCoordinator reconciliation',
   'relay-flat-billing-intent-runtime': 'Relay flat billing intent',
   'relay-billing-owner-generation-configured': 'Relay billing owner generation',
+  'container-operation-runtime': 'Container operation financial runtime',
   'ai-gateway-canary': 'AI Gateway canary',
   'ai-gateway-actual-group-billing-smoke':
     'AI Gateway actual-group billing smoke',
@@ -365,6 +385,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'relay-flat-billing-intent-staging-proof': 'Relay flat billing intent proof',
   'relay-billing-owner-generation-staging-proof':
     'Relay billing owner race proof',
+  'container-operation-staging-proof':
+    'Container exact replay and divergence proof',
   'task-runner-cutover': 'TaskRunner',
   'task-poll-lease-cutover': 'Task poll generation-fenced lease',
   'task-poll-scheduler-cutover': 'Task poll scheduler',
@@ -374,6 +396,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'relay-billing-recovery-cutover': 'Relay billing recovery',
   'relay-flat-billing-intent-cutover': 'Relay flat billing intent',
   'relay-billing-owner-generation-cutover': 'Relay billing owner generation',
+  'container-operation-cutover': 'Container operation cutover',
   'quota-coordinator-write-authority': 'QuotaCoordinator write authority',
   'quota-coordinator-cutover': 'QuotaCoordinator cutover',
   'ai-gateway-fallback-cutover': 'AI Gateway fallback',
@@ -598,6 +621,26 @@ export function buildPlatformReadinessSummary(
     capabilities.relay_billing_finalization_replay_compiled,
     capabilities.relay_billing_finalization_reconcile_compiled
   )
+  const containerOperationImplementation = allReady(
+    capabilities.container_financial_terminal_compiled,
+    capabilities.container_exact_response_replay_compiled,
+    capabilities.container_divergence_reconciliation_compiled
+  )
+  const containerOperationRuntime = allReady(
+    containerOperationImplementation,
+    capabilities.d1_migration_ready,
+    capabilities.container_operation_write_enabled,
+    capabilities.container_terminal_cas_enabled,
+    capabilities.container_financial_terminal_enabled,
+    capabilities.container_exact_response_replay_enabled,
+    capabilities.container_operation_reconciliation_enabled,
+    capabilities.container_chat_canary_enabled
+  )
+  const containerOperationStagingProof = allReady(
+    containerOperationRuntime,
+    capabilities.container_operation_staging_verified,
+    capabilities.container_divergence_reconciliation_verified
+  )
   const taskRunnerImplementation = allReady(
     capabilities.task_runner_do_foundation_compiled,
     capabilities.task_runner_alarm_contract_compiled,
@@ -705,6 +748,10 @@ export function buildPlatformReadinessSummary(
       'relay-billing-owner-generation-compiled',
       capabilities.relay_billing_prebind_owner_generation_compiled
     ),
+    readySignal(
+      'container-operation-implementation',
+      containerOperationImplementation
+    ),
     readySignal('quota-coordinator-foundation', quotaCoordinator.foundation),
     readySignal(
       'quota-coordinator-relay-observer',
@@ -800,6 +847,7 @@ export function buildPlatformReadinessSummary(
       'relay-billing-owner-generation-configured',
       capabilities.relay_billing_prebind_owner_generation_configured
     ),
+    readySignal('container-operation-runtime', containerOperationRuntime),
   ])
 
   const taskRunnerReplayReady = allReady(
@@ -925,6 +973,11 @@ export function buildPlatformReadinessSummary(
       capabilities.relay_billing_prebind_owner_generation_configured,
       capabilities.relay_billing_prebind_owner_generation_staging_verified
     ),
+    verificationSignal(
+      'container-operation-staging-proof',
+      containerOperationRuntime,
+      containerOperationStagingProof
+    ),
   ])
 
   const cutover = createReadyStage('cutover', [
@@ -972,6 +1025,14 @@ export function buildPlatformReadinessSummary(
     readySignal(
       'relay-billing-owner-generation-cutover',
       capabilities.relay_billing_prebind_owner_generation_cutover_ready
+    ),
+    readySignal(
+      'container-operation-cutover',
+      allReady(
+        containerOperationStagingProof,
+        capabilities.container_operation_runtime_ready,
+        capabilities.container_scheduler_cutover_ready
+      )
     ),
     readySignal(
       'quota-coordinator-write-authority',

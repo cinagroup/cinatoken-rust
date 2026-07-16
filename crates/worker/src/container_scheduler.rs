@@ -16,8 +16,13 @@ pub const CONTAINER_SCHEDULER_ENABLED_ENV: &str = "CONTAINER_SCHEDULER_ENABLED";
 pub const CONTAINER_SCHEDULER_STAGING_VERIFIED_ENV: &str = "CONTAINER_SCHEDULER_STAGING_VERIFIED";
 pub const CONTAINER_OPERATION_WRITE_ENABLED_ENV: &str = "CONTAINER_OPERATION_WRITE_ENABLED";
 pub const CONTAINER_TERMINAL_CAS_ENABLED_ENV: &str = "CONTAINER_TERMINAL_CAS_ENABLED";
+pub const CONTAINER_FINANCIAL_TERMINAL_ENABLED_ENV: &str = "CONTAINER_FINANCIAL_TERMINAL_ENABLED";
+pub const CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED_ENV: &str =
+    "CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED";
 pub const CONTAINER_OPERATION_RECONCILIATION_ENABLED_ENV: &str =
     "CONTAINER_OPERATION_RECONCILIATION_ENABLED";
+pub const CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED_ENV: &str =
+    "CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED";
 pub const CONTAINER_CHAT_CANARY_ENABLED_ENV: &str = "CONTAINER_CHAT_CANARY_ENABLED";
 pub const CONTAINER_OPERATION_STAGING_VERIFIED_ENV: &str = "CONTAINER_OPERATION_STAGING_VERIFIED";
 pub const CONTAINER_SHARD_READINESS_STAGING_VERIFIED_ENV: &str =
@@ -45,7 +50,10 @@ const CONTAINER_SCHEDULER_CUTOVER_GUARDS: &[&str] = &[
     "shared_storage_contract",
     "operation_write_enabled",
     "terminal_cas_enabled",
+    "financial_terminal_enabled",
+    "exact_response_replay_enabled",
     "operation_reconciliation_enabled",
+    "divergence_reconciliation_verified",
     "chat_canary_enabled",
     "operation_staging_verified",
     "n_minus_one_protocol",
@@ -66,7 +74,10 @@ pub struct ContainerSchedulerRuntimeStatus {
 pub struct ContainerOperationRuntimeStatus {
     pub operation_write_enabled: bool,
     pub terminal_cas_enabled: bool,
+    pub financial_terminal_enabled: bool,
+    pub exact_response_replay_enabled: bool,
     pub operation_reconciliation_enabled: bool,
+    pub divergence_reconciliation_verified: bool,
     pub chat_canary_enabled: bool,
     pub operation_staging_verified: bool,
 }
@@ -75,7 +86,10 @@ impl ContainerOperationRuntimeStatus {
     pub fn cutover_ready(self) -> bool {
         self.operation_write_enabled
             && self.terminal_cas_enabled
+            && self.financial_terminal_enabled
+            && self.exact_response_replay_enabled
             && self.operation_reconciliation_enabled
+            && self.divergence_reconciliation_verified
             && self.chat_canary_enabled
             && self.operation_staging_verified
     }
@@ -90,14 +104,22 @@ pub fn container_scheduler_runtime_status(env: &Env) -> ContainerSchedulerRuntim
 pub fn container_operation_runtime_status(env: &Env) -> ContainerOperationRuntimeStatus {
     let operation_write_enabled = runtime_value(env, CONTAINER_OPERATION_WRITE_ENABLED_ENV);
     let terminal_cas_enabled = runtime_value(env, CONTAINER_TERMINAL_CAS_ENABLED_ENV);
+    let financial_terminal_enabled = runtime_value(env, CONTAINER_FINANCIAL_TERMINAL_ENABLED_ENV);
+    let exact_response_replay_enabled =
+        runtime_value(env, CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED_ENV);
     let operation_reconciliation_enabled =
         runtime_value(env, CONTAINER_OPERATION_RECONCILIATION_ENABLED_ENV);
+    let divergence_reconciliation_verified =
+        runtime_value(env, CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED_ENV);
     let chat_canary_enabled = runtime_value(env, CONTAINER_CHAT_CANARY_ENABLED_ENV);
     let operation_staging_verified = runtime_value(env, CONTAINER_OPERATION_STAGING_VERIFIED_ENV);
     parse_container_operation_runtime_status([
         operation_write_enabled.as_deref(),
         terminal_cas_enabled.as_deref(),
+        financial_terminal_enabled.as_deref(),
+        exact_response_replay_enabled.as_deref(),
         operation_reconciliation_enabled.as_deref(),
+        divergence_reconciliation_verified.as_deref(),
         chat_canary_enabled.as_deref(),
         operation_staging_verified.as_deref(),
     ])
@@ -301,14 +323,17 @@ fn parse_container_scheduler_runtime_status(
 }
 
 fn parse_container_operation_runtime_status(
-    values: [Option<&str>; 5],
+    values: [Option<&str>; 8],
 ) -> ContainerOperationRuntimeStatus {
     ContainerOperationRuntimeStatus {
         operation_write_enabled: runtime_gate_enabled(values[0]),
         terminal_cas_enabled: runtime_gate_enabled(values[1]),
-        operation_reconciliation_enabled: runtime_gate_enabled(values[2]),
-        chat_canary_enabled: runtime_gate_enabled(values[3]),
-        operation_staging_verified: runtime_gate_enabled(values[4]),
+        financial_terminal_enabled: runtime_gate_enabled(values[2]),
+        exact_response_replay_enabled: runtime_gate_enabled(values[3]),
+        operation_reconciliation_enabled: runtime_gate_enabled(values[4]),
+        divergence_reconciliation_verified: runtime_gate_enabled(values[5]),
+        chat_canary_enabled: runtime_gate_enabled(values[6]),
+        operation_staging_verified: runtime_gate_enabled(values[7]),
     }
 }
 
@@ -438,12 +463,15 @@ mod tests {
     #[test]
     fn cutover_requires_every_remote_and_runtime_proof() {
         let guards = container_scheduler_cutover_guards();
-        assert_eq!(guards.len(), 19);
+        assert_eq!(guards.len(), 22);
         assert!(guards.contains(&"remote_fault_matrix"));
         for guard in [
             "operation_write_enabled",
             "terminal_cas_enabled",
+            "financial_terminal_enabled",
+            "exact_response_replay_enabled",
             "operation_reconciliation_enabled",
+            "divergence_reconciliation_verified",
             "chat_canary_enabled",
             "operation_staging_verified",
         ] {
@@ -453,13 +481,13 @@ mod tests {
             true, true, true, true, true, true, false, true, true, true, true, true, true, true,
             true,
         ));
-        let operation_runtime = parse_container_operation_runtime_status([Some("true"); 5]);
+        let operation_runtime = parse_container_operation_runtime_status([Some("true"); 8]);
         assert!(cutover_with_operation_runtime(operation_runtime));
     }
 
     #[test]
     fn every_container_operation_gate_is_independently_fail_closed() {
-        let all_enabled = [Some("true"); 5];
+        let all_enabled = [Some("true"); 8];
         for missing_index in 0..all_enabled.len() {
             let mut missing_one = all_enabled;
             missing_one[missing_index] = None;
@@ -477,7 +505,7 @@ mod tests {
     #[test]
     fn operation_gates_do_not_change_ring_validity() {
         let ring = parse_container_scheduler_runtime_status(Some("1"), Some("8"));
-        let operation_runtime = parse_container_operation_runtime_status([None; 5]);
+        let operation_runtime = parse_container_operation_runtime_status([None; 8]);
         assert!(ring.valid);
         assert!(!operation_runtime.cutover_ready());
     }
@@ -493,7 +521,10 @@ mod tests {
             for gate in [
                 CONTAINER_OPERATION_WRITE_ENABLED_ENV,
                 CONTAINER_TERMINAL_CAS_ENABLED_ENV,
+                CONTAINER_FINANCIAL_TERMINAL_ENABLED_ENV,
+                CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED_ENV,
                 CONTAINER_OPERATION_RECONCILIATION_ENABLED_ENV,
+                CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED_ENV,
                 CONTAINER_CHAT_CANARY_ENABLED_ENV,
                 CONTAINER_OPERATION_STAGING_VERIFIED_ENV,
             ] {

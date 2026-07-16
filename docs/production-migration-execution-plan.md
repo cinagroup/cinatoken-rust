@@ -347,23 +347,30 @@ The mandatory order for the first non-streaming chat canary is:
 7. on ambiguity, query the same operation and reconcile; never switch provider,
    create a new provider identity, settle, or refund by timeout alone.
 
-Five independent flags must remain false until their own evidence exists:
+Eight independent flags must remain false until their own evidence exists:
 `CONTAINER_OPERATION_WRITE_ENABLED`, `CONTAINER_TERMINAL_CAS_ENABLED`,
+`CONTAINER_FINANCIAL_TERMINAL_ENABLED`,
+`CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED`,
 `CONTAINER_OPERATION_RECONCILIATION_ENABLED`,
+`CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED`,
 `CONTAINER_CHAT_CANARY_ENABLED`, and
 `CONTAINER_OPERATION_STAGING_VERIFIED`. They are mandatory inputs to Container
-cutover readiness, not operational hints. The local lifecycle CAS and signed
-status-only query do not open G4 or G7 because the cross-ledger terminal batch,
-exact response replay, Linux image, remote fault matrix, and C1-C5 approvals are
-still incomplete.
+cutover readiness, not operational hints. The local lifecycle CAS, signed
+status-only query, and 0042 cross-ledger terminal batch do not open G4 or G7:
+the batch is not wired into the edge canary, and exact response replay, the
+Linux image, remote fault matrix, and C1-C5 approvals remain incomplete.
+Migration 0042 is an expand-only event/identity contract;
+it does not authorize any of these flags. A later 0043 enforcement migration
+requires a drained old-writer cohort and remote proof that every v1 operation
+has non-empty client/reconciliation identity.
 
 ## Production Gates
 
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0041, `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 41/41 and 36-table replay are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0042, `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 42/42 and 38-table replay are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go, and Container operation/billing/quota/audit terminal state commits atomically | Golden fixtures, cross-ledger D1 batch rollback faults, exact replay, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -377,7 +384,7 @@ still incomplete.
 | Workstream | Current Status | Production Target | Next Evidence |
 | --- | --- | --- | --- |
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
-| Data migration | Partial: local exact-set SQLite replay passes 41/41 migrations, 36 tables, 277 checked incremental columns, and 48 key indexes; 0041 append-only hardening freezes same-state Container lifecycle outcomes; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 41/41 staging apply with every Container writer gate false, immutable-contract negative probes, real source inventory, staging import report, and rollback point |
+| Data migration | Partial: local exact-set SQLite replay passes 42/42 migrations, 38 tables, 323 checked incremental columns, and 54 key indexes; 0041 freezes same-state Container lifecycle outcomes and 0042 adds default-inert immutable financial terminal/outbox authority; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 42/42 staging apply with all eight Container writer/proof gates false, immutable-contract negative probes, old-writer drain inventory, real source inventory, staging import report, and rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
 | Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers plus bounded commit-watermark compaction and a 1.5 MB local JSON guard, but no deployed retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, deployed hot-token window/structured-clone/load/cost report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |

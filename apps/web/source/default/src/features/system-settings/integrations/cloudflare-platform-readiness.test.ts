@@ -51,6 +51,19 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_billing_prebind_owner_generation_configured: false,
   relay_billing_prebind_owner_generation_staging_verified: false,
   relay_billing_prebind_owner_generation_cutover_ready: false,
+  container_financial_terminal_compiled: false,
+  container_exact_response_replay_compiled: false,
+  container_divergence_reconciliation_compiled: false,
+  container_operation_write_enabled: false,
+  container_terminal_cas_enabled: false,
+  container_financial_terminal_enabled: false,
+  container_exact_response_replay_enabled: false,
+  container_operation_reconciliation_enabled: false,
+  container_divergence_reconciliation_verified: false,
+  container_chat_canary_enabled: false,
+  container_operation_staging_verified: false,
+  container_operation_runtime_ready: false,
+  container_scheduler_cutover_ready: false,
   relay_billing_stream_lease_renewal_compiled: false,
   relay_billing_stream_lease_heartbeat_configured: false,
   relay_billing_stream_lease_heartbeat_valid: false,
@@ -247,6 +260,8 @@ describe('Cloudflare platform readiness headline', () => {
       'relay-flat-billing-intent-implementation': 'Relay flat billing intent',
       'relay-billing-owner-generation-compiled':
         'Relay billing owner generation',
+      'container-operation-implementation':
+        'Container financial terminal, exact replay, and divergence recovery',
       'quota-coordinator-foundation': 'QuotaCoordinator foundation',
       'quota-coordinator-relay-observer': 'QuotaCoordinator relay observer',
       'realtime-implementation':
@@ -278,6 +293,7 @@ describe('Cloudflare platform readiness headline', () => {
       'relay-flat-billing-intent-runtime': 'Relay flat billing intent',
       'relay-billing-owner-generation-configured':
         'Relay billing owner generation',
+      'container-operation-runtime': 'Container operation financial runtime',
       'ai-gateway-canary': 'AI Gateway canary',
       'ai-gateway-actual-group-billing-smoke':
         'AI Gateway actual-group billing smoke',
@@ -304,6 +320,8 @@ describe('Cloudflare platform readiness headline', () => {
         'Relay flat billing intent proof',
       'relay-billing-owner-generation-staging-proof':
         'Relay billing owner race proof',
+      'container-operation-staging-proof':
+        'Container exact replay and divergence proof',
       'ai-gateway-fallback-cutover': 'AI Gateway fallback',
       'task-runner-cutover': 'TaskRunner',
       'task-poll-lease-cutover': 'Task poll generation-fenced lease',
@@ -315,6 +333,7 @@ describe('Cloudflare platform readiness headline', () => {
       'relay-flat-billing-intent-cutover': 'Relay flat billing intent',
       'relay-billing-owner-generation-cutover':
         'Relay billing owner generation',
+      'container-operation-cutover': 'Container operation cutover',
       'quota-coordinator-write-authority': 'QuotaCoordinator write authority',
       'quota-coordinator-cutover': 'QuotaCoordinator cutover',
       'realtime-v1-cutover': 'Realtime v1 fail-closed cutover',
@@ -336,6 +355,9 @@ describe('Cloudflare platform readiness headline', () => {
         relay_flat_billing_intent_contract_version: 1,
         relay_flat_billing_intent_compiled: true,
         relay_billing_prebind_owner_generation_compiled: true,
+        container_financial_terminal_compiled: true,
+        container_exact_response_replay_compiled: true,
+        container_divergence_reconciliation_compiled: true,
         relay_billing_stream_lease_renewal_compiled: true,
         relay_billing_stream_lease_heartbeat_configured: true,
         relay_billing_stream_error_usage_recovery_compiled: true,
@@ -854,6 +876,7 @@ describe('Cloudflare platform readiness headline', () => {
         'blocked',
         'blocked',
         'blocked',
+        'blocked',
       ]
     )
   })
@@ -1351,6 +1374,20 @@ describe('Cloudflare platform readiness headline', () => {
         subscription_funding_source_staging_verified: true,
         subscription_funding_source_cutover_ready: true,
         relay_billing_prebind_owner_generation_cutover_ready: true,
+        d1_migration_ready: true,
+        container_financial_terminal_compiled: true,
+        container_exact_response_replay_compiled: true,
+        container_divergence_reconciliation_compiled: true,
+        container_operation_write_enabled: true,
+        container_terminal_cas_enabled: true,
+        container_financial_terminal_enabled: true,
+        container_exact_response_replay_enabled: true,
+        container_operation_reconciliation_enabled: true,
+        container_divergence_reconciliation_verified: true,
+        container_chat_canary_enabled: true,
+        container_operation_staging_verified: true,
+        container_operation_runtime_ready: true,
+        container_scheduler_cutover_ready: true,
         realtime_session_v1_cutover_ready: true,
         realtime_flat_billing_compiled: true,
         realtime_flat_billing_runtime_ready: true,
@@ -1433,7 +1470,74 @@ describe('Cloudflare platform readiness headline', () => {
 
     assert.equal(getStage(blocked, 'cutover').complete, false)
     assert.equal(getStage(ready, 'cutover').complete, true)
-    assert.equal(getStage(ready, 'cutover').readyCount, 14)
+    assert.equal(getStage(ready, 'cutover').readyCount, 15)
+  })
+
+  test('keeps Container financial, replay, and divergence proofs fail closed', () => {
+    const implementationOnly = buildPlatformReadinessSummary(
+      makeCapabilities({
+        container_financial_terminal_compiled: true,
+        container_exact_response_replay_compiled: true,
+        container_divergence_reconciliation_compiled: true,
+      })
+    )
+    assert.equal(
+      getSignalStatus(
+        implementationOnly,
+        'implementation',
+        'container-operation-implementation'
+      ),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(
+        implementationOnly,
+        'configuration',
+        'container-operation-runtime'
+      ),
+      'blocked'
+    )
+
+    const runtimeCapabilities = {
+      container_financial_terminal_compiled: true,
+      container_exact_response_replay_compiled: true,
+      container_divergence_reconciliation_compiled: true,
+      d1_migration_ready: true,
+      container_operation_write_enabled: true,
+      container_terminal_cas_enabled: true,
+      container_financial_terminal_enabled: true,
+      container_exact_response_replay_enabled: true,
+      container_operation_reconciliation_enabled: true,
+      container_chat_canary_enabled: true,
+    }
+    const runtime = buildPlatformReadinessSummary(
+      makeCapabilities(runtimeCapabilities)
+    )
+    assert.equal(
+      getSignalStatus(runtime, 'configuration', 'container-operation-runtime'),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(runtime, 'smoke', 'container-operation-staging-proof'),
+      'ready-to-verify'
+    )
+    assert.equal(
+      getSignalStatus(runtime, 'cutover', 'container-operation-cutover'),
+      'blocked'
+    )
+
+    const forgedProof = buildPlatformReadinessSummary(
+      makeCapabilities({
+        ...runtimeCapabilities,
+        container_operation_staging_verified: true,
+        container_divergence_reconciliation_verified: true,
+        container_scheduler_cutover_ready: true,
+      })
+    )
+    assert.equal(
+      getSignalStatus(forgedProof, 'cutover', 'container-operation-cutover'),
+      'blocked'
+    )
   })
 
   test('keeps task poll lease split across all four production stages', () => {

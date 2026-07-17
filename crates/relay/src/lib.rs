@@ -5,6 +5,7 @@ pub mod cache;
 pub mod multipart;
 pub mod openai_compatible;
 pub mod retry;
+pub mod usage_receipt;
 
 pub use cache::{
     scoped_key, token_fingerprint, CachedAuthenticatedToken, CachedRelayChannel, RelayCacheKeys,
@@ -39,6 +40,18 @@ pub use openai_compatible::{
 pub use retry::{
     is_auto_disable_status, is_retryable_status, parse_retry_times_env, RetryConfig,
     DEFAULT_RETRY_TIMES,
+};
+pub use usage_receipt::{
+    ProviderUsageReceiptError, ProviderUsageReceiptInput, ProviderUsageReceiptV1,
+    MAX_PROVIDER_USAGE_RECEIPT_ENCODED_BYTES, MAX_PROVIDER_USAGE_RECEIPT_JSON_BYTES,
+    PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE, PROVIDER_USAGE_RECEIPT_NORMALIZATION_CONTRACT,
+    PROVIDER_USAGE_RECEIPT_PARSER_CONTRACT, PROVIDER_USAGE_RECEIPT_SCHEMA_VERSION,
+    PROVIDER_USAGE_RECEIPT_SOURCE, REPORTED_USAGE_AUDIO_INPUT_TOKENS,
+    REPORTED_USAGE_AUDIO_OUTPUT_TOKENS, REPORTED_USAGE_CACHED_TOKENS,
+    REPORTED_USAGE_CACHE_CREATION_TOKENS, REPORTED_USAGE_CACHE_CREATION_TOKENS_1H,
+    REPORTED_USAGE_CACHE_CREATION_TOKENS_5M, REPORTED_USAGE_COMPLETION_TOKENS,
+    REPORTED_USAGE_FIELDS_ALL, REPORTED_USAGE_IMAGE_INPUT_TOKENS,
+    REPORTED_USAGE_IMAGE_OUTPUT_TOKENS, REPORTED_USAGE_PROMPT_TOKENS, REPORTED_USAGE_TOTAL_TOKENS,
 };
 
 #[derive(Debug, Clone)]

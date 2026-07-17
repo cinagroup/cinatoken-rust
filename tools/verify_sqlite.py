@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -38,6 +39,8 @@ REQUIRED_TABLES = [
     "relay_billing_finalization_incidents",
     "relay_container_operations",
     "relay_container_provider_egress_grants",
+    "relay_container_provider_usage_receipts",
+    "relay_container_provider_usage_receipt_identities",
     "relay_container_terminal_events",
     "relay_container_terminal_outbox_state",
     "relay_container_reconciliation_observations",
@@ -319,6 +322,46 @@ REQUIRED_COLUMNS = {
         "reservation_owner_deadline_at",
         "reservation_lease_expires_at",
     },
+    "relay_container_provider_usage_receipts": {
+        "operation_id",
+        "reservation_key",
+        "owner_generation",
+        "attempt_generation",
+        "provider_operation_id",
+        "admission_sha256",
+        "request_sha256",
+        "egress_profile",
+        "egress_worker_version_id",
+        "billing_kind",
+        "billing_contract_hash",
+        "billing_snapshot_sha256",
+        "provider_response_status",
+        "provider_response_sha256",
+        "provider_request_id",
+        "provider_completed_at",
+        "result_object_key",
+        "result_object_version",
+        "result_sha256",
+        "result_size",
+        "result_content_type",
+        "usage_schema_version",
+        "usage_parser_contract",
+        "usage_normalization_contract",
+        "usage_present",
+        "reported_usage_fields",
+        "usage_estimated",
+        "usage_receipt_json",
+        "usage_receipt_sha256",
+        "persisted_at",
+    },
+    "relay_container_provider_usage_receipt_identities": {
+        "operation_id",
+        "owner_generation",
+        "attempt_generation",
+        "provider_operation_id",
+        "result_object_key",
+        "result_object_version",
+    },
     "relay_container_terminal_events": {
         "billing_event_id",
         "reservation_key",
@@ -353,6 +396,9 @@ REQUIRED_COLUMNS = {
         "outbox_payload_json",
         "outbox_payload_sha256",
         "created_at",
+        "provider_usage_receipt_sha256",
+        "provider_result_sha256",
+        "provider_attempt_generation",
     },
     "relay_container_terminal_outbox_state": {
         "billing_event_id",
@@ -627,6 +673,11 @@ REQUIRED_INDEXES = {
         "idx_relay_container_provider_egress_grants_provider_operation": True,
         "idx_relay_container_provider_egress_grants_worker_version": False,
     },
+    "relay_container_provider_usage_receipts": {
+        "idx_relay_container_provider_usage_receipts_provider_operation": True,
+        "idx_relay_container_provider_usage_receipts_reconciliation": False,
+        "idx_relay_container_provider_usage_receipts_result_object_identity": True,
+    },
     "relay_container_terminal_events": {
         "idx_relay_container_terminal_events_operation_identity": True,
         "idx_relay_container_terminal_events_reconciliation_identity": True,
@@ -712,6 +763,8 @@ def main() -> int:
     relay_container_financial_terminal_enforce_rollout_verified = False
     relay_container_provider_egress_grant_verified = False
     relay_container_provider_egress_grant_rollout_verified = False
+    relay_container_provider_usage_receipt_verified = False
+    relay_container_provider_usage_receipt_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -745,6 +798,8 @@ def main() -> int:
         relay_container_financial_terminal_enforce_rollout_verified = True
         verify_relay_container_provider_egress_grant_rollout(schema_paths)
         relay_container_provider_egress_grant_rollout_verified = True
+        verify_relay_container_provider_usage_receipt_rollout(schema_paths)
+        relay_container_provider_usage_receipt_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -774,6 +829,8 @@ def main() -> int:
         relay_container_financial_terminal_enforce_verified = True
         verify_relay_container_provider_egress_grant(conn)
         relay_container_provider_egress_grant_verified = True
+        verify_relay_container_provider_usage_receipt(conn)
+        relay_container_provider_usage_receipt_verified = True
         verify_relay_container_reconciliation_observer(conn)
         relay_container_reconciliation_observer_verified = True
         verify_relay_container_r2_inventory(conn)
@@ -863,6 +920,10 @@ def main() -> int:
         message += " + 0047 immutable provider egress grant authority"
     if relay_container_provider_egress_grant_rollout_verified:
         message += " + 0047 default-empty provider egress provenance rollout"
+    if relay_container_provider_usage_receipt_verified:
+        message += " + 0048 immutable provider usage receipt settlement linkage"
+    if relay_container_provider_usage_receipt_rollout_verified:
+        message += " + 0048 default-empty provider usage receipt rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -1381,10 +1442,27 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
     terminal_event_guard_sql = sqlite_object_sql(
         conn, "trigger", "relay_container_operation_terminal_event_guard"
     )
-    if initial_state_guard_sql is None or terminal_event_guard_sql is None:
-        raise SystemExit("0046 operation guards are unavailable for 0042 verification")
+    usage_receipt_event_guard_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_terminal_event_provider_usage_guard"
+    )
+    usage_receipt_completion_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_operation_provider_usage_terminal_guard",
+    )
+    if (
+        initial_state_guard_sql is None
+        or terminal_event_guard_sql is None
+        or usage_receipt_event_guard_sql is None
+        or usage_receipt_completion_guard_sql is None
+    ):
+        raise SystemExit("0046/0048 operation guards are unavailable for 0042 verification")
     conn.execute("DROP TRIGGER relay_container_operation_v1_initial_state_insert_guard")
     conn.execute("DROP TRIGGER relay_container_operation_terminal_event_guard")
+    conn.execute("DROP TRIGGER relay_container_terminal_event_provider_usage_guard")
+    conn.execute(
+        "DROP TRIGGER relay_container_operation_provider_usage_terminal_guard"
+    )
 
     identity_sql = sqlite_object_sql(
         conn, "trigger", "relay_container_operation_identity_immutable_guard"
@@ -2408,6 +2486,8 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
         raise SystemExit(f"0042 outbox lifecycle did not persist: {final_outbox_states}")
     conn.executescript(initial_state_guard_sql)
     conn.executescript(terminal_event_guard_sql)
+    conn.executescript(usage_receipt_event_guard_sql)
+    conn.executescript(usage_receipt_completion_guard_sql)
 
 
 def verify_relay_container_financial_terminal_enforce(
@@ -2630,6 +2710,7 @@ def verify_relay_container_provider_egress_grant(
         dispatched: bool = True,
         billing_kind: str = "flat",
         billing_snapshot_json: str | None = None,
+        operation_kind: str = "chat_completions_canary",
     ) -> dict[str, object]:
         operation_id = f"0047-{label}"
         owner_generation = 2
@@ -2719,7 +2800,7 @@ def verify_relay_container_provider_egress_grant(
               client_idempotency_hmac_sha256, client_request_sha256,
               reconciliation_id, status, created_at, updated_at
             ) VALUES (
-              ?, ?, ?, ?, ?, 'default', 'chat_completions', ?, ?, 1, 1,
+              ?, ?, ?, ?, ?, 'default', ?, ?, ?, 1, 1,
               1, 8, 2, 'cinatoken-relay-shard-v1-0002', ?, 'r2', ?,
               ?, ?, 64, 'application/json', ?, ?, ?, ?,
               'prepared', ?, ?
@@ -2731,6 +2812,7 @@ def verify_relay_container_provider_egress_grant(
                 owner_generation,
                 owner_lease_expires_at,
                 channel_id,
+                operation_kind,
                 provider_operation_id,
                 admission_sha256,
                 execution_deadline_at,
@@ -2897,6 +2979,15 @@ def verify_relay_container_provider_egress_grant(
     ):
         raise SystemExit("0047 tiered provider egress grant was not frozen exactly")
 
+    non_canary = insert_authority(
+        "non-canary",
+        operation_kind="chat_completions",
+    )
+    conn.execute(grant_insert_sql, non_canary)
+
+    accepted_202 = insert_authority("accepted-202")
+    conn.execute(grant_insert_sql, accepted_202)
+
     expect_integrity_error(
         lambda: conn.execute(grant_insert_sql, valid),
         "0047 accepted a duplicate provider attempt grant",
@@ -2918,6 +3009,1004 @@ def verify_relay_container_provider_egress_grant(
         "0047 provider egress grants must reject every delete",
         "relay container provider egress grant cannot be deleted",
     )
+
+
+def verify_relay_container_provider_usage_receipt(
+    conn: sqlite3.Connection,
+) -> None:
+    required_triggers = (
+        "relay_container_provider_usage_receipt_insert_authority_guard",
+        "relay_container_provider_usage_receipt_identity_guard",
+        "relay_container_provider_usage_receipt_identity_update_guard",
+        "relay_container_provider_usage_receipt_identity_delete_guard",
+        "relay_container_provider_usage_receipt_update_guard",
+        "relay_container_provider_usage_receipt_delete_guard",
+        "relay_container_terminal_event_provider_usage_guard",
+        "relay_container_operation_provider_usage_terminal_guard",
+    )
+    for trigger in required_triggers:
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0048 provider usage receipt trigger missing: {trigger}")
+
+    table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_provider_usage_receipts"
+    )
+    authority_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_provider_usage_receipt_insert_authority_guard",
+    )
+    identity_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_provider_usage_receipt_identity_guard",
+    )
+    terminal_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_terminal_event_provider_usage_guard",
+    )
+    completion_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_operation_provider_usage_terminal_guard",
+    )
+    for sql, fragment in (
+        (table_sql, "PRIMARY KEY (operation_id, owner_generation, attempt_generation)"),
+        (table_sql, "attempt_generation = 1"),
+        (table_sql, "egress_profile = 'openai-chat-completions-canary-v1'"),
+        (table_sql, "provider_response_status BETWEEN 200 AND 299"),
+        (table_sql, "provider_response_sha256 = result_sha256"),
+        (table_sql, "length(provider_request_id) BETWEEN 1 AND 128"),
+        (table_sql, "result_size BETWEEN 2 AND 4194304"),
+        (table_sql, "result_content_type = 'application/json'"),
+        (table_sql, "usage_schema_version = 1"),
+        (table_sql, "usage_parser_contract = 'openai-chat-completions-usage-v1'"),
+        (table_sql, "usage_normalization_contract = 'billing-token-normalization-v1'"),
+        (table_sql, "reported_usage_fields BETWEEN 0 AND 2047"),
+        (table_sql, "usage_estimated = 0"),
+        (table_sql, "length(usage_receipt_json) BETWEEN 2 AND 8192"),
+        (authority_sql, "operation.operation_kind = 'chat_completions_canary'"),
+        (authority_sql, "operation.status = 'dispatched'"),
+        (authority_sql, "reservation.status = 'reserved'"),
+        (authority_sql, "grant_row.request_sha256 = NEW.request_sha256"),
+        (authority_sql, "grant_row.billing_snapshot_sha256 = NEW.billing_snapshot_sha256"),
+        (
+            authority_sql,
+            "NEW.provider_completed_at >= grant_row.authorized_at * 1000",
+        ),
+        (
+            authority_sql,
+            "NEW.provider_completed_at < grant_row.execution_deadline_at * 1000",
+        ),
+        (
+            authority_sql,
+            "NEW.persisted_at < grant_row.reservation_owner_deadline_at * 1000",
+        ),
+        (authority_sql, "SELECT COUNT(*) FROM json_each(NEW.usage_receipt_json)) = 38"),
+        (authority_sql, "json_extract(NEW.usage_receipt_json, '$.source') = 'provider_response'"),
+        (authority_sql, "json_type(NEW.usage_receipt_json, '$.estimated') = 'false'"),
+        (authority_sql, "'cache_creation_tokens_5m'"),
+        (authority_sql, "'cache_creation_tokens_1h'"),
+        (authority_sql, "'responses_web_search_calls'"),
+        (authority_sql, "'image_generation_quality'"),
+        (authority_sql, "BETWEEN 0 AND 256"),
+        (authority_sql, "(NEW.reported_usage_fields & 1024)"),
+        (
+            identity_guard_sql,
+            "FROM relay_container_provider_usage_receipt_identities AS identity",
+        ),
+        (identity_guard_sql, "identity.provider_operation_id = NEW.provider_operation_id"),
+        (identity_guard_sql, "identity.result_object_key = NEW.result_object_key"),
+        (terminal_guard_sql, "receipt.usage_present = 1"),
+        (terminal_guard_sql, "receipt.usage_estimated = 0"),
+        (terminal_guard_sql, "receipt.provider_response_status <> 202"),
+        (terminal_guard_sql, "NEW.client_response_status = receipt.provider_response_status"),
+        (terminal_guard_sql, "receipt.result_sha256 = NEW.provider_result_sha256"),
+        (terminal_guard_sql, "FROM relay_container_provider_egress_grants AS grant_row"),
+        (terminal_guard_sql, "NEW.provider_usage_receipt_sha256 IS NULL"),
+        (terminal_guard_sql, "NEW.provider_attempt_generation IS NOT NULL"),
+        (terminal_guard_sql, "receipt.persisted_at < (NEW.created_at + 1) * 1000"),
+        (completion_guard_sql, "NEW.response_status = receipt.provider_response_status"),
+        (completion_guard_sql, "receipt.provider_response_status <> 202"),
+        (completion_guard_sql, "NEW.result_sha256 = receipt.result_sha256"),
+        (completion_guard_sql, "event.created_at <= NEW.updated_at"),
+    ):
+        if sql is None or fragment not in sql:
+            raise SystemExit(f"0048 provider usage receipt contract missing: {fragment}")
+
+    receipt_insert_sql = """
+        INSERT INTO relay_container_provider_usage_receipts (
+          operation_id, reservation_key, owner_generation, attempt_generation,
+          provider_operation_id, admission_sha256, request_sha256,
+          egress_profile, egress_worker_version_id,
+          billing_kind, billing_contract_hash, billing_snapshot_sha256,
+          provider_response_status, provider_response_sha256,
+          provider_request_id, provider_completed_at,
+          result_object_key, result_object_version, result_sha256,
+          result_size, result_content_type,
+          usage_schema_version, usage_parser_contract,
+          usage_normalization_contract, usage_present,
+          reported_usage_fields, usage_estimated,
+          usage_receipt_json, usage_receipt_sha256, persisted_at
+        ) VALUES (
+          :operation_id, :reservation_key, :owner_generation, :attempt_generation,
+          :provider_operation_id, :admission_sha256, :request_sha256,
+          :egress_profile, :egress_worker_version_id,
+          :billing_kind, :billing_contract_hash, :billing_snapshot_sha256,
+          :provider_response_status, :provider_response_sha256,
+          :provider_request_id, :provider_completed_at,
+          :result_object_key, :result_object_version, :result_sha256,
+          :result_size, :result_content_type,
+          :usage_schema_version, :usage_parser_contract,
+          :usage_normalization_contract, :usage_present,
+          :reported_usage_fields, :usage_estimated,
+          :usage_receipt_json, :usage_receipt_sha256, :persisted_at
+        )
+    """
+    usage_bits = {
+        "prompt_tokens": 1,
+        "completion_tokens": 2,
+        "total_tokens": 4,
+        "cached_tokens": 8,
+        "cache_creation_tokens": 16,
+        "cache_creation_tokens_5m": 32,
+        "cache_creation_tokens_1h": 64,
+        "image_input_tokens": 128,
+        "image_output_tokens": 256,
+        "audio_input_tokens": 512,
+        "audio_output_tokens": 1024,
+    }
+    normalized_authority_sql = " ".join(authority_sql.split())
+    for field, bit in usage_bits.items():
+        mapping = (
+            f"((NEW.reported_usage_fields & {bit}) <> 0 OR "
+            f"json_extract(NEW.usage_receipt_json, '$.{field}') = 0)"
+        )
+        if mapping not in normalized_authority_sql:
+            raise SystemExit(
+                f"0048 reported-usage bit {bit} is not allocated to {field}"
+            )
+
+    def digest(label: str) -> str:
+        return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+    def freeze_payload(values: dict[str, object], payload: dict[str, object]) -> None:
+        encoded = json.dumps(payload, separators=(",", ":"))
+        values["usage_receipt_json"] = encoded
+        values["usage_receipt_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()
+
+    def receipt_values(
+        operation_id: str,
+        label: str,
+        *,
+        reported_usage_fields: int = 15,
+        provider_request_id: str | None = "auto",
+        usage_overrides: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        grant_columns = (
+            "operation_id",
+            "reservation_key",
+            "owner_generation",
+            "attempt_generation",
+            "provider_operation_id",
+            "admission_sha256",
+            "request_sha256",
+            "egress_profile",
+            "egress_worker_version_id",
+            "billing_kind",
+            "billing_contract_hash",
+            "billing_snapshot_sha256",
+        )
+        row = conn.execute(
+            "SELECT " + ", ".join(grant_columns) + " "
+            "FROM relay_container_provider_egress_grants WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            raise AssertionError(f"missing 0048 grant fixture: {operation_id}")
+        values = dict(zip(grant_columns, row))
+        result_sha256 = digest(f"0048-provider-result:{label}")
+        values.update(
+            {
+                "provider_response_status": 200,
+                "provider_response_sha256": result_sha256,
+                "provider_request_id": (
+                    f"request-0048-{label}"
+                    if provider_request_id == "auto"
+                    else provider_request_id
+                ),
+                "provider_completed_at": 1_201_000,
+                "result_object_key": (
+                    f"container-results/v1/{operation_id}/"
+                    f"{values['owner_generation']}/{result_sha256}"
+                ),
+                "result_object_version": f"result-version-0048-{label}",
+                "result_sha256": result_sha256,
+                "result_size": 256,
+                "result_content_type": "application/json",
+                "usage_schema_version": 1,
+                "usage_parser_contract": "openai-chat-completions-usage-v1",
+                "usage_normalization_contract": "billing-token-normalization-v1",
+                "usage_present": (
+                    1 if (reported_usage_fields & 3) == 3 else 0
+                ),
+                "reported_usage_fields": reported_usage_fields,
+                "usage_estimated": 0,
+                "persisted_at": 1_310_000,
+            }
+        )
+        usage: dict[str, object] = {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "cached_tokens": 10,
+            "cache_creation_tokens": 0,
+            "cache_creation_tokens_5m": 0,
+            "cache_creation_tokens_1h": 0,
+            "image_input_tokens": 0,
+            "image_output_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0,
+        }
+        for field, bit in usage_bits.items():
+            if reported_usage_fields & bit == 0:
+                usage[field] = 0
+        if usage_overrides:
+            usage.update(usage_overrides)
+        payload: dict[str, object] = {
+            "schema_version": values["usage_schema_version"],
+            "parser_contract": values["usage_parser_contract"],
+            "normalization_contract": values["usage_normalization_contract"],
+            "source": "provider_response",
+            "estimated": False,
+            "operation_id": values["operation_id"],
+            "owner_generation": values["owner_generation"],
+            "attempt_generation": values["attempt_generation"],
+            "provider_operation_id": values["provider_operation_id"],
+            "request_sha256": values["request_sha256"],
+            "egress_profile": values["egress_profile"],
+            "egress_worker_version_id": values["egress_worker_version_id"],
+            "provider_response_status": values["provider_response_status"],
+            "provider_response_sha256": values["provider_response_sha256"],
+            "provider_request_id": values["provider_request_id"],
+            "provider_completed_at": values["provider_completed_at"],
+            "usage_present": bool(values["usage_present"]),
+            "reported_usage_fields": values["reported_usage_fields"],
+            "prompt_tokens": usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "total_tokens": usage["total_tokens"],
+            "cached_tokens": usage["cached_tokens"],
+            "cache_creation_tokens": usage["cache_creation_tokens"],
+            "cache_creation_tokens_5m": usage["cache_creation_tokens_5m"],
+            "cache_creation_tokens_1h": usage["cache_creation_tokens_1h"],
+            "image_input_tokens": usage["image_input_tokens"],
+            "image_output_tokens": usage["image_output_tokens"],
+            "audio_input_tokens": usage["audio_input_tokens"],
+            "audio_output_tokens": usage["audio_output_tokens"],
+            "is_anthropic_usage_semantic": False,
+            "usage_semantic_source": "openai_default",
+            "provider_cost_usd": None,
+            "cache_creation_source": "none",
+            "responses_web_search_calls": 0,
+            "responses_file_search_calls": 0,
+            "claude_web_search_calls": 0,
+            "image_generation_quality": None,
+            "image_generation_size": None,
+        }
+        freeze_payload(values, payload)
+        return values
+
+    def rewrite_payload(
+        values: dict[str, object],
+        **changes: object,
+    ) -> dict[str, object]:
+        candidate = dict(values)
+        payload = json.loads(str(candidate["usage_receipt_json"]))
+        payload.update(changes)
+        freeze_payload(candidate, payload)
+        return candidate
+
+    non_canary = receipt_values("0047-non-canary", "non-canary")
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, non_canary),
+        "0048 accepted a receipt outside chat_completions_canary",
+        "relay container provider usage receipt authority mismatch",
+    )
+
+    valid = receipt_values("0047-valid", "valid")
+    forged_request = dict(valid)
+    forged_request["request_sha256"] = "e" * 64
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, forged_request),
+        "0048 accepted a receipt with a request digest outside the grant",
+        "relay container provider usage receipt authority mismatch",
+    )
+
+    stale_completion = rewrite_payload(valid, provider_completed_at=1_200_999)
+    stale_completion["provider_completed_at"] = 1_200_999
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, stale_completion),
+        "0048 accepted a provider completion before grant authorization",
+        "relay container provider usage receipt authority mismatch",
+    )
+
+    deadline_completion = rewrite_payload(valid, provider_completed_at=1_600_000)
+    deadline_completion["provider_completed_at"] = 1_600_000
+    deadline_completion["persisted_at"] = 1_600_000
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, deadline_completion),
+        "0048 accepted a provider completion at the exclusive execution deadline",
+        "relay container provider usage receipt authority mismatch",
+    )
+
+    expired_persistence = dict(valid)
+    expired_persistence["persisted_at"] = 1_800_000
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, expired_persistence),
+        "0048 accepted receipt persistence at the exclusive owner deadline",
+        "relay container provider usage receipt authority mismatch",
+    )
+
+    missing_key = dict(valid)
+    missing_payload = json.loads(str(valid["usage_receipt_json"]))
+    del missing_payload["audio_output_tokens"]
+    freeze_payload(missing_key, missing_payload)
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, missing_key),
+        "0048 accepted a receipt without all 38 canonical keys",
+        "relay container provider usage receipt authority mismatch",
+    )
+
+    extra_key = rewrite_payload(valid, unexpected=0)
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, extra_key),
+        "0048 accepted a receipt with an unrecognized canonical key",
+        "relay container provider usage receipt authority mismatch",
+    )
+
+    mismatched_json = rewrite_payload(valid, request_sha256="d" * 64)
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, mismatched_json),
+        "0048 accepted receipt JSON that diverged from its copied identity",
+        "relay container provider usage receipt authority mismatch",
+    )
+
+    for label, token_value in (
+        ("text", "100"),
+        ("negative", -1),
+        ("overflow", 2147483648),
+    ):
+        invalid_token = rewrite_payload(valid, prompt_tokens=token_value)
+        expect_integrity_error(
+            lambda invalid_token=invalid_token: conn.execute(
+                receipt_insert_sql, invalid_token
+            ),
+            f"0048 accepted a {label} canonical token count",
+            "relay container provider usage receipt authority mismatch",
+        )
+
+    unallocated_mask = rewrite_payload(
+        valid,
+        usage_present=False,
+        reported_usage_fields=2048,
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        cached_tokens=0,
+    )
+    unallocated_mask["usage_present"] = 0
+    unallocated_mask["reported_usage_fields"] = 2048
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, unallocated_mask),
+        "0048 accepted an unallocated reported-usage bit",
+        "CHECK constraint failed",
+    )
+
+    inconsistent_presence = rewrite_payload(
+        valid,
+        usage_present=True,
+        reported_usage_fields=1,
+        completion_tokens=0,
+        total_tokens=0,
+        cached_tokens=0,
+    )
+    inconsistent_presence["reported_usage_fields"] = 1
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, inconsistent_presence),
+        "0048 accepted usage_present without both prompt and completion bits",
+        "CHECK constraint failed",
+    )
+
+    for field, bit in usage_bits.items():
+        mask_without_field = 2047 ^ bit
+        absent_nonzero = rewrite_payload(
+            valid,
+            usage_present=(mask_without_field & 3) == 3,
+            reported_usage_fields=mask_without_field,
+            **{field: 1},
+        )
+        absent_nonzero["usage_present"] = 1 if (mask_without_field & 3) == 3 else 0
+        absent_nonzero["reported_usage_fields"] = mask_without_field
+        expect_integrity_error(
+            lambda absent_nonzero=absent_nonzero: conn.execute(
+                receipt_insert_sql, absent_nonzero
+            ),
+            f"0048 accepted a nonzero {field} value with bit {bit} absent",
+            "relay container provider usage receipt authority mismatch",
+        )
+
+    for label, changes in (
+        ("estimated provenance", {"estimated": True}),
+        ("receipt source", {"source": "local_estimate"}),
+        ("usage semantic", {"usage_semantic_source": "unknown"}),
+        ("cache creation source", {"cache_creation_source": "unknown"}),
+        ("anthropic semantic", {"is_anthropic_usage_semantic": True}),
+        ("tool count", {"responses_web_search_calls": 257}),
+        ("provider cost", {"provider_cost_usd": "01.0"}),
+        ("provider cost trailing zero", {"provider_cost_usd": "1.0"}),
+        ("partial image generation", {"image_generation_quality": "low"}),
+    ):
+        invalid_contract = rewrite_payload(valid, **changes)
+        expect_integrity_error(
+            lambda invalid_contract=invalid_contract: conn.execute(
+                receipt_insert_sql, invalid_contract
+            ),
+            f"0048 accepted an invalid {label} field",
+            "relay container provider usage receipt authority mismatch",
+        )
+
+    response_mismatch = rewrite_payload(valid, provider_response_sha256="c" * 64)
+    response_mismatch["provider_response_sha256"] = "c" * 64
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, response_mismatch),
+        "0048 accepted divergent provider-response and result digests",
+        "CHECK constraint failed",
+    )
+
+    oversized_request_id = rewrite_payload(valid, provider_request_id="r" * 129)
+    oversized_request_id["provider_request_id"] = "r" * 129
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, oversized_request_id),
+        "0048 accepted an overlong provider request identifier",
+        "CHECK constraint failed",
+    )
+
+    oversized_result = dict(valid)
+    oversized_result["result_size"] = 4_194_305
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, oversized_result),
+        "0048 accepted a result beyond the bounded R2 object size",
+        "CHECK constraint failed",
+    )
+
+    conn.execute(receipt_insert_sql, valid)
+    identity = conn.execute(
+        "SELECT provider_operation_id, result_object_key, result_object_version "
+        "FROM relay_container_provider_usage_receipt_identities "
+        "WHERE operation_id = ? AND owner_generation = ? AND attempt_generation = ?",
+        (
+            valid["operation_id"],
+            valid["owner_generation"],
+            valid["attempt_generation"],
+        ),
+    ).fetchone()
+    if identity != (
+        valid["provider_operation_id"],
+        valid["result_object_key"],
+        valid["result_object_version"],
+    ):
+        raise SystemExit(f"0048 provider usage receipt identity was not frozen: {identity}")
+    persisted = conn.execute(
+        "SELECT provider_operation_id, provider_response_status, "
+        "provider_request_id, usage_present, reported_usage_fields, "
+        "usage_estimated, usage_receipt_sha256 "
+        "FROM relay_container_provider_usage_receipts WHERE operation_id = ?",
+        (valid["operation_id"],),
+    ).fetchone()
+    if persisted != (
+        valid["provider_operation_id"],
+        200,
+        valid["provider_request_id"],
+        1,
+        15,
+        0,
+        valid["usage_receipt_sha256"],
+    ):
+        raise SystemExit(f"0048 provider usage receipt was not frozen exactly: {persisted}")
+
+    missing_usage = receipt_values(
+        "0047-tiered",
+        "missing-usage",
+        reported_usage_fields=1,
+        provider_request_id=None,
+    )
+    missing_payload = json.loads(str(missing_usage["usage_receipt_json"]))
+    missing_payload["provider_request_id"] = None
+    missing_usage["provider_request_id"] = None
+    freeze_payload(missing_usage, missing_payload)
+    conn.execute(receipt_insert_sql, missing_usage)
+    if conn.execute(
+        "SELECT usage_present, reported_usage_fields, "
+        "json_extract(usage_receipt_json, '$.prompt_tokens'), "
+        "json_extract(usage_receipt_json, '$.completion_tokens'), "
+        "provider_request_id FROM relay_container_provider_usage_receipts "
+        "WHERE operation_id = ?",
+        (missing_usage["operation_id"],),
+    ).fetchone() != (0, 1, 100, 0, None):
+        raise SystemExit("0048 missing usage did not preserve its exact partial mask")
+
+    accepted_202 = receipt_values("0047-accepted-202", "accepted-202")
+    accepted_202 = rewrite_payload(accepted_202, provider_response_status=202)
+    accepted_202["provider_response_status"] = 202
+    conn.execute(receipt_insert_sql, accepted_202)
+
+    expect_integrity_error(
+        lambda: conn.execute(receipt_insert_sql, valid),
+        "0048 accepted a duplicate immutable receipt",
+    )
+    previous_recursive_triggers = conn.execute("PRAGMA recursive_triggers").fetchone()[0]
+    conn.execute("PRAGMA recursive_triggers = OFF")
+    expect_integrity_error(
+        lambda: conn.execute(
+            receipt_insert_sql.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1),
+            valid,
+        ),
+        "0048 allowed INSERT OR REPLACE to rewrite an immutable receipt",
+    )
+    conn.execute(f"PRAGMA recursive_triggers = {int(previous_recursive_triggers)}")
+    if conn.execute(
+        "SELECT usage_receipt_sha256 FROM relay_container_provider_usage_receipts "
+        "WHERE operation_id = ? AND owner_generation = ? AND attempt_generation = ?",
+        (
+            valid["operation_id"],
+            valid["owner_generation"],
+            valid["attempt_generation"],
+        ),
+    ).fetchone() != (valid["usage_receipt_sha256"],):
+        raise SystemExit("0048 immutable receipt changed after rejected replacement")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_provider_usage_receipts "
+            "SET provider_request_id = 'rewritten' WHERE operation_id = ?",
+            (valid["operation_id"],),
+        ),
+        "0048 provider usage receipts must reject every update",
+        "relay container provider usage receipt is immutable",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_provider_usage_receipts WHERE operation_id = ?",
+            (valid["operation_id"],),
+        ),
+        "0048 provider usage receipts must reject every delete",
+        "relay container provider usage receipt cannot be deleted",
+    )
+
+    conn.execute(
+        """
+        INSERT INTO users (
+          id, username, password, quota, used_quota, request_count,
+          aff_code, created_at
+        ) VALUES (
+          470047, 'sqlite-0048-user', 'not-used', 100, 0, 0,
+          'sqlite-0048-aff', 1
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO channels (id, \"key\", name, used_quota) "
+        "VALUES (470047, 'sqlite-0048-channel-key', 'sqlite-0048-channel', 0)"
+    )
+
+    terminal_insert_sql = """
+        INSERT INTO relay_container_terminal_events (
+          billing_event_id, reservation_key, operation_id,
+          owner_generation, operation_from_status, operation_status,
+          terminal_contract_sha256,
+          billing_action, billing_owner_generation, billing_from_status,
+          billing_final_quota, billing_request_accounted, billing_reason,
+          pre_consumed_quota, user_quota_delta, token_quota_delta,
+          user_used_quota_delta, channel_used_quota_delta,
+          request_count_delta, reconciliation_id, reconciliation_revision,
+          client_response_status, client_response_headers_json,
+          client_response_headers_sha256, client_response_object_key,
+          client_response_object_version, client_response_sha256,
+          client_response_size, client_response_content_type,
+          outbox_schema_version, outbox_payload_json,
+          outbox_payload_sha256, created_at,
+          provider_usage_receipt_sha256, provider_result_sha256,
+          provider_attempt_generation
+        ) VALUES (
+          :billing_event_id, :reservation_key, :operation_id,
+          :owner_generation, :operation_from_status, :operation_status,
+          :terminal_contract_sha256,
+          :billing_action, :billing_owner_generation, :billing_from_status,
+          :billing_final_quota, :billing_request_accounted, :billing_reason,
+          :pre_consumed_quota, :user_quota_delta, :token_quota_delta,
+          :user_used_quota_delta, :channel_used_quota_delta,
+          :request_count_delta, :reconciliation_id, :reconciliation_revision,
+          :client_response_status, :client_response_headers_json,
+          :client_response_headers_sha256, :client_response_object_key,
+          :client_response_object_version, :client_response_sha256,
+          :client_response_size, :client_response_content_type,
+          :outbox_schema_version, :outbox_payload_json,
+          :outbox_payload_sha256, :created_at,
+          :provider_usage_receipt_sha256, :provider_result_sha256,
+          :provider_attempt_generation
+        )
+    """
+    terminal_counter = 0
+
+    def terminal_values(
+        receipt: dict[str, object],
+        label: str,
+        action: str,
+        *,
+        include_provider_linkage: bool,
+    ) -> dict[str, object]:
+        nonlocal terminal_counter
+        terminal_counter += 1
+        operation_id = str(receipt["operation_id"])
+        owner_generation = int(receipt["owner_generation"])
+        reconciliation_id = conn.execute(
+            "SELECT reconciliation_id FROM relay_container_operations "
+            "WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()[0]
+        client_sha256 = digest(f"0048-client-response:{label}")
+        if action == "settle":
+            operation_status = "completed"
+            final_quota: object = 1
+            billing_request_accounted = 1
+            user_quota_delta = 0
+            user_used_quota_delta = 1
+            channel_used_quota_delta = 1
+            request_count_delta = 1
+            client_status = 200
+        elif action == "refund":
+            operation_status = "failed"
+            final_quota = None
+            billing_request_accounted = 1
+            user_quota_delta = 1
+            user_used_quota_delta = 0
+            channel_used_quota_delta = 0
+            request_count_delta = 1
+            client_status = 503
+        elif action == "recovery_required":
+            operation_status = "recovery_required"
+            final_quota = None
+            billing_request_accounted = 0
+            user_quota_delta = 0
+            user_used_quota_delta = 0
+            channel_used_quota_delta = 0
+            request_count_delta = 0
+            client_status = None
+        else:
+            raise AssertionError(f"unsupported 0048 terminal action: {action}")
+        return {
+            "billing_event_id": digest(f"0048-billing-event:{label}"),
+            "reservation_key": operation_id,
+            "operation_id": operation_id,
+            "owner_generation": owner_generation,
+            "operation_from_status": "dispatched",
+            "operation_status": operation_status,
+            "terminal_contract_sha256": digest(f"0048-terminal-contract:{label}"),
+            "billing_action": action,
+            "billing_owner_generation": owner_generation,
+            "billing_from_status": "reserved",
+            "billing_final_quota": final_quota,
+            "billing_request_accounted": billing_request_accounted,
+            "billing_reason": f"sqlite_0048_{action}",
+            "pre_consumed_quota": 1,
+            "user_quota_delta": user_quota_delta,
+            "token_quota_delta": 0,
+            "user_used_quota_delta": user_used_quota_delta,
+            "channel_used_quota_delta": channel_used_quota_delta,
+            "request_count_delta": request_count_delta,
+            "reconciliation_id": reconciliation_id,
+            "reconciliation_revision": 1,
+            "client_response_status": client_status,
+            "client_response_headers_json": (
+                None if client_status is None else '{"content-type":"application/json"}'
+            ),
+            "client_response_headers_sha256": (
+                None
+                if client_status is None
+                else digest(f"0048-client-headers:{label}")
+            ),
+            "client_response_object_key": (
+                None
+                if client_status is None
+                else (
+                    f"container-client-responses/v1/{operation_id}/"
+                    f"{owner_generation}/{client_sha256}"
+                )
+            ),
+            "client_response_object_version": (
+                None if client_status is None else f"client-version-0048-{label}"
+            ),
+            "client_response_sha256": None if client_status is None else client_sha256,
+            "client_response_size": None if client_status is None else 128,
+            "client_response_content_type": (
+                None if client_status is None else "application/json"
+            ),
+            "outbox_schema_version": 1,
+            "outbox_payload_json": f'{{"event":"{label}"}}',
+            "outbox_payload_sha256": digest(f"0048-outbox:{label}"),
+            "created_at": 1400 + terminal_counter * 10,
+            "provider_usage_receipt_sha256": (
+                receipt["usage_receipt_sha256"] if include_provider_linkage else None
+            ),
+            "provider_result_sha256": (
+                receipt["result_sha256"] if include_provider_linkage else None
+            ),
+            "provider_attempt_generation": (
+                receipt["attempt_generation"] if include_provider_linkage else None
+            ),
+        }
+
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_provider_egress_grants "
+        "WHERE operation_id = '0047-prepared'"
+    ).fetchone() != (0,):
+        raise SystemExit("0048 pre-0047 legacy fixture unexpectedly has a provider grant")
+    conn.execute(
+        "UPDATE relay_container_operations SET status = 'dispatched', updated_at = 1200 "
+        "WHERE operation_id = '0047-prepared'"
+    )
+    legacy_subject: dict[str, object] = {
+        "operation_id": "0047-prepared",
+        "owner_generation": 2,
+    }
+    partial_legacy_settle = terminal_values(
+        legacy_subject,
+        "partial-legacy-settle",
+        "settle",
+        include_provider_linkage=False,
+    )
+    partial_legacy_settle["provider_usage_receipt_sha256"] = digest(
+        "0048-partial-legacy-receipt"
+    )
+    expect_integrity_error(
+        lambda: conn.execute(terminal_insert_sql, partial_legacy_settle),
+        "0048 accepted a partially populated pre-0047 settlement receipt triple",
+        "relay container terminal event provider usage receipt mismatch",
+    )
+    legacy_settle = terminal_values(
+        legacy_subject,
+        "legacy-settle",
+        "settle",
+        include_provider_linkage=False,
+    )
+    conn.execute(terminal_insert_sql, legacy_settle)
+    if conn.execute(
+        "SELECT provider_usage_receipt_sha256, provider_result_sha256, "
+        "provider_attempt_generation FROM relay_container_terminal_events "
+        "WHERE billing_event_id = ?",
+        (legacy_settle["billing_event_id"],),
+    ).fetchone() != (None, None, None):
+        raise SystemExit("0048 pre-0047 settlement receipt triple did not remain null")
+
+    # A true 0047 writer has an immutable provider grant but no 0048 receipt.
+    # After 0048 it must be drained, not allowed to settle without usage evidence.
+    missing_linkage_event = terminal_values(
+        valid,
+        "missing-linkage",
+        "settle",
+        include_provider_linkage=False,
+    )
+    expect_integrity_error(
+        lambda: conn.execute(terminal_insert_sql, missing_linkage_event),
+        "0048 accepted a 0047-writer settlement without provider receipt linkage",
+        "relay container terminal event provider usage receipt mismatch",
+    )
+
+    forged_receipt_linkage = terminal_values(
+        valid,
+        "forged-receipt-linkage",
+        "settle",
+        include_provider_linkage=True,
+    )
+    forged_receipt_linkage["provider_usage_receipt_sha256"] = digest(
+        "0048-forged-receipt-linkage"
+    )
+    expect_integrity_error(
+        lambda: conn.execute(terminal_insert_sql, forged_receipt_linkage),
+        "0048 accepted settlement with a forged receipt digest",
+        "relay container terminal event provider usage receipt mismatch",
+    )
+
+    forged_result_linkage = terminal_values(
+        valid,
+        "forged-result-linkage",
+        "settle",
+        include_provider_linkage=True,
+    )
+    forged_result_linkage["provider_result_sha256"] = digest(
+        "0048-forged-result-linkage"
+    )
+    expect_integrity_error(
+        lambda: conn.execute(terminal_insert_sql, forged_result_linkage),
+        "0048 accepted settlement with a forged provider result digest",
+        "relay container terminal event provider usage receipt mismatch",
+    )
+
+    mismatched_client_status = terminal_values(
+        valid,
+        "mismatched-client-status",
+        "settle",
+        include_provider_linkage=True,
+    )
+    mismatched_client_status["client_response_status"] = 201
+    expect_integrity_error(
+        lambda: conn.execute(terminal_insert_sql, mismatched_client_status),
+        "0048 accepted a client response status outside its provider receipt",
+        "relay container terminal event provider usage receipt mismatch",
+    )
+
+    missing_usage_event = terminal_values(
+        missing_usage,
+        "missing-usage",
+        "settle",
+        include_provider_linkage=True,
+    )
+    expect_integrity_error(
+        lambda: conn.execute(terminal_insert_sql, missing_usage_event),
+        "0048 allowed missing provider usage to settle",
+        "relay container terminal event provider usage receipt mismatch",
+    )
+
+    accepted_202_event = terminal_values(
+        accepted_202,
+        "accepted-202",
+        "settle",
+        include_provider_linkage=True,
+    )
+    expect_integrity_error(
+        lambda: conn.execute(terminal_insert_sql, accepted_202_event),
+        "0048 allowed an accepted-but-incomplete provider response to settle",
+        "relay container terminal event provider usage receipt mismatch",
+    )
+
+    linked_refund = terminal_values(
+        missing_usage,
+        "linked-refund",
+        "refund",
+        include_provider_linkage=True,
+    )
+    expect_integrity_error(
+        lambda: conn.execute(terminal_insert_sql, linked_refund),
+        "0048 accepted provider receipt linkage on a refund",
+        "relay container terminal event provider usage receipt mismatch",
+    )
+    unlinked_refund = terminal_values(
+        missing_usage,
+        "unlinked-refund",
+        "refund",
+        include_provider_linkage=False,
+    )
+    conn.execute(terminal_insert_sql, unlinked_refund)
+
+    linked_recovery = terminal_values(
+        non_canary,
+        "linked-recovery",
+        "recovery_required",
+        include_provider_linkage=True,
+    )
+    expect_integrity_error(
+        lambda: conn.execute(terminal_insert_sql, linked_recovery),
+        "0048 accepted provider receipt linkage on recovery",
+        "relay container terminal event provider usage receipt mismatch",
+    )
+    unlinked_recovery = terminal_values(
+        non_canary,
+        "unlinked-recovery",
+        "recovery_required",
+        include_provider_linkage=False,
+    )
+    conn.execute(terminal_insert_sql, unlinked_recovery)
+
+    settle_event = terminal_values(
+        valid,
+        "valid-settle",
+        "settle",
+        include_provider_linkage=True,
+    )
+    conn.execute(terminal_insert_sql, settle_event)
+    if conn.execute(
+        "SELECT provider_usage_receipt_sha256, provider_result_sha256, "
+        "provider_attempt_generation FROM relay_container_terminal_events "
+        "WHERE billing_event_id = ?",
+        (settle_event["billing_event_id"],),
+    ).fetchone() != (
+        valid["usage_receipt_sha256"],
+        valid["result_sha256"],
+        1,
+    ):
+        raise SystemExit("0048 terminal settlement did not freeze receipt linkage")
+
+    event_created_at = int(settle_event["created_at"])
+    conn.execute(
+        """
+        INSERT INTO relay_container_terminal_outbox_state (
+          billing_event_id, status, delivery_generation,
+          delivery_attempt_count, lease_expires_at, available_at,
+          delivered_at, last_error, created_at, updated_at
+        ) VALUES (?, 'pending', 0, 0, 0, ?, 0, '', ?, ?)
+        """,
+        (
+            settle_event["billing_event_id"],
+            event_created_at,
+            event_created_at,
+            event_created_at,
+        ),
+    )
+
+    forged_result_sha256 = digest("0048-forged-completed-result")
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations SET status = 'completed', "
+            "response_status = 200, response_code = NULL, "
+            "result_object_key = ?, result_object_version = ?, "
+            "result_sha256 = ?, result_size = 256, "
+            "result_content_type = 'application/json', updated_at = ? "
+            "WHERE operation_id = ?",
+            (
+                f"container-results/v1/{valid['operation_id']}/"
+                f"{valid['owner_generation']}/{forged_result_sha256}",
+                valid["result_object_version"],
+                forged_result_sha256,
+                event_created_at + 10,
+                valid["operation_id"],
+            ),
+        ),
+        "0048 accepted a completed operation with a result outside its receipt",
+        "relay container completed operation provider usage receipt mismatch",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations SET status = 'completed', "
+            "response_status = 201, response_code = NULL, "
+            "result_object_key = ?, result_object_version = ?, "
+            "result_sha256 = ?, result_size = ?, result_content_type = ?, "
+            "updated_at = ? WHERE operation_id = ?",
+            (
+                valid["result_object_key"],
+                valid["result_object_version"],
+                valid["result_sha256"],
+                valid["result_size"],
+                valid["result_content_type"],
+                event_created_at + 10,
+                valid["operation_id"],
+            ),
+        ),
+        "0048 accepted a completed operation with a status outside its receipt",
+        "relay container completed operation provider usage receipt mismatch",
+    )
+    conn.execute(
+        "UPDATE relay_container_operations SET status = 'completed', "
+        "response_status = ?, response_code = NULL, "
+        "result_object_key = ?, result_object_version = ?, "
+        "result_sha256 = ?, result_size = ?, result_content_type = ?, "
+        "updated_at = ? WHERE operation_id = ?",
+        (
+            valid["provider_response_status"],
+            valid["result_object_key"],
+            valid["result_object_version"],
+            valid["result_sha256"],
+            valid["result_size"],
+            valid["result_content_type"],
+            event_created_at + 10,
+            valid["operation_id"],
+        ),
+    )
+    if conn.execute(
+        "SELECT status, response_status, result_sha256 "
+        "FROM relay_container_operations WHERE operation_id = ?",
+        (valid["operation_id"],),
+    ).fetchone() != ("completed", 200, valid["result_sha256"]):
+        raise SystemExit("0048 exact receipt-linked completion did not persist")
 
 
 def verify_relay_container_reconciliation_observer(
@@ -7248,13 +8337,21 @@ def verify_relay_container_provider_egress_grant_rollout(
         ),
         None,
     )
-    if grant_path is None or enforce_path is None:
-        raise SystemExit("0046/0047 relay Container egress migrations not found")
+    receipt_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0048_relay_container_provider_usage_receipts.sql"
+        ),
+        None,
+    )
+    if grant_path is None or enforce_path is None or receipt_path is None:
+        raise SystemExit("0046/0047/0048 relay Container egress migrations not found")
     grant_index = schema_paths.index(grant_path)
     if grant_index == 0 or schema_paths[grant_index - 1] != enforce_path:
         raise SystemExit("0047 provider egress grants must immediately follow 0046")
-    if grant_index != len(schema_paths) - 1:
-        raise SystemExit("0047 provider egress grants must be the current D1 migration head")
+    if grant_index + 1 >= len(schema_paths) or schema_paths[grant_index + 1] != receipt_path:
+        raise SystemExit("0047 provider egress grants must immediately precede 0048")
 
     grant_sql = grant_path.read_text(encoding="utf-8")
     if "if not exists" in grant_sql.lower():
@@ -7376,6 +8473,262 @@ def verify_relay_container_provider_egress_grant_rollout(
         "SELECT COUNT(*) FROM relay_container_provider_egress_grants"
     ).fetchone() != (0,):
         raise SystemExit("0047 provider egress rollout backfilled historical grants")
+
+
+def verify_relay_container_provider_usage_receipt_rollout(
+    schema_paths: list[Path],
+) -> None:
+    receipt_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0048_relay_container_provider_usage_receipts.sql"
+        ),
+        None,
+    )
+    grant_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0047_relay_container_provider_egress_grants.sql"
+        ),
+        None,
+    )
+    if receipt_path is None or grant_path is None:
+        raise SystemExit("0047/0048 relay Container usage migrations not found")
+    receipt_index = schema_paths.index(receipt_path)
+    if receipt_index == 0 or schema_paths[receipt_index - 1] != grant_path:
+        raise SystemExit("0048 provider usage receipts must immediately follow 0047")
+    if receipt_index != len(schema_paths) - 1:
+        raise SystemExit("0048 provider usage receipts must be the current D1 migration head")
+
+    receipt_sql = receipt_path.read_text(encoding="utf-8")
+    if "if not exists" in receipt_sql.lower():
+        raise SystemExit("0048 critical receipt objects must fail on duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_provider_usage_receipts",
+        "CREATE TABLE relay_container_provider_usage_receipt_identities",
+        "PRIMARY KEY (operation_id, owner_generation, attempt_generation)",
+        "reported_usage_fields BETWEEN 0 AND 2047",
+        "usage_parser_contract = 'openai-chat-completions-usage-v1'",
+        "usage_normalization_contract = 'billing-token-normalization-v1'",
+        "provider_response_sha256 = result_sha256",
+        "SELECT COUNT(*) FROM json_each(NEW.usage_receipt_json)) = 38",
+        "operation.operation_kind = 'chat_completions_canary'",
+        "CREATE UNIQUE INDEX idx_relay_container_provider_usage_receipts_provider_operation",
+        "CREATE INDEX idx_relay_container_provider_usage_receipts_reconciliation",
+        "CREATE UNIQUE INDEX idx_relay_container_provider_usage_receipts_result_object_identity",
+        "CREATE TRIGGER relay_container_provider_usage_receipt_insert_authority_guard",
+        "CREATE TRIGGER relay_container_provider_usage_receipt_identity_guard",
+        "CREATE TRIGGER relay_container_provider_usage_receipt_identity_update_guard",
+        "CREATE TRIGGER relay_container_provider_usage_receipt_identity_delete_guard",
+        "CREATE TRIGGER relay_container_provider_usage_receipt_update_guard",
+        "CREATE TRIGGER relay_container_provider_usage_receipt_delete_guard",
+        "ADD COLUMN provider_usage_receipt_sha256",
+        "ADD COLUMN provider_result_sha256",
+        "ADD COLUMN provider_attempt_generation",
+        "CREATE TRIGGER relay_container_terminal_event_provider_usage_guard",
+        "receipt.provider_response_status <> 202",
+        "NEW.client_response_status = receipt.provider_response_status",
+        "NEW.billing_action IN ('refund', 'recovery_required')",
+        "CREATE TRIGGER relay_container_operation_provider_usage_terminal_guard",
+        "NEW.response_status = receipt.provider_response_status",
+        "NEW.result_sha256 = receipt.result_sha256",
+    ):
+        if fragment not in receipt_sql:
+            raise SystemExit(f"0048 provider usage rollout contract missing: {fragment}")
+    for forbidden in (
+        "INSERT INTO relay_container_provider_usage_receipts",
+        "INSERT INTO relay_container_terminal_events",
+        "UPDATE relay_container_terminal_events SET",
+        "UPDATE relay_container_operations SET",
+        "DELETE FROM relay_container_provider_usage_receipts",
+    ):
+        if forbidden in receipt_sql:
+            raise SystemExit(
+                f"0048 provider usage rollout must remain default-empty: {forbidden}"
+            )
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == receipt_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    def digest(label: str) -> str:
+        return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+    operation_id = "0048-rollout-existing"
+    owner_generation = 3
+    input_sha256 = digest("0048-rollout-input")
+    reconciliation_id = digest("0048-rollout-reconciliation")
+    billing_snapshot = '{"default":{"1":{"schema_version":4}}}'
+    billing_snapshot_sha256 = hashlib.sha256(billing_snapshot.encode()).hexdigest()
+    conn.execute(
+        "INSERT INTO users (id, username, password, quota, created_at) "
+        "VALUES (480048, 'sqlite-0048-rollout-user', 'not-used', 100, 1)"
+    )
+    conn.execute(
+        "INSERT INTO channels (id, \"key\", name, used_quota) "
+        "VALUES (480048, 'sqlite-0048-rollout-channel-key', "
+        "'sqlite-0048-rollout-channel', 0)"
+    )
+    conn.execute(
+        """
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, token_id, model_name, endpoint_path,
+          request_id_hash, expr_hash, billing_kind, billing_snapshot_json,
+          candidate_group_count, reservation_strategy, pre_consumed_quota,
+          status, channel_id, selected_group, selected_at,
+          lease_expires_at, owner_generation, owner_deadline_at,
+          owner_lease_renewed_at, created_at, updated_at
+        ) VALUES (
+          ?, 480048, 0, 'gpt-4o-mini', 'chat/completions',
+          ?, ?, 'flat', ?, 1, 'selected_group', 0,
+          'reserved', 480048, 'default', 900,
+          2000, ?, 1800, 0, 800, 1000
+        )
+        """,
+        (
+            operation_id,
+            digest("0048-rollout-request-id"),
+            f"flat-v4:{billing_snapshot_sha256}",
+            billing_snapshot,
+            owner_generation,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO relay_container_operations (
+          reservation_key, operation_id, owner_generation,
+          owner_lease_expires_at, channel_id, selected_group,
+          operation_kind, provider_operation_id, admission_sha256,
+          protocol_version, shard_contract_version,
+          ring_generation, shard_count, shard_index, instance_name,
+          execution_deadline_at, input_mode, input_object_key,
+          input_object_version, input_sha256, input_size,
+          input_content_type, trace_id,
+          client_idempotency_hmac_sha256, client_request_sha256,
+          reconciliation_id, status, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, 2000, 480048, 'default',
+          'chat_completions_canary', 'provider:0048-rollout-existing', ?,
+          1, 1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003',
+          1600, 'r2', ?, 'version-0048-rollout', ?, 64,
+          'application/json', 'trace:0048-rollout', ?, ?, ?,
+          'prepared', 1000, 1000
+        )
+        """,
+        (
+            operation_id,
+            operation_id,
+            owner_generation,
+            digest("0048-rollout-admission"),
+            f"container-inputs/v1/{operation_id}/{owner_generation}/{input_sha256}",
+            input_sha256,
+            digest("0048-rollout-client-hmac"),
+            digest("0048-rollout-client-request"),
+            reconciliation_id,
+        ),
+    )
+    conn.execute(
+        "UPDATE relay_container_operations SET status = 'dispatched', updated_at = 1100 "
+        "WHERE operation_id = ?",
+        (operation_id,),
+    )
+    historical_event_id = digest("0048-rollout-historical-event")
+    conn.execute(
+        """
+        INSERT INTO relay_container_terminal_events (
+          billing_event_id, reservation_key, operation_id,
+          owner_generation, operation_from_status, operation_status,
+          terminal_contract_sha256,
+          billing_action, billing_owner_generation, billing_from_status,
+          billing_final_quota, billing_request_accounted, billing_reason,
+          pre_consumed_quota, user_quota_delta, token_quota_delta,
+          user_used_quota_delta, channel_used_quota_delta,
+          request_count_delta, reconciliation_id, reconciliation_revision,
+          client_response_status, client_response_headers_json,
+          client_response_headers_sha256, client_response_object_key,
+          client_response_object_version, client_response_sha256,
+          client_response_size, client_response_content_type,
+          outbox_schema_version, outbox_payload_json,
+          outbox_payload_sha256, created_at
+        ) VALUES (
+          ?, ?, ?, ?, 'dispatched', 'recovery_required', ?,
+          'recovery_required', ?, 'reserved',
+          NULL, 0, 'sqlite_0048_historical_recovery',
+          0, 0, 0, 0, 0, 0, ?, 1,
+          NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+          1, '{}', ?, 1200
+        )
+        """,
+        (
+            historical_event_id,
+            operation_id,
+            operation_id,
+            owner_generation,
+            digest("0048-rollout-terminal-contract"),
+            owner_generation,
+            reconciliation_id,
+            digest("0048-rollout-outbox-payload"),
+        ),
+    )
+    old_event_columns = tuple(
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(relay_container_terminal_events)"
+        ).fetchall()
+    )
+    quoted_old_event_columns = ", ".join(f'"{name}"' for name in old_event_columns)
+    before_event = conn.execute(
+        f"SELECT {quoted_old_event_columns} FROM relay_container_terminal_events "
+        "WHERE billing_event_id = ?",
+        (historical_event_id,),
+    ).fetchone()
+    before_operation = conn.execute(
+        "SELECT * FROM relay_container_operations WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    before_reservation = conn.execute(
+        "SELECT * FROM relay_billing_reservations WHERE reservation_key = ?",
+        (operation_id,),
+    ).fetchone()
+
+    conn.executescript(receipt_sql)
+
+    after_event = conn.execute(
+        f"SELECT {quoted_old_event_columns} FROM relay_container_terminal_events "
+        "WHERE billing_event_id = ?",
+        (historical_event_id,),
+    ).fetchone()
+    if after_event != before_event:
+        raise SystemExit("0048 provider usage rollout rewrote a historical terminal event")
+    if conn.execute(
+        "SELECT provider_usage_receipt_sha256, provider_result_sha256, "
+        "provider_attempt_generation FROM relay_container_terminal_events "
+        "WHERE billing_event_id = ?",
+        (historical_event_id,),
+    ).fetchone() != (None, None, None):
+        raise SystemExit("0048 historical terminal linkage columns must default to null")
+    if conn.execute(
+        "SELECT * FROM relay_container_operations WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone() != before_operation:
+        raise SystemExit("0048 provider usage rollout changed an existing operation")
+    if conn.execute(
+        "SELECT * FROM relay_billing_reservations WHERE reservation_key = ?",
+        (operation_id,),
+    ).fetchone() != before_reservation:
+        raise SystemExit("0048 provider usage rollout changed an existing reservation")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_provider_usage_receipts"
+    ).fetchone() != (0,):
+        raise SystemExit("0048 provider usage rollout backfilled historical receipts")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_provider_usage_receipt_identities"
+    ).fetchone() != (0,):
+        raise SystemExit("0048 provider usage rollout backfilled historical identities")
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

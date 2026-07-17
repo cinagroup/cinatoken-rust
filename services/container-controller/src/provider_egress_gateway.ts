@@ -10,6 +10,8 @@ import {
 import { ProtocolError } from "./protocol";
 import {
   CONTENT_SHA256_HEADER,
+  MAX_PROVIDER_USAGE_RECEIPT_ENCODED_BYTES,
+  MAX_PROVIDER_USAGE_RECEIPT_JSON_BYTES,
   OPERATION_ID_HEADER,
   OWNER_GENERATION_HEADER,
   PROVIDER_ATTEMPT_GENERATION_HEADER,
@@ -19,8 +21,12 @@ import {
   STORAGE_GATEWAY_ACTIONS,
   deriveR2ResultKey,
   handleStorageGatewayRequest,
+  isProviderUsageReceipt,
   requireD1ProviderEgressAdmission,
   requireD1ProviderEgressGrant,
+  requireD1ProviderUsageReceipt,
+  requireD1ProviderUsageReceiptSchema,
+  type CanonicalProviderUsageReceipt,
   type D1AdmissionSnapshot,
   type R2ResultPutGrant,
   type StorageGatewayEnvironment,
@@ -42,6 +48,9 @@ export const PROVIDER_EGRESS_EXPECTED_WORKER_VERSION_HEADER =
 export const CLOUDFLARE_WORKERS_VERSION_KEY_HEADER = "cloudflare-workers-version-key";
 export const PROVIDER_OPERATION_ID_HEADER = "x-cinatoken-provider-operation-id";
 export const PROVIDER_DEADLINE_HEADER = "x-cinatoken-provider-deadline";
+export const PROVIDER_USAGE_RECEIPT_HEADER = "x-cinatoken-provider-usage-receipt";
+export const PROVIDER_USAGE_RECEIPT_SHA256_HEADER =
+  "x-cinatoken-provider-usage-receipt-sha256";
 export const MAX_PROVIDER_EGRESS_BODY_BYTES = 4 * 1024 * 1024;
 export const MAX_PROVIDER_EGRESS_READINESS_BYTES = 1024;
 
@@ -141,6 +150,14 @@ export async function handleProviderEgressGatewayRequest(
       : jsonError("provider_egress_admission_unavailable", 503);
   }
 
+  try {
+    await requireD1ProviderUsageReceiptSchema(env);
+  } catch (error) {
+    return error instanceof ProtocolError
+      ? jsonError(error.code, error.status)
+      : jsonError("provider_usage_receipt_schema_unavailable", 503);
+  }
+
   const broker = env.PROVIDER_EGRESS;
   if (broker === undefined) {
     return jsonError("provider_egress_binding_unavailable", 503);
@@ -207,14 +224,16 @@ export async function handleProviderEgressGatewayRequest(
   } catch {
     return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_transport_ambiguous");
   }
-  if (
-    upstream.headers.get(PROVIDER_EGRESS_WORKER_VERSION_HEADER) !==
-    egressIdentity.worker_version_id
-  ) {
+  const upstreamStatus = upstream.status;
+  const upstreamWorkerVersion = upstream.headers.get(PROVIDER_EGRESS_WORKER_VERSION_HEADER);
+  const upstreamContentType = upstream.headers.get("content-type");
+  const usageReceiptHeader = upstream.headers.get(PROVIDER_USAGE_RECEIPT_HEADER);
+  const usageReceiptSha256Header = upstream.headers.get(PROVIDER_USAGE_RECEIPT_SHA256_HEADER);
+  if (upstreamWorkerVersion !== egressIdentity.worker_version_id) {
     await cancelResponse(upstream);
     return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_version_ambiguous");
   }
-  if (upstream.status < 200 || upstream.status > 299) {
+  if (upstreamStatus < 200 || upstreamStatus > 299) {
     await cancelResponse(upstream);
     return ambiguousResponse(port, grant, attemptGeneration, "provider_response_ambiguous");
   }
@@ -225,11 +244,33 @@ export async function handleProviderEgressGatewayRequest(
   } catch {
     return ambiguousResponse(port, grant, attemptGeneration, "provider_response_ambiguous");
   }
-  const contentType = normalizedJsonContentType(upstream.headers.get("content-type"));
+  const contentType = normalizedJsonContentType(upstreamContentType);
   if (contentType === null || !isJsonObject(providerBody)) {
     return ambiguousResponse(port, grant, attemptGeneration, "provider_response_invalid");
   }
   const resultSha256 = await sha256(providerBody);
+  let usageReceipt: CanonicalProviderUsageReceipt;
+  try {
+    usageReceipt = await parseCanonicalProviderUsageReceipt(
+      usageReceiptHeader,
+      usageReceiptSha256Header,
+    );
+    if (
+      !providerUsageReceiptMatches(
+        usageReceipt,
+        grant,
+        attemptGeneration,
+        expectedSha256,
+        egressIdentity,
+        upstreamStatus,
+        resultSha256,
+      )
+    ) {
+      throw new Error("provider usage receipt identity mismatch");
+    }
+  } catch {
+    return ambiguousResponse(port, grant, attemptGeneration, "provider_usage_receipt_ambiguous");
+  }
   const resultGrant: R2ResultPutGrant = {
     action: STORAGE_GATEWAY_ACTIONS.R2_RESULT_PUT,
     operation_id: grant.operation_id,
@@ -239,6 +280,7 @@ export async function handleProviderEgressGatewayRequest(
     attempt_generation: attemptGeneration,
     egress_profile: egressIdentity.profile,
     egress_worker_version_id: egressIdentity.worker_version_id,
+    usage_receipt_sha256: usageReceipt.sha256,
     sha256: resultSha256,
     size: providerBody.byteLength,
     content_type: contentType,
@@ -250,6 +292,16 @@ export async function handleProviderEgressGatewayRequest(
   } catch {
     return ambiguousResponse(port, grant, attemptGeneration, "provider_result_persistence_ambiguous");
   }
+  try {
+    await requireD1ProviderUsageReceipt(env, admission, usageReceipt, result);
+  } catch {
+    return ambiguousResponse(
+      port,
+      grant,
+      attemptGeneration,
+      "provider_usage_receipt_persistence_ambiguous",
+    );
+  }
   const attached = await port.recordStorageResult(
     grant.operation_id,
     grant.owner_generation,
@@ -259,11 +311,19 @@ export async function handleProviderEgressGatewayRequest(
   if (!attached.ok) {
     return ambiguousResponse(port, grant, attemptGeneration, "provider_result_persistence_ambiguous");
   }
+  if (upstreamStatus === 202) {
+    return ambiguousResponse(
+      port,
+      grant,
+      attemptGeneration,
+      "provider_response_accepted_ambiguous",
+    );
+  }
   const terminal = await port.recordProviderAttemptOutcome(
     grant.operation_id,
     grant.owner_generation,
     attemptGeneration,
-    { status: "succeeded", response_status: upstream.status, response_code: null },
+    { status: "succeeded", response_status: upstreamStatus, response_code: null },
   );
   if (!terminal.ok) {
     const refreshed = await port.authorizeStorageAccess(
@@ -275,7 +335,7 @@ export async function handleProviderEgressGatewayRequest(
       : null;
     return recovered ?? jsonResponse(ambiguousPayload(grant, "provider_terminal_ambiguous"), 202);
   }
-  return successResponse(grant, attemptGeneration, upstream.status, result);
+  return successResponse(grant, attemptGeneration, upstreamStatus, result);
 }
 
 async function requireProviderEgressReadiness(
@@ -348,17 +408,18 @@ async function replayWithoutProviderSend(
   const attempt = grant.provider_attempt;
   if (attempt === null || attempt.status === "prepared") return null;
   if (grant.result !== null && attempt.status === "dispatched") {
-    const terminal = await port.recordProviderAttemptOutcome(
-      grant.operation_id,
-      grant.owner_generation,
-      attemptGeneration,
-      { status: "succeeded", response_status: 200, response_code: null },
-    );
-    if (terminal.ok) return successResponse(grant, attemptGeneration, 200, grant.result);
-    return jsonResponse(ambiguousPayload(grant, "provider_terminal_ambiguous"), 202);
+    return ambiguousResponse(port, grant, attemptGeneration, "provider_terminal_ambiguous");
   }
   if (grant.result !== null && attempt.status === "succeeded") {
-    return successResponse(grant, attemptGeneration, 200, grant.result);
+    if (
+      attempt.response_status === null ||
+      attempt.response_status < 200 ||
+      attempt.response_status > 299 ||
+      attempt.response_status === 202
+    ) {
+      return ambiguousResponse(port, grant, attemptGeneration, "provider_terminal_ambiguous");
+    }
+    return successResponse(grant, attemptGeneration, attempt.response_status, grant.result);
   }
   return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_replay_ambiguous");
 }
@@ -465,6 +526,85 @@ async function persistResult(
     size: grant.size,
     content_type: grant.content_type,
   };
+}
+
+async function parseCanonicalProviderUsageReceipt(
+  encoded: string | null,
+  expectedSha256: string | null,
+): Promise<CanonicalProviderUsageReceipt> {
+  if (
+    encoded === null ||
+    encoded.length < 1 ||
+    encoded.length > MAX_PROVIDER_USAGE_RECEIPT_ENCODED_BYTES ||
+    !/^[A-Za-z0-9_-]+$/.test(encoded) ||
+    expectedSha256 === null ||
+    !validSha256(expectedSha256)
+  ) {
+    throw new Error("provider usage receipt header invalid");
+  }
+
+  const remainder = encoded.length % 4;
+  if (remainder === 1) throw new Error("provider usage receipt encoding invalid");
+  let bytes: Uint8Array;
+  try {
+    const padded = encoded.replace(/-/g, "+").replace(/_/g, "/") +
+      (remainder === 0 ? "" : "=".repeat(4 - remainder));
+    const binary = atob(padded);
+    bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    throw new Error("provider usage receipt encoding invalid");
+  }
+  if (
+    bytes.byteLength < 1 ||
+    bytes.byteLength > MAX_PROVIDER_USAGE_RECEIPT_JSON_BYTES ||
+    encodeBase64UrlNoPad(bytes) !== encoded ||
+    (await sha256(bytes)) !== expectedSha256
+  ) {
+    throw new Error("provider usage receipt integrity invalid");
+  }
+
+  let decodedText: string;
+  let parsed: unknown;
+  try {
+    decodedText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    parsed = JSON.parse(decodedText);
+  } catch {
+    throw new Error("provider usage receipt JSON invalid");
+  }
+  if (!isProviderUsageReceipt(parsed) || decodedText !== JSON.stringify(parsed)) {
+    throw new Error("provider usage receipt JSON noncanonical");
+  }
+  return { receipt: parsed, json: decodedText, sha256: expectedSha256 };
+}
+
+function encodeBase64UrlNoPad(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function providerUsageReceiptMatches(
+  evidence: CanonicalProviderUsageReceipt,
+  grant: StorageAccessGrant,
+  attemptGeneration: number,
+  requestSha256: string,
+  egressIdentity: ProviderEgressIdentity,
+  providerStatus: number,
+  providerBodySha256: string,
+): boolean {
+  const receipt = evidence.receipt;
+  return (
+    receipt.operation_id === grant.operation_id &&
+    receipt.owner_generation === grant.owner_generation &&
+    receipt.attempt_generation === attemptGeneration &&
+    receipt.provider_operation_id === grant.provider_operation_id &&
+    receipt.request_sha256 === requestSha256 &&
+    receipt.egress_profile === egressIdentity.profile &&
+    receipt.egress_worker_version_id === egressIdentity.worker_version_id &&
+    receipt.provider_response_status === providerStatus &&
+    receipt.provider_response_sha256 === providerBodySha256 &&
+    receipt.provider_completed_at <= Date.now()
+  );
 }
 
 function brokerHeaders(

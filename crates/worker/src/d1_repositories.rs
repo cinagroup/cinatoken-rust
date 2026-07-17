@@ -1,11 +1,17 @@
-use cinatoken_billing::TieredBillingSnapshot;
+use cinatoken_billing::{
+    build_tiered_token_params, compute_flat_quota_from_snapshot,
+    compute_tiered_quota_from_durable_snapshot, detect_billing_expr_variables, FlatPricingSnapshot,
+    FlatUsage, ImageGenerationPriceClass, TieredBillingSnapshot, TieredTokenUsage, UsageSemantic,
+};
 use cinatoken_core::format_matching_model_name;
 use cinatoken_relay::{channel_type_supported, clamp_i64_to_i32 as d1_i32, csv_contains};
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::str::FromStr;
 use worker::{D1Database, D1Result, D1Type};
 
 use crate::container_artifacts::{
@@ -45,6 +51,8 @@ pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_ENFORCE_MIGRATION: &str =
     "0046_relay_container_financial_terminal_enforce.sql";
 pub(crate) const RELAY_CONTAINER_PROVIDER_EGRESS_GRANT_MIGRATION: &str =
     "0047_relay_container_provider_egress_grants.sql";
+pub(crate) const RELAY_CONTAINER_PROVIDER_USAGE_RECEIPT_MIGRATION: &str =
+    "0048_relay_container_provider_usage_receipts.sql";
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
     &["pending", "leased", "retry", "converged", "dead_letter"];
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
@@ -698,6 +706,9 @@ pub enum RelayContainerFinancialTerminalAction<'a> {
     Settle {
         final_quota: i64,
         finalization_reason: &'a str,
+        provider_usage_receipt_sha256: &'a str,
+        provider_result_sha256: &'a str,
+        provider_attempt_generation: i64,
     },
     Refund {
         finalization_reason: &'a str,
@@ -755,6 +766,9 @@ pub struct RelayContainerFinancialTerminalReceipt {
     pub client_response_sha256: Option<String>,
     pub client_response_size: Option<i64>,
     pub client_response_content_type: Option<String>,
+    pub provider_usage_receipt_sha256: Option<String>,
+    pub provider_result_sha256: Option<String>,
+    pub provider_attempt_generation: Option<i64>,
     pub outbox_payload_json: String,
     pub outbox_payload_sha256: String,
     pub outbox_status: String,
@@ -2718,9 +2732,102 @@ struct PreparedRelayContainerFinancialTerminal {
     channel_used_quota_delta: i64,
     request_count_delta: i64,
     reconciliation_revision: i64,
+    provider_usage_receipt_sha256: Option<String>,
+    provider_result_sha256: Option<String>,
+    provider_attempt_generation: Option<i64>,
     outbox_payload_json: String,
     outbox_payload_sha256: String,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+struct RelayContainerProviderUsageReceiptRow {
+    operation_id: String,
+    reservation_key: String,
+    owner_generation: i64,
+    attempt_generation: i64,
+    provider_operation_id: String,
+    admission_sha256: String,
+    request_sha256: String,
+    egress_profile: String,
+    egress_worker_version_id: String,
+    billing_kind: String,
+    billing_contract_hash: String,
+    billing_snapshot_sha256: String,
+    provider_response_status: i64,
+    provider_response_sha256: String,
+    provider_request_id: Option<String>,
+    provider_completed_at: i64,
+    result_object_key: String,
+    result_object_version: String,
+    result_sha256: String,
+    result_size: i64,
+    result_content_type: String,
+    usage_schema_version: i64,
+    usage_parser_contract: String,
+    usage_normalization_contract: String,
+    usage_present: i64,
+    reported_usage_fields: i64,
+    usage_estimated: i64,
+    usage_receipt_json: String,
+    usage_receipt_sha256: String,
+    persisted_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct RelayContainerProviderUsageReceiptPayload {
+    schema_version: i64,
+    parser_contract: String,
+    normalization_contract: String,
+    source: String,
+    estimated: bool,
+    operation_id: String,
+    owner_generation: i64,
+    attempt_generation: i64,
+    provider_operation_id: String,
+    request_sha256: String,
+    egress_profile: String,
+    egress_worker_version_id: String,
+    provider_response_status: i64,
+    provider_response_sha256: String,
+    provider_request_id: Option<String>,
+    provider_completed_at: i64,
+    usage_present: bool,
+    reported_usage_fields: i64,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    total_tokens: i64,
+    cached_tokens: i64,
+    cache_creation_tokens: i64,
+    cache_creation_tokens_5m: i64,
+    cache_creation_tokens_1h: i64,
+    image_input_tokens: i64,
+    image_output_tokens: i64,
+    audio_input_tokens: i64,
+    audio_output_tokens: i64,
+    is_anthropic_usage_semantic: bool,
+    usage_semantic_source: String,
+    provider_cost_usd: Option<String>,
+    cache_creation_source: String,
+    responses_web_search_calls: i64,
+    responses_file_search_calls: i64,
+    claude_web_search_calls: i64,
+    image_generation_quality: Option<String>,
+    image_generation_size: Option<String>,
+}
+
+const RELAY_CONTAINER_USAGE_PROMPT_REPORTED: i64 = 1 << 0;
+const RELAY_CONTAINER_USAGE_COMPLETION_REPORTED: i64 = 1 << 1;
+const RELAY_CONTAINER_USAGE_TOTAL_REPORTED: i64 = 1 << 2;
+const RELAY_CONTAINER_USAGE_CACHED_REPORTED: i64 = 1 << 3;
+const RELAY_CONTAINER_USAGE_CACHE_CREATION_REPORTED: i64 = 1 << 4;
+const RELAY_CONTAINER_USAGE_CACHE_CREATION_5M_REPORTED: i64 = 1 << 5;
+const RELAY_CONTAINER_USAGE_CACHE_CREATION_1H_REPORTED: i64 = 1 << 6;
+const RELAY_CONTAINER_USAGE_IMAGE_INPUT_REPORTED: i64 = 1 << 7;
+const RELAY_CONTAINER_USAGE_IMAGE_OUTPUT_REPORTED: i64 = 1 << 8;
+const RELAY_CONTAINER_USAGE_AUDIO_INPUT_REPORTED: i64 = 1 << 9;
+const RELAY_CONTAINER_USAGE_AUDIO_OUTPUT_REPORTED: i64 = 1 << 10;
+const RELAY_CONTAINER_USAGE_V1_REPORTED_MASK: i64 = (1 << 11) - 1;
 
 #[derive(Debug, Clone, Deserialize)]
 struct RelayContainerTerminalEventFingerprint {
@@ -2740,6 +2847,533 @@ struct RelayContainerTerminalOutboxState {
     last_error: String,
     created_at: i64,
     updated_at: i64,
+}
+
+async fn relay_container_provider_usage_receipt(
+    db: &D1Database,
+    operation_id: &str,
+    owner_generation: i64,
+    attempt_generation: i64,
+) -> worker::Result<Option<RelayContainerProviderUsageReceiptRow>> {
+    let args = [
+        D1Type::Text(operation_id),
+        relay_container_d1_integer(owner_generation, "provider usage owner generation")?,
+        relay_container_d1_integer(attempt_generation, "provider attempt generation")?,
+    ];
+    db.prepare(
+        r#"
+        SELECT
+          operation_id, reservation_key, owner_generation, attempt_generation,
+          provider_operation_id, admission_sha256, request_sha256,
+          egress_profile, egress_worker_version_id,
+          billing_kind, billing_contract_hash, billing_snapshot_sha256,
+          provider_response_status, provider_response_sha256,
+          provider_request_id, provider_completed_at,
+          result_object_key, result_object_version, result_sha256,
+          result_size, result_content_type,
+          usage_schema_version, usage_parser_contract,
+          usage_normalization_contract, usage_present, reported_usage_fields,
+          usage_estimated, usage_receipt_json, usage_receipt_sha256, persisted_at
+        FROM relay_container_provider_usage_receipts
+        WHERE operation_id = ?1
+          AND owner_generation = ?2
+          AND attempt_generation = ?3
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerProviderUsageReceiptRow>(None)
+    .await
+}
+
+fn parse_relay_container_provider_usage_payload(
+    row: &RelayContainerProviderUsageReceiptRow,
+) -> worker::Result<RelayContainerProviderUsageReceiptPayload> {
+    if row.usage_receipt_json.len() > 8 * 1024
+        || relay_container_sha256_hex(row.usage_receipt_json.as_bytes()) != row.usage_receipt_sha256
+    {
+        return Err(worker::Error::RustError(
+            "relay container provider usage receipt digest is invalid".to_string(),
+        ));
+    }
+    let payload =
+        serde_json::from_str::<RelayContainerProviderUsageReceiptPayload>(&row.usage_receipt_json)
+            .map_err(|err| {
+                worker::Error::RustError(format!(
+                    "relay container provider usage receipt is invalid: {err}"
+                ))
+            })?;
+    let canonical = serde_json::to_string(&payload).map_err(|err| {
+        worker::Error::RustError(format!(
+            "relay container provider usage receipt cannot be canonicalized: {err}"
+        ))
+    })?;
+    let reported_values = [
+        (RELAY_CONTAINER_USAGE_PROMPT_REPORTED, payload.prompt_tokens),
+        (
+            RELAY_CONTAINER_USAGE_COMPLETION_REPORTED,
+            payload.completion_tokens,
+        ),
+        (RELAY_CONTAINER_USAGE_TOTAL_REPORTED, payload.total_tokens),
+        (RELAY_CONTAINER_USAGE_CACHED_REPORTED, payload.cached_tokens),
+        (
+            RELAY_CONTAINER_USAGE_CACHE_CREATION_REPORTED,
+            payload.cache_creation_tokens,
+        ),
+        (
+            RELAY_CONTAINER_USAGE_CACHE_CREATION_5M_REPORTED,
+            payload.cache_creation_tokens_5m,
+        ),
+        (
+            RELAY_CONTAINER_USAGE_CACHE_CREATION_1H_REPORTED,
+            payload.cache_creation_tokens_1h,
+        ),
+        (
+            RELAY_CONTAINER_USAGE_IMAGE_INPUT_REPORTED,
+            payload.image_input_tokens,
+        ),
+        (
+            RELAY_CONTAINER_USAGE_IMAGE_OUTPUT_REPORTED,
+            payload.image_output_tokens,
+        ),
+        (
+            RELAY_CONTAINER_USAGE_AUDIO_INPUT_REPORTED,
+            payload.audio_input_tokens,
+        ),
+        (
+            RELAY_CONTAINER_USAGE_AUDIO_OUTPUT_REPORTED,
+            payload.audio_output_tokens,
+        ),
+    ];
+    let tool_values = [
+        payload.responses_web_search_calls,
+        payload.responses_file_search_calls,
+        payload.claude_web_search_calls,
+    ];
+    let prompt_and_completion_reported = payload.reported_usage_fields
+        & (RELAY_CONTAINER_USAGE_PROMPT_REPORTED | RELAY_CONTAINER_USAGE_COMPLETION_REPORTED)
+        == (RELAY_CONTAINER_USAGE_PROMPT_REPORTED | RELAY_CONTAINER_USAGE_COMPLETION_REPORTED);
+    if canonical != row.usage_receipt_json
+        || payload.schema_version != 1
+        || payload.parser_contract != "openai-chat-completions-usage-v1"
+        || payload.normalization_contract != "billing-token-normalization-v1"
+        || payload.source != "provider_response"
+        || payload.estimated
+        || payload.attempt_generation != 1
+        || !(200..=299).contains(&payload.provider_response_status)
+        || payload.provider_completed_at <= 0
+        || payload.reported_usage_fields < 0
+        || payload.reported_usage_fields & !RELAY_CONTAINER_USAGE_V1_REPORTED_MASK != 0
+        || payload.usage_present != prompt_and_completion_reported
+        || reported_values.iter().any(|&(bit, value)| {
+            !(0..=i64::from(i32::MAX)).contains(&value)
+                || (payload.reported_usage_fields & bit == 0 && value != 0)
+        })
+        || tool_values.iter().any(|value| !(0..=256).contains(value))
+        || !matches!(
+            payload.usage_semantic_source.as_str(),
+            "openai_default" | "upstream_explicit" | "native_anthropic"
+        )
+        || !matches!(
+            payload.cache_creation_source.as_str(),
+            "none" | "upstream_aggregate" | "upstream_split"
+        )
+        || payload.is_anthropic_usage_semantic
+    {
+        return Err(worker::Error::RustError(
+            "relay container provider usage receipt contract is invalid".to_string(),
+        ));
+    }
+    if let Some(value) = payload.provider_cost_usd.as_deref() {
+        let decimal = Decimal::from_str(value).map_err(|_| {
+            worker::Error::RustError("relay container provider usage cost is invalid".to_string())
+        })?;
+        if decimal < Decimal::ZERO
+            || decimal > Decimal::from(1_000_000_000_000_i64)
+            || decimal.normalize().to_string() != value
+        {
+            return Err(worker::Error::RustError(
+                "relay container provider usage cost is not canonical".to_string(),
+            ));
+        }
+    }
+    relay_container_usage_image_price_class(&payload)?;
+    Ok(payload)
+}
+
+fn relay_container_usage_image_price_class(
+    payload: &RelayContainerProviderUsageReceiptPayload,
+) -> worker::Result<Option<ImageGenerationPriceClass>> {
+    let value = match (
+        payload.image_generation_quality.as_deref(),
+        payload.image_generation_size.as_deref(),
+    ) {
+        (None, None) => None,
+        (Some("low"), Some("1024x1024")) => Some(ImageGenerationPriceClass::Low1024x1024),
+        (Some("low"), Some("1024x1536")) => Some(ImageGenerationPriceClass::Low1024x1536),
+        (Some("low"), Some("1536x1024")) => Some(ImageGenerationPriceClass::Low1536x1024),
+        (Some("medium"), Some("1024x1024")) => Some(ImageGenerationPriceClass::Medium1024x1024),
+        (Some("medium"), Some("1024x1536")) => Some(ImageGenerationPriceClass::Medium1024x1536),
+        (Some("medium"), Some("1536x1024")) => Some(ImageGenerationPriceClass::Medium1536x1024),
+        (Some("high"), Some("1024x1024")) => Some(ImageGenerationPriceClass::High1024x1024),
+        (Some("high"), Some("1024x1536")) => Some(ImageGenerationPriceClass::High1024x1536),
+        (Some("high"), Some("1536x1024")) => Some(ImageGenerationPriceClass::High1536x1024),
+        _ => {
+            return Err(worker::Error::RustError(
+                "relay container provider image usage contract is invalid".to_string(),
+            ))
+        }
+    };
+    Ok(value)
+}
+
+fn relay_container_provider_usage_row_matches(
+    row: &RelayContainerProviderUsageReceiptRow,
+    payload: &RelayContainerProviderUsageReceiptPayload,
+    operation: &RelayContainerOperation,
+    reservation: &RelayBillingReservation,
+    terminal: RelayContainerOperationTerminalRecord<'_>,
+    expected_receipt_sha256: &str,
+    expected_result_sha256: &str,
+    expected_attempt_generation: i64,
+) -> bool {
+    let Some(result) = terminal.result() else {
+        return false;
+    };
+    let billing_snapshot_sha256 =
+        relay_container_sha256_hex(reservation.billing_snapshot_json.as_bytes());
+    row.operation_id == operation.operation_id
+        && row.reservation_key == operation.reservation_key
+        && row.owner_generation == operation.owner_generation
+        && row.attempt_generation == expected_attempt_generation
+        && row.attempt_generation == payload.attempt_generation
+        && row.provider_operation_id == operation.provider_operation_id
+        && row.admission_sha256 == operation.admission_sha256
+        && row.request_sha256 == operation.input_sha256
+        && row.egress_profile == "openai-chat-completions-canary-v1"
+        && row.egress_profile == payload.egress_profile
+        && row.egress_worker_version_id == payload.egress_worker_version_id
+        && row.billing_kind == reservation.billing_kind
+        && row.billing_contract_hash == reservation.expr_hash
+        && row.billing_snapshot_sha256 == billing_snapshot_sha256
+        && row.provider_response_status == terminal.response_status()
+        && row.provider_response_status == payload.provider_response_status
+        && row.provider_response_sha256 == result.sha256
+        && row.provider_response_sha256 == payload.provider_response_sha256
+        && row.provider_request_id == payload.provider_request_id
+        && row.provider_completed_at == payload.provider_completed_at
+        && row.result_object_key == result.object_key
+        && row.result_object_version == result.object_version
+        && row.result_sha256 == result.sha256
+        && row.result_sha256 == expected_result_sha256
+        && row.result_size == result.size
+        && row.result_content_type == result.content_type
+        && row.usage_schema_version == payload.schema_version
+        && row.usage_parser_contract == payload.parser_contract
+        && row.usage_normalization_contract == payload.normalization_contract
+        && row.usage_present == i64::from(payload.usage_present)
+        && row.reported_usage_fields == payload.reported_usage_fields
+        && row.usage_estimated == i64::from(payload.estimated)
+        && row.usage_receipt_sha256 == expected_receipt_sha256
+        && row.persisted_at >= row.provider_completed_at
+        && payload.operation_id == operation.operation_id
+        && payload.owner_generation == operation.owner_generation
+        && payload.provider_operation_id == operation.provider_operation_id
+        && payload.request_sha256 == operation.input_sha256
+}
+
+fn relay_container_provider_usage_final_quota(
+    payload: &RelayContainerProviderUsageReceiptPayload,
+    reservation: &RelayBillingReservation,
+) -> worker::Result<i64> {
+    if !payload.usage_present || payload.estimated {
+        return Err(worker::Error::RustError(
+            "relay container settlement requires native provider usage".to_string(),
+        ));
+    }
+    match reservation.billing_kind.as_str() {
+        "tiered_expr" => {
+            if payload.responses_web_search_calls > 0
+                || payload.responses_file_search_calls > 0
+                || payload.claude_web_search_calls > 0
+                || payload.image_generation_quality.is_some()
+                || payload.image_generation_size.is_some()
+            {
+                return Err(worker::Error::RustError(
+                    "relay container tiered tool settlement is not yet versioned".to_string(),
+                ));
+            }
+            let snapshots = serde_json::from_str::<BTreeMap<String, TieredBillingSnapshot>>(
+                &reservation.billing_snapshot_json,
+            )
+            .map_err(|err| {
+                worker::Error::RustError(format!(
+                    "relay container tiered settlement snapshot is invalid: {err}"
+                ))
+            })?;
+            let snapshot = snapshots.get(&reservation.selected_group).ok_or_else(|| {
+                worker::Error::RustError(
+                    "relay container selected tiered settlement snapshot is missing".to_string(),
+                )
+            })?;
+            snapshot.validate_durable().map_err(|err| {
+                worker::Error::RustError(format!(
+                    "relay container tiered settlement snapshot is not durable: {err}"
+                ))
+            })?;
+            let used_vars = detect_billing_expr_variables(&snapshot.expr_string);
+            if used_vars.cc1h && !payload.is_anthropic_usage_semantic {
+                return Err(worker::Error::RustError(
+                    "relay container tiered cc1h settlement requires Anthropic usage semantics"
+                        .to_string(),
+                ));
+            }
+            let mut required_fields =
+                RELAY_CONTAINER_USAGE_PROMPT_REPORTED | RELAY_CONTAINER_USAGE_COMPLETION_REPORTED;
+            if used_vars.cr {
+                required_fields |= RELAY_CONTAINER_USAGE_CACHED_REPORTED;
+            }
+            if used_vars.cc {
+                required_fields |= if payload.is_anthropic_usage_semantic {
+                    RELAY_CONTAINER_USAGE_CACHE_CREATION_5M_REPORTED
+                } else {
+                    RELAY_CONTAINER_USAGE_CACHE_CREATION_REPORTED
+                };
+            }
+            if used_vars.cc1h && payload.is_anthropic_usage_semantic {
+                required_fields |= RELAY_CONTAINER_USAGE_CACHE_CREATION_1H_REPORTED;
+            }
+            if used_vars.img {
+                required_fields |= RELAY_CONTAINER_USAGE_IMAGE_INPUT_REPORTED;
+            }
+            if used_vars.img_o {
+                required_fields |= RELAY_CONTAINER_USAGE_IMAGE_OUTPUT_REPORTED;
+            }
+            if used_vars.ai {
+                required_fields |= RELAY_CONTAINER_USAGE_AUDIO_INPUT_REPORTED;
+            }
+            if used_vars.ao {
+                required_fields |= RELAY_CONTAINER_USAGE_AUDIO_OUTPUT_REPORTED;
+            }
+            if used_vars.len && payload.is_anthropic_usage_semantic {
+                required_fields |= RELAY_CONTAINER_USAGE_CACHED_REPORTED
+                    | RELAY_CONTAINER_USAGE_CACHE_CREATION_5M_REPORTED
+                    | RELAY_CONTAINER_USAGE_CACHE_CREATION_1H_REPORTED;
+            }
+            require_relay_container_reported_usage_fields(
+                payload,
+                required_fields,
+                "tiered expression",
+            )?;
+            let usage = TieredTokenUsage {
+                prompt_tokens: payload.prompt_tokens,
+                completion_tokens: payload.completion_tokens,
+                cached_tokens: payload.cached_tokens,
+                cache_creation_tokens: payload.cache_creation_tokens,
+                claude_cache_creation_5m_tokens: payload.cache_creation_tokens_5m,
+                claude_cache_creation_1h_tokens: payload.cache_creation_tokens_1h,
+                image_input_tokens: payload.image_input_tokens,
+                image_output_tokens: payload.image_output_tokens,
+                audio_input_tokens: payload.audio_input_tokens,
+                audio_output_tokens: payload.audio_output_tokens,
+                usage_semantic: if payload.is_anthropic_usage_semantic {
+                    UsageSemantic::Anthropic
+                } else {
+                    UsageSemantic::OpenAi
+                },
+            };
+            let params =
+                build_tiered_token_params(usage, payload.is_anthropic_usage_semantic, used_vars);
+            let result =
+                compute_tiered_quota_from_durable_snapshot(snapshot, params).map_err(|err| {
+                    worker::Error::RustError(format!(
+                        "relay container tiered settlement failed: {err}"
+                    ))
+                })?;
+            if !result.actual_expression_cost.is_finite()
+                || result.actual_expression_cost < 0.0
+                || !result.actual_quota_before_group.is_finite()
+                || result.actual_quota_before_group < 0.0
+                || result.actual_quota_after_group.0 < 0
+            {
+                return Err(worker::Error::RustError(
+                    "relay container tiered settlement produced an invalid quota".to_string(),
+                ));
+            }
+            Ok(result.actual_quota_after_group.0)
+        }
+        "flat" => {
+            let snapshots = serde_json::from_str::<
+                BTreeMap<String, BTreeMap<String, FlatPricingSnapshot>>,
+            >(&reservation.billing_snapshot_json)
+            .map_err(|err| {
+                worker::Error::RustError(format!(
+                    "relay container flat settlement snapshot is invalid: {err}"
+                ))
+            })?;
+            let channel_id = reservation.channel_id.to_string();
+            let snapshot = snapshots
+                .get(&reservation.selected_group)
+                .and_then(|group| group.get(&channel_id))
+                .ok_or_else(|| {
+                    worker::Error::RustError(
+                        "relay container selected flat settlement snapshot is missing".to_string(),
+                    )
+                })?;
+            snapshot.validate().map_err(|err| {
+                worker::Error::RustError(format!(
+                    "relay container flat settlement snapshot is invalid: {err}"
+                ))
+            })?;
+            let mut required_fields =
+                RELAY_CONTAINER_USAGE_PROMPT_REPORTED | RELAY_CONTAINER_USAGE_COMPLETION_REPORTED;
+            if snapshot.model_price.is_none() {
+                if payload.is_anthropic_usage_semantic || snapshot.cache_ratio != 1.0 {
+                    required_fields |= RELAY_CONTAINER_USAGE_CACHED_REPORTED;
+                }
+                if payload.is_anthropic_usage_semantic {
+                    if snapshot.cache_creation_ratio != 1.0
+                        || snapshot.cache_creation_ratio_5m != 1.0
+                        || snapshot.cache_creation_ratio_1h != 1.0
+                    {
+                        required_fields |= RELAY_CONTAINER_USAGE_CACHE_CREATION_REPORTED
+                            | RELAY_CONTAINER_USAGE_CACHE_CREATION_5M_REPORTED
+                            | RELAY_CONTAINER_USAGE_CACHE_CREATION_1H_REPORTED;
+                    }
+                } else if snapshot.cache_creation_ratio != 1.0 {
+                    required_fields |= RELAY_CONTAINER_USAGE_CACHE_CREATION_REPORTED;
+                }
+                if snapshot.image_ratio != 1.0 {
+                    required_fields |= RELAY_CONTAINER_USAGE_IMAGE_INPUT_REPORTED;
+                }
+                if snapshot.uses_audio_detail_billing {
+                    required_fields |= RELAY_CONTAINER_USAGE_AUDIO_INPUT_REPORTED
+                        | RELAY_CONTAINER_USAGE_AUDIO_OUTPUT_REPORTED;
+                } else if snapshot.audio_input_price_per_million != 0.0 {
+                    required_fields |= RELAY_CONTAINER_USAGE_AUDIO_INPUT_REPORTED;
+                }
+            }
+            require_relay_container_reported_usage_fields(
+                payload,
+                required_fields,
+                "flat pricing snapshot",
+            )?;
+            let total_tokens = payload
+                .prompt_tokens
+                .checked_add(payload.completion_tokens)
+                .ok_or_else(|| {
+                    worker::Error::RustError(
+                        "relay container provider usage total overflowed".to_string(),
+                    )
+                })?;
+            let preview_model = reservation.model_name.ends_with("search-preview");
+            let responses_web_search_calls = payload.responses_web_search_calls;
+            let usage = FlatUsage {
+                prompt_tokens: payload.prompt_tokens,
+                completion_tokens: payload.completion_tokens,
+                total_tokens,
+                cached_tokens: payload.cached_tokens,
+                cache_creation_tokens: payload.cache_creation_tokens,
+                cache_creation_5m_tokens: payload.cache_creation_tokens_5m,
+                cache_creation_1h_tokens: payload.cache_creation_tokens_1h,
+                image_tokens: payload.image_input_tokens,
+                audio_input_tokens: payload.audio_input_tokens,
+                audio_output_tokens: payload.audio_output_tokens,
+                web_search_preview_calls: if preview_model {
+                    responses_web_search_calls.max(1)
+                } else {
+                    0
+                },
+                web_search_calls: payload.claude_web_search_calls.saturating_add(
+                    if preview_model {
+                        0
+                    } else {
+                        responses_web_search_calls
+                    },
+                ),
+                file_search_calls: payload.responses_file_search_calls,
+                image_generation_price_class: relay_container_usage_image_price_class(payload)?,
+                is_anthropic_usage_semantic: payload.is_anthropic_usage_semantic,
+            };
+            let result = compute_flat_quota_from_snapshot(&usage, snapshot);
+            if result.quota < 0
+                || result.quota == i64::MAX
+                || !result.tool_surcharge_quota.is_finite()
+                || result.tool_surcharge_quota < 0.0
+            {
+                return Err(worker::Error::RustError(
+                    "relay container flat settlement produced an invalid quota".to_string(),
+                ));
+            }
+            Ok(result.quota)
+        }
+        _ => Err(worker::Error::RustError(
+            "relay container settlement billing kind is unsupported".to_string(),
+        )),
+    }
+}
+
+fn require_relay_container_reported_usage_fields(
+    payload: &RelayContainerProviderUsageReceiptPayload,
+    required_fields: i64,
+    pricing_contract: &str,
+) -> worker::Result<()> {
+    if payload.reported_usage_fields & required_fields == required_fields {
+        Ok(())
+    } else {
+        Err(worker::Error::RustError(format!(
+            "relay container provider usage is incomplete for {pricing_contract}"
+        )))
+    }
+}
+
+async fn validate_relay_container_provider_usage_settlement(
+    db: &D1Database,
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    operation: &RelayContainerOperation,
+    reservation: &RelayBillingReservation,
+) -> worker::Result<Option<i64>> {
+    let RelayContainerFinancialTerminalAction::Settle {
+        provider_usage_receipt_sha256,
+        provider_result_sha256,
+        provider_attempt_generation,
+        ..
+    } = command.action
+    else {
+        return Ok(None);
+    };
+    validate_relay_container_sha256(
+        provider_usage_receipt_sha256,
+        "provider usage receipt sha256",
+    )?;
+    validate_relay_container_sha256(provider_result_sha256, "provider result sha256")?;
+    if provider_attempt_generation != 1 {
+        return Ok(None);
+    }
+    let Some(row) = relay_container_provider_usage_receipt(
+        db,
+        command.operation_id,
+        command.operation_owner_generation,
+        provider_attempt_generation,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let payload = parse_relay_container_provider_usage_payload(&row)?;
+    if !relay_container_provider_usage_row_matches(
+        &row,
+        &payload,
+        operation,
+        reservation,
+        command.terminal,
+        provider_usage_receipt_sha256,
+        provider_result_sha256,
+        provider_attempt_generation,
+    ) {
+        return Ok(None);
+    }
+    relay_container_provider_usage_final_quota(&payload, reservation).map(Some)
 }
 
 /// Commits the Container operation outcome and its financial effects as one D1 transaction.
@@ -2773,6 +3407,21 @@ pub async fn commit_relay_container_financial_terminal(
     let Some(reservation) = relay_billing_reservation(db, command.reservation_key).await? else {
         return Ok(RelayContainerFinancialTerminalOutcome::NotFound);
     };
+    if let RelayContainerFinancialTerminalAction::Settle { final_quota, .. } = command.action {
+        let Some(recomputed_final_quota) = validate_relay_container_provider_usage_settlement(
+            db,
+            &command,
+            &operation,
+            &reservation,
+        )
+        .await?
+        else {
+            return Ok(RelayContainerFinancialTerminalOutcome::Conflict);
+        };
+        if recomputed_final_quota != final_quota {
+            return Ok(RelayContainerFinancialTerminalOutcome::DifferentDecision);
+        }
+    }
     let prepared = prepare_relay_container_financial_terminal(&command, &operation, &reservation)?;
 
     if let Some(outcome) =
@@ -2955,12 +3604,32 @@ fn prepare_relay_container_financial_terminal(
         request_count_delta,
     ) = match (command.action, command.terminal, command.client_response) {
         (
-            RelayContainerFinancialTerminalAction::Settle { final_quota, .. },
+            RelayContainerFinancialTerminalAction::Settle {
+                final_quota,
+                provider_usage_receipt_sha256,
+                provider_result_sha256,
+                provider_attempt_generation,
+                ..
+            },
             RelayContainerOperationTerminalRecord::Completed {
-                response_status, ..
+                response_status,
+                result,
             },
             Some(response),
         ) if response.status == response_status => {
+            validate_relay_container_sha256(
+                provider_usage_receipt_sha256,
+                "provider usage receipt sha256",
+            )?;
+            validate_relay_container_sha256(provider_result_sha256, "provider result sha256")?;
+            if response_status == 202
+                || provider_attempt_generation != 1
+                || result.sha256 != provider_result_sha256
+            {
+                return Err(worker::Error::RustError(
+                    "relay container provider usage settlement binding is invalid".to_string(),
+                ));
+            }
             let final_quota = i64::from(quota_i32(final_quota)?);
             validate_relay_container_client_response(command, response)?;
             let remain_delta = pre_consumed_quota.saturating_sub(final_quota);
@@ -3018,6 +3687,20 @@ fn prepare_relay_container_financial_terminal(
     };
 
     let terminal_result = command.terminal.result();
+    let provider_usage_receipt = match command.action {
+        RelayContainerFinancialTerminalAction::Settle {
+            provider_usage_receipt_sha256,
+            provider_result_sha256,
+            provider_attempt_generation,
+            ..
+        } => Some(serde_json::json!({
+            "attempt_generation": provider_attempt_generation,
+            "result_sha256": provider_result_sha256,
+            "sha256": provider_usage_receipt_sha256,
+        })),
+        RelayContainerFinancialTerminalAction::Refund { .. }
+        | RelayContainerFinancialTerminalAction::RecoveryRequired { .. } => None,
+    };
     let client_response = command.client_response.map(|response| {
         serde_json::json!({
             "content_type": response.content_type,
@@ -3065,6 +3748,7 @@ fn prepare_relay_container_financial_terminal(
             })),
             "to_status": command.terminal.status(),
         },
+        "provider_usage_receipt": provider_usage_receipt,
         "reconciliation_id": operation.reconciliation_id,
         "reconciliation_revision": reconciliation_revision,
         "schema_version": RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION,
@@ -3130,6 +3814,27 @@ fn prepare_relay_container_financial_terminal(
         channel_used_quota_delta,
         request_count_delta,
         reconciliation_revision,
+        provider_usage_receipt_sha256: match command.action {
+            RelayContainerFinancialTerminalAction::Settle {
+                provider_usage_receipt_sha256,
+                ..
+            } => Some(provider_usage_receipt_sha256.to_string()),
+            _ => None,
+        },
+        provider_result_sha256: match command.action {
+            RelayContainerFinancialTerminalAction::Settle {
+                provider_result_sha256,
+                ..
+            } => Some(provider_result_sha256.to_string()),
+            _ => None,
+        },
+        provider_attempt_generation: match command.action {
+            RelayContainerFinancialTerminalAction::Settle {
+                provider_attempt_generation,
+                ..
+            } => Some(provider_attempt_generation),
+            _ => None,
+        },
         outbox_payload_json,
         outbox_payload_sha256,
     })
@@ -3280,6 +3985,20 @@ fn relay_container_terminal_event_statement(
         D1Type::Text(command.admission_sha256),
         D1Type::Text(&operation.client_idempotency_hmac_sha256),
         D1Type::Text(&operation.client_request_sha256),
+        prepared
+            .provider_usage_receipt_sha256
+            .as_deref()
+            .map(D1Type::Text)
+            .unwrap_or(D1Type::Null),
+        prepared
+            .provider_result_sha256
+            .as_deref()
+            .map(D1Type::Text)
+            .unwrap_or(D1Type::Null),
+        match prepared.provider_attempt_generation {
+            Some(value) => relay_container_d1_integer(value, "provider attempt generation")?,
+            None => D1Type::Null,
+        },
     ];
     db.prepare(
         r#"
@@ -3298,12 +4017,14 @@ fn relay_container_terminal_event_statement(
           client_response_sha256, client_response_size,
           client_response_content_type,
           outbox_schema_version, outbox_payload_json, outbox_payload_sha256,
-          created_at
+          created_at,
+          provider_usage_receipt_sha256, provider_result_sha256,
+          provider_attempt_generation
         )
         SELECT
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
           ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-          ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33
+          ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?37, ?38, ?39
         FROM relay_container_operations AS operation
         JOIN relay_billing_reservations AS reservation
           ON reservation.reservation_key = operation.reservation_key
@@ -3686,6 +4407,9 @@ async fn relay_container_financial_terminal_receipt(
           event.client_response_headers_sha256, event.client_response_object_key,
           event.client_response_object_version, event.client_response_sha256,
           event.client_response_size, event.client_response_content_type,
+          event.provider_usage_receipt_sha256,
+          event.provider_result_sha256,
+          event.provider_attempt_generation,
           event.outbox_payload_json, event.outbox_payload_sha256,
           outbox.status AS outbox_status,
           operation.status AS operation_current_status,
@@ -3821,6 +4545,9 @@ fn relay_container_financial_receipt_matches(
         && receipt.client_response_size == response.map(|value| value.size)
         && receipt.client_response_content_type.as_deref()
             == response.map(|value| value.content_type)
+        && receipt.provider_usage_receipt_sha256 == prepared.provider_usage_receipt_sha256
+        && receipt.provider_result_sha256 == prepared.provider_result_sha256
+        && receipt.provider_attempt_generation == prepared.provider_attempt_generation
         && receipt.outbox_payload_json == prepared.outbox_payload_json
         && receipt.outbox_payload_sha256 == prepared.outbox_payload_sha256
         && matches!(
@@ -3973,6 +4700,53 @@ pub async fn relay_container_financial_terminal_receipt_for_operation(
         None => Err(worker::Error::RustError(
             "relay container financial terminal receipt is incomplete".to_string(),
         )),
+    }
+}
+
+fn relay_container_provider_usage_binding_valid(
+    billing_action: &str,
+    provider_usage_receipt_sha256: Option<&str>,
+    provider_result_sha256: Option<&str>,
+    provider_attempt_generation: Option<i64>,
+    contract_provider_usage_receipt: Option<&Value>,
+    operation_result_sha256: Option<&str>,
+) -> bool {
+    match billing_action {
+        "settle" => {
+            let legacy = provider_usage_receipt_sha256.is_none()
+                && provider_result_sha256.is_none()
+                && provider_attempt_generation.is_none()
+                && contract_provider_usage_receipt.is_none();
+            let bound = provider_usage_receipt_sha256.is_some_and(|value| {
+                validate_relay_container_sha256(value, "provider usage receipt sha256").is_ok()
+            }) && provider_result_sha256.is_some_and(|value| {
+                validate_relay_container_sha256(value, "provider result sha256").is_ok()
+            }) && provider_attempt_generation == Some(1)
+                && contract_provider_usage_receipt
+                    .and_then(Value::as_object)
+                    .is_some_and(|value| value.len() == 3)
+                && contract_provider_usage_receipt
+                    .and_then(|value| value.get("sha256"))
+                    .and_then(Value::as_str)
+                    == provider_usage_receipt_sha256
+                && contract_provider_usage_receipt
+                    .and_then(|value| value.get("result_sha256"))
+                    .and_then(Value::as_str)
+                    == provider_result_sha256
+                && contract_provider_usage_receipt
+                    .and_then(|value| value.get("attempt_generation"))
+                    .and_then(Value::as_i64)
+                    == provider_attempt_generation
+                && provider_result_sha256 == operation_result_sha256;
+            legacy || bound
+        }
+        "refund" | "recovery_required" => {
+            provider_usage_receipt_sha256.is_none()
+                && provider_result_sha256.is_none()
+                && provider_attempt_generation.is_none()
+                && contract_provider_usage_receipt.map_or(true, Value::is_null)
+        }
+        _ => false,
     }
 }
 
@@ -4163,6 +4937,17 @@ pub(crate) fn relay_container_financial_receipt_integrity_valid(
             .and_then(Value::as_str)
             != receipt.client_response_content_type.as_deref()
     {
+        return false;
+    }
+    let provider_usage_binding_valid = relay_container_provider_usage_binding_valid(
+        &receipt.billing_action,
+        receipt.provider_usage_receipt_sha256.as_deref(),
+        receipt.provider_result_sha256.as_deref(),
+        receipt.provider_attempt_generation,
+        contract.get("provider_usage_receipt"),
+        receipt.operation_result_sha256.as_deref(),
+    );
+    if !provider_usage_binding_valid {
         return false;
     }
     let expected_billing_status = match receipt.billing_action.as_str() {
@@ -4451,7 +5236,12 @@ fn relay_container_terminal_outbox_contract_integrity_valid(
     let Some(contract_billing) = contract.get("billing") else {
         return false;
     };
-    if contract_object.len() != 10
+    let provider_usage_receipt = contract.get("provider_usage_receipt");
+    let contract_shape_valid = match provider_usage_receipt {
+        Some(_) => contract_object.len() == 11,
+        None => contract_object.len() == 10,
+    };
+    if !contract_shape_valid
         || contract_operation.as_object().map(|value| value.len()) != Some(7)
         || contract_billing.as_object().map(|value| value.len()) != Some(12)
         || contract.get("schema_version").and_then(Value::as_i64)
@@ -4537,6 +5327,16 @@ fn relay_container_terminal_outbox_contract_integrity_valid(
         .get("response_code")
         .and_then(Value::as_str);
     let result = contract_operation.get("result");
+    let provider_usage_binding_valid = relay_container_provider_usage_binding_valid(
+        &receipt.billing_action,
+        receipt.provider_usage_receipt_sha256.as_deref(),
+        receipt.provider_result_sha256.as_deref(),
+        receipt.provider_attempt_generation,
+        provider_usage_receipt,
+        result
+            .and_then(|value| value.get("sha256"))
+            .and_then(Value::as_str),
+    );
     let operation_terminal_valid = match receipt.operation_status.as_str() {
         "completed" => {
             receipt.billing_action == "settle"
@@ -4579,6 +5379,7 @@ fn relay_container_terminal_outbox_contract_integrity_valid(
         _ => false,
     };
     operation_terminal_valid
+        && provider_usage_binding_valid
         && contract.get("client_response").is_some_and(|response| {
             relay_container_terminal_outbox_client_response_integrity_valid(receipt, response)
         })
@@ -5825,19 +6626,30 @@ pub async fn relay_container_operation_schema_ready(db: &D1Database) -> worker::
 }
 
 pub async fn relay_container_provider_egress_schema_ready(db: &D1Database) -> worker::Result<bool> {
-    let args = [D1Type::Text(
-        RELAY_CONTAINER_PROVIDER_EGRESS_GRANT_MIGRATION,
-    )];
+    let args = [
+        D1Type::Text(RELAY_CONTAINER_PROVIDER_EGRESS_GRANT_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_PROVIDER_USAGE_RECEIPT_MIGRATION),
+    ];
     let row = db
         .prepare(
             r#"
             SELECT COUNT(DISTINCT name) AS count
             FROM d1_migrations
-            WHERE name = ?1
+            WHERE name IN (?1, ?2)
               AND EXISTS (
                 SELECT 1 FROM sqlite_master
                 WHERE type = 'table'
                   AND name = 'relay_container_provider_egress_grants'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_provider_usage_receipts'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_provider_usage_receipt_identities'
               )
               AND (
                 SELECT COUNT(1) FROM sqlite_master
@@ -5845,15 +6657,23 @@ pub async fn relay_container_provider_egress_schema_ready(db: &D1Database) -> wo
                   AND name IN (
                     'relay_container_provider_egress_grant_insert_authority_guard',
                     'relay_container_provider_egress_grant_update_guard',
-                    'relay_container_provider_egress_grant_delete_guard'
+                    'relay_container_provider_egress_grant_delete_guard',
+                    'relay_container_provider_usage_receipt_insert_authority_guard',
+                    'relay_container_provider_usage_receipt_identity_guard',
+                    'relay_container_provider_usage_receipt_identity_update_guard',
+                    'relay_container_provider_usage_receipt_identity_delete_guard',
+                    'relay_container_provider_usage_receipt_update_guard',
+                    'relay_container_provider_usage_receipt_delete_guard',
+                    'relay_container_terminal_event_provider_usage_guard',
+                    'relay_container_operation_provider_usage_terminal_guard'
                   )
-              ) = 3
+              ) = 11
             "#,
         )
         .bind_refs(&args)?
         .first::<CountRow>(None)
         .await?;
-    Ok(row.map(|row| row.count == 1).unwrap_or(false))
+    Ok(row.map(|row| row.count == 2).unwrap_or(false))
 }
 
 pub async fn relay_container_reconciliation_schema_ready(db: &D1Database) -> worker::Result<bool> {
@@ -20215,6 +21035,51 @@ mod tests {
         }
     }
 
+    fn relay_container_test_provider_usage_payload() -> RelayContainerProviderUsageReceiptPayload {
+        RelayContainerProviderUsageReceiptPayload {
+            schema_version: 1,
+            parser_contract: "openai-chat-completions-usage-v1".to_string(),
+            normalization_contract: "billing-token-normalization-v1".to_string(),
+            source: "provider_response".to_string(),
+            estimated: false,
+            operation_id: "relayreserve-test".to_string(),
+            owner_generation: 2,
+            attempt_generation: 1,
+            provider_operation_id: "provider-operation-001".to_string(),
+            request_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_string(),
+            egress_profile: "openai-chat-completions-canary-v1".to_string(),
+            egress_worker_version_id: "worker-version-001".to_string(),
+            provider_response_status: 200,
+            provider_response_sha256:
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
+            provider_request_id: Some("request-001".to_string()),
+            provider_completed_at: 140,
+            usage_present: true,
+            reported_usage_fields: 0b111,
+            prompt_tokens: 1_000,
+            completion_tokens: 500,
+            total_tokens: 1_500,
+            cached_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_creation_tokens_5m: 0,
+            cache_creation_tokens_1h: 0,
+            image_input_tokens: 0,
+            image_output_tokens: 0,
+            audio_input_tokens: 0,
+            audio_output_tokens: 0,
+            is_anthropic_usage_semantic: false,
+            usage_semantic_source: "openai_default".to_string(),
+            provider_cost_usd: None,
+            cache_creation_source: "none".to_string(),
+            responses_web_search_calls: 0,
+            responses_file_search_calls: 0,
+            claude_web_search_calls: 0,
+            image_generation_quality: None,
+            image_generation_size: None,
+        }
+    }
+
     fn relay_container_test_client_response<'a>(
         status: i64,
         headers_sha256: &'a str,
@@ -20270,6 +21135,9 @@ mod tests {
             client_response_sha256: response.map(|value| value.sha256.to_string()),
             client_response_size: response.map(|value| value.size),
             client_response_content_type: response.map(|value| value.content_type.to_string()),
+            provider_usage_receipt_sha256: prepared.provider_usage_receipt_sha256.clone(),
+            provider_result_sha256: prepared.provider_result_sha256.clone(),
+            provider_attempt_generation: prepared.provider_attempt_generation,
             outbox_payload_json: prepared.outbox_payload_json.clone(),
             outbox_payload_sha256: prepared.outbox_payload_sha256.clone(),
             outbox_status: "pending".to_string(),
@@ -20728,6 +21596,11 @@ mod tests {
                 action: RelayContainerFinancialTerminalAction::Settle {
                     final_quota,
                     finalization_reason: "container_usage_settlement",
+                    provider_usage_receipt_sha256:
+                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    provider_result_sha256:
+                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    provider_attempt_generation: 1,
                 },
                 client_response: Some(response),
                 audit_payload_json: audit_payload,
@@ -20763,6 +21636,201 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn relay_container_provider_usage_recomputes_tiered_quota_and_rejects_fallbacks() {
+        let snapshot = cinatoken_billing::estimate_tiered_billing_snapshot_with_request_at(
+            "gpt-test",
+            r#"tier("default", p * 2 + c * 10)"#,
+            cinatoken_billing::TokenParams {
+                p: 100.0,
+                c: 50.0,
+                ..cinatoken_billing::TokenParams::default()
+            },
+            1.0,
+            cinatoken_billing::RequestInput::default(),
+            1_700_000_000,
+        )
+        .unwrap();
+        let mut reservation = relay_billing_test_reservation("reserved");
+        reservation.billing_kind = "tiered_expr".to_string();
+        reservation.expr_hash = snapshot.expr_hash.clone();
+        reservation.selected_group = "default".to_string();
+        reservation.billing_snapshot_json =
+            serde_json::to_string(&BTreeMap::from([("default".to_string(), snapshot)])).unwrap();
+
+        let payload = relay_container_test_provider_usage_payload();
+        assert_eq!(
+            relay_container_provider_usage_final_quota(&payload, &reservation).unwrap(),
+            3_500
+        );
+
+        let mut missing = payload.clone();
+        missing.usage_present = false;
+        missing.reported_usage_fields = 0;
+        assert!(relay_container_provider_usage_final_quota(&missing, &reservation).is_err());
+
+        let mut unversioned_tool_charge = payload;
+        unversioned_tool_charge.responses_web_search_calls = 1;
+        assert!(
+            relay_container_provider_usage_final_quota(&unversioned_tool_charge, &reservation)
+                .is_err()
+        );
+
+        let cache_snapshot = cinatoken_billing::estimate_tiered_billing_snapshot_with_request_at(
+            "gpt-test",
+            r#"tier("default", p * 2 + c * 10 + cr * 0.5)"#,
+            cinatoken_billing::TokenParams {
+                p: 100.0,
+                c: 50.0,
+                cr: 0.0,
+                ..cinatoken_billing::TokenParams::default()
+            },
+            1.0,
+            cinatoken_billing::RequestInput::default(),
+            1_700_000_000,
+        )
+        .unwrap();
+        reservation.expr_hash = cache_snapshot.expr_hash.clone();
+        reservation.billing_snapshot_json =
+            serde_json::to_string(&BTreeMap::from([("default".to_string(), cache_snapshot)]))
+                .unwrap();
+        let mut missing_cache_evidence = relay_container_test_provider_usage_payload();
+        missing_cache_evidence.reported_usage_fields =
+            RELAY_CONTAINER_USAGE_PROMPT_REPORTED | RELAY_CONTAINER_USAGE_COMPLETION_REPORTED;
+        missing_cache_evidence.total_tokens = 0;
+        assert!(
+            relay_container_provider_usage_final_quota(&missing_cache_evidence, &reservation)
+                .is_err()
+        );
+        missing_cache_evidence.reported_usage_fields |= RELAY_CONTAINER_USAGE_CACHED_REPORTED;
+        assert_eq!(
+            relay_container_provider_usage_final_quota(&missing_cache_evidence, &reservation)
+                .unwrap(),
+            3_500
+        );
+
+        let cc1h_snapshot = cinatoken_billing::estimate_tiered_billing_snapshot_with_request_at(
+            "gpt-test",
+            r#"tier("default", p * 2 + c * 10 + cc1h * 6)"#,
+            cinatoken_billing::TokenParams {
+                p: 100.0,
+                c: 50.0,
+                ..cinatoken_billing::TokenParams::default()
+            },
+            1.0,
+            cinatoken_billing::RequestInput::default(),
+            1_700_000_000,
+        )
+        .unwrap();
+        reservation.expr_hash = cc1h_snapshot.expr_hash.clone();
+        reservation.billing_snapshot_json =
+            serde_json::to_string(&BTreeMap::from([("default".to_string(), cc1h_snapshot)]))
+                .unwrap();
+        let error = relay_container_provider_usage_final_quota(
+            &relay_container_test_provider_usage_payload(),
+            &reservation,
+        )
+        .expect_err("OpenAI-semantic cc1h settlement must fail closed");
+        assert!(error
+            .to_string()
+            .contains("requires Anthropic usage semantics"));
+
+        let nonfinite_snapshot =
+            cinatoken_billing::estimate_tiered_billing_snapshot_with_request_at(
+                "gpt-test",
+                r#"tier("default", p / (c - 500))"#,
+                cinatoken_billing::TokenParams {
+                    p: 100.0,
+                    c: 501.0,
+                    ..cinatoken_billing::TokenParams::default()
+                },
+                1.0,
+                cinatoken_billing::RequestInput::default(),
+                1_700_000_000,
+            )
+            .unwrap();
+        reservation.expr_hash = nonfinite_snapshot.expr_hash.clone();
+        reservation.billing_snapshot_json = serde_json::to_string(&BTreeMap::from([(
+            "default".to_string(),
+            nonfinite_snapshot,
+        )]))
+        .unwrap();
+        let error = relay_container_provider_usage_final_quota(
+            &relay_container_test_provider_usage_payload(),
+            &reservation,
+        )
+        .expect_err("non-finite tiered quota must fail closed");
+        assert!(error.to_string().contains("produced an invalid quota"));
+    }
+
+    #[test]
+    fn relay_container_provider_usage_derives_flat_total_and_requires_priced_fields() {
+        let mut snapshot = cinatoken_billing::FlatPricingSnapshot::from_config(
+            "gpt-test",
+            "default",
+            &cinatoken_billing::PricingConfig::new(),
+            1.0,
+            0,
+        );
+        snapshot.mode = cinatoken_billing::FlatBillingMode::PerToken;
+        snapshot.model_price = None;
+        snapshot.model_ratio = 1.0;
+        snapshot.completion_ratio = 1.0;
+        snapshot.group_ratio = 1.0;
+        snapshot.cache_ratio = 1.0;
+        snapshot.cache_creation_ratio = 1.0;
+        snapshot.cache_creation_ratio_5m = 1.0;
+        snapshot.cache_creation_ratio_1h = 1.0;
+        snapshot.image_ratio = 1.0;
+        snapshot.audio_ratio = 1.0;
+        snapshot.audio_completion_ratio = 1.0;
+        snapshot.uses_audio_detail_billing = false;
+        snapshot.audio_input_price_per_million = 0.0;
+
+        let mut reservation = relay_billing_test_reservation("reserved");
+        reservation.billing_kind = "flat".to_string();
+        reservation.model_name = "gpt-test".to_string();
+        reservation.selected_group = "default".to_string();
+        reservation.billing_snapshot_json = serde_json::to_string(&BTreeMap::from([(
+            "default".to_string(),
+            BTreeMap::from([(reservation.channel_id.to_string(), snapshot.clone())]),
+        )]))
+        .unwrap();
+
+        let mut payload = relay_container_test_provider_usage_payload();
+        payload.reported_usage_fields =
+            RELAY_CONTAINER_USAGE_PROMPT_REPORTED | RELAY_CONTAINER_USAGE_COMPLETION_REPORTED;
+        payload.total_tokens = 0;
+        assert_eq!(
+            relay_container_provider_usage_final_quota(&payload, &reservation).unwrap(),
+            1_500
+        );
+
+        snapshot.cache_ratio = 0.5;
+        reservation.billing_snapshot_json = serde_json::to_string(&BTreeMap::from([(
+            "default".to_string(),
+            BTreeMap::from([(reservation.channel_id.to_string(), snapshot.clone())]),
+        )]))
+        .unwrap();
+        assert!(relay_container_provider_usage_final_quota(&payload, &reservation).is_err());
+        payload.reported_usage_fields |= RELAY_CONTAINER_USAGE_CACHED_REPORTED;
+        assert_eq!(
+            relay_container_provider_usage_final_quota(&payload, &reservation).unwrap(),
+            1_500
+        );
+
+        snapshot.cache_ratio = 1.0;
+        snapshot.model_ratio = f64::MAX;
+        reservation.billing_snapshot_json = serde_json::to_string(&BTreeMap::from([(
+            "default".to_string(),
+            BTreeMap::from([(reservation.channel_id.to_string(), snapshot)]),
+        )]))
+        .unwrap();
+        let error = relay_container_provider_usage_final_quota(&payload, &reservation)
+            .expect_err("overflowed flat quota must fail closed");
+        assert!(error.to_string().contains("produced an invalid quota"));
     }
 
     #[test]
@@ -20885,6 +21953,11 @@ mod tests {
             action: RelayContainerFinancialTerminalAction::Settle {
                 final_quota: 80,
                 finalization_reason: "container_recovery_settlement",
+                provider_usage_receipt_sha256:
+                    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                provider_result_sha256:
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                provider_attempt_generation: 1,
             },
             client_response: Some(response),
             audit_payload_json: audit_payload,
@@ -21105,6 +22178,11 @@ mod tests {
             action: RelayContainerFinancialTerminalAction::Settle {
                 final_quota: 80,
                 finalization_reason: "container_recovery_settlement",
+                provider_usage_receipt_sha256:
+                    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                provider_result_sha256:
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                provider_attempt_generation: 1,
             },
             client_response: Some(response),
             audit_payload_json: audit_payload,
@@ -21280,6 +22358,11 @@ mod tests {
             action: RelayContainerFinancialTerminalAction::Settle {
                 final_quota: 100,
                 finalization_reason: "container_usage_settlement",
+                provider_usage_receipt_sha256:
+                    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                provider_result_sha256:
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                provider_attempt_generation: 1,
             },
             client_response: Some(response),
             audit_payload_json: "{\"action\":\"container_terminal\"}",
@@ -21359,7 +22442,7 @@ mod tests {
     }
 
     #[test]
-    fn relay_container_provider_egress_schema_ready_requires_0047_contract() {
+    fn relay_container_provider_egress_schema_ready_requires_0047_and_0048_contracts() {
         let source = include_str!("d1_repositories.rs");
         let start = source
             .find("pub async fn relay_container_provider_egress_schema_ready")
@@ -21370,18 +22453,29 @@ mod tests {
         let readiness = &source[start..end];
 
         assert!(readiness.contains("RELAY_CONTAINER_PROVIDER_EGRESS_GRANT_MIGRATION"));
+        assert!(readiness.contains("RELAY_CONTAINER_PROVIDER_USAGE_RECEIPT_MIGRATION"));
         assert!(readiness.contains("relay_container_provider_egress_grants"));
+        assert!(readiness.contains("relay_container_provider_usage_receipts"));
+        assert!(readiness.contains("relay_container_provider_usage_receipt_identities"));
         for trigger in [
             "relay_container_provider_egress_grant_insert_authority_guard",
             "relay_container_provider_egress_grant_update_guard",
             "relay_container_provider_egress_grant_delete_guard",
+            "relay_container_provider_usage_receipt_insert_authority_guard",
+            "relay_container_provider_usage_receipt_identity_guard",
+            "relay_container_provider_usage_receipt_identity_update_guard",
+            "relay_container_provider_usage_receipt_identity_delete_guard",
+            "relay_container_provider_usage_receipt_update_guard",
+            "relay_container_provider_usage_receipt_delete_guard",
+            "relay_container_terminal_event_provider_usage_guard",
+            "relay_container_operation_provider_usage_terminal_guard",
         ] {
             assert!(
                 readiness.contains(trigger),
                 "missing provider egress readiness trigger {trigger}"
             );
         }
-        assert!(readiness.contains(") = 3"));
+        assert!(readiness.contains(") = 11"));
     }
 
     #[test]

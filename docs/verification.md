@@ -6882,3 +6882,109 @@ not persisted at the egress boundary or cryptographically linked to the
 terminal financial event; provider-native idempotency/lookup and real
 fault/load/cost evidence are also outstanding. Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+## Migration 0048 Immutable Provider Usage Receipt Verification (2026-07-17)
+
+This overlay supersedes the preceding statement that provider usage is not
+persisted or linked locally. It describes the local 0048 contract and its
+required release evidence. It does not claim a remote D1 apply,
+Worker/Controller/Container deployment, binding or secret change, provider
+request, financial mutation, or traffic switch.
+
+The receipt verifier must lock the exact v1 constants and all 38 canonical
+fields in this order:
+
+```text
+schema_version, parser_contract, normalization_contract, source, estimated,
+operation_id, owner_generation, attempt_generation, provider_operation_id,
+request_sha256, egress_profile, egress_worker_version_id,
+provider_response_status, provider_response_sha256, provider_request_id,
+provider_completed_at, usage_present, reported_usage_fields, prompt_tokens,
+completion_tokens, total_tokens, cached_tokens, cache_creation_tokens,
+cache_creation_tokens_5m, cache_creation_tokens_1h, image_input_tokens,
+image_output_tokens, audio_input_tokens, audio_output_tokens,
+is_anthropic_usage_semantic, usage_semantic_source, provider_cost_usd,
+cache_creation_source, responses_web_search_calls,
+responses_file_search_calls, claude_web_search_calls,
+image_generation_quality, image_generation_size
+```
+
+The fixed values are schema 1, parser
+`openai-chat-completions-usage-v1`, normalization
+`billing-token-normalization-v1`, source `provider_response`,
+`estimated=false`, and egress profile
+`openai-chat-completions-canary-v1`. Tests must reject extra/reordered/missing
+fields, noncanonical serialization, digest mismatch, canonical JSON over 8,192
+bytes, encoded receipt over 12,288 bytes, unknown mask bits, and nonzero values
+whose presence bit is clear.
+
+The presence-mask cases cover bits 0 through 10 and maximum 2047. Prompt plus
+completion, bits 0 and 1, define `usage_present`; prompt/completion without bit
+2 is valid. The flat settlement test must prove a nonzero charge using the
+checked prompt-plus-completion sum while the provider `total_tokens` field is
+absent. A separate matrix removes each cache, cache-creation, image, or audio
+bit needed by the frozen tiered expression or flat snapshot and requires a
+fail-closed error; neutral/unreferenced categories remain optional. Tiered
+tests also reject unversioned tool charges and non-finite/negative cost or
+quota results.
+
+The D1 replay and negative suite verifies:
+
+- all 48 migrations apply in order and 0048 adds the receipt table, separate
+  identity ledger, result-identity index, three receipt guards, three identity
+  guards, terminal linkage columns/guard, and completion guard;
+- exact receipt insert succeeds only against the matching immutable 0047
+  grant, operation, reservation, billing snapshot digest, R2 result identity,
+  and canonical receipt;
+- receipt and identity updates/deletes fail, and `INSERT OR REPLACE` fails with
+  `PRAGMA recursive_triggers=OFF` because the append-only identity ledger
+  survives SQLite's implicit receipt delete;
+- provider status 202 can be inserted as evidence but both settlement and
+  completion fail; a settle with a client status different from the receipt
+  provider status also fails;
+- settle requires usage present, non-estimated evidence, attempt 1, exact
+  receipt/result hashes, persisted-before-terminal ordering, and matching
+  operation response status; refund/recovery must not carry provider linkage;
+- raw negative, fractional, or greater-than-`i32::MAX` recognized token values,
+  non-Anthropic `cc1h`, non-finite tiered output, and a flat `i64::MAX`
+  calculator overflow sentinel fail closed;
+- a true 0047 writer on schema 0048 cannot create an unlinked settle, proving
+  the intentional drain-before-0048 safety boundary rather than rolling-write
+  compatibility.
+
+The Controller protocol suite must prove the operational order and each crash
+boundary: pre-send 0048 schema readiness; complete egress body drain under the
+same absolute upstream deadline; forced final `Cache-Control: no-store`; strict
+receipt header/canonical/hash/status/body identity; R2 create-only write and
+metadata-schema-4 exact replay; D1 `INSERT OR IGNORE` followed by complete
+same-session readback; D1 before DO result attachment; and no provider resend
+after any post-send ambiguous outcome. An R2 conflict, D1 zero-row write without
+exact readback, receipt mismatch, DO attachment failure, or terminal-write loss
+must not become public success.
+
+The local release command set is:
+
+```powershell
+python tools/verify_sqlite.py
+cargo test -p cinatoken-relay
+cargo test -p cinatoken-container-egress
+cargo test -p cinatoken-worker --lib
+cargo check -p cinatoken-container-egress --target wasm32-unknown-unknown
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run test:container-controller
+bun run check:container-controller
+cargo fmt --all -- --check
+git diff --check
+```
+
+Passing these commands is local implementation evidence only. Production is
+still **NO-GO** because D1 cannot independently evaluate arbitrary billing
+expressions or attest final amount authority; the DO ledger does not store and
+compare the receipt hash; reconciliation does not close the
+R2/D1/DO/terminal/provider-invoice hash loop; no production terminal caller is
+enabled; provider-native idempotency/lookup is absent; and provider completion
+before the first R2 create remains an unrecoverable ambiguous window. A remote
+0048 apply/readback, old-writer and in-flight-operation drain, deployed version
+inventory, real fault/load/cost and financial convergence, disable-first
+rollback rehearsal, and C1-C5/G1-G8 approval remain mandatory. No deploy or
+secret command was run; all gates remain false and Go/VPS remains authoritative.

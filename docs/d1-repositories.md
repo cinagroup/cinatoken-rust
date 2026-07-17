@@ -32,7 +32,15 @@ This module owns Worker-specific storage operations:
   event/outbox, and recovery-predecessor trigger names. It is compiled and
   source-tested but has no production call site yet; every Container operation
   path remains default-off and unwired, so this helper is not an active runtime
-  gate.
+  gate;
+- a migration-0048 provider-usage schema-readiness helper requiring both
+  receipt and identity tables, their six immutable guards, the terminal linkage
+  guard, and the operation-completion guard; and
+- exact immutable provider-receipt lookup plus flat/tiered settlement
+  verification from the frozen reservation snapshot. The repository rejects
+  missing priced usage fields, derives flat total from prompt plus completion,
+  and binds the resulting financial terminal event to receipt/result hashes,
+  attempt generation, and provider/client status.
 
 `relay.rs` remains responsible for request parsing, auth validation policy,
 cache orchestration, upstream forwarding, and audit payload construction. D1
@@ -73,3 +81,97 @@ a non-negative Unix second representable through year 9999. The relay owns
 request projection and serialization; D1 owns immutable storage. Historical
 empty rows remain readable for quarantine and migration accounting and are not
 silently upgraded.
+
+## Migration 0048 Provider Usage Receipt Boundary
+
+Migration 0048 adds D1 authority after the provider body and R2 result exist.
+The Controller remains the only receipt writer. It performs a pre-send schema
+read through a `first-primary` session; after provider completion it writes the
+result to R2 with create-only semantics, then runs one D1
+`INSERT OR IGNORE` and reads the row back through the same session. The Worker
+repository is the terminal consumer: it does not reconstruct a receipt from a
+public response or trust Controller-computed quota.
+
+The canonical v1 JSON is limited to 8,192 UTF-8 bytes and has exactly 38 fields
+in declaration/wire order:
+
+```text
+schema_version, parser_contract, normalization_contract, source, estimated,
+operation_id, owner_generation, attempt_generation, provider_operation_id,
+request_sha256, egress_profile, egress_worker_version_id,
+provider_response_status, provider_response_sha256, provider_request_id,
+provider_completed_at, usage_present, reported_usage_fields, prompt_tokens,
+completion_tokens, total_tokens, cached_tokens, cache_creation_tokens,
+cache_creation_tokens_5m, cache_creation_tokens_1h, image_input_tokens,
+image_output_tokens, audio_input_tokens, audio_output_tokens,
+is_anthropic_usage_semantic, usage_semantic_source, provider_cost_usd,
+cache_creation_source, responses_web_search_calls,
+responses_file_search_calls, claude_web_search_calls,
+image_generation_quality, image_generation_size
+```
+
+The repository requires schema 1, parser
+`openai-chat-completions-usage-v1`, normalization
+`billing-token-normalization-v1`, source `provider_response`,
+`estimated=false`, and egress profile
+`openai-chat-completions-canary-v1`. It reserializes the parsed object and
+requires byte equality, recomputes SHA-256, validates every identity/result
+column against the JSON, and rejects extra or missing fields. The private
+base64url header is bounded separately to 12,288 bytes; D1 stores canonical
+JSON and its lowercase digest, not the encoded transport form.
+
+`reported_usage_fields` has only these valid bits: 0 prompt, 1 completion,
+2 total, 3 cached, 4 aggregate cache creation, 5 five-minute cache creation,
+6 one-hour cache creation, 7 image input, 8 image output, 9 audio input, and
+10 audio output. Its maximum is 2047. Missing normalized values are zero with
+their bit clear; a reported zero keeps its bit. `usage_present` is true exactly
+when bits 0 and 1 are both set. The provider-total bit is optional: flat
+settlement computes a checked `prompt_tokens + completion_tokens`, so an absent
+provider `total_tokens` cannot turn valid usage into zero or become an alternate
+amount authority.
+
+Required-field validation is derived from the frozen price contract. Tiered
+expressions require the corresponding `cr`, `cc`, Anthropic `cc1h`, `img`,
+`img_o`, `ai`, and `ao` mask bits; Anthropic `len` also requires cached and both
+split cache-creation bits. Flat per-token snapshots require cached/cache-
+creation/image/audio bits whenever the selected ratios or audio mode price
+those categories. A missing priced bit rejects. Fixed-price token categories
+do not invent mask requirements, while tiered tool/image-generation settlement
+remains unversioned and rejects. Non-finite or negative tiered intermediates,
+unknown bits, nonzero values with a clear bit, and arithmetic overflow all fail
+closed.
+
+The receipt table is append-only and has a separate
+`relay_container_provider_usage_receipt_identities` ledger for the
+operation/owner/attempt, provider-operation, and R2 key/version identities.
+Receipt and identity updates/deletes are forbidden. The receipt's `AFTER
+INSERT` identity guard means `INSERT OR REPLACE` also aborts when
+`recursive_triggers=OFF`: SQLite may implicitly delete the receipt row, but it
+does not remove the separate identity row. Exact replay is therefore only
+`INSERT OR IGNORE` followed by complete readback.
+
+For settlement, the repository requires a canonical actual receipt with
+prompt/completion present, provider status other than 202, exact attempt 1,
+and exact receipt/result hashes. It recomputes quota from the frozen tiered or
+flat snapshot and prepares an event carrying the receipt linkage. D1 then
+requires the terminal event's client status and the completed operation status
+to equal the receipt provider status. A status-202 receipt may remain immutable
+evidence, but cannot complete or settle. Refund and `recovery_required` paths
+must carry no provider linkage.
+
+This boundary still is not independent D1 amount authority. Arbitrary billing
+expressions execute in the Worker before the D1 batch; database triggers attest
+linkage and ordering, not expression semantics or the final amount. The shard
+DO currently records only the R2 result manifest and does not store/compare the
+receipt hash, and the reconciliation path does not yet compare receipt identity
+across R2, D1, DO, terminal event, and provider invoice. Those are production
+NO-GO items, along with the absent production terminal caller,
+provider-native idempotency/lookup, and the post-provider/pre-R2 ambiguity.
+
+A true 0047 settle writer is deliberately incompatible with schema 0048 because
+it omits receipt linkage. Apply 0048 only after all such writers and in-flight
+provider work are drained or quarantined with every gate false. Rollback is
+disable-first and retains schema, rows, triggers, R2 evidence, and migration
+history; a rolled-back 0047 artifact must have no provider traffic. No remote
+schema, deployment, binding, or secret action is implied by this repository
+contract. Go/VPS remains authoritative and production remains **NO-GO**.

@@ -911,3 +911,73 @@ not an authorization to apply 0046 or enable a runtime gate.
 | N/N-1 | New Controller fails closed without 0047; old Controller can bypass grants on 0047 | Remove/read back every old Controller before provider enable; broker target first, caller second; disable-first rollback | Blocked |
 | Usage recovery | Grant does not persist actual provider usage or link a terminal financial receipt | Durable usage receipt, exact snapshot-only recovery, terminal linkage, duplicate/ambiguity convergence | Blocked |
 | Remote status | No remote migration, deploy, provider, secret, financial, or traffic action occurred | Real Linux/R2/provider faults, idempotency/lookup, load/cost, rollback, C1-C5/G1-G8 | **NO-GO** |
+
+## 2026-07-17 Migration 0048 Immutable Provider Usage Receipt Matrix
+
+This matrix supersedes only the local implementation status of the 0047
+`Usage recovery` row. It does not close that row's production acceptance
+criteria. Migration 0048 is a local candidate: no remote schema, deployment,
+secret, provider, financial, or traffic authority changed.
+
+Receipt schema 1 freezes one canonical 38-field JSON object in this exact
+order:
+
+`schema_version`, `parser_contract`, `normalization_contract`, `source`,
+`estimated`, `operation_id`, `owner_generation`, `attempt_generation`,
+`provider_operation_id`, `request_sha256`, `egress_profile`,
+`egress_worker_version_id`, `provider_response_status`,
+`provider_response_sha256`, `provider_request_id`, `provider_completed_at`,
+`usage_present`, `reported_usage_fields`, `prompt_tokens`,
+`completion_tokens`, `total_tokens`, `cached_tokens`,
+`cache_creation_tokens`, `cache_creation_tokens_5m`,
+`cache_creation_tokens_1h`, `image_input_tokens`, `image_output_tokens`,
+`audio_input_tokens`, `audio_output_tokens`,
+`is_anthropic_usage_semantic`, `usage_semantic_source`, `provider_cost_usd`,
+`cache_creation_source`, `responses_web_search_calls`,
+`responses_file_search_calls`, `claude_web_search_calls`,
+`image_generation_quality`, and `image_generation_size`.
+
+The fixed contracts are schema `1`, parser
+`openai-chat-completions-usage-v1`, normalization
+`billing-token-normalization-v1`, source `provider_response`,
+`estimated=false`, and egress profile `openai-chat-completions-canary-v1`.
+Canonical JSON is bounded to 8,192 bytes and its private header encoding to
+12,288 bytes.
+
+Local audit anchors are
+`migrations/d1/0048_relay_container_provider_usage_receipts.sql`,
+`crates/relay/src/usage_receipt.rs`,
+`crates/container-egress/src/lib.rs`,
+`services/container-controller/src/provider_egress_gateway.ts`,
+`services/container-controller/src/storage_gateway.ts`,
+`crates/worker/src/d1_repositories.rs`, the adjacent Rust/Controller tests,
+and the migration fixtures in `tools/verify_sqlite.py`.
+
+| Gate | Current local evidence | Production acceptance | Status |
+| --- | --- | --- | --- |
+| Pre-send schema fence | The Controller checks the 0048 receipt table, six-column identity ledger, exact required columns, and eight named guards before broker readiness, DO dispatch, or provider I/O | Remote account/name/UUID-bound schema readback and a fault proving a missing or drifted 0048 object prevents dispatch count and provider count from increasing | Local only |
+| Exact evidence chain | Local components bind the 0047 grant and frozen billing snapshot to broker profile/version, request/admission, provider response, R2 result/receipt metadata, D1 receipt, and terminal event fields, but no production caller completes the whole chain and DO does not bind the receipt hash | One redacted remote trace joins the exact grant, provider invoice/request ID when available, R2 version/metadata, D1 receipt/identity/event/outbox, DO attempt/result, client replay, and accounting delta without prompt, credential, or response-body disclosure | Partial |
+| Canonical receipt | Rust egress emits the fixed 38-field schema; Controller requires strict base64url, SHA-256, canonical byte equality, exact identity, 2xx status, bounded values, and no unknown fields | Cross-version broker/Controller vectors, malformed/oversize/tampered-header faults, parser-version inventory, and retained canonical fixtures from every enabled provider | Local only |
+| Immutable identity | Receipt primary key, provider operation ID, and R2 key/version are unique; update/delete guards reject mutation. The separate append-only identity ledger survives SQLite `INSERT OR REPLACE` implicit deletion and causes the receipt `AFTER INSERT` guard to abort replacement even when `recursive_triggers` is off | Remote negative probes for exact and divergent `INSERT OR REPLACE` with `PRAGMA recursive_triggers=OFF`, plus unchanged receipt/identity counts, hashes, and high-watermarks after every failure | Local only |
+| Idempotent D1 write | The Controller uses `INSERT OR IGNORE` followed by exact primary readback, canonical JSON digest recomputation, and full grant/result/snapshot comparison; it never uses replacement as replay | D1 response-loss, duplicate, concurrent insert, conflict, and session-consistency campaign with one immutable row and one identity row | Local only |
+| R2 -> D1 -> DO order | The successful local path creates or verifies the R2 result with receipt-hash metadata, persists and reads back D1 receipt authority, then attaches the exact result to the selected DO attempt before recording success | Remote fault injection at every boundary; DO ledger and terminal acknowledgement must also persist or compare the receipt hash before this chain is complete | Partial |
+| Presence mask | `reported_usage_fields` accepts only bits 0-10: prompt `1`, completion `2`, total `4`, cached `8`, cache-creation aggregate `16`, 5m `32`, 1h `64`, image input `128`, image output `256`, audio input `512`, and audio output `1024`; maximum mask is `2047`. `usage_present` is true iff prompt and completion bits are both set; an absent field is stored as zero but remains distinguishable by its missing bit | Provider fixture corpus proves omitted, explicit-zero, partial, nested, cache, image, audio, and Anthropic variants against captured provider responses | Local only |
+| Priced-field fail close | Settlement always requires prompt and completion. Tiered expression variables and flat snapshot ratios add exact cache/image/audio bit requirements; non-Anthropic `cc1h`, unversioned tiered tool/image-generation charges, missing priced fields, out-of-range raw token values, estimated usage, invalid/nonfinite results, the flat `i64::MAX` overflow sentinel, and tool counts above 256 fail closed | Approved expression/snapshot inventory proves every enabled priced dimension has provider-native evidence; remote missing-field and overflow faults produce recovery with no settlement, refund, or second provider send | Local only |
+| Semantic canary scope | Receipt parsing and financial validation define Anthropic-related fields, but the 0048 D1 insert guard currently accepts only `is_anthropic_usage_semantic=false` | Keep Anthropic-semantic provider/channel enablement blocked until a separately versioned schema, parser, settlement, fault, and invoice-parity contract is approved | Blocked |
+| Flat total normalization | Flat settlement derives `total_tokens` with checked `prompt_tokens + completion_tokens`; provider `total_tokens` is not trusted or required when prompt and completion are present | Go/Rust differential fixtures cover absent, inconsistent, zero, and overflow totals across every enabled flat model and ratio mode | Local only |
+| Status binding | A settle event requires `client_response_status = provider_response_status`; completed operation status must equal the same receipt status and exact R2 result identity | Remote mismatched client/provider/operation status probes abort the whole terminal batch with no accounting or outbox delta | Local only |
+| HTTP 202 evidence | A valid provider 202 may be retained as immutable R2/D1 evidence, but both terminal-event settlement and global operation completion explicitly reject receipt status 202 | Remote accepted-202 fixture proves no settle, no completed terminal, no automatic refund, and no provider resend; operator/reconciler disposition is documented and alerted | Local only |
+| Financial amount authority | The Rust terminal writer recomputes tiered or flat quota from the frozen snapshot and receipt and rejects a caller-supplied mismatch | D1 still cannot independently evaluate the billing expression or attest the amount. A versioned immutable settlement-decision/engine authority, independent verification, and invoice convergence are required | Blocked |
+| DO and reconciliation authority | DO currently attaches the result manifest, and R2 metadata carries the receipt hash | The DO ledger/terminal acknowledgement and the D1/DO/R2 reconciler do not yet compare receipt hash end to end; add that contract plus missing/divergent/orphan receipt classes and remote replay proof | Blocked |
+| Terminal caller | Receipt-aware financial terminal repository and D1 guards exist locally | Wire one production candidate caller after DO success, prove exact batch/readback and lost-response replay, and keep it disabled until all financial gates pass | Blocked |
+| Provider recovery | Dispatch remains one-shot after durable DO dispatch | Every enabled provider/channel needs native idempotency-key acceptance or deterministic operation lookup; the response-before-R2 window remains ambiguous and cannot authorize retry or refund | Blocked |
+| True 0047 writer drain | A grant created by a true 0047 writer has no 0048 receipt, and 0048 correctly refuses its settlement. This is an intentional asymmetric compatibility boundary, not a rolling active-provider path | Keep all gates false; inventory and remove every 0047 Controller/Worker/Queue/Cron/alarm owner, drain/read back all open 0047 grants and operations, then apply/read back 0048 before any provider enablement. Any old owner reappearance resets the drain | Blocked |
+| Disable-first rollback | The contract retains immutable receipt, identity, R2, event, and outbox evidence and forbids downgrade-based overwrite | Disable new Rust admission/provider/financial producers first, route new traffic to Go, retain an 0048-compatible recovery writer, drain leases, reconcile exact evidence, and roll the Controller back last; never resend, auto-refund, delete receipts, or promote a true 0047 writer for in-flight work | Blocked |
+| Remote state | No remote deploy, schema apply/readback, secret provisioning/rotation, provider call, or traffic change occurred | Authenticated staging and production binding/schema/version/secret readback, redacted faults, alerts, load/cost, rollback, C1-C5, and G1-G8 approvals | **NO-GO** |
+
+Unresolved production blockers are therefore explicit: independent D1 amount
+authority, DO and reconciler receipt-hash comparison, a production terminal
+caller, provider-native idempotency or lookup, the provider-response-before-R2
+ambiguity, and all remote deployment, schema, binding, secret, fault, and
+traffic evidence. Go/VPS remains authoritative and production remains
+**NO-GO**.

@@ -295,6 +295,8 @@ dependencies = [
 name = "cinatoken-container-egress"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "cinatoken-relay",
  "console_error_panic_hook",
  "futures-util",
  "js-sys",
@@ -400,6 +402,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

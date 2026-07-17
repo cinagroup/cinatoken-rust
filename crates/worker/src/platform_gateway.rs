@@ -186,7 +186,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0047_relay_container_provider_egress_grants.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0048_relay_container_provider_usage_receipts.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -271,6 +271,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0045_relay_container_reconciliation_retry_apply.sql",
     "0046_relay_container_financial_terminal_enforce.sql",
     "0047_relay_container_provider_egress_grants.sql",
+    "0048_relay_container_provider_usage_receipts.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -4712,7 +4713,15 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0047_relay_container_provider_egress_grants.sql"
+            "0048_relay_container_provider_usage_receipts.sql"
+        );
+        assert_eq!(
+            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 3..],
+            &[
+                "0046_relay_container_financial_terminal_enforce.sql",
+                "0047_relay_container_provider_egress_grants.sql",
+                "0048_relay_container_provider_usage_receipts.sql",
+            ]
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -4874,6 +4883,24 @@ mod tests {
             .contains("relay_container_provider_egress_grant_update_guard"));
         assert!(relay_container_provider_egress_grants
             .contains("relay_container_provider_egress_grant_delete_guard"));
+        let relay_container_provider_usage_receipts =
+            include_str!("../../../migrations/d1/0048_relay_container_provider_usage_receipts.sql");
+        assert!(relay_container_provider_usage_receipts
+            .contains("CREATE TABLE relay_container_provider_usage_receipts"));
+        assert!(relay_container_provider_usage_receipts
+            .contains("CREATE TABLE relay_container_provider_usage_receipt_identities"));
+        assert!(relay_container_provider_usage_receipts
+            .contains("relay_container_provider_usage_receipt_insert_authority_guard"));
+        assert!(relay_container_provider_usage_receipts
+            .contains("relay_container_provider_usage_receipt_identity_guard"));
+        assert!(relay_container_provider_usage_receipts
+            .contains("relay_container_provider_usage_receipt_identity_update_guard"));
+        assert!(relay_container_provider_usage_receipts
+            .contains("relay_container_provider_usage_receipt_identity_delete_guard"));
+        assert!(relay_container_provider_usage_receipts
+            .contains("relay_container_terminal_event_provider_usage_guard"));
+        assert!(relay_container_provider_usage_receipts
+            .contains("relay_container_operation_provider_usage_terminal_guard"));
     }
 
     #[test]

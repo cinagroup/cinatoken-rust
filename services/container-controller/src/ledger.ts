@@ -63,6 +63,7 @@ export interface StorageAccessGrant {
     egress_profile: string | null;
     egress_worker_version_id: string | null;
     status: ProviderAttemptStatus;
+    response_status: number | null;
   } | null;
 }
 
@@ -2853,6 +2854,7 @@ function storageGrant(
             egress_profile: providerAttempt.egress_profile,
             egress_worker_version_id: providerAttempt.egress_worker_version_id,
             status: providerAttempt.status,
+            response_status: providerAttempt.response_status,
           },
   };
 }

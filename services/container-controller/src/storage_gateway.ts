@@ -23,8 +23,19 @@ export const OPERATION_ID_HEADER = "x-cinatoken-operation-id";
 export const OWNER_GENERATION_HEADER = "x-cinatoken-owner-generation";
 export const MAX_R2_OBJECT_BYTES = 64 * 1024 * 1024;
 export const MAX_KV_CONFIG_BYTES = 32 * 1024;
+export const MAX_PROVIDER_USAGE_RECEIPT_JSON_BYTES = 8_192;
+export const MAX_PROVIDER_USAGE_RECEIPT_ENCODED_BYTES = 12_288;
 export const KV_OPERATION_CONFIG_PREFIX = "container-operation-config/v1/";
 export const R2_RESULT_KEY_PREFIX = "container-results/v1";
+export const PROVIDER_USAGE_RECEIPT_SCHEMA_VERSION = 1;
+export const PROVIDER_USAGE_RECEIPT_PARSER_CONTRACT =
+  "openai-chat-completions-usage-v1";
+export const PROVIDER_USAGE_RECEIPT_NORMALIZATION_CONTRACT =
+  "billing-token-normalization-v1";
+export const PROVIDER_USAGE_RECEIPT_SOURCE = "provider_response";
+export const PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE =
+  "openai-chat-completions-canary-v1";
+export const REPORTED_USAGE_FIELDS_V1_ALL = 2_047;
 
 export const STORAGE_GATEWAY_ACTIONS = {
   R2_INPUT_GET: "r2_input_get",
@@ -54,6 +65,7 @@ export interface R2ResultPutGrant {
   attempt_generation: number | null;
   egress_profile: string | null;
   egress_worker_version_id: string | null;
+  usage_receipt_sha256?: string;
   sha256: string;
   size: number;
   content_type: string;
@@ -127,6 +139,66 @@ export interface ProviderEgressGrantIdentity {
 export interface ProviderEgressGrantOutcome {
   replayed: boolean;
   authorized_at: number;
+}
+
+export interface ProviderUsageReceipt {
+  schema_version: 1;
+  parser_contract: typeof PROVIDER_USAGE_RECEIPT_PARSER_CONTRACT;
+  normalization_contract: typeof PROVIDER_USAGE_RECEIPT_NORMALIZATION_CONTRACT;
+  source: typeof PROVIDER_USAGE_RECEIPT_SOURCE;
+  estimated: false;
+  operation_id: string;
+  owner_generation: number;
+  attempt_generation: number;
+  provider_operation_id: string;
+  request_sha256: string;
+  egress_profile: typeof PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE;
+  egress_worker_version_id: string;
+  provider_response_status: number;
+  provider_response_sha256: string;
+  provider_request_id: string | null;
+  provider_completed_at: number;
+  usage_present: boolean;
+  reported_usage_fields: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens: number;
+  cache_creation_tokens: number;
+  cache_creation_tokens_5m: number;
+  cache_creation_tokens_1h: number;
+  image_input_tokens: number;
+  image_output_tokens: number;
+  audio_input_tokens: number;
+  audio_output_tokens: number;
+  is_anthropic_usage_semantic: boolean;
+  usage_semantic_source: "openai_default" | "upstream_explicit" | "native_anthropic";
+  provider_cost_usd: string | null;
+  cache_creation_source: "none" | "upstream_aggregate" | "upstream_split";
+  responses_web_search_calls: number;
+  responses_file_search_calls: number;
+  claude_web_search_calls: number;
+  image_generation_quality: "low" | "medium" | "high" | null;
+  image_generation_size: "1024x1024" | "1024x1536" | "1536x1024" | null;
+}
+
+export interface CanonicalProviderUsageReceipt {
+  receipt: ProviderUsageReceipt;
+  json: string;
+  sha256: string;
+}
+
+export interface ProviderUsageReceiptResult {
+  object_key: string;
+  object_version: string;
+  sha256: string;
+  size: number;
+  content_type: string;
+}
+
+export interface ProviderUsageReceiptOutcome {
+  replayed: boolean;
+  persisted_at: number;
 }
 
 interface StorageRoute {
@@ -208,6 +280,39 @@ interface ProviderEgressGrantRow {
   owner_lease_expires_at: number;
   reservation_owner_deadline_at: number;
   reservation_lease_expires_at: number;
+}
+
+interface ProviderUsageReceiptRow {
+  operation_id: string;
+  reservation_key: string;
+  owner_generation: number;
+  attempt_generation: number;
+  provider_operation_id: string;
+  admission_sha256: string;
+  request_sha256: string;
+  egress_profile: string;
+  egress_worker_version_id: string;
+  billing_kind: string;
+  billing_contract_hash: string;
+  billing_snapshot_sha256: string;
+  provider_response_status: number;
+  provider_response_sha256: string;
+  provider_request_id: string | null;
+  provider_completed_at: number;
+  result_object_key: string;
+  result_object_version: string;
+  result_sha256: string;
+  result_size: number;
+  result_content_type: string;
+  usage_schema_version: number;
+  usage_parser_contract: string;
+  usage_normalization_contract: string;
+  usage_present: number;
+  reported_usage_fields: number;
+  usage_estimated: number;
+  usage_receipt_json: string;
+  usage_receipt_sha256: string;
+  persisted_at: number;
 }
 
 const ROUTES: Record<StorageGatewayAction, StorageRoute> = {
@@ -428,6 +533,193 @@ WHERE operation_id = ?1
 LIMIT 1
 `.trim();
 
+const PROVIDER_USAGE_RECEIPT_SCHEMA_READINESS_SQL = `
+SELECT
+  (SELECT COUNT(*)
+     FROM sqlite_master
+    WHERE type = 'table'
+      AND name = 'relay_container_provider_usage_receipts') AS table_count,
+  (SELECT COUNT(*)
+     FROM pragma_table_info('relay_container_provider_usage_receipts')) AS column_count,
+  (SELECT COUNT(*)
+     FROM pragma_table_info('relay_container_provider_usage_receipts')
+    WHERE name IN (
+      'operation_id',
+      'reservation_key',
+      'owner_generation',
+      'attempt_generation',
+      'provider_operation_id',
+      'admission_sha256',
+      'request_sha256',
+      'egress_profile',
+      'egress_worker_version_id',
+      'billing_kind',
+      'billing_contract_hash',
+      'billing_snapshot_sha256',
+      'provider_response_status',
+      'provider_response_sha256',
+      'provider_request_id',
+      'provider_completed_at',
+      'result_object_key',
+      'result_object_version',
+      'result_sha256',
+      'result_size',
+      'result_content_type',
+      'usage_schema_version',
+      'usage_parser_contract',
+      'usage_normalization_contract',
+      'usage_present',
+      'reported_usage_fields',
+      'usage_estimated',
+      'usage_receipt_json',
+      'usage_receipt_sha256',
+      'persisted_at'
+    )) AS required_column_count,
+  (SELECT COUNT(*)
+     FROM sqlite_master
+    WHERE type = 'table'
+      AND name = 'relay_container_provider_usage_receipt_identities') AS identity_table_count,
+  (SELECT COUNT(*)
+     FROM pragma_table_info('relay_container_provider_usage_receipt_identities'))
+    AS identity_column_count,
+  (SELECT COUNT(*)
+     FROM pragma_table_info('relay_container_provider_usage_receipt_identities')
+    WHERE name IN (
+      'operation_id',
+      'owner_generation',
+      'attempt_generation',
+      'provider_operation_id',
+      'result_object_key',
+      'result_object_version'
+    )) AS identity_required_column_count,
+  (SELECT COUNT(*)
+     FROM sqlite_master
+    WHERE type = 'trigger'
+      AND name = 'relay_container_provider_usage_receipt_insert_authority_guard'
+      AND tbl_name = 'relay_container_provider_usage_receipts') AS insert_guard_count,
+  (SELECT COUNT(*)
+     FROM sqlite_master
+    WHERE type = 'trigger'
+      AND name = 'relay_container_provider_usage_receipt_update_guard'
+      AND tbl_name = 'relay_container_provider_usage_receipts') AS update_guard_count,
+  (SELECT COUNT(*)
+     FROM sqlite_master
+    WHERE type = 'trigger'
+      AND name = 'relay_container_provider_usage_receipt_delete_guard'
+      AND tbl_name = 'relay_container_provider_usage_receipts') AS delete_guard_count,
+  (SELECT COUNT(*)
+     FROM sqlite_master
+    WHERE type = 'trigger'
+      AND name = 'relay_container_provider_usage_receipt_identity_guard'
+      AND tbl_name = 'relay_container_provider_usage_receipts') AS identity_guard_count,
+  (SELECT COUNT(*)
+     FROM sqlite_master
+    WHERE type = 'trigger'
+      AND name = 'relay_container_provider_usage_receipt_identity_update_guard'
+      AND tbl_name = 'relay_container_provider_usage_receipt_identities')
+    AS identity_update_guard_count,
+  (SELECT COUNT(*)
+     FROM sqlite_master
+    WHERE type = 'trigger'
+      AND name = 'relay_container_provider_usage_receipt_identity_delete_guard'
+      AND tbl_name = 'relay_container_provider_usage_receipt_identities')
+    AS identity_delete_guard_count,
+  (SELECT COUNT(*)
+     FROM pragma_table_info('relay_container_terminal_events')
+    WHERE name IN (
+      'provider_usage_receipt_sha256',
+      'provider_result_sha256',
+      'provider_attempt_generation'
+    )) AS terminal_event_column_count,
+  (SELECT COUNT(*)
+     FROM sqlite_master
+    WHERE type = 'trigger'
+      AND name = 'relay_container_terminal_event_provider_usage_guard'
+      AND tbl_name = 'relay_container_terminal_events') AS terminal_event_guard_count,
+  (SELECT COUNT(*)
+     FROM sqlite_master
+    WHERE type = 'trigger'
+      AND name = 'relay_container_operation_provider_usage_terminal_guard'
+      AND tbl_name = 'relay_container_operations') AS operation_completion_guard_count
+`.trim();
+
+const PROVIDER_USAGE_RECEIPT_INSERT_SQL = `
+INSERT OR IGNORE INTO relay_container_provider_usage_receipts (
+  operation_id,
+  reservation_key,
+  owner_generation,
+  attempt_generation,
+  provider_operation_id,
+  admission_sha256,
+  request_sha256,
+  egress_profile,
+  egress_worker_version_id,
+  billing_kind,
+  billing_contract_hash,
+  billing_snapshot_sha256,
+  provider_response_status,
+  provider_response_sha256,
+  provider_request_id,
+  provider_completed_at,
+  result_object_key,
+  result_object_version,
+  result_sha256,
+  result_size,
+  result_content_type,
+  usage_schema_version,
+  usage_parser_contract,
+  usage_normalization_contract,
+  usage_present,
+  reported_usage_fields,
+  usage_estimated,
+  usage_receipt_json,
+  usage_receipt_sha256,
+  persisted_at
+) VALUES (
+  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+  ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+  ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
+)
+`.trim();
+
+const PROVIDER_USAGE_RECEIPT_READBACK_SQL = `
+SELECT operation_id,
+       reservation_key,
+       owner_generation,
+       attempt_generation,
+       provider_operation_id,
+       admission_sha256,
+       request_sha256,
+       egress_profile,
+       egress_worker_version_id,
+       billing_kind,
+       billing_contract_hash,
+       billing_snapshot_sha256,
+       provider_response_status,
+       provider_response_sha256,
+       provider_request_id,
+       provider_completed_at,
+       result_object_key,
+       result_object_version,
+       result_sha256,
+       result_size,
+       result_content_type,
+       usage_schema_version,
+       usage_parser_contract,
+       usage_normalization_contract,
+       usage_present,
+       reported_usage_fields,
+       usage_estimated,
+       usage_receipt_json,
+       usage_receipt_sha256,
+       persisted_at
+FROM relay_container_provider_usage_receipts
+WHERE operation_id = ?1
+  AND owner_generation = ?2
+  AND attempt_generation = ?3
+LIMIT 1
+`.trim();
+
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
@@ -441,6 +733,51 @@ const MODEL_NAME = /^[A-Za-z0-9._:/-]+$/;
 const ENDPOINT_PATH = /^[A-Za-z0-9_./:-]+$/;
 const CONTENT_TYPE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?:;[ -~]+)?$/;
 const MAX_BILLING_SNAPSHOT_BYTES = 32 * 1024;
+const MAX_UNIX_MILLISECONDS = 253_402_300_799_999;
+const MAX_NORMALIZED_TOKENS = 2_147_483_647;
+const MAX_PROVIDER_TOOL_CALLS = 256;
+const MAX_PROVIDER_COST_USD = 1_000_000_000_000;
+
+const PROVIDER_USAGE_RECEIPT_KEYS: ReadonlyArray<keyof ProviderUsageReceipt> = [
+  "schema_version",
+  "parser_contract",
+  "normalization_contract",
+  "source",
+  "estimated",
+  "operation_id",
+  "owner_generation",
+  "attempt_generation",
+  "provider_operation_id",
+  "request_sha256",
+  "egress_profile",
+  "egress_worker_version_id",
+  "provider_response_status",
+  "provider_response_sha256",
+  "provider_request_id",
+  "provider_completed_at",
+  "usage_present",
+  "reported_usage_fields",
+  "prompt_tokens",
+  "completion_tokens",
+  "total_tokens",
+  "cached_tokens",
+  "cache_creation_tokens",
+  "cache_creation_tokens_5m",
+  "cache_creation_tokens_1h",
+  "image_input_tokens",
+  "image_output_tokens",
+  "audio_input_tokens",
+  "audio_output_tokens",
+  "is_anthropic_usage_semantic",
+  "usage_semantic_source",
+  "provider_cost_usd",
+  "cache_creation_source",
+  "responses_web_search_calls",
+  "responses_file_search_calls",
+  "claude_web_search_calls",
+  "image_generation_quality",
+  "image_generation_size",
+];
 
 class GatewayError extends Error {
   constructor(
@@ -770,6 +1107,199 @@ export async function requireD1ProviderEgressGrant(
   }
 }
 
+export async function requireD1ProviderUsageReceiptSchema(
+  env: StorageGatewayEnvironment,
+): Promise<void> {
+  const database = env.CONTAINER_STORAGE_ADMISSION_DB;
+  if (database === undefined || typeof database.withSession !== "function") {
+    throw new ProtocolError("provider_usage_receipt_schema_unavailable", 503);
+  }
+
+  try {
+    const session = database.withSession("first-primary");
+    const row = await session
+      .prepare(PROVIDER_USAGE_RECEIPT_SCHEMA_READINESS_SQL)
+      .first<Record<string, unknown>>();
+    if (
+      !isRecord(row) ||
+      !hasExactKeys(row, [
+        "table_count",
+        "column_count",
+        "required_column_count",
+        "identity_table_count",
+        "identity_column_count",
+        "identity_required_column_count",
+        "insert_guard_count",
+        "update_guard_count",
+        "delete_guard_count",
+        "identity_guard_count",
+        "identity_update_guard_count",
+        "identity_delete_guard_count",
+        "terminal_event_column_count",
+        "terminal_event_guard_count",
+        "operation_completion_guard_count",
+      ]) ||
+      row.table_count !== 1 ||
+      row.column_count !== 30 ||
+      row.required_column_count !== 30 ||
+      row.identity_table_count !== 1 ||
+      row.identity_column_count !== 6 ||
+      row.identity_required_column_count !== 6 ||
+      row.insert_guard_count !== 1 ||
+      row.update_guard_count !== 1 ||
+      row.delete_guard_count !== 1 ||
+      row.identity_guard_count !== 1 ||
+      row.identity_update_guard_count !== 1 ||
+      row.identity_delete_guard_count !== 1 ||
+      row.terminal_event_column_count !== 3 ||
+      row.terminal_event_guard_count !== 1 ||
+      row.operation_completion_guard_count !== 1
+    ) {
+      throw new GatewayError("provider_usage_receipt_schema_unavailable", 503);
+    }
+  } catch (error) {
+    if (error instanceof GatewayError) {
+      throw new ProtocolError(error.code, error.status);
+    }
+    throw new ProtocolError("provider_usage_receipt_schema_unavailable", 503);
+  }
+}
+
+export async function requireD1ProviderUsageReceipt(
+  env: StorageGatewayEnvironment,
+  admission: D1AdmissionSnapshot,
+  evidence: CanonicalProviderUsageReceipt,
+  result: ProviderUsageReceiptResult,
+  persistedAt = Date.now(),
+): Promise<ProviderUsageReceiptOutcome> {
+  const receipt = evidence.receipt;
+  const canonicalJson = JSON.stringify(receipt);
+  const expectedResultKey =
+    `${R2_RESULT_KEY_PREFIX}/${admission.operation_id}/${admission.owner_generation}/${result.sha256}`;
+  if (
+    !validAdmissionSnapshot(admission) ||
+    admission.reservation_status !== "reserved" ||
+    admission.operation_status !== "dispatched" ||
+    !isProviderUsageReceipt(receipt) ||
+    canonicalJson !== evidence.json ||
+    evidence.json.length < 1 ||
+    new TextEncoder().encode(evidence.json).byteLength > MAX_PROVIDER_USAGE_RECEIPT_JSON_BYTES ||
+    !validSha256(evidence.sha256) ||
+    !Number.isSafeInteger(persistedAt) ||
+    persistedAt < receipt.provider_completed_at ||
+    persistedAt > MAX_UNIX_MILLISECONDS ||
+    receipt.operation_id !== admission.operation_id ||
+    receipt.owner_generation !== admission.owner_generation ||
+    receipt.attempt_generation !== 1 ||
+    receipt.provider_operation_id !== admission.provider_operation_id ||
+    receipt.request_sha256 !== admission.input_sha256 ||
+    result.object_key !== expectedResultKey ||
+    !validIdentifier(result.object_version, 128) ||
+    receipt.provider_response_sha256 !== result.sha256 ||
+    !validSha256(result.sha256) ||
+    !isNonNegativeInteger(result.size) ||
+    result.size < 2 ||
+    result.size > MAX_R2_OBJECT_BYTES ||
+    !validContentType(result.content_type)
+  ) {
+    throw new ProtocolError("provider_usage_receipt_authority_mismatch", 409);
+  }
+
+  const [receiptSha256, billingSnapshotSha256] = await Promise.all([
+    sha256Utf8(evidence.json),
+    sha256Utf8(admission.billing_snapshot_json),
+  ]);
+  if (receiptSha256 !== evidence.sha256) {
+    throw new ProtocolError("provider_usage_receipt_authority_mismatch", 409);
+  }
+
+  const database = env.CONTAINER_STORAGE_ADMISSION_DB;
+  if (database === undefined || typeof database.withSession !== "function") {
+    throw new ProtocolError("provider_usage_receipt_unavailable", 503);
+  }
+
+  try {
+    const session = database.withSession("first-primary");
+    const write = await session
+      .prepare(PROVIDER_USAGE_RECEIPT_INSERT_SQL)
+      .bind(
+        receipt.operation_id,
+        admission.reservation_key,
+        receipt.owner_generation,
+        receipt.attempt_generation,
+        receipt.provider_operation_id,
+        admission.admission_sha256,
+        receipt.request_sha256,
+        receipt.egress_profile,
+        receipt.egress_worker_version_id,
+        admission.billing_kind,
+        admission.billing_contract_hash,
+        billingSnapshotSha256,
+        receipt.provider_response_status,
+        receipt.provider_response_sha256,
+        receipt.provider_request_id,
+        receipt.provider_completed_at,
+        result.object_key,
+        result.object_version,
+        result.sha256,
+        result.size,
+        result.content_type,
+        receipt.schema_version,
+        receipt.parser_contract,
+        receipt.normalization_contract,
+        receipt.usage_present ? 1 : 0,
+        receipt.reported_usage_fields,
+        receipt.estimated ? 1 : 0,
+        evidence.json,
+        evidence.sha256,
+        persistedAt,
+      )
+      .run();
+    const changes = write?.meta?.changes;
+    if (write?.success !== true || (changes !== 0 && changes !== 1)) {
+      throw new GatewayError("provider_usage_receipt_write_invalid", 502);
+    }
+
+    const row = await session
+      .prepare(PROVIDER_USAGE_RECEIPT_READBACK_SQL)
+      .bind(receipt.operation_id, receipt.owner_generation, receipt.attempt_generation)
+      .first<Record<string, unknown>>();
+    if (row === null) {
+      throw new GatewayError(
+        changes === 1
+          ? "provider_usage_receipt_readback_invalid"
+          : "provider_usage_receipt_conflict",
+        changes === 1 ? 502 : 409,
+      );
+    }
+    if (!isProviderUsageReceiptRow(row)) {
+      throw new GatewayError("provider_usage_receipt_readback_invalid", 502);
+    }
+    if ((await sha256Utf8(row.usage_receipt_json)) !== row.usage_receipt_sha256) {
+      throw new GatewayError("provider_usage_receipt_readback_invalid", 502);
+    }
+    if (
+      !providerUsageReceiptRowMatches(
+        row,
+        admission,
+        evidence,
+        result,
+        billingSnapshotSha256,
+        changes,
+        persistedAt,
+      )
+    ) {
+      throw new GatewayError("provider_usage_receipt_conflict", 409);
+    }
+    return { replayed: changes === 0, persisted_at: row.persisted_at };
+  } catch (error) {
+    if (error instanceof GatewayError) {
+      throw new ProtocolError(error.code, error.status);
+    }
+    throw new ProtocolError("provider_usage_receipt_unavailable", 503);
+  }
+}
+
 async function readD1Admission(
   env: StorageGatewayEnvironment,
   grant: D1AdmissionGetGrant,
@@ -913,6 +1443,98 @@ function admissionAuthorityMatches(
     row.input_content_type === grant.input.content_type &&
     row.trace_id === grant.trace_id
   );
+}
+
+export function isProviderUsageReceipt(value: unknown): value is ProviderUsageReceipt {
+  if (
+    !isRecord(value) ||
+    !hasExactOrderedKeys(value, PROVIDER_USAGE_RECEIPT_KEYS) ||
+    value.schema_version !== PROVIDER_USAGE_RECEIPT_SCHEMA_VERSION ||
+    value.parser_contract !== PROVIDER_USAGE_RECEIPT_PARSER_CONTRACT ||
+    value.normalization_contract !== PROVIDER_USAGE_RECEIPT_NORMALIZATION_CONTRACT ||
+    value.source !== PROVIDER_USAGE_RECEIPT_SOURCE ||
+    value.estimated !== false ||
+    !validEgressIdentity(value.operation_id, 128) ||
+    !isPositiveInteger(value.owner_generation) ||
+    !isPositiveInteger(value.attempt_generation) ||
+    value.attempt_generation > 3 ||
+    !validEgressIdentity(value.provider_operation_id, 128) ||
+    !validSha256(value.request_sha256) ||
+    value.egress_profile !== PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE ||
+    !validEgressIdentity(value.egress_worker_version_id, 128) ||
+    !isBoundedNonNegativeInteger(value.provider_response_status, 299) ||
+    value.provider_response_status < 200 ||
+    !validSha256(value.provider_response_sha256) ||
+    !(
+      value.provider_request_id === null ||
+      validEgressIdentity(value.provider_request_id, 128)
+    ) ||
+    !isPositiveInteger(value.provider_completed_at) ||
+    value.provider_completed_at > MAX_UNIX_MILLISECONDS ||
+    typeof value.usage_present !== "boolean" ||
+    !isNonNegativeInteger(value.reported_usage_fields) ||
+    value.reported_usage_fields > REPORTED_USAGE_FIELDS_V1_ALL ||
+    value.usage_present !== ((value.reported_usage_fields & 3) === 3)
+  ) {
+    return false;
+  }
+
+  const reportedUsageFields = value.reported_usage_fields;
+  const tokenFields: ReadonlyArray<readonly [number, unknown]> = [
+    [1 << 0, value.prompt_tokens],
+    [1 << 1, value.completion_tokens],
+    [1 << 2, value.total_tokens],
+    [1 << 3, value.cached_tokens],
+    [1 << 4, value.cache_creation_tokens],
+    [1 << 5, value.cache_creation_tokens_5m],
+    [1 << 6, value.cache_creation_tokens_1h],
+    [1 << 7, value.image_input_tokens],
+    [1 << 8, value.image_output_tokens],
+    [1 << 9, value.audio_input_tokens],
+    [1 << 10, value.audio_output_tokens],
+  ];
+  if (
+    tokenFields.some(
+      ([bit, field]) =>
+        !isBoundedNonNegativeInteger(field, MAX_NORMALIZED_TOKENS) ||
+        ((reportedUsageFields & bit) === 0 && field !== 0),
+    ) ||
+    typeof value.is_anthropic_usage_semantic !== "boolean" ||
+    (typeof value.usage_semantic_source !== "string" ||
+      !["openai_default", "upstream_explicit", "native_anthropic"].includes(
+        value.usage_semantic_source,
+      )) ||
+    !(value.provider_cost_usd === null || validCanonicalProviderCost(value.provider_cost_usd)) ||
+    (typeof value.cache_creation_source !== "string" ||
+      !["none", "upstream_aggregate", "upstream_split"].includes(
+        value.cache_creation_source,
+      )) ||
+    !isBoundedNonNegativeInteger(
+      value.responses_web_search_calls,
+      MAX_PROVIDER_TOOL_CALLS,
+    ) ||
+    !isBoundedNonNegativeInteger(
+      value.responses_file_search_calls,
+      MAX_PROVIDER_TOOL_CALLS,
+    ) ||
+    !isBoundedNonNegativeInteger(value.claude_web_search_calls, MAX_PROVIDER_TOOL_CALLS) ||
+    !(
+      value.image_generation_quality === null ||
+      value.image_generation_quality === "low" ||
+      value.image_generation_quality === "medium" ||
+      value.image_generation_quality === "high"
+    ) ||
+    !(
+      value.image_generation_size === null ||
+      value.image_generation_size === "1024x1024" ||
+      value.image_generation_size === "1024x1536" ||
+      value.image_generation_size === "1536x1024"
+    ) ||
+    (value.image_generation_quality === null) !== (value.image_generation_size === null)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function validProviderEgressGrantIdentity(identity: ProviderEgressGrantIdentity): boolean {
@@ -1066,6 +1688,163 @@ function providerEgressGrantMatches(
   );
 }
 
+function isProviderUsageReceiptRow(value: unknown): value is ProviderUsageReceiptRow {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "operation_id",
+      "reservation_key",
+      "owner_generation",
+      "attempt_generation",
+      "provider_operation_id",
+      "admission_sha256",
+      "request_sha256",
+      "egress_profile",
+      "egress_worker_version_id",
+      "billing_kind",
+      "billing_contract_hash",
+      "billing_snapshot_sha256",
+      "provider_response_status",
+      "provider_response_sha256",
+      "provider_request_id",
+      "provider_completed_at",
+      "result_object_key",
+      "result_object_version",
+      "result_sha256",
+      "result_size",
+      "result_content_type",
+      "usage_schema_version",
+      "usage_parser_contract",
+      "usage_normalization_contract",
+      "usage_present",
+      "reported_usage_fields",
+      "usage_estimated",
+      "usage_receipt_json",
+      "usage_receipt_sha256",
+      "persisted_at",
+    ]) ||
+    !validEgressIdentity(value.operation_id, 128) ||
+    !validEgressIdentity(value.reservation_key, 128) ||
+    value.operation_id !== value.reservation_key ||
+    !isPositiveInteger(value.owner_generation) ||
+    !isPositiveInteger(value.attempt_generation) ||
+    value.attempt_generation > 3 ||
+    !validEgressIdentity(value.provider_operation_id, 128) ||
+    !validSha256(value.admission_sha256) ||
+    !validSha256(value.request_sha256) ||
+    value.egress_profile !== PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE ||
+    !validEgressIdentity(value.egress_worker_version_id, 128) ||
+    !validBillingContract(value.billing_kind, value.billing_contract_hash) ||
+    !validSha256(value.billing_snapshot_sha256) ||
+    !isBoundedNonNegativeInteger(value.provider_response_status, 299) ||
+    value.provider_response_status < 200 ||
+    !validSha256(value.provider_response_sha256) ||
+    !(
+      value.provider_request_id === null ||
+      validEgressIdentity(value.provider_request_id, 128)
+    ) ||
+    !isPositiveInteger(value.provider_completed_at) ||
+    value.provider_completed_at > MAX_UNIX_MILLISECONDS ||
+    !validStorageKey(value.result_object_key) ||
+    !validIdentifier(value.result_object_version, 128) ||
+    !validSha256(value.result_sha256) ||
+    !isNonNegativeInteger(value.result_size) ||
+    value.result_size < 2 ||
+    value.result_size > MAX_R2_OBJECT_BYTES ||
+    !validContentType(value.result_content_type) ||
+    value.usage_schema_version !== PROVIDER_USAGE_RECEIPT_SCHEMA_VERSION ||
+    value.usage_parser_contract !== PROVIDER_USAGE_RECEIPT_PARSER_CONTRACT ||
+    value.usage_normalization_contract !== PROVIDER_USAGE_RECEIPT_NORMALIZATION_CONTRACT ||
+    (value.usage_present !== 0 && value.usage_present !== 1) ||
+    !isNonNegativeInteger(value.reported_usage_fields) ||
+    value.reported_usage_fields > REPORTED_USAGE_FIELDS_V1_ALL ||
+    value.usage_estimated !== 0 ||
+    typeof value.usage_receipt_json !== "string" ||
+    value.usage_receipt_json.length < 1 ||
+    new TextEncoder().encode(value.usage_receipt_json).byteLength >
+      MAX_PROVIDER_USAGE_RECEIPT_JSON_BYTES ||
+    !validSha256(value.usage_receipt_sha256) ||
+    !isPositiveInteger(value.persisted_at) ||
+    value.persisted_at < value.provider_completed_at ||
+    value.persisted_at > MAX_UNIX_MILLISECONDS ||
+    value.result_object_key !==
+      `${R2_RESULT_KEY_PREFIX}/${value.operation_id}/${value.owner_generation}/${value.result_sha256}` ||
+    value.result_sha256 !== value.provider_response_sha256
+  ) {
+    return false;
+  }
+
+  let receiptValue: unknown;
+  try {
+    receiptValue = JSON.parse(value.usage_receipt_json);
+  } catch {
+    return false;
+  }
+  return (
+    isProviderUsageReceipt(receiptValue) &&
+    JSON.stringify(receiptValue) === value.usage_receipt_json &&
+    receiptValue.operation_id === value.operation_id &&
+    receiptValue.owner_generation === value.owner_generation &&
+    receiptValue.attempt_generation === value.attempt_generation &&
+    receiptValue.provider_operation_id === value.provider_operation_id &&
+    receiptValue.request_sha256 === value.request_sha256 &&
+    receiptValue.egress_profile === value.egress_profile &&
+    receiptValue.egress_worker_version_id === value.egress_worker_version_id &&
+    receiptValue.provider_response_status === value.provider_response_status &&
+    receiptValue.provider_response_sha256 === value.provider_response_sha256 &&
+    receiptValue.provider_request_id === value.provider_request_id &&
+    receiptValue.provider_completed_at === value.provider_completed_at &&
+    Number(receiptValue.usage_present) === value.usage_present &&
+    receiptValue.reported_usage_fields === value.reported_usage_fields &&
+    Number(receiptValue.estimated) === value.usage_estimated
+  );
+}
+
+function providerUsageReceiptRowMatches(
+  row: ProviderUsageReceiptRow,
+  admission: D1AdmissionSnapshot,
+  evidence: CanonicalProviderUsageReceipt,
+  result: ProviderUsageReceiptResult,
+  billingSnapshotSha256: string,
+  changes: 0 | 1,
+  persistedAt: number,
+): boolean {
+  const receipt = evidence.receipt;
+  return (
+    row.operation_id === receipt.operation_id &&
+    row.reservation_key === admission.reservation_key &&
+    row.owner_generation === receipt.owner_generation &&
+    row.attempt_generation === receipt.attempt_generation &&
+    row.provider_operation_id === receipt.provider_operation_id &&
+    row.admission_sha256 === admission.admission_sha256 &&
+    row.request_sha256 === receipt.request_sha256 &&
+    row.egress_profile === receipt.egress_profile &&
+    row.egress_worker_version_id === receipt.egress_worker_version_id &&
+    row.billing_kind === admission.billing_kind &&
+    row.billing_contract_hash === admission.billing_contract_hash &&
+    row.billing_snapshot_sha256 === billingSnapshotSha256 &&
+    row.provider_response_status === receipt.provider_response_status &&
+    row.provider_response_sha256 === receipt.provider_response_sha256 &&
+    row.provider_request_id === receipt.provider_request_id &&
+    row.provider_completed_at === receipt.provider_completed_at &&
+    row.result_object_key === result.object_key &&
+    row.result_object_version === result.object_version &&
+    row.result_sha256 === result.sha256 &&
+    row.result_size === result.size &&
+    row.result_content_type === result.content_type &&
+    row.usage_schema_version === receipt.schema_version &&
+    row.usage_parser_contract === receipt.parser_contract &&
+    row.usage_normalization_contract === receipt.normalization_contract &&
+    row.usage_present === Number(receipt.usage_present) &&
+    row.reported_usage_fields === receipt.reported_usage_fields &&
+    row.usage_estimated === Number(receipt.estimated) &&
+    row.usage_receipt_json === evidence.json &&
+    row.usage_receipt_sha256 === evidence.sha256 &&
+    row.persisted_at <= persistedAt &&
+    (changes === 0 || row.persisted_at === persistedAt)
+  );
+}
+
 function validBillingContract(kind: unknown, contract: unknown): contract is string {
   if (kind === "tiered_expr") {
     return validSha256(contract);
@@ -1124,6 +1903,9 @@ function isStorageAccessGrant(value: unknown): value is StorageAccessGrant {
           "attempt_generation",
           "egress_profile",
           "egress_worker_version_id",
+          ...(typeof value.usage_receipt_sha256 === "string"
+            ? ["usage_receipt_sha256"]
+            : []),
           "sha256",
           "size",
           "content_type",
@@ -1138,6 +1920,11 @@ function isStorageAccessGrant(value: unknown): value is StorageAccessGrant {
           (value.attempt_generation !== null &&
             validIdentifier(value.egress_profile, 64) &&
             validIdentifier(value.egress_worker_version_id, 128))) &&
+        (value.usage_receipt_sha256 === undefined ||
+          (value.attempt_generation !== null &&
+            value.egress_profile !== null &&
+            value.egress_worker_version_id !== null &&
+            validSha256(value.usage_receipt_sha256))) &&
         validSha256(value.sha256) &&
         isNonNegativeInteger(value.size) &&
         validContentType(value.content_type)
@@ -1329,7 +2116,9 @@ function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
         };
   return {
     gateway_version:
-      grant.attempt_generation === null
+      grant.usage_receipt_sha256 !== undefined
+        ? "4"
+        : grant.attempt_generation === null
         ? "1"
         : Object.keys(egressMetadata).length === 0
           ? "2"
@@ -1342,6 +2131,9 @@ function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
       ? {}
       : { attempt_generation: String(grant.attempt_generation) }),
     ...egressMetadata,
+    ...(grant.usage_receipt_sha256 === undefined
+      ? {}
+      : { usage_receipt_sha256: grant.usage_receipt_sha256 }),
     sha256: grant.sha256,
     size: String(grant.size),
     content_type: grant.content_type,
@@ -1436,13 +2228,46 @@ function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+function isBoundedNonNegativeInteger(value: unknown, maximum: number): value is number {
+  return isNonNegativeInteger(value) && value <= maximum;
+}
+
+function validCanonicalProviderCost(value: unknown): value is string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 64) return false;
+  const match = /^(0|[1-9]\d{0,12})(?:\.(\d{1,28}))?$/.exec(value);
+  if (match === null) return false;
+  const integer = match[1];
+  const fraction = match[2];
+  if (
+    (fraction !== undefined && fraction.endsWith("0")) ||
+    integer.length + (fraction?.length ?? 0) > 29
+  ) {
+    return false;
+  }
+  const integerValue = Number(integer);
+  return (
+    integerValue < MAX_PROVIDER_COST_USD ||
+    (integerValue === MAX_PROVIDER_COST_USD && fraction === undefined)
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function hasExactOrderedKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
 function hasExactKeys(value: Record<string, unknown>, expected: string[]): boolean {
   const keys = Object.keys(value).sort();
-  return keys.length === expected.length && keys.every((key, index) => key === [...expected].sort()[index]);
+  const sortedExpected = [...expected].sort();
+  return keys.length === sortedExpected.length &&
+    keys.every((key, index) => key === sortedExpected[index]);
 }
 
 async function rejectRequest(

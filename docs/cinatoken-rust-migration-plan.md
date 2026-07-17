@@ -14843,3 +14843,199 @@ checked incremental columns, and 66 key indexes. Rust billing and Worker tests,
 SQLite migration/negative tests, Controller tests, migration/config audits,
 wasm32 checks, and Workerd scenarios remain required together before commit.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.241 Migration 0048 Immutable Provider Usage Receipt (2026-07-17)
+
+This section supersedes the 0047 statement that actual provider usage and
+terminal linkage are only future work. Migration
+`0048_relay_container_provider_usage_receipts.sql`, the private egress receipt
+producer, the Controller persistence path, and the Worker settlement verifier
+now exist locally. This is immutable evidence and a fail-closed settlement
+precondition; it is not production amount authority. No remote schema apply,
+deployment, secret mutation, provider canary, financial mutation, or traffic
+switch is authorized by this section.
+
+### Canonical receipt v1
+
+The private non-streaming OpenAI chat-completions egress boundary emits two
+private headers only after it has read and validated the complete upstream
+JSON body:
+
+- `x-cinatoken-provider-usage-receipt`: unpadded base64url of canonical JSON,
+  bounded to 12,288 encoded bytes;
+- `x-cinatoken-provider-usage-receipt-sha256`: lowercase SHA-256 of the exact
+  canonical JSON, whose UTF-8 form is bounded to 8,192 bytes.
+
+Unknown, reordered, omitted, or duplicated fields are not accepted. The exact
+38-field wire order is:
+
+```text
+schema_version, parser_contract, normalization_contract, source, estimated,
+operation_id, owner_generation, attempt_generation, provider_operation_id,
+request_sha256, egress_profile, egress_worker_version_id,
+provider_response_status, provider_response_sha256, provider_request_id,
+provider_completed_at, usage_present, reported_usage_fields, prompt_tokens,
+completion_tokens, total_tokens, cached_tokens, cache_creation_tokens,
+cache_creation_tokens_5m, cache_creation_tokens_1h, image_input_tokens,
+image_output_tokens, audio_input_tokens, audio_output_tokens,
+is_anthropic_usage_semantic, usage_semantic_source, provider_cost_usd,
+cache_creation_source, responses_web_search_calls,
+responses_file_search_calls, claude_web_search_calls,
+image_generation_quality, image_generation_size
+```
+
+Version 1 fixes `schema_version=1`,
+`parser_contract=openai-chat-completions-usage-v1`,
+`normalization_contract=billing-token-normalization-v1`,
+`source=provider_response`, `estimated=false`, and
+`egress_profile=openai-chat-completions-canary-v1`. The receipt binds the
+operation/owner/attempt/provider identities, request and response digests,
+broker Worker version, provider status/request ID/completion time, normalized
+usage, tool-call counts, optional provider cost, and image-generation price
+class. `provider_completed_at` and D1 `persisted_at` are Unix milliseconds;
+grant and operation deadlines remain Unix seconds.
+
+`reported_usage_fields` is an eleven-bit presence mask. A reported zero keeps
+its bit set; an absent value is normalized to zero with its bit clear. Any bit
+outside `0..10`, or any nonzero normalized token value whose bit is clear, is
+invalid.
+
+| Bit | Value | Receipt field |
+| ---: | ---: | --- |
+| 0 | 1 | `prompt_tokens` |
+| 1 | 2 | `completion_tokens` |
+| 2 | 4 | `total_tokens` |
+| 3 | 8 | `cached_tokens` |
+| 4 | 16 | `cache_creation_tokens` |
+| 5 | 32 | `cache_creation_tokens_5m` |
+| 6 | 64 | `cache_creation_tokens_1h` |
+| 7 | 128 | `image_input_tokens` |
+| 8 | 256 | `image_output_tokens` |
+| 9 | 512 | `audio_input_tokens` |
+| 10 | 1024 | `audio_output_tokens` |
+
+The maximum valid mask is `2047`. `usage_present=true` if and only if bits 0
+and 1 are both set; provider `total_tokens` is not required for completeness.
+For flat per-token settlement the authoritative total is the checked sum
+`prompt_tokens + completion_tokens`, even when bit 2 is clear and the provider
+omits `total_tokens`. Overflow rejects settlement. Bit 2 remains provenance,
+not an alternative total authority.
+
+### Pricing evidence policy
+
+Settlement always requires bits 0 and 1 and rejects estimated, missing,
+noncanonical, hash-mismatched, or identity-mismatched evidence. It also derives
+a required mask from the frozen pricing contract so an absent priced category
+cannot silently become a free zero:
+
+- tiered expressions require bit 3 for `cr`; bit 5 for Anthropic `cc` or bit 4
+  for non-Anthropic `cc`; bit 6 for Anthropic `cc1h`; bits 7, 8, 9, and 10 for
+  `img`, `img_o`, `ai`, and `ao`; and Anthropic `len` additionally requires
+  bits 3, 5, and 6. A non-Anthropic `cc1h` contract is rejected rather than
+  evaluated with an invented zero;
+- flat per-token pricing requires bit 3 for Anthropic semantics or a non-neutral
+  cache ratio; Anthropic cache-creation pricing with any non-neutral creation
+  ratio requires bits 4, 5, and 6, while non-Anthropic aggregate creation
+  pricing requires bit 4; a non-neutral image ratio requires bit 7; detailed
+  audio pricing requires bits 9 and 10, and a nonzero standalone audio-input
+  price requires bit 9; and
+- tool-call and image-generation price fields are outside this eleven-bit mask
+  but remain exact canonical receipt fields. Tiered tool settlement is not yet
+  versioned and therefore rejects rather than estimating.
+
+The Worker recomputes flat quota from the frozen snapshot and derives tiered
+inputs from the durable canonical snapshot. Non-finite or negative tiered cost
+and quota intermediates reject; a Flat calculator overflow sentinel also
+rejects instead of becoming an `i64::MAX` charge. D1 independently enforces immutable linkage,
+but it cannot evaluate an arbitrary billing expression or independently prove
+the final amount; that separate amount-authority gap remains a production
+blocker.
+
+### Persistence and terminal ordering
+
+The local success path is intentionally ordered:
+
+1. Before the one-shot provider send, the Controller proves the exact 0048 D1
+   table, identity ledger, columns, and trigger set through a `first-primary`
+   schema read.
+2. The private egress Worker applies the same absolute provider deadline to
+   both response headers and the complete bounded body drain. Timeout, stream
+   error, oversize body, redirect, invalid JSON, or receipt construction failure
+   aborts. Projected upstream headers cannot override the final forced
+   `Cache-Control: no-store`.
+3. After a valid 2xx JSON response, the Controller validates both private
+   receipt headers, canonical JSON, digest, all 38 fields, result-body digest,
+   request/grant identity, status, broker profile, and Worker version.
+4. The result body is written to its deterministic R2 key with create-only
+   semantics. Exact replay must match body identity and metadata schema 4,
+   including `usage_receipt_sha256`; a different existing object is a conflict.
+5. Through one D1 `first-primary` session, the Controller performs
+   `INSERT OR IGNORE` and then reads back every receipt/result/grant/billing
+   field exactly. A zero-row insert without exact readback, malformed row,
+   digest mismatch, or changed identity is ambiguous and cannot become success.
+6. Only after the D1 row is exact does the Controller attach the R2 result
+   manifest to the shard DO, then record the provider attempt outcome. The DO
+   ledger currently stores and compares the result manifest, not the provider
+   receipt hash; this is an explicit remaining convergence gap.
+
+The D1 receipt table is append-only and is paired with
+`relay_container_provider_usage_receipt_identities`. The separate ledger
+freezes operation/owner/attempt, provider-operation, and R2 key/version
+identities. Its insert guard executes after receipt insertion, while update and
+delete are unconditionally rejected on both tables. Consequently an
+`INSERT OR REPLACE` cannot exploit SQLite's implicit delete behavior when
+`recursive_triggers=OFF`: the surviving identity row makes the replacement
+statement abort. Normal exact replay uses `INSERT OR IGNORE` plus complete
+readback, never replacement.
+
+A receipt with provider status `202` may be persisted as immutable evidence of
+what crossed the provider boundary, but it can never authorize operation
+completion or financial settlement. A settle event must name the exact receipt
+hash, result hash, and attempt generation; `usage_present` must be true,
+`estimated` must be false, and provider status must not be 202. The terminal
+event's `client_response_status` and the completed operation's response status
+must each equal the receipt's `provider_response_status`. Refund and
+`recovery_required` events must not claim receipt/result linkage.
+
+### Rollout, compatibility, and rollback
+
+Migration 0048 is intentionally not rolling-write compatible with a true 0047
+financial-terminal writer. Historical 0047 rows remain readable, but after
+0048 a new 0047-style settle that omits receipt/result linkage is rejected.
+This is a safety boundary, not a compatibility defect: all provider, terminal,
+billing, reconciliation, and traffic gates stay false while every 0047 writer,
+Queue/Cron/alarm owner, Controller, and in-flight provider operation is removed,
+read back, drained, or quarantined. Only an inventoried 0048-aware candidate may
+run after the schema apply, and no provider gate may open until that drain and
+the exact N/N-1 failure matrix are archived.
+
+Normal rollback is disable-first. Stop edge admission, provider egress,
+terminal settlement, and reconciliation; drain or quarantine all operations;
+retain schema 0048, receipt/identity rows, triggers, R2 objects, and migration
+history; then roll application artifacts back only to a version that cannot
+receive provider traffic against schema 0048. Do not delete receipts or the
+identity ledger, remove triggers, edit `d1_migrations`, or re-enable a 0047
+writer. Time Travel is reserved for an approved all-writer-frozen disaster
+decision, not routine rollback.
+
+### Production decision
+
+Migration 0048 closes the local provider-body-to-D1 immutable evidence gap, but
+production remains **NO-GO**. The following blockers remain explicit:
+
+- D1 cannot independently recompute arbitrary billing expressions or attest
+  final amount authority; Worker recomputation is not a second database-owned
+  settlement decision;
+- the shard DO does not persist/compare the receipt hash, and reconciliation
+  does not yet compare the same receipt identity across R2, D1, DO, terminal
+  event, and provider invoice;
+- no production terminal caller is enabled or proven;
+- provider-native idempotency or operation lookup is absent;
+- a crash or transport loss after provider completion but before the first R2
+  create remains ambiguous and must not retry or settle as success;
+- remote schema/readback, Worker/Controller/Container deployment, bindings,
+  secrets, real provider faults, load/cost, alerts, financial convergence,
+  rollback rehearsal, and C1-C5/G1-G8 approval are absent.
+
+No deploy or secret command was run. All tracked gates remain false, Go/VPS
+remains authoritative, and production remains **NO-GO**.

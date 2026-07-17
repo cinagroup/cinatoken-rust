@@ -17,12 +17,18 @@ import {
   STORAGE_GATEWAY_ACTIONS,
   deriveR2ResultKey,
   handleStorageGatewayRequest,
+  isProviderUsageReceipt,
   requireD1OperationAdmission,
   requireD1ProviderEgressGrant,
+  requireD1ProviderUsageReceipt,
+  requireD1ProviderUsageReceiptSchema,
+  type CanonicalProviderUsageReceipt,
   type D1AdmissionSnapshot,
   type D1AdmissionGetGrant,
   type KvConfigGetGrant,
   type ProviderEgressGrantIdentity,
+  type ProviderUsageReceipt,
+  type ProviderUsageReceiptResult,
   type R2InputGetGrant,
   type R2ResultPutGrant,
   type StorageGatewayEnvironment,
@@ -190,6 +196,122 @@ function providerEgressGrantRow(
   };
 }
 
+function providerUsageReceipt(
+  admission: D1AdmissionSnapshot,
+  result: ProviderUsageReceiptResult,
+  overrides: Partial<ProviderUsageReceipt> = {},
+): ProviderUsageReceipt {
+  const receipt: ProviderUsageReceipt = {
+    schema_version: 1,
+    parser_contract: "openai-chat-completions-usage-v1",
+    normalization_contract: "billing-token-normalization-v1",
+    source: "provider_response",
+    estimated: false,
+    operation_id: admission.operation_id,
+    owner_generation: admission.owner_generation,
+    attempt_generation: 1,
+    provider_operation_id: admission.provider_operation_id,
+    request_sha256: admission.input_sha256,
+    egress_profile: "openai-chat-completions-canary-v1",
+    egress_worker_version_id: "worker-version-1",
+    provider_response_status: 200,
+    provider_response_sha256: result.sha256,
+    provider_request_id: "request-1",
+    provider_completed_at: Date.now() - 10,
+    usage_present: false,
+    reported_usage_fields: 0,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    cached_tokens: 0,
+    cache_creation_tokens: 0,
+    cache_creation_tokens_5m: 0,
+    cache_creation_tokens_1h: 0,
+    image_input_tokens: 0,
+    image_output_tokens: 0,
+    audio_input_tokens: 0,
+    audio_output_tokens: 0,
+    is_anthropic_usage_semantic: false,
+    usage_semantic_source: "openai_default",
+    provider_cost_usd: null,
+    cache_creation_source: "none",
+    responses_web_search_calls: 0,
+    responses_file_search_calls: 0,
+    claude_web_search_calls: 0,
+    image_generation_quality: null,
+    image_generation_size: null,
+    ...overrides,
+  };
+  if (!isProviderUsageReceipt(receipt)) throw new Error("invalid provider usage receipt fixture");
+  return receipt;
+}
+
+async function canonicalProviderUsageReceipt(
+  receipt: ProviderUsageReceipt,
+): Promise<CanonicalProviderUsageReceipt> {
+  const json = JSON.stringify(receipt);
+  return { receipt, json, sha256: await sha256Bytes(new TextEncoder().encode(json)) };
+}
+
+function providerUsageReceiptRowFromBindings(values: unknown[]): Record<string, unknown> {
+  const names = [
+    "operation_id",
+    "reservation_key",
+    "owner_generation",
+    "attempt_generation",
+    "provider_operation_id",
+    "admission_sha256",
+    "request_sha256",
+    "egress_profile",
+    "egress_worker_version_id",
+    "billing_kind",
+    "billing_contract_hash",
+    "billing_snapshot_sha256",
+    "provider_response_status",
+    "provider_response_sha256",
+    "provider_request_id",
+    "provider_completed_at",
+    "result_object_key",
+    "result_object_version",
+    "result_sha256",
+    "result_size",
+    "result_content_type",
+    "usage_schema_version",
+    "usage_parser_contract",
+    "usage_normalization_contract",
+    "usage_present",
+    "reported_usage_fields",
+    "usage_estimated",
+    "usage_receipt_json",
+    "usage_receipt_sha256",
+    "persisted_at",
+  ];
+  return Object.fromEntries(names.map((name, index) => [name, values[index]]));
+}
+
+function providerUsageSchemaReadyRow(
+  overrides: Record<string, number> = {},
+): Record<string, number> {
+  return {
+    table_count: 1,
+    column_count: 30,
+    required_column_count: 30,
+    identity_table_count: 1,
+    identity_column_count: 6,
+    identity_required_column_count: 6,
+    insert_guard_count: 1,
+    update_guard_count: 1,
+    delete_guard_count: 1,
+    identity_guard_count: 1,
+    identity_update_guard_count: 1,
+    identity_delete_guard_count: 1,
+    terminal_event_column_count: 3,
+    terminal_event_guard_count: 1,
+    operation_completion_guard_count: 1,
+    ...overrides,
+  };
+}
+
 function inputRequest(path = R2_INPUT_PATH, method = "GET"): Request {
   return new Request(`https://${R2_INPUT_HOST}${path}`, { method });
 }
@@ -220,6 +342,11 @@ function hexBuffer(hex: string): ArrayBuffer {
     bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
   }
   return bytes.buffer;
+}
+
+async function sha256Bytes(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 interface R2ObjectOptions {
@@ -276,7 +403,9 @@ function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
         };
   return {
     gateway_version:
-      grant.attempt_generation === null
+      grant.usage_receipt_sha256 !== undefined
+        ? "4"
+        : grant.attempt_generation === null
         ? "1"
         : Object.keys(egressMetadata).length === 0
           ? "2"
@@ -289,6 +418,9 @@ function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
       ? {}
       : { attempt_generation: String(grant.attempt_generation) }),
     ...egressMetadata,
+    ...(grant.usage_receipt_sha256 === undefined
+      ? {}
+      : { usage_receipt_sha256: grant.usage_receipt_sha256 }),
     sha256: grant.sha256,
     size: String(grant.size),
     content_type: grant.content_type,
@@ -612,6 +744,46 @@ describe("container storage gateway", () => {
     });
   });
 
+  test("binds the canonical usage receipt digest into R2 metadata v4", async () => {
+    const usageReceiptSha256 = "d".repeat(64);
+    const grant = resultGrant({
+      attempt_generation: 1,
+      egress_profile: "openai-chat-completions-canary-v1",
+      egress_worker_version_id: "worker-version-1",
+      usage_receipt_sha256: usageReceiptSha256,
+    });
+    let customMetadata: Record<string, string> | undefined;
+    const bucket = {
+      async put(key: string, _value: unknown, options: R2PutOptions) {
+        customMetadata = options.customMetadata;
+        return r2Object({
+          key,
+          version: "result-version-attempt-v4",
+          size: grant.size,
+          contentType: grant.content_type,
+          sha256: grant.sha256,
+          customMetadata: resultMetadata(grant),
+        });
+      },
+      async head() {
+        throw new Error("head must not run after a successful create");
+      },
+    } as unknown as Pick<R2Bucket, "head" | "put">;
+
+    const response = await handleStorageGatewayRequest(
+      enabledEnv({ CONTAINER_STORAGE_RESULT_R2: bucket }),
+      resultRequest(grant),
+      grant,
+    );
+
+    expect(response.status).toBe(201);
+    expect(customMetadata).toEqual({
+      ...resultMetadata(grant),
+      gateway_version: "4",
+      usage_receipt_sha256: usageReceiptSha256,
+    });
+  });
+
   test("treats an identical create-only replay as idempotent", async () => {
     const grant = resultGrant();
     const key = deriveR2ResultKey(grant);
@@ -784,6 +956,264 @@ describe("container storage gateway", () => {
     const missing = await handleStorageGatewayRequest(env, request(), grant);
     expect(missing.status).toBe(404);
     expect(await errorCode(missing)).toBe("admission_snapshot_not_found");
+  });
+
+  test("probes the complete 0048 receipt schema and guards through a read-only primary session", async () => {
+    let readiness = providerUsageSchemaReadyRow();
+    const prepared: string[] = [];
+    const constraints: unknown[] = [];
+    const session = {
+      prepare(sql: string) {
+        prepared.push(sql);
+        return {
+          async first<T>() {
+            return { ...readiness } as T;
+          },
+        };
+      },
+    };
+    const database = {
+      prepare() {
+        throw new Error("schema probe must use the primary session");
+      },
+      withSession(constraint: unknown) {
+        constraints.push(constraint);
+        return session;
+      },
+    } as unknown as D1Database;
+    const env = enabledEnv({ CONTAINER_STORAGE_ADMISSION_DB: database });
+
+    await expect(requireD1ProviderUsageReceiptSchema(env)).resolves.toBeUndefined();
+    expect(constraints).toEqual(["first-primary"]);
+    expect(prepared[0]).toContain("relay_container_provider_usage_receipts");
+    expect(prepared[0]).toContain("pragma_table_info('relay_container_provider_usage_receipts')");
+    expect(prepared[0]).toContain("relay_container_provider_usage_receipt_insert_authority_guard");
+    expect(prepared[0]).toContain("relay_container_provider_usage_receipt_identities");
+    expect(prepared[0]).toContain("relay_container_provider_usage_receipt_identity_guard");
+    expect(prepared[0]).toContain("relay_container_provider_usage_receipt_identity_update_guard");
+    expect(prepared[0]).toContain("relay_container_provider_usage_receipt_identity_delete_guard");
+    expect(prepared[0]).toContain("relay_container_terminal_event_provider_usage_guard");
+    expect(prepared[0]).toContain(
+      "relay_container_operation_provider_usage_terminal_guard",
+    );
+
+    for (const unavailable of [
+      { identity_table_count: 0 },
+      { identity_guard_count: 0 },
+      { terminal_event_guard_count: 0 },
+      { operation_completion_guard_count: 0 },
+    ]) {
+      readiness = providerUsageSchemaReadyRow(unavailable);
+      await expect(requireD1ProviderUsageReceiptSchema(env)).rejects.toMatchObject({
+        code: "provider_usage_receipt_schema_unavailable",
+        status: 503,
+      });
+    }
+    await expect(
+      requireD1ProviderUsageReceiptSchema(enabledEnv()),
+    ).rejects.toMatchObject({
+      code: "provider_usage_receipt_schema_unavailable",
+      status: 503,
+    });
+  });
+
+  test("creates and exactly replays a canonical 0048 usage receipt", async () => {
+    const grant = admissionGrant();
+    const admission = {
+      ...admissionRow(grant),
+      operation_status: "dispatched",
+    } as unknown as D1AdmissionSnapshot;
+    const result: ProviderUsageReceiptResult = {
+      object_key:
+        `${R2_RESULT_KEY_PREFIX}/${admission.operation_id}/${admission.owner_generation}/${resultSha256}`,
+      object_version: "result-version-1",
+      sha256: resultSha256,
+      size: inputBytes.byteLength,
+      content_type: "application/json",
+    };
+    const evidence = await canonicalProviderUsageReceipt(
+      providerUsageReceipt(admission, result),
+    );
+    const persistedAt = evidence.receipt.provider_completed_at + 1;
+    const prepared: string[] = [];
+    const constraints: unknown[] = [];
+    const writeBindings: unknown[][] = [];
+    let stored: Record<string, unknown> | null = null;
+    const session = {
+      prepare(sql: string) {
+        prepared.push(sql);
+        let values: unknown[] = [];
+        const statement = {
+          bind(...next: unknown[]) {
+            values = next;
+            return statement;
+          },
+          async run() {
+            writeBindings.push(values);
+            if (stored !== null) return { success: true, meta: { changes: 0 }, results: [] };
+            stored = providerUsageReceiptRowFromBindings(values);
+            return { success: true, meta: { changes: 1 }, results: [] };
+          },
+          async first<T>() {
+            return (stored === null ? null : { ...stored }) as T | null;
+          },
+        };
+        return statement;
+      },
+    };
+    const database = {
+      prepare() {
+        throw new Error("receipt persistence must use the primary session");
+      },
+      withSession(constraint: unknown) {
+        constraints.push(constraint);
+        return session;
+      },
+    } as unknown as D1Database;
+    const env = enabledEnv({ CONTAINER_STORAGE_ADMISSION_DB: database });
+
+    await expect(
+      requireD1ProviderUsageReceipt(env, admission, evidence, result, persistedAt),
+    ).resolves.toEqual({ replayed: false, persisted_at: persistedAt });
+    await expect(
+      requireD1ProviderUsageReceipt(env, admission, evidence, result, persistedAt + 1),
+    ).resolves.toEqual({ replayed: true, persisted_at: persistedAt });
+
+    expect(constraints).toEqual(["first-primary", "first-primary"]);
+    expect(prepared[0]).toContain(
+      "INSERT OR IGNORE INTO relay_container_provider_usage_receipts",
+    );
+    expect(prepared[1]).toContain("FROM relay_container_provider_usage_receipts");
+    expect(writeBindings[0]?.[11]).toBe(tieredBillingSnapshotSha256);
+    expect(writeBindings[0]?.[24]).toBe(0);
+    expect(writeBindings[0]?.[26]).toBe(0);
+    expect(writeBindings[0]?.[27]).toBe(evidence.json);
+    expect(writeBindings[0]?.[28]).toBe(evidence.sha256);
+  });
+
+  test("rejects 0048 result boundaries that D1 cannot store", async () => {
+    const grant = admissionGrant();
+    const admission = {
+      ...admissionRow(grant),
+      operation_status: "dispatched",
+    } as unknown as D1AdmissionSnapshot;
+    const result: ProviderUsageReceiptResult = {
+      object_key:
+        `${R2_RESULT_KEY_PREFIX}/${admission.operation_id}/${admission.owner_generation}/${resultSha256}`,
+      object_version: "result-version-1",
+      sha256: resultSha256,
+      size: inputBytes.byteLength,
+      content_type: "application/json",
+    };
+    const evidence = await canonicalProviderUsageReceipt(
+      providerUsageReceipt(admission, result),
+    );
+
+    for (const invalidResult of [
+      { ...result, object_version: "v".repeat(129) },
+      { ...result, size: 1 },
+    ]) {
+      await expect(
+        requireD1ProviderUsageReceipt(enabledEnv(), admission, evidence, invalidResult),
+      ).rejects.toMatchObject({
+        code: "provider_usage_receipt_authority_mismatch",
+        status: 409,
+      });
+    }
+  });
+
+  test("fails closed on conflicting, malformed, and unavailable 0048 receipt persistence", async () => {
+    const grant = admissionGrant();
+    const admission = {
+      ...admissionRow(grant),
+      operation_status: "dispatched",
+    } as unknown as D1AdmissionSnapshot;
+    const result: ProviderUsageReceiptResult = {
+      object_key:
+        `${R2_RESULT_KEY_PREFIX}/${admission.operation_id}/${admission.owner_generation}/${resultSha256}`,
+      object_version: "result-version-1",
+      sha256: resultSha256,
+      size: inputBytes.byteLength,
+      content_type: "application/json",
+    };
+    const evidence = await canonicalProviderUsageReceipt(
+      providerUsageReceipt(admission, result),
+    );
+    const persistedAt = evidence.receipt.provider_completed_at + 1;
+
+    for (const scenario of ["conflict", "malformed"] as const) {
+      let writeValues: unknown[] = [];
+      const session = {
+        prepare() {
+          let values: unknown[] = [];
+          const statement = {
+            bind(...next: unknown[]) {
+              values = next;
+              return statement;
+            },
+            async run() {
+              writeValues = values;
+              return {
+                success: true,
+                meta: { changes: scenario === "malformed" ? 1 : 0 },
+                results: [],
+              };
+            },
+            async first<T>() {
+              const row = providerUsageReceiptRowFromBindings(writeValues);
+              if (scenario === "conflict") {
+                const conflictingReceipt: ProviderUsageReceipt = {
+                  ...evidence.receipt,
+                  egress_worker_version_id: "different-worker-version",
+                };
+                const conflictingJson = JSON.stringify(conflictingReceipt);
+                row.egress_worker_version_id = conflictingReceipt.egress_worker_version_id;
+                row.usage_receipt_json = conflictingJson;
+                row.usage_receipt_sha256 = await sha256Bytes(
+                  new TextEncoder().encode(conflictingJson),
+                );
+              } else {
+                row.persisted_at = "invalid";
+              }
+              return row as T;
+            },
+          };
+          return statement;
+        },
+      };
+      const database = {
+        prepare: session.prepare,
+        withSession() {
+          return session;
+        },
+      } as unknown as D1Database;
+
+      await expect(
+        requireD1ProviderUsageReceipt(
+          enabledEnv({ CONTAINER_STORAGE_ADMISSION_DB: database }),
+          admission,
+          evidence,
+          result,
+          persistedAt,
+        ),
+      ).rejects.toMatchObject({
+        code:
+          scenario === "conflict"
+            ? "provider_usage_receipt_conflict"
+            : "provider_usage_receipt_readback_invalid",
+        status: scenario === "conflict" ? 409 : 502,
+      });
+    }
+
+    await expect(
+      requireD1ProviderUsageReceipt(
+        enabledEnv(),
+        admission,
+        evidence,
+        result,
+        persistedAt,
+      ),
+    ).rejects.toMatchObject({ code: "provider_usage_receipt_unavailable", status: 503 });
   });
 
   test("creates and exactly replays the 0047 provider egress grant in a first-primary session", async () => {

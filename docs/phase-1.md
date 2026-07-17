@@ -2139,3 +2139,81 @@ broker-first/Controller-second N/N-1 proof, real Linux/R2/provider faults,
 usage receipt recovery, idempotency/lookup, convergence, rollback, load/cost,
 and approvals. All Container gates remain false; Go/VPS is authoritative and
 production remains **NO-GO**.
+
+## Migration 0048 Immutable Provider Usage Receipt
+
+This section supersedes the 0047 statement that provider usage is not captured
+at the egress boundary. The local D1 head is now 0048. For a bounded
+non-streaming chat-completions response, the private egress Worker drains the
+entire upstream body under the same absolute provider deadline, parses usage,
+and returns an immutable canonical receipt plus its SHA-256 in private headers.
+It never forwards upstream `Cache-Control`; the final projected response is
+always forced to `no-store`.
+
+Receipt v1 is exact, not extensible by accident. Its canonical JSON contains
+these 38 fields in wire order:
+
+```text
+schema_version, parser_contract, normalization_contract, source, estimated,
+operation_id, owner_generation, attempt_generation, provider_operation_id,
+request_sha256, egress_profile, egress_worker_version_id,
+provider_response_status, provider_response_sha256, provider_request_id,
+provider_completed_at, usage_present, reported_usage_fields, prompt_tokens,
+completion_tokens, total_tokens, cached_tokens, cache_creation_tokens,
+cache_creation_tokens_5m, cache_creation_tokens_1h, image_input_tokens,
+image_output_tokens, audio_input_tokens, audio_output_tokens,
+is_anthropic_usage_semantic, usage_semantic_source, provider_cost_usd,
+cache_creation_source, responses_web_search_calls,
+responses_file_search_calls, claude_web_search_calls,
+image_generation_quality, image_generation_size
+```
+
+The fixed constants are schema 1,
+`openai-chat-completions-usage-v1`,
+`billing-token-normalization-v1`, `provider_response`, `estimated=false`, and
+`openai-chat-completions-canary-v1`. Canonical JSON is limited to 8,192 bytes
+and its unpadded base64url header to 12,288 bytes. The eleven-bit
+`reported_usage_fields` mask is: bit 0 prompt, 1 completion, 2 total, 3 cached,
+4 aggregate cache creation, 5 five-minute cache creation, 6 one-hour cache
+creation, 7 image input, 8 image output, 9 audio input, and 10 audio output.
+The maximum is 2047. Missing fields normalize to zero with the bit clear;
+reported zero retains the bit. `usage_present` is true exactly when bits 0 and
+1 are set. Flat settlement derives its checked total from prompt plus
+completion even when bit 2 is clear.
+
+The frozen tiered expression or flat snapshot determines which priced bits are
+mandatory. Cached, cache-creation, image, and audio categories required by the
+selected contract must be reported; absence rejects settlement instead of
+pricing zero. Tiered tool/image-generation settlement is still unversioned and
+rejects. OpenAI-semantic `cc1h` expressions also reject because that variable
+is Anthropic-only. Estimated usage, noncanonical JSON, unknown mask bits, hash
+or identity mismatch, missing prompt/completion, out-of-range raw token values,
+non-finite tiered results, the flat `i64::MAX` overflow sentinel, and a nonzero
+value with its bit clear all fail closed.
+
+The durable order is R2 create-only result write, D1
+`INSERT OR IGNORE` plus exact same-session readback, then shard-DO result
+attachment. R2 metadata schema 4 carries the receipt hash. D1 stores the exact
+receipt/result/grant/billing identity and a separate append-only identity
+ledger; it blocks update/delete and also blocks `INSERT OR REPLACE` when SQLite
+recursive triggers are disabled. The terminal event must bind receipt hash,
+result hash, and attempt 1. Its client status and the completed operation status
+must equal the provider status. A provider-status 202 receipt may remain as
+evidence, but cannot complete or settle.
+
+This is intentionally incompatible with a true 0047 settle writer after schema
+0048: missing receipt linkage is rejected. Before 0048 can be applied to an
+active target, every 0047 writer and in-flight provider operation must be
+inventoried, removed, read back, drained, or quarantined while all gates remain
+false. Rollback is disable-first and retains schema, receipt/identity rows,
+triggers, R2 evidence, and migration history; an older artifact may return only
+when it cannot receive provider traffic.
+
+Production is still **NO-GO**. D1 does not independently evaluate arbitrary
+billing expressions or attest the final amount; the DO ledger does not yet
+store/compare the receipt hash; reconciliation does not close the
+R2/D1/DO/terminal/provider-invoice hash loop; no production terminal caller is
+enabled; provider-native idempotency/lookup is absent; and the
+post-provider/pre-R2 crash window remains ambiguous. No remote schema apply,
+deployment, binding, secret, provider canary, or traffic change has occurred.
+Go/VPS remains authoritative and all Container gates remain false.

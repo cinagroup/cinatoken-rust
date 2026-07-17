@@ -132,13 +132,28 @@ describe("isolated container controller configuration", () => {
     expect(providerEgressConfig.env.staging.name).toBe("cinatoken-container-egress-staging");
     expect(providerEgressConfig.env.production.name).toBe("cinatoken-container-egress-production");
     expect(providerEgressGatewaySource).toContain("requireD1ProviderEgressAdmission");
+    expect(providerEgressGatewaySource).toContain("requireProviderEgressReadiness");
     expect(providerEgressGatewaySource).toContain("dispatchProviderAttempt");
-    expect(providerEgressGatewaySource.indexOf("requireD1ProviderEgressAdmission")).toBeLessThan(
-      providerEgressGatewaySource.indexOf("dispatchProviderAttempt"),
+    const dispatchCall = providerEgressGatewaySource.indexOf(
+      "const dispatch = await port.dispatchProviderAttempt(",
     );
+    const admissionCall = providerEgressGatewaySource.indexOf(
+      "await requireD1ProviderEgressAdmission(env, grant);",
+    );
+    const readinessCall = providerEgressGatewaySource.indexOf(
+      "await requireProviderEgressReadiness(broker, grant.deadline_at);",
+    );
+    expect(dispatchCall).toBeGreaterThan(-1);
+    expect(admissionCall).toBeGreaterThan(-1);
+    expect(readinessCall).toBeGreaterThan(-1);
+    expect(admissionCall).toBeLessThan(readinessCall);
+    expect(readinessCall).toBeLessThan(dispatchCall);
     expect(providerEgressSource).toContain('const API_KEY_ENV: &str = "CINATOKEN_CONTAINER_PROVIDER_API_KEY"');
     expect(providerEgressSource).toContain('pub const UPSTREAM_HOST: &str = "api.openai.com"');
     expect(providerEgressSource).toContain('pub const UPSTREAM_PATH: &str = "/v1/chat/completions"');
+    expect(providerEgressSource).toContain(
+      'pub const INTERNAL_EGRESS_READINESS_PATH: &str = "/internal/v1/provider-egress/readiness"',
+    );
     expect(providerEgressSource).not.toMatch(/BASE_URL_ENV|UPSTREAM_URL_ENV|env\.secret\([^A]/);
     expect(packageJson.scripts["check:container-egress"]).toContain("wasm32-unknown-unknown");
   });

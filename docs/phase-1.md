@@ -1948,6 +1948,29 @@ Before isolated staging, the migration still needs immutable egress-profile
 identity, provider-native idempotency or lookup, durable upstream response
 provenance, global terminal acknowledgement/compaction, exact edge replay and
 financial convergence, actual Container lifecycle and R2/DO/network faults,
-a pre-dispatch broker readiness/readback RPC, N/N-1, secret rotation,
+remote broker readiness/version readback, N/N-1, secret rotation,
 load/cost/alerts, rollback, and C1-C5 approvals. Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+## 2026-07-17 Phase 1 Pre-Dispatch Broker Readiness
+
+The private provider broker now exposes one exact configuration-readiness GET
+over its Service Binding. It returns ready only when the broker gate is true,
+the fixed model is configured, and the API-key secret is present. Its no-store
+response contains only protocol version, fixed profile, and a boolean; model and
+credential values are never returned and no provider request is made.
+
+After global D1 admission, the Controller requires that response before
+consuming the DO's one-shot dispatch. The read is capped at two seconds and
+1 KiB and rejects non-200, wrong headers/profile, non-JSON, extra fields, or
+transport failure. Direct gateway failure is 503 with zero dispatch. If the
+Linux runtime reports conservative recovery, the still-prepared DO attempt is
+cancelled as provably unsent rather than marked ambiguous.
+
+Compiled Workerd tests exercise ready, disabled, missing-model, missing-secret,
+wrong-method, and wrong-profile cases against the Rust Wasm Worker. This closes
+the local configuration-readiness gap only. Credential validity, provider
+reachability, deployment-version affinity, remote readback, immutable D1/DO
+egress-profile identity, provider idempotency/lookup, actual Container faults,
+and production canary evidence remain open. All tracked gates stay false;
+Go/VPS remains authoritative and production remains **NO-GO**.

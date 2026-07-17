@@ -557,9 +557,9 @@ The send boundary has two phases:
 | Result attached, success RPC unknown | Exact manifest is in the DO grant | Reread DO and finish the same attempt | Forbidden |
 | Attempt already succeeded | Exact attempt and manifest are durable | Return the same result manifest | Forbidden |
 
-The Controller performs all deterministic checks it owns before consuming dispatch:
-exact synthetic host/path/method, bounded JSON, body digest, operation kind,
-R2 input identity, provider/admission/request digests, owner and attempt
+The Controller performs all deterministic checks it owns before consuming
+dispatch: exact synthetic host/path/method, bounded JSON, body digest, operation
+kind, R2 input identity, provider/admission/request digests, owner and attempt
 generation, five-minute deadline, and global D1 `dispatched` state. The broker
 binding must also be present before dispatch. The broker repeats the
 security-sensitive profile, model, digest, identity, deadline, body-size, and
@@ -572,8 +572,9 @@ binding transport loss, broker gate/model/credential rejection, absolute
 timeout, non-2xx, redirect, malformed or oversized response, R2 write/readback
 uncertainty, DO attach uncertainty, and terminal RPC uncertainty all converge
 to recovery instead of another request. A replay of a dispatched attempt never
-calls the Service Binding. The current canary does not claim a pre-dispatch
-broker readiness RPC, provider-native idempotency key, or status lookup.
+calls the Service Binding. The current canary now performs a pre-dispatch broker
+configuration-readiness RPC, but it does not claim provider-native idempotency,
+provider health, credential validation, or a provider status lookup.
 
 The successful path is persist-before-terminal: bound provider response bytes,
 validate JSON, compute SHA-256, create-or-verify the immutable R2 object, attach
@@ -594,3 +595,33 @@ real Container lifecycle tests, R2/DO/D1 fault injection, N/N-1 compatibility,
 global terminal acknowledgement, exact edge replay, and financial convergence
 all have dated evidence. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## Broker Readiness Failure Semantics
+
+The pre-dispatch sequence is now exact:
+
+1. validate the Container request body and immutable DO grant;
+2. prove the matching global D1 operation is `dispatched`;
+3. require the Service Binding and read the broker's exact readiness contract;
+4. only then consume DO attempt dispatch; and
+5. call the execute endpoint once.
+
+Readiness is bounded to two seconds and the remaining operation deadline. It
+checks broker gate, fixed model presence, and secret presence without returning
+either value or contacting the provider. The Controller independently validates
+status, content type, protocol/profile headers, a 1 KiB body limit, exact JSON
+fields, and no unknown fields.
+
+Any readiness transport, configuration, credential-presence, shape, or version
+failure occurs while the attempt is still `prepared`. The direct gateway
+response is a no-store 503 and dispatch count remains zero. The Linux runtime
+uses a conservative recovery-required envelope for any gateway uncertainty;
+the DO can still prove no dispatch occurred and atomically converts that
+prepared attempt to safe cancellation and operation failure. No provider retry,
+lookup, R2 result, or billing settlement is authorized by readiness.
+
+After dispatch, readiness evidence has no retry authority. A deployment could
+change between the readiness GET and execute POST, so a later broker error is
+still ambiguous. Closing that residual requires remote deployment-version
+readback or affinity, N/N-1 proof, and provider-native idempotency or lookup. It
+must not be papered over by repeating either request.

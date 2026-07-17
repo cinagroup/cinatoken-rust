@@ -689,8 +689,46 @@ This is still not production-ready. The fixed profile is deployment-local, not
 an immutable D1/DO egress-profile version. Provider-native idempotency or lookup,
 durable upstream status/header provenance, definite non-2xx classification,
 global terminal acknowledgement and compaction, multi-provider adapters,
-streaming, a pre-dispatch broker readiness/readback RPC, real Linux/Cloudflare
-Container execution, N/N-1, credential rotation, remote R2/DO/network fault
-campaigns, load/cost/alert evidence, exact edge replay, financial convergence,
-and C1-C5 approvals remain open. All tracked gates stay false, no provider or
-remote deployment was invoked, and production remains **NO-GO**.
+streaming, remote broker readiness/deployment-version readback, real
+Linux/Cloudflare Container execution, N/N-1, credential rotation, remote
+R2/DO/network fault campaigns, load/cost/alert evidence, exact edge replay,
+financial convergence, and C1-C5 approvals remain open. All tracked gates stay
+false, no provider or remote deployment was invoked, and production remains
+**NO-GO**.
+
+## 2026-07-17 Pre-Dispatch Broker Readiness
+
+Binding presence alone did not prove that the target broker had its runtime
+gate, fixed model, and secret configured. Discovering one of those deterministic
+errors after consuming the DO dispatch transition would create an avoidable
+ambiguous attempt. The Controller now performs one bounded private readiness
+call after exact D1 admission and before dispatch.
+
+The call is an exact GET to
+`/internal/v1/provider-egress/readiness` over the existing `PROVIDER_EGRESS`
+Service Binding. It carries only protocol and profile identifiers, has no body,
+uses the operation deadline with a two-second maximum, and performs no provider
+I/O. The broker returns ready only when its gate is true, its configured model
+is nonempty, and its API-key secret exists and is nonempty. The response is
+no-store, at most 1 KiB, and contains exactly protocol version 1, the fixed
+profile identifier, and `ready=true`. It never returns the model or credential.
+
+The Controller requires status 200, JSON content type, exact protocol/profile
+headers, and the exact three-field body. A timeout, non-200, oversized body,
+unknown field, wrong profile, or missing binding returns 503 before the DO can
+leave `prepared`. If the Linux client conservatively reports that response as
+recovery-required, the existing DO finalizer converts the still-prepared attempt
+to `cancelled` with `provider_attempt_not_dispatched`; it does not manufacture an
+ambiguous provider send.
+
+Local Workerd runs the compiled Rust Worker behind four Service Bindings and
+proves ready, disabled, missing-model, and missing-secret behavior plus method
+and profile rejection. The ready response contains neither configured value,
+and the readiness path completes without an outbound provider service.
+
+This probe is configuration readiness, not provider health. It does not prove
+credential validity, provider reachability, quota, model entitlement, or atomic
+version affinity between readiness and execute. Production still requires
+target-first deployment, remote binding/version readback, mixed-version proof,
+credential rotation, and a separately approved real provider canary. All
+tracked runtime gates remain false and production remains **NO-GO**.

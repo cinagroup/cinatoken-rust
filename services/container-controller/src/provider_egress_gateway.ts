@@ -26,6 +26,8 @@ import {
 export const PROVIDER_EGRESS_HOST = "provider-egress.cinatoken.internal";
 export const PROVIDER_EGRESS_PATH = "/v1/provider-attempts/execute";
 export const PROVIDER_EGRESS_SERVICE_PATH = "/internal/v1/provider-attempts/execute";
+export const PROVIDER_EGRESS_READINESS_SERVICE_PATH =
+  "/internal/v1/provider-egress/readiness";
 export const PROVIDER_EGRESS_PROFILE = "openai-chat-completions-canary-v1";
 export const PROVIDER_CANARY_OPERATION_KIND = "chat_completions_canary";
 export const PROVIDER_EGRESS_PROTOCOL_HEADER = "x-cinatoken-provider-egress-protocol";
@@ -33,6 +35,7 @@ export const PROVIDER_EGRESS_PROFILE_HEADER = "x-cinatoken-provider-egress-profi
 export const PROVIDER_OPERATION_ID_HEADER = "x-cinatoken-provider-operation-id";
 export const PROVIDER_DEADLINE_HEADER = "x-cinatoken-provider-deadline";
 export const MAX_PROVIDER_EGRESS_BODY_BYTES = 4 * 1024 * 1024;
+export const MAX_PROVIDER_EGRESS_READINESS_BYTES = 1024;
 
 const JSON_HEADERS = {
   "cache-control": "no-store",
@@ -132,6 +135,11 @@ export async function handleProviderEgressGatewayRequest(
   if (broker === undefined) {
     return jsonError("provider_egress_binding_unavailable", 503);
   }
+  try {
+    await requireProviderEgressReadiness(broker, grant.deadline_at);
+  } catch {
+    return jsonError("provider_egress_not_ready", 503);
+  }
 
   const dispatch = await port.dispatchProviderAttempt(
     grant.operation_id,
@@ -216,6 +224,37 @@ export async function handleProviderEgressGatewayRequest(
     return recovered ?? jsonResponse(ambiguousPayload(grant, "provider_terminal_ambiguous"), 202);
   }
   return successResponse(grant, attemptGeneration, upstream.status, result);
+}
+
+async function requireProviderEgressReadiness(
+  broker: Pick<Fetcher, "fetch">,
+  deadlineAt: number,
+): Promise<void> {
+  const response = await broker.fetch(
+    new Request(`https://${PROVIDER_EGRESS_HOST}${PROVIDER_EGRESS_READINESS_SERVICE_PATH}`, {
+      method: "GET",
+      headers: {
+        "accept": "application/json",
+        "cache-control": "no-store",
+        [PROVIDER_EGRESS_PROTOCOL_HEADER]: "1",
+        [PROVIDER_EGRESS_PROFILE_HEADER]: PROVIDER_EGRESS_PROFILE,
+      },
+      signal: AbortSignal.timeout(readinessTimeoutMilliseconds(deadlineAt)),
+    }),
+  );
+  if (
+    response.status !== 200 ||
+    response.headers.get(PROVIDER_EGRESS_PROTOCOL_HEADER) !== "1" ||
+    response.headers.get(PROVIDER_EGRESS_PROFILE_HEADER) !== PROVIDER_EGRESS_PROFILE ||
+    normalizedJsonContentType(response.headers.get("content-type")) === null
+  ) {
+    await cancelResponse(response);
+    throw new Error("provider egress readiness unavailable");
+  }
+  const body = await readBoundedResponse(response, MAX_PROVIDER_EGRESS_READINESS_BYTES);
+  if (!isExactProviderEgressReadiness(body)) {
+    throw new Error("provider egress readiness invalid");
+  }
 }
 
 function matchesCanaryGrant(
@@ -469,6 +508,10 @@ function remainingMilliseconds(deadlineAt: number): number {
   return Math.min(300_000, Math.max(1, deadlineAt * 1000 - Date.now()));
 }
 
+function readinessTimeoutMilliseconds(deadlineAt: number): number {
+  return Math.min(2_000, remainingMilliseconds(deadlineAt));
+}
+
 function validProviderDeadline(deadlineAt: number): boolean {
   const now = Math.floor(Date.now() / 1000);
   return Number.isSafeInteger(deadlineAt) && deadlineAt > now && deadlineAt <= now + 300;
@@ -501,6 +544,24 @@ function isJsonObject(bytes: Uint8Array): boolean {
       new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes),
     ) as unknown;
     return value !== null && typeof value === "object" && !Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
+function isExactProviderEgressReadiness(bytes: Uint8Array): boolean {
+  try {
+    const value = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes),
+    ) as unknown;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    return (
+      record.protocol_version === 1 &&
+      record.profile === PROVIDER_EGRESS_PROFILE &&
+      record.ready === true &&
+      Object.keys(record).length === 3
+    );
   } catch {
     return false;
   }

@@ -20,6 +20,7 @@ pub const EGRESS_PROTOCOL_VERSION: &str = "1";
 pub const EGRESS_PROFILE: &str = "openai-chat-completions-canary-v1";
 pub const INTERNAL_EGRESS_HOST: &str = "provider-egress.cinatoken.internal";
 pub const INTERNAL_EGRESS_PATH: &str = "/internal/v1/provider-attempts/execute";
+pub const INTERNAL_EGRESS_READINESS_PATH: &str = "/internal/v1/provider-egress/readiness";
 pub const UPSTREAM_HOST: &str = "api.openai.com";
 pub const UPSTREAM_PATH: &str = "/v1/chat/completions";
 pub const MAX_PROVIDER_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -61,6 +62,7 @@ enum EgressError {
     InvalidJson,
     Streaming,
     Model,
+    Configuration,
     Credential,
     Upstream,
     Redirect,
@@ -80,6 +82,12 @@ pub async fn fetch(mut request: Request, env: Env, _ctx: Context) -> WorkerResul
     }
 
     let url = request.url()?;
+    if url.path() == INTERNAL_EGRESS_READINESS_PATH {
+        if let Err(error) = validate_readiness_request(request.method(), &url, request.headers()) {
+            return policy_error(error);
+        }
+        return readiness_response(&env);
+    }
     let deadline_at = match validate_request_metadata(request.method(), &url, request.headers()) {
         Ok(deadline_at) => deadline_at,
         Err(error) => return policy_error(error),
@@ -134,6 +142,57 @@ pub async fn fetch(mut request: Request, env: Env, _ctx: Context) -> WorkerResul
     Ok(Response::from_bytes(response_body)?
         .with_status(status)
         .with_headers(response_headers))
+}
+
+fn validate_readiness_request(
+    method: Method,
+    url: &Url,
+    headers: &Headers,
+) -> Result<(), EgressError> {
+    if url.scheme() != "https"
+        || url.host_str() != Some(INTERNAL_EGRESS_HOST)
+        || url.path() != INTERNAL_EGRESS_READINESS_PATH
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(EgressError::Route);
+    }
+    if method != Method::Get {
+        return Err(EgressError::Method);
+    }
+    if header(headers, PROTOCOL_HEADER).as_deref() != Some(EGRESS_PROTOCOL_VERSION)
+        || header(headers, PROFILE_HEADER).as_deref() != Some(EGRESS_PROFILE)
+    {
+        return Err(EgressError::Protocol);
+    }
+    Ok(())
+}
+
+fn readiness_response(env: &Env) -> WorkerResult<Response> {
+    let model = env.var(MODEL_ENV).map(|value| value.to_string()).ok();
+    if !configured_value(model.as_deref()) {
+        return policy_error(EgressError::Configuration);
+    }
+    let api_key = env
+        .secret(API_KEY_ENV)
+        .map(|secret| secret.to_string())
+        .ok();
+    if !configured_value(api_key.as_deref()) {
+        return policy_error(EgressError::Credential);
+    }
+    let mut headers = no_store_json_headers()?;
+    headers.set(PROTOCOL_HEADER, EGRESS_PROTOCOL_VERSION)?;
+    headers.set(PROFILE_HEADER, EGRESS_PROFILE)?;
+    Ok(Response::from_json(&serde_json::json!({
+        "protocol_version": 1,
+        "profile": EGRESS_PROFILE,
+        "ready": true,
+    }))?
+    .with_status(200)
+    .with_headers(headers))
 }
 
 fn validate_request_metadata(
@@ -312,6 +371,7 @@ fn policy_error(error: EgressError) -> WorkerResult<Response> {
         | EgressError::InvalidJson
         | EgressError::Streaming
         | EgressError::Model => (400, "provider_egress_request_invalid"),
+        EgressError::Configuration => (503, "provider_egress_configuration_unavailable"),
         EgressError::Credential => (503, "provider_egress_credential_unavailable"),
         EgressError::Upstream => (502, "provider_egress_upstream_failed"),
         EgressError::Redirect => (502, "provider_egress_redirect_denied"),
@@ -354,6 +414,10 @@ fn valid_positive_integer(value: Option<&str>, max_digits: usize) -> bool {
 
 fn valid_deadline(now: u64, deadline: u64) -> bool {
     deadline > now && deadline <= now.saturating_add(300)
+}
+
+fn configured_value(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -403,5 +467,13 @@ mod tests {
         assert!(valid_deadline(1_000, 1_300));
         assert!(!valid_deadline(1_000, 1_000));
         assert!(!valid_deadline(1_000, 1_301));
+    }
+
+    #[test]
+    fn readiness_requires_nonempty_model_and_credential_without_exposing_values() {
+        assert!(configured_value(Some("canary-model")));
+        assert!(configured_value(Some("provider-secret")));
+        assert!(!configured_value(None));
+        assert!(!configured_value(Some("  ")));
     }
 }

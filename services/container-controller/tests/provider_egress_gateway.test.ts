@@ -12,6 +12,10 @@ import {
   MAX_PROVIDER_EGRESS_BODY_BYTES,
   PROVIDER_EGRESS_HOST,
   PROVIDER_EGRESS_PATH,
+  PROVIDER_EGRESS_PROFILE,
+  PROVIDER_EGRESS_PROFILE_HEADER,
+  PROVIDER_EGRESS_PROTOCOL_HEADER,
+  PROVIDER_EGRESS_READINESS_SERVICE_PATH,
   handleProviderEgressGatewayRequest,
   type ProviderEgressGatewayEnvironment,
   type ProviderEgressGatewayPort,
@@ -148,8 +152,16 @@ describe("provider egress gateway", () => {
     const port = new FakePort();
     applyRequestSha(port.grant, requestSha256);
     let brokerCalls = 0;
+    let readinessCalls = 0;
     let r2Puts = 0;
     const env = gatewayEnv(port.grant, {
+      readiness: async (request) => {
+        readinessCalls += 1;
+        expect(new URL(request.url).pathname).toBe(PROVIDER_EGRESS_READINESS_SERVICE_PATH);
+        expect(request.headers.get(PROVIDER_EGRESS_PROTOCOL_HEADER)).toBe("1");
+        expect(request.headers.get(PROVIDER_EGRESS_PROFILE_HEADER)).toBe(PROVIDER_EGRESS_PROFILE);
+        return providerReadinessResponse();
+      },
       broker: async (request) => {
         brokerCalls += 1;
         expect(new URL(request.url).pathname).toBe("/internal/v1/provider-attempts/execute");
@@ -194,6 +206,7 @@ describe("provider egress gateway", () => {
       },
     });
     expect(brokerCalls).toBe(1);
+    expect(readinessCalls).toBe(1);
     expect(r2Puts).toBe(1);
     expect(port.dispatches).toBe(1);
     expect(port.terminal).toEqual({
@@ -201,6 +214,48 @@ describe("provider egress gateway", () => {
       response_status: 200,
       response_code: null,
     });
+  });
+
+  test("requires exact broker readiness before dispatch", async () => {
+    const requestSha256 = await sha256(requestBody);
+    const readinessResponses = [
+      async () => new Response(JSON.stringify({ error: "disabled" }), { status: 503 }),
+      async () =>
+        providerReadinessResponse({
+          protocol_version: 1,
+          profile: "wrong-profile",
+          ready: true,
+        }),
+      async () =>
+        providerReadinessResponse({
+          protocol_version: 1,
+          profile: PROVIDER_EGRESS_PROFILE,
+          ready: true,
+          extra: true,
+        }),
+      async () => providerReadinessResponse({ padding: "x".repeat(1024) }),
+    ];
+    for (const readiness of readinessResponses) {
+      const port = new FakePort();
+      applyRequestSha(port.grant, requestSha256);
+      let brokerCalls = 0;
+      const response = await handleProviderEgressGatewayRequest(
+        await providerRequest(requestSha256),
+        gatewayEnv(port.grant, {
+          readiness,
+          broker: async () => {
+            brokerCalls += 1;
+            return new Response(providerBody);
+          },
+        }),
+        port,
+        identity,
+      );
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "provider_egress_not_ready" });
+      expect(port.dispatches).toBe(0);
+      expect(brokerCalls).toBe(0);
+    }
   });
 
   test("turns every post-dispatch broker failure into recovery without a retry", async () => {
@@ -434,6 +489,7 @@ describe("provider egress gateway", () => {
 function gatewayEnv(
   grant: StorageAccessGrant,
   options: {
+    readiness?: (request: Request) => Promise<Response>;
     broker?: (request: Request) => Promise<Response>;
     r2Put?: (
       key: string,
@@ -463,7 +519,18 @@ function gatewayEnv(
     },
   } as unknown as Pick<R2Bucket, "put" | "head">;
   const broker = {
-    fetch: options.broker ?? (async () => new Response(providerBody, { status: 200 })),
+    fetch: async (request: Request) => {
+      if (new URL(request.url).pathname === PROVIDER_EGRESS_READINESS_SERVICE_PATH) {
+        return options.readiness?.(request) ?? providerReadinessResponse();
+      }
+      return (
+        options.broker?.(request) ??
+        new Response(providerBody, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+    },
   } as Pick<Fetcher, "fetch">;
   return {
     CONTAINER_PROVIDER_EGRESS_ENABLED: "true",
@@ -472,6 +539,23 @@ function gatewayEnv(
     CONTAINER_STORAGE_RESULT_R2: bucket,
     PROVIDER_EGRESS: broker,
   };
+}
+
+function providerReadinessResponse(
+  body: Record<string, unknown> = {
+    protocol_version: 1,
+    profile: PROVIDER_EGRESS_PROFILE,
+    ready: true,
+  },
+): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      [PROVIDER_EGRESS_PROTOCOL_HEADER]: "1",
+      [PROVIDER_EGRESS_PROFILE_HEADER]: PROVIDER_EGRESS_PROFILE,
+    },
+  });
 }
 
 function admissionRow(grant: StorageAccessGrant, operationStatus: string) {

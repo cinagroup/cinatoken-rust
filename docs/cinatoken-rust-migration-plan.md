@@ -14333,9 +14333,63 @@ egress-profile/version identity in D1 and DO, provider-native idempotency or
 lookup, durable upstream status/header provenance, definite provider rejection
 classification, global D1 terminal acknowledgement and journal compaction,
 multi-provider adapters, streaming, actual remote Linux Container evidence,
-a pre-dispatch broker readiness/readback RPC, N/N-1, secret rotation, real
-R2/DO/network faults, load/cost/alert evidence, exact edge replay, financial
-convergence, rollback drills, and C1-C5 approval. Migration 0046 remains
-reserved for legacy enforcement after old-writer drain. No remote migration,
-deployment, provider call, financial mutation, or traffic switch occurred.
-Go/VPS remains authoritative and production remains **NO-GO**.
+remote broker readiness/deployment-version readback, N/N-1, secret rotation,
+real R2/DO/network faults, load/cost/alert evidence, exact edge replay,
+financial convergence, rollback drills, and C1-C5 approval. Migration 0046
+remains reserved for legacy enforcement after old-writer drain. No remote
+migration, deployment, provider call, financial mutation, or traffic switch
+occurred. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.236 Pre-Dispatch Broker Readiness Contract (2026-07-17)
+
+The private broker binding was locally present, but that fact alone could not
+prove the target Worker's runtime gate, model, or secret configuration. Those
+are deterministic preconditions. Allowing them to fail only after the shard DO
+consumed one-shot dispatch would turn an operator configuration error into an
+avoidable ambiguous provider attempt.
+
+The execution order is now:
+
+1. validate exact Container request and immutable DO grant;
+2. prove the complete global D1 operation is exactly `dispatched`;
+3. require the environment-specific `PROVIDER_EGRESS` binding;
+4. issue one private GET to
+   `/internal/v1/provider-egress/readiness`, bounded by two seconds and the
+   operation deadline;
+5. validate status 200, JSON, protocol/profile response headers, a 1 KiB body,
+   and exactly `{protocol_version:1, profile:<fixed>, ready:true}`; and
+6. only then commit DO `prepared -> dispatched` and issue the single execute
+   POST.
+
+The broker readiness handler performs no provider fetch. It verifies only that
+its own gate is true, the fixed canary model is nonempty, and the secret binding
+exists and is nonempty. It returns neither model nor credential. Disabled,
+missing-model, and missing-secret states have separate internal policy errors,
+but the Controller intentionally collapses every invalid or unavailable
+readiness result to `provider_egress_not_ready` so Container callers cannot use
+the gateway as a configuration oracle.
+
+If readiness fails or its response is lost, the attempt remains `prepared` and
+dispatch count is zero. The Linux client conservatively reports gateway
+uncertainty as recovery-required; the DO's existing finalizer observes that
+dispatch was never consumed, changes the attempt to `cancelled`, and fails the
+operation with `provider_attempt_not_dispatched`. No ambiguous provider send,
+result object, retry permission, usage parsing, or settlement is created.
+
+Portable Controller tests now prove strict readiness readback precedes dispatch
+and that a 503 or wrong-profile body makes zero broker execute calls. A separate
+Workerd suite loads the compiled Rust Wasm behind four Service Bindings and
+proves ready, disabled, missing-model, missing-secret, wrong-method, and
+wrong-profile behavior without an outbound provider service. The local test
+runtime uses its supported compatibility date 2026-07-15; the tracked broker
+deployment remains on 2026-07-17.
+
+Readiness is not upstream health. It cannot prove credential validity, model
+entitlement, provider reachability, quota, or atomic affinity between the GET
+and the later POST. Remote target/version readback, N/N-1, credential rotation,
+provider-native idempotency or lookup, immutable D1/DO profile identity, real
+Container/network faults, global terminal acknowledgement, exact edge replay,
+financial convergence, cost/alerts/rollback, and C1-C5 remain mandatory. All
+tracked gates stay false; no remote deployment, provider call, secret
+provisioning, or traffic switch occurred. Go/VPS remains authoritative and
+production remains **NO-GO**.

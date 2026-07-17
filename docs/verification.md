@@ -6343,12 +6343,121 @@ formatter, and diff checks cover the changed paths directly.
 
 A focused credential/egress scan found the real provider host and Authorization
 construction only in `cinatoken-container-egress`; the Controller contains one
-broker fetch and the Container has no credential. The Container allowlist holds
-only synthetic internal hosts and `enableInternet=false`. Remote evidence is
+readiness fetch and one execute fetch, and the Container has no credential. The
+Container allowlist holds only synthetic internal hosts and
+`enableInternet=false`. Remote evidence is
 still empty: no API key was provisioned, no Worker or Container was deployed,
 no Docker image was started, no R2/D1/DO remote state changed, and no provider
-request was sent. Pre-dispatch broker readiness/readback, immutable egress
-profile identity, provider-native idempotency/lookup, durable upstream response
-provenance, global terminal acknowledgement, edge replay, financial convergence,
-N/N-1, real fault/load/cost/alert/rollback evidence, and C1-C5 approval remain
-mandatory. Go/VPS remains authoritative and production remains **NO-GO**.
+request was sent. Remote broker readiness/deployment-version readback, immutable
+egress profile identity, provider-native idempotency/lookup, durable upstream
+response provenance, global terminal acknowledgement, edge replay, financial
+convergence, N/N-1, real fault/load/cost/alert/rollback evidence, and C1-C5
+approval remain mandatory. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
+## Pre-Dispatch Broker Readiness Verification (2026-07-17)
+
+This overlay verifies the deterministic configuration probe added between
+global D1 admission and one-shot DO dispatch. It does not claim provider health,
+credential validity, deployment affinity, a remote Container, or production
+readiness.
+
+```powershell
+cargo test -p cinatoken-container-egress
+# PASS: 4 tests; 0 failed.
+
+cargo test -p cinatoken-container-runtime
+# PASS: 12 unit tests plus 7 HTTP tests; 0 failed.
+
+node node_modules/vitest/vitest.mjs run `
+  --config vitest.container-controller-protocol.config.mjs
+# PASS: 5 files, 53 tests.
+
+node node_modules/vitest/vitest.mjs run `
+  --config vitest.container-egress.config.mjs
+# PASS: compiled Rust broker behind Service Bindings; 3 tests.
+
+node node_modules/vitest/vitest.mjs run `
+  --config vitest.container-controller.config.mjs
+# PASS: 22 Workerd/DO SQLite tests.
+
+node node_modules/vitest/vitest.mjs run --config vitest.do.config.mjs
+# PASS: 45 Workerd lifecycle tests on the clean full rerun.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 771 tests; 0 failed.
+
+cargo test --workspace --exclude cinatoken-worker
+# PASS: all non-Worker unit, integration, and doc tests.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo check -p cinatoken-wfp-tenant --target wasm32-unknown-unknown
+cargo check -p cinatoken-wfp-outbound --target wasm32-unknown-unknown
+cargo check -p cinatoken-container-egress --target wasm32-unknown-unknown
+# PASS: all four wasm32 targets.
+
+worker-build --release
+# PASS: optimized broker Wasm/JS package.
+
+node node_modules/typescript/bin/tsc `
+  -p services/container-controller/tsconfig.json --noEmit
+
+wrangler types services/container-controller/worker-configuration.d.ts `
+  --config services/container-controller/wrangler.jsonc `
+  --env-interface ContainerControllerEnv --check
+
+wrangler deploy --config services/container-controller/wrangler.jsonc `
+  --dry-run --containers-rollout none `
+  --outdir .wrangler/container-controller-build
+# PASS: TypeScript, generated bindings, private Service Binding, and bundle.
+
+python tools/verify_sqlite.py
+# PASS: 45 migrations, 43 tables, 434 incremental columns, 64 key indexes.
+
+cargo fmt --all -- --check
+git diff --check
+# PASS.
+```
+
+The portable gateway suite proves the exact order is D1 admission, broker
+readiness, DO dispatch, then execute. A 503, wrong profile, unknown field, or
+oversized readiness body produces a no-store 503, zero dispatches, and zero
+execute calls. The successful path makes exactly one readiness call and one
+execute call. Existing post-dispatch transport, R2, attach, and terminal
+uncertainty tests continue to prove no resend.
+
+The separate broker Workerd suite loads the release-built Rust Worker rather
+than a TypeScript mock. It proves the ready response is exact and contains
+neither configured model nor test credential, while disabled, missing-model,
+missing-secret, wrong-method, and wrong-profile cases fail closed. No outbound
+provider service is present, so successful readiness also proves the probe does
+not perform provider I/O. The test runtime uses compatibility date 2026-07-15,
+the newest date supported by the installed Workerd; tracked deployment config
+remains 2026-07-17.
+
+The first full 45-test DO run had one timeout waiting for an authenticated
+Realtime reservation while unrelated queue fault-injection work was active. The
+same test passed immediately in isolation, and a complete clean rerun passed
+45/45. This was treated as a timing observation, not hidden as an initial pass.
+
+Static assertions independently proved the source call order, all three
+Controller configurations remain private and default-off, and provider attempts
+remain capped at one. The credential/egress scan found the real provider host
+and API-key binding only in the private broker; the visible credential strings
+are test fixtures or the documented secret-binding name. No Cloudflare token,
+provider credential, or production secret was added.
+
+Bun is unavailable in this shell, so the aggregate `bun run check` and
+Bun-native configuration wrapper were not run. Their changed-path Rust,
+TypeScript, Vitest, Workerd, Wrangler, SQLite, syntax, configuration, formatter,
+and release-build gates were run directly. No remote migration, secret
+provisioning, Worker/Container deployment, Docker launch, provider request,
+financial mutation, or traffic switch occurred.
+
+Readiness remains a non-atomic configuration snapshot. Production still needs
+remote target/deployment-version readback, mixed-version N/N-1 proof, credential
+rotation, provider-native idempotency or lookup, immutable D1/DO egress-profile
+identity, actual Container and network fault evidence, global terminal
+acknowledgement, exact edge replay, financial convergence, load/cost/alerts,
+rollback, and C1-C5 approval. All tracked gates stay false; Go/VPS remains
+authoritative and production remains **NO-GO**.

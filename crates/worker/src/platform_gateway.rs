@@ -186,7 +186,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0045_relay_container_reconciliation_retry_apply.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0046_relay_container_financial_terminal_enforce.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -269,6 +269,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0043_relay_container_reconciliation_observer.sql",
     "0044_relay_container_r2_orphan_inventory.sql",
     "0045_relay_container_reconciliation_retry_apply.sql",
+    "0046_relay_container_financial_terminal_enforce.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -4710,7 +4711,7 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0045_relay_container_reconciliation_retry_apply.sql"
+            "0046_relay_container_financial_terminal_enforce.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -4851,6 +4852,17 @@ mod tests {
             .contains("relay_container_reconciliation_retry_event_insert_guard"));
         assert!(relay_container_reconciliation_retry
             .contains("relay_container_reconciliation_retry_event_apply"));
+        let relay_container_financial_terminal_enforce = include_str!(
+            "../../../migrations/d1/0046_relay_container_financial_terminal_enforce.sql"
+        );
+        assert!(relay_container_financial_terminal_enforce
+            .contains("relay_container_operation_v1_identity_insert_guard"));
+        assert!(relay_container_financial_terminal_enforce
+            .contains("relay_container_operation_v1_initial_state_insert_guard"));
+        assert!(relay_container_financial_terminal_enforce
+            .contains("relay_container_operation_terminal_event_guard"));
+        assert!(relay_container_financial_terminal_enforce
+            .contains("relay_container_terminal_event_revision_predecessor_guard"));
     }
 
     #[test]

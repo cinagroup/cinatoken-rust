@@ -20,11 +20,19 @@ This module owns Worker-specific storage operations:
   that retain quarantine provenance and write financial plus root audit state
   atomically;
 - generation-fenced Container reconciliation status/list reads and observer
-  lifecycle mutations; and
+  lifecycle mutations;
 - the default-off 0045 Container observer retry event, exact dead-letter
   readback, and event-plus-admin-audit D1 batch. The repository contains no
   direct operation, billing, user, token, channel, DO, provider, or R2 mutation
-  for this command; the observer transition is owned by the migration trigger.
+  for this command; the observer transition is owned by the migration trigger;
+  and
+- a future Container operation schema-readiness helper for the trigger-only
+  0046 enforcement boundary. The helper requires the 0040/0041/0042/0046
+  migration records and all four identity, initial-state, terminal
+  event/outbox, and recovery-predecessor trigger names. It is compiled and
+  source-tested but has no production call site yet; every Container operation
+  path remains default-off and unwired, so this helper is not an active runtime
+  gate.
 
 `relay.rs` remains responsible for request parsing, auth validation policy,
 cache orchestration, upstream forwarding, and audit payload construction. D1
@@ -40,3 +48,11 @@ The reconciliation HTTP module passes typed mutation and audit values into the
 repository. It does not construct D1 prepared statements. Frozen billing
 expression snapshots remain the only pricing input, and the default-off runtime
 gate is enforced above this repository boundary.
+
+Migration 0046 does not add a pricing lookup, recalculate a billing expression,
+or repair financial rows. The financial writer still owns one ordered D1 batch
+for immutable event, outbox, operation, billing, and accounting statements, and
+settlement must continue from the frozen reservation snapshot. The separate
+read-only enforcement audit binds aggregate D1 preconditions to a signed
+deployment-inventory hash; it does not grant mutation authority or replace
+remote version and trigger-SQL readback.

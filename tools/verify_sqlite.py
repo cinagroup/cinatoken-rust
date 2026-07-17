@@ -671,6 +671,8 @@ def main() -> int:
     relay_container_r2_inventory_rollout_verified = False
     relay_container_reconciliation_retry_apply_verified = False
     relay_container_reconciliation_retry_apply_rollout_verified = False
+    relay_container_financial_terminal_enforce_verified = False
+    relay_container_financial_terminal_enforce_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -700,6 +702,8 @@ def main() -> int:
         relay_container_r2_inventory_rollout_verified = True
         verify_relay_container_reconciliation_retry_apply_rollout(schema_paths)
         relay_container_reconciliation_retry_apply_rollout_verified = True
+        verify_relay_container_financial_terminal_enforce_rollout(schema_paths)
+        relay_container_financial_terminal_enforce_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -725,6 +729,8 @@ def main() -> int:
         relay_container_operation_verified = True
         verify_relay_container_financial_terminal(conn)
         relay_container_financial_terminal_verified = True
+        verify_relay_container_financial_terminal_enforce(conn)
+        relay_container_financial_terminal_enforce_verified = True
         verify_relay_container_reconciliation_observer(conn)
         relay_container_reconciliation_observer_verified = True
         verify_relay_container_r2_inventory(conn)
@@ -806,6 +812,10 @@ def main() -> int:
         message += " + 0045 audited Container observer retry apply"
     if relay_container_reconciliation_retry_apply_rollout_verified:
         message += " + 0045 default-off observer-only retry rollout"
+    if relay_container_financial_terminal_enforce_verified:
+        message += " + 0046 Container financial terminal enforcement"
+    if relay_container_financial_terminal_enforce_rollout_verified:
+        message += " + 0046 trigger-only enforcement rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -901,12 +911,24 @@ def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
     if recovery_index_sql is None or "WHERE status IN" not in recovery_index_sql:
         raise SystemExit("0040 recovery index must remain partial and status-bounded")
 
+    initial_state_guard_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_v1_initial_state_insert_guard"
+    )
+    terminal_event_guard_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_terminal_event_guard"
+    )
+    if initial_state_guard_sql is None or terminal_event_guard_sql is None:
+        raise SystemExit("0046 operation guards are unavailable for layered verification")
+    conn.execute("DROP TRIGGER relay_container_operation_v1_initial_state_insert_guard")
+    conn.execute("DROP TRIGGER relay_container_operation_terminal_event_guard")
+
     def insert_operation(
         reservation_key: str | None,
         provider_operation_id: str,
         shard_index: int,
         **overrides: object,
     ) -> None:
+        identity_label = reservation_key or provider_operation_id
         values: dict[str, object] = {
             "reservation_key": reservation_key,
             "operation_id": reservation_key,
@@ -933,6 +955,15 @@ def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
             "input_size": 128,
             "input_content_type": "application/json",
             "trace_id": f"trace:{reservation_key}",
+            "client_idempotency_hmac_sha256": hashlib.sha256(
+                f"client:{identity_label}".encode("utf-8")
+            ).hexdigest(),
+            "client_request_sha256": hashlib.sha256(
+                f"request:{identity_label}".encode("utf-8")
+            ).hexdigest(),
+            "reconciliation_id": hashlib.sha256(
+                f"reconciliation:{identity_label}".encode("utf-8")
+            ).hexdigest(),
             "status": "prepared",
             "response_status": None,
             "response_code": None,
@@ -955,7 +986,10 @@ def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
               ring_generation, shard_count, shard_index,
               instance_name, execution_deadline_at, input_mode, input_object_key,
               input_object_version, input_sha256, input_size,
-              input_content_type, trace_id, status, response_status, response_code,
+              input_content_type, trace_id,
+              client_idempotency_hmac_sha256, client_request_sha256,
+              reconciliation_id,
+              status, response_status, response_code,
               result_object_key, result_object_version, result_sha256,
               result_size, result_content_type, created_at, updated_at
             ) VALUES (
@@ -966,7 +1000,10 @@ def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
               :ring_generation, :shard_count, :shard_index,
               :instance_name, :execution_deadline_at, :input_mode, :input_object_key,
               :input_object_version, :input_sha256, :input_size,
-              :input_content_type, :trace_id, :status, :response_status, :response_code,
+              :input_content_type, :trace_id,
+              :client_idempotency_hmac_sha256, :client_request_sha256,
+              :reconciliation_id,
+              :status, :response_status, :response_code,
               :result_object_key, :result_object_version, :result_sha256,
               :result_size, :result_content_type, :created_at, :updated_at
             )
@@ -1272,6 +1309,8 @@ def verify_relay_container_operation(conn: sqlite3.Connection) -> None:
         raise SystemExit(
             f"0041 changed legal prepared/dispatched transitions: {preserved_transitions}"
         )
+    conn.executescript(initial_state_guard_sql)
+    conn.executescript(terminal_event_guard_sql)
 
 
 def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
@@ -1288,6 +1327,17 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
     for trigger in required_triggers:
         if not trigger_exists(conn, trigger):
             raise SystemExit(f"0042 financial terminal trigger missing: {trigger}")
+
+    initial_state_guard_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_v1_initial_state_insert_guard"
+    )
+    terminal_event_guard_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_terminal_event_guard"
+    )
+    if initial_state_guard_sql is None or terminal_event_guard_sql is None:
+        raise SystemExit("0046 operation guards are unavailable for 0042 verification")
+    conn.execute("DROP TRIGGER relay_container_operation_v1_initial_state_insert_guard")
+    conn.execute("DROP TRIGGER relay_container_operation_terminal_event_guard")
 
     identity_sql = sqlite_object_sql(
         conn, "trigger", "relay_container_operation_identity_immutable_guard"
@@ -1540,16 +1590,12 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
         authorities[key] = authority
         return authority
 
-    insert_authority("0042-legacy-a", legacy_identity=True)
-    insert_authority("0042-legacy-b", legacy_identity=True)
-    legacy_identities = conn.execute(
-        "SELECT COUNT(*) FROM relay_container_operations "
-        "WHERE client_idempotency_hmac_sha256 = '' "
-        "AND client_request_sha256 = '' AND reconciliation_id = '' "
-        "AND reservation_key LIKE '0042-legacy-%'"
-    ).fetchone()
-    if legacy_identities != (2,):
-        raise SystemExit(f"0042 legacy identity compatibility failed: {legacy_identities}")
+    for legacy_label in ("0046-legacy-a", "0046-legacy-b"):
+        expect_integrity_error(
+            lambda label=legacy_label: insert_authority(label, legacy_identity=True),
+            "0046 must reject a newly inserted v1 operation with legacy identity",
+            "relay container v1 operation identity is required",
+        )
 
     expect_integrity_error(
         lambda: insert_authority(
@@ -1557,16 +1603,16 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
             legacy_identity=True,
             client_hmac=digest("0042-mixed-client"),
         ),
-        "0042 operation identity must be all-empty legacy or all-valid v1",
-        "CHECK constraint failed",
+        "0046 operation identity must reject a mixed legacy/v1 shape",
+        "relay container v1 operation identity is required",
     )
     expect_integrity_error(
         lambda: insert_authority(
             "0042-uppercase-identity",
             client_hmac="A" * 64,
         ),
-        "0042 operation identity must reject uppercase digests",
-        "CHECK constraint failed",
+        "0046 operation identity must reject uppercase digests",
+        "relay container v1 operation identity is required",
     )
 
     v1_authority = insert_authority("0042-v1-identity")
@@ -1601,6 +1647,8 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
         "0042 non-empty operation reconciliation identity must be unique",
         "UNIQUE constraint failed",
     )
+
+    insert_authority("0046-eventless-terminal")
 
     event_counter = 0
 
@@ -1927,11 +1975,20 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
         "UNIQUE constraint failed",
     )
 
-    insert_authority(
+    insert_authority("0042-billing-status-mismatch")
+    billing_mismatch_predecessor = terminal_values(
         "0042-billing-status-mismatch",
-        operation_status="recovery_required",
-        billing_status="reserved",
+        "0042-billing-status-mismatch-predecessor",
+        "recovery_required",
     )
+    insert_terminal_event(billing_mismatch_predecessor)
+    conn.execute(
+        "UPDATE relay_container_operations "
+        "SET status = 'recovery_required', response_status = 202, "
+        "response_code = 'container_execution_ambiguous', updated_at = 7600 "
+        "WHERE reservation_key = '0042-billing-status-mismatch'"
+    )
+    authorities["0042-billing-status-mismatch"]["billing_owner_generation"] = 6
     expect_integrity_error(
         lambda: insert_terminal_event(
             terminal_values(
@@ -1939,6 +1996,7 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
                 "0042-billing-status-mismatch",
                 "refund",
                 operation_from_status="recovery_required",
+                reconciliation_revision=2,
             )
         ),
         "0042 terminal event guard must match the exact current billing status",
@@ -1985,6 +2043,26 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
         (tokenless_event["billing_event_id"],),
     ).fetchone() != (0,):
         raise SystemExit("0042 tokenless settlement did not freeze a zero token delta")
+
+    insert_authority(
+        "0046-missing-predecessor",
+        operation_status="recovery_required",
+        billing_status="recovery_required",
+        billing_owner_generation=6,
+    )
+    expect_integrity_error(
+        lambda: insert_terminal_event(
+            terminal_values(
+                "0046-missing-predecessor",
+                "0046-missing-predecessor",
+                "settle",
+                operation_from_status="recovery_required",
+                reconciliation_revision=2,
+            )
+        ),
+        "0046 revision 2 must require the exact revision 1 recovery predecessor",
+        "relay container revision 2 predecessor is missing",
+    )
 
     insert_authority("0042-recovery-resolution")
     recovery_event = terminal_values(
@@ -2281,6 +2359,155 @@ def verify_relay_container_financial_terminal(conn: sqlite3.Connection) -> None:
     )
     if final_outbox_states != expected_outbox_states:
         raise SystemExit(f"0042 outbox lifecycle did not persist: {final_outbox_states}")
+    conn.executescript(initial_state_guard_sql)
+    conn.executescript(terminal_event_guard_sql)
+
+
+def verify_relay_container_financial_terminal_enforce(
+    conn: sqlite3.Connection,
+) -> None:
+    required_triggers = (
+        "relay_container_operation_v1_identity_insert_guard",
+        "relay_container_operation_v1_initial_state_insert_guard",
+        "relay_container_operation_terminal_event_guard",
+        "relay_container_terminal_event_revision_predecessor_guard",
+    )
+    for trigger in required_triggers:
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0046 financial terminal trigger missing: {trigger}")
+
+    identity_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_v1_identity_insert_guard"
+    )
+    initial_state_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_v1_initial_state_insert_guard"
+    )
+    terminal_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_operation_terminal_event_guard"
+    )
+    predecessor_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_terminal_event_revision_predecessor_guard",
+    )
+    required_fragments = (
+        (identity_sql, "NEW.protocol_version = 1"),
+        (identity_sql, "length(NEW.client_idempotency_hmac_sha256) <> 64"),
+        (identity_sql, "length(NEW.client_request_sha256) <> 64"),
+        (identity_sql, "length(NEW.reconciliation_id) <> 64"),
+        (initial_state_sql, "NEW.status <> 'prepared'"),
+        (initial_state_sql, "relay container v1 operation must start prepared"),
+        (terminal_sql, "NEW.status IN ('completed', 'failed', 'recovery_required')"),
+        (terminal_sql, "JOIN relay_container_terminal_outbox_state AS outbox"),
+        (terminal_sql, "event.operation_from_status = OLD.status"),
+        (terminal_sql, "event.operation_status = NEW.status"),
+        (terminal_sql, "event.created_at <= NEW.updated_at"),
+        (predecessor_sql, "NEW.reconciliation_revision = 2"),
+        (predecessor_sql, "predecessor.reconciliation_revision = 1"),
+        (predecessor_sql, "predecessor.operation_status = 'recovery_required'"),
+        (
+            predecessor_sql,
+            "predecessor.billing_owner_generation + 1 = NEW.billing_owner_generation",
+        ),
+    )
+    for sql, fragment in required_fragments:
+        if sql is None or fragment not in sql:
+            raise SystemExit(f"0046 financial terminal contract missing: {fragment}")
+
+    input_sha256 = "8" * 64
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            INSERT INTO relay_container_operations (
+              reservation_key, operation_id, owner_generation,
+              owner_lease_expires_at, channel_id, selected_group,
+              operation_kind, provider_operation_id, admission_sha256,
+              protocol_version, shard_contract_version,
+              ring_generation, shard_count, shard_index, instance_name,
+              execution_deadline_at, input_mode, input_object_key,
+              input_object_version, input_sha256, input_size,
+              input_content_type, trace_id,
+              client_idempotency_hmac_sha256, client_request_sha256,
+              reconciliation_id, status, response_status, response_code,
+              created_at, updated_at
+            ) VALUES (
+              '0046-direct-terminal', '0046-direct-terminal', 1,
+              9000, 42, 'default', 'health_probe',
+              'provider-0046-direct-terminal', ?, 1, 1,
+              1, 8, 1, 'cinatoken-relay-shard-v1-0001',
+              8000, 'r2', ?, 'version-0046-direct', ?, 0,
+              'application/json', 'trace-0046-direct', ?, ?, ?,
+              'failed', 500, 'direct_terminal', 7000, 7000
+            )
+            """,
+            (
+                "9" * 64,
+                f"container-inputs/v1/0046-direct-terminal/1/{input_sha256}",
+                input_sha256,
+                "a" * 64,
+                "b" * 64,
+                "c" * 64,
+            ),
+        ),
+        "0046 accepted a v1 operation inserted directly in a terminal state",
+        "relay container v1 operation must start prepared",
+    )
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations "
+            "SET status = 'failed', response_status = 500, "
+            "response_code = 'event_missing', updated_at = 7500 "
+            "WHERE reservation_key = '0046-eventless-terminal'"
+        ),
+        "0046 accepted a v1 terminal transition without an immutable event",
+        "relay container terminal transition requires event and outbox",
+    )
+
+    tokenless_event = conn.execute(
+        "SELECT billing_event_id, created_at FROM relay_container_terminal_events "
+        "WHERE operation_id = '0042-tokenless'"
+    ).fetchone()
+    if tokenless_event is None:
+        raise SystemExit("0046 event/outbox enforcement fixture is missing")
+    tokenless_event_id, tokenless_created_at = tokenless_event
+    result_sha256 = "d" * 64
+    tokenless_update = (
+        "UPDATE relay_container_operations "
+        "SET status = 'completed', response_status = 200, response_code = NULL, "
+        "result_object_key = ?, result_object_version = 'version-0046-result', "
+        "result_sha256 = ?, result_size = 1, "
+        "result_content_type = 'application/json', updated_at = ? "
+        "WHERE reservation_key = '0042-tokenless'"
+    )
+    tokenless_update_args = (
+        f"container-results/v1/0042-tokenless/5/{result_sha256}",
+        result_sha256,
+        tokenless_created_at + 1,
+    )
+    expect_integrity_error(
+        lambda: conn.execute(tokenless_update, tokenless_update_args),
+        "0046 accepted a terminal event without its outbox state",
+        "relay container terminal transition requires event and outbox",
+    )
+    conn.execute(
+        "INSERT INTO relay_container_terminal_outbox_state ("
+        "billing_event_id, status, delivery_generation, delivery_attempt_count, "
+        "lease_expires_at, available_at, delivered_at, last_error, "
+        "created_at, updated_at) VALUES (?, 'pending', 0, 0, 0, ?, 0, '', ?, ?)",
+        (
+            tokenless_event_id,
+            tokenless_created_at,
+            tokenless_created_at,
+            tokenless_created_at,
+        ),
+    )
+    conn.execute(tokenless_update, tokenless_update_args)
+    if conn.execute(
+        "SELECT status FROM relay_container_operations "
+        "WHERE reservation_key = '0042-tokenless'"
+    ).fetchone() != ("completed",):
+        raise SystemExit("0046 exact event plus outbox transition did not persist")
 
 
 def verify_relay_container_reconciliation_observer(
@@ -3154,21 +3381,17 @@ def verify_relay_container_reconciliation_observer(
         "relay container reconciliation observation cannot be deleted",
     )
 
-    insert_operation(
-        "0043-legacy-observation", 21000, 3, legacy_identity=True
+    expect_integrity_error(
+        lambda: insert_operation(
+            "0043-legacy-observation", 21000, 3, legacy_identity=True
+        ),
+        "0046 must reject new legacy identity before observer enrollment",
+        "relay container v1 operation identity is required",
     )
+    insert_operation("0043-horizon-observation", 21000, 3)
     insert_default_observation(
-        observation_values("0043-legacy-observation", 21100, 23000)
+        observation_values("0043-horizon-observation", 21100, 23000)
     )
-    legacy_identity = conn.execute(
-        "SELECT reconciliation_id, status FROM "
-        "relay_container_reconciliation_observations "
-        "WHERE operation_id = '0043-legacy-observation'"
-    ).fetchone()
-    if legacy_identity != ("", "pending"):
-        raise SystemExit(
-            f"0043 observer rejected exact 0042 legacy identity: {legacy_identity}"
-        )
 
     insert_operation("0043-dead-letter", 23000, 4)
     insert_default_observation(
@@ -3434,7 +3657,7 @@ def verify_relay_container_reconciliation_retry_apply(
         "claim_owner = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', "
         "claim_lease_expires_at = 23001, available_at = 0, attempt_count = 1, "
         "first_observed_at = 22000, last_attempt_at = 22000, updated_at = 22000 "
-        "WHERE operation_id = '0043-legacy-observation'"
+        "WHERE operation_id = '0043-horizon-observation'"
     )
     conn.execute(
         "UPDATE relay_container_reconciliation_observations "
@@ -3444,7 +3667,7 @@ def verify_relay_container_reconciliation_retry_apply(
         "last_error_code = 'retry_horizon_exhausted', "
         "dead_lettered_at = 23000, "
         "dead_letter_reason = 'retry_horizon_exhausted', updated_at = 23000 "
-        "WHERE operation_id = '0043-legacy-observation'"
+        "WHERE operation_id = '0043-horizon-observation'"
     )
     horizon = conn.execute(
         "SELECT rowid, operation_created_at, owner_generation, reconciliation_id, "
@@ -3453,14 +3676,14 @@ def verify_relay_container_reconciliation_retry_apply(
         "last_error_code, recovery_deadline_at, dead_lettered_at, "
         "dead_letter_reason, updated_at "
         "FROM relay_container_reconciliation_observations "
-        "WHERE operation_id = '0043-legacy-observation'"
+        "WHERE operation_id = '0043-horizon-observation'"
     ).fetchone()
     horizon_values = dict(event_values)
     horizon_values.update(
         {
             "resolution_key": hashlib.sha256(b"0045-horizon").hexdigest(),
             "observation_sequence": horizon[0],
-            "operation_id": "0043-legacy-observation",
+            "operation_id": "0043-horizon-observation",
             "operation_created_at": horizon[1],
             "owner_generation": horizon[2],
             "reconciliation_id": horizon[3],
@@ -3683,16 +3906,17 @@ def verify_relay_container_r2_inventory(conn: sqlite3.Connection) -> None:
           shard_contract_version, ring_generation, shard_count, shard_index,
           instance_name, execution_deadline_at, input_mode, input_object_key,
           input_object_version, input_sha256, input_size, input_content_type,
-          trace_id, status, created_at, updated_at
+          trace_id, client_idempotency_hmac_sha256, client_request_sha256,
+          reconciliation_id, status, created_at, updated_at
         ) VALUES (
           '0044-orphan', '0044-orphan', 1, 1000, 1, 'default', 'relay_chat',
           'provider:0044-divergent', ?, 1, 1, 1, 8, 0,
           'cinatoken-relay-shard-v1-0000', 500, 'r2', ?,
           'version-divergent-reference', ?, 42, 'application/json',
-          'trace:0044-divergent', 'prepared', 1, 1
+          'trace:0044-divergent', ?, ?, ?, 'prepared', 1, 1
         )
         """,
-        ("a" * 64, object_key, object_sha256),
+        ("a" * 64, object_key, object_sha256, "b" * 64, "c" * 64, "d" * 64),
     )
     conn.execute(
         "UPDATE relay_container_r2_inventory_findings "
@@ -6275,8 +6499,10 @@ def verify_relay_container_reconciliation_retry_apply_rollout(
     retry_index = schema_paths.index(retry_path)
     if retry_index == 0 or schema_paths[retry_index - 1] != inventory_path:
         raise SystemExit("0045 retry apply must immediately follow 0044")
-    if retry_index != len(schema_paths) - 1:
-        raise SystemExit("0045 retry apply must be the current D1 migration head")
+    if retry_index + 1 >= len(schema_paths) or schema_paths[
+        retry_index + 1
+    ].name != "0046_relay_container_financial_terminal_enforce.sql":
+        raise SystemExit("0045 retry apply must immediately precede 0046 enforcement")
 
     retry_sql = retry_path.read_text(encoding="utf-8")
     if "if not exists" in retry_sql.lower():
@@ -6384,6 +6610,205 @@ def verify_relay_container_reconciliation_retry_apply_rollout(
         "SELECT COUNT(*) FROM relay_container_reconciliation_retry_events"
     ).fetchone() != (0,):
         raise SystemExit("0045 retry-apply expand backfilled command events")
+
+
+def verify_relay_container_financial_terminal_enforce_rollout(
+    schema_paths: list[Path],
+) -> None:
+    enforce_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0046_relay_container_financial_terminal_enforce.sql"
+        ),
+        None,
+    )
+    retry_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0045_relay_container_reconciliation_retry_apply.sql"
+        ),
+        None,
+    )
+    if enforce_path is None or retry_path is None:
+        raise SystemExit("0045/0046 relay Container enforcement migrations not found")
+    enforce_index = schema_paths.index(enforce_path)
+    if enforce_index == 0 or schema_paths[enforce_index - 1] != retry_path:
+        raise SystemExit("0046 enforcement must immediately follow 0045 retry apply")
+    if enforce_index != len(schema_paths) - 1:
+        raise SystemExit("0046 enforcement must be the current D1 migration head")
+
+    enforce_sql = enforce_path.read_text(encoding="utf-8")
+    if "if not exists" in enforce_sql.lower():
+        raise SystemExit("0046 critical enforcement triggers must fail on duplicate DDL")
+    for fragment in (
+        "CREATE TRIGGER relay_container_operation_v1_identity_insert_guard",
+        "NEW.protocol_version = 1",
+        "relay container v1 operation identity is required",
+        "CREATE TRIGGER relay_container_operation_v1_initial_state_insert_guard",
+        "relay container v1 operation must start prepared",
+        "CREATE TRIGGER relay_container_operation_terminal_event_guard",
+        "JOIN relay_container_terminal_outbox_state AS outbox",
+        "event.operation_from_status = OLD.status",
+        "event.operation_status = NEW.status",
+        "relay container terminal transition requires event and outbox",
+        "CREATE TRIGGER relay_container_terminal_event_revision_predecessor_guard",
+        "predecessor.reconciliation_revision = 1",
+        "predecessor.operation_status = 'recovery_required'",
+        "relay container revision 2 predecessor is missing",
+    ):
+        if fragment not in enforce_sql:
+            raise SystemExit(f"0046 enforcement rollout contract missing: {fragment}")
+    for forbidden in (
+        "ALTER TABLE",
+        "CREATE TABLE",
+        "CREATE INDEX",
+        "DROP TRIGGER",
+        "INSERT INTO",
+        "UPDATE relay_",
+        "DELETE FROM",
+    ):
+        if forbidden in enforce_sql:
+            raise SystemExit(f"0046 enforcement must remain trigger-only: {forbidden}")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == enforce_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    input_sha256 = "1" * 64
+    conn.execute(
+        "INSERT INTO relay_container_operations ("
+        "reservation_key, operation_id, owner_generation, owner_lease_expires_at, "
+        "channel_id, selected_group, operation_kind, provider_operation_id, "
+        "admission_sha256, protocol_version, shard_contract_version, "
+        "ring_generation, shard_count, shard_index, instance_name, "
+        "execution_deadline_at, input_mode, input_object_key, "
+        "input_object_version, input_sha256, input_size, input_content_type, "
+        "trace_id, created_at, updated_at) VALUES ("
+        "'0046-historical-legacy', '0046-historical-legacy', 1, 1000, "
+        "1, 'default', 'health_probe', 'provider-0046-historical-legacy', ?, "
+        "1, 1, 1, 8, 1, 'cinatoken-relay-shard-v1-0001', 900, 'r2', ?, "
+        "'version-0046-historical', ?, 0, 'application/json', "
+        "'trace-0046-historical', 800, 800)",
+        (
+            "2" * 64,
+            f"container-inputs/v1/0046-historical-legacy/1/{input_sha256}",
+            input_sha256,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO relay_container_operations ("
+        "reservation_key, operation_id, owner_generation, owner_lease_expires_at, "
+        "channel_id, selected_group, operation_kind, provider_operation_id, "
+        "admission_sha256, protocol_version, shard_contract_version, "
+        "ring_generation, shard_count, shard_index, instance_name, "
+        "execution_deadline_at, input_mode, input_object_key, "
+        "input_object_version, input_sha256, input_size, input_content_type, "
+        "trace_id, client_idempotency_hmac_sha256, client_request_sha256, "
+        "reconciliation_id, status, response_status, response_code, "
+        "created_at, updated_at) VALUES ("
+        "'0046-historical-eventless', '0046-historical-eventless', 1, 1000, "
+        "1, 'default', 'health_probe', 'provider-0046-historical-eventless', ?, "
+        "1, 1, 1, 8, 2, 'cinatoken-relay-shard-v1-0002', 900, 'r2', ?, "
+        "'version-0046-eventless', ?, 0, 'application/json', "
+        "'trace-0046-eventless', ?, ?, ?, 'failed', 500, 'historical_failure', "
+        "800, 850)",
+        (
+            "3" * 64,
+            f"container-inputs/v1/0046-historical-eventless/1/{input_sha256}",
+            input_sha256,
+            "4" * 64,
+            "5" * 64,
+            "6" * 64,
+        ),
+    )
+    before_rows = conn.execute(
+        "SELECT * FROM relay_container_operations "
+        "WHERE reservation_key LIKE '0046-historical-%' ORDER BY reservation_key"
+    ).fetchall()
+    conn.executescript(enforce_sql)
+    after_rows = conn.execute(
+        "SELECT * FROM relay_container_operations "
+        "WHERE reservation_key LIKE '0046-historical-%' ORDER BY reservation_key"
+    ).fetchall()
+    if after_rows != before_rows:
+        raise SystemExit("0046 enforcement rewrote historical Container operations")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_terminal_events"
+    ).fetchone() != (0,):
+        raise SystemExit("0046 enforcement synthesized terminal events")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "INSERT INTO relay_container_operations ("
+            "reservation_key, operation_id, owner_generation, owner_lease_expires_at, "
+            "channel_id, selected_group, operation_kind, provider_operation_id, "
+            "admission_sha256, protocol_version, shard_contract_version, "
+            "ring_generation, shard_count, shard_index, instance_name, "
+            "execution_deadline_at, input_mode, input_object_key, "
+            "input_object_version, input_sha256, input_size, input_content_type, "
+            "trace_id, created_at, updated_at) VALUES ("
+            "'0046-new-legacy', '0046-new-legacy', 1, 1100, "
+            "1, 'default', 'health_probe', 'provider-0046-new-legacy', ?, "
+            "1, 1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003', 1000, 'r2', ?, "
+            "'version-0046-new', ?, 0, 'application/json', "
+            "'trace-0046-new', 900, 900)",
+            (
+                "7" * 64,
+                f"container-inputs/v1/0046-new-legacy/1/{input_sha256}",
+                input_sha256,
+            ),
+        ),
+        "0046 enforcement accepted a new legacy-identity v1 operation",
+        "relay container v1 operation identity is required",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "INSERT INTO relay_container_operations ("
+            "reservation_key, operation_id, owner_generation, owner_lease_expires_at, "
+            "channel_id, selected_group, operation_kind, provider_operation_id, "
+            "admission_sha256, protocol_version, shard_contract_version, "
+            "ring_generation, shard_count, shard_index, instance_name, "
+            "execution_deadline_at, input_mode, input_object_key, "
+            "input_object_version, input_sha256, input_size, input_content_type, "
+            "trace_id, client_idempotency_hmac_sha256, client_request_sha256, "
+            "reconciliation_id, status, response_status, response_code, "
+            "created_at, updated_at) VALUES ("
+            "'0046-new-terminal', '0046-new-terminal', 1, 1100, "
+            "1, 'default', 'health_probe', 'provider-0046-new-terminal', ?, "
+            "1, 1, 1, 8, 4, 'cinatoken-relay-shard-v1-0004', 1000, 'r2', ?, "
+            "'version-0046-terminal', ?, 0, 'application/json', "
+            "'trace-0046-terminal', ?, ?, ?, 'failed', 500, 'direct_terminal', "
+            "900, 900)",
+            (
+                "8" * 64,
+                f"container-inputs/v1/0046-new-terminal/1/{input_sha256}",
+                input_sha256,
+                "9" * 64,
+                "a" * 64,
+                "b" * 64,
+            ),
+        ),
+        "0046 enforcement accepted a direct v1 terminal insert",
+        "relay container v1 operation must start prepared",
+    )
+    conn.execute(
+        "UPDATE relay_container_operations SET status = 'dispatched', updated_at = 810 "
+        "WHERE reservation_key = '0046-historical-legacy'"
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations "
+            "SET status = 'failed', response_status = 500, "
+            "response_code = 'event_missing', updated_at = 820 "
+            "WHERE reservation_key = '0046-historical-legacy'"
+        ),
+        "0046 enforcement accepted an eventless v1 terminal transition",
+        "relay container terminal transition requires event and outbox",
+    )
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

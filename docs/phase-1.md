@@ -2047,3 +2047,69 @@ binding readback, key rotation, mixed-version rollout, real Container/network
 faults, provider-native idempotency or lookup, end-to-end provenance, exact
 edge replay, financial convergence, load/cost/alerts, rollback, and approvals
 remain open. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-17 Phase 1 Financial Terminal Enforcement Gate
+
+This section supersedes the preceding statement that migration 0046 is only
+reserved. The local D1 chain now contains 46 contiguous migrations with
+`0046_relay_container_financial_terminal_enforce.sql` as its head. The new
+migration is trigger-only and rejects new protocol-v1 legacy identities,
+non-`prepared` initial operations, terminal updates without an exact immutable
+event plus outbox row, and revision-2 events without the exact revision-1
+recovery predecessor. It does not rewrite historical rows or alter pricing.
+
+The Worker repository contains a future schema-readiness helper that requires
+migrations 0040, 0041, 0042, and 0046 plus all four exact trigger names. It is
+compiled and source-tested but has no production call site; the active status
+capability still uses the exact migration set, and every Container operation
+path remains default-off and unwired. Local SQLite replay and the readiness CLI
+self-test cover real 0001-0045/0046 SQL replay, direct terminal insert,
+eventless and outbox-less update, legacy identity, pre- and post-`Tdrain` open
+operations, migration drift, trigger set drift, and exact trigger-body drift.
+
+Remote sequencing remains blocked and ordered: apply only through 0045 with all
+gates false; deploy and inventory the 0046-compatible candidate at `Tdeploy`;
+remove and read back every old owner, then establish `Tdrain`. Any old owner
+reappearance invalidates the signed inventory, digest, preflight, and drain
+clock; recollect and resign before restarting. Compute the old-writer window
+from every Worker, request, Queue, Cron,
+alarm, deployment, operation deadline, and owner lease upper bound plus margin;
+then run the read-only preflight for at least that window. Its 86,400-second
+floor is not a substitute for the calculation. The report must be bound to the
+signed deployment inventory hash and must show the exact 45-row migration set,
+no 0046 trigger, no open protocol-v1 operation from either side of `Tdrain`, and
+zero contract anomalies. `snapshotReady=true` is a single D1 snapshot and the
+report always returns `authorizesEnforcement=false`; signed continuous-owner
+evidence and named approval remain external gates.
+
+Only after every target-D1 writer is frozen and a pre-apply disaster-recovery
+Time Travel bookmark plus full application-data fingerprint is archived may
+staging apply 0046 against the revalidated account/name/UUID/environment,
+rerun the post-audit against the exact 46-row/four-trigger set and exact
+normalized trigger bodies, and execute direct negative probes as atomic
+all-or-rollback batches that match the intended statement ordinal and exact
+0046 error, reject ambiguous outcomes, and are followed by full fingerprint
+comparison. A
+destructive restore after failed validation requires data-owner/SRE approval
+and proof that every application table is unchanged; `version: production`,
+retention-valid bookmark, target UUID, all-writer freeze, and archival of the
+restore's previous/undo bookmark are also mandatory. The exact 0046 ledger row
+and four trigger definitions are the only permitted logical differences. Any
+application DML, incomplete full-database evidence, or uncertain provenance
+requires quarantine plus reviewed forward repair. Normal rollback never
+removes 0046 or reintroduces a pre-0046 writer; an 0046-compatible Rust recovery
+artifact remains available for existing D1 work.
+
+A clean postflight permits only controlled restoration of the pre-inventoried
+non-Container D1 writers with phase-correct capability readback, exact owner
+inventory, and unchanged Container-table fingerprints after every wave. Every Container
+gate remains false, and postflight success grants no traffic or financial
+authority.
+
+The database gate does not close two billing cutover blockers: time-derived
+pricing facts still need a frozen evaluation instant (or disabled time
+functions), and tiered settlement needs a durable canonical reservation
+snapshot that survives Worker loss. No remote D1 mutation, deployment, secret
+change, provider call, financial mutation, or traffic switch occurred. Every
+Container gate remains false; Go/VPS remains authoritative and production
+remains **NO-GO**.

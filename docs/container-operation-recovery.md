@@ -748,3 +748,83 @@ last. Local Workerd also proves response-loss replay: a Controller-side prior
 acceptance returns `duplicate`, and overlapping schedulers converge one D1
 delivery generation. Migration 0046 remains untouched. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## Financial Terminal Enforcement And Recovery Rollout
+
+The local migration head is now 0046, superseding the earlier statement that
+0046 was untouched or future work. It remains unapplied remotely. Four
+trigger-only guards enforce complete v1 identity, `prepared` as the only new v1
+initial state, exact terminal event plus outbox evidence before a terminal
+operation update, and the exact revision-1 recovery predecessor before a
+revision-2 event. Existing legacy/eventless rows remain readable and no repair
+row is synthesized.
+
+This database boundary is intentionally narrower than the financial batch. The
+current Rust writer issues terminal event, outbox, operation transition,
+billing transition, and accounting mutations in one D1 batch. The operation
+trigger can see the preceding event/outbox statements and reject their absence;
+it cannot attest that the deployed writer issued all later billing/accounting
+statements. Deployment-version inventory and batch-contract evidence remain
+part of recovery authority.
+
+The old-writer drain applies to earlier Cloudflare/D1 writers, not Go/VPS.
+Record candidate deployment as `Tdeploy`, but start the drain clock at the later
+`Tdrain` only after the candidate version owns all request, Queue, Cron, alarm,
+recovery, and maintenance paths and the signed deployment inventory has been
+hashed into the readiness report. Any reappearance of an old owner invalidates
+that inventory, its digest, every prior preflight, `Tdrain`, and the whole
+observation window; recollect and resign the complete inventory before a new
+`Tdrain`. That window is the maximum old
+execution lifecycle and every pre-cutover operation lease/deadline plus margin, with a
+hard CLI floor of 86,400 seconds. The preflight must additionally show that no
+protocol-v1 operation from either side of `Tdrain` remains `prepared`,
+`dispatched`, or `recovery_required`; with every runtime gate false, this
+prevents enforcement from stranding any open D1 work.
+
+Apply/readback order is schema 0045, candidate N, drain/preflight, freeze every
+target-D1 writer, verify the exact UUID plus `version: production` and retention
+window, capture a pre-apply disaster-recovery Time Travel bookmark and full
+application-data fingerprint, apply schema 0046 through an account-pinned
+stable-name/UUID/environment config with before/after target readback, then run
+postflight with exact normalized trigger bodies and direct negative probes. Each negative probe must
+place all fixture statements and its expected failure in one atomic D1 batch,
+require the intended failing statement ordinal and exact 0046 trigger message,
+reject transport/timeout/ambiguous outcomes, then prove the full
+application-table fingerprint unchanged. Candidate N must
+work on both schemas. A pre-0046 N-1 writer is never allowed after schema 0046.
+Because D1 migrations are forward records, a normal Workers rollback does not
+remove the triggers; a Worker rollback may promote the selected artifact to
+100%, so only an inventoried, rehearsed 0046-compatible artifact is eligible.
+
+On a clean postflight, resume only the pre-inventoried non-Container D1 writers
+in controlled waves with migration count/head/set readback. Every wave also
+requires exact writer ownership plus Container-table count/hash/high-watermark
+comparison; any unexpected delta refreezes all writers. All Container gates
+stay false; passing schema validation does not activate admission, execution,
+financial, recovery, outbox, or compaction authority.
+
+Recovery rollback is therefore disable-first: route new admission back to Go,
+stop Rust producers and mutation gates, let active outbox leases complete or
+expire, retain candidate N (or another 0046-compatible artifact) for existing
+D1 recovery, and roll the Controller back last. Never delete trigger or event
+evidence, edit the migration ledger, clear ambiguous operations, or retry a
+provider/financial side effect merely to make the rollback appear clean.
+
+If post-apply validation fails while gates are still false, keep all writers
+frozen and compare the complete pre/post logical-export and per-table
+fingerprints. A named data owner and SRE may authorize the destructive in-place
+restore only if every application table is unchanged and the exact 0046 ledger
+row plus four triggers are the only logical differences. Before restore,
+reconfirm the target UUID, `version: production`, bookmark validity inside the
+30-day Paid or 7-day Free retention window, and the all-writer freeze. Archive
+the restore receipt and returned previous/undo bookmark, then revalidate the
+restored ledger and full fingerprint before retry. Any application DML,
+incomplete full-database evidence, or uncertain provenance forbids restore.
+Quarantine the D1 database, route new admission to Go, preserve compatible
+recovery, and use a reviewed forward repair migration. Time Travel is
+exceptional disaster recovery, not normal rollback; it overwrites the database
+in place and cancels in-flight queries. See the official
+[D1 Time Travel contract](https://developers.cloudflare.com/d1/reference/time-travel/).
+
+No remote schema, runtime, provider, or financial authority changed. Go/VPS
+remains authoritative and production remains **NO-GO**.

@@ -1493,7 +1493,7 @@ options 读取）。
   - D1 只存近期可查日志/任务；历史按月归档到 R2 + Analytics Engine（已与 §7.9 一致）。
   - `logs` / `tasks` / `quota_data` 长期可能撑爆单库，预留**按月或按账户分库**的 schema 设计
     （表名带分片后缀、查询层路由），利用账户级多库能力。
-- 备份/回滚：D1 **Time Travel**（30 天）即 cutover 的还原点，写入 §15 回滚清单。
+- 灾难恢复：cutover 前捕获 D1 **Time Travel** bookmark；它只用于严格审批的灾难恢复，不属于常规回滚清单。
 
 ### 21.4 native 兜底：用 Cloudflare Containers 取代独立 VPS/native server（修正 §5/§6.2/§7.11/§7.12，provider 第四/五批）
 
@@ -13092,7 +13092,7 @@ fairness.
 
 | Wave | Action | Required proof | Abort condition |
 | --- | --- | --- | --- |
-| P0 backup | Capture D1 backup/Time Travel point, exact ledger/object shape, active versions and pollers | Restorable point and redacted inventory | Wrong DB, missing backup, unknown writer |
+| P0 disaster recovery | Capture a D1 pre-change Time Travel bookmark, exact ledger/object shape, active versions and pollers | Approved disaster-recovery bookmark and redacted inventory; normal rollback remains forward-compatible | Wrong DB, missing bookmark, unknown writer |
 | P1 expand | Apply 0034/0035 with both DB controls at zero | Columns/indexes/triggers/control row exact; no provider I/O | Any control flag on or partial object set |
 | P2 compatible deploy | Deploy 0035-aware Worker at 100 percent with `TASK_POLL_LEASE_ENABLED=false`, staging flag false, TaskRunner false | Capabilities compiled/schema true but runtime/cutover false | New poll claim or provider request |
 | P3 drain | Stop Go/legacy Worker pollers, cron ownership, TaskRunner arm/alarm work, and in-flight provider calls | No old writer; no live old lease after maximum lease plus margin | New old-format lifecycle write |
@@ -14604,3 +14604,138 @@ lookup, real faults, global terminal acknowledgement, financial convergence,
 and C1-C5 approval remain open. Every activation gate is still false; no secret,
 deployment, provider call, or traffic switch occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.239 Migration 0046 Financial Terminal Enforcement (2026-07-17)
+
+This section supersedes earlier same-day statements that migration 0046 was
+only reserved. The trigger-only migration is now implemented and verified in
+the local repository. It has not been applied to staging or production, and no
+Container runtime gate has been enabled.
+
+The compatibility boundary is an old Cloudflare/D1 writer, not the Go/VPS
+application. A source-repository audit found no Go model, migration, or SQL
+write for `relay_container_operations` or
+`relay_container_terminal_events`. Go/VPS authority drain remains a separate
+request-admission and billing-owner cutover. For 0046, an old writer means any
+Rust Worker deployment, Queue consumer, Cron handler, alarm path, or recovery
+artifact that can still emit the pre-enforcement D1 shape.
+
+Migration 0046 creates exactly four guards:
+
+| Guard | New write rejected | Historical effect |
+| --- | --- | --- |
+| v1 identity insert | Missing, mixed, uppercase, or non-64-hex client idempotency, request, or reconciliation identity | Existing legacy rows remain readable |
+| v1 initial state | Direct insert in `dispatched`, `completed`, `failed`, or `recovery_required` | Existing non-`prepared` rows are not rewritten |
+| terminal transition | `completed`, `failed`, or `recovery_required` update without the exact immutable terminal event and matching outbox row | Existing eventless terminal rows remain readable |
+| revision-2 predecessor | Recovery resolution without the exact earlier revision-1 recovery event, owner/reconciliation identity, next billing generation, and time order | Existing events are not synthesized or changed |
+
+The migration contains no table/index DDL, backfill, update, delete, or repair.
+It must therefore follow reconciliation, not replace it. Before remote apply,
+the 0046-compatible candidate runs on schema 0045 with every Container gate
+false. Operators archive a signed inventory of all deployed versions,
+artifacts, traffic weights, Queue/Cron/alarm owners, and candidate deployment
+time `Tdeploy`. After every old owner is removed and read back, they record the
+later `Tdrain`. Any old owner reappearance invalidates the inventory, digest,
+prior preflight JSON, and drain clock; recollect and resign the full inventory
+before recording a new `Tdrain`. Then compute:
+
+```text
+drain_window = max(
+  old Worker/isolate/request/Queue/Cron/alarm/deployment lifetimes,
+  every operation created before Tdrain owner lease and execution deadline
+) + approved safety margin
+```
+
+The required value can never be inferred from the repository alone. The CLI
+enforces 86,400 seconds only as a floor; one day is not accepted as the remote
+upper bound unless the signed inventory proves it.
+
+```powershell
+bun tools/audit_relay_container_enforcement_readiness.mjs `
+  --database <staging-database> --wrangler-env staging `
+  --account-id <lowercase-account-id> `
+  --database-id <lowercase-d1-uuid> `
+  --candidate-version <worker-version-id> `
+  --deployment-inventory-sha256 <lowercase-sha256> `
+  --drain-started-at <Tdrain-unix-seconds> `
+  --minimum-drain-seconds <computed-window> --phase pre --json
+```
+
+The report is deliberately scoped to one D1 snapshot. `snapshotReady=true`
+requires the exact pre-0046 migration set, zero 0046 triggers or trigger bodies,
+no open protocol-v1 operation regardless of whether it was created before or after
+`Tdrain`, no new or active legacy identity, no suspected direct non-`prepared`
+insert, no recent event/outbox-less terminal transition, no event without
+outbox, and no revision-2 predecessor gap. Candidate-version
+inventory is operator evidence bound by the supplied hash. Wrangler resolves
+the database under the supplied account, requires the exact expected D1 UUID,
+and embeds the resolved target and environment in the report. It always emits
+`authorizesEnforcement=false`: the query cannot prove continuous old-owner
+absence, active deployment inventory, or the lifecycle calculation by itself.
+
+N/N-1 behavior is asymmetric:
+
+| Combination | Acceptance |
+| --- | --- |
+| Candidate N writer + schema 0045 | Required pre-enforcement soak; all writes must already use the 0046-compatible shape |
+| Candidate N writer + schema 0046 | Required post-apply state; rerun aggregate audit, trigger readback, and direct negative probes |
+| Pre-0046 writer N-1 + schema 0045 | Allowed only before `Tdrain`; remove it from every traffic and async owner before the drain clock starts |
+| Pre-0046 writer N-1 + schema 0046 | Forbidden; it may abort on identity, initial-state, or terminal-event guards |
+
+Post-apply validation has an explicit one-way decision. Before the pre-apply
+Time Travel bookmark, freeze every writer to the target D1 and archive a full
+application-data fingerprint: logical-export SHA-256 plus deterministic
+per-table row counts/hashes/high-watermarks. The exact 0046 ledger row and four
+trigger definitions are the only permitted post-bookmark logical differences;
+every application table must remain unchanged. Apply with a stable database
+name and account-pinned name/UUID/environment config, rechecking the UUID
+immediately before and after the command. Put each negative probe's fixtures
+and expected failure in one atomic D1 batch, require the intended statement
+ordinal and exact 0046 trigger message, reject transport/timeout/ambiguous
+outcomes, then prove all fingerprints remain unchanged. Only named data-owner
+and SRE approvers who can prove that complete
+condition may authorize the destructive
+in-place restore. Before restore, reconfirm `version: production`, bookmark
+validity inside the plan's 30-day Paid or 7-day Free retention window, target
+UUID, and all-writer freeze. Archive the failed state, restore receipt, and
+returned previous/undo bookmark; then revalidate the restored ledger and full
+fingerprint before retry. Any application DML, incomplete evidence, or
+uncertain writer provenance forbids restore: quarantine that D1 database, route
+new admission to Go, retain an 0046-compatible Rust recovery artifact, and
+repair forward through a reviewed migration.
+
+After a clean postflight, restore only the pre-inventoried non-Container D1
+writers in controlled waves and read back migration count/head/set, exact owner
+inventory, and Container-table counts/hashes/high-watermarks after each wave.
+Any unexpected delta refreezes all writers. Every Container gate remains false;
+postflight success does not grant request, provider, billing, recovery, outbox,
+compaction, or traffic authority.
+
+Normal post-apply rollback is disable-first and forward-compatible. Stop the
+Rust producer, drain or expire leases, retain the compatible recovery artifact,
+and roll the Controller back last. Do not delete triggers, edit
+`d1_migrations`, clear events/outbox rows, or deploy a pre-0046 writer. A Worker
+version rollback does not roll back D1 schema automatically, and Time Travel is
+not a routine schema rollback. See the official
+[D1 migration contract](https://developers.cloudflare.com/d1/reference/migrations/),
+[D1 Time Travel contract](https://developers.cloudflare.com/d1/reference/time-travel/),
+and [Workers rollback contract](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
+
+The 0046 trigger set does not change billing expression semantics. Pricing must
+continue to use the expression/hash/version, group ratio, QuotaPerUnit, request
+facts, estimate, and tier frozen at reservation; settlement substitutes actual
+usage only, performs one half-away-from-zero rounding, and falls back to the
+pre-consumed amount when expression evaluation fails. Two separate cutover
+blockers remain: time-derived pricing facts must be frozen (or time functions
+disabled), and tiered requests need a durable canonical snapshot sufficient to
+reconstruct settlement after Worker loss. Neither blocker is papered over by a
+database trigger.
+
+The current writer orders event, outbox, operation, billing, and accounting in
+one D1 batch. Migration 0046 adds database rejection at two critical edges but
+cannot attest the deployed writer version or all later financial statements.
+Signed version inventory, batch-contract evidence, exact trigger SQL readback,
+backup/Time Travel evidence, and post-apply negatives remain mandatory. No
+remote migration, deployment, provider call, secret change, financial
+mutation, or traffic switch occurred. Go/VPS remains authoritative and
+production remains **NO-GO**.

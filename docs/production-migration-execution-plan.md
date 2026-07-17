@@ -359,10 +359,12 @@ cutover readiness, not operational hints. The local lifecycle CAS, signed
 status-only query, and 0042 cross-ledger terminal batch do not open G4 or G7:
 the batch is not wired into the edge canary, and exact response replay, the
 Linux image, remote fault matrix, and C1-C5 approvals remain incomplete.
-Migration 0042 is an expand-only event/identity contract;
-it does not authorize any of these flags. A later 0046 enforcement migration
-requires a drained old-writer cohort and remote proof that every v1 operation
-has non-empty client/reconciliation identity.
+Migration 0042 is an expand-only event/identity contract and does not authorize
+any of these flags. Migration 0046 is now implemented locally as the separate
+trigger-only enforcement boundary, but it must not be applied remotely until
+the old Cloudflare/D1 writer cohort is drained and the pre-enforcement audit is
+clean. Go/VPS does not write the Container operation or terminal-event tables;
+its traffic and financial-authority drain remains a separate cutover concern.
 
 Migration 0044 is also expand-only and default inert. It adds a three-lane R2
 orphan inventory whose only authority is LIST plus writes to its own fenced D1
@@ -387,8 +389,8 @@ environment and is not a Container cutover flag.
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0045 with every mutation/cutover/retry gate false, `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 45/45 and 43-table replay are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0045 first and 0046 only after its drain gate, with every mutation/cutover/retry gate false; `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 46/46 and 43-table replay plus a clean 0046 pre/post audit are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go, and Container operation/billing/quota/audit terminal state commits atomically | Golden fixtures, cross-ledger D1 batch rollback faults, exact replay, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -402,7 +404,7 @@ environment and is not a Container cutover flag.
 | Workstream | Current Status | Production Target | Next Evidence |
 | --- | --- | --- | --- |
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
-| Data migration | Partial: local exact-set SQLite replay passes 45/45 migrations, 43 tables, 434 checked incremental columns, and 64 key indexes; 0041 freezes same-state Container lifecycle outcomes, 0042 adds immutable financial terminal/outbox authority, 0043 adds observer-only reconciliation, 0044 adds observer-only R2 inventory, and 0045 adds default-off audited observer retry apply; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 45/45 staging apply with all Container writer/proof/inventory/retry gates false, immutable-contract negative probes, old-writer drain inventory, real source inventory, staging import report, and rollback point |
+| Data migration | Partial: local exact-set SQLite replay passes 46/46 migrations, 43 tables, 434 checked incremental columns, and 64 key indexes; 0041 freezes same-state Container lifecycle outcomes, 0042 adds immutable financial terminal/outbox authority, 0043 adds observer-only reconciliation, 0044 adds observer-only R2 inventory, 0045 adds default-off audited observer retry apply, and trigger-only 0046 rejects new v1 legacy identity, direct-terminal inserts, event/outbox-less terminal updates, and revision-2 predecessor gaps; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 0001-0045 staging apply with all gates false; candidate writer/version inventory; clean computed drain window; 0046 backup/apply/readback/post-audit; immutable negative probes; real source inventory; staging import report; rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
 | Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers plus bounded commit-watermark compaction and a 1.5 MB local JSON guard, but no deployed retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, deployed hot-token window/structured-clone/load/cost report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
@@ -907,10 +909,17 @@ Candidate rollback triggers:
 
 Rollback actions:
 
-1. Stop new Rust traffic: roll the gradual deployment back to the previous
-   Worker version (fastest), and/or stop exposure by token group, route rule,
-   feature flag, or DNS.
-2. Keep Rust logs and D1 state immutable for investigation.
+1. Stop new Rust traffic with token-group, route, feature, or DNS gates first.
+   A Cloudflare rollback replaces a split deployment with one selected version
+   at 100% traffic, so never interpret "previous" as automatically safe. Roll
+   back only to a pre-recorded, rehearsed artifact that is compatible with the
+   current D1 schema, bindings, and Durable Object lifecycle; otherwise keep
+   traffic gated away and deploy a reviewed compatible recovery artifact.
+2. Preserve Rust logs and D1 evidence and block unrelated D1 mutation. If the
+   current schema has durable operation/outbox/recovery work, keep exactly one
+   inventoried, schema-compatible recovery artifact as the sole writer until
+   those ownership/lease inventories reach zero; only then freeze D1 fully for
+   investigation.
 3. Reconcile any Rust-applied quota/payment deltas back to Go.
 4. Rotate any secrets exposed during incident response.
 5. Write a short rollback report before restarting canary.
@@ -1412,3 +1421,169 @@ complete or expire, reconcile pending/leased/dead-letter rows, Controller
 acknowledgement off, then Controller rollback. Never clear D1 outbox or DO
 journal rows to make rollback appear complete. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-17 Migration 0046 Enforcement Rollout
+
+Migration `0046_relay_container_financial_terminal_enforce.sql` is locally
+implemented and verified, but has not been applied to a remote D1 database. It
+creates four triggers and performs no table/index creation, backfill, update,
+delete, or synthetic event write:
+
+1. every new protocol-v1 operation must carry exact lowercase 64-hex client
+   idempotency, request, and reconciliation identities;
+2. every new protocol-v1 operation must begin in `prepared`, closing the direct
+   terminal-insert bypass;
+3. every protocol-v1 terminal status update must already have the exact
+   immutable terminal event and its matching outbox state; and
+4. every revision-2 event must have the exact earlier revision-1 recovery
+   predecessor for the same operation, owner generation, reconciliation ID,
+   billing generation, and time order.
+
+Historical legacy and eventless terminal rows are not rewritten. Therefore
+0046 is an enforcement boundary, not a repair migration. Before applying it,
+operators must reconcile every active legacy operation, every terminal event
+without outbox state, and every revision-2 predecessor gap. An old
+Cloudflare/D1 writer becomes incompatible after 0046; Go/VPS is not that writer
+because it does not write these Container tables.
+
+The remote sequence is mandatory and ordered:
+
+1. Keep all Container admission, execution, terminal, reconciliation, retry,
+   outbox, canary, and compaction gates false. Apply only through 0045.
+2. Deploy the 0046-compatible Worker candidate while 0046 is still absent.
+   Archive its Worker version/deployment ID, artifact hash, traffic percentage,
+   Queue consumers, Cron/alarm owners, and deployment timestamp `Tdeploy`.
+3. Move every request, Queue, Cron, alarm, recovery, and maintenance ownership
+   path off every pre-0046 writer. After readback proves the candidate is the
+   sole Cloudflare/D1 owner, record `Tdrain`; this is the value passed to the
+   audit, not `Tdeploy`. Any old owner, isolate, scheduled event, or Queue
+   consumer observed again invalidates the signed inventory, its SHA-256, every
+   prior preflight JSON, `Tdrain`, and the entire observation window. Recollect
+   and sign the full owner inventory, generate a new digest, and record a new
+   `Tdrain` only after sole-owner readback passes again.
+   Compute that window as the maximum old isolate, request, Queue, Cron, alarm,
+   deployment, active operation deadline, and owner lease lifetime plus an
+   approved safety margin. The audit tool enforces an 86,400-second floor, but
+   that floor is not proof that the computed remote maximum is only one day.
+4. Run the read-only preflight after the computed window and archive its JSON:
+
+   ```powershell
+   bun tools/audit_relay_container_enforcement_readiness.mjs `
+     --database <staging-database> --wrangler-env staging `
+     --account-id <lowercase-account-id> `
+     --database-id <lowercase-d1-uuid> `
+     --candidate-version <worker-version-id> `
+     --deployment-inventory-sha256 <lowercase-sha256> `
+     --drain-started-at <Tdrain-unix-seconds> `
+     --minimum-drain-seconds <computed-window> --phase pre --json
+   ```
+
+   `snapshotReady=true` is one D1 snapshot, not rollout authorization; the
+   report always returns `authorizesEnforcement=false`. The snapshot requires
+   the exact 45-row pre-enforcement migration set, no 0046 trigger or trigger
+   body,
+   a complete drain window, zero open protocol-v1 operations regardless of
+   whether they began before or after `Tdrain`, zero new/active legacy
+   identities, zero suspected direct non-`prepared` inserts, zero recent
+   terminal rows lacking exact event-plus-outbox evidence, zero terminal
+   events without outbox state, and zero revision-2 predecessor gaps. The
+   Wrangler first resolves the database through an ephemeral config pinned to
+   the supplied account and fails if its UUID differs. The subsequent read uses
+   that verified UUID, not the database alias; the target account, database
+   UUID/name/argument, and Wrangler environment are embedded in the report. The
+   aggregate report is also bound to the signed deployment inventory by its
+   lowercase SHA-256, but it does not independently verify that inventory,
+   continuous old-writer absence, or the computed lifecycle upper bound. Those
+   external proofs plus named approval remain mandatory.
+5. Execute the freeze in this exact order: block every new application, admin,
+   Queue, Cron, alarm, DO, and maintenance write to the target D1; wait for and
+   prove all in-flight writes have finished; verify the target UUID and that
+   `wrangler d1 info` reports the production backend; verify the active plan's
+   retention window covers the rollback exercise; capture the pre-apply
+   disaster-recovery Time Travel bookmark; then archive the migration ledger,
+   trigger SQL, aggregate report, active-operation inventory, and a full
+   application-data fingerprint. The fingerprint is a logical-export SHA-256
+   plus deterministic per-table row counts/hashes/high-watermarks for every
+   application table.
+   Apply 0046 as the only permitted writer, using the stable database name and
+   an account-pinned migration config whose D1 name/UUID/environment exactly
+   match the audited target. Re-resolve and compare the UUID immediately before
+   apply; archive the exact command, migration receipt, and post-apply target
+   readback. The only allowed logical delta is the exact 0046 migration-ledger
+   row plus its four trigger definitions; application-table DML must remain
+   zero.
+6. Rerun the audit with `--phase post`. `snapshotReady=true` must include the
+   exact normalized body of all four local 0046 triggers, not merely their
+   names, while still returning `authorizesEnforcement=false`. Prove direct D1
+   negatives for empty identity, terminal initial state, eventless/outbox-less
+   terminal update, and revision-2 without predecessor. Put every probe's
+   fixture statements and expected failing statement in one `D1Database.batch()`
+   so the failure rolls back the entire sequence. Require the expected failing
+   statement ordinal and exact 0046 trigger message; a foreign-key, uniqueness,
+   unrelated-trigger, transport, timeout, or ambiguous response is a failed
+   probe, never a pass. The four expected messages are, respectively,
+   `relay container v1 operation identity is required`,
+   `relay container v1 operation must start prepared`,
+   `relay container terminal transition requires event and outbox`, and
+   `relay container revision 2 predecessor is missing`. After every probe,
+   recompute the full application-table hashes, counts, and high-watermarks and
+   require an exact match with the post-migration baseline.
+7. Branch on post-apply validation. On success, archive the complete evidence
+   packet, then restore only the pre-inventoried non-Container D1 writers in
+   controlled waves with count/head/set readback after each wave. Also compare
+   the Container-table row counts, hashes, and high-watermarks plus the exact
+   writer artifact/route/Queue/Cron/alarm inventory after every wave; any
+   unexpected delta immediately refreezes all writers. Keep every
+   Container admission, execution, terminal, reconciliation, retry, outbox,
+   canary, and compaction gate false; a clean 0046 postflight grants no traffic
+   or financial authority. On failure, keep every writer frozen and quarantine
+   the database. Compare the complete pre/post application-data fingerprints.
+   Named data-owner and SRE approvers may authorize an in-place Time Travel
+   restore only when every application table is unchanged and the exact 0046
+   ledger row plus four trigger definitions are the only logical differences.
+   Before restore, reconfirm `version: production`, bookmark validity inside the
+   30-day Paid or 7-day Free retention window, target UUID, and all-writer
+   freeze. The restore overwrites the database and cancels in-flight queries,
+   so archive the failed state, the complete restore receipt, and the returned
+   previous/undo bookmark; then revalidate the restored ledger and full
+   fingerprint before any retry. Any application DML, incomplete full-database
+   evidence, or uncertain writer provenance forbids restore: keep the database
+   quarantined, route new traffic to Go, preserve the 0046-compatible recovery artifact, and
+   ship a separately reviewed forward repair migration. Never delete a trigger,
+   rewrite the ledger, or use an N-1 writer as repair.
+8. Rehearse normal operational rollback without removing 0046: route new
+   traffic back to Go, disable Rust admission first, retain the 0046-compatible Rust recovery
+   writer for existing D1 operations, drain outbox leases, and roll the
+   Controller back last. Never delete triggers, edit `d1_migrations`, or deploy
+   an N-1 writer that emits the legacy empty identity.
+
+N/N-1 acceptance is asymmetric. The new candidate must run against schema 0045
+before enforcement. Once schema 0046 is applied, only 0046-compatible writers
+may write Container operations; rollback is code/gate rollback to a compatible
+artifact, not schema rollback. Time Travel is an exceptional destructive
+recovery branch for a failed validation with zero application DML and only the
+exact expected 0046 ledger/trigger delta, not routine rollback. See Cloudflare's
+[D1 Time Travel restore contract](https://developers.cloudflare.com/d1/reference/time-travel/).
+Frozen billing-expression snapshots and actual usage settlement semantics are
+unchanged by this migration.
+
+The authenticated `/api/platform/capabilities` readback is phase-specific. On
+schema 0045 it must report applied count 45, latest 0045, expected migration
+0046, `d1_expected_migration_applied=false`, and `d1_migration_ready=false`;
+that false value is the expected default-off pre-enforcement state. After a
+valid 0046 apply it must report count 46, latest/expected 0046,
+`d1_expected_migration_applied=true`, exact-set match, and readiness true.
+Trigger-body evidence comes from the readiness CLI or direct `sqlite_master`
+readback, not `/api/status` or the capability response.
+
+The trigger set is defense in depth, not a substitute for writer provenance.
+The approved writer must still prove one D1 batch ordered as terminal event,
+outbox, operation transition, billing transition, and accounting mutations.
+The event/outbox trigger can reject an incomplete operation transition, but it
+cannot by itself attest that every later financial statement in that batch was
+issued by the approved artifact. Archive the exact candidate version, batch
+contract tests, remote trigger SQL, and post-apply negative probes together.
+
+No remote D1 mutation, deployment, traffic switch, secret provisioning, or
+provider call is claimed here. Go/VPS remains authoritative and production
+remains **NO-GO**.

@@ -40,6 +40,8 @@ pub(crate) const RELAY_CONTAINER_R2_INVENTORY_MIGRATION: &str =
     "0044_relay_container_r2_orphan_inventory.sql";
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_RETRY_MIGRATION: &str =
     "0045_relay_container_reconciliation_retry_apply.sql";
+pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_ENFORCE_MIGRATION: &str =
+    "0046_relay_container_financial_terminal_enforce.sql";
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
     &["pending", "leased", "retry", "converged", "dead_letter"];
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
@@ -5733,13 +5735,31 @@ pub async fn relay_container_operation_schema_ready(db: &D1Database) -> worker::
         D1Type::Text(RELAY_CONTAINER_OPERATION_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_OPERATION_LIFECYCLE_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_FINANCIAL_TERMINAL_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_FINANCIAL_TERMINAL_ENFORCE_MIGRATION),
     ];
     let row = db
-        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2, ?3)")
+        .prepare(
+            r#"
+            SELECT COUNT(DISTINCT name) AS count
+            FROM d1_migrations
+            WHERE name IN (?1, ?2, ?3, ?4)
+              AND (
+                SELECT COUNT(1)
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name IN (
+                    'relay_container_operation_v1_identity_insert_guard',
+                    'relay_container_operation_v1_initial_state_insert_guard',
+                    'relay_container_operation_terminal_event_guard',
+                    'relay_container_terminal_event_revision_predecessor_guard'
+                  )
+              ) = 4
+            "#,
+        )
         .bind_refs(&args)?
         .first::<CountRow>(None)
         .await?;
-    Ok(row.map(|row| row.count == 3).unwrap_or(false))
+    Ok(row.map(|row| row.count == 4).unwrap_or(false))
 }
 
 pub async fn relay_container_reconciliation_schema_ready(db: &D1Database) -> worker::Result<bool> {
@@ -21180,6 +21200,33 @@ mod tests {
         ));
         assert!(source.contains("OR status = 'recovery_required'"));
         assert!(source.contains("LIMIT ?2"));
+    }
+
+    #[test]
+    fn relay_container_operation_schema_ready_requires_0046_enforcement_contract() {
+        let source = include_str!("d1_repositories.rs");
+        let start = source
+            .find("pub async fn relay_container_operation_schema_ready")
+            .unwrap();
+        let end = source
+            .find("pub async fn relay_container_reconciliation_schema_ready")
+            .unwrap();
+        let readiness = &source[start..end];
+
+        assert!(readiness.contains("RELAY_CONTAINER_FINANCIAL_TERMINAL_ENFORCE_MIGRATION"));
+        assert!(readiness.contains("COUNT(DISTINCT name) AS count"));
+        for trigger in [
+            "relay_container_operation_v1_identity_insert_guard",
+            "relay_container_operation_v1_initial_state_insert_guard",
+            "relay_container_operation_terminal_event_guard",
+            "relay_container_terminal_event_revision_predecessor_guard",
+        ] {
+            assert!(
+                readiness.contains(trigger),
+                "missing readiness trigger {trigger}"
+            );
+        }
+        assert!(readiness.contains(") = 4"));
     }
 
     #[test]

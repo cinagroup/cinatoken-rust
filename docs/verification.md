@@ -6703,3 +6703,109 @@ provider-native idempotency or lookup, full execution and financial
 reconciliation, retention/archive/restore approval, load/cost evidence,
 rollback, and C1-C5/G1-G8 approval. Every tracked activation and compaction gate
 remains false; Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Migration 0046 Enforcement Verification (2026-07-17)
+
+This overlay supersedes the preceding statement that migration 0046 remains
+reserved. It verifies the local trigger-only enforcement boundary and its
+read-only rollout audit. It does not claim a remote D1 apply, Worker deploy,
+secret change, provider request, financial mutation, or traffic switch.
+
+```powershell
+python tools/verify_sqlite.py
+# PASS: 46 migrations, 43 tables, 434 incremental columns, 64 key indexes.
+# PASS: historical legacy/eventless rows unchanged; new legacy identity,
+# direct terminal insert, event/outbox-less transition, and revision-2 without
+# predecessor are rejected; an exact event plus outbox transition persists.
+
+node tools/audit_d1_migration_config.mjs --json
+# PASS: 46 contiguous migrations; local/config/runtime head is 0046.
+
+node tools/audit_relay_container_enforcement_readiness.mjs --self-test --json
+# PASS: clean pre/post fixtures and real 0001-0045/0046 SQL are snapshot-ready;
+# authorizesEnforcement remains false; legacy identity, pre/post-Tdrain open
+# operations, direct non-prepared insert, new legacy identity, eventless
+# terminal, missing predecessor/outbox, short drain, migration drift,
+# trigger-set drift, and exact trigger-body drift all block. Target binding,
+# temporary account-config lifecycle, verified-UUID Wrangler arguments, local
+# spawn/account/JSON envelope, strict numeric typing, success-envelope
+# validation, quoted SQL literal preservation, and target UUID mismatch
+# rejection also pass.
+
+node --check tools/audit_relay_container_enforcement_readiness.mjs
+cargo fmt --all --check
+# PASS.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 784 passed; 0 failed.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS; existing default-off dead-code warnings only.
+
+cargo test --workspace --exclude cinatoken-worker
+# PASS: all non-Worker unit, integration, and doc tests.
+
+node node_modules/vitest/vitest.mjs run --config vitest.do.config.mjs
+# PASS: 1 file, 48 Workerd/D1 tests. Controlled corrupt-state, stream-failure,
+# and DLQ logs are expected fault-injection evidence; suite exit code is zero.
+
+# From crates/worker with locked wasm-bindgen and local esbuild binaries.
+worker-build --release
+# PASS: optimized Wasm and bundled Worker JavaScript generated successfully.
+```
+
+The self-test executes the generated audit query with Node 24 `node:sqlite`
+(and `bun:sqlite` when run by Bun) against an in-memory database containing
+migrations 0001-0045 and then 0001-0046. The pre query returns 45 migration rows and zero enforcement
+triggers or trigger bodies; the post query returned 46 rows, four triggers, and
+the four exact normalized local trigger bodies. Both queries parsed and
+executed without mutation. A 46-row ledger with one expected name missing and
+another duplicated was rejected by the distinct-name set check.
+
+The CLI requires an explicit Cloudflare account ID, expected D1 UUID, candidate
+version, `Tdrain` after every old owner is removed, computed drain window of at
+least 86,400 seconds, phase, and lowercase SHA-256 of the signed deployment
+inventory. It uses an
+ephemeral Wrangler config pinned to that account, rejects a UUID mismatch, runs
+the read against the verified UUID rather than re-resolving the alias, and
+embeds the target account/database/environment in the report.
+`snapshotReady=true` is explicitly scoped to one D1 snapshot:
+the exact phase-specific migration/trigger set and trigger bodies, no open
+protocol-v1 operation from either side of `Tdrain`, and zero legacy identity,
+suspected direct insert, event/outbox, or revision-chain anomaly. The hash binds
+the report to external evidence but
+does not independently verify continuous deployed
+Worker/Queue/Cron/alarm ownership or the lifecycle upper-bound calculation, so
+the report always returns `authorizesEnforcement=false`.
+
+The Worker repository's future operation schema-readiness helper requires the
+0040/0041/0042/0046 migrations and all four enforcement trigger names, but it
+has no production call site and is not an active runtime gate. The active
+runtime capability contract expects 0046. On schema 0045, the authenticated
+`/api/platform/capabilities` response must report applied count 45, latest 0045,
+expected 0046, expected-applied false, set-match false, and readiness false;
+this is the required default-off pre-enforcement state. After a valid 0046
+apply, the same endpoint must report count 46, latest/expected 0046,
+expected-applied/set-match/readiness true. It does not report trigger bodies;
+those come from the readiness CLI or direct `sqlite_master` readback. All
+Container operation paths remain default-off and unwired. The financial
+writer's event, outbox, operation, billing, and accounting statements remain
+one D1 batch; trigger evidence is defense in depth and does not replace
+candidate-version or batch-contract proof.
+
+Bun is unavailable in this shell, so the aggregate `bun run check` was not
+run. Its changed-path coverage was executed through the bundled Node runtime,
+Python SQLite replay, Cargo, compiled Workerd, and the optimized Worker build.
+No remote command was issued. Production still requires authenticated 0045
+staging apply, signed `Tdeploy`/`Tdrain` target-first inventory and continuous
+old-owner absence, the computed drain, account/name/UUID/environment-bound 0046
+apply/readback, atomic rollback-only negative probes, a pre-bookmark freeze of
+every D1 writer, full pre/post logical-export and per-table fingerprints,
+production-backend/retention-valid Time Travel evidence including the returned
+undo bookmark, the exact-0046-only restore decision versus mandatory
+quarantine/forward repair, controlled restoration of only pre-inventoried
+non-Container writers with per-wave Container fingerprints, N/N-1 rollback
+rehearsal, frozen time-derived pricing facts, durable canonical tiered
+snapshots, real fault/load/cost and financial convergence, and C1-C5/G1-G8
+approval. All gates remain false; Go/VPS remains authoritative and production
+remains **NO-GO**.

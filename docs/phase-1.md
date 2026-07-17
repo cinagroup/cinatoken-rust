@@ -2113,3 +2113,29 @@ snapshot that survives Worker loss. No remote D1 mutation, deployment, secret
 change, provider call, financial mutation, or traffic switch occurred. Every
 Container gate remains false; Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## Migration 0047 Provider-Egress Authority
+
+The local D1 head is now 0047. The new immutable
+`relay_container_provider_egress_grants` row is created after private broker
+readiness but before DO attempt dispatch or provider I/O. A `first-primary`
+session performs an exact `INSERT OR IGNORE ... SELECT` from the live operation
+and reservation, then compares a complete readback. Missing schema, stale
+authority, changed broker version/profile, changed request/R2/billing identity,
+or ambiguous readback fails before the one-shot send boundary.
+
+New tiered reservations now persist a canonical group snapshot with a frozen
+evaluation instant and bounded expression-referenced scalar request facts.
+Sensitive headers/content paths, structured values, dynamic lookup keys, and
+DST-dependent timezones are rejected before reserve. HTTP and Realtime use the
+strict snapshot-only settlement API; D1 rejects empty or cross-group-divergent
+new tiered contracts.
+
+This is not financial recovery completion. Actual usage is not yet durably
+captured at the egress boundary, historical empty snapshots remain legacy, and
+the terminal event is not yet linked to the grant. Production rollout still
+requires 0046 completion, old-writer drain, isolated 0047 apply/readback,
+broker-first/Controller-second N/N-1 proof, real Linux/R2/provider faults,
+usage receipt recovery, idempotency/lookup, convergence, rollback, load/cost,
+and approvals. All Container gates remain false; Go/VPS is authoritative and
+production remains **NO-GO**.

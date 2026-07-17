@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,6 +25,30 @@ pub struct RequestInput {
     pub headers: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frozen_params: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FrozenRequestInput {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, JsonValue>,
+}
+
+impl FrozenRequestInput {
+    pub fn to_request_input(&self) -> RequestInput {
+        RequestInput {
+            headers: self
+                .headers
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+            body: None,
+            frozen_params: self.params.clone(),
+        }
+    }
 }
 
 impl RequestInput {
@@ -82,9 +106,232 @@ pub fn validate_billing_expr(expr: &str) -> Result<(), BillingExprError> {
     Ok(())
 }
 
+const MAX_FROZEN_REQUEST_FACTS: usize = 64;
+const MAX_FROZEN_REQUEST_STRING_BYTES: usize = 4 * 1024;
+
+/// Projects an expression's request dependencies into a bounded, canonical
+/// settlement input. Credentials, dynamic lookup keys, and structured values
+/// are rejected rather than persisted into a billing ledger.
+pub fn freeze_billing_expr_request_input(
+    expr: &str,
+    request: &RequestInput,
+) -> Result<FrozenRequestInput, BillingExprError> {
+    let parts = split_billing_expr_request_rule(expr);
+    let mut param_paths = BTreeSet::new();
+    let mut header_names = BTreeSet::new();
+    collect_request_dependencies(&parts.billing_expr, &mut param_paths, &mut header_names)?;
+    if let Some(request_rule_expr) = parts.request_rule_expr {
+        collect_request_dependencies(&request_rule_expr, &mut param_paths, &mut header_names)?;
+    }
+    if param_paths.len().saturating_add(header_names.len()) > MAX_FROZEN_REQUEST_FACTS {
+        return Err(BillingExprError::Runtime(format!(
+            "durable billing request exceeds {MAX_FROZEN_REQUEST_FACTS} referenced facts"
+        )));
+    }
+
+    let normalized_headers = normalize_headers(&request.headers);
+    let mut frozen = FrozenRequestInput::default();
+    for name in header_names {
+        if is_sensitive_frozen_header(&name) {
+            return Err(BillingExprError::Runtime(format!(
+                "sensitive header {name:?} cannot be persisted in a billing snapshot"
+            )));
+        }
+        let value = normalized_headers.get(&name).cloned().unwrap_or_default();
+        validate_frozen_string(&value, "header value")?;
+        if !value.is_empty() {
+            frozen.headers.insert(name, value);
+        }
+    }
+    for path in param_paths {
+        if is_sensitive_frozen_param_path(&path) {
+            return Err(BillingExprError::Runtime(format!(
+                "sensitive request path {path:?} cannot be persisted in a billing snapshot"
+            )));
+        }
+        let value = request_param_json(request, &path).unwrap_or(JsonValue::Null);
+        match &value {
+            JsonValue::Array(_) | JsonValue::Object(_) => {
+                return Err(BillingExprError::Runtime(format!(
+                    "structured request path {path:?} cannot be persisted in a billing snapshot"
+                )))
+            }
+            JsonValue::String(value) => validate_frozen_string(value, "request value")?,
+            JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => {}
+        }
+        frozen.params.insert(path, value);
+    }
+    Ok(frozen)
+}
+
+fn collect_request_dependencies(
+    expr: &str,
+    param_paths: &mut BTreeSet<String>,
+    header_names: &mut BTreeSet<String>,
+) -> Result<(), BillingExprError> {
+    let (_, body) = parse_expr_version(expr);
+    let tokens = Lexer::new(body).lex()?;
+    let ast = Parser::new(tokens).parse()?;
+    collect_request_dependencies_from_ast(&ast, param_paths, header_names)
+}
+
+fn collect_request_dependencies_from_ast(
+    expr: &Expr,
+    param_paths: &mut BTreeSet<String>,
+    header_names: &mut BTreeSet<String>,
+) -> Result<(), BillingExprError> {
+    match expr {
+        Expr::Number(_) | Expr::String(_) | Expr::Bool(_) | Expr::Null | Expr::Variable(_) => {}
+        Expr::Unary { expr, .. } => {
+            collect_request_dependencies_from_ast(expr, param_paths, header_names)?;
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_request_dependencies_from_ast(left, param_paths, header_names)?;
+            collect_request_dependencies_from_ast(right, param_paths, header_names)?;
+        }
+        Expr::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_request_dependencies_from_ast(condition, param_paths, header_names)?;
+            collect_request_dependencies_from_ast(then_branch, param_paths, header_names)?;
+            collect_request_dependencies_from_ast(else_branch, param_paths, header_names)?;
+        }
+        Expr::Call { name, args } => {
+            if matches!(name.as_str(), "param" | "header") {
+                let Some(Expr::String(value)) = args.first() else {
+                    return Err(BillingExprError::Parse(format!(
+                        "durable billing {name} lookup requires a literal string key"
+                    )));
+                };
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(BillingExprError::Parse(format!(
+                        "durable billing {name} lookup key cannot be empty"
+                    )));
+                }
+                if name == "param" {
+                    param_paths.insert(value.to_string());
+                } else {
+                    header_names.insert(normalize_header_key(value));
+                }
+            }
+            if matches!(
+                name.as_str(),
+                "hour" | "minute" | "weekday" | "month" | "day"
+            ) {
+                let Some(Expr::String(timezone)) = args.first() else {
+                    return Err(BillingExprError::Parse(format!(
+                        "durable billing {name} lookup requires a literal timezone"
+                    )));
+                };
+                if !durable_timezone_has_fixed_offset(timezone) {
+                    return Err(BillingExprError::Runtime(format!(
+                        "timezone {timezone:?} is not supported by the durable billing clock"
+                    )));
+                }
+            }
+            for arg in args {
+                collect_request_dependencies_from_ast(arg, param_paths, header_names)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn request_param_json(request: &RequestInput, path: &str) -> Option<JsonValue> {
+    if let Some(value) = request.frozen_params.get(path) {
+        return Some(value.clone());
+    }
+    let mut current = request.body.as_ref()?;
+    for segment in path.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
+        if segment == "#" {
+            return match current {
+                JsonValue::Array(items) => Some(JsonValue::from(items.len() as u64)),
+                _ => None,
+            };
+        }
+        current = match current {
+            JsonValue::Object(map) => map.get(segment)?,
+            JsonValue::Array(items) => items.get(segment.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(current.clone())
+}
+
+fn validate_frozen_string(value: &str, label: &str) -> Result<(), BillingExprError> {
+    if value.len() <= MAX_FROZEN_REQUEST_STRING_BYTES {
+        Ok(())
+    } else {
+        Err(BillingExprError::Runtime(format!(
+            "durable billing {label} exceeds {MAX_FROZEN_REQUEST_STRING_BYTES} bytes"
+        )))
+    }
+}
+
+fn is_sensitive_frozen_header(name: &str) -> bool {
+    matches!(
+        name,
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-api-key"
+            | "api-key"
+            | "cf-access-jwt-assertion"
+    )
+}
+
+fn is_sensitive_frozen_param_path(path: &str) -> bool {
+    let normalized = path.trim().to_ascii_lowercase();
+    let segments = normalized.split('.').collect::<Vec<_>>();
+    if segments.iter().any(|segment| {
+        matches!(
+            *segment,
+            "api_key" | "apikey" | "access_token" | "authorization" | "password" | "secret"
+        )
+    }) {
+        return true;
+    }
+    !normalized.ends_with(".#")
+        && segments.first().is_some_and(|root| {
+            matches!(
+                *root,
+                "messages"
+                    | "input"
+                    | "prompt"
+                    | "contents"
+                    | "documents"
+                    | "query"
+                    | "text"
+                    | "instructions"
+            )
+        })
+}
+
+fn durable_timezone_has_fixed_offset(timezone: &str) -> bool {
+    matches!(
+        timezone.trim(),
+        "" | "UTC"
+            | "Etc/UTC"
+            | "GMT"
+            | "Asia/Shanghai"
+            | "Asia/Singapore"
+            | "Asia/Hong_Kong"
+            | "Asia/Taipei"
+            | "Asia/Tokyo"
+            | "Asia/Seoul"
+    )
+}
+
 /// Current Unix time in seconds (UTC). Used as the default clock for the
 /// time helpers when no pinned instant is supplied.
-fn current_unix_seconds() -> i64 {
+pub(crate) fn current_unix_seconds() -> i64 {
     #[cfg(target_arch = "wasm32")]
     {
         return (js_sys::Date::now() / 1000.0).floor() as i64;
@@ -1064,44 +1311,14 @@ impl Evaluator {
     }
 
     fn param(&self, path: &str) -> ExprValue {
-        let Some(body) = &self.request.body else {
-            return ExprValue::Null;
-        };
         let path = path.trim();
         if path.is_empty() {
             return ExprValue::Null;
         }
-        let mut current = body;
-        for segment in path.split('.') {
-            if segment.is_empty() {
-                return ExprValue::Null;
-            }
-            if segment == "#" {
-                if let JsonValue::Array(items) = current {
-                    return ExprValue::Number(items.len() as f64);
-                }
-                return ExprValue::Null;
-            }
-            match current {
-                JsonValue::Object(map) => {
-                    let Some(next) = map.get(segment) else {
-                        return ExprValue::Null;
-                    };
-                    current = next;
-                }
-                JsonValue::Array(items) => {
-                    let Ok(index) = segment.parse::<usize>() else {
-                        return ExprValue::Null;
-                    };
-                    let Some(next) = items.get(index) else {
-                        return ExprValue::Null;
-                    };
-                    current = next;
-                }
-                _ => return ExprValue::Null,
-            }
-        }
-        json_to_expr_value(current)
+        request_param_json(&self.request, path)
+            .as_ref()
+            .map(json_to_expr_value)
+            .unwrap_or(ExprValue::Null)
     }
 
     fn time_part(

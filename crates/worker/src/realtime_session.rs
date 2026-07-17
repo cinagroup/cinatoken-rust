@@ -7,9 +7,9 @@
 //! testing.
 
 use cinatoken_billing::{
-    build_tiered_token_params, compute_tiered_quota_with_request, detect_billing_expr_variables,
-    expr_hash_string, split_billing_expr_request_rule, RequestInput, TieredBillingResult,
-    TieredBillingSnapshot, TieredTokenUsage, UsageSemantic,
+    build_tiered_token_params, compute_tiered_quota_from_durable_snapshot,
+    detect_billing_expr_variables, expr_hash_string, split_billing_expr_request_rule, RequestInput,
+    TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, UsageSemantic,
 };
 #[cfg(test)]
 use cinatoken_billing::{estimate_tiered_billing_snapshot_with_request, TokenParams};
@@ -4887,7 +4887,7 @@ fn realtime_billing_bridge_segment_compiled() -> bool {
 fn realtime_billing_settlement_preview(
     snapshot: &TieredBillingSnapshot,
     usage: &RealtimeUsageMetadata,
-    request: RequestInput,
+    _request: RequestInput,
     mutation_plan: Option<&RealtimeBillingSettlementMutationPlan>,
 ) -> Result<RealtimeBillingSettlementPreviewMetadata, String> {
     let tiered_usage = usage.to_tiered_token_usage();
@@ -4896,7 +4896,7 @@ fn realtime_billing_settlement_preview(
         false,
         detect_billing_expr_variables(&snapshot.expr_string),
     );
-    let result = compute_tiered_quota_with_request(snapshot, params, request)
+    let result = compute_tiered_quota_from_durable_snapshot(snapshot, params)
         .map_err(|err| format!("failed to compute realtime tiered billing preview: {err}"))?;
     Ok(RealtimeBillingSettlementPreviewMetadata::from_settlement(
         snapshot,

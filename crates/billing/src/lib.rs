@@ -9,9 +9,9 @@ mod pricing;
 mod tiered;
 
 pub use expression::{
-    run_billing_expr, run_billing_expr_at, run_billing_expr_with_request,
-    run_billing_expr_with_request_at, validate_billing_expr, BillingExprError, ExprRun,
-    RequestInput, TraceResult,
+    freeze_billing_expr_request_input, run_billing_expr, run_billing_expr_at,
+    run_billing_expr_with_request, run_billing_expr_with_request_at, validate_billing_expr,
+    BillingExprError, ExprRun, FrozenRequestInput, RequestInput, TraceResult,
 };
 pub use flat::{
     compute_flat_quota, compute_flat_quota_from_snapshot,
@@ -26,8 +26,10 @@ pub use openrouter::{
 };
 pub use pricing::PricingConfig;
 pub use tiered::{
-    compute_tiered_quota, compute_tiered_quota_with_request, estimate_tiered_billing_snapshot,
-    estimate_tiered_billing_snapshot_with_request, rebase_tiered_billing_snapshot_group_ratio,
+    compute_tiered_quota, compute_tiered_quota_from_durable_snapshot,
+    compute_tiered_quota_with_request, estimate_tiered_billing_snapshot,
+    estimate_tiered_billing_snapshot_with_request,
+    estimate_tiered_billing_snapshot_with_request_at, rebase_tiered_billing_snapshot_group_ratio,
     TieredBillingResult, TieredBillingSnapshot,
 };
 

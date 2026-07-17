@@ -897,3 +897,17 @@ Production remains **NO-GO**.
 preconditions passed at one instant. The report explicitly returns
 `authorizesEnforcement=false` and lists external evidence still required; it is
 not an authorization to apply 0046 or enable a runtime gate.
+
+## 2026-07-17 Migration 0047 Provider-Egress Grant Matrix
+
+| Gate | Local evidence | Production acceptance | Status |
+| --- | --- | --- | --- |
+| Pre-send global CAS | D1 insert-select requires exact dispatched operation, reserved billing owner, live deadlines, selected channel/group, request/R2/billing identity | Remote concurrent/retry/lost-response proof with exactly one provider send | Local only |
+| Immutable provenance | Grant freezes attempt 1, broker profile/version, request/admission hashes, input artifact, billing snapshot hash, and all deadlines; update/delete rejected | Exact remote table/index/trigger SQL readback and retention ownership | Local only |
+| Replay | Same operation/owner/attempt reads back byte-identical grant; any changed broker/request/billing field conflicts before DO/provider I/O | Duplicate, deployment skew, D1 response loss, DO eviction, and retry campaign | Local only |
+| Tiered contract | New writer persists canonical group snapshots with frozen time and bounded scalar request facts; strict settlement rejects incomplete snapshots | Drain/quarantine legacy empty rows; remote reserve/loss/rebuild vectors and privacy review | Local only |
+| Time/privacy | Credentials, prompt/content paths, structured/dynamic facts, oversize values, and DST-dependent zones fail before reserve | Approved expression inventory and configuration-time validation/alerts | Partial |
+| Schema rollout | General runtime head is 0047; the dedicated 0046 enforcement audit still evaluates only the historical 0045/0046 prefix | Complete 0046 first, then account/name/UUID-bound 0047 bookmark/apply/readback/negative probes | Blocked |
+| N/N-1 | New Controller fails closed without 0047; old Controller can bypass grants on 0047 | Remove/read back every old Controller before provider enable; broker target first, caller second; disable-first rollback | Blocked |
+| Usage recovery | Grant does not persist actual provider usage or link a terminal financial receipt | Durable usage receipt, exact snapshot-only recovery, terminal linkage, duplicate/ambiguity convergence | Blocked |
+| Remote status | No remote migration, deploy, provider, secret, financial, or traffic action occurred | Real Linux/R2/provider faults, idempotency/lookup, load/cost, rollback, C1-C5/G1-G8 | **NO-GO** |

@@ -18,8 +18,11 @@ import {
   deriveR2ResultKey,
   handleStorageGatewayRequest,
   requireD1OperationAdmission,
+  requireD1ProviderEgressGrant,
+  type D1AdmissionSnapshot,
   type D1AdmissionGetGrant,
   type KvConfigGetGrant,
+  type ProviderEgressGrantIdentity,
   type R2InputGetGrant,
   type R2ResultPutGrant,
   type StorageGatewayEnvironment,
@@ -28,6 +31,12 @@ import {
 const inputBytes = new TextEncoder().encode("hello");
 const inputSha256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 const resultSha256 = "a".repeat(64);
+const tieredBillingSnapshotJson = '{"canary":"tiered"}';
+const tieredBillingSnapshotSha256 =
+  "df3029b0f9ad33604ca660838f1e38aae61983e81f4b3ad0a8ac19c1bb92f867";
+const flatBillingSnapshotJson = '{"canary":"flat"}';
+const flatBillingSnapshotSha256 =
+  "0806a22bd2a4233995e7a5979ab02384714e224886536b18b29871b59e9ca320";
 
 function enabledEnv(overrides: Partial<StorageGatewayEnvironment> = {}): StorageGatewayEnvironment {
   return { CONTAINER_STORAGE_GATEWAY_ENABLED: "true", ...overrides };
@@ -95,15 +104,22 @@ function admissionGrant(overrides: Partial<D1AdmissionGetGrant> = {}): D1Admissi
 }
 
 function admissionRow(grant: D1AdmissionGetGrant): Record<string, unknown> {
+  const operationCreatedAt = grant.execution_deadline_at - 150;
   return {
-    reservation_key: "reservation-123",
-    operation_reservation_key: "reservation-123",
+    reservation_key: grant.operation_id,
+    operation_reservation_key: grant.operation_id,
     reservation_status: "reserved",
     lease_expires_at: grant.owner_lease_expires_at + 30,
     owner_deadline_at: grant.execution_deadline_at + 10,
     reservation_owner_generation: grant.owner_generation,
     reservation_channel_id: 11,
     reservation_selected_group: "premium",
+    reservation_selected_at: operationCreatedAt - 1,
+    model_name: "canary-model",
+    endpoint_path: "chat/completions",
+    billing_kind: "tiered_expr",
+    billing_contract_hash: "c".repeat(64),
+    billing_snapshot_json: tieredBillingSnapshotJson,
     operation_id: grant.operation_id,
     owner_generation: grant.owner_generation,
     owner_lease_expires_at: grant.owner_lease_expires_at,
@@ -127,6 +143,50 @@ function admissionRow(grant: D1AdmissionGetGrant): Record<string, unknown> {
     input_content_type: grant.input.content_type,
     trace_id: grant.trace_id,
     operation_status: "prepared",
+    operation_created_at: operationCreatedAt,
+    operation_updated_at: operationCreatedAt + 1,
+  };
+}
+
+function providerEgressGrantRow(
+  admission: D1AdmissionSnapshot,
+  identity: ProviderEgressGrantIdentity,
+  authorizedAt: number,
+): Record<string, unknown> {
+  return {
+    operation_id: admission.operation_id,
+    reservation_key: admission.reservation_key,
+    owner_generation: admission.owner_generation,
+    attempt_generation: identity.attempt_generation,
+    provider_operation_id: admission.provider_operation_id,
+    admission_sha256: admission.admission_sha256,
+    request_sha256: identity.request_sha256,
+    egress_profile: identity.egress_profile,
+    egress_worker_version_id: identity.egress_worker_version_id,
+    channel_id: admission.channel_id,
+    selected_group: admission.selected_group,
+    model_name: admission.model_name,
+    endpoint_path: admission.endpoint_path,
+    input_mode: admission.input_mode,
+    input_object_key: admission.input_object_key,
+    input_object_version: admission.input_object_version,
+    input_sha256: admission.input_sha256,
+    input_size: admission.input_size,
+    input_content_type: admission.input_content_type,
+    billing_kind: admission.billing_kind,
+    billing_contract_hash: admission.billing_contract_hash,
+    billing_snapshot_sha256:
+      admission.billing_kind === "flat"
+        ? admission.billing_contract_hash.slice(-64)
+        : tieredBillingSnapshotSha256,
+    stream_policy: "non_streaming",
+    operation_created_at: admission.operation_created_at,
+    operation_dispatched_at: admission.operation_updated_at,
+    authorized_at: authorizedAt,
+    execution_deadline_at: admission.execution_deadline_at,
+    owner_lease_expires_at: admission.owner_lease_expires_at,
+    reservation_owner_deadline_at: admission.owner_deadline_at,
+    reservation_lease_expires_at: admission.lease_expires_at,
   };
 }
 
@@ -724,6 +784,202 @@ describe("container storage gateway", () => {
     const missing = await handleStorageGatewayRequest(env, request(), grant);
     expect(missing.status).toBe(404);
     expect(await errorCode(missing)).toBe("admission_snapshot_not_found");
+  });
+
+  test("creates and exactly replays the 0047 provider egress grant in a first-primary session", async () => {
+    const grant = admissionGrant();
+    const admission = {
+      ...admissionRow(grant),
+      operation_status: "dispatched",
+    } as unknown as D1AdmissionSnapshot;
+    const identity: ProviderEgressGrantIdentity = {
+      attempt_generation: 1,
+      request_sha256: grant.input.sha256,
+      egress_profile: "openai-chat-completions-canary-v1",
+      egress_worker_version_id: "worker-version-1",
+    };
+    const prepared: string[] = [];
+    const constraints: unknown[] = [];
+    const writeBindings: unknown[][] = [];
+    let stored: Record<string, unknown> | null = null;
+    const session = {
+      prepare(sql: string) {
+        prepared.push(sql);
+        let values: unknown[] = [];
+        const statement = {
+          bind(...next: unknown[]) {
+            values = next;
+            return statement;
+          },
+          async run() {
+            writeBindings.push(values);
+            if (stored !== null) return { success: true, meta: { changes: 0 }, results: [] };
+            stored = providerEgressGrantRow(admission, identity, values[6] as number);
+            return { success: true, meta: { changes: 1 }, results: [] };
+          },
+          async first<T>() {
+            return (stored === null ? null : { ...stored }) as T | null;
+          },
+        };
+        return statement;
+      },
+    };
+    const database = {
+      prepare() {
+        throw new Error("grant CAS must use the D1 session when available");
+      },
+      withSession(constraint: unknown) {
+        constraints.push(constraint);
+        return session;
+      },
+    } as unknown as D1Database;
+    const env = enabledEnv({ CONTAINER_STORAGE_ADMISSION_DB: database });
+    const authorizedAt = admission.operation_updated_at + 2;
+
+    await expect(
+      requireD1ProviderEgressGrant(env, admission, identity, authorizedAt),
+    ).resolves.toEqual({ replayed: false, authorized_at: authorizedAt });
+    await expect(
+      requireD1ProviderEgressGrant(env, admission, identity, authorizedAt + 1),
+    ).resolves.toEqual({ replayed: true, authorized_at: authorizedAt });
+
+    expect(constraints).toEqual(["first-primary", "first-primary"]);
+    expect(prepared[0]).toContain(
+      "INSERT OR IGNORE INTO relay_container_provider_egress_grants",
+    );
+    expect(prepared[0]).toContain("FROM relay_container_operations AS operation");
+    expect(prepared[0]).toContain("JOIN relay_billing_reservations AS reservation");
+    expect(prepared[0]).toContain("reservation.billing_snapshot_json = ?23");
+    expect(prepared[1]).toContain("FROM relay_container_provider_egress_grants");
+    expect(writeBindings[0]?.slice(0, 7)).toEqual([
+      admission.operation_id,
+      admission.owner_generation,
+      identity.attempt_generation,
+      identity.request_sha256,
+      identity.egress_profile,
+      identity.egress_worker_version_id,
+      authorizedAt,
+    ]);
+    expect(writeBindings[0]?.[22]).toBe(tieredBillingSnapshotJson);
+    expect(writeBindings[0]?.[23]).toBe(tieredBillingSnapshotSha256);
+  });
+
+  test("hashes and binds the exact flat billing snapshot through a primary session", async () => {
+    const grant = admissionGrant();
+    const admission = {
+      ...admissionRow(grant),
+      operation_status: "dispatched",
+      billing_kind: "flat",
+      billing_contract_hash: `flat-v4:${flatBillingSnapshotSha256}`,
+      billing_snapshot_json: flatBillingSnapshotJson,
+    } as unknown as D1AdmissionSnapshot;
+    const identity: ProviderEgressGrantIdentity = {
+      attempt_generation: 1,
+      request_sha256: grant.input.sha256,
+      egress_profile: "openai-chat-completions-canary-v1",
+      egress_worker_version_id: "worker-version-1",
+    };
+    const now = admission.operation_updated_at + 2;
+    let writeValues: unknown[] = [];
+    const session = {
+      prepare(sql: string) {
+        let values: unknown[] = [];
+        const statement = {
+          bind(...next: unknown[]) {
+            values = next;
+            return statement;
+          },
+          async run() {
+            writeValues = values;
+            return { success: true, meta: { changes: 1 }, results: [] };
+          },
+          async first<T>() {
+            expect(sql).toContain("FROM relay_container_provider_egress_grants");
+            return providerEgressGrantRow(admission, identity, now) as T;
+          },
+        };
+        return statement;
+      },
+    };
+    const database = {
+      prepare: session.prepare,
+      withSession() {
+        return session;
+      },
+    } as unknown as D1Database;
+
+    await expect(
+      requireD1ProviderEgressGrant(
+        enabledEnv({ CONTAINER_STORAGE_ADMISSION_DB: database }),
+        admission,
+        identity,
+        now,
+      ),
+    ).resolves.toEqual({ replayed: false, authorized_at: now });
+    expect(writeValues[22]).toBe(flatBillingSnapshotJson);
+    expect(writeValues[23]).toBe(flatBillingSnapshotSha256);
+  });
+
+  test("fails closed on invalid changes and conflicting 0047 grant readback", async () => {
+    const grant = admissionGrant();
+    const admission = {
+      ...admissionRow(grant),
+      operation_status: "dispatched",
+    } as unknown as D1AdmissionSnapshot;
+    const identity: ProviderEgressGrantIdentity = {
+      attempt_generation: 1,
+      request_sha256: grant.input.sha256,
+      egress_profile: "openai-chat-completions-canary-v1",
+      egress_worker_version_id: "worker-version-1",
+    };
+    const now = admission.operation_updated_at + 2;
+
+    for (const scenario of ["invalid_changes", "conflict"] as const) {
+      const session = {
+        prepare(sql: string) {
+          const statement = {
+            bind() {
+              return statement;
+            },
+            async run() {
+              return {
+                success: true,
+                meta: { changes: scenario === "invalid_changes" ? 2 : 0 },
+                results: [],
+              };
+            },
+            async first<T>() {
+              const row = providerEgressGrantRow(admission, identity, now);
+              row.egress_worker_version_id = "different-worker-version";
+              return row as T;
+            },
+          };
+          if (sql.includes("INSERT OR IGNORE")) return statement;
+          return statement;
+        },
+      };
+      const database = {
+        prepare: session.prepare,
+        withSession() {
+          return session;
+        },
+      } as unknown as D1Database;
+
+      await expect(
+        requireD1ProviderEgressGrant(
+          enabledEnv({ CONTAINER_STORAGE_ADMISSION_DB: database }),
+          admission,
+          identity,
+          now,
+        ),
+      ).rejects.toMatchObject({
+        code:
+          scenario === "invalid_changes"
+            ? "provider_egress_grant_write_invalid"
+            : "provider_egress_grant_conflict",
+        status: scenario === "invalid_changes" ? 502 : 409,
+      });
+    }
   });
 
   test("rejects every immutable 0040 authority field mismatch", async () => {

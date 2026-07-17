@@ -29,6 +29,7 @@ import {
   OPERATION_ID_HEADER,
   OWNER_GENERATION_HEADER,
   PROVIDER_ATTEMPT_GENERATION_HEADER,
+  type D1AdmissionSnapshot,
 } from "../src/storage_gateway";
 
 const identity = { operationId: "operation-1", ownerGeneration: 2 };
@@ -39,6 +40,9 @@ const providerBody = new TextEncoder().encode(
   JSON.stringify({ id: "response-1", choices: [] }),
 );
 const workerVersionId = "worker-version-1";
+const billingSnapshotJson = '{"canary":"tiered"}';
+const billingSnapshotSha256 =
+  "df3029b0f9ad33604ca660838f1e38aae61983e81f4b3ad0a8ac19c1bb92f867";
 
 class FakePort implements ProviderEgressGatewayPort {
   grant: StorageAccessGrant;
@@ -48,8 +52,10 @@ class FakePort implements ProviderEgressGatewayPort {
   failDispatchTransport = false;
   corruptDispatchIdentity = false;
   loseTerminalResponseOnce = false;
+  readonly events: string[];
 
-  constructor(status: ProviderAttemptStatus = "prepared") {
+  constructor(status: ProviderAttemptStatus = "prepared", events: string[] = []) {
+    this.events = events;
     const now = Math.floor(Date.now() / 1000);
     this.grant = {
       protocol_version: 1,
@@ -103,6 +109,7 @@ class FakePort implements ProviderEgressGatewayPort {
     result: DispatchProviderAttemptOutcome;
   }> {
     if (this.failDispatchTransport) throw new Error("legacy DO method unavailable");
+    this.events.push("dispatch");
     this.dispatches += 1;
     this.grant.provider_attempt!.status = "dispatched";
     this.grant.provider_attempt!.egress_profile = egressIdentity.profile;
@@ -168,13 +175,15 @@ describe("provider egress gateway", () => {
   test("consumes dispatch once, persists the provider response, then records success", async () => {
     const requestSha256 = await sha256(requestBody);
     const providerSha256 = await sha256(providerBody);
-    const port = new FakePort();
+    const events: string[] = [];
+    const port = new FakePort("prepared", events);
     applyRequestSha(port.grant, requestSha256);
     let brokerCalls = 0;
     let readinessCalls = 0;
     let r2Puts = 0;
     const env = gatewayEnv(port.grant, {
       readiness: async (request) => {
+        events.push("readiness");
         readinessCalls += 1;
         expect(new URL(request.url).pathname).toBe(PROVIDER_EGRESS_READINESS_SERVICE_PATH);
         expect(request.headers.get(PROVIDER_EGRESS_PROTOCOL_HEADER)).toBe("1");
@@ -185,6 +194,7 @@ describe("provider egress gateway", () => {
         return providerReadinessResponse();
       },
       broker: async (request) => {
+        events.push("provider-send");
         brokerCalls += 1;
         expect(new URL(request.url).pathname).toBe("/internal/v1/provider-attempts/execute");
         expect(request.headers.get("authorization")).toBeNull();
@@ -214,6 +224,7 @@ describe("provider egress gateway", () => {
           options.customMetadata,
         );
       },
+      events,
     });
 
     const response = await handleProviderEgressGatewayRequest(
@@ -249,6 +260,15 @@ describe("provider egress gateway", () => {
       response_status: 200,
       response_code: null,
     });
+    expect(events).toEqual([
+      "d1-admission",
+      "readiness",
+      "d1-session:first-primary",
+      "d1-grant-write",
+      "d1-grant-read",
+      "dispatch",
+      "provider-send",
+    ]);
   });
 
   test("requires exact broker readiness before dispatch", async () => {
@@ -299,6 +319,93 @@ describe("provider egress gateway", () => {
       expect(port.dispatches).toBe(0);
       expect(brokerCalls).toBe(0);
     }
+  });
+
+  test("fails every 0047 schema, write, read, and field conflict before dispatch and send", async () => {
+    const requestSha256 = await sha256(requestBody);
+    const scenarios: Array<{
+      mode: D1GrantMode;
+      status: number;
+      error: string;
+    }> = [
+      { mode: "write_error", status: 503, error: "provider_egress_grant_unavailable" },
+      { mode: "invalid_changes", status: 502, error: "provider_egress_grant_write_invalid" },
+      { mode: "read_error", status: 503, error: "provider_egress_grant_unavailable" },
+      { mode: "missing_readback", status: 409, error: "provider_egress_grant_conflict" },
+      {
+        mode: "malformed_readback",
+        status: 502,
+        error: "provider_egress_grant_readback_invalid",
+      },
+      { mode: "conflict", status: 409, error: "provider_egress_grant_conflict" },
+    ];
+
+    for (const scenario of scenarios) {
+      const events: string[] = [];
+      const port = new FakePort("prepared", events);
+      applyRequestSha(port.grant, requestSha256);
+      let readinessCalls = 0;
+      let providerCalls = 0;
+      const response = await handleProviderEgressGatewayRequest(
+        await providerRequest(requestSha256),
+        gatewayEnv(port.grant, {
+          d1GrantMode: scenario.mode,
+          events,
+          readiness: async () => {
+            events.push("readiness");
+            readinessCalls += 1;
+            return providerReadinessResponse();
+          },
+          broker: async () => {
+            events.push("provider-send");
+            providerCalls += 1;
+            return providerResponse();
+          },
+        }),
+        port,
+        identity,
+      );
+
+      expect(response.status, scenario.mode).toBe(scenario.status);
+      await expect(response.json()).resolves.toEqual({ error: scenario.error });
+      expect(readinessCalls, scenario.mode).toBe(1);
+      expect(port.dispatches, scenario.mode).toBe(0);
+      expect(providerCalls, scenario.mode).toBe(0);
+      expect(events, scenario.mode).not.toContain("dispatch");
+      expect(events, scenario.mode).not.toContain("provider-send");
+    }
+  });
+
+  test("continues through an exact 0047 grant replay", async () => {
+    const requestSha256 = await sha256(requestBody);
+    const providerSha256 = await sha256(providerBody);
+    const port = new FakePort();
+    applyRequestSha(port.grant, requestSha256);
+    let providerCalls = 0;
+    const response = await handleProviderEgressGatewayRequest(
+      await providerRequest(requestSha256),
+      gatewayEnv(port.grant, {
+        d1GrantMode: "replayed",
+        broker: async () => {
+          providerCalls += 1;
+          return providerResponse();
+        },
+        r2Put: async (key, _value, options) =>
+          r2Object(
+            key,
+            "result-version-grant-replay",
+            providerBody.byteLength,
+            providerSha256,
+            options.customMetadata,
+          ),
+      }),
+      port,
+      identity,
+    );
+
+    expect(response.status).toBe(200);
+    expect(port.dispatches).toBe(1);
+    expect(providerCalls).toBe(1);
   });
 
   test("turns every post-dispatch broker failure into recovery without a retry", async () => {
@@ -609,6 +716,16 @@ describe("provider egress gateway", () => {
   });
 });
 
+type D1GrantMode =
+  | "created"
+  | "replayed"
+  | "write_error"
+  | "invalid_changes"
+  | "read_error"
+  | "missing_readback"
+  | "malformed_readback"
+  | "conflict";
+
 function gatewayEnv(
   grant: StorageAccessGrant,
   options: {
@@ -620,21 +737,63 @@ function gatewayEnv(
       options: R2PutOptions,
     ) => Promise<R2Object | null>;
     d1OperationStatus?: string;
+    d1GrantMode?: D1GrantMode;
+    events?: string[];
   } = {},
 ): ProviderEgressGatewayEnvironment {
+  const admission = admissionRow(grant, options.d1OperationStatus ?? "dispatched");
+  const grantMode = options.d1GrantMode ?? "created";
+  let storedGrant: Record<string, unknown> | null =
+    grantMode === "replayed"
+      ? providerGrantRow(admission, admission.operation_updated_at)
+      : null;
+  const prepare = (sql: string) => {
+    let values: unknown[] = [];
+    const statement = {
+      bind(...next: unknown[]) {
+        values = next;
+        return statement;
+      },
+      async run() {
+        options.events?.push("d1-grant-write");
+        if (grantMode === "write_error") throw new Error("no such table");
+        if (grantMode === "invalid_changes") {
+          return { success: true, meta: { changes: 2 }, results: [] };
+        }
+        if (grantMode === "created") {
+          storedGrant = providerGrantRow(admission, values[6] as number);
+          return { success: true, meta: { changes: 1 }, results: [] };
+        }
+        if (grantMode === "conflict") {
+          storedGrant = providerGrantRow(admission, admission.operation_updated_at);
+          storedGrant.egress_worker_version_id = "different-worker-version";
+        }
+        return { success: true, meta: { changes: 0 }, results: [] };
+      },
+      async first<T>() {
+        if (!sql.includes("FROM relay_container_provider_egress_grants")) {
+          options.events?.push("d1-admission");
+          return { ...admission } as T;
+        }
+        options.events?.push("d1-grant-read");
+        if (grantMode === "read_error") throw new Error("read failed");
+        if (grantMode === "missing_readback") return null;
+        const row = storedGrant ?? providerGrantRow(admission, admission.operation_updated_at);
+        if (grantMode === "malformed_readback") {
+          return { ...row, authorized_at: "invalid" } as T;
+        }
+        return { ...row } as T;
+      },
+    };
+    return statement;
+  };
   const database = {
-    prepare() {
-      return {
-        bind() {
-          return {
-            async first() {
-              return admissionRow(grant, options.d1OperationStatus ?? "dispatched");
-            },
-          };
-        },
-      };
+    prepare,
+    withSession(constraint: unknown) {
+      options.events?.push(`d1-session:${String(constraint)}`);
+      return { prepare };
     },
-  } as unknown as Pick<D1Database, "prepare">;
+  } as unknown as D1Database;
   const bucket = {
     put: options.r2Put ?? (async () => null),
     async head() {
@@ -680,16 +839,26 @@ function providerReadinessResponse(
   });
 }
 
-function admissionRow(grant: StorageAccessGrant, operationStatus: string) {
+function admissionRow(
+  grant: StorageAccessGrant,
+  operationStatus: string,
+): D1AdmissionSnapshot {
+  const operationCreatedAt = Math.floor(Date.now() / 1000) - 30;
   return {
-    reservation_key: "reservation-1",
-    operation_reservation_key: "reservation-1",
+    reservation_key: grant.operation_id,
+    operation_reservation_key: grant.operation_id,
     reservation_status: "reserved",
     lease_expires_at: grant.owner_lease_expires_at + 30,
     owner_deadline_at: grant.deadline_at + 10,
     reservation_owner_generation: grant.owner_generation,
     reservation_channel_id: 11,
     reservation_selected_group: "canary",
+    reservation_selected_at: operationCreatedAt - 1,
+    model_name: "canary-model",
+    endpoint_path: "chat/completions",
+    billing_kind: "tiered_expr",
+    billing_contract_hash: "c".repeat(64),
+    billing_snapshot_json: billingSnapshotJson,
     operation_id: grant.operation_id,
     owner_generation: grant.owner_generation,
     owner_lease_expires_at: grant.owner_lease_expires_at,
@@ -713,6 +882,46 @@ function admissionRow(grant: StorageAccessGrant, operationStatus: string) {
     input_content_type: grant.input.content_type,
     trace_id: grant.trace_id,
     operation_status: operationStatus,
+    operation_created_at: operationCreatedAt,
+    operation_updated_at: operationCreatedAt + 1,
+  };
+}
+
+function providerGrantRow(
+  admission: D1AdmissionSnapshot,
+  authorizedAt: number,
+): Record<string, unknown> {
+  return {
+    operation_id: admission.operation_id,
+    reservation_key: admission.reservation_key,
+    owner_generation: admission.owner_generation,
+    attempt_generation: 1,
+    provider_operation_id: admission.provider_operation_id,
+    admission_sha256: admission.admission_sha256,
+    request_sha256: admission.input_sha256,
+    egress_profile: PROVIDER_EGRESS_PROFILE,
+    egress_worker_version_id: workerVersionId,
+    channel_id: admission.channel_id,
+    selected_group: admission.selected_group,
+    model_name: admission.model_name,
+    endpoint_path: admission.endpoint_path,
+    input_mode: admission.input_mode,
+    input_object_key: admission.input_object_key,
+    input_object_version: admission.input_object_version,
+    input_sha256: admission.input_sha256,
+    input_size: admission.input_size,
+    input_content_type: admission.input_content_type,
+    billing_kind: admission.billing_kind,
+    billing_contract_hash: admission.billing_contract_hash,
+    billing_snapshot_sha256: billingSnapshotSha256,
+    stream_policy: "non_streaming",
+    operation_created_at: admission.operation_created_at,
+    operation_dispatched_at: admission.operation_updated_at,
+    authorized_at: authorizedAt,
+    execution_deadline_at: admission.execution_deadline_at,
+    owner_lease_expires_at: admission.owner_lease_expires_at,
+    reservation_owner_deadline_at: admission.owner_deadline_at,
+    reservation_lease_expires_at: admission.lease_expires_at,
   };
 }
 
@@ -737,6 +946,8 @@ async function providerRequest(
 
 function applyRequestSha(grant: StorageAccessGrant, sha256: string): void {
   grant.input.sha256 = sha256;
+  grant.input.request_object_key =
+    `container-inputs/v1/${grant.operation_id}/${grant.owner_generation}/${sha256}`;
   grant.provider_attempt!.request_sha256 = sha256;
 }
 

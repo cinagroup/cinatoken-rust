@@ -20,6 +20,8 @@ import {
   deriveR2ResultKey,
   handleStorageGatewayRequest,
   requireD1ProviderEgressAdmission,
+  requireD1ProviderEgressGrant,
+  type D1AdmissionSnapshot,
   type R2ResultPutGrant,
   type StorageGatewayEnvironment,
 } from "./storage_gateway";
@@ -130,8 +132,9 @@ export async function handleProviderEgressGatewayRequest(
   const replay = await replayWithoutProviderSend(port, grant, attemptGeneration);
   if (replay !== null) return replay;
 
+  let admission: D1AdmissionSnapshot;
   try {
-    await requireD1ProviderEgressAdmission(env, grant);
+    admission = await requireD1ProviderEgressAdmission(env, grant);
   } catch (error) {
     return error instanceof ProtocolError
       ? jsonError(error.code, error.status)
@@ -151,6 +154,19 @@ export async function handleProviderEgressGatewayRequest(
     );
   } catch {
     return jsonError("provider_egress_not_ready", 503);
+  }
+
+  try {
+    await requireD1ProviderEgressGrant(env, admission, {
+      attempt_generation: attemptGeneration,
+      request_sha256: expectedSha256,
+      egress_profile: egressIdentity.profile,
+      egress_worker_version_id: egressIdentity.worker_version_id,
+    });
+  } catch (error) {
+    return error instanceof ProtocolError
+      ? jsonError(error.code, error.status)
+      : jsonError("provider_egress_grant_unavailable", 503);
   }
 
   let dispatch: RpcResult<DispatchProviderAttemptOutcome>;

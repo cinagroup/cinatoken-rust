@@ -85,12 +85,15 @@ export type StorageAccessGrant =
   | KvConfigGetGrant
   | D1AdmissionGetGrant;
 
+export type StorageGatewayD1Database = Pick<D1Database, "prepare"> &
+  Partial<Pick<D1Database, "withSession">>;
+
 export interface StorageGatewayEnvironment {
   CONTAINER_STORAGE_GATEWAY_ENABLED?: string;
   CONTAINER_STORAGE_INPUT_R2?: Pick<R2Bucket, "get">;
   CONTAINER_STORAGE_RESULT_R2?: Pick<R2Bucket, "head" | "put">;
   CONTAINER_STORAGE_CONFIG_KV?: Pick<KVNamespace, "get">;
-  CONTAINER_STORAGE_ADMISSION_DB?: Pick<D1Database, "prepare">;
+  CONTAINER_STORAGE_ADMISSION_DB?: StorageGatewayD1Database;
 }
 
 export interface ProviderEgressAdmission {
@@ -114,13 +117,25 @@ export interface ProviderEgressAdmission {
   trace_id: string;
 }
 
+export interface ProviderEgressGrantIdentity {
+  attempt_generation: number;
+  request_sha256: string;
+  egress_profile: string;
+  egress_worker_version_id: string;
+}
+
+export interface ProviderEgressGrantOutcome {
+  replayed: boolean;
+  authorized_at: number;
+}
+
 interface StorageRoute {
   host: string;
   method: "GET" | "PUT";
   path: string;
 }
 
-interface AdmissionSnapshotRow {
+export interface D1AdmissionSnapshot {
   reservation_key: string;
   operation_reservation_key: string;
   reservation_status: string;
@@ -129,6 +144,12 @@ interface AdmissionSnapshotRow {
   reservation_owner_generation: number;
   reservation_channel_id: number;
   reservation_selected_group: string;
+  reservation_selected_at: number;
+  model_name: string;
+  endpoint_path: string;
+  billing_kind: string;
+  billing_contract_hash: string;
+  billing_snapshot_json: string;
   operation_id: string;
   owner_generation: number;
   owner_lease_expires_at: number;
@@ -152,6 +173,41 @@ interface AdmissionSnapshotRow {
   input_content_type: string;
   trace_id: string;
   operation_status: string;
+  operation_created_at: number;
+  operation_updated_at: number;
+}
+
+interface ProviderEgressGrantRow {
+  operation_id: string;
+  reservation_key: string;
+  owner_generation: number;
+  attempt_generation: number;
+  provider_operation_id: string;
+  admission_sha256: string;
+  request_sha256: string;
+  egress_profile: string;
+  egress_worker_version_id: string;
+  channel_id: number;
+  selected_group: string;
+  model_name: string;
+  endpoint_path: string;
+  input_mode: string;
+  input_object_key: string;
+  input_object_version: string;
+  input_sha256: string;
+  input_size: number;
+  input_content_type: string;
+  billing_kind: string;
+  billing_contract_hash: string;
+  billing_snapshot_sha256: string;
+  stream_policy: string;
+  operation_created_at: number;
+  operation_dispatched_at: number;
+  authorized_at: number;
+  execution_deadline_at: number;
+  owner_lease_expires_at: number;
+  reservation_owner_deadline_at: number;
+  reservation_lease_expires_at: number;
 }
 
 const ROUTES: Record<StorageGatewayAction, StorageRoute> = {
@@ -186,6 +242,12 @@ SELECT reservation.reservation_key,
        reservation.owner_generation AS reservation_owner_generation,
        reservation.channel_id AS reservation_channel_id,
        reservation.selected_group AS reservation_selected_group,
+       reservation.selected_at AS reservation_selected_at,
+       reservation.model_name,
+       reservation.endpoint_path,
+       reservation.billing_kind,
+       reservation.expr_hash AS billing_contract_hash,
+       reservation.billing_snapshot_json,
        operation.operation_id,
        operation.owner_generation,
        operation.owner_lease_expires_at,
@@ -208,13 +270,161 @@ SELECT reservation.reservation_key,
        operation.input_size,
        operation.input_content_type,
        operation.trace_id,
-       operation.status AS operation_status
+       operation.status AS operation_status,
+       operation.created_at AS operation_created_at,
+       operation.updated_at AS operation_updated_at
 FROM relay_container_operations AS operation
 JOIN relay_billing_reservations AS reservation
   ON reservation.reservation_key = operation.reservation_key
 WHERE operation.operation_id = ?1
   AND operation.owner_generation = ?2
   AND reservation.owner_generation = ?2
+LIMIT 1
+`.trim();
+
+const PROVIDER_EGRESS_GRANT_INSERT_SQL = `
+INSERT OR IGNORE INTO relay_container_provider_egress_grants (
+  operation_id,
+  reservation_key,
+  owner_generation,
+  attempt_generation,
+  provider_operation_id,
+  admission_sha256,
+  request_sha256,
+  egress_profile,
+  egress_worker_version_id,
+  channel_id,
+  selected_group,
+  model_name,
+  endpoint_path,
+  input_mode,
+  input_object_key,
+  input_object_version,
+  input_sha256,
+  input_size,
+  input_content_type,
+  billing_kind,
+  billing_contract_hash,
+  billing_snapshot_sha256,
+  stream_policy,
+  operation_created_at,
+  operation_dispatched_at,
+  authorized_at,
+  execution_deadline_at,
+  owner_lease_expires_at,
+  reservation_owner_deadline_at,
+  reservation_lease_expires_at
+)
+SELECT operation.operation_id,
+       reservation.reservation_key,
+       operation.owner_generation,
+       ?3,
+       operation.provider_operation_id,
+       operation.admission_sha256,
+       ?4,
+       ?5,
+       ?6,
+       operation.channel_id,
+       operation.selected_group,
+       reservation.model_name,
+       reservation.endpoint_path,
+       operation.input_mode,
+       operation.input_object_key,
+       operation.input_object_version,
+       operation.input_sha256,
+       operation.input_size,
+       operation.input_content_type,
+       reservation.billing_kind,
+       reservation.expr_hash,
+       ?24,
+       'non_streaming',
+       operation.created_at,
+       operation.updated_at,
+       ?7,
+       operation.execution_deadline_at,
+       operation.owner_lease_expires_at,
+       reservation.owner_deadline_at,
+       reservation.lease_expires_at
+FROM relay_container_operations AS operation
+JOIN relay_billing_reservations AS reservation
+  ON reservation.reservation_key = operation.reservation_key
+WHERE operation.operation_id = ?1
+  AND operation.owner_generation = ?2
+  AND ?3 = 1
+  AND operation.protocol_version = 1
+  AND operation.status = 'dispatched'
+  AND reservation.status = 'reserved'
+  AND reservation.owner_generation = operation.owner_generation
+  AND reservation.selected_at > 0
+  AND reservation.selected_at <= operation.created_at
+  AND operation.input_sha256 = ?4
+  AND ?7 >= operation.updated_at
+  AND ?7 < operation.execution_deadline_at
+  AND ?7 < operation.owner_lease_expires_at
+  AND ?7 < reservation.owner_deadline_at
+  AND ?7 < reservation.lease_expires_at
+  AND reservation.reservation_key = ?8
+  AND operation.provider_operation_id = ?9
+  AND operation.admission_sha256 = ?10
+  AND operation.channel_id = ?11
+  AND reservation.channel_id = ?11
+  AND operation.selected_group = ?12
+  AND reservation.selected_group = ?12
+  AND reservation.model_name = ?13
+  AND reservation.endpoint_path = ?14
+  AND operation.input_mode = ?15
+  AND operation.input_object_key = ?16
+  AND operation.input_object_version = ?17
+  AND operation.input_sha256 = ?18
+  AND operation.input_size = ?19
+  AND operation.input_content_type = ?20
+  AND reservation.billing_kind = ?21
+  AND reservation.expr_hash = ?22
+  AND length(?23) BETWEEN 1 AND 32768
+  AND reservation.billing_snapshot_json = ?23
+  AND operation.created_at = ?25
+  AND operation.updated_at = ?26
+  AND operation.execution_deadline_at = ?27
+  AND operation.owner_lease_expires_at = ?28
+  AND reservation.owner_deadline_at = ?29
+  AND reservation.lease_expires_at = ?30
+`.trim();
+
+const PROVIDER_EGRESS_GRANT_READBACK_SQL = `
+SELECT operation_id,
+       reservation_key,
+       owner_generation,
+       attempt_generation,
+       provider_operation_id,
+       admission_sha256,
+       request_sha256,
+       egress_profile,
+       egress_worker_version_id,
+       channel_id,
+       selected_group,
+       model_name,
+       endpoint_path,
+       input_mode,
+       input_object_key,
+       input_object_version,
+       input_sha256,
+       input_size,
+       input_content_type,
+       billing_kind,
+       billing_contract_hash,
+       billing_snapshot_sha256,
+       stream_policy,
+       operation_created_at,
+       operation_dispatched_at,
+       authorized_at,
+       execution_deadline_at,
+       owner_lease_expires_at,
+       reservation_owner_deadline_at,
+       reservation_lease_expires_at
+FROM relay_container_provider_egress_grants
+WHERE operation_id = ?1
+  AND owner_generation = ?2
+  AND attempt_generation = ?3
 LIMIT 1
 `.trim();
 
@@ -226,7 +436,11 @@ const LOWER_HEX_64 = /^[0-9a-f]{64}$/;
 const STORAGE_KEY = /^[A-Za-z0-9/_.:-]+$/;
 const IDENTIFIER = /^[A-Za-z0-9._:-]+$/;
 const OPERATION_KIND = /^[a-z0-9_:-]+$/;
+const EGRESS_IDENTITY = /^[A-Za-z0-9._:/@-]+$/;
+const MODEL_NAME = /^[A-Za-z0-9._:/-]+$/;
+const ENDPOINT_PATH = /^[A-Za-z0-9_./:-]+$/;
 const CONTENT_TYPE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?:;[ -~]+)?$/;
+const MAX_BILLING_SNAPSHOT_BYTES = 32 * 1024;
 
 class GatewayError extends Error {
   constructor(
@@ -412,7 +626,7 @@ export async function requireD1ProviderEgressAdmission(
   env: StorageGatewayEnvironment,
   admission: ProviderEgressAdmission,
   now = Math.floor(Date.now() / 1000),
-): Promise<void> {
+): Promise<D1AdmissionSnapshot> {
   const grant: D1AdmissionGetGrant = {
     action: STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET,
     protocol_version: admission.protocol_version,
@@ -446,9 +660,113 @@ export async function requireD1ProviderEgressAdmission(
     if (row.operation_status !== "dispatched") {
       throw new GatewayError("provider_egress_not_dispatched", 409);
     }
+    return row;
   } catch (error) {
     if (error instanceof GatewayError) throw new ProtocolError(error.code, error.status);
     throw new ProtocolError("provider_egress_admission_unavailable", 503);
+  }
+}
+
+export async function requireD1ProviderEgressGrant(
+  env: StorageGatewayEnvironment,
+  admission: D1AdmissionSnapshot,
+  identity: ProviderEgressGrantIdentity,
+  now = Math.floor(Date.now() / 1000),
+): Promise<ProviderEgressGrantOutcome> {
+  if (
+    !validAdmissionSnapshot(admission) ||
+    admission.reservation_status !== "reserved" ||
+    admission.operation_status !== "dispatched" ||
+    admission.lease_expires_at <= now ||
+    admission.owner_deadline_at <= now ||
+    admission.owner_lease_expires_at <= now ||
+    admission.execution_deadline_at <= now ||
+    !validProviderEgressGrantIdentity(identity)
+  ) {
+    throw new ProtocolError("provider_egress_grant_authority_mismatch", 409);
+  }
+
+  const database = env.CONTAINER_STORAGE_ADMISSION_DB;
+  if (database === undefined || typeof database.withSession !== "function") {
+    throw new ProtocolError("provider_egress_grant_unavailable", 503);
+  }
+
+  try {
+    const billingSnapshotSha256 = await sha256Utf8(admission.billing_snapshot_json);
+    const session = database.withSession("first-primary");
+    const write = await session
+      .prepare(PROVIDER_EGRESS_GRANT_INSERT_SQL)
+      .bind(
+        admission.operation_id,
+        admission.owner_generation,
+        identity.attempt_generation,
+        identity.request_sha256,
+        identity.egress_profile,
+        identity.egress_worker_version_id,
+        now,
+        admission.reservation_key,
+        admission.provider_operation_id,
+        admission.admission_sha256,
+        admission.channel_id,
+        admission.selected_group,
+        admission.model_name,
+        admission.endpoint_path,
+        admission.input_mode,
+        admission.input_object_key,
+        admission.input_object_version,
+        admission.input_sha256,
+        admission.input_size,
+        admission.input_content_type,
+        admission.billing_kind,
+        admission.billing_contract_hash,
+        admission.billing_snapshot_json,
+        billingSnapshotSha256,
+        admission.operation_created_at,
+        admission.operation_updated_at,
+        admission.execution_deadline_at,
+        admission.owner_lease_expires_at,
+        admission.owner_deadline_at,
+        admission.lease_expires_at,
+      )
+      .run();
+    const changes = write?.meta?.changes;
+    if (write?.success !== true || (changes !== 0 && changes !== 1)) {
+      throw new GatewayError("provider_egress_grant_write_invalid", 502);
+    }
+
+    const row = await session
+      .prepare(PROVIDER_EGRESS_GRANT_READBACK_SQL)
+      .bind(admission.operation_id, admission.owner_generation, identity.attempt_generation)
+      .first<Record<string, unknown>>();
+    if (row === null) {
+      throw new GatewayError(
+        changes === 1
+          ? "provider_egress_grant_readback_invalid"
+          : "provider_egress_grant_conflict",
+        changes === 1 ? 502 : 409,
+      );
+    }
+    if (!validProviderEgressGrantRow(row, now)) {
+      throw new GatewayError("provider_egress_grant_readback_invalid", 502);
+    }
+    if (
+      !providerEgressGrantMatches(
+        row,
+        admission,
+        identity,
+        billingSnapshotSha256,
+        changes,
+        now,
+      )
+    ) {
+      throw new GatewayError("provider_egress_grant_conflict", 409);
+    }
+    return { replayed: changes === 0, authorized_at: row.authorized_at };
+  } catch (error) {
+    if (error instanceof GatewayError) {
+      throw new ProtocolError(error.code, error.status);
+    }
+    throw new ProtocolError("provider_egress_grant_unavailable", 503);
   }
 }
 
@@ -456,14 +774,14 @@ async function readD1Admission(
   env: StorageGatewayEnvironment,
   grant: D1AdmissionGetGrant,
   now: number,
-): Promise<AdmissionSnapshotRow> {
+): Promise<D1AdmissionSnapshot> {
   const database = env.CONTAINER_STORAGE_ADMISSION_DB;
   if (database === undefined) throw new GatewayError("storage_binding_unavailable", 503);
 
   const row = await database
     .prepare(ADMISSION_SNAPSHOT_SQL)
     .bind(grant.operation_id, grant.owner_generation)
-    .first<AdmissionSnapshotRow>();
+    .first<D1AdmissionSnapshot>();
   if (row === null) throw new GatewayError("admission_snapshot_not_found", 404);
   if (!validAdmissionSnapshot(row)) {
     throw new GatewayError("admission_snapshot_invalid", 502);
@@ -489,7 +807,7 @@ async function readD1Admission(
   return row;
 }
 
-function admissionResponse(row: AdmissionSnapshotRow): Response {
+function admissionResponse(row: D1AdmissionSnapshot): Response {
   return jsonResponse({
     status: row.reservation_status,
     operation_status: row.operation_status,
@@ -499,7 +817,7 @@ function admissionResponse(row: AdmissionSnapshotRow): Response {
   });
 }
 
-function validAdmissionSnapshot(row: AdmissionSnapshotRow): boolean {
+function validAdmissionSnapshot(row: D1AdmissionSnapshot): boolean {
   return (
     validIdentifier(row.reservation_key, 128) &&
     validIdentifier(row.operation_reservation_key, 128) &&
@@ -511,6 +829,17 @@ function validAdmissionSnapshot(row: AdmissionSnapshotRow): boolean {
     typeof row.reservation_selected_group === "string" &&
     row.reservation_selected_group.length >= 1 &&
     row.reservation_selected_group.length <= 64 &&
+    isPositiveInteger(row.reservation_selected_at) &&
+    typeof row.model_name === "string" &&
+    row.model_name.length >= 1 &&
+    row.model_name.length <= 200 &&
+    MODEL_NAME.test(row.model_name) &&
+    typeof row.endpoint_path === "string" &&
+    row.endpoint_path.length >= 1 &&
+    row.endpoint_path.length <= 256 &&
+    ENDPOINT_PATH.test(row.endpoint_path) &&
+    validBillingContract(row.billing_kind, row.billing_contract_hash) &&
+    validBillingSnapshotJson(row.billing_snapshot_json) &&
     validIdentifier(row.operation_id, 128) &&
     isPositiveInteger(row.owner_generation) &&
     isPositiveInteger(row.owner_lease_expires_at) &&
@@ -542,12 +871,17 @@ function validAdmissionSnapshot(row: AdmissionSnapshotRow): boolean {
     row.input_size <= MAX_R2_OBJECT_BYTES &&
     validContentType(row.input_content_type) &&
     validIdentifier(row.trace_id, 128) &&
-    typeof row.operation_status === "string"
+    typeof row.operation_status === "string" &&
+    isPositiveInteger(row.operation_created_at) &&
+    isPositiveInteger(row.operation_updated_at) &&
+    row.reservation_selected_at <= row.operation_created_at &&
+    row.operation_created_at <= row.operation_updated_at &&
+    row.operation_updated_at < row.execution_deadline_at
   );
 }
 
 function admissionAuthorityMatches(
-  row: AdmissionSnapshotRow,
+  row: D1AdmissionSnapshot,
   grant: D1AdmissionGetGrant,
 ): boolean {
   return (
@@ -578,6 +912,192 @@ function admissionAuthorityMatches(
     row.input_size === grant.input.size &&
     row.input_content_type === grant.input.content_type &&
     row.trace_id === grant.trace_id
+  );
+}
+
+function validProviderEgressGrantIdentity(identity: ProviderEgressGrantIdentity): boolean {
+  return (
+    identity.attempt_generation === 1 &&
+    validSha256(identity.request_sha256) &&
+    identity.egress_profile === "openai-chat-completions-canary-v1" &&
+    validEgressIdentity(identity.egress_worker_version_id, 128)
+  );
+}
+
+function validProviderEgressGrantRow(
+  value: unknown,
+  now: number,
+): value is ProviderEgressGrantRow {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "operation_id",
+      "reservation_key",
+      "owner_generation",
+      "attempt_generation",
+      "provider_operation_id",
+      "admission_sha256",
+      "request_sha256",
+      "egress_profile",
+      "egress_worker_version_id",
+      "channel_id",
+      "selected_group",
+      "model_name",
+      "endpoint_path",
+      "input_mode",
+      "input_object_key",
+      "input_object_version",
+      "input_sha256",
+      "input_size",
+      "input_content_type",
+      "billing_kind",
+      "billing_contract_hash",
+      "billing_snapshot_sha256",
+      "stream_policy",
+      "operation_created_at",
+      "operation_dispatched_at",
+      "authorized_at",
+      "execution_deadline_at",
+      "owner_lease_expires_at",
+      "reservation_owner_deadline_at",
+      "reservation_lease_expires_at",
+    ])
+  ) {
+    return false;
+  }
+  const row = value;
+  return (
+    validIdentifier(row.operation_id, 128) &&
+    validIdentifier(row.reservation_key, 128) &&
+    row.operation_id === row.reservation_key &&
+    isPositiveInteger(row.owner_generation) &&
+    row.attempt_generation === 1 &&
+    validIdentifier(row.provider_operation_id, 128) &&
+    validSha256(row.admission_sha256) &&
+    validSha256(row.request_sha256) &&
+    row.egress_profile === "openai-chat-completions-canary-v1" &&
+    validEgressIdentity(row.egress_worker_version_id, 128) &&
+    isPositiveInteger(row.channel_id) &&
+    typeof row.selected_group === "string" &&
+    row.selected_group.length >= 1 &&
+    row.selected_group.length <= 64 &&
+    typeof row.model_name === "string" &&
+    row.model_name.length >= 1 &&
+    row.model_name.length <= 200 &&
+    MODEL_NAME.test(row.model_name) &&
+    typeof row.endpoint_path === "string" &&
+    row.endpoint_path.length >= 1 &&
+    row.endpoint_path.length <= 256 &&
+    ENDPOINT_PATH.test(row.endpoint_path) &&
+    row.input_mode === "r2" &&
+    validStorageKey(row.input_object_key) &&
+    row.input_object_key.length >= 8 &&
+    row.input_object_key.length <= 512 &&
+    validIdentifier(row.input_object_version, 128) &&
+    validSha256(row.input_sha256) &&
+    row.request_sha256 === row.input_sha256 &&
+    row.input_object_key ===
+      `container-inputs/v1/${row.operation_id}/${row.owner_generation}/${row.input_sha256}` &&
+    isNonNegativeInteger(row.input_size) &&
+    row.input_size <= MAX_R2_OBJECT_BYTES &&
+    validContentType(row.input_content_type) &&
+    validBillingContract(row.billing_kind, row.billing_contract_hash) &&
+    validSha256(row.billing_snapshot_sha256) &&
+    (row.billing_kind !== "flat" ||
+      row.billing_contract_hash.slice(-64) === row.billing_snapshot_sha256) &&
+    row.stream_policy === "non_streaming" &&
+    isPositiveInteger(row.operation_created_at) &&
+    isPositiveInteger(row.operation_dispatched_at) &&
+    row.operation_dispatched_at >= row.operation_created_at &&
+    isPositiveInteger(row.authorized_at) &&
+    row.authorized_at >= row.operation_dispatched_at &&
+    row.authorized_at <= now &&
+    isPositiveInteger(row.execution_deadline_at) &&
+    row.execution_deadline_at > row.authorized_at &&
+    isPositiveInteger(row.owner_lease_expires_at) &&
+    row.owner_lease_expires_at > row.execution_deadline_at &&
+    isPositiveInteger(row.reservation_owner_deadline_at) &&
+    row.reservation_owner_deadline_at >= row.execution_deadline_at &&
+    row.reservation_owner_deadline_at > row.authorized_at &&
+    isPositiveInteger(row.reservation_lease_expires_at) &&
+    row.reservation_lease_expires_at >= row.owner_lease_expires_at &&
+    row.reservation_lease_expires_at >= row.reservation_owner_deadline_at
+  );
+}
+
+function providerEgressGrantMatches(
+  row: ProviderEgressGrantRow,
+  admission: D1AdmissionSnapshot,
+  identity: ProviderEgressGrantIdentity,
+  billingSnapshotSha256: string,
+  changes: 0 | 1,
+  now: number,
+): boolean {
+  return (
+    row.operation_id === admission.operation_id &&
+    row.reservation_key === admission.reservation_key &&
+    row.owner_generation === admission.owner_generation &&
+    row.attempt_generation === identity.attempt_generation &&
+    row.provider_operation_id === admission.provider_operation_id &&
+    row.admission_sha256 === admission.admission_sha256 &&
+    row.request_sha256 === identity.request_sha256 &&
+    row.egress_profile === identity.egress_profile &&
+    row.egress_worker_version_id === identity.egress_worker_version_id &&
+    row.channel_id === admission.channel_id &&
+    row.selected_group === admission.selected_group &&
+    row.model_name === admission.model_name &&
+    row.endpoint_path === admission.endpoint_path &&
+    row.input_mode === admission.input_mode &&
+    row.input_object_key === admission.input_object_key &&
+    row.input_object_version === admission.input_object_version &&
+    row.input_sha256 === admission.input_sha256 &&
+    row.input_size === admission.input_size &&
+    row.input_content_type === admission.input_content_type &&
+    row.billing_kind === admission.billing_kind &&
+    row.billing_contract_hash === admission.billing_contract_hash &&
+    row.billing_snapshot_sha256 === billingSnapshotSha256 &&
+    row.operation_created_at === admission.operation_created_at &&
+    row.operation_dispatched_at === admission.operation_updated_at &&
+    row.execution_deadline_at === admission.execution_deadline_at &&
+    row.owner_lease_expires_at === admission.owner_lease_expires_at &&
+    row.reservation_owner_deadline_at === admission.owner_deadline_at &&
+    row.reservation_lease_expires_at === admission.lease_expires_at &&
+    (changes === 0 || row.authorized_at === now)
+  );
+}
+
+function validBillingContract(kind: unknown, contract: unknown): contract is string {
+  if (kind === "tiered_expr") {
+    return validSha256(contract);
+  }
+  if (kind !== "flat" || typeof contract !== "string") {
+    return false;
+  }
+  return (
+    contract.length >= 66 &&
+    contract.length <= 96 &&
+    contract[contract.length - 65] === ":" &&
+    validSha256(contract.slice(-64))
+  );
+}
+
+function validBillingSnapshotJson(value: unknown): value is string {
+  if (typeof value !== "string" || value.length < 1) return false;
+  if (new TextEncoder().encode(value).byteLength > MAX_BILLING_SNAPSHOT_BYTES) return false;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+function validEgressIdentity(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= maxLength &&
+    EGRESS_IDENTITY.test(value)
   );
 }
 
@@ -873,6 +1393,11 @@ async function readBoundedStream(stream: ReadableStream, limit: number): Promise
     offset += chunk.byteLength;
   }
   return result;
+}
+
+async function sha256Utf8(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function checksumHex(value: ArrayBuffer | undefined): string | null {

@@ -1,10 +1,11 @@
+use cinatoken_billing::TieredBillingSnapshot;
 use cinatoken_core::format_matching_model_name;
 use cinatoken_relay::{channel_type_supported, clamp_i64_to_i32 as d1_i32, csv_contains};
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use worker::{D1Database, D1Result, D1Type};
 
 use crate::container_artifacts::{
@@ -42,6 +43,8 @@ pub(crate) const RELAY_CONTAINER_RECONCILIATION_RETRY_MIGRATION: &str =
     "0045_relay_container_reconciliation_retry_apply.sql";
 pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_ENFORCE_MIGRATION: &str =
     "0046_relay_container_financial_terminal_enforce.sql";
+pub(crate) const RELAY_CONTAINER_PROVIDER_EGRESS_GRANT_MIGRATION: &str =
+    "0047_relay_container_provider_egress_grants.sql";
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
     &["pending", "leased", "retry", "converged", "dead_letter"];
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
@@ -2163,7 +2166,7 @@ pub async fn reserve_relay_billing_quota(
         || record.lease_expires_at <= record.created_at
         || !matches!(billing_kind, "tiered_expr" | "flat")
         || billing_snapshot_json.len() > RELAY_BILLING_SNAPSHOT_MAX_BYTES
-        || (billing_kind == "flat" && billing_snapshot_json.is_empty())
+        || billing_snapshot_json.is_empty()
     {
         return Err(worker::Error::RustError(
             "relay billing reservation identity is invalid".to_string(),
@@ -2248,7 +2251,66 @@ fn validate_relay_billing_snapshot_contract(
     contract_hash: &str,
     billing_snapshot_json: &str,
 ) -> worker::Result<()> {
-    if billing_kind != "flat" {
+    if billing_kind == "tiered_expr" {
+        let snapshots =
+            serde_json::from_str::<BTreeMap<String, TieredBillingSnapshot>>(billing_snapshot_json)
+                .map_err(|err| {
+                    worker::Error::RustError(format!(
+                        "tiered billing reservation snapshot is invalid: {err}"
+                    ))
+                })?;
+        let canonical_snapshot_json = serde_json::to_string(&snapshots).map_err(|err| {
+            worker::Error::RustError(format!(
+                "tiered billing reservation snapshot cannot be canonicalized: {err}"
+            ))
+        })?;
+        if canonical_snapshot_json != billing_snapshot_json {
+            return Err(worker::Error::RustError(
+                "tiered billing reservation snapshot is not canonical".to_string(),
+            ));
+        }
+        let mut baseline: Option<&TieredBillingSnapshot> = None;
+        for (group, snapshot) in &snapshots {
+            if group.trim().is_empty()
+                || snapshot.expr_hash != contract_hash
+                || snapshot.validate_durable().is_err()
+            {
+                return Err(worker::Error::RustError(
+                    "tiered billing reservation snapshot does not match its contract".to_string(),
+                ));
+            }
+            if let Some(expected) = baseline {
+                if snapshot.billing_mode != expected.billing_mode
+                    || snapshot.model_name != expected.model_name
+                    || snapshot.expr_string != expected.expr_string
+                    || snapshot.expr_hash != expected.expr_hash
+                    || snapshot.request_rule_expr != expected.request_rule_expr
+                    || snapshot.expr_version != expected.expr_version
+                    || snapshot.quota_per_unit != expected.quota_per_unit
+                    || snapshot.estimated_prompt_tokens != expected.estimated_prompt_tokens
+                    || snapshot.estimated_completion_tokens != expected.estimated_completion_tokens
+                    || snapshot.estimated_expression_cost != expected.estimated_expression_cost
+                    || snapshot.estimated_quota_before_group
+                        != expected.estimated_quota_before_group
+                    || snapshot.estimated_tier != expected.estimated_tier
+                    || snapshot.evaluation_time_unix_seconds
+                        != expected.evaluation_time_unix_seconds
+                    || snapshot.frozen_request != expected.frozen_request
+                {
+                    return Err(worker::Error::RustError(
+                        "tiered billing reservation groups do not share one frozen contract"
+                            .to_string(),
+                    ));
+                }
+            } else {
+                baseline = Some(snapshot);
+            }
+        }
+        if baseline.is_none() {
+            return Err(worker::Error::RustError(
+                "tiered billing reservation snapshot has no serving groups".to_string(),
+            ));
+        }
         return Ok(());
     }
     let expected_hash = format!(
@@ -5760,6 +5822,38 @@ pub async fn relay_container_operation_schema_ready(db: &D1Database) -> worker::
         .first::<CountRow>(None)
         .await?;
     Ok(row.map(|row| row.count == 4).unwrap_or(false))
+}
+
+pub async fn relay_container_provider_egress_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    let args = [D1Type::Text(
+        RELAY_CONTAINER_PROVIDER_EGRESS_GRANT_MIGRATION,
+    )];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(DISTINCT name) AS count
+            FROM d1_migrations
+            WHERE name = ?1
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_provider_egress_grants'
+              )
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name IN (
+                    'relay_container_provider_egress_grant_insert_authority_guard',
+                    'relay_container_provider_egress_grant_update_guard',
+                    'relay_container_provider_egress_grant_delete_guard'
+                  )
+              ) = 3
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 1).unwrap_or(false))
 }
 
 pub async fn relay_container_reconciliation_schema_ready(db: &D1Database) -> worker::Result<bool> {
@@ -19957,7 +20051,42 @@ mod tests {
 
         validate_relay_billing_snapshot_contract("flat", &hash, snapshot).unwrap();
         assert!(validate_relay_billing_snapshot_contract("flat", "flat-v4:00", snapshot).is_err());
-        validate_relay_billing_snapshot_contract("tiered_expr", "expr-hash", "").unwrap();
+
+        let tiered = cinatoken_billing::estimate_tiered_billing_snapshot_with_request_at(
+            "gpt-test",
+            r#"tier("default", p * 2 + c * 10)"#,
+            cinatoken_billing::TokenParams {
+                p: 100.0,
+                c: 10.0,
+                ..cinatoken_billing::TokenParams::default()
+            },
+            1.0,
+            cinatoken_billing::RequestInput::default(),
+            1_700_000_000,
+        )
+        .unwrap();
+        let tiered_hash = tiered.expr_hash.clone();
+        let tiered_json =
+            serde_json::to_string(&BTreeMap::from([("default".to_string(), tiered)])).unwrap();
+        validate_relay_billing_snapshot_contract("tiered_expr", &tiered_hash, &tiered_json)
+            .unwrap();
+        let noncanonical_tiered_json = serde_json::to_string_pretty(
+            &serde_json::from_str::<serde_json::Value>(&tiered_json).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_relay_billing_snapshot_contract(
+            "tiered_expr",
+            &tiered_hash,
+            &noncanonical_tiered_json,
+        )
+        .is_err());
+        assert!(validate_relay_billing_snapshot_contract(
+            "tiered_expr",
+            "different-expression",
+            &tiered_json,
+        )
+        .is_err());
+        assert!(validate_relay_billing_snapshot_contract("tiered_expr", &tiered_hash, "").is_err());
     }
 
     #[test]
@@ -21227,6 +21356,32 @@ mod tests {
             );
         }
         assert!(readiness.contains(") = 4"));
+    }
+
+    #[test]
+    fn relay_container_provider_egress_schema_ready_requires_0047_contract() {
+        let source = include_str!("d1_repositories.rs");
+        let start = source
+            .find("pub async fn relay_container_provider_egress_schema_ready")
+            .unwrap();
+        let end = source
+            .find("pub async fn relay_container_reconciliation_schema_ready")
+            .unwrap();
+        let readiness = &source[start..end];
+
+        assert!(readiness.contains("RELAY_CONTAINER_PROVIDER_EGRESS_GRANT_MIGRATION"));
+        assert!(readiness.contains("relay_container_provider_egress_grants"));
+        for trigger in [
+            "relay_container_provider_egress_grant_insert_authority_guard",
+            "relay_container_provider_egress_grant_update_guard",
+            "relay_container_provider_egress_grant_delete_guard",
+        ] {
+            assert!(
+                readiness.contains(trigger),
+                "missing provider egress readiness trigger {trigger}"
+            );
+        }
+        assert!(readiness.contains(") = 3"));
     }
 
     #[test]

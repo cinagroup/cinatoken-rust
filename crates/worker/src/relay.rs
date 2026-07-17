@@ -1,12 +1,13 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use cinatoken_billing::{
-    build_tiered_token_params, compute_flat_quota_from_snapshot, compute_tiered_quota_with_request,
-    detect_billing_expr_variables, estimate_flat_pre_consumed_quota,
-    estimate_tiered_billing_snapshot_with_request, infer_openrouter_cache_write_tokens,
-    rebase_tiered_billing_snapshot_group_ratio, settle, split_billing_expr_request_rule,
-    BillingExprVariables, FlatBillingMode, FlatPricingSnapshot, FlatQuotaResult, FlatUsage,
-    ImageGenerationPriceClass, OpenRouterCacheWriteInput, PricingConfig, Quota, RequestInput,
-    TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, TokenParams, UsageSemantic,
+    build_tiered_token_params, compute_flat_quota_from_snapshot,
+    compute_tiered_quota_from_durable_snapshot, detect_billing_expr_variables,
+    estimate_flat_pre_consumed_quota, estimate_tiered_billing_snapshot_with_request,
+    infer_openrouter_cache_write_tokens, rebase_tiered_billing_snapshot_group_ratio, settle,
+    split_billing_expr_request_rule, BillingExprVariables, FlatBillingMode, FlatPricingSnapshot,
+    FlatQuotaResult, FlatUsage, ImageGenerationPriceClass, OpenRouterCacheWriteInput,
+    PricingConfig, Quota, RequestInput, TieredBillingResult, TieredBillingSnapshot,
+    TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::relay::ErrorItem;
@@ -11780,6 +11781,7 @@ struct TieredBillingPreflight {
 #[derive(Clone)]
 struct TieredBillingGroupPlan {
     snapshots: HashMap<String, TieredBillingSnapshot>,
+    billing_snapshot_json: String,
     reserved_quota: i64,
     reserve_applied: bool,
     reservation_key: Option<String>,
@@ -11904,7 +11906,7 @@ impl RelayBillingGroupPlan {
 
     fn billing_snapshot_json(&self) -> &str {
         match self {
-            Self::Tiered(_) => "",
+            Self::Tiered(plan) => &plan.billing_snapshot_json,
             Self::Flat(plan) => &plan.billing_snapshot_json,
         }
     }
@@ -12596,8 +12598,23 @@ fn tiered_billing_group_plan_from_base(
     if snapshots.is_empty() {
         return Err("tiered billing group plan requires at least one serving group".to_string());
     }
+    let durable_snapshots = snapshots
+        .iter()
+        .map(|(group, snapshot)| {
+            snapshot
+                .validate_durable()
+                .map_err(|err| format!("invalid durable tiered snapshot for {group}: {err}"))?;
+            Ok((group.clone(), snapshot.clone()))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    let billing_snapshot_json = serde_json::to_string(&durable_snapshots)
+        .map_err(|err| format!("failed to serialize tiered billing snapshot: {err}"))?;
+    if billing_snapshot_json.len() > 32 * 1024 {
+        return Err("tiered billing snapshot exceeds the durable ledger bound".to_string());
+    }
     Ok(TieredBillingGroupPlan {
         snapshots,
+        billing_snapshot_json,
         reserved_quota,
         reserve_applied: false,
         reservation_key: None,
@@ -13078,12 +13095,11 @@ async fn bind_relay_billing_selected_attempt(
 fn tiered_billing_settlement(
     preflight: &TieredBillingPreflight,
     usage: &UsageSummary,
-    request: &RequestInput,
+    _request: &RequestInput,
 ) -> Result<TieredBillingOutcome, String> {
     let params = token_params_from_usage(&preflight.snapshot, usage);
-    let mut result =
-        compute_tiered_quota_with_request(&preflight.snapshot, params, request.clone())
-            .map_err(|err| format!("failed to compute tiered billing: {err}"))?;
+    let mut result = compute_tiered_quota_from_durable_snapshot(&preflight.snapshot, params)
+        .map_err(|err| format!("failed to compute tiered billing: {err}"))?;
     result.settlement = settle(
         Quota(preflight.pre_consumed_quota),
         result.actual_quota_after_group,
@@ -14698,6 +14714,7 @@ fn billing_request_input(req: &Request, body: &Value) -> RequestInput {
     RequestInput {
         headers: req.headers().entries().collect::<HashMap<_, _>>(),
         body: Some(body.clone()),
+        ..RequestInput::default()
     }
 }
 
@@ -14705,6 +14722,7 @@ fn realtime_billing_request_input(req: &Request, body: &Value) -> RequestInput {
     RequestInput {
         headers: safe_realtime_billing_headers(req),
         body: Some(body.clone()),
+        ..RequestInput::default()
     }
 }
 

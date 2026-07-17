@@ -22,15 +22,21 @@ const ENFORCEMENT_TRIGGER_NAMES = [
   "relay_container_terminal_event_revision_predecessor_guard",
 ];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const expectedMigrationNames = readdirSync(path.join(repoRoot, "migrations", "d1"))
+const localMigrationNames = readdirSync(path.join(repoRoot, "migrations", "d1"))
   .filter((name) => /^[0-9]{4}_[A-Za-z0-9_]+\.sql$/.test(name))
   .sort();
-
-if (expectedMigrationNames.at(-1) !== MIGRATION_0046) {
-  throw new Error(`local D1 migration head must be ${MIGRATION_0046}`);
+const enforcementMigrationIndex = localMigrationNames.indexOf(MIGRATION_0046);
+if (enforcementMigrationIndex < 0) {
+  throw new Error(`local D1 migration set must contain ${MIGRATION_0046}`);
 }
-if (!expectedMigrationNames.includes(MIGRATION_0045)) {
-  throw new Error(`local D1 migration set must contain ${MIGRATION_0045}`);
+// This audit proves the historical 0046 rollout set even when later migrations
+// are present in the checkout.
+const expectedMigrationNames = localMigrationNames.slice(
+  0,
+  enforcementMigrationIndex + 1,
+);
+if (expectedMigrationNames.at(-2) !== MIGRATION_0045) {
+  throw new Error(`${MIGRATION_0045} must immediately precede ${MIGRATION_0046}`);
 }
 const enforcementMigrationSql = readFileSync(
   path.join(repoRoot, "migrations", "d1", MIGRATION_0046),

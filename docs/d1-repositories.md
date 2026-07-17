@@ -56,3 +56,20 @@ settlement must continue from the frozen reservation snapshot. The separate
 read-only enforcement audit binds aggregate D1 preconditions to a signed
 deployment-inventory hash; it does not grant mutation authority or replace
 remote version and trigger-SQL readback.
+
+Migration 0047 adds a separate provider-egress schema-readiness helper. It
+requires the 0047 ledger row plus the immutable grant table and its insert,
+update, and delete trigger names. It does not replace the 0046 helper: 0046
+proves historical financial-terminal enforcement, while 0047 proves the later
+pre-send provenance schema.
+
+New tiered reservation writes are no longer allowed to carry an empty snapshot.
+The repository parses the canonical serving-group map, validates every durable
+`TieredBillingSnapshot`, binds its expression hash to the reservation contract,
+requires byte-for-byte equality with its own canonical reserialization, and
+rejects cross-group differences in model, expression/version, request facts,
+evaluation instant, QuotaPerUnit, estimate, or tier. The frozen instant must be
+a non-negative Unix second representable through year 9999. The relay owns
+request projection and serialization; D1 owns immutable storage. Historical
+empty rows remain readable for quarantine and migration accounting and are not
+silently upgraded.

@@ -14739,3 +14739,107 @@ backup/Time Travel evidence, and post-apply negatives remain mandatory. No
 remote migration, deployment, provider call, secret change, financial
 mutation, or traffic switch occurred. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.240 Migration 0047 Global Provider-Egress Grant (2026-07-17)
+
+This section supersedes the earlier statement that global D1 provider-egress
+provenance was only planned. Migration
+`0047_relay_container_provider_egress_grants.sql` and its default-off
+Controller writer now exist locally. Nothing in this section authorizes a
+remote migration, gate change, provider request, financial mutation, or traffic
+cutover.
+
+The grant closes one precise pre-send gap. After the private broker returns a
+strict readiness profile and Worker version, but before the shard DO consumes
+its one-shot dispatch authority and before the broker can call a provider, the
+Controller opens a D1 `first-primary` session and executes one
+`INSERT OR IGNORE ... SELECT`. The select must still observe the exact global
+operation in `dispatched`, the exact billing reservation in `reserved`, live
+owner/deadline fences, selected channel/group, provider operation, admission
+hash, R2 input identity, model/endpoint, billing kind/hash, and the byte-exact
+non-empty billing snapshot. It then reads the immutable row through the same
+session and compares every field. A missing table, stale lease, zero-row write
+without an exact readback, malformed readback, or any identity difference
+fails before DO dispatch and provider I/O.
+
+The D1 row freezes:
+
+- operation, reservation, owner generation, and fixed attempt generation 1;
+- provider operation, admission SHA-256, provider-request SHA-256, selected
+  channel/group, model, endpoint, and non-streaming policy;
+- exact R2 input key/version/SHA-256/size/content type;
+- private egress profile and broker Worker version returned by readiness;
+- billing kind, immutable contract hash, and SHA-256 of the exact reservation
+  snapshot; and
+- operation, authorization, execution, owner, and reservation deadline facts.
+
+The table has a composite primary key, unique provider-operation index,
+authority trigger, and unconditional update/delete rejection. The trigger
+repeats the global operation/reservation authority checks. The Controller's
+`INSERT ... SELECT` additionally compares the exact snapshot JSON before
+computing and persisting its digest. The table is provenance, not a retry
+queue, provider health claim, terminal receipt, or authorization to settle.
+
+The billing prerequisite is also stricter for new Rust reservations. A tiered
+plan now serializes a canonical serving-group map instead of writing an empty
+snapshot. Each snapshot freezes expression/hash/version, request-rule,
+QuotaPerUnit, group ratio, estimate, selected tier, one evaluation instant,
+bounded to the non-negative Unix range through year 9999, and only the literal
+scalar request/header facts actually referenced by the expression. Dynamic
+lookup keys, credentials, prompt/content paths,
+structured values, excessive facts/values, and DST-dependent timezone names
+fail before reserve. New HTTP and Realtime settlement paths use the strict
+snapshot-only API: they cannot inject a live request or current wall clock.
+The D1 repository requires byte-for-byte canonical reserialization, validates
+every new tiered snapshot, and requires all serving groups to share one
+expression, model, request facts, time, estimate, and tier; only the group ratio
+and resulting group quota may differ.
+
+This does not make historical empty tiered reservations recoverable. It also
+does not yet persist actual provider usage at the provider boundary. If a
+Worker or Controller loses the only copy of actual usage before the immutable
+terminal financial event exists, the reservation must remain quarantined;
+settling from the pre-consumed amount is not accepted as exact recovery. A
+later migration must add a usage/receipt contract and bind the terminal event
+to this grant before financial cutover.
+
+The required rollout order is:
+
+1. complete and archive the separate 0046 pre/post rollout, with every
+   Container gate still false;
+2. deploy the durable-snapshot Rust writer and Controller N with provider
+   egress disabled; inventory all Worker, Queue, Cron, alarm, and Controller
+   versions;
+3. prove no old writer can create a new empty tiered snapshot, drain or
+   quarantine every active legacy empty snapshot, and reset the drain clock if
+   an old owner reappears;
+4. freeze D1 writers, capture a Time Travel bookmark plus full logical and
+   per-table fingerprints, apply 0047 to isolated staging, and read back the
+   exact 47-row migration set, table, two indexes, and three trigger bodies;
+5. run direct negative probes in rollback-only batches for stale operation,
+   stale reservation, wrong owner/attempt/request/broker/billing/R2 identity,
+   update, and delete; reject timeout or ambiguous evidence;
+6. deploy/read back broker N first and Controller N second, then run an
+   isolated non-production canary proving grant -> DO dispatch -> one provider
+   send -> R2 result -> terminal/outbox/ack under duplicate, response loss,
+   eviction, deadline, and version-skew faults; and
+7. keep provider, billing, recovery, compaction, and traffic gates false until
+   usage receipt recovery, provider idempotency/lookup, terminal linkage,
+   financial convergence, load/cost, rollback, and C1-C5/G1-G8 approvals pass.
+
+N/N-1 behavior is intentionally asymmetric. Controller N on schema 0046 is
+safe only while provider egress is disabled; if accidentally invoked, missing
+0047 SQL fails before DO/provider I/O. Controller N on schema 0047 can create
+or replay only an exact grant. Controller N-1 on schema 0047 does not know the
+grant and could bypass it, so every N-1 Controller must be removed and read
+back before any provider gate is enabled. After 0047, rollback is disable-first:
+stop edge admission/provider egress, drain operations, retain schema 0047, and
+roll the Controller back only to an inventoried artifact that cannot receive
+provider traffic. Never delete grant rows/triggers or edit `d1_migrations` as
+a normal rollback.
+
+Local replay currently reports 47 contiguous migrations, 44 tables, 464
+checked incremental columns, and 66 key indexes. Rust billing and Worker tests,
+SQLite migration/negative tests, Controller tests, migration/config audits,
+wasm32 checks, and Workerd scenarios remain required together before commit.
+Go/VPS remains authoritative and production remains **NO-GO**.

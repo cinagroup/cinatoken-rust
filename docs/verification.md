@@ -6809,3 +6809,76 @@ rehearsal, frozen time-derived pricing facts, durable canonical tiered
 snapshots, real fault/load/cost and financial convergence, and C1-C5/G1-G8
 approval. All gates remain false; Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## Migration 0047 Provider-Egress Grant Verification (2026-07-17)
+
+This overlay supersedes the preceding runtime-head statement: the local and
+runtime migration head is now
+`0047_relay_container_provider_egress_grants.sql`. It verifies local code,
+schema, and fail-closed protocol behavior only. It does not claim a remote D1
+apply, Worker/Controller/Container deployment, secret change, provider call,
+financial mutation, or traffic switch.
+
+```powershell
+cargo test -p cinatoken-billing
+# PASS: 105 library + 3 flat-manifest + 10 Go-parity tests; 0 failed.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 785 passed; 0 failed.
+
+cargo test --workspace --exclude cinatoken-worker
+# PASS: all non-Worker unit, integration, and doc tests.
+
+cargo fmt --all -- --check
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS; existing default-off dead-code warnings only.
+
+.\node_modules\.bin\tsc.exe -p services/container-controller/tsconfig.json --noEmit
+# PASS.
+
+.\node_modules\.bin\vitest.exe run --config vitest.container-controller-protocol.config.mjs
+# PASS: 5 files, 65 tests.
+
+.\node_modules\.bin\vitest.exe run --config vitest.container-controller.config.mjs
+# PASS: 1 file, 27 tests.
+
+python tools/verify_sqlite.py
+# PASS: 47 migrations, 44 tables, 464 incremental columns, 66 key indexes,
+# including the immutable 0047 grant authority and default-empty rollout.
+
+node tools/audit_d1_migration_config.mjs --json
+# PASS: 47 contiguous local/runtime migrations; exact head is 0047.
+
+node tools/audit_relay_container_enforcement_readiness.mjs --self-test --json
+# PASS: pre/post 0046 snapshots and every drift/negative fixture; the report
+# remains read-only and never authorizes enforcement.
+
+git diff --check
+# PASS.
+```
+
+The Controller sequence is admission read, private broker readiness/version
+readback, D1 grant, shard-DO one-shot dispatch, then provider POST. The grant
+write and exact readback use one D1 `first-primary` session. Cloudflare defines
+that option as starting on the primary and gives later session queries
+sequential consistency; see the official
+[D1 Database session contract](https://developers.cloudflare.com/d1/worker-api/d1-database/#withsession).
+The implementation awaits every operation and uses bindings rather than the
+Cloudflare REST API, consistent with the official
+[Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).
+
+New tiered reservations now require a non-empty, byte-canonical serving-group
+snapshot. Settlement freezes the literal request facts and evaluation instant,
+rejects credentials, prompt/content persistence, structured facts,
+DST-dependent timezone names, noncanonical JSON, and unsafe Unix timestamps,
+and does not fall back to live request state or the current clock. Historical
+empty snapshots are not upgraded and remain quarantine-only.
+
+Bun is unavailable in this shell, so the aggregate `bun run check` was not run.
+Its changed-path coverage was executed with TypeScript, both Controller Vitest
+suites, Python SQLite replay, Cargo, and wasm32 compilation. No remote command
+was issued. Every Container gate remains false. Actual provider usage is still
+not persisted at the egress boundary or cryptographically linked to the
+terminal financial event; provider-native idempotency/lookup and real
+fault/load/cost evidence are also outstanding. Go/VPS remains authoritative
+and production remains **NO-GO**.

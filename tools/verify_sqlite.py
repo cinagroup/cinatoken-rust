@@ -37,6 +37,7 @@ REQUIRED_TABLES = [
     "relay_billing_recovery_state",
     "relay_billing_finalization_incidents",
     "relay_container_operations",
+    "relay_container_provider_egress_grants",
     "relay_container_terminal_events",
     "relay_container_terminal_outbox_state",
     "relay_container_reconciliation_observations",
@@ -285,6 +286,38 @@ REQUIRED_COLUMNS = {
         "result_content_type",
         "created_at",
         "updated_at",
+    },
+    "relay_container_provider_egress_grants": {
+        "operation_id",
+        "reservation_key",
+        "owner_generation",
+        "attempt_generation",
+        "provider_operation_id",
+        "admission_sha256",
+        "request_sha256",
+        "egress_profile",
+        "egress_worker_version_id",
+        "channel_id",
+        "selected_group",
+        "model_name",
+        "endpoint_path",
+        "input_mode",
+        "input_object_key",
+        "input_object_version",
+        "input_sha256",
+        "input_size",
+        "input_content_type",
+        "billing_kind",
+        "billing_contract_hash",
+        "billing_snapshot_sha256",
+        "stream_policy",
+        "operation_created_at",
+        "operation_dispatched_at",
+        "authorized_at",
+        "execution_deadline_at",
+        "owner_lease_expires_at",
+        "reservation_owner_deadline_at",
+        "reservation_lease_expires_at",
     },
     "relay_container_terminal_events": {
         "billing_event_id",
@@ -590,6 +623,10 @@ REQUIRED_INDEXES = {
         "idx_relay_container_operations_input_object_identity": False,
         "idx_relay_container_operations_result_object_identity": False,
     },
+    "relay_container_provider_egress_grants": {
+        "idx_relay_container_provider_egress_grants_provider_operation": True,
+        "idx_relay_container_provider_egress_grants_worker_version": False,
+    },
     "relay_container_terminal_events": {
         "idx_relay_container_terminal_events_operation_identity": True,
         "idx_relay_container_terminal_events_reconciliation_identity": True,
@@ -673,6 +710,8 @@ def main() -> int:
     relay_container_reconciliation_retry_apply_rollout_verified = False
     relay_container_financial_terminal_enforce_verified = False
     relay_container_financial_terminal_enforce_rollout_verified = False
+    relay_container_provider_egress_grant_verified = False
+    relay_container_provider_egress_grant_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -704,6 +743,8 @@ def main() -> int:
         relay_container_reconciliation_retry_apply_rollout_verified = True
         verify_relay_container_financial_terminal_enforce_rollout(schema_paths)
         relay_container_financial_terminal_enforce_rollout_verified = True
+        verify_relay_container_provider_egress_grant_rollout(schema_paths)
+        relay_container_provider_egress_grant_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -731,6 +772,8 @@ def main() -> int:
         relay_container_financial_terminal_verified = True
         verify_relay_container_financial_terminal_enforce(conn)
         relay_container_financial_terminal_enforce_verified = True
+        verify_relay_container_provider_egress_grant(conn)
+        relay_container_provider_egress_grant_verified = True
         verify_relay_container_reconciliation_observer(conn)
         relay_container_reconciliation_observer_verified = True
         verify_relay_container_r2_inventory(conn)
@@ -816,6 +859,10 @@ def main() -> int:
         message += " + 0046 Container financial terminal enforcement"
     if relay_container_financial_terminal_enforce_rollout_verified:
         message += " + 0046 trigger-only enforcement rollout"
+    if relay_container_provider_egress_grant_verified:
+        message += " + 0047 immutable provider egress grant authority"
+    if relay_container_provider_egress_grant_rollout_verified:
+        message += " + 0047 default-empty provider egress provenance rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -2508,6 +2555,369 @@ def verify_relay_container_financial_terminal_enforce(
         "WHERE reservation_key = '0042-tokenless'"
     ).fetchone() != ("completed",):
         raise SystemExit("0046 exact event plus outbox transition did not persist")
+
+
+def verify_relay_container_provider_egress_grant(
+    conn: sqlite3.Connection,
+) -> None:
+    required_triggers = (
+        "relay_container_provider_egress_grant_insert_authority_guard",
+        "relay_container_provider_egress_grant_update_guard",
+        "relay_container_provider_egress_grant_delete_guard",
+    )
+    for trigger in required_triggers:
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0047 provider egress grant trigger missing: {trigger}")
+
+    table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_provider_egress_grants"
+    )
+    authority_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_provider_egress_grant_insert_authority_guard",
+    )
+    for sql, fragment in (
+        (table_sql, "PRIMARY KEY (operation_id, owner_generation, attempt_generation)"),
+        (table_sql, "attempt_generation = 1"),
+        (table_sql, "request_sha256 = input_sha256"),
+        (table_sql, "length(endpoint_path) BETWEEN 1 AND 256"),
+        (table_sql, "endpoint_path NOT GLOB '*[^A-Za-z0-9_./:-]*'"),
+        (table_sql, "billing_snapshot_sha256 = substr(billing_contract_hash, -64)"),
+        (table_sql, "stream_policy = 'non_streaming'"),
+        (authority_sql, "operation.status = 'dispatched'"),
+        (authority_sql, "reservation.status = 'reserved'"),
+        (authority_sql, "operation.provider_operation_id = NEW.provider_operation_id"),
+        (authority_sql, "operation.input_object_version = NEW.input_object_version"),
+        (authority_sql, "reservation.model_name = NEW.model_name"),
+        (authority_sql, "reservation.expr_hash = NEW.billing_contract_hash"),
+        (authority_sql, "length(trim(reservation.billing_snapshot_json)) > 0"),
+        (authority_sql, "NEW.authorized_at < reservation.owner_deadline_at"),
+    ):
+        if sql is None or fragment not in sql:
+            raise SystemExit(f"0047 provider egress grant contract missing: {fragment}")
+    if "substr(endpoint_path, 1, 1) = '/'" in table_sql:
+        raise SystemExit("0047 endpoint path must accept canonical paths without a leading slash")
+
+    grant_insert_sql = """
+        INSERT INTO relay_container_provider_egress_grants (
+          operation_id, reservation_key, owner_generation, attempt_generation,
+          provider_operation_id, admission_sha256, request_sha256,
+          egress_profile, egress_worker_version_id,
+          channel_id, selected_group, model_name, endpoint_path,
+          input_mode, input_object_key, input_object_version,
+          input_sha256, input_size, input_content_type,
+          billing_kind, billing_contract_hash, billing_snapshot_sha256,
+          stream_policy, operation_created_at, operation_dispatched_at,
+          authorized_at, execution_deadline_at, owner_lease_expires_at,
+          reservation_owner_deadline_at, reservation_lease_expires_at
+        ) VALUES (
+          :operation_id, :reservation_key, :owner_generation, :attempt_generation,
+          :provider_operation_id, :admission_sha256, :request_sha256,
+          :egress_profile, :egress_worker_version_id,
+          :channel_id, :selected_group, :model_name, :endpoint_path,
+          :input_mode, :input_object_key, :input_object_version,
+          :input_sha256, :input_size, :input_content_type,
+          :billing_kind, :billing_contract_hash, :billing_snapshot_sha256,
+          :stream_policy, :operation_created_at, :operation_dispatched_at,
+          :authorized_at, :execution_deadline_at, :owner_lease_expires_at,
+          :reservation_owner_deadline_at, :reservation_lease_expires_at
+        )
+    """
+
+    def insert_authority(
+        label: str,
+        dispatched: bool = True,
+        billing_kind: str = "flat",
+        billing_snapshot_json: str | None = None,
+    ) -> dict[str, object]:
+        operation_id = f"0047-{label}"
+        owner_generation = 2
+        channel_id = 470047
+        operation_created_at = 1100
+        operation_dispatched_at = 1200
+        execution_deadline_at = 1600
+        owner_lease_expires_at = 2000
+        reservation_owner_deadline_at = 1800
+        input_sha256 = hashlib.sha256(f"0047-input-{label}".encode()).hexdigest()
+        admission_sha256 = hashlib.sha256(
+            f"0047-admission-{label}".encode()
+        ).hexdigest()
+        client_request_sha256 = hashlib.sha256(
+            f"0047-client-request-{label}".encode()
+        ).hexdigest()
+        reconciliation_id = hashlib.sha256(
+            f"0047-reconciliation-{label}".encode()
+        ).hexdigest()
+        client_hmac = hashlib.sha256(f"0047-client-hmac-{label}".encode()).hexdigest()
+        tiered_contract_hash = hashlib.sha256(
+            f"0047-expression-{label}".encode()
+        ).hexdigest()
+        default_billing_snapshot = (
+            '{"default":{"1":{"schema_version":4}}}'
+            if billing_kind == "flat"
+            else (
+                '{"billing_kind":"tiered_expr","contract_hash":"'
+                f'{tiered_contract_hash}","schema_version":1}}'
+            )
+        )
+        billing_snapshot = (
+            default_billing_snapshot
+            if billing_snapshot_json is None
+            else billing_snapshot_json
+        )
+        billing_snapshot_sha256 = hashlib.sha256(
+            billing_snapshot.encode()
+        ).hexdigest()
+        billing_contract_hash = (
+            f"flat-v4:{billing_snapshot_sha256}"
+            if billing_kind == "flat"
+            else tiered_contract_hash
+        )
+        provider_operation_id = f"provider:0047-{label}"
+        input_object_key = (
+            f"container-inputs/v1/{operation_id}/{owner_generation}/{input_sha256}"
+        )
+        conn.execute(
+            """
+            INSERT INTO relay_billing_reservations (
+              reservation_key, user_id, token_id, model_name, endpoint_path,
+              request_id_hash, expr_hash, billing_kind, billing_snapshot_json,
+              candidate_group_count, reservation_strategy, pre_consumed_quota,
+              status, channel_id, selected_group, selected_at,
+              lease_expires_at, owner_generation, owner_deadline_at,
+              owner_lease_renewed_at, created_at, updated_at
+            ) VALUES (
+              ?, 470047, 0, 'gpt-4o-mini', 'chat/completions',
+              ?, ?, ?, ?, 1, 'selected_group', 1,
+              'reserved', ?, 'default', 1050, ?, ?, ?, 0, 1000, 1100
+            )
+            """,
+            (
+                operation_id,
+                hashlib.sha256(f"0047-request-id-{label}".encode()).hexdigest(),
+                billing_contract_hash,
+                billing_kind,
+                billing_snapshot,
+                channel_id,
+                owner_lease_expires_at,
+                owner_generation,
+                reservation_owner_deadline_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO relay_container_operations (
+              reservation_key, operation_id, owner_generation,
+              owner_lease_expires_at, channel_id, selected_group,
+              operation_kind, provider_operation_id, admission_sha256,
+              protocol_version, shard_contract_version,
+              ring_generation, shard_count, shard_index, instance_name,
+              execution_deadline_at, input_mode, input_object_key,
+              input_object_version, input_sha256, input_size,
+              input_content_type, trace_id,
+              client_idempotency_hmac_sha256, client_request_sha256,
+              reconciliation_id, status, created_at, updated_at
+            ) VALUES (
+              ?, ?, ?, ?, ?, 'default', 'chat_completions', ?, ?, 1, 1,
+              1, 8, 2, 'cinatoken-relay-shard-v1-0002', ?, 'r2', ?,
+              ?, ?, 64, 'application/json', ?, ?, ?, ?,
+              'prepared', ?, ?
+            )
+            """,
+            (
+                operation_id,
+                operation_id,
+                owner_generation,
+                owner_lease_expires_at,
+                channel_id,
+                provider_operation_id,
+                admission_sha256,
+                execution_deadline_at,
+                input_object_key,
+                f"version-0047-{label}",
+                input_sha256,
+                f"trace:0047-{label}",
+                client_hmac,
+                client_request_sha256,
+                reconciliation_id,
+                operation_created_at,
+                operation_created_at,
+            ),
+        )
+        if dispatched:
+            conn.execute(
+                "UPDATE relay_container_operations "
+                "SET status = 'dispatched', updated_at = ? "
+                "WHERE operation_id = ?",
+                (operation_dispatched_at, operation_id),
+            )
+        return {
+            "operation_id": operation_id,
+            "reservation_key": operation_id,
+            "owner_generation": owner_generation,
+            "attempt_generation": 1,
+            "provider_operation_id": provider_operation_id,
+            "admission_sha256": admission_sha256,
+            "request_sha256": input_sha256,
+            "egress_profile": "openai-chat-completions-canary-v1",
+            "egress_worker_version_id": "worker-version-0047",
+            "channel_id": channel_id,
+            "selected_group": "default",
+            "model_name": "gpt-4o-mini",
+            "endpoint_path": "chat/completions",
+            "input_mode": "r2",
+            "input_object_key": input_object_key,
+            "input_object_version": f"version-0047-{label}",
+            "input_sha256": input_sha256,
+            "input_size": 64,
+            "input_content_type": "application/json",
+            "billing_kind": billing_kind,
+            "billing_contract_hash": billing_contract_hash,
+            "billing_snapshot_sha256": billing_snapshot_sha256,
+            "stream_policy": "non_streaming",
+            "operation_created_at": operation_created_at,
+            "operation_dispatched_at": operation_dispatched_at,
+            "authorized_at": operation_dispatched_at + 1,
+            "execution_deadline_at": execution_deadline_at,
+            "owner_lease_expires_at": owner_lease_expires_at,
+            "reservation_owner_deadline_at": reservation_owner_deadline_at,
+            "reservation_lease_expires_at": owner_lease_expires_at,
+        }
+
+    prepared = insert_authority("prepared", dispatched=False)
+    expect_integrity_error(
+        lambda: conn.execute(grant_insert_sql, prepared),
+        "0047 accepted a provider egress grant for a prepared operation",
+        "relay container provider egress grant authority mismatch",
+    )
+
+    inactive = insert_authority("inactive")
+    conn.execute(
+        "UPDATE relay_billing_reservations "
+        "SET status = 'refunded', finalization_reason = '0047_test', "
+        "refunded_at = 1250, updated_at = 1250 WHERE reservation_key = ?",
+        (inactive["reservation_key"],),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(grant_insert_sql, inactive),
+        "0047 accepted a provider egress grant for an inactive reservation",
+        "relay container provider egress grant authority mismatch",
+    )
+
+    empty_tiered_snapshot = insert_authority(
+        "tiered-empty-snapshot",
+        billing_kind="tiered_expr",
+        billing_snapshot_json="",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(grant_insert_sql, empty_tiered_snapshot),
+        "0047 accepted a tiered provider egress grant without a frozen snapshot",
+        "relay container provider egress grant authority mismatch",
+    )
+
+    invalid_tiered_snapshot = insert_authority(
+        "tiered-invalid-snapshot",
+        billing_kind="tiered_expr",
+        billing_snapshot_json="not-json",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(grant_insert_sql, invalid_tiered_snapshot),
+        "0047 accepted a tiered provider egress grant with invalid snapshot JSON",
+        "relay container provider egress grant authority mismatch",
+    )
+
+    mismatched = insert_authority("mismatch")
+    mismatch_cases = {
+        "attempt generation": {"attempt_generation": 2},
+        "provider operation": {"provider_operation_id": "provider:0047-forged"},
+        "admission digest": {"admission_sha256": "f" * 64},
+        "request digest": {"request_sha256": "e" * 64},
+        "worker profile": {"egress_profile": "another-profile"},
+        "worker version shape": {"egress_worker_version_id": "bad worker version"},
+        "channel": {"channel_id": 470048},
+        "group": {"selected_group": "vip"},
+        "model": {"model_name": "gpt-4o"},
+        "endpoint": {"endpoint_path": "responses"},
+        "R2 version": {"input_object_version": "forged-version"},
+        "billing contract": {
+            "billing_contract_hash": "flat-v4:" + "d" * 64,
+            "billing_snapshot_sha256": "d" * 64,
+        },
+        "stream policy": {"stream_policy": "streaming"},
+        "dispatch timestamp": {"operation_dispatched_at": 1201},
+    }
+    for label, changes in mismatch_cases.items():
+        candidate = {**mismatched, **changes}
+        expect_integrity_error(
+            lambda candidate=candidate: conn.execute(grant_insert_sql, candidate),
+            f"0047 accepted a provider egress grant with mismatched {label}",
+        )
+
+    valid = insert_authority("valid")
+    conn.execute(grant_insert_sql, valid)
+    persisted = conn.execute(
+        "SELECT provider_operation_id, attempt_generation, egress_profile, "
+        "egress_worker_version_id, billing_contract_hash, "
+        "billing_snapshot_sha256, stream_policy, operation_dispatched_at, "
+        "authorized_at FROM relay_container_provider_egress_grants "
+        "WHERE operation_id = ?",
+        (valid["operation_id"],),
+    ).fetchone()
+    expected = (
+        valid["provider_operation_id"],
+        1,
+        valid["egress_profile"],
+        valid["egress_worker_version_id"],
+        valid["billing_contract_hash"],
+        valid["billing_snapshot_sha256"],
+        "non_streaming",
+        valid["operation_dispatched_at"],
+        valid["authorized_at"],
+    )
+    if persisted != expected:
+        raise SystemExit(f"0047 provider egress grant was not frozen exactly: {persisted}")
+
+    tiered = insert_authority("tiered", billing_kind="tiered_expr")
+    conn.execute(grant_insert_sql, tiered)
+    tiered_snapshot_json = conn.execute(
+        "SELECT billing_snapshot_json FROM relay_billing_reservations "
+        "WHERE reservation_key = ?",
+        (tiered["reservation_key"],),
+    ).fetchone()[0]
+    tiered_snapshot_sha256 = hashlib.sha256(tiered_snapshot_json.encode()).hexdigest()
+    if conn.execute(
+        "SELECT billing_kind, billing_contract_hash, billing_snapshot_sha256 "
+        "FROM relay_container_provider_egress_grants WHERE operation_id = ?",
+        (tiered["operation_id"],),
+    ).fetchone() != (
+        "tiered_expr",
+        tiered["billing_contract_hash"],
+        tiered_snapshot_sha256,
+    ):
+        raise SystemExit("0047 tiered provider egress grant was not frozen exactly")
+
+    expect_integrity_error(
+        lambda: conn.execute(grant_insert_sql, valid),
+        "0047 accepted a duplicate provider attempt grant",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_provider_egress_grants "
+            "SET egress_worker_version_id = 'rewritten' WHERE operation_id = ?",
+            (valid["operation_id"],),
+        ),
+        "0047 provider egress grants must reject every update",
+        "relay container provider egress grant is immutable",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_provider_egress_grants WHERE operation_id = ?",
+            (valid["operation_id"],),
+        ),
+        "0047 provider egress grants must reject every delete",
+        "relay container provider egress grant cannot be deleted",
+    )
 
 
 def verify_relay_container_reconciliation_observer(
@@ -6631,13 +7041,21 @@ def verify_relay_container_financial_terminal_enforce_rollout(
         ),
         None,
     )
-    if enforce_path is None or retry_path is None:
-        raise SystemExit("0045/0046 relay Container enforcement migrations not found")
+    grant_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0047_relay_container_provider_egress_grants.sql"
+        ),
+        None,
+    )
+    if enforce_path is None or retry_path is None or grant_path is None:
+        raise SystemExit("0045/0046/0047 relay Container migrations not found")
     enforce_index = schema_paths.index(enforce_path)
     if enforce_index == 0 or schema_paths[enforce_index - 1] != retry_path:
         raise SystemExit("0046 enforcement must immediately follow 0045 retry apply")
-    if enforce_index != len(schema_paths) - 1:
-        raise SystemExit("0046 enforcement must be the current D1 migration head")
+    if enforce_index + 1 >= len(schema_paths) or schema_paths[enforce_index + 1] != grant_path:
+        raise SystemExit("0046 enforcement must immediately precede 0047 egress grants")
 
     enforce_sql = enforce_path.read_text(encoding="utf-8")
     if "if not exists" in enforce_sql.lower():
@@ -6809,6 +7227,155 @@ def verify_relay_container_financial_terminal_enforce_rollout(
         "0046 enforcement accepted an eventless v1 terminal transition",
         "relay container terminal transition requires event and outbox",
     )
+
+
+def verify_relay_container_provider_egress_grant_rollout(
+    schema_paths: list[Path],
+) -> None:
+    grant_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0047_relay_container_provider_egress_grants.sql"
+        ),
+        None,
+    )
+    enforce_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0046_relay_container_financial_terminal_enforce.sql"
+        ),
+        None,
+    )
+    if grant_path is None or enforce_path is None:
+        raise SystemExit("0046/0047 relay Container egress migrations not found")
+    grant_index = schema_paths.index(grant_path)
+    if grant_index == 0 or schema_paths[grant_index - 1] != enforce_path:
+        raise SystemExit("0047 provider egress grants must immediately follow 0046")
+    if grant_index != len(schema_paths) - 1:
+        raise SystemExit("0047 provider egress grants must be the current D1 migration head")
+
+    grant_sql = grant_path.read_text(encoding="utf-8")
+    if "if not exists" in grant_sql.lower():
+        raise SystemExit("0047 critical egress grant objects must fail on duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_provider_egress_grants",
+        "PRIMARY KEY (operation_id, owner_generation, attempt_generation)",
+        "attempt_generation = 1",
+        "request_sha256 = input_sha256",
+        "length(endpoint_path) BETWEEN 1 AND 256",
+        "endpoint_path NOT GLOB '*[^A-Za-z0-9_./:-]*'",
+        "billing_snapshot_sha256 = substr(billing_contract_hash, -64)",
+        "stream_policy = 'non_streaming'",
+        "CREATE UNIQUE INDEX idx_relay_container_provider_egress_grants_provider_operation",
+        "CREATE INDEX idx_relay_container_provider_egress_grants_worker_version",
+        "CREATE TRIGGER relay_container_provider_egress_grant_insert_authority_guard",
+        "operation.status = 'dispatched'",
+        "reservation.status = 'reserved'",
+        "operation.provider_operation_id = NEW.provider_operation_id",
+        "reservation.model_name = NEW.model_name",
+        "reservation.expr_hash = NEW.billing_contract_hash",
+        "length(trim(reservation.billing_snapshot_json)) > 0",
+        "CREATE TRIGGER relay_container_provider_egress_grant_update_guard",
+        "CREATE TRIGGER relay_container_provider_egress_grant_delete_guard",
+    ):
+        if fragment not in grant_sql:
+            raise SystemExit(f"0047 provider egress rollout contract missing: {fragment}")
+    if "substr(endpoint_path, 1, 1) = '/'" in grant_sql:
+        raise SystemExit("0047 endpoint path must accept canonical paths without a leading slash")
+    if hashlib.sha256(b"").hexdigest() in grant_sql:
+        raise SystemExit("0047 must not bind tiered billing snapshots to SHA256(empty)")
+    for forbidden in (
+        "ALTER TABLE",
+        "INSERT INTO relay_container_provider_egress_grants",
+        "UPDATE relay_container_operations",
+        "UPDATE relay_billing_reservations",
+        "DELETE FROM relay_container_operations",
+        "DELETE FROM relay_billing_reservations",
+    ):
+        if forbidden in grant_sql:
+            raise SystemExit(f"0047 provider egress rollout must remain default-empty: {forbidden}")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == grant_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    input_sha256 = hashlib.sha256(b"0047-rollout-input").hexdigest()
+    conn.execute(
+        "INSERT INTO relay_billing_reservations ("
+        "reservation_key, user_id, token_id, model_name, endpoint_path, "
+        "request_id_hash, expr_hash, billing_kind, billing_snapshot_json, "
+        "candidate_group_count, reservation_strategy, pre_consumed_quota, "
+        "status, channel_id, selected_group, selected_at, lease_expires_at, "
+        "owner_generation, owner_deadline_at, owner_lease_renewed_at, "
+        "created_at, updated_at) VALUES ("
+        "'0047-rollout-existing', 470047, 0, 'gpt-4o-mini', "
+        "'chat/completions', ?, ?, 'tiered_expr', ?, 1, "
+        "'selected_group', 0, 'reserved', 47, 'default', 900, "
+        "2000, 2, 1900, 0, 800, 1000)",
+        (
+            hashlib.sha256(b"0047-rollout-request-id").hexdigest(),
+            hashlib.sha256(b"0047-rollout-expression").hexdigest(),
+            '{"billing_kind":"tiered_expr","schema_version":1}',
+        ),
+    )
+    conn.execute(
+        "INSERT INTO relay_container_operations ("
+        "reservation_key, operation_id, owner_generation, owner_lease_expires_at, "
+        "channel_id, selected_group, operation_kind, provider_operation_id, "
+        "admission_sha256, protocol_version, shard_contract_version, "
+        "ring_generation, shard_count, shard_index, instance_name, "
+        "execution_deadline_at, input_mode, input_object_key, "
+        "input_object_version, input_sha256, input_size, input_content_type, "
+        "trace_id, client_idempotency_hmac_sha256, client_request_sha256, "
+        "reconciliation_id, status, created_at, updated_at) VALUES ("
+        "'0047-rollout-existing', '0047-rollout-existing', 2, 2000, "
+        "47, 'default', 'chat_completions', 'provider:0047-rollout-existing', ?, "
+        "1, 1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003', 1800, 'r2', ?, "
+        "'version-0047-rollout', ?, 64, 'application/json', "
+        "'trace:0047-rollout', ?, ?, ?, 'prepared', 1000, 1000)",
+        (
+            hashlib.sha256(b"0047-rollout-admission").hexdigest(),
+            f"container-inputs/v1/0047-rollout-existing/2/{input_sha256}",
+            input_sha256,
+            hashlib.sha256(b"0047-rollout-hmac").hexdigest(),
+            hashlib.sha256(b"0047-rollout-client-request").hexdigest(),
+            hashlib.sha256(b"0047-rollout-reconciliation").hexdigest(),
+        ),
+    )
+    conn.execute(
+        "UPDATE relay_container_operations SET status = 'dispatched', updated_at = 1100 "
+        "WHERE operation_id = '0047-rollout-existing'"
+    )
+    protected_tables = (
+        "relay_billing_reservations",
+        "relay_container_operations",
+        "relay_container_terminal_events",
+        "relay_container_terminal_outbox_state",
+        "relay_container_reconciliation_observations",
+        "relay_container_reconciliation_cursor",
+        "relay_container_reconciliation_retry_events",
+        "relay_container_r2_inventory_cursors",
+        "relay_container_r2_inventory_findings",
+    )
+    before_rows = {
+        table: conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+        for table in protected_tables
+    }
+    conn.executescript(grant_sql)
+    after_rows = {
+        table: conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+        for table in protected_tables
+    }
+    if after_rows != before_rows:
+        raise SystemExit("0047 provider egress rollout changed existing durable state")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_provider_egress_grants"
+    ).fetchone() != (0,):
+        raise SystemExit("0047 provider egress rollout backfilled historical grants")
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

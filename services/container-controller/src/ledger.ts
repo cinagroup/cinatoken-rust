@@ -57,6 +57,8 @@ export interface StorageAccessGrant {
     provider_operation_id: string;
     admission_sha256: string;
     request_sha256: string;
+    egress_profile: string | null;
+    egress_worker_version_id: string | null;
     status: ProviderAttemptStatus;
   } | null;
 }
@@ -79,6 +81,11 @@ export type ProviderAttemptStatus =
   | "ambiguous"
   | "cancelled";
 
+export interface ProviderEgressIdentity {
+  profile: string;
+  worker_version_id: string;
+}
+
 export interface ProviderAttemptRow {
   [key: string]: SqlStorageValue;
   operation_id: string;
@@ -87,6 +94,8 @@ export interface ProviderAttemptRow {
   provider_operation_id: string;
   admission_sha256: string;
   request_sha256: string;
+  egress_profile: string | null;
+  egress_worker_version_id: string | null;
   status: ProviderAttemptStatus;
   response_status: number | null;
   response_code: string | null;
@@ -340,6 +349,8 @@ export class RelayShardLedger {
         provider_operation_id TEXT NOT NULL,
         admission_sha256 TEXT NOT NULL,
         request_sha256 TEXT NOT NULL,
+        egress_profile TEXT,
+        egress_worker_version_id TEXT,
         status TEXT NOT NULL,
         response_status INTEGER,
         response_code TEXT,
@@ -359,6 +370,12 @@ export class RelayShardLedger {
         CHECK (length(provider_operation_id) BETWEEN 1 AND 128),
         CHECK (length(admission_sha256) = 64),
         CHECK (length(request_sha256) = 64),
+        CHECK (
+          (egress_profile IS NULL AND egress_worker_version_id IS NULL) OR
+          (egress_profile IS NOT NULL AND length(egress_profile) BETWEEN 1 AND 64
+            AND egress_worker_version_id IS NOT NULL
+            AND length(egress_worker_version_id) BETWEEN 1 AND 128)
+        ),
         CHECK (status IN ('prepared', 'dispatched', 'succeeded', 'definite_reject', 'ambiguous', 'cancelled')),
         CHECK (prepared_at > 0 AND updated_at >= prepared_at),
         CHECK (
@@ -467,6 +484,8 @@ export class RelayShardLedger {
         to_status TEXT NOT NULL,
         response_status INTEGER,
         response_code TEXT,
+        egress_profile TEXT,
+        egress_worker_version_id TEXT,
         observed_at INTEGER NOT NULL,
         UNIQUE (operation_id, owner_generation, attempt_generation, event_sequence),
         CHECK (event_sequence BETWEEN 1 AND 4),
@@ -629,6 +648,8 @@ export class RelayShardLedger {
         ON cinatoken_shard_readiness_dispatches(created_at_ms);
     `);
     this.ensureOperationColumns();
+    this.ensureProviderAttemptEgressColumns();
+    this.installProviderAttemptEgressGuards();
     this.storage.sql.exec(
       `UPDATE cinatoken_shard_operations
           SET status = 'failed', response_status = COALESCE(response_status, 503)
@@ -929,6 +950,39 @@ export class RelayShardLedger {
     attemptGeneration: number,
     now: number,
   ): DispatchProviderAttemptOutcome {
+    return this.dispatchProviderAttemptInternal(
+      operationId,
+      ownerGeneration,
+      attemptGeneration,
+      now,
+      null,
+    );
+  }
+
+  dispatchProviderAttemptWithEgressIdentity(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    identity: ProviderEgressIdentity,
+    now: number,
+  ): DispatchProviderAttemptOutcome {
+    validateProviderEgressIdentity(identity);
+    return this.dispatchProviderAttemptInternal(
+      operationId,
+      ownerGeneration,
+      attemptGeneration,
+      now,
+      identity,
+    );
+  }
+
+  private dispatchProviderAttemptInternal(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    now: number,
+    identity: ProviderEgressIdentity | null,
+  ): DispatchProviderAttemptOutcome {
     this.ensureSchema();
     validateProviderAttemptCommand(operationId, ownerGeneration, now, attemptGeneration);
     return this.storage.transactionSync(() => {
@@ -938,7 +992,12 @@ export class RelayShardLedger {
         attemptGeneration,
       );
       if (current === null) throw new ProtocolError("provider_attempt_not_found", 404);
-      if (current.status !== "prepared") return { kind: "existing", row: current };
+      if (current.status !== "prepared") {
+        if (identity !== null && !providerEgressIdentityMatches(current, identity)) {
+          throw new ProtocolError("provider_attempt_egress_identity_conflict", 409);
+        }
+        return { kind: "existing", row: current };
+      }
       const retryState = this.readProviderRetryState(operationId, ownerGeneration);
       if (
         retryState === null ||
@@ -950,7 +1009,8 @@ export class RelayShardLedger {
       }
       this.storage.sql.exec(
         `UPDATE cinatoken_shard_provider_attempts
-            SET status = 'dispatched', dispatched_at = ?1, updated_at = ?1
+            SET status = 'dispatched', dispatched_at = ?1, updated_at = ?1,
+                egress_profile = ?5, egress_worker_version_id = ?6
           WHERE operation_id = ?2 AND owner_generation = ?3 AND attempt_generation = ?4
             AND status = 'prepared'
             AND EXISTS (
@@ -965,6 +1025,8 @@ export class RelayShardLedger {
         operationId,
         ownerGeneration,
         attemptGeneration,
+        identity?.profile ?? null,
+        identity?.worker_version_id ?? null,
       );
       if (changedRowCount(this.storage) !== 1) {
         const replay = this.readProviderAttempt(
@@ -973,6 +1035,9 @@ export class RelayShardLedger {
           attemptGeneration,
         );
         if (replay !== null && replay.status !== "prepared") {
+          if (identity !== null && !providerEgressIdentityMatches(replay, identity)) {
+            throw new ProtocolError("provider_attempt_egress_identity_conflict", 409);
+          }
           return { kind: "existing", row: replay };
         }
         throw new ProtocolError("provider_attempt_dispatch_conflict", 409);
@@ -1951,6 +2016,88 @@ export class RelayShardLedger {
     }
   }
 
+  private ensureProviderAttemptEgressColumns(): void {
+    const additions: ReadonlyArray<readonly [string, string]> = [
+      ["egress_profile", "TEXT"],
+      ["egress_worker_version_id", "TEXT"],
+    ];
+    for (const table of [
+      "cinatoken_shard_provider_attempts",
+      "cinatoken_shard_provider_attempt_events",
+    ]) {
+      const existing = new Set(
+        this.storage.sql
+          .exec<{ name: string }>(`PRAGMA table_info(${table})`)
+          .toArray()
+          .map(({ name }) => name),
+      );
+      for (const [name, definition] of additions) {
+        if (!existing.has(name)) {
+          this.storage.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+        }
+      }
+    }
+  }
+
+  private installProviderAttemptEgressGuards(): void {
+    this.storage.sql.exec(`
+      DROP TRIGGER IF EXISTS cinatoken_shard_provider_attempt_egress_insert_guard;
+      CREATE TRIGGER cinatoken_shard_provider_attempt_egress_insert_guard
+      BEFORE INSERT ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      WHEN NEW.egress_profile IS NOT NULL OR NEW.egress_worker_version_id IS NOT NULL
+      BEGIN
+        SELECT RAISE(ABORT, 'provider attempt egress identity must be assigned at dispatch');
+      END;
+      DROP TRIGGER IF EXISTS cinatoken_shard_provider_attempt_egress_identity_guard;
+      CREATE TRIGGER cinatoken_shard_provider_attempt_egress_identity_guard
+      BEFORE UPDATE ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      WHEN NOT (
+        (NEW.egress_profile IS OLD.egress_profile
+          AND NEW.egress_worker_version_id IS OLD.egress_worker_version_id)
+        OR
+        (OLD.status = 'prepared' AND NEW.status = 'dispatched'
+          AND OLD.egress_profile IS NULL AND OLD.egress_worker_version_id IS NULL
+          AND NEW.egress_profile IS NOT NULL
+          AND length(NEW.egress_profile) BETWEEN 1 AND 64
+          AND NEW.egress_profile NOT GLOB '*[^A-Za-z0-9._:/@-]*'
+          AND NEW.egress_worker_version_id IS NOT NULL
+          AND length(NEW.egress_worker_version_id) BETWEEN 1 AND 128
+          AND NEW.egress_worker_version_id NOT GLOB '*[^A-Za-z0-9._:/@-]*')
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'provider attempt egress identity is immutable');
+      END;
+      DROP TRIGGER IF EXISTS cinatoken_shard_provider_attempt_event_append;
+      CREATE TRIGGER cinatoken_shard_provider_attempt_event_append
+      AFTER UPDATE ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      BEGIN
+        INSERT INTO cinatoken_shard_provider_attempt_events
+          (event_id, operation_id, owner_generation, attempt_generation, event_sequence,
+           from_status, to_status, response_status, response_code, egress_profile,
+           egress_worker_version_id, observed_at)
+        VALUES (
+          'provider-attempt-v1:' || NEW.operation_id || ':' || NEW.owner_generation || ':' ||
+            NEW.attempt_generation || ':' ||
+            CASE WHEN OLD.status = 'prepared' THEN 2 ELSE 3 END,
+          NEW.operation_id,
+          NEW.owner_generation,
+          NEW.attempt_generation,
+          CASE WHEN OLD.status = 'prepared' THEN 2 ELSE 3 END,
+          OLD.status,
+          NEW.status,
+          NEW.response_status,
+          NEW.response_code,
+          NEW.egress_profile,
+          NEW.egress_worker_version_id,
+          NEW.updated_at
+        );
+      END;
+    `);
+  }
+
   private readStorageOperation(operationId: string): StorageOperationRow | null {
     return firstRow<StorageOperationRow>(
       this.storage.sql.exec<StorageOperationRow>(
@@ -1974,7 +2121,8 @@ export class RelayShardLedger {
     const row = firstRow<ProviderAttemptRow>(
       this.storage.sql.exec<ProviderAttemptRow>(
         `SELECT operation_id, owner_generation, attempt_generation, provider_operation_id,
-                admission_sha256, request_sha256, status, response_status, response_code,
+                admission_sha256, request_sha256, egress_profile, egress_worker_version_id,
+                status, response_status, response_code,
                 result_object_key, result_object_version, result_sha256, result_size,
                 result_content_type, prepared_at, dispatched_at, terminal_at, updated_at
            FROM cinatoken_shard_provider_attempts
@@ -1995,7 +2143,8 @@ export class RelayShardLedger {
     const row = firstRow<ProviderAttemptRow>(
       this.storage.sql.exec<ProviderAttemptRow>(
         `SELECT operation_id, owner_generation, attempt_generation, provider_operation_id,
-                admission_sha256, request_sha256, status, response_status, response_code,
+                admission_sha256, request_sha256, egress_profile, egress_worker_version_id,
+                status, response_status, response_code,
                 result_object_key, result_object_version, result_sha256, result_size,
                 result_content_type, prepared_at, dispatched_at, terminal_at, updated_at
            FROM cinatoken_shard_provider_attempts
@@ -2344,6 +2493,8 @@ function storageGrant(
             provider_operation_id: providerAttempt.provider_operation_id,
             admission_sha256: providerAttempt.admission_sha256,
             request_sha256: providerAttempt.request_sha256,
+            egress_profile: providerAttempt.egress_profile,
+            egress_worker_version_id: providerAttempt.egress_worker_version_id,
             status: providerAttempt.status,
           },
   };
@@ -2473,6 +2624,42 @@ function validateProviderRetryPolicy(policy: ProviderRetryPolicy): void {
   }
 }
 
+function validateProviderEgressIdentity(identity: ProviderEgressIdentity): void {
+  if (
+    identity === null ||
+    typeof identity !== "object" ||
+    Array.isArray(identity)
+  ) {
+    throw new ProtocolError("invalid_provider_egress_identity", 400);
+  }
+  const keys = Object.keys(identity).sort();
+  if (
+    keys.length !== 2 ||
+    keys[0] !== "profile" ||
+    keys[1] !== "worker_version_id" ||
+    typeof identity.profile !== "string" ||
+    identity.profile.length < 1 ||
+    identity.profile.length > 64 ||
+    !/^[A-Za-z0-9._:/@-]+$/.test(identity.profile) ||
+    typeof identity.worker_version_id !== "string" ||
+    identity.worker_version_id.length < 1 ||
+    identity.worker_version_id.length > 128 ||
+    !/^[A-Za-z0-9._:/@-]+$/.test(identity.worker_version_id)
+  ) {
+    throw new ProtocolError("invalid_provider_egress_identity", 400);
+  }
+}
+
+function providerEgressIdentityMatches(
+  row: ProviderAttemptRow,
+  identity: ProviderEgressIdentity,
+): boolean {
+  return (
+    row.egress_profile === identity.profile &&
+    row.egress_worker_version_id === identity.worker_version_id
+  );
+}
+
 function validateProviderAttemptRow(row: ProviderAttemptRow): void {
   validateProviderAttemptCommand(
     row.operation_id,
@@ -2494,6 +2681,22 @@ function validateProviderAttemptRow(row: ProviderAttemptRow): void {
       (!Number.isSafeInteger(row.terminal_at) ||
         row.terminal_at < row.prepared_at ||
         (row.dispatched_at !== null && row.terminal_at < row.dispatched_at)))
+  ) {
+    throw new ProtocolError("provider_attempt_corrupt", 503);
+  }
+  const hasLegacyEgressIdentity =
+    row.egress_profile === null && row.egress_worker_version_id === null;
+  const hasVersionedEgressIdentity =
+    row.egress_profile !== null &&
+    row.egress_worker_version_id !== null &&
+    row.egress_profile.length <= 64 &&
+    /^[A-Za-z0-9._:/@-]+$/.test(row.egress_profile) &&
+    row.egress_worker_version_id.length <= 128 &&
+    /^[A-Za-z0-9._:/@-]+$/.test(row.egress_worker_version_id);
+  if (
+    (!hasLegacyEgressIdentity && !hasVersionedEgressIdentity) ||
+    ((row.status === "prepared" || row.status === "cancelled") &&
+      !hasLegacyEgressIdentity)
   ) {
     throw new ProtocolError("provider_attempt_corrupt", 503);
   }

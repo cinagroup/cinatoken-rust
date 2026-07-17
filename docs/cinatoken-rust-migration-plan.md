@@ -14378,9 +14378,10 @@ result object, retry permission, usage parsing, or settlement is created.
 
 Portable Controller tests now prove strict readiness readback precedes dispatch
 and that a 503 or wrong-profile body makes zero broker execute calls. A separate
-Workerd suite loads the compiled Rust Wasm behind four Service Bindings and
-proves ready, disabled, missing-model, missing-secret, wrong-method, and
-wrong-profile behavior without an outbound provider service. The local test
+Workerd suite loads the compiled Rust Wasm behind five Service Bindings and
+proves ready, disabled, missing-model, missing-secret, missing-version,
+wrong-method, and wrong-profile behavior without a real outbound provider
+service. The local test
 runtime uses its supported compatibility date 2026-07-15; the tracked broker
 deployment remains on 2026-07-17.
 
@@ -14393,3 +14394,111 @@ financial convergence, cost/alerts/rollback, and C1-C5 remain mandatory. All
 tracked gates stay false; no remote deployment, provider call, secret
 provisioning, or traffic switch occurred. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.237 Provider Broker Version Affinity And Durable Provenance (2026-07-17)
+
+The pre-dispatch broker probe is now bound to the actual Cloudflare Worker
+version that will be allowed to execute the one-shot provider attempt. The
+broker declares `CF_VERSION_METADATA` explicitly in local, staging, and
+production because environment bindings are not assumed to inherit. An enabled
+broker fails closed when that binding is missing or its `id` is malformed. The
+exact, N-1-compatible readiness body remains:
+
+```json
+{
+  "protocol_version": 1,
+  "profile": "openai-chat-completions-canary-v1",
+  "ready": true
+}
+```
+
+The actual Worker ID is returned only in
+`x-cinatoken-provider-egress-worker-version`. The response remains no-store,
+bounded to 1 KiB, and contains no model or credential. Successful execute
+responses and all policy responses emitted after version resolution carry the
+same private header. The version metadata contract is the platform-provided
+runtime identity, not a service name, Git SHA, tag, or operator-supplied value:
+<https://developers.cloudflare.com/workers/runtime-apis/bindings/version-metadata/>.
+
+The Controller sends both readiness GET and execute POST through the Service
+Binding with the same `Cloudflare-Workers-Version-Key`. The key is the already
+frozen `provider_operation_id`, so retrying a readiness read cannot silently
+choose a different affinity identity for the same provider operation. This
+uses Cloudflare version affinity exactly as documented:
+<https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/version-affinity/>.
+Affinity is not an atomic version pin. A key may move from an old version to a
+new version as deployment percentages advance. Correctness therefore does not
+depend on routing affinity alone.
+
+The local send order is now:
+
+1. validate the Container request, immutable DO grant, deadline, and body;
+2. prove the complete global D1 operation is exactly `dispatched`;
+3. require the private broker binding;
+4. issue readiness with the frozen affinity key, require the exact stable
+   three-field v1 body, and validate the actual Worker version header;
+5. call `dispatchProviderAttemptV2`, which atomically changes
+   `prepared -> dispatched` and writes the fixed profile plus Worker version;
+6. verify the committed row returns exactly that identity before sending;
+7. issue the single execute-protocol-v2 POST with the same affinity key and the
+   committed readiness version in
+   `x-cinatoken-provider-egress-expected-worker-version`; the broker compares
+   it with its runtime version before body read, secret access, or provider I/O;
+8. require the execute response version header to equal the committed readiness
+   version before interpreting status or body; and
+9. bind profile and Worker version into create-only R2 result metadata schema 3,
+   then attach the manifest and record terminal success.
+
+The shard SQLite schema adds nullable `egress_profile` and
+`egress_worker_version_id` columns to provider attempts and immutable attempt
+events. Existing DOs receive the columns through idempotent `PRAGMA table_info`
+plus `ALTER TABLE`. SQLite guards require both values to be assigned together
+only during `prepared -> dispatched`, preserve them on every later transition,
+and reject mutation. Dispatch and terminal events copy the same identity.
+Runtime validation independently rejects half-written or malformed identities.
+
+N/N-1 behavior is explicit. The old `dispatchProviderAttempt` RPC remains for
+older callers and produces a legacy `NULL/NULL` identity. Existing attempt rows
+remain readable. R2 metadata schema 1 remains valid for non-journaled writes and
+schema 2 remains valid for legacy journaled writes; only a versioned attempt
+uses schema 3. A new Controller calling an old DO that lacks the V2 RPC receives
+a pre-send 503 and does not consume dispatch authority or call the provider.
+An already-dispatched legacy attempt uses the existing no-resend replay path.
+The readiness v1 JSON body deliberately remains the pre-existing three-field
+shape, so broker N can be deployed before Controller N and still serve
+Controller N-1; the extra private version header is ignored by the old caller.
+Rollback reverses that order: Controller first, then broker. Controller N fails
+closed before dispatch if it reaches broker N-1, which has no version header.
+Broker N continues to accept legacy execute protocol v1 without an expected
+version for Controller N-1. Controller N uses protocol v2; if deployment skew
+routes that POST to broker N-1, its existing protocol guard rejects the request
+before credential access or provider fetch. Broker N likewise rejects a v2
+expected-version mismatch with 409 before provider I/O.
+
+The Rust R2 inventory reader now recognizes result metadata schemas 1, 2, and 3
+as separate exact contracts. Schema 2 requires one canonical bounded attempt
+generation; schema 3 additionally requires the bounded broker profile and
+Worker version, while unknown, partial, or cross-version fields remain invalid.
+The Workerd inventory scenario scans an actual schema-3 result without producing
+an `invalid_contract` anomaly.
+
+Failure classification is intentionally asymmetric. Missing or invalid
+readiness version evidence is a pre-dispatch 503 with zero provider sends. A V2
+dispatch readback mismatch consumes authority but still makes zero provider
+sends and enters recovery. Missing or different execute version evidence after
+POST is `provider_egress_version_ambiguous`: the response body is cancelled, no
+R2 object is written, and provider resend is forbidden even when HTTP status was
+200. Protocol v2 prevents a conforming broker with a different runtime version
+from calling the provider at all; the Controller still treats an untrusted,
+missing, or malformed post-dispatch response conservatively because transport
+evidence cannot prove what an unknown target executed.
+
+No D1 migration was consumed. Migration 0046 remains reserved for planned
+legacy enforcement after old-writer drain. Global D1 provider-egress provenance
+must use a later migration, currently planned as 0047, after 0046 is applied and
+verified. Remote deployment readback, mixed-version drills,
+edge/controller/DO/container-artifact provenance, provider idempotency or
+lookup, real faults, global terminal acknowledgement, financial convergence,
+and C1-C5 approval remain open. Every activation gate is still false; no secret,
+deployment, provider call, or traffic switch occurred. Go/VPS remains
+authoritative and production remains **NO-GO**.

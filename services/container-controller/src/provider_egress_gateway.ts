@@ -1,5 +1,6 @@
 import {
   type DispatchProviderAttemptOutcome,
+  type ProviderEgressIdentity,
   type ProviderAttemptTerminal,
   type RecordProviderAttemptOutcome,
   type RecordStorageResultOutcome,
@@ -32,6 +33,11 @@ export const PROVIDER_EGRESS_PROFILE = "openai-chat-completions-canary-v1";
 export const PROVIDER_CANARY_OPERATION_KIND = "chat_completions_canary";
 export const PROVIDER_EGRESS_PROTOCOL_HEADER = "x-cinatoken-provider-egress-protocol";
 export const PROVIDER_EGRESS_PROFILE_HEADER = "x-cinatoken-provider-egress-profile";
+export const PROVIDER_EGRESS_WORKER_VERSION_HEADER =
+  "x-cinatoken-provider-egress-worker-version";
+export const PROVIDER_EGRESS_EXPECTED_WORKER_VERSION_HEADER =
+  "x-cinatoken-provider-egress-expected-worker-version";
+export const CLOUDFLARE_WORKERS_VERSION_KEY_HEADER = "cloudflare-workers-version-key";
 export const PROVIDER_OPERATION_ID_HEADER = "x-cinatoken-provider-operation-id";
 export const PROVIDER_DEADLINE_HEADER = "x-cinatoken-provider-deadline";
 export const MAX_PROVIDER_EGRESS_BODY_BYTES = 4 * 1024 * 1024;
@@ -50,10 +56,11 @@ export interface ProviderEgressGatewayPort {
     operationId: string,
     ownerGeneration: number,
   ): Promise<{ ok: true; grant: StorageAccessGrant } | { ok: false; error: RpcError }>;
-  dispatchProviderAttempt(
+  dispatchProviderAttemptV2(
     operationId: string,
     ownerGeneration: number,
     attemptGeneration: number,
+    identity: ProviderEgressIdentity,
   ): Promise<RpcResult<DispatchProviderAttemptOutcome>>;
   recordStorageResult(
     operationId: string,
@@ -135,20 +142,34 @@ export async function handleProviderEgressGatewayRequest(
   if (broker === undefined) {
     return jsonError("provider_egress_binding_unavailable", 503);
   }
+  let egressIdentity: ProviderEgressIdentity;
   try {
-    await requireProviderEgressReadiness(broker, grant.deadline_at);
+    egressIdentity = await requireProviderEgressReadiness(
+      broker,
+      grant.deadline_at,
+      grant.provider_operation_id,
+    );
   } catch {
     return jsonError("provider_egress_not_ready", 503);
   }
 
-  const dispatch = await port.dispatchProviderAttempt(
-    grant.operation_id,
-    grant.owner_generation,
-    attemptGeneration,
-  );
+  let dispatch: RpcResult<DispatchProviderAttemptOutcome>;
+  try {
+    dispatch = await port.dispatchProviderAttemptV2(
+      grant.operation_id,
+      grant.owner_generation,
+      attemptGeneration,
+      egressIdentity,
+    );
+  } catch {
+    return jsonError("provider_egress_dispatch_unavailable", 503);
+  }
   if (!dispatch.ok) return jsonError(dispatch.error.code, dispatch.error.status);
   if (dispatch.result.kind !== "dispatched") {
     return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_replay_ambiguous");
+  }
+  if (!providerAttemptEgressIdentityMatches(dispatch.result.row, egressIdentity)) {
+    return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_identity_ambiguous");
   }
 
   let upstream: Response;
@@ -156,13 +177,26 @@ export async function handleProviderEgressGatewayRequest(
     upstream = await broker.fetch(
       new Request(`https://${PROVIDER_EGRESS_HOST}${PROVIDER_EGRESS_SERVICE_PATH}`, {
         method: "POST",
-        headers: brokerHeaders(grant, attemptGeneration, expectedSha256, body.byteLength),
+        headers: brokerHeaders(
+          grant,
+          attemptGeneration,
+          expectedSha256,
+          body.byteLength,
+          egressIdentity.worker_version_id,
+        ),
         body,
         signal: AbortSignal.timeout(remainingMilliseconds(grant.deadline_at)),
       }),
     );
   } catch {
     return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_transport_ambiguous");
+  }
+  if (
+    upstream.headers.get(PROVIDER_EGRESS_WORKER_VERSION_HEADER) !==
+    egressIdentity.worker_version_id
+  ) {
+    await cancelResponse(upstream);
+    return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_version_ambiguous");
   }
   if (upstream.status < 200 || upstream.status > 299) {
     await cancelResponse(upstream);
@@ -187,6 +221,8 @@ export async function handleProviderEgressGatewayRequest(
     provider_operation_id: grant.provider_operation_id,
     admission_sha256: grant.admission_sha256,
     attempt_generation: attemptGeneration,
+    egress_profile: egressIdentity.profile,
+    egress_worker_version_id: egressIdentity.worker_version_id,
     sha256: resultSha256,
     size: providerBody.byteLength,
     content_type: contentType,
@@ -229,7 +265,8 @@ export async function handleProviderEgressGatewayRequest(
 async function requireProviderEgressReadiness(
   broker: Pick<Fetcher, "fetch">,
   deadlineAt: number,
-): Promise<void> {
+  affinityKey: string,
+): Promise<ProviderEgressIdentity> {
   const response = await broker.fetch(
     new Request(`https://${PROVIDER_EGRESS_HOST}${PROVIDER_EGRESS_READINESS_SERVICE_PATH}`, {
       method: "GET",
@@ -238,15 +275,18 @@ async function requireProviderEgressReadiness(
         "cache-control": "no-store",
         [PROVIDER_EGRESS_PROTOCOL_HEADER]: "1",
         [PROVIDER_EGRESS_PROFILE_HEADER]: PROVIDER_EGRESS_PROFILE,
+        [CLOUDFLARE_WORKERS_VERSION_KEY_HEADER]: affinityKey,
       },
       signal: AbortSignal.timeout(readinessTimeoutMilliseconds(deadlineAt)),
     }),
   );
+  const workerVersionId = response.headers.get(PROVIDER_EGRESS_WORKER_VERSION_HEADER);
   if (
     response.status !== 200 ||
     response.headers.get(PROVIDER_EGRESS_PROTOCOL_HEADER) !== "1" ||
     response.headers.get(PROVIDER_EGRESS_PROFILE_HEADER) !== PROVIDER_EGRESS_PROFILE ||
-    normalizedJsonContentType(response.headers.get("content-type")) === null
+    normalizedJsonContentType(response.headers.get("content-type")) === null ||
+    !validProviderEgressIdentifier(workerVersionId, 128)
   ) {
     await cancelResponse(response);
     throw new Error("provider egress readiness unavailable");
@@ -255,6 +295,10 @@ async function requireProviderEgressReadiness(
   if (!isExactProviderEgressReadiness(body)) {
     throw new Error("provider egress readiness invalid");
   }
+  return {
+    profile: PROVIDER_EGRESS_PROFILE,
+    worker_version_id: workerVersionId,
+  };
 }
 
 function matchesCanaryGrant(
@@ -412,13 +456,16 @@ function brokerHeaders(
   attemptGeneration: number,
   bodySha256: string,
   bodySize: number,
+  expectedWorkerVersionId: string,
 ): Headers {
   return new Headers({
     "accept": "application/json",
     "content-length": String(bodySize),
     "content-type": "application/json",
-    [PROVIDER_EGRESS_PROTOCOL_HEADER]: "1",
+    [PROVIDER_EGRESS_PROTOCOL_HEADER]: "2",
     [PROVIDER_EGRESS_PROFILE_HEADER]: PROVIDER_EGRESS_PROFILE,
+    [PROVIDER_EGRESS_EXPECTED_WORKER_VERSION_HEADER]: expectedWorkerVersionId,
+    [CLOUDFLARE_WORKERS_VERSION_KEY_HEADER]: grant.provider_operation_id,
     [OPERATION_ID_HEADER]: grant.operation_id,
     [OWNER_GENERATION_HEADER]: String(grant.owner_generation),
     [PROVIDER_ATTEMPT_GENERATION_HEADER]: String(attemptGeneration),
@@ -565,6 +612,25 @@ function isExactProviderEgressReadiness(bytes: Uint8Array): boolean {
   } catch {
     return false;
   }
+}
+
+function providerAttemptEgressIdentityMatches(
+  attempt: DispatchProviderAttemptOutcome["row"],
+  identity: ProviderEgressIdentity,
+): boolean {
+  return (
+    attempt.egress_profile === identity.profile &&
+    attempt.egress_worker_version_id === identity.worker_version_id
+  );
+}
+
+function validProviderEgressIdentifier(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= maxLength &&
+    /^[A-Za-z0-9._:-]+$/.test(value)
+  );
 }
 
 function normalizedJsonContentType(value: string | null): string | null {

@@ -382,6 +382,8 @@ describe("container controller private protocol", () => {
                     provider_operation_id: envelope().provider_operation_id,
                     admission_sha256: envelope().admission_sha256,
                     request_sha256: envelope().input.sha256,
+                    egress_profile: null,
+                    egress_worker_version_id: null,
                     status: "dispatched" as const,
                     response_status: null,
                     response_code: null,

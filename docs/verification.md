@@ -6461,3 +6461,135 @@ identity, actual Container and network fault evidence, global terminal
 acknowledgement, exact edge replay, financial convergence, load/cost/alerts,
 rollback, and C1-C5 approval. All tracked gates stay false; Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## Provider Broker Version Affinity Verification (2026-07-17)
+
+This overlay verifies local Worker-version affinity and durable provider-egress
+provenance. It does not claim a remote deployment, exact version pin, provider
+health, production secret, real provider call, or traffic cutover.
+
+```powershell
+cargo test -p cinatoken-container-egress
+# PASS: 5 tests.
+
+cargo check -p cinatoken-container-egress --target wasm32-unknown-unknown
+worker-build --release
+# PASS: Wasm check and optimized compiled broker package.
+
+node node_modules/vitest/vitest.mjs run `
+  --config vitest.container-egress.config.mjs
+# PASS: 1 file, 4 compiled Rust/Workerd tests.
+
+node node_modules/vitest/vitest.mjs run `
+  --config vitest.container-controller.config.mjs
+# PASS: 1 file, 23 Workerd/DO SQLite tests.
+
+node node_modules/vitest/vitest.mjs run `
+  --config .codex-portable-tests.config.mjs
+# PASS: 5 files, 58 portable Controller tests. The temporary config mapped
+# bun:test to Vitest because Bun is unavailable; it was removed after the run.
+
+node node_modules/typescript/bin/tsc `
+  -p services/container-controller/tsconfig.json --noEmit
+
+node node_modules/wrangler/bin/wrangler.js types `
+  services/container-controller/worker-configuration.d.ts `
+  --config services/container-controller/wrangler.jsonc `
+  --env-interface ContainerControllerEnv --check
+# PASS: source types and generated environment types are current.
+
+node node_modules/wrangler/bin/wrangler.js deploy `
+  --config services/container-controller/wrangler.jsonc `
+  --dry-run --containers-rollout none `
+  --outdir .wrangler/container-controller-build
+# PASS: Controller bundle and private Service Binding.
+
+# Run separately for local, staging, and production broker environments.
+node node_modules/wrangler/bin/wrangler.js deploy `
+  --config crates/container-egress/wrangler.toml `
+  --env <environment> --dry-run `
+  --outdir .wrangler/container-egress-<environment>
+# PASS: all three report env.CF_VERSION_METADATA and default-false broker vars.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 772 tests.
+
+cargo test --workspace --exclude cinatoken-worker
+# PASS: all non-Worker unit, integration, and doc tests.
+
+node node_modules/vitest/vitest.mjs run --config vitest.do.config.mjs
+# PASS: 45 Workerd lifecycle tests. Expected fault-injection exceptions and
+# queue-to-DLQ warnings were observed; the suite passed.
+
+python tools/verify_sqlite.py
+# PASS: 45 migrations, 43 tables, 434 incremental columns, 64 key indexes.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo fmt --all -- --check
+git diff --check
+# PASS.
+```
+
+The compiled broker test supplies Worker Version Metadata through Miniflare and
+proves an exact secret-free, N-1-compatible three-field readiness body plus the
+private version header. A fifth broker omits
+the binding and fails closed. Disabled, missing-model, missing-secret,
+wrong-method, and wrong-profile behavior remains fail closed. The broker source
+returns its actual version header on both readiness and execute responses and does not
+forward affinity or provenance headers to the provider.
+
+The execute test first proves protocol v2 reaches only the local provider mock
+when the expected Worker version equals the runtime Version Metadata. It then
+sends a different expected version and receives the broker's 409 mismatch with
+no provider-mock response marker. The guard executes before body read, secret
+access, and outbound fetch. Controller tests independently require execute v2
+and the committed expected-version header.
+
+The portable gateway suite proves readiness and execute use the same
+`Cloudflare-Workers-Version-Key`, equal to the frozen provider operation ID.
+The DO V2 dispatch receives and returns the exact profile/version identity before
+the only POST. A missing old-DO RPC fails before send; corrupt dispatch readback
+makes zero provider calls; a different execute version after POST returns
+`provider_egress_version_ambiguous`, writes no R2 result, and records recovery
+without retry. The success path writes R2 custom metadata schema 3.
+
+The Workerd SQLite suite proves the version identity survives eviction, appears
+in the immutable dispatch event, rejects later SQL mutation, accepts an exact V2
+replay, and rejects a different identity. The legacy dispatch path persists
+null identity fields, preserving N/N-1 rows. Storage tests independently prove
+R2 metadata schemas 1 and 2 remain valid, schema 3 includes profile/version, and
+a half-written identity is rejected before R2 I/O. Rust unit coverage validates
+the exact result metadata shapes for schemas 1/2/3, rejects non-canonical or
+partial schema-3 values, and the Workerd inventory scenario scans a real
+schema-3 result without reporting an anomaly.
+
+The readiness body intentionally does not duplicate the Worker version. Keeping
+the established three-field v1 shape lets broker N serve Controller N-1 during
+target-first rollout; Controller N obtains the platform identity from the new
+private header and fails safely before dispatch when broker N-1 lacks it.
+Rollback deploys Controller N-1 before broker N-1. This follows Cloudflare's
+requirement that mixed Worker/Durable Object API versions remain forward and
+backward compatible during gradual deployment.
+
+Wrangler dry-runs confirm `CF_VERSION_METADATA` is declared separately in local,
+staging, and production. Cloudflare version affinity is deliberately documented
+as stable-key routing, not an exact pin; correctness comes from comparing the
+actual runtime version ID returned before and after dispatch. See the official
+[Version Metadata binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/version-metadata/)
+and [Version Affinity](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/version-affinity/)
+contracts.
+
+Bun is unavailable in this shell, so the aggregate `bun run check` and the
+Bun-native TOML/config wrapper were not run. Their changed-path behavior was
+covered by source TypeScript, the portable Vitest mapping, compiled Workerd,
+three environment-specific Wrangler dry-runs, Cargo, SQLite, formatter, and
+diff checks. No remote migration, secret provisioning, deployment, provider
+request, R2/D1/DO production mutation, financial mutation, or traffic switch
+occurred.
+
+Migration 0046 remains reserved. Global D1 egress provenance, remote version
+readback, target-first mixed-version drills, full edge/controller/DO/container
+artifact identity, provider-native idempotency or lookup, real fault/load/cost
+evidence, terminal acknowledgement, financial convergence, rollback, and C1-C5
+approval remain required. All gates stay false; Go/VPS remains authoritative
+and production remains **NO-GO**.

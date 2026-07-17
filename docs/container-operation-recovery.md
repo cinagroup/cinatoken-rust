@@ -625,3 +625,69 @@ change between the readiness GET and execute POST, so a later broker error is
 still ambiguous. Closing that residual requires remote deployment-version
 readback or affinity, N/N-1 proof, and provider-native idempotency or lookup. It
 must not be papered over by repeating either request.
+
+## Broker Version Affinity And Recovery Evidence
+
+The local broker path now narrows that deployment race without pretending to
+eliminate it. Readiness and execute carry the same
+`Cloudflare-Workers-Version-Key`, using the frozen provider operation identity.
+Readiness preserves the exact three-field v1 body used by N-1 and returns the
+actual `CF_VERSION_METADATA.id` in
+`x-cinatoken-provider-egress-worker-version`. The Controller requires both the
+stable readiness contract and a valid private version header.
+
+The readiness identity is committed in the same shard SQLite transaction that
+changes the attempt from `prepared` to `dispatched`. The attempt row and its
+append-only lifecycle events store `egress_profile` and
+`egress_worker_version_id`. They are assigned as a pair at dispatch and become
+immutable. This gives recovery a durable answer to which broker version was
+authorized before the one-shot send.
+
+Execute protocol v2 carries that durable ID in
+`x-cinatoken-provider-egress-expected-worker-version`. A conforming broker
+compares it with its own Version Metadata before body consumption, credential
+read, or outbound fetch. Legacy execute v1 remains accepted only for the N-1
+Controller rollout window.
+
+The execute response is checked before status or body interpretation:
+
+| Observation | Durable state | Result | Provider resend |
+| --- | --- | --- | --- |
+| Readiness body invalid or version header missing/malformed | `prepared` | 503, safely unsent | Not needed |
+| V2 dispatch RPC unavailable | `prepared` | 503, safely unsent | Not needed |
+| Committed dispatch identity does not match readiness | `dispatched` | 202 `provider_egress_identity_ambiguous` | Forbidden |
+| Broker v2 expected version differs from its runtime version | `dispatched` | 202 `provider_egress_version_ambiguous`; broker 409 proves its provider path was not entered | Forbidden |
+| Execute response version missing or different | `dispatched` | 202 `provider_egress_version_ambiguous` | Forbidden |
+| Execute version equal and response valid | `dispatched` then terminal | Persist and complete the same attempt | Forbidden |
+
+Post-dispatch version mismatch writes no R2 object and cancels the response
+body. A valid protocol-v2 409 is generated before provider I/O, but missing,
+malformed, or unknown responses remain ambiguous even for HTTP 200 because the
+provider-side effect may already have happened. Affinity is not retry authority
+and does not permit a second readiness/execute cycle after dispatch.
+
+R2 result metadata is now versioned as follows:
+
+- schema 1: legacy non-journaled result;
+- schema 2: legacy journaled result with `attempt_generation`; and
+- schema 3: journaled result with attempt generation, broker profile, and actual
+  broker Worker version.
+
+The create-only replay comparison includes every schema-3 field. Legacy DO rows
+retain a null egress identity and continue to use schema 1 or 2. The old dispatch
+RPC remains available for N-1 callers, while a new caller refuses to send when
+an old DO does not expose the V2 RPC.
+
+The inventory reader applies the same version split: schema 1 is exactly eight
+fields, schema 2 is exactly nine with a canonical attempt generation, and schema
+3 is exactly eleven with the complete bounded egress identity. This prevents a
+valid schema-3 result from becoming a false recovery anomaly without accepting
+unknown or partially upgraded metadata.
+
+Cloudflare version affinity can move a stable key from an old version to a new
+version as deployment percentages change. The execute v2 request therefore
+checks the expected version inside the broker before provider I/O, while the
+Controller still verifies the returned runtime ID. Remote deployment readback,
+target-first N/N-1 drills, provider-native idempotency or lookup, and global D1
+provenance remain required. D1 migration 0046 is still reserved; a later 0047
+must add the global provider-egress identity after old-writer drain.

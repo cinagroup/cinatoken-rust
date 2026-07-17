@@ -721,10 +721,11 @@ recovery-required, the existing DO finalizer converts the still-prepared attempt
 to `cancelled` with `provider_attempt_not_dispatched`; it does not manufacture an
 ambiguous provider send.
 
-Local Workerd runs the compiled Rust Worker behind four Service Bindings and
-proves ready, disabled, missing-model, and missing-secret behavior plus method
-and profile rejection. The ready response contains neither configured value,
-and the readiness path completes without an outbound provider service.
+Local Workerd runs the compiled Rust Worker behind five Service Bindings and
+proves ready, disabled, missing-model, missing-secret, and missing-version
+behavior plus method and profile rejection. The ready response contains neither
+configured value, and the readiness path does not call the local outbound
+provider mock.
 
 This probe is configuration readiness, not provider health. It does not prove
 credential validity, provider reachability, quota, model entitlement, or atomic
@@ -732,3 +733,54 @@ version affinity between readiness and execute. Production still requires
 target-first deployment, remote binding/version readback, mixed-version proof,
 credential rotation, and a separately approved real provider canary. All
 tracked runtime gates remain false and production remains **NO-GO**.
+
+## 2026-07-17 Version-Affined Provider Broker
+
+The private provider Worker now binds Cloudflare Worker Version Metadata in
+every environment. An enabled instance without a valid runtime version ID is
+not ready and cannot execute. Readiness keeps the exact legacy-compatible
+three-field v1 body and returns the actual ID in a private response header;
+successful execute responses and version-resolved policy failures carry the
+same header.
+
+Controller readiness and execute subrequests use one
+`Cloudflare-Workers-Version-Key` equal to the immutable
+`provider_operation_id`. Cloudflare therefore gives both requests stable
+deployment routing when the deployment percentages permit it. The Controller
+does not treat that behavior as a lock: it persists the readiness ID during the
+DO dispatch transaction and independently requires the execute response ID to
+match. Execute protocol v2 also sends that committed ID as the expected Worker
+version. The broker compares it to its own Version Metadata before reading the
+body, credential, or provider network path.
+
+The provider-attempt authority path is now:
+
+```text
+D1 exact admission
+  -> version-affined broker readiness
+  -> DO dispatch V2 + immutable broker profile/version event
+  -> version-affined one-shot execute v2 + pre-I/O expected-version guard
+  -> exact execute-version comparison
+  -> R2 metadata v3 + DO attach + terminal event
+```
+
+The old DO dispatch RPC, null identity rows, and R2 metadata schemas 1/2 remain
+available for N/N-1 read and replay compatibility. New versioned sends require
+the V2 RPC and fail before provider I/O if an older DO does not implement it.
+DO schema upgrades are additive and idempotent; identity assignment is guarded
+by SQLite and runtime validation.
+
+Broker rollout is target first: broker N preserves the body expected by
+Controller N-1, then Controller N begins requiring the version header. Rollback
+reverses the order. Broker N accepts legacy execute v1 for N-1 callers, while
+Controller N sends execute v2 with the expected version; both broker N and the
+old broker reject an incompatible v2 request before provider I/O. The Rust R2
+observer also reads result metadata schemas
+1/2/3 as exact, version-specific contracts, so schema-3 canary results are not
+misclassified as inventory corruption.
+
+This closes local broker-version provenance only. It does not yet record the
+edge Worker version, Controller ingress version, shard DO code version, or
+Container artifact digest as one end-to-end execution tuple. It also does not
+provide a remote version pin, provider idempotency, or deployment promotion
+proof. All execution gates remain false and production remains **NO-GO**.

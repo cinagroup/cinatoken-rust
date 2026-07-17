@@ -199,6 +199,8 @@ function attemptRow(
     provider_operation_id: "provider-operation-1",
     admission_sha256: "a".repeat(64),
     request_sha256: "b".repeat(64),
+    egress_profile: null,
+    egress_worker_version_id: null,
     status,
     response_status: terminal?.response_status ?? null,
     response_code: terminal?.response_code ?? null,

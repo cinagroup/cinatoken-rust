@@ -17,7 +17,7 @@ const auxiliaryModuleRules = [
   ...compiledWasmModules,
 ];
 
-function brokerWorker(name, bindings) {
+function brokerWorker(name, bindings, versionMetadata = true) {
   return {
     name,
     scriptPath: "./crates/container-egress/build/index.js",
@@ -25,7 +25,9 @@ function brokerWorker(name, bindings) {
     modulesRules: auxiliaryModuleRules,
     compatibilityDate: "2026-07-15",
     compatibilityFlags: ["nodejs_compat"],
+    outboundService: "container-egress-provider-mock",
     bindings,
+    ...(versionMetadata ? { versionMetadata: "CF_VERSION_METADATA" } : {}),
   };
 }
 
@@ -41,8 +43,17 @@ export default defineConfig({
           BROKER_DISABLED: "container-egress-disabled",
           BROKER_MISSING_MODEL: "container-egress-missing-model",
           BROKER_MISSING_SECRET: "container-egress-missing-secret",
+          BROKER_MISSING_VERSION: "container-egress-missing-version",
         },
         workers: [
+          {
+            name: "container-egress-provider-mock",
+            scriptPath: "./tests/fixtures/container-egress-provider-mock.mjs",
+            modules: true,
+            modulesRules: auxiliaryModuleRules,
+            compatibilityDate: "2026-07-15",
+            compatibilityFlags: ["nodejs_compat"],
+          },
           brokerWorker("container-egress-ready", {
             CINATOKEN_CONTAINER_PROVIDER_EGRESS_ENABLED: "true",
             CINATOKEN_CONTAINER_PROVIDER_MODEL: "canary-runtime-model",
@@ -62,6 +73,15 @@ export default defineConfig({
             CINATOKEN_CONTAINER_PROVIDER_EGRESS_ENABLED: "true",
             CINATOKEN_CONTAINER_PROVIDER_MODEL: "canary-runtime-model",
           }),
+          brokerWorker(
+            "container-egress-missing-version",
+            {
+              CINATOKEN_CONTAINER_PROVIDER_EGRESS_ENABLED: "true",
+              CINATOKEN_CONTAINER_PROVIDER_MODEL: "canary-runtime-model",
+              CINATOKEN_CONTAINER_PROVIDER_API_KEY: "runtime-provider-secret",
+            },
+            false,
+          ),
         ],
       },
     }),

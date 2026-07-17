@@ -5,6 +5,7 @@ import {
   operationStorageResult,
   type OperationRow,
   type DispatchProviderAttemptOutcome,
+  type ProviderEgressIdentity,
   type ProviderAttemptTerminal,
   type ProviderRetryPolicy,
   type RecordProviderAttemptOutcome,
@@ -257,6 +258,34 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           operationId,
           ownerGeneration,
           attemptGeneration,
+          Math.floor(Date.now() / 1000),
+        ),
+      };
+    } catch (error) {
+      return providerAttemptRpcError(error);
+    }
+  }
+
+  async dispatchProviderAttemptV2(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    identity: ProviderEgressIdentity,
+  ): Promise<ShardDispatchProviderAttemptRpcResult> {
+    if (this.env.CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED !== "true") {
+      return {
+        ok: false,
+        error: { code: "provider_attempt_journal_disabled", status: 503 },
+      };
+    }
+    try {
+      return {
+        ok: true,
+        result: this.ledger.dispatchProviderAttemptWithEgressIdentity(
+          operationId,
+          ownerGeneration,
+          attemptGeneration,
+          identity,
           Math.floor(Date.now() / 1000),
         ),
       };
@@ -999,6 +1028,9 @@ function gatewayStorageGrant(
           provider_operation_id: grant.provider_operation_id,
           admission_sha256: grant.admission_sha256,
           attempt_generation: attemptGeneration,
+          egress_profile: grant.provider_attempt?.egress_profile ?? null,
+          egress_worker_version_id:
+            grant.provider_attempt?.egress_worker_version_id ?? null,
           sha256: grant.result.sha256,
           size: grant.result.size,
           content_type: grant.result.content_type,
@@ -1025,6 +1057,9 @@ function gatewayStorageGrant(
         provider_operation_id: grant.provider_operation_id,
         admission_sha256: grant.admission_sha256,
         attempt_generation: attemptGeneration,
+        egress_profile: grant.provider_attempt?.egress_profile ?? null,
+        egress_worker_version_id:
+          grant.provider_attempt?.egress_worker_version_id ?? null,
         sha256,
         size,
         content_type: contentType,

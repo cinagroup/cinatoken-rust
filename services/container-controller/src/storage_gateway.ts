@@ -52,6 +52,8 @@ export interface R2ResultPutGrant {
   provider_operation_id: string;
   admission_sha256: string;
   attempt_generation: number | null;
+  egress_profile: string | null;
+  egress_worker_version_id: string | null;
   sha256: string;
   size: number;
   content_type: string;
@@ -600,6 +602,8 @@ function isStorageAccessGrant(value: unknown): value is StorageAccessGrant {
           "provider_operation_id",
           "admission_sha256",
           "attempt_generation",
+          "egress_profile",
+          "egress_worker_version_id",
           "sha256",
           "size",
           "content_type",
@@ -610,6 +614,10 @@ function isStorageAccessGrant(value: unknown): value is StorageAccessGrant {
         validSha256(value.admission_sha256) &&
         (value.attempt_generation === null ||
           (isPositiveInteger(value.attempt_generation) && value.attempt_generation <= 3)) &&
+        ((value.egress_profile === null && value.egress_worker_version_id === null) ||
+          (value.attempt_generation !== null &&
+            validIdentifier(value.egress_profile, 64) &&
+            validIdentifier(value.egress_worker_version_id, 128))) &&
         validSha256(value.sha256) &&
         isNonNegativeInteger(value.size) &&
         validContentType(value.content_type)
@@ -792,8 +800,20 @@ function r2ResultMatches(
 }
 
 function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
+  const egressMetadata: Record<string, string> =
+    grant.egress_profile === null || grant.egress_worker_version_id === null
+      ? {}
+      : {
+          egress_profile: grant.egress_profile,
+          egress_worker_version_id: grant.egress_worker_version_id,
+        };
   return {
-    gateway_version: grant.attempt_generation === null ? "1" : "2",
+    gateway_version:
+      grant.attempt_generation === null
+        ? "1"
+        : Object.keys(egressMetadata).length === 0
+          ? "2"
+          : "3",
     operation_id: grant.operation_id,
     owner_generation: String(grant.owner_generation),
     provider_operation_id: grant.provider_operation_id,
@@ -801,6 +821,7 @@ function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
     ...(grant.attempt_generation === null
       ? {}
       : { attempt_generation: String(grant.attempt_generation) }),
+    ...egressMetadata,
     sha256: grant.sha256,
     size: String(grant.size),
     content_type: grant.content_type,

@@ -1974,3 +1974,33 @@ reachability, deployment-version affinity, remote readback, immutable D1/DO
 egress-profile identity, provider idempotency/lookup, actual Container faults,
 and production canary evidence remain open. All tracked gates stay false;
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-17 Phase 1 Provider Broker Version Affinity
+
+The private broker now preserves the exact three-field readiness v1 body and
+exposes its actual `CF_VERSION_METADATA.id` in a private response header. Local,
+staging, and production declare the binding explicitly and the enabled broker
+fails closed without it.
+The Controller sends readiness and execute with the same
+`Cloudflare-Workers-Version-Key`, derived from the immutable provider operation
+identity, but treats affinity as routing assistance rather than a version lock.
+
+Before the only provider POST, `dispatchProviderAttemptV2` atomically stores the
+fixed broker profile and readiness Worker version in the shard DO attempt and
+append-only event log. The execute response must return that exact version.
+Execute protocol v2 first sends the committed version back to the broker, which
+rejects a runtime mismatch before secret access or provider I/O. Missing or
+different post-dispatch evidence still becomes
+`provider_egress_version_ambiguous`, writes no R2 result, and cannot retry. A
+successful result uses R2 custom metadata schema 3 with the same identity.
+
+Legacy DO rows and the old dispatch RPC remain readable with a null version
+identity, and R2 metadata schemas 1 and 2 remain valid. The Rust inventory
+reader now validates schemas 1/2/3 independently, including a Workerd schema-3
+scan. Broker N can therefore roll out before Controller N without breaking the
+N-1 readiness body; rollback reverses that order. An old DO without the V2 RPC
+fails before send. No D1 migration was used, so 0046 stays reserved and
+global D1 egress provenance remains a later 0047 task. Remote version readback,
+mixed-version proof, full edge/controller/DO/container provenance, provider
+idempotency, real faults, and production evidence remain open. All gates stay
+false; Go/VPS remains authoritative and production remains **NO-GO**.

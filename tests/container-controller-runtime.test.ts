@@ -285,9 +285,107 @@ describe("RelayShardLedger in Workerd", () => {
       provider_operation_id: operation.provider_operation_id,
       admission_sha256: operation.admission_sha256,
       request_sha256: operation.input.sha256,
+      egress_profile: null,
+      egress_worker_version_id: null,
       status: "dispatched",
       prepared_at: BASE_NOW + 1,
       dispatched_at: BASE_NOW + 4,
+    });
+  });
+
+  it("persists immutable provider egress version identity at dispatch", async () => {
+    const stub = ledgerStub("provider-attempt-version-identity");
+    const operation = operationEnvelope("provider-attempt-version-identity", {
+      operation_kind: "chat_completion",
+    });
+    const egressIdentity = {
+      profile: "openai-chat-completions-canary-v1",
+      worker_version_id: "worker-version-1",
+    };
+    await stub.claim(operation, sha256("v"), "dispatch-provider-version", ledgerPolicy(), BASE_NOW);
+    await stub.startOperationWithProviderAttemptOutcome(
+      operation.operation_id,
+      1,
+      { maxAttempts: 1, retryEnabled: false },
+      BASE_NOW + 1,
+    );
+    await expect(
+      stub.dispatchProviderAttemptV2Outcome(
+        operation.operation_id,
+        1,
+        1,
+        egressIdentity,
+        BASE_NOW + 2,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        kind: "dispatched",
+        row: {
+          egress_profile: egressIdentity.profile,
+          egress_worker_version_id: egressIdentity.worker_version_id,
+        },
+      },
+    });
+    await expect(
+      stub.dispatchProviderAttemptV2Outcome(
+        operation.operation_id,
+        1,
+        1,
+        egressIdentity,
+        BASE_NOW + 3,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: { kind: "existing" } });
+    await expect(
+      stub.dispatchProviderAttemptV2Outcome(
+        operation.operation_id,
+        1,
+        1,
+        { ...egressIdentity, worker_version_id: "worker-version-2" },
+        BASE_NOW + 4,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_attempt_egress_identity_conflict", status: 409 },
+    });
+
+    await evictDurableObject(stub);
+    const persisted = await runInDurableObject(stub, (_instance, state) => {
+      const event = state.storage.sql
+        .exec<{ egress_profile: string | null; egress_worker_version_id: string | null }>(
+          `SELECT egress_profile, egress_worker_version_id
+             FROM cinatoken_shard_provider_attempt_events
+            WHERE operation_id = ?1 AND owner_generation = 1
+              AND attempt_generation = 1 AND event_sequence = 2`,
+          operation.operation_id,
+        )
+        .one();
+      let immutable = false;
+      try {
+        state.storage.sql.exec(
+          `UPDATE cinatoken_shard_provider_attempts
+              SET egress_worker_version_id = 'worker-version-2'
+            WHERE operation_id = ?1`,
+          operation.operation_id,
+        );
+      } catch {
+        immutable = true;
+      }
+      const attempt = new RelayShardLedger(state.storage).readOperationStatusSnapshot(
+        operationStatusQuery(operation),
+      ).provider_attempt;
+      return { event, immutable, attempt };
+    });
+    expect(persisted).toMatchObject({
+      event: {
+        egress_profile: egressIdentity.profile,
+        egress_worker_version_id: egressIdentity.worker_version_id,
+      },
+      immutable: true,
+      attempt: {
+        egress_profile: egressIdentity.profile,
+        egress_worker_version_id: egressIdentity.worker_version_id,
+      },
     });
   });
 

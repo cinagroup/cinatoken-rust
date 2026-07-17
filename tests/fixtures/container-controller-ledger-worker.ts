@@ -7,6 +7,7 @@ import {
   type OperationRow,
   type OperationStatus,
   type PrepareProviderAttemptOutcome,
+  type ProviderEgressIdentity,
   type ProviderAttemptTerminal,
   type ProviderRetryPolicy,
   type ReadinessCompletion,
@@ -223,6 +224,32 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
           operationId,
           ownerGeneration,
           attemptGeneration,
+          now,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
+  }
+
+  async dispatchProviderAttemptV2Outcome(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    identity: ProviderEgressIdentity,
+    now: number,
+  ): Promise<DispatchProviderAttemptRpcOutcome> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.dispatchProviderAttemptWithEgressIdentity(
+          operationId,
+          ownerGeneration,
+          attemptGeneration,
+          identity,
           now,
         ),
       };

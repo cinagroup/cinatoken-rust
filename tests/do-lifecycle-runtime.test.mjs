@@ -2359,8 +2359,12 @@ describe("Rust Durable Object lifecycle contracts", () => {
           sha256: resultSha256,
           size: resultBody.byteLength,
         }),
+        gateway_version: "3",
         provider_operation_id: "provider-runtime-observer-inventory",
         admission_sha256: "a".repeat(64),
+        attempt_generation: "1",
+        egress_profile: "openai-chat-completions-canary-v1",
+        egress_worker_version_id: "worker-version-1",
       },
     });
 

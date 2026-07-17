@@ -13,10 +13,11 @@ use url::Url;
 use wasm_bindgen::JsValue;
 use worker::{
     event, AbortController, Context, Delay, Env, Fetch, Headers, Method, Request, RequestInit,
-    RequestRedirect, Response, Result as WorkerResult,
+    RequestRedirect, Response, Result as WorkerResult, WorkerVersionMetadata,
 };
 
 pub const EGRESS_PROTOCOL_VERSION: &str = "1";
+pub const EGRESS_EXECUTION_PROTOCOL_VERSION: &str = "2";
 pub const EGRESS_PROFILE: &str = "openai-chat-completions-canary-v1";
 pub const INTERNAL_EGRESS_HOST: &str = "provider-egress.cinatoken.internal";
 pub const INTERNAL_EGRESS_PATH: &str = "/internal/v1/provider-attempts/execute";
@@ -28,9 +29,13 @@ pub const MAX_PROVIDER_BODY_BYTES: usize = 4 * 1024 * 1024;
 const ENABLED_ENV: &str = "CINATOKEN_CONTAINER_PROVIDER_EGRESS_ENABLED";
 const MODEL_ENV: &str = "CINATOKEN_CONTAINER_PROVIDER_MODEL";
 const API_KEY_ENV: &str = "CINATOKEN_CONTAINER_PROVIDER_API_KEY";
+const VERSION_METADATA_ENV: &str = "CF_VERSION_METADATA";
 
 const PROTOCOL_HEADER: &str = "x-cinatoken-provider-egress-protocol";
 const PROFILE_HEADER: &str = "x-cinatoken-provider-egress-profile";
+pub const WORKER_VERSION_HEADER: &str = "x-cinatoken-provider-egress-worker-version";
+pub const EXPECTED_WORKER_VERSION_HEADER: &str =
+    "x-cinatoken-provider-egress-expected-worker-version";
 const OPERATION_ID_HEADER: &str = "x-cinatoken-operation-id";
 const OWNER_GENERATION_HEADER: &str = "x-cinatoken-owner-generation";
 const ATTEMPT_GENERATION_HEADER: &str = "x-cinatoken-provider-attempt-generation";
@@ -54,6 +59,7 @@ enum EgressError {
     Route,
     Method,
     Protocol,
+    VersionMismatch,
     Identity,
     ContentType,
     BodyTooLarge,
@@ -80,22 +86,31 @@ pub async fn fetch(mut request: Request, env: Env, _ctx: Context) -> WorkerResul
     {
         return policy_error(EgressError::Disabled);
     }
+    let worker_version_id = match worker_version_id(&env) {
+        Ok(worker_version_id) => worker_version_id,
+        Err(error) => return policy_error(error),
+    };
 
     let url = request.url()?;
     if url.path() == INTERNAL_EGRESS_READINESS_PATH {
         if let Err(error) = validate_readiness_request(request.method(), &url, request.headers()) {
-            return policy_error(error);
+            return versioned_policy_error(error, &worker_version_id);
         }
-        return readiness_response(&env);
+        return readiness_response(&env, &worker_version_id);
     }
-    let deadline_at = match validate_request_metadata(request.method(), &url, request.headers()) {
+    let deadline_at = match validate_request_metadata(
+        request.method(),
+        &url,
+        request.headers(),
+        &worker_version_id,
+    ) {
         Ok(deadline_at) => deadline_at,
-        Err(error) => return policy_error(error),
+        Err(error) => return versioned_policy_error(error, &worker_version_id),
     };
     let expected_sha256 = request.headers().get(CONTENT_SHA256_HEADER)?;
     let body = match read_bounded_body(&mut request).await {
         Ok(body) => body,
-        Err(error) => return policy_error(error),
+        Err(error) => return versioned_policy_error(error, &worker_version_id),
     };
     if let Err(error) = validate_body(
         &body,
@@ -105,12 +120,12 @@ pub async fn fetch(mut request: Request, env: Env, _ctx: Context) -> WorkerResul
             .ok()
             .as_deref(),
     ) {
-        return policy_error(error);
+        return versioned_policy_error(error, &worker_version_id);
     }
 
     let api_key = match env.secret(API_KEY_ENV) {
         Ok(secret) if !secret.to_string().trim().is_empty() => secret.to_string(),
-        _ => return policy_error(EgressError::Credential),
+        _ => return versioned_policy_error(EgressError::Credential, &worker_version_id),
     };
     let mut outbound_headers = Headers::new();
     outbound_headers.set("accept", "application/json")?;
@@ -128,16 +143,16 @@ pub async fn fetch(mut request: Request, env: Env, _ctx: Context) -> WorkerResul
         Request::new_with_init(&format!("https://{UPSTREAM_HOST}{UPSTREAM_PATH}"), &init)?;
     let mut upstream = match send_with_deadline(outbound, deadline_at).await {
         Ok(response) => response,
-        Err(_) => return policy_error(EgressError::Upstream),
+        Err(_) => return versioned_policy_error(EgressError::Upstream, &worker_version_id),
     };
     let status = upstream.status_code();
     if (300..=399).contains(&status) {
-        return policy_error(EgressError::Redirect);
+        return versioned_policy_error(EgressError::Redirect, &worker_version_id);
     }
-    let response_headers = public_response_headers(upstream.headers())?;
+    let response_headers = public_response_headers(upstream.headers(), &worker_version_id)?;
     let response_body = match read_bounded_response(&mut upstream).await {
         Ok(body) => body,
-        Err(error) => return policy_error(error),
+        Err(error) => return versioned_policy_error(error, &worker_version_id),
     };
     Ok(Response::from_bytes(response_body)?
         .with_status(status)
@@ -171,21 +186,22 @@ fn validate_readiness_request(
     Ok(())
 }
 
-fn readiness_response(env: &Env) -> WorkerResult<Response> {
+fn readiness_response(env: &Env, worker_version_id: &str) -> WorkerResult<Response> {
     let model = env.var(MODEL_ENV).map(|value| value.to_string()).ok();
     if !configured_value(model.as_deref()) {
-        return policy_error(EgressError::Configuration);
+        return versioned_policy_error(EgressError::Configuration, worker_version_id);
     }
     let api_key = env
         .secret(API_KEY_ENV)
         .map(|secret| secret.to_string())
         .ok();
     if !configured_value(api_key.as_deref()) {
-        return policy_error(EgressError::Credential);
+        return versioned_policy_error(EgressError::Credential, worker_version_id);
     }
     let mut headers = no_store_json_headers()?;
     headers.set(PROTOCOL_HEADER, EGRESS_PROTOCOL_VERSION)?;
     headers.set(PROFILE_HEADER, EGRESS_PROFILE)?;
+    headers.set(WORKER_VERSION_HEADER, worker_version_id)?;
     Ok(Response::from_json(&serde_json::json!({
         "protocol_version": 1,
         "profile": EGRESS_PROFILE,
@@ -199,6 +215,7 @@ fn validate_request_metadata(
     method: Method,
     url: &Url,
     headers: &Headers,
+    worker_version_id: &str,
 ) -> Result<u64, EgressError> {
     if method != Method::Post {
         return Err(EgressError::Method);
@@ -214,11 +231,16 @@ fn validate_request_metadata(
     {
         return Err(EgressError::Route);
     }
-    if header(headers, PROTOCOL_HEADER).as_deref() != Some(EGRESS_PROTOCOL_VERSION)
-        || header(headers, PROFILE_HEADER).as_deref() != Some(EGRESS_PROFILE)
-    {
+    if header(headers, PROFILE_HEADER).as_deref() != Some(EGRESS_PROFILE) {
         return Err(EgressError::Protocol);
     }
+    let protocol = header(headers, PROTOCOL_HEADER);
+    let expected_worker_version = header(headers, EXPECTED_WORKER_VERSION_HEADER);
+    validate_execution_version(
+        protocol.as_deref(),
+        expected_worker_version.as_deref(),
+        worker_version_id,
+    )?;
     let deadline = header(headers, DEADLINE_HEADER)
         .and_then(|value| value.parse::<u64>().ok())
         .ok_or(EgressError::Identity)?;
@@ -252,6 +274,24 @@ fn validate_request_metadata(
         }
     }
     Ok(deadline)
+}
+
+fn validate_execution_version(
+    protocol: Option<&str>,
+    expected_worker_version: Option<&str>,
+    worker_version_id: &str,
+) -> Result<(), EgressError> {
+    match protocol {
+        Some(EGRESS_PROTOCOL_VERSION) if expected_worker_version.is_none() => Ok(()),
+        Some(EGRESS_EXECUTION_PROTOCOL_VERSION)
+            if valid_identifier(expected_worker_version, 128)
+                && expected_worker_version == Some(worker_version_id) =>
+        {
+            Ok(())
+        }
+        Some(EGRESS_EXECUTION_PROTOCOL_VERSION) => Err(EgressError::VersionMismatch),
+        _ => Err(EgressError::Protocol),
+    }
 }
 
 async fn send_with_deadline(request: Request, deadline_at: u64) -> WorkerResult<Response> {
@@ -347,9 +387,10 @@ async fn read_bounded_response(response: &mut Response) -> Result<Vec<u8>, Egres
     Ok(body)
 }
 
-fn public_response_headers(source: &Headers) -> WorkerResult<Headers> {
+fn public_response_headers(source: &Headers, worker_version_id: &str) -> WorkerResult<Headers> {
     let mut result = Headers::new();
     result.set("cache-control", "no-store")?;
+    result.set(WORKER_VERSION_HEADER, worker_version_id)?;
     for name in FORWARDED_RESPONSE_HEADERS {
         if let Some(value) = source.get(name)? {
             result.set(name, &value)?;
@@ -359,11 +400,23 @@ fn public_response_headers(source: &Headers) -> WorkerResult<Headers> {
 }
 
 fn policy_error(error: EgressError) -> WorkerResult<Response> {
+    policy_error_with_version(error, None)
+}
+
+fn versioned_policy_error(error: EgressError, worker_version_id: &str) -> WorkerResult<Response> {
+    policy_error_with_version(error, Some(worker_version_id))
+}
+
+fn policy_error_with_version(
+    error: EgressError,
+    worker_version_id: Option<&str>,
+) -> WorkerResult<Response> {
     let (status, code) = match error {
         EgressError::Disabled => (503, "provider_egress_disabled"),
         EgressError::Route => (404, "provider_egress_route_not_found"),
         EgressError::Method => (405, "provider_egress_method_not_allowed"),
         EgressError::Protocol | EgressError::Identity => (403, "provider_egress_access_denied"),
+        EgressError::VersionMismatch => (409, "provider_egress_worker_version_mismatch"),
         EgressError::ContentType => (415, "provider_egress_content_type_invalid"),
         EgressError::BodyTooLarge => (413, "provider_egress_body_too_large"),
         EgressError::BodyRead
@@ -376,9 +429,13 @@ fn policy_error(error: EgressError) -> WorkerResult<Response> {
         EgressError::Upstream => (502, "provider_egress_upstream_failed"),
         EgressError::Redirect => (502, "provider_egress_redirect_denied"),
     };
+    let mut headers = no_store_json_headers()?;
+    if let Some(worker_version_id) = worker_version_id {
+        headers.set(WORKER_VERSION_HEADER, worker_version_id)?;
+    }
     Ok(Response::from_json(&serde_json::json!({ "error": code }))?
         .with_status(status)
-        .with_headers(no_store_json_headers()?))
+        .with_headers(headers))
 }
 
 fn no_store_json_headers() -> WorkerResult<Headers> {
@@ -390,6 +447,18 @@ fn no_store_json_headers() -> WorkerResult<Headers> {
 
 fn header(headers: &Headers, name: &str) -> Option<String> {
     headers.get(name).ok().flatten()
+}
+
+fn worker_version_id(env: &Env) -> Result<String, EgressError> {
+    let id = env
+        .get_binding::<WorkerVersionMetadata>(VERSION_METADATA_ENV)
+        .map_err(|_| EgressError::Configuration)?
+        .id();
+    if valid_identifier(Some(id.as_str()), 128) {
+        Ok(id)
+    } else {
+        Err(EgressError::Configuration)
+    }
 }
 
 fn valid_identifier(value: Option<&str>, max: usize) -> bool {
@@ -467,6 +536,40 @@ mod tests {
         assert!(valid_deadline(1_000, 1_300));
         assert!(!valid_deadline(1_000, 1_000));
         assert!(!valid_deadline(1_000, 1_301));
+    }
+
+    #[test]
+    fn execution_v2_requires_the_exact_runtime_worker_version() {
+        assert_eq!(
+            validate_execution_version(
+                Some(EGRESS_EXECUTION_PROTOCOL_VERSION),
+                Some("worker-version-1"),
+                "worker-version-1",
+            ),
+            Ok(())
+        );
+        for expected in [None, Some("worker-version-2"), Some("bad version")] {
+            assert_eq!(
+                validate_execution_version(
+                    Some(EGRESS_EXECUTION_PROTOCOL_VERSION),
+                    expected,
+                    "worker-version-1",
+                ),
+                Err(EgressError::VersionMismatch)
+            );
+        }
+        assert_eq!(
+            validate_execution_version(Some(EGRESS_PROTOCOL_VERSION), None, "worker-version-1"),
+            Ok(())
+        );
+        assert_eq!(
+            validate_execution_version(
+                Some(EGRESS_PROTOCOL_VERSION),
+                Some("worker-version-1"),
+                "worker-version-1",
+            ),
+            Err(EgressError::Protocol)
+        );
     }
 
     #[test]

@@ -53,6 +53,8 @@ function resultGrant(overrides: Partial<R2ResultPutGrant> = {}): R2ResultPutGran
     provider_operation_id: "provider-op-123",
     admission_sha256: "b".repeat(64),
     attempt_generation: null,
+    egress_profile: null,
+    egress_worker_version_id: null,
     sha256: resultSha256,
     size: inputBytes.byteLength,
     content_type: "application/json",
@@ -205,8 +207,20 @@ function r2Object(options: R2ObjectOptions): R2ObjectBody {
 }
 
 function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
+  const egressMetadata =
+    grant.egress_profile === null || grant.egress_worker_version_id === null
+      ? {}
+      : {
+          egress_profile: grant.egress_profile,
+          egress_worker_version_id: grant.egress_worker_version_id,
+        };
   return {
-    gateway_version: grant.attempt_generation === null ? "1" : "2",
+    gateway_version:
+      grant.attempt_generation === null
+        ? "1"
+        : Object.keys(egressMetadata).length === 0
+          ? "2"
+          : "3",
     operation_id: grant.operation_id,
     owner_generation: String(grant.owner_generation),
     provider_operation_id: grant.provider_operation_id,
@@ -214,6 +228,7 @@ function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
     ...(grant.attempt_generation === null
       ? {}
       : { attempt_generation: String(grant.attempt_generation) }),
+    ...egressMetadata,
     sha256: grant.sha256,
     size: String(grant.size),
     content_type: grant.content_type,
@@ -388,6 +403,35 @@ describe("container storage gateway", () => {
     expect(puts).toBe(0);
   });
 
+  test("rejects a partial provider egress identity before touching R2", async () => {
+    const grant = resultGrant({
+      attempt_generation: 1,
+      egress_profile: "openai-chat-completions-canary-v1",
+      egress_worker_version_id: null,
+    });
+    let called = false;
+    const response = await handleStorageGatewayRequest(
+      enabledEnv({
+        CONTAINER_STORAGE_RESULT_R2: {
+          async put() {
+            called = true;
+            return null;
+          },
+          async head() {
+            called = true;
+            return null;
+          },
+        } as unknown as Pick<R2Bucket, "head" | "put">,
+      }),
+      resultRequest(grant),
+      grant,
+    );
+
+    expect(response.status).toBe(403);
+    expect(await errorCode(response)).toBe("storage_access_denied");
+    expect(called).toBe(false);
+  });
+
   test("creates an R2 result with a server-derived key, checksum, and create-only condition", async () => {
     const grant = resultGrant();
     const calls: Array<{ key: string; options: R2PutOptions }> = [];
@@ -465,6 +509,46 @@ describe("container storage gateway", () => {
       ...resultMetadata(grant),
       gateway_version: "2",
       attempt_generation: "1",
+    });
+  });
+
+  test("binds versioned provider-attempt identity into R2 metadata v3", async () => {
+    const grant = resultGrant({
+      attempt_generation: 1,
+      egress_profile: "openai-chat-completions-canary-v1",
+      egress_worker_version_id: "worker-version-1",
+    });
+    let customMetadata: Record<string, string> | undefined;
+    const bucket = {
+      async put(key: string, _value: unknown, options: R2PutOptions) {
+        customMetadata = options.customMetadata;
+        return r2Object({
+          key,
+          version: "result-version-attempt-v3",
+          size: grant.size,
+          contentType: grant.content_type,
+          sha256: grant.sha256,
+          customMetadata: resultMetadata(grant),
+        });
+      },
+      async head() {
+        throw new Error("head must not run after a successful create");
+      },
+    } as unknown as Pick<R2Bucket, "head" | "put">;
+
+    const response = await handleStorageGatewayRequest(
+      enabledEnv({ CONTAINER_STORAGE_RESULT_R2: bucket }),
+      resultRequest(grant),
+      grant,
+    );
+
+    expect(response.status).toBe(201);
+    expect(customMetadata).toEqual({
+      ...resultMetadata(grant),
+      gateway_version: "3",
+      attempt_generation: "1",
+      egress_profile: grant.egress_profile,
+      egress_worker_version_id: grant.egress_worker_version_id,
     });
   });
 

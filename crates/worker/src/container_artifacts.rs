@@ -15,6 +15,8 @@ const INPUT_KEY_PREFIX: &str = "container-inputs/v1";
 const CLIENT_RESPONSE_KEY_PREFIX: &str = "container-client-responses/v1";
 const CLIENT_RESPONSE_HEADERS_MAX_BYTES: usize = 4 * 1024;
 const METADATA_VERSION: &str = "1";
+const RESULT_ATTEMPT_METADATA_VERSION: &str = "2";
+const RESULT_EGRESS_METADATA_VERSION: &str = "3";
 const CLIENT_RESPONSE_ALLOWED_HEADERS: [&str; 6] = [
     "anthropic-request-id",
     "cache-control",
@@ -112,9 +114,7 @@ pub(crate) fn container_r2_inventory_object_contract_valid(
     };
     let owner_generation = owner_generation.to_string();
     let object_size = object.size().to_string();
-    let common_matches = metadata.get("gateway_version").map(String::as_str)
-        == Some(METADATA_VERSION)
-        && metadata.get("operation_id").map(String::as_str) == Some(operation_id)
+    let common_matches = metadata.get("operation_id").map(String::as_str) == Some(operation_id)
         && metadata.get("owner_generation").map(String::as_str) == Some(owner_generation.as_str())
         && metadata.get("sha256").map(String::as_str) == Some(sha256)
         && metadata.get("size").map(String::as_str) == Some(object_size.as_str())
@@ -123,18 +123,14 @@ pub(crate) fn container_r2_inventory_object_contract_valid(
         return false;
     }
     match kind {
-        ContainerR2InventoryArtifactKind::Input => metadata.len() == 6,
-        ContainerR2InventoryArtifactKind::Result => {
-            metadata.len() == 8
-                && metadata.get("provider_operation_id").is_some_and(|value| {
-                    validate_identifier(value, "provider operation id").is_ok()
-                })
-                && metadata
-                    .get("admission_sha256")
-                    .is_some_and(|value| validate_sha256(value).is_ok())
+        ContainerR2InventoryArtifactKind::Input => {
+            metadata.len() == 6
+                && metadata.get("gateway_version").map(String::as_str) == Some(METADATA_VERSION)
         }
+        ContainerR2InventoryArtifactKind::Result => result_metadata_contract_valid(&metadata),
         ContainerR2InventoryArtifactKind::ClientResponse => {
             metadata.len() == 9
+                && metadata.get("gateway_version").map(String::as_str) == Some(METADATA_VERSION)
                 && metadata.get("artifact_kind").map(String::as_str) == Some("client_response")
                 && metadata
                     .get("response_status")
@@ -145,6 +141,56 @@ pub(crate) fn container_r2_inventory_object_contract_valid(
                     .is_some_and(|value| validate_sha256(value).is_ok())
         }
     }
+}
+
+fn result_metadata_contract_valid(metadata: &HashMap<String, String>) -> bool {
+    if !metadata
+        .get("provider_operation_id")
+        .is_some_and(|value| metadata_identifier_valid(value, 128))
+        || !metadata
+            .get("admission_sha256")
+            .is_some_and(|value| validate_sha256(value).is_ok())
+    {
+        return false;
+    }
+    match metadata.get("gateway_version").map(String::as_str) {
+        Some(METADATA_VERSION) => metadata.len() == 8,
+        Some(RESULT_ATTEMPT_METADATA_VERSION) => {
+            metadata.len() == 9
+                && metadata
+                    .get("attempt_generation")
+                    .is_some_and(|value| valid_result_attempt_generation(value))
+        }
+        Some(RESULT_EGRESS_METADATA_VERSION) => {
+            metadata.len() == 11
+                && metadata
+                    .get("attempt_generation")
+                    .is_some_and(|value| valid_result_attempt_generation(value))
+                && metadata
+                    .get("egress_profile")
+                    .is_some_and(|value| metadata_identifier_valid(value, 64))
+                && metadata
+                    .get("egress_worker_version_id")
+                    .is_some_and(|value| metadata_identifier_valid(value, 128))
+        }
+        _ => false,
+    }
+}
+
+fn valid_result_attempt_generation(value: &str) -> bool {
+    value
+        .parse::<u8>()
+        .ok()
+        .is_some_and(|generation| (1..=3).contains(&generation) && generation.to_string() == value)
+}
+
+fn metadata_identifier_valid(value: &str, max_len: usize) -> bool {
+    value == value.trim()
+        && !value.is_empty()
+        && value.len() <= max_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
 fn container_r2_inventory_max_bytes(kind: ContainerR2InventoryArtifactKind) -> u64 {
@@ -779,13 +825,7 @@ fn client_response_metadata(
 }
 
 fn validate_identifier(value: &str, field: &str) -> worker::Result<()> {
-    if value != value.trim()
-        || value.is_empty()
-        || value.len() > 128
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
-    {
+    if !metadata_identifier_valid(value, 128) {
         return Err(artifact_error(&format!(
             "container artifact {field} is invalid"
         )));
@@ -861,6 +901,54 @@ mod tests {
             container_r2_inventory_max_bytes(ContainerR2InventoryArtifactKind::ClientResponse),
             4 * 1024 * 1024
         );
+    }
+
+    #[test]
+    fn result_inventory_accepts_exact_metadata_versions_one_through_three() {
+        let mut metadata = HashMap::from([
+            ("gateway_version".to_string(), METADATA_VERSION.to_string()),
+            ("operation_id".to_string(), "operation-1".to_string()),
+            ("owner_generation".to_string(), "2".to_string()),
+            (
+                "provider_operation_id".to_string(),
+                "provider-operation-1".to_string(),
+            ),
+            ("admission_sha256".to_string(), "a".repeat(64)),
+            ("sha256".to_string(), "b".repeat(64)),
+            ("size".to_string(), "128".to_string()),
+            ("content_type".to_string(), "application/json".to_string()),
+        ]);
+        assert!(result_metadata_contract_valid(&metadata));
+
+        metadata.insert(
+            "gateway_version".to_string(),
+            RESULT_ATTEMPT_METADATA_VERSION.to_string(),
+        );
+        metadata.insert("attempt_generation".to_string(), "1".to_string());
+        assert!(result_metadata_contract_valid(&metadata));
+
+        metadata.insert(
+            "gateway_version".to_string(),
+            RESULT_EGRESS_METADATA_VERSION.to_string(),
+        );
+        metadata.insert(
+            "egress_profile".to_string(),
+            "openai-chat-completions-canary-v1".to_string(),
+        );
+        metadata.insert(
+            "egress_worker_version_id".to_string(),
+            "worker-version-1".to_string(),
+        );
+        assert!(result_metadata_contract_valid(&metadata));
+
+        metadata.insert("attempt_generation".to_string(), "01".to_string());
+        assert!(!result_metadata_contract_valid(&metadata));
+        metadata.insert("attempt_generation".to_string(), "1".to_string());
+        metadata.insert("unknown".to_string(), "value".to_string());
+        assert!(!result_metadata_contract_valid(&metadata));
+        metadata.remove("unknown");
+        metadata.remove("egress_worker_version_id");
+        assert!(!result_metadata_contract_valid(&metadata));
     }
 
     #[test]

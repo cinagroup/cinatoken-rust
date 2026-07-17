@@ -2403,6 +2403,7 @@ async fn relay_endpoint_with_auth(
     let started_at = unix_timestamp();
     let client_ip = client_ip(&req);
     let request_id = request_id(&req);
+    let idempotency_key = request_header(&req, "idempotency-key");
     let provider_headers = RelayProviderHeaders::from_request(&req);
 
     let json_body_config = match RelayJsonBodyConfig::from_env(&env) {
@@ -2615,6 +2616,191 @@ async fn relay_endpoint_with_auth(
         attempt_plan
     };
 
+    // The Container transport is a bounded, explicit cohort rather than a
+    // transparent fallback. A request is classified before quota reserve; an
+    // existing idempotent operation is resumed/replayed without a second
+    // reservation or provider send.
+    let container_canary_route_eligible = auth_mode == RelayAuthMode::ApiKey
+        && endpoint.route == ProviderRelayRoute::ChatCompletions
+        && endpoint.provider == RelayProviderKind::OpenAiCompatible
+        && endpoint.upstream_path == "chat/completions"
+        && !should_relay_stream;
+    let container_canary_active =
+        match crate::container_relay_canary::container_chat_canary_cohort_active(
+            &env,
+            container_canary_route_eligible,
+            auth.token_id,
+            &model,
+        ) {
+            Ok(active) => active,
+            Err(error) => {
+                return openai_error_response(
+                    format!("container chat canary planning failed: {}", error.code()),
+                    error.status(),
+                )
+            }
+        };
+    let mut container_canary_plan = None;
+    if container_canary_active {
+        let candidate = attempt_plan.first();
+        let raw_request_body = json_body
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|err| {
+                worker::Error::RustError(format!(
+                    "failed to encode container canary request: {err}"
+                ))
+            })?
+            .unwrap_or_default();
+        let eligibility = crate::container_relay_canary::ContainerChatCanaryEligibility {
+            user_id: auth.user_id,
+            token_id: auth.token_id,
+            model: &model,
+            selected_group: candidate
+                .map(|plan| plan.group.as_str())
+                .unwrap_or_default(),
+            selected_channel_id: candidate.map(|plan| plan.channel.id).unwrap_or_default(),
+            selected_channel_type: candidate
+                .map(|plan| plan.channel.channel_type)
+                .unwrap_or_default(),
+            selected_channel_has_model_mapping: candidate.is_some_and(|plan| {
+                plan.channel
+                    .model_mapping
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+            }),
+            selected_channel_has_custom_base_url: candidate.is_some_and(|plan| {
+                plan.channel
+                    .base_url
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+            }),
+            selected_channel_has_organization: candidate.is_some_and(|plan| {
+                plan.channel
+                    .openai_organization
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+            }),
+            selected_channel_key_is_single: candidate.is_some_and(|plan| {
+                let key = plan.channel.key.trim();
+                !key.is_empty()
+                    && !key.starts_with('[')
+                    && !key.contains('\n')
+                    && !key.contains('\r')
+            }),
+            selected_channel_has_extra_config: candidate.is_some_and(|plan| {
+                !plan.channel.other.trim().is_empty() || !plan.channel.other_info.trim().is_empty()
+            }),
+            selected_channel_has_wfp_worker: candidate
+                .is_some_and(|plan| plan.channel.wfp_worker().is_some()),
+            selected_channel_uses_ai_gateway: candidate
+                .is_some_and(|plan| plan.channel.ai_gateway_opted_in()),
+            attempt_count: attempt_plan.len(),
+            retry_times: retry_config.retry_times,
+            model_fallback_configured: configured_fallback_model.is_some(),
+            api_key_auth: true,
+            openai_chat_route: true,
+            non_streaming: true,
+            idempotency_key: idempotency_key.as_deref(),
+            request_body: &raw_request_body,
+        };
+        let preliminary =
+            match crate::container_relay_canary::plan_container_chat_canary(&env, eligibility) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    return openai_error_response(
+                        format!("container chat canary planning failed: {}", error.code()),
+                        error.status(),
+                    )
+                }
+            };
+        if let Some(preliminary) = preliminary {
+            let Some(candidate) = candidate else {
+                return openai_error_response(
+                    "container chat canary planning failed: container_chat_canary_incompatible",
+                    503,
+                );
+            };
+            let mut transformed = json_body.clone().ok_or_else(|| {
+                worker::Error::RustError(
+                    "eligible container canary request has no JSON body".to_string(),
+                )
+            })?;
+            apply_model_mapping(
+                &mut transformed,
+                &model,
+                candidate.channel.model_mapping.as_deref(),
+            );
+            apply_endpoint_request_transform_with_config(
+                &mut transformed,
+                &endpoint.upstream_path,
+                &candidate.channel,
+                ali_sync_image_model_patterns.as_deref(),
+            )?;
+            let canary_provider = endpoint.effective_provider(candidate.channel.channel_type);
+            apply_provider_request_transform(&mut transformed, canary_provider);
+            if stream_options_inject_enabled(&env)
+                && provider_uses_openai_stream_options(canary_provider)
+            {
+                cinatoken_relay::openai_compatible::apply_stream_options(
+                    &mut transformed,
+                    candidate.channel.channel_type,
+                    false,
+                );
+            }
+            let transformed = prepare_same_channel_direct_body(
+                &transformed,
+                candidate.channel.channel_type,
+                &endpoint.upstream_path,
+            )?;
+            let transformed = serde_json::to_vec(&transformed).map_err(|err| {
+                worker::Error::RustError(format!(
+                    "failed to encode transformed container canary request: {err}"
+                ))
+            })?;
+            container_canary_plan = match preliminary.freeze_provider_request_body(&transformed) {
+                Ok(plan) => Some(plan),
+                Err(error) => {
+                    return openai_error_response(
+                        format!("container chat canary planning failed: {}", error.code()),
+                        error.status(),
+                    )
+                }
+            };
+        }
+    }
+    if let (Some(plan), Some(candidate)) = (container_canary_plan.as_ref(), attempt_plan.first()) {
+        let audit = crate::container_relay_canary::ContainerChatCanaryAudit {
+            user_id: auth.user_id,
+            token_id: auth.token_id,
+            channel_id: candidate.channel.id,
+            model: &model,
+            selected_group: &candidate.group,
+            endpoint_path: &endpoint.upstream_path,
+            request_id: request_id.as_deref(),
+            client_ip: client_ip.as_deref(),
+        };
+        match crate::container_relay_canary::replay_or_resume_container_chat_canary(
+            &env,
+            &db,
+            context.as_ref(),
+            plan,
+            audit,
+        )
+        .await
+        {
+            Ok(Some(response)) => return Ok(response),
+            Ok(None) => {}
+            Err(err) => {
+                return openai_error_response(
+                    format!("container chat canary recovery failed: {err}"),
+                    503,
+                )
+            }
+        }
+    }
+
     // Freeze one expression result for every possible serving group, reserve
     // the maximum candidate-group estimate once, then settle with the snapshot
     // belonging to the group that actually returns the final response.
@@ -2656,7 +2842,10 @@ async fn relay_endpoint_with_auth(
             plan,
             &model,
             &endpoint.upstream_path,
-            request_id.as_deref(),
+            container_canary_plan
+                .as_ref()
+                .map(|plan| plan.billing_request_identity())
+                .or(request_id.as_deref()),
             relay_billing_reservation_lease_seconds(&env),
             unix_timestamp(),
         )
@@ -2667,6 +2856,96 @@ async fn relay_endpoint_with_auth(
                 quota_mutation_error_status(&err),
             );
         }
+    }
+    if let (Some(canary_plan), Some(candidate), Some(group_plan)) = (
+        container_canary_plan.as_ref(),
+        attempt_plan.first(),
+        billing_group_plan.as_ref(),
+    ) {
+        let mut preflight = group_plan
+            .selected_preflight(&candidate.group, candidate.channel.channel_type)
+            .ok_or_else(|| {
+                worker::Error::RustError(
+                    "container chat canary selected billing snapshot is missing".to_string(),
+                )
+            })?;
+        if !preflight.reserve_applied() {
+            return openai_error_response(
+                "container chat canary requires a durable billing reservation",
+                503,
+            );
+        }
+        if preflight.pre_consumed_quota() <= 0
+            || !preflight
+                .flat()
+                .is_some_and(|flat| flat.snapshot.mode == FlatBillingMode::PerToken)
+        {
+            return openai_error_response(
+                "container chat canary requires positive flat per-token billing",
+                503,
+            );
+        }
+        bind_relay_billing_selected_attempt(
+            &db,
+            &mut preflight,
+            candidate.channel.id,
+            &candidate.group,
+            unix_timestamp(),
+            relay_billing_reservation_lease_seconds(&env),
+        )
+        .await
+        .map_err(|err| {
+            worker::Error::RustError(format!(
+                "failed to bind container canary billing attempt: {err}"
+            ))
+        })?;
+        let reservation_key = preflight.reservation_key().ok_or_else(|| {
+            worker::Error::RustError("container chat canary reservation key is missing".to_string())
+        })?;
+        let owner_generation = preflight.owner_generation().ok_or_else(|| {
+            worker::Error::RustError(
+                "container chat canary owner generation is missing".to_string(),
+            )
+        })?;
+        let owner_lease_expires_at = preflight.selected_lease_expires_at().ok_or_else(|| {
+            worker::Error::RustError("container chat canary owner lease is missing".to_string())
+        })?;
+        let audit = crate::container_relay_canary::ContainerChatCanaryAudit {
+            user_id: auth.user_id,
+            token_id: auth.token_id,
+            channel_id: candidate.channel.id,
+            model: &model,
+            selected_group: &candidate.group,
+            endpoint_path: &endpoint.upstream_path,
+            request_id: request_id.as_deref(),
+            client_ip: client_ip.as_deref(),
+        };
+        return match crate::container_relay_canary::execute_container_chat_canary(
+            &env,
+            &db,
+            context.as_ref(),
+            crate::container_relay_canary::ContainerChatCanaryExecution {
+                reservation_key,
+                billing_owner_generation: owner_generation,
+                billing_owner_lease_expires_at: owner_lease_expires_at,
+                selected_group: &candidate.group,
+                channel_id: candidate.channel.id,
+                user_id: auth.user_id,
+                plan: canary_plan,
+                audit,
+            },
+        )
+        .await
+        {
+            Ok(response) => Ok(response),
+            Err(err) => openai_error_response(
+                format!("container chat canary execution failed: {err}"),
+                503,
+            ),
+        };
+    }
+    if container_canary_plan.is_some() {
+        return openai_error_response("container chat canary billing plan is unavailable", 503);
     }
     let mut billing_preflight: Option<RelayBillingPreflight> = None;
     let mut terminal_reserve_refund = if billing_group_plan

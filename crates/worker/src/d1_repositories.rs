@@ -2804,6 +2804,14 @@ pub struct RelayContainerProviderUsageReceiptIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerProviderUsageSettlementQuote {
+    pub final_quota: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub identity: RelayContainerProviderUsageReceiptIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelayContainerProviderUsageReceiptReadback {
     NotExpected,
     Missing,
@@ -3141,11 +3149,12 @@ pub async fn relay_container_provider_usage_receipt_readback(
         }
         _ => return Ok(RelayContainerProviderUsageReceiptReadback::Divergent),
     };
-    if receipt.operation_from_status != "dispatched"
-        || receipt.billing_action != "settle"
-        || receipt.operation_status != "completed"
-        || expected_attempt_generation != 1
-    {
+    if !relay_container_provider_usage_settlement_transition_valid(
+        &receipt.operation_from_status,
+        &receipt.billing_action,
+        &receipt.operation_status,
+        expected_attempt_generation,
+    ) {
         return Ok(RelayContainerProviderUsageReceiptReadback::Divergent);
     }
     let (
@@ -3228,6 +3237,18 @@ pub async fn relay_container_provider_usage_receipt_readback(
             usage_receipt_sha256: row.usage_receipt_sha256,
         },
     ))
+}
+
+fn relay_container_provider_usage_settlement_transition_valid(
+    operation_from_status: &str,
+    billing_action: &str,
+    operation_status: &str,
+    attempt_generation: i64,
+) -> bool {
+    matches!(operation_from_status, "dispatched" | "recovery_required")
+        && billing_action == "settle"
+        && operation_status == "completed"
+        && attempt_generation == 1
 }
 
 fn relay_container_provider_usage_final_quota(
@@ -3473,6 +3494,120 @@ fn require_relay_container_reported_usage_fields(
             "relay container provider usage is incomplete for {pricing_contract}"
         )))
     }
+}
+
+fn relay_container_provider_usage_quote_reservation_matches(
+    operation: &RelayContainerOperation,
+    reservation: &RelayBillingReservation,
+) -> bool {
+    let (expected_status, expected_owner_generation) = match operation.status.as_str() {
+        "dispatched" => ("reserved", operation.owner_generation),
+        "recovery_required" => {
+            let Some(owner_generation) = operation.owner_generation.checked_add(1) else {
+                return false;
+            };
+            ("recovery_required", owner_generation)
+        }
+        _ => return false,
+    };
+    reservation.reservation_key == operation.reservation_key
+        && reservation.status == expected_status
+        && reservation.owner_generation == expected_owner_generation
+        && reservation.channel_id == operation.channel_id
+        && reservation.selected_group == operation.selected_group
+}
+
+/// Quotes the exact canonical provider usage bound to a pre-financial-terminal operation.
+///
+/// The financial terminal commit remains authoritative and independently recomputes this quota.
+pub async fn quote_relay_container_provider_usage_settlement(
+    db: &D1Database,
+    operation: &RelayContainerOperation,
+    terminal: RelayContainerOperationTerminalRecord<'_>,
+    expected_receipt_sha256: &str,
+    expected_result_sha256: &str,
+    attempt_generation: i64,
+) -> worker::Result<Option<RelayContainerProviderUsageSettlementQuote>> {
+    let RelayContainerOperationTerminalRecord::Completed {
+        response_status,
+        result,
+    } = terminal
+    else {
+        return Ok(None);
+    };
+    if attempt_generation != 1
+        || !matches!(
+            operation.status.as_str(),
+            "dispatched" | "recovery_required"
+        )
+        || !(200..=299).contains(&response_status)
+        || response_status == 202
+        || result.sha256 != expected_result_sha256
+        || validate_relay_container_sha256(expected_receipt_sha256, "provider usage receipt sha256")
+            .is_err()
+        || validate_relay_container_sha256(expected_result_sha256, "provider result sha256")
+            .is_err()
+        || validate_relay_container_result_record(
+            &operation.operation_id,
+            operation.owner_generation,
+            result,
+        )
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let Some(row) = relay_container_provider_usage_receipt(
+        db,
+        &operation.operation_id,
+        operation.owner_generation,
+        attempt_generation,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let payload = parse_relay_container_provider_usage_payload(&row)?;
+    let Some(reservation) = relay_billing_reservation(db, &operation.reservation_key).await? else {
+        return Ok(None);
+    };
+    if !relay_container_provider_usage_quote_reservation_matches(operation, &reservation)
+        || !relay_container_provider_usage_row_matches(
+            &row,
+            &payload,
+            operation,
+            &reservation,
+            terminal,
+            expected_receipt_sha256,
+            expected_result_sha256,
+            attempt_generation,
+        )
+    {
+        return Ok(None);
+    }
+    let final_quota = relay_container_provider_usage_final_quota(&payload, &reservation)?;
+    Ok(Some(RelayContainerProviderUsageSettlementQuote {
+        final_quota,
+        prompt_tokens: payload.prompt_tokens,
+        completion_tokens: payload.completion_tokens,
+        identity: RelayContainerProviderUsageReceiptIdentity {
+            operation_id: row.operation_id,
+            owner_generation: row.owner_generation,
+            attempt_generation: row.attempt_generation,
+            provider_operation_id: row.provider_operation_id,
+            admission_sha256: row.admission_sha256,
+            request_sha256: row.request_sha256,
+            egress_profile: row.egress_profile,
+            egress_worker_version_id: row.egress_worker_version_id,
+            provider_response_status: row.provider_response_status,
+            provider_response_sha256: row.provider_response_sha256,
+            result_object_key: row.result_object_key,
+            result_object_version: row.result_object_version,
+            result_sha256: row.result_sha256,
+            result_size: row.result_size,
+            result_content_type: row.result_content_type,
+            usage_receipt_sha256: row.usage_receipt_sha256,
+        },
+    }))
 }
 
 async fn validate_relay_container_provider_usage_settlement(
@@ -21122,6 +21257,30 @@ mod tests {
     }
 
     #[test]
+    fn provider_usage_readback_accepts_direct_and_revision_two_settlement() {
+        for operation_from_status in ["dispatched", "recovery_required"] {
+            assert!(relay_container_provider_usage_settlement_transition_valid(
+                operation_from_status,
+                "settle",
+                "completed",
+                1,
+            ));
+        }
+        assert!(!relay_container_provider_usage_settlement_transition_valid(
+            "prepared",
+            "settle",
+            "completed",
+            1,
+        ));
+        assert!(!relay_container_provider_usage_settlement_transition_valid(
+            "recovery_required",
+            "settle",
+            "completed",
+            2,
+        ));
+    }
+
+    #[test]
     fn flat_billing_snapshot_contract_hash_is_domain_separated_and_exact() {
         let snapshot = r#"{"default":{"1":{"schema_version":4}}}"#;
         let hash = format!("flat-v4:{:x}", Sha256::digest(snapshot.as_bytes()));
@@ -21893,6 +22052,46 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn relay_container_provider_usage_quote_accepts_only_matching_preterminal_reservations() {
+        let mut operation = relay_container_test_operation();
+        let mut reservation = relay_billing_test_reservation("reserved");
+
+        operation.status = "dispatched".to_string();
+        assert!(relay_container_provider_usage_quote_reservation_matches(
+            &operation,
+            &reservation
+        ));
+
+        reservation.selected_group = "other".to_string();
+        assert!(!relay_container_provider_usage_quote_reservation_matches(
+            &operation,
+            &reservation
+        ));
+        reservation.selected_group = operation.selected_group.clone();
+
+        operation.status = "recovery_required".to_string();
+        reservation.status = "recovery_required".to_string();
+        reservation.owner_generation = operation.owner_generation + 1;
+        assert!(relay_container_provider_usage_quote_reservation_matches(
+            &operation,
+            &reservation
+        ));
+
+        reservation.owner_generation = operation.owner_generation;
+        assert!(!relay_container_provider_usage_quote_reservation_matches(
+            &operation,
+            &reservation
+        ));
+
+        operation.status = "prepared".to_string();
+        reservation.status = "reserved".to_string();
+        assert!(!relay_container_provider_usage_quote_reservation_matches(
+            &operation,
+            &reservation
+        ));
     }
 
     #[test]

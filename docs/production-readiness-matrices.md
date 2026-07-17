@@ -503,6 +503,7 @@ Deployment env vars map to Cloudflare destinations as follows:
 | Provider tunables | `COHERE_SAFETY_SETTING`, `DIFY_DEBUG` | Worker `[vars]` | Provider-specific behavior flags. |
 | OAuth endpoints | `LINUX_DO_TOKEN_ENDPOINT`, `LINUX_DO_USER_ENDPOINT` | Worker `[vars]` | Non-secret endpoints; client secret is in `options`/Secrets Store. |
 | Tasks | `UPDATE_TASK`, `TASK_QUERY_LIMIT`, `TASK_TIMEOUT_MINUTES`, `TASK_PRICE_PATCHES`, `TASK_RUNNER_DO_ENABLED`, `TASK_RUNNER_STAGING_REPLAY_VERIFIED`, `TASK_RUNNER_MAX_ALARM_FIRES` | Worker `[vars]` / optional DO/Workflows config | `TASK_QUERY_LIMIT=100` and `TASK_TIMEOUT_MINUTES=1440` are explicit Worker vars; scheduled poller timeout sweep, CAS-winner refund batch, local refund replay contract, and the default-off `TASK_RUNNER` DO alarm foundation plus video/remix/Suno submit-path arming are compiled. The alarm state machine separates terminal settlement from progress CAS, re-reads D1 after a lost CAS, re-arms non-terminal progress, backs off transient failures, and records cron fallback after a bounded horizon. The admin status probe, frontend UI, replay classifier, and smoke plan expose this metadata. Remaining: staging timeout/provider-failure/no-duplicate-refund replay, live TaskRunner progress/rearm/terminal/lost-CAS/horizon replay, rollback, no-double-poll CAS proof, and the final DO-vs-Workflows fast-path decision. |
+| Container scheduler/canary | `CONTAINER_SCHEDULER_*`, `CONTAINER_SHARD_READINESS_*`, `CONTAINER_OPERATION_*`, `CONTAINER_TERMINAL_CAS_ENABLED`, `CONTAINER_FINANCIAL_TERMINAL_ENABLED`, `CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED`, `CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED`, `CONTAINER_CHAT_CANARY_*` | Worker `[vars]` plus Service Binding/DO/Container config | Every activation/staging value is false, the token/model/channel cohort is empty, and the code-level atomic-admission capability is false. Production requires one authoritative complete scheduler-cutover predicate, not a partial reassembly of flags. |
 
 Required G0 evidence still pending: real production row counts per table and a
 redacted secret-name inventory captured from the production `options` table.
@@ -539,6 +540,10 @@ real IDs, deliberate environments, generated types, and out-of-band secrets.
 | `CINATOKEN_WFP_OUTBOUND_AUTH_MODE` | Tenant plain-text marker | Must be exactly `platform-outbound-v1` | Upload/readback proves the marker exists and every Cloudflare bearer binding is absent. |
 | `WFP_RELAY_AUTHORITY_SECRET` | Platform Worker secret only | Central signer master; never a tenant binding | Minimum 32 bytes, platform-side provisioning evidence, rotation plan, and no value in logs/manifests/tenant metadata. |
 | `CINATOKEN_WFP_OUTBOUND_CONTEXT` | Outbound invocation parameter, not a tenant binding | Cloudflare-provided route/public-worker/dispatch-worker context | Exact single-parameter attachment readback plus live missing/wrong-context negatives; local static Workerd binding is not remote propagation evidence. |
+| `CONTAINER_CONTROLLER` / shard DO / Container | Service binding and isolated Controller/Container configuration exist locally with all execution/provider gates false | Environment-specific binding, namespace, image digest and protocol rollout | Authenticated binding/version/image readback, Controller/shard readiness, real lifecycle/fault evidence, and complete scheduler cutover. |
+| `CONTAINER_CHAT_CANARY_IDEMPOTENCY_SECRET` | Secret name only; no tracked value | At least 32 bytes, edge-only HMAC key with documented rotation | Stdin/Secrets Store provisioning, redacted existence readback, rotation/replay proof, and no plaintext idempotency key in D1/R2/DO/logs. |
+| `CONTAINER_SCHEDULER_ROUTING_SECRET` | Secret name only; no tracked value | At least 32 bytes, stable keyed shard-routing authority | Redacted existence/readback, deterministic ring vectors, rotation/remap/drain plan, and no value in evidence. |
+| `CONTAINER_AUTHORITY_CURRENT_SECRET` / `CONTAINER_AUTHORITY_PREVIOUS_SECRET` | Controller authority names; tracked config contains no value | Current signer plus bounded rotation-only previous verifier | Controller-first rotation, overlapping verification window, exact removal readback, and signed request replay/expiry faults. |
 
 Detailed binding and secret ownership is tracked in
 `docs/cloudflare-production-config-checklist.md`.
@@ -981,3 +986,42 @@ caller, provider-native idempotency or lookup, the provider-response-before-R2
 ambiguity, and all remote deployment, schema, binding, secret, fault, and
 traffic evidence. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-18 Migration 0049 Provider Usage Convergence Matrix
+
+This section supersedes the 0048 rows that described DO receipt binding and
+four-store reconciliation as unimplemented. It changes local implementation
+status only; remote and financial acceptance remain open.
+
+| Gate | Current local evidence | Production acceptance | Status |
+| --- | --- | --- | --- |
+| DO receipt binding | Result manifest and receipt digest attach atomically to operation and attempt; exact replay is duplicate and divergent hash/generation conflicts | Real DO eviction/restart and lost-response campaign with immutable status v3 readback | Local only |
+| Signed status | v3 has a separate authority domain and returns operation/attempt receipt evidence; v1/v2 shapes remain frozen | Deployed N/N-1 parser matrix, key rotation, tamper/expiry/replay faults | Local only |
+| Terminal ACK | ACK v2 binds attempt, receipt and result; v1 is rejected for receipt-bearing work | Remote outbox response-loss, duplicate, predecessor and retention proof | Local only |
+| Four-store observer | Worker compares canonical D1 receipt/terminal, status v3 and read-only R2 schema-4 HEAD before `converged_replayable` | Real D1/R2/DO missing/divergent/unavailable faults and archived joined evidence | Local only |
+| D1 enforcement | 0049 backfills without invented evidence and blocks old-writer convergence, late receipt writes and evidence mutation | Remote account/name/UUID-bound apply/readback, old-writer drain, normalized trigger/index negatives and fingerprints | Local only |
+| Terminal caller | Receipt-aware quote, exact R2 client artifact, financial terminal CAS and provider receipt readback are compiled behind a false admission gate | Atomic 0050 admission, autonomous terminalizer, response parity and remote exact replay | **Blocked** |
+| Amount/invoice authority | Frozen snapshot recomputation rejects mismatch | Independent amount attestation plus provider invoice/accounting convergence | **Blocked** |
+| Provider uncertainty | Post-dispatch paths never resend from local evidence alone | Native provider idempotency/lookup for every enabled channel and approved ambiguous-state runbook | **Blocked** |
+| Remote state | No remote 0049 apply, deployment, secret, provider, financial or traffic action occurred | Fault/load/cost/alerts/security/rollback and C1-C5/G1-G8 approvals | **NO-GO** |
+
+## 2026-07-18 Edge-to-Shard Chat Canary Matrix
+
+| Gate | Current local evidence | Production acceptance | Status |
+| --- | --- | --- | --- |
+| Route isolation | Exact API-key, non-streaming OpenAI-compatible `chat/completions` scope is checked before canary configuration; unrelated routes stay on the existing relay | Route-level Workerd tests for embeddings/responses/completions/streaming/non-API auth with malformed and armed cohort config | Local only |
+| Cohort identity | Positive canonical unique token allowlist, exact model/channel, one non-auto group and one no-retry attempt; mapping/override/proxy/WFP/AI Gateway/multikey excluded | Signed staging cohort inventory and readback with customer traffic excluded | Local only |
+| Idempotency privacy | Plaintext key never persists; HMAC is scoped to user/token/model/group and secret must be at least 32 bytes | Secret rotation/dual-read plan, redacted logs, replay/conflict campaign, and no plaintext in D1/R2/DO/traces | Partial |
+| Dispatch fence | Only D1 CAS `Applied` sends; `AlreadyDispatched`, dispatched, and recovery states query only; prepared may retry CAS | Real Controller/DO concurrent duplicates and response-loss proof with provider call count exactly one | Local only |
+| Atomic admission | Reservation, selected-attempt bind, and operation prepare are currently separate writes | Planned 0050 all-or-nothing reserve/debit/snapshot/selection/operation transaction with matching-resume and old-writer guards | **Blocked** |
+| Autonomous terminalization | Client replay can query and settle exact completion; scheduled reconciliation is observation-only | Owner-fenced scheduled terminalizer completes exact receipt/R2/quote/financial CAS without a surviving client | **Blocked** |
+| Response semantics | Exact provider bytes can be verified and replayed after settlement | Durable non-2xx status/body/approved headers plus one shared source-parity response/error/usage interpreter | **Blocked** |
+| Billing authority | Worker recomputes a D1-quoted frozen flat/tiered contract; Container has no quota authority | Independent amount authority, invoice/accounting convergence, ambiguous-terminal runbook and approval | **Blocked** |
+| Rolling compatibility | Protocol identities are version-fenced and fail closed | Proven N/N-1 range or blue/green DO/Container namespace; exact-version-only traffic cannot use rolling percentages | **Blocked** |
+| Runtime lifecycle | Controller ledger/unit fixtures cover many state transitions | Real `RelayShardContainer` eviction/restart/deadline/capacity/version-skew/fault tests | **Blocked** |
+| Activation fences | Scheduler, operation, canary, staging gates and cohort are false/empty; `container_chat_canary_admission_compiled=false` | Code gate true only after all blocked rows close and named staged evidence is archived | **NO-GO** |
+| Remote production | No schema/deploy/binding/secret/provider/financial/traffic mutation occurred | Remote 0050/readback, versions, bindings, secret rotation, faults, load/cost/alerts, security, rollback, C1-C5/G1-G8 | **NO-GO** |
+
+The canary secret names are `CONTAINER_CHAT_CANARY_IDEMPOTENCY_SECRET` and
+`CONTAINER_SCHEDULER_ROUTING_SECRET`; values must not appear in tracked files,
+CLI arguments, logs, or evidence bundles. Go/VPS remains authoritative.

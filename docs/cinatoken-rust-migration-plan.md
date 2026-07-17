@@ -15220,3 +15220,143 @@ This closes only the local R2/D1/DO/terminal hash loop. Production remains
 No remote migration, deployment, binding, secret, provider, financial, or
 traffic mutation is authorized by this section. All gates remain false and
 Go/VPS remains authoritative.
+
+## 22.243 Default-Off Edge-to-Shard Chat Canary Foundation (2026-07-18)
+
+This increment connects the existing edge relay, global D1 operation ledger,
+sharded Controller/DO/Container substrate, R2 artifacts, immutable provider
+usage receipt, and financial terminal writer for one deliberately narrow
+non-streaming OpenAI-compatible chat candidate. It adds no D1 migration and
+does not consume migration number 0050. The path is source-compiled for local
+review, but `container_chat_canary_admission_compiled()` is intentionally
+hard-coded false because crash-safe admission is not complete.
+
+### Bounded request contract
+
+Only a request satisfying every item below may ever be considered for the
+future canary:
+
+- exact API-key-authenticated `POST /v1/chat/completions`, non-streaming;
+- one explicit positive token ID from a canonical, duplicate-free allowlist;
+- one exact model, one positive OpenAI channel, one non-`auto` group, one
+  planned attempt, `RetryTimes=0`, and no model fallback;
+- no model mapping, custom base URL, organization, multiple key, channel extra
+  configuration, Workers for Platforms dispatch, or AI Gateway routing;
+- positive durable flat per-token reservation, with no free/trust/subscription
+  bypass; and
+- an ASCII `Idempotency-Key` of 8-128 bytes and a secret HMAC identity scoped
+  to user, token, model, and group.
+
+The route/auth/stream predicate is evaluated before canary configuration. An
+empty or malformed cohort therefore remains off; it does not return 503 for
+embeddings, responses, completions, streaming chat, or other relay traffic.
+Current platform runtime readiness remains false independently because the
+code-level admission capability is false. Duplicate or noncanonical token IDs
+are invalid instead of being silently normalized.
+
+The transformed provider JSON is frozen in R2 without credentials. The edge
+derives deterministic operation, provider-operation, trace, admission, and
+reconciliation identities. Only a global dispatch CAS result of `Applied` may
+invoke the Controller. `AlreadyDispatched`, an existing `dispatched` row, and
+`recovery_required` are query-only. A safely persisted `prepared` operation
+may retry the dispatch CAS; if another owner already won, it also becomes
+query-only. No query path is allowed to make a second provider request.
+
+On completed status v3, the edge requires the exact provider attempt, receipt
+hash, result manifest, immutable D1 quote, schema-4 R2 metadata and bytes,
+then creates the exact client replay artifact before the single financial
+terminal CAS. Recovery settlement uses billing owner generation
+`operation.owner_generation + 1`; prepared/dispatched settlement uses the
+operation generation. The Container never evaluates pricing or mutates quota.
+
+### Hard activation fences
+
+All tracked environments retain these false or empty values:
+
+```text
+CONTAINER_SCHEDULER_ENABLED=false
+CONTAINER_OPERATION_WRITE_ENABLED=false
+CONTAINER_TERMINAL_CAS_ENABLED=false
+CONTAINER_FINANCIAL_TERMINAL_ENABLED=false
+CONTAINER_EXACT_RESPONSE_REPLAY_ENABLED=false
+CONTAINER_OPERATION_RECONCILIATION_ENABLED=false
+CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED=false
+CONTAINER_CHAT_CANARY_ENABLED=false
+CONTAINER_OPERATION_STAGING_VERIFIED=false
+CONTAINER_CHAT_CANARY_TOKEN_IDS=
+CONTAINER_CHAT_CANARY_CHANNEL_ID=0
+CONTAINER_CHAT_CANARY_MODEL=
+```
+
+`CONTAINER_CHAT_CANARY_DEADLINE_SECONDS=120` is inert configuration. The
+secrets `CONTAINER_CHAT_CANARY_IDEMPOTENCY_SECRET` and
+`CONTAINER_SCHEDULER_ROUTING_SECRET` are names only and must never be committed
+or passed on a command line. Even if every environment value above were
+changed, the code-level atomic-admission capability remains false and the
+request path stays off. Readiness exposes this separately as
+`container_chat_canary_admission_compiled=false`.
+
+Changing that constant is not sufficient. The request path must consume one
+authoritative complete scheduler-cutover result that includes Controller
+binding/readiness, targeted shard readiness, operation runtime, N/N-1 support,
+capacity rejection, remote fault matrix, scheduler staging verification, and
+routing-secret readiness. It must not reconstruct activation from a partial
+subset of environment flags. Until a durable, request-usable form of that full
+predicate exists, the code-level admission gate stays false.
+
+### Planned migration 0050: atomic edge admission
+
+Migration 0050 is reserved for the first schema change required by the next
+contract. It must not be created merely to advance the sequence. Its design
+must make one D1 transactional decision own all of the following:
+
+1. deterministic client-idempotency and request hashes;
+2. quota reservation and debit evidence;
+3. immutable pricing snapshot and selected channel/group;
+4. billing owner generation/deadline;
+5. operation identity, input R2 version/hash, shard/ring fence, provider
+   operation ID, admission hash, and `prepared` state; and
+6. exact replay classification: newly admitted, matching resumable admission,
+   terminal replay, request conflict, or immutable identity conflict.
+
+There must be no committed reservation without a resumable operation and no
+operation without its matching reservation. A retry after response loss must
+recover the existing owner and continue from `prepared`; it must never debit
+again or report a generic in-progress conflict. D1 batch failure and readback
+ambiguity must leave either no state or a fully classifiable exact state. The
+0050 design also needs old-writer drain, N/N-1 read compatibility, trigger
+guards, local SQLite negative fixtures, Time Travel/fingerprint procedures,
+and disable-first rollback before any remote apply.
+
+### Remaining execution contracts
+
+Atomic admission alone will not open traffic. These independent blockers must
+also close:
+
+- an owner-fenced scheduled terminalizer must settle or quarantine a completed
+  operation without requiring the original client to retry;
+- provider non-2xx status, bounded body, and approved headers must be durable,
+  and the shared response interpreter must reproduce source success/error,
+  usage normalization, and client-header behavior instead of treating every
+  non-2xx result as an ambiguous 202;
+- the response artifact must be derived by that shared interpreter, not by
+  returning raw provider bytes with only `content-type`;
+- Worker, Controller, DO, and Container protocols must support a proven N/N-1
+  range or an isolated blue/green namespace. Cloudflare rolls Worker code and
+  Container instances on different timelines, so exact-version-only execution
+  is not a rolling deployment contract;
+- real `RelayShardContainer` lifecycle tests must cover eviction, restart,
+  duplicate delivery, response loss, deadline, capacity, and version skew;
+- provider-native idempotency or deterministic operation lookup is required
+  for every enabled channel, or its post-provider/pre-R2 uncertainty remains
+  non-retryable; and
+- remote 0050/readback, bindings, secrets, versions, D1/R2/DO/provider faults,
+  load/cost, invoice/accounting convergence, alerts, security review, rollback
+  rehearsal, and C1-C5/G1-G8 approvals must be archived.
+
+This sequencing follows Cloudflare guidance to use service bindings for
+Worker-to-Worker calls and to design Durable Object/Container state for
+restarts and rolling updates. The tracked configuration remains a local
+candidate only. No remote API, deploy, secret, provider, financial, or traffic
+command was run; Go/VPS remains authoritative and production remains
+**NO-GO**.

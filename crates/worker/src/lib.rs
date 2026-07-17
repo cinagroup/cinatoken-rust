@@ -30,6 +30,7 @@ mod container_r2_inventory;
 mod container_r2_inventory_admin;
 mod container_reconciliation;
 mod container_reconciliation_admin;
+mod container_relay_canary;
 mod container_scheduler;
 mod container_terminal_outbox;
 mod container_terminal_outbox_admin;
@@ -2128,7 +2129,7 @@ pub(crate) fn set_cors_headers(response: &mut Response) -> Result<()> {
     headers.set("Access-Control-Allow-Origin", "*")?;
     headers.set(
         "Access-Control-Allow-Headers",
-        "authorization,content-type,x-api-key,x-goog-api-key,anthropic-version,anthropic-beta",
+        "authorization,content-type,idempotency-key,x-api-key,x-goog-api-key,anthropic-version,anthropic-beta",
     )?;
     headers.set(
         "Access-Control-Allow-Methods",

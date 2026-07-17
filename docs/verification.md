@@ -7085,3 +7085,71 @@ amount authority, load/cost/alerts, disable-first rollback rehearsal, and
 C1-C5/G1-G8 approvals are archived. Provider completion before the first R2
 create remains ambiguous. No deploy, binding, secret, provider, financial, or
 traffic mutation is part of this verification entry.
+
+## Default-Off Edge-to-Shard Chat Canary Verification (2026-07-18)
+
+This verification entry covers the local orchestration foundation only. It
+must not be used as evidence that a client canary, Container deployment, D1
+migration, secret, provider request, settlement, or traffic switch occurred.
+
+Current Rust unit/static evidence covers the tracked false gates, strict cohort
+parser, HMAC identity, dispatch-action mapping, recovery generation, D1 quote
+and receipt-readback transition, and CORS header construction. The following
+is the complete acceptance list; route-level Worker, Controller, real DO
+lifecycle, remote, and fault items remain pending unless their separate command
+and archived artifact are present:
+
+- all tracked scheduler/operation/canary gates are false and the token/model/
+  channel cohort is empty;
+- `container_chat_canary_admission_compiled()` is false and participates in
+  operation readiness, independently of environment flags;
+- exact route/auth/non-stream scope exits before cohort parsing, so malformed
+  config cannot return 503 on unrelated relay endpoints;
+- token IDs are positive, canonical, bounded and unique; duplicate/empty/
+  leading-zero forms fail closed;
+- HMAC identities are deterministic and tenant-scoped, while request changes
+  under one idempotency identity produce a 409 lookup conflict;
+- dispatch CAS `Applied` maps to one send, `AlreadyDispatched` maps to query
+  only, and a prepared operation re-enters through the same CAS;
+- recovery owner generation advances exactly once;
+- status v3, attempt 1, receipt/result identity, immutable settlement quote,
+  R2 metadata/body, financial terminal readback and exact replay must all
+  converge before a client success; and
+- CORS permits `Idempotency-Key` without persisting CORS headers in the replay
+  artifact.
+
+The local command set is:
+
+```powershell
+cargo fmt --all -- --check
+cargo test -p cinatoken-worker --lib
+cargo test --workspace --exclude cinatoken-worker
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run check:container-scheduler-config
+bun run check:container-controller
+bun run check:do-lifecycle-runtime
+python tools/verify_sqlite.py
+bun run check
+git diff --check
+```
+
+The focused commands above do not imply a live `RelayShardContainer`. That
+requires an explicit Workerd/remote fixture executing the actual class across
+eviction/restart and a provider-call counter. Route isolation and wildcard/
+allowlisted CORS also require request-level Worker tests; the pure Rust tests
+alone are not that evidence. On a shell without a direct Bun executable, use
+the repository's existing `npx.cmd --yes bun run <script>` wrapper.
+
+Before the hard admission gate can change, migration 0050 or an equivalent
+schema-proven transaction must demonstrate crash injection before, during and
+after quota debit, reservation insert, selected-attempt bind, operation insert,
+and response readback. Every retry must classify as no state, matching
+resumable state, terminal replay, or immutable conflict, with no second debit
+and no provider send before a unique `Applied` dispatch CAS.
+
+Separate required suites must then prove an autonomous reconciler terminalizes
+completion without a client, source-parity handling of 200-error and non-2xx
+responses, real `RelayShardContainer` eviction/restart, N/N-1 or blue/green
+rollout, provider idempotency/lookup, and remote D1/R2/DO/provider fault and
+financial convergence. Local pass status leaves Go/VPS authoritative and
+production **NO-GO**.

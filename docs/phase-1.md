@@ -2298,3 +2298,45 @@ rollback rehearsal, and C1-C5/G1-G8 approvals are still absent. No remote
 schema, deployment, binding, secret, provider, financial, or traffic action is
 authorized by this local increment; Go/VPS remains authoritative and every
 Container gate remains false.
+
+## Default-Off Edge-to-Shard Chat Canary Foundation
+
+The Phase 1 edge now contains a locally compiled orchestration foundation for
+one exact API-key, non-streaming `/v1/chat/completions` cohort. It freezes the
+transformed body in R2, derives HMAC-scoped idempotency and deterministic shard
+identity, binds the selected attempt, dispatches only after a global D1 CAS,
+requires status v3 plus the immutable provider receipt, reads exact R2 bytes,
+and uses the atomic financial terminal writer before replaying the client
+artifact. `AlreadyDispatched` is query-only, while `prepared` may retry only
+the dispatch CAS. Browser preflight now permits `Idempotency-Key`.
+
+This is not an activation milestone. `container_chat_canary_admission_compiled`
+is false because quota reservation, selected-attempt binding, and operation
+preparation are still separate commits. A client retry can otherwise encounter
+a reserved-but-unbound state. The code-level gate is required in addition to
+`CONTAINER_SCHEDULER_ENABLED`, every operation gate, the empty token/model/
+channel cohort, and the two secret-readiness checks. Malformed cohort input is
+off and cannot fail unrelated relay routes.
+
+The next Phase 1 data task is planned migration 0050, if schema changes are
+needed, to atomically admit or resume reservation plus operation state. It is
+followed by an owner-fenced autonomous terminalizer, source-parity non-2xx and
+response interpretation, N/N-1 or blue/green protocol rollout, real
+`RelayShardContainer` lifecycle tests, and isolated remote staging evidence.
+All tracked gates remain false; no remote mutation occurred; Go/VPS remains
+authoritative and production remains **NO-GO**.
+
+Phase 1 acceptance remains blocked until all of the following are archived:
+
+- atomic reservation/selection/operation admission with resumable matching;
+- a request-usable complete scheduler-cutover predicate, not partial flags;
+- autonomous owner-fenced terminalization without a client retry;
+- durable non-2xx and source-parity response/error/usage behavior;
+- N/N-1 protocol range or isolated blue/green rollout;
+- provider idempotency/lookup and independent amount/invoice convergence; and
+- real D1/R2/DO/Container faults, lifecycle, load/cost, alerts, rollback,
+  security review, and C1-C5/G1-G8 approval.
+
+The detailed contracts are migration plan section 22.243,
+`docs/container-operation-recovery.md`, the 0049/canary readiness matrices,
+and the matching entry in `docs/verification.md`.

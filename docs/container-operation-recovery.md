@@ -416,13 +416,13 @@ never recompute group ratios, expression inputs, reservation policy, or quota.
 
 The following are still mandatory:
 
-- wire the default-off Rust envelope/R2/Controller foundation into the narrow
-  non-streaming chat canary after all admission records are committed;
-- wire the implemented guarded D1 financial terminal batch into the narrow
-  edge canary only after R2 response verification succeeds;
-- derive the implemented tenant/user/token/route-scoped client idempotency HMAC
-  at admission, require it for the canary, and map the implemented same-key/
-  different-request lookup conflict to 409;
+- complete planned migration 0050, or prove an equivalent schema contract, so
+  quota reservation, selected-attempt ownership, and operation preparation are
+  one resumable D1 admission decision;
+- keep the compiled edge/R2/Controller/receipt/financial-terminal canary behind
+  its false code-level admission gate until that atomic contract is verified;
+- add an owner-fenced scheduled terminalizer so completion does not depend on a
+  surviving client retry;
 - prove the default-off R2 orphan inventory against an isolated real bucket,
   including pagination, concurrent creation, metadata drift, cost, alerts, and
   retention;
@@ -437,11 +437,10 @@ The following are still mandatory:
   lookup before any broader provider canary;
 - add the DO-owned retry scheduler without exposing prepare or retry authority
   to the Container;
-- wire the implemented create-only exact client-response R2 write and verified
-  byte replay into the narrow edge canary without enabling any broader route;
-- after old writers drain and remote 0042/0043/0044/0045 invariants pass, add a separate 0046
-  enforcement migration that rejects legacy empty identity and eventless v1
-  terminal transitions;
+- prove the implemented create-only exact client-response R2 write and verified
+  byte replay through source-parity response interpretation in isolated staging;
+- remotely apply/read back 0046-0049 only after the documented old-writer drain,
+  then reserve 0050 for atomic admission only if its reviewed schema requires it;
 - reconciliation for R2 write success followed by DO attach failure;
 - current/previous protocol parsers and N/N-1 mixed Controller/image tests;
 - real cold/warm/sleep/restart/OOM and network fault evidence;
@@ -920,6 +919,57 @@ inconsistent and is not the charging total. This preserves the Go charging
 shape while retaining the provider total and its presence bit as audit
 evidence.
 
+## Edge Chat Canary Admission And Recovery Boundary
+
+The edge orchestration foundation is intentionally unreachable in tracked and
+custom environments until `container_chat_canary_admission_compiled()` becomes
+true. This is a code-level safety boundary, not an operator assertion.
+
+The future request state transitions are constrained as follows:
+
+| Durable state or CAS outcome | Edge authority | Provider-send authority |
+| --- | --- | --- |
+| no admission | direct relay may continue only before cohort admission | none |
+| atomic admission newly applied | build/read exact operation and attempt dispatch CAS | none yet |
+| operation `prepared`, dispatch CAS `Applied` | call the signed Controller once, then query | exactly one |
+| dispatch CAS `AlreadyDispatched` | query Controller only | none |
+| operation `dispatched` | query status only | none |
+| operation `recovery_required` | query exact status/receipt; terminalize only with matching fenced evidence | none |
+| operation `completed`/`failed` | replay immutable financial-terminal client artifact | none |
+| request hash conflict | return 409 without quota/provider mutation | none |
+| identity, receipt, R2, or status divergence | quarantine/recovery with immutable audit evidence | none |
+
+The current local code already enforces `Applied` versus `AlreadyDispatched`
+at the dispatch fence and lets a safely unsent `prepared` row resume. It also
+uses `operation.owner_generation + 1` when a `recovery_required` billing owner
+is settled. These properties do not solve the earlier reserve/bind crash
+window, so the hard admission gate remains false.
+
+Planned migration 0050 must make reservation/debit, frozen billing snapshot,
+selected channel/group, owner fence, operation input/shard identity, and
+`prepared` state one D1 transaction with exact readback. `MatchingReservation`
+must become resumable ownership rather than a generic conflict. Any failure
+must classify as no admission, exact matching admission, terminal replay, or
+immutable conflict; an orphan reservation is forbidden.
+
+Recovery must later gain an independently gated scheduled owner. It may query
+the Controller and perform the same receipt/R2/quote/terminal checks as the
+edge, but must acquire a generation-fenced reconciliation lease and use the
+single financial terminal CAS. Observation-only reconciliation is not enough:
+provider completion after edge/client disappearance otherwise remains
+unsettled indefinitely. After an uncertain financial-terminal call, no second
+terminal decision may be attempted; exact D1 readback is the only recovery.
+
+External traffic also waits for a shared source-parity response interpreter.
+The provider broker must durably retain bounded non-2xx status/body/approved
+headers, and the interpreter must apply the same success/error and usage rules
+before creating the client artifact. Raw-body replay is useful integrity
+evidence but is not source-equivalent behavior.
+
+All of these paths remain default-off. No remote schema, deployment, secret,
+provider, financial, or traffic operation is authorized; production is
+**NO-GO**.
+
 ### Persist-before-terminal evidence chain
 
 The only accepted local success chain is ordered as follows:
@@ -943,10 +993,11 @@ The only accepted local success chain is ordered as follows:
 6. The Controller performs `INSERT OR IGNORE` into D1, then rereads the primary
    row, recomputes the canonical receipt digest, and compares every grant,
    billing snapshot, provider response, result, usage, and timestamp field.
-7. Only after R2 and D1 readback does the Controller attach the exact result to
-   the selected DO attempt and record provider-attempt success.
-8. A later receipt-aware financial caller must reread the canonical D1
-   receipt, recompute quota from the frozen billing snapshot, and commit the
+7. Only after R2 and D1 readback does the Controller atomically attach the exact
+   result and receipt digest to the selected DO operation/attempt, then record
+   provider-attempt success.
+8. The compiled but hard-gated receipt-aware edge caller rereads the canonical D1
+   receipt, recomputes quota from the frozen billing snapshot, and commits the
    receipt hash, result hash, attempt generation, exact client response, event,
    outbox, operation, billing, accounting, and audit mutations in the existing
    atomic D1 terminal batch.
@@ -971,12 +1022,13 @@ for callers. Production probes must exercise exact and divergent replacement
 with `PRAGMA recursive_triggers=OFF` and prove both tables are byte-for-byte
 unchanged.
 
-This is not yet an end-to-end distributed receipt authority. R2 metadata
-stores the receipt hash, but the DO result ledger and terminal acknowledgement
-do not yet persist or compare it, and the observer/reconciler does not yet
-classify D1/DO/R2 receipt-hash divergence. The Rust terminal writer recomputes
-the amount, but D1 triggers cannot independently execute arbitrary billing
-expressions or attest that amount. Those gaps remain explicit blockers.
+Migration 0049 closes the local receipt-binding loop: R2 metadata, the D1
+receipt and terminal event, the DO operation/attempt, status v3, terminal ACK
+v2, and the reconciliation observation all compare the same receipt/result
+tuple. That remains local implementation evidence, not remote distributed
+truth. The Rust terminal writer recomputes the amount, but D1 triggers cannot
+independently execute arbitrary billing expressions or attest that amount;
+provider invoice comparison and remote fault evidence are also absent.
 
 ### Crash-window contract
 
@@ -988,9 +1040,9 @@ expressions or attest that amount. Those gaps remain explicit blockers.
 | Receipt parsed, before R2 create/readback | Receipt exists only in volatile memory | Preserve ambiguous state; lookup/reconcile the same provider operation | Forbidden | No settle or automatic refund |
 | R2 create committed, response lost before D1 receipt | Immutable result may exist with receipt-hash metadata; D1 may be absent | Exact HEAD/readback and future receipt-aware reconciliation; never infer receipt bytes from metadata alone | Forbidden | No settle or automatic refund until canonical D1 receipt exists |
 | D1 receipt insert committed, response lost | Receipt and identity ledger may exist; R2 is exact | Repeat `INSERT OR IGNORE`, exact primary readback, and canonical/hash comparison | Forbidden | Eligible only after the remaining chain matches |
-| D1 receipt durable, before DO result attach | R2 and D1 match; DO may lack result | Reattach the same exact result/attempt after canonical DO readback | Forbidden | No settle until DO/global terminal prerequisites match |
-| DO attach committed, attach response lost | DO may hold exact result, but currently not receipt hash | Reread DO and compare result identity; receipt-hash comparison remains a required enhancement | Forbidden | No settle on any divergence |
-| DO success committed, before financial terminal | R2, D1 receipt, and DO result may exist | Receipt-aware caller reconstructs only from frozen D1/R2/DO evidence | Forbidden | Settle once through exact D1 batch; never estimate |
+| D1 receipt durable, before DO result attach | R2 and D1 match; DO may lack result/receipt pair | Reattach the same exact result and receipt digest after canonical DO readback | Forbidden | No settle until status v3 and global terminal prerequisites match |
+| DO attach committed, attach response lost | DO may hold the exact result/receipt pair | Reread status v3 and compare DO, R2, D1 receipt, and terminal identity | Forbidden | No settle on any divergence |
+| DO success committed, before financial terminal | R2, D1 receipt, and DO result/receipt pair may exist | Hard-gated receipt-aware caller reconstructs only from frozen D1/R2/DO evidence | Forbidden | Settle once through exact D1 batch; never estimate |
 | Terminal D1 batch committed, response lost | Event/outbox/operation/billing/accounting may all be committed | Joined terminal readback must prove exact replay before responding | Forbidden | No second financial mutation |
 | Provider returned valid 202 | R2 and D1 may retain status/body/usage evidence | Keep recovery ownership and alert; no completed terminal | Forbidden | Both settlement and automatic refund forbidden |
 | Usage present but a price-relevant field bit is absent | Canonical omission is durable and distinguishable from zero | Quarantine/reconcile provider evidence or pricing support | Forbidden | Fail closed; no settlement or automatic refund |
@@ -1001,7 +1053,7 @@ provider-native idempotency or deterministic lookup, no local algorithm can
 distinguish an accepted request from a lost response. A second send or an
 automatic refund would each create a different financial correctness risk.
 
-### 0047 drain, rollout, and rollback
+### 0047-0049 drain, rollout, and rollback
 
 Schema 0048 is intentionally incompatible with a true 0047 provider writer
 after that writer creates a global egress grant: a settle event for that grant
@@ -1041,8 +1093,8 @@ replace or delete a receipt, resend an ambiguous provider operation, or refund
 it merely to clear state.
 
 Production remains **NO-GO** until D1 has an independently attestable amount
-authority, DO and reconciler compare receipt hashes, a production terminal
-caller is wired and proven, every enabled provider has native idempotency or
+authority, the compiled terminal caller and 0049 four-store comparison are
+proven remotely, every enabled provider has native idempotency or
 lookup, the response-before-R2 ambiguity has an approved operational path,
 and authenticated remote deployment/schema/binding/secret, fault, alert,
 load/cost, rollback, C1-C5, and G1-G8 evidence is complete. Go/VPS remains

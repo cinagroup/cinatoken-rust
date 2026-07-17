@@ -428,6 +428,7 @@ struct PlatformCapabilities {
     container_operation_reconciliation_enabled: bool,
     container_divergence_reconciliation_verified: bool,
     container_chat_canary_enabled: bool,
+    container_chat_canary_admission_compiled: bool,
     container_operation_staging_verified: bool,
     container_operation_runtime_ready: bool,
     container_scheduler_n_minus_one_protocol_compiled: bool,
@@ -1097,12 +1098,17 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let container_scheduler_status = container_scheduler_runtime_status(&env);
     let container_operation_runtime = container_operation_runtime_status(&env);
     let container_financial_terminal_compiled = true;
-    let container_exact_response_replay_compiled = false;
-    let container_divergence_reconciliation_compiled = false;
+    let container_exact_response_replay_compiled =
+        crate::container_relay_canary::container_chat_canary_compiled();
+    let container_divergence_reconciliation_compiled =
+        crate::container_reconciliation::container_reconciliation_observer_compiled();
+    let container_chat_canary_admission_compiled =
+        crate::container_relay_canary::container_chat_canary_admission_compiled();
     let container_operation_runtime_ready = container_operation_runtime.cutover_ready()
         && container_financial_terminal_compiled
         && container_exact_response_replay_compiled
-        && container_divergence_reconciliation_compiled;
+        && container_divergence_reconciliation_compiled
+        && container_chat_canary_admission_compiled;
     let container_scheduler_contract_version = CONTAINER_SHARD_CONTRACT_VERSION;
     let container_scheduler_foundation_compiled = container_scheduler_foundation_compiled();
     let container_scheduler_enabled = env_flag(&env, CONTAINER_SCHEDULER_ENABLED_ENV);
@@ -1766,6 +1772,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_divergence_reconciliation_verified: container_operation_runtime
             .divergence_reconciliation_verified,
         container_chat_canary_enabled: container_operation_runtime.chat_canary_enabled,
+        container_chat_canary_admission_compiled,
         container_operation_staging_verified: container_operation_runtime
             .operation_staging_verified,
         container_operation_runtime_ready,

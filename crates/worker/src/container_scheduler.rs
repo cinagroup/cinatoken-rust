@@ -101,6 +101,11 @@ pub fn container_scheduler_runtime_status(env: &Env) -> ContainerSchedulerRuntim
     parse_container_scheduler_runtime_status(generation.as_deref(), shard_count.as_deref())
 }
 
+pub fn container_scheduler_enabled(env: &Env) -> bool {
+    let enabled = runtime_value(env, CONTAINER_SCHEDULER_ENABLED_ENV);
+    runtime_gate_enabled(enabled.as_deref())
+}
+
 pub fn container_operation_runtime_status(env: &Env) -> ContainerOperationRuntimeStatus {
     let operation_write_enabled = runtime_value(env, CONTAINER_OPERATION_WRITE_ENABLED_ENV);
     let terminal_cas_enabled = runtime_value(env, CONTAINER_TERMINAL_CAS_ENABLED_ENV);

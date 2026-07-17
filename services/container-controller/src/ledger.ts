@@ -33,6 +33,7 @@ export interface OperationRow {
   result_sha256: string | null;
   result_size: number | null;
   result_content_type: string | null;
+  provider_usage_receipt_sha256: string | null;
 }
 
 export interface StorageAccessGrant {
@@ -55,6 +56,7 @@ export interface StorageAccessGrant {
   shard: OperationShard;
   trace_id: string;
   result: StorageResultRecord | null;
+  provider_usage_receipt_sha256: string | null;
   provider_attempt: {
     attempt_generation: number;
     provider_operation_id: string;
@@ -64,6 +66,8 @@ export interface StorageAccessGrant {
     egress_worker_version_id: string | null;
     status: ProviderAttemptStatus;
     response_status: number | null;
+    provider_usage_receipt_sha256: string | null;
+    provider_usage_receipt_attached_at: number | null;
   } | null;
 }
 
@@ -108,6 +112,8 @@ export interface ProviderAttemptRow {
   result_sha256: string | null;
   result_size: number | null;
   result_content_type: string | null;
+  provider_usage_receipt_sha256: string | null;
+  provider_usage_receipt_attached_at: number | null;
   prepared_at: number;
   dispatched_at: number | null;
   terminal_at: number | null;
@@ -303,6 +309,7 @@ interface StorageOperationRow {
   result_sha256: string | null;
   result_size: number | null;
   result_content_type: string | null;
+  provider_usage_receipt_sha256: string | null;
 }
 
 const TERMINAL_STATUS_SQL = "'completed', 'failed', 'recovery_required'";
@@ -357,6 +364,7 @@ export class RelayShardLedger {
         result_sha256 TEXT,
         result_size INTEGER,
         result_content_type TEXT,
+        provider_usage_receipt_sha256 TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -389,6 +397,8 @@ export class RelayShardLedger {
         result_sha256 TEXT,
         result_size INTEGER,
         result_content_type TEXT,
+        provider_usage_receipt_sha256 TEXT,
+        provider_usage_receipt_attached_at INTEGER,
         prepared_at INTEGER NOT NULL,
         dispatched_at INTEGER,
         terminal_at INTEGER,
@@ -406,6 +416,11 @@ export class RelayShardLedger {
             AND egress_worker_version_id IS NOT NULL
             AND length(egress_worker_version_id) BETWEEN 1 AND 128)
         ),
+        CHECK (
+          provider_usage_receipt_sha256 IS NULL OR
+          (length(provider_usage_receipt_sha256) = 64
+            AND provider_usage_receipt_sha256 NOT GLOB '*[^0-9a-f]*')
+        ),
         CHECK (status IN ('prepared', 'dispatched', 'succeeded', 'definite_reject', 'ambiguous', 'cancelled')),
         CHECK (prepared_at > 0 AND updated_at >= prepared_at),
         CHECK (
@@ -414,6 +429,8 @@ export class RelayShardLedger {
             AND response_status IS NULL AND response_code IS NULL
             AND result_object_key IS NULL AND result_object_version IS NULL
             AND result_sha256 IS NULL AND result_size IS NULL AND result_content_type IS NULL
+            AND provider_usage_receipt_sha256 IS NULL
+            AND provider_usage_receipt_attached_at IS NULL
             AND updated_at = prepared_at)
           OR
           (status = 'dispatched'
@@ -421,6 +438,11 @@ export class RelayShardLedger {
             AND terminal_at IS NULL AND response_status IS NULL AND response_code IS NULL
             AND result_object_key IS NULL AND result_object_version IS NULL
             AND result_sha256 IS NULL AND result_size IS NULL AND result_content_type IS NULL
+            AND ((provider_usage_receipt_sha256 IS NULL
+                  AND provider_usage_receipt_attached_at IS NULL)
+              OR (provider_usage_receipt_sha256 IS NOT NULL
+                  AND provider_usage_receipt_attached_at IS NOT NULL
+                  AND provider_usage_receipt_attached_at >= dispatched_at))
             AND updated_at = dispatched_at)
           OR
           (status = 'succeeded'
@@ -429,26 +451,38 @@ export class RelayShardLedger {
             AND response_status BETWEEN 200 AND 299 AND response_code IS NULL
             AND result_object_key IS NOT NULL AND result_object_version IS NOT NULL
             AND result_sha256 IS NOT NULL AND result_size IS NOT NULL
-            AND result_content_type IS NOT NULL)
+            AND result_content_type IS NOT NULL
+            AND provider_usage_receipt_sha256 IS NOT NULL
+            AND provider_usage_receipt_attached_at BETWEEN dispatched_at AND terminal_at)
           OR
           (status = 'definite_reject'
             AND dispatched_at IS NOT NULL AND terminal_at IS NOT NULL
             AND terminal_at >= dispatched_at AND updated_at = terminal_at
             AND response_status BETWEEN 400 AND 599 AND response_code IS NOT NULL
             AND result_object_key IS NULL AND result_object_version IS NULL
-            AND result_sha256 IS NULL AND result_size IS NULL AND result_content_type IS NULL)
+            AND result_sha256 IS NULL AND result_size IS NULL AND result_content_type IS NULL
+            AND provider_usage_receipt_sha256 IS NULL
+            AND provider_usage_receipt_attached_at IS NULL)
           OR
           (status = 'ambiguous'
             AND dispatched_at IS NOT NULL AND terminal_at IS NOT NULL
             AND terminal_at >= dispatched_at AND updated_at = terminal_at
-            AND response_status = 202 AND response_code IS NOT NULL)
+            AND response_status = 202 AND response_code IS NOT NULL
+            AND ((result_object_key IS NULL
+                  AND provider_usage_receipt_sha256 IS NULL
+                  AND provider_usage_receipt_attached_at IS NULL)
+              OR (result_object_key IS NOT NULL
+                  AND provider_usage_receipt_sha256 IS NOT NULL
+                  AND provider_usage_receipt_attached_at BETWEEN dispatched_at AND terminal_at)))
           OR
           (status = 'cancelled'
             AND dispatched_at IS NULL AND terminal_at IS NOT NULL
             AND terminal_at >= prepared_at AND updated_at = terminal_at
             AND response_status BETWEEN 400 AND 599 AND response_code IS NOT NULL
             AND result_object_key IS NULL AND result_object_version IS NULL
-            AND result_sha256 IS NULL AND result_size IS NULL AND result_content_type IS NULL)
+            AND result_sha256 IS NULL AND result_size IS NULL AND result_content_type IS NULL
+            AND provider_usage_receipt_sha256 IS NULL
+            AND provider_usage_receipt_attached_at IS NULL)
         )
       );
       CREATE UNIQUE INDEX IF NOT EXISTS cinatoken_shard_provider_attempts_active
@@ -555,10 +589,26 @@ export class RelayShardLedger {
         response_code TEXT,
         egress_profile TEXT,
         egress_worker_version_id TEXT,
+        provider_usage_receipt_sha256 TEXT,
+        provider_usage_receipt_attached_at INTEGER,
         observed_at INTEGER NOT NULL,
         UNIQUE (operation_id, owner_generation, attempt_generation, event_sequence),
-        CHECK (event_sequence BETWEEN 1 AND 4),
+        CHECK (event_sequence BETWEEN 1 AND 3),
         CHECK (to_status IN ('prepared', 'dispatched', 'succeeded', 'definite_reject', 'ambiguous', 'cancelled')),
+        CHECK (
+          provider_usage_receipt_sha256 IS NULL OR
+          (length(provider_usage_receipt_sha256) = 64
+            AND provider_usage_receipt_sha256 NOT GLOB '*[^0-9a-f]*')
+        ),
+        CHECK (
+          (provider_usage_receipt_sha256 IS NULL
+            AND provider_usage_receipt_attached_at IS NULL)
+          OR
+          (provider_usage_receipt_sha256 IS NOT NULL
+            AND provider_usage_receipt_attached_at IS NOT NULL
+            AND provider_usage_receipt_attached_at > 0
+            AND provider_usage_receipt_attached_at <= observed_at)
+        ),
         CHECK (observed_at > 0)
       );
       CREATE INDEX IF NOT EXISTS cinatoken_shard_provider_attempt_events_operation
@@ -657,7 +707,8 @@ export class RelayShardLedger {
       BEGIN
         INSERT INTO cinatoken_shard_provider_attempt_events
           (event_id, operation_id, owner_generation, attempt_generation, event_sequence,
-           from_status, to_status, response_status, response_code, observed_at)
+           from_status, to_status, response_status, response_code,
+           provider_usage_receipt_sha256, provider_usage_receipt_attached_at, observed_at)
         VALUES (
           'provider-attempt-v1:' || NEW.operation_id || ':' || NEW.owner_generation || ':' ||
             NEW.attempt_generation || ':' ||
@@ -670,6 +721,8 @@ export class RelayShardLedger {
           NEW.status,
           NEW.response_status,
           NEW.response_code,
+          NEW.provider_usage_receipt_sha256,
+          NEW.provider_usage_receipt_attached_at,
           NEW.updated_at
         );
       END;
@@ -726,7 +779,9 @@ export class RelayShardLedger {
     `);
     this.ensureOperationColumns();
     this.ensureProviderAttemptEgressColumns();
+    this.ensureProviderUsageReceiptColumns();
     this.installProviderAttemptEgressGuards();
+    this.installProviderUsageReceiptGuards();
     this.storage.sql.exec(
       `UPDATE cinatoken_shard_operations
           SET status = 'failed', response_status = COALESCE(response_status, 503)
@@ -821,6 +876,9 @@ export class RelayShardLedger {
   ): RecordStorageResultOutcome {
     this.ensureSchema();
     validateStorageResult(result);
+    if (providerAttemptGeneration !== undefined) {
+      throw new ProtocolError("provider_usage_result_required", 409);
+    }
     if (
       result.object_key !==
       `container-results/v1/${operationId}/${ownerGeneration}/${result.sha256}`
@@ -828,26 +886,9 @@ export class RelayShardLedger {
       throw new ProtocolError("invalid_storage_result", 400);
     }
     return this.storage.transactionSync(() => {
-      if (
-        providerAttemptGeneration !== undefined &&
-        (!Number.isSafeInteger(providerAttemptGeneration) ||
-          providerAttemptGeneration < 1 ||
-          providerAttemptGeneration > 3)
-      ) {
-        throw new ProtocolError("invalid_provider_attempt", 400);
-      }
-      const grant = this.authorizeStorageAccess(
-        operationId,
-        ownerGeneration,
-        now,
-        providerAttemptGeneration !== undefined,
-      );
-      if (
-        providerAttemptGeneration !== undefined &&
-        (grant.provider_attempt?.attempt_generation !== providerAttemptGeneration ||
-          grant.provider_attempt.status !== "dispatched")
-      ) {
-        throw new ProtocolError("provider_attempt_result_conflict", 409);
+      const grant = this.authorizeStorageAccess(operationId, ownerGeneration, now, false);
+      if (grant.provider_attempt !== null) {
+        throw new ProtocolError("provider_usage_result_required", 409);
       }
       if (grant.result !== null) {
         if (storageResultMatches(grant.result, result)) return "duplicate";
@@ -884,13 +925,113 @@ export class RelayShardLedger {
     });
   }
 
+  recordProviderUsageResult(
+    operationId: string,
+    ownerGeneration: number,
+    result: StorageResultRecord,
+    attemptGeneration: number,
+    usageReceiptSha256: string,
+    now: number,
+  ): RecordStorageResultOutcome {
+    this.ensureSchema();
+    validateStorageResult(result);
+    validateProviderAttemptCommand(operationId, ownerGeneration, now, attemptGeneration);
+    if (
+      !/^[0-9a-f]{64}$/.test(usageReceiptSha256) ||
+      result.object_key !==
+        `container-results/v1/${operationId}/${ownerGeneration}/${result.sha256}`
+    ) {
+      throw new ProtocolError("invalid_provider_usage_result", 400);
+    }
+    return this.storage.transactionSync(() => {
+      const grant = this.authorizeStorageAccess(operationId, ownerGeneration, now, true);
+      const attempt = grant.provider_attempt;
+      if (
+        attempt === null ||
+        attempt.attempt_generation !== attemptGeneration ||
+        attempt.status !== "dispatched"
+      ) {
+        throw new ProtocolError("provider_attempt_result_conflict", 409);
+      }
+      if (grant.result !== null) {
+        if (
+          storageResultMatches(grant.result, result) &&
+          grant.provider_usage_receipt_sha256 === usageReceiptSha256 &&
+          attempt.provider_usage_receipt_sha256 === usageReceiptSha256 &&
+          attempt.provider_usage_receipt_attached_at !== null
+        ) {
+          return "duplicate";
+        }
+        throw new ProtocolError("provider_usage_result_conflict", 409);
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_operations
+            SET result_object_key = ?1, result_object_version = ?2, result_sha256 = ?3,
+                result_size = ?4, result_content_type = ?5,
+                provider_usage_receipt_sha256 = ?6, updated_at = ?7
+          WHERE operation_id = ?8 AND owner_generation = ?9 AND status = 'running'
+            AND deadline_at > ?7 AND result_object_key IS NULL
+            AND provider_usage_receipt_sha256 IS NULL`,
+        result.object_key,
+        result.object_version,
+        result.sha256,
+        result.size,
+        result.content_type,
+        usageReceiptSha256,
+        now,
+        operationId,
+        ownerGeneration,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("provider_usage_result_conflict", 409);
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_attempts
+            SET provider_usage_receipt_sha256 = ?1,
+                provider_usage_receipt_attached_at = ?2
+          WHERE operation_id = ?3 AND owner_generation = ?4
+            AND attempt_generation = ?5 AND status = 'dispatched'
+            AND provider_usage_receipt_sha256 IS NULL
+            AND provider_usage_receipt_attached_at IS NULL`,
+        usageReceiptSha256,
+        now,
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("provider_usage_result_conflict", 409);
+      }
+      const operation = this.readStorageOperation(operationId);
+      const recordedAttempt = this.readProviderAttempt(
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (
+        operation === null ||
+        operation.owner_generation !== ownerGeneration ||
+        !storageResultMatches(operationStorageResult(operation), result) ||
+        operation.provider_usage_receipt_sha256 !== usageReceiptSha256 ||
+        recordedAttempt === null ||
+        recordedAttempt.status !== "dispatched" ||
+        recordedAttempt.provider_usage_receipt_sha256 !== usageReceiptSha256 ||
+        recordedAttempt.provider_usage_receipt_attached_at !== now
+      ) {
+        throw new ProtocolError("provider_usage_result_conflict", 409);
+      }
+      return "recorded";
+    });
+  }
+
   readOperationOutcome(operationId: string): OperationRow | null {
     this.ensureSchema();
     return firstRow<OperationRow>(
       this.storage.sql.exec<OperationRow>(
         `SELECT operation_id, owner_generation, operation_kind, trace_id, envelope_sha256,
                 status, response_status, response_code, result_object_key,
-                result_object_version, result_sha256, result_size, result_content_type
+                result_object_version, result_sha256, result_size, result_content_type,
+                provider_usage_receipt_sha256
            FROM cinatoken_shard_operations WHERE operation_id = ?1`,
         operationId,
       ),
@@ -903,7 +1044,8 @@ export class RelayShardLedger {
       this.storage.sql.exec<OperationRow>(
         `SELECT operation_id, owner_generation, operation_kind, trace_id, envelope_sha256,
                 status, response_status, response_code, result_object_key,
-                result_object_version, result_sha256, result_size, result_content_type
+                result_object_version, result_sha256, result_size, result_content_type,
+                provider_usage_receipt_sha256
            FROM cinatoken_shard_operations
           WHERE protocol_version = ?1 AND operation_id = ?2 AND owner_generation = ?3
             AND shard_contract_version = ?4 AND ring_generation = ?5 AND shard_count = ?6
@@ -972,13 +1114,17 @@ export class RelayShardLedger {
 
       const operation = this.readStorageOperation(ack.operation_id);
       if (operation === null) throw new ProtocolError("terminal_ack_not_found", 404);
+      const providerAttempt = this.readLatestProviderAttempt(
+        ack.operation_id,
+        ack.owner_generation,
+      );
       const localAck = progressingRecovery
         ? storedTerminalAck(state?.recovery_payload_json ?? null)
         : ack;
       if (
         localAck === null ||
         (progressingRecovery && operation.status !== ack.operation_from_status) ||
-        !terminalAckOperationMatches(operation, localAck)
+        !terminalAckOperationMatches(operation, providerAttempt, localAck)
       ) {
         throw new ProtocolError("terminal_ack_conflict", 409);
       }
@@ -2232,6 +2378,34 @@ export class RelayShardLedger {
     }
   }
 
+  private ensureProviderUsageReceiptColumns(): void {
+    for (const table of [
+      "cinatoken_shard_operations",
+      "cinatoken_shard_provider_attempts",
+      "cinatoken_shard_provider_attempt_events",
+    ]) {
+      const existing = new Set(
+        this.storage.sql
+          .exec<{ name: string }>(`PRAGMA table_info(${table})`)
+          .toArray()
+          .map(({ name }) => name),
+      );
+      if (!existing.has("provider_usage_receipt_sha256")) {
+        this.storage.sql.exec(
+          `ALTER TABLE ${table} ADD COLUMN provider_usage_receipt_sha256 TEXT`,
+        );
+      }
+      if (
+        table !== "cinatoken_shard_operations" &&
+        !existing.has("provider_usage_receipt_attached_at")
+      ) {
+        this.storage.sql.exec(
+          `ALTER TABLE ${table} ADD COLUMN provider_usage_receipt_attached_at INTEGER`,
+        );
+      }
+    }
+  }
+
   private installProviderAttemptEgressGuards(): void {
     this.storage.sql.exec(`
       DROP TRIGGER IF EXISTS cinatoken_shard_provider_attempt_egress_insert_guard;
@@ -2266,6 +2440,7 @@ export class RelayShardLedger {
       CREATE TRIGGER cinatoken_shard_provider_attempt_event_append
       AFTER UPDATE ON cinatoken_shard_provider_attempts
       FOR EACH ROW
+      WHEN OLD.status IS NOT NEW.status
       BEGIN
         INSERT INTO cinatoken_shard_provider_attempt_events
           (event_id, operation_id, owner_generation, attempt_generation, event_sequence,
@@ -2291,6 +2466,153 @@ export class RelayShardLedger {
     `);
   }
 
+  private installProviderUsageReceiptGuards(): void {
+    this.storage.sql.exec(`
+      DROP TRIGGER IF EXISTS cinatoken_shard_operation_provider_usage_receipt_guard;
+      CREATE TRIGGER cinatoken_shard_operation_provider_usage_receipt_guard
+      BEFORE UPDATE ON cinatoken_shard_operations
+      FOR EACH ROW
+      WHEN NOT (
+        NEW.provider_usage_receipt_sha256 IS OLD.provider_usage_receipt_sha256
+        OR
+        (OLD.status = 'running' AND NEW.status = 'running'
+          AND OLD.provider_usage_receipt_sha256 IS NULL
+          AND NEW.provider_usage_receipt_sha256 IS NOT NULL
+          AND length(NEW.provider_usage_receipt_sha256) = 64
+          AND NEW.provider_usage_receipt_sha256 NOT GLOB '*[^0-9a-f]*'
+          AND OLD.result_object_key IS NULL AND OLD.result_object_version IS NULL
+          AND OLD.result_sha256 IS NULL AND OLD.result_size IS NULL
+          AND OLD.result_content_type IS NULL
+          AND NEW.result_object_key IS NOT NULL AND NEW.result_object_version IS NOT NULL
+          AND NEW.result_sha256 IS NOT NULL AND NEW.result_size IS NOT NULL
+          AND NEW.result_content_type IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM cinatoken_shard_provider_attempts AS attempt
+             WHERE attempt.operation_id = OLD.operation_id
+               AND attempt.owner_generation = OLD.owner_generation
+               AND attempt.status = 'dispatched'
+               AND attempt.provider_usage_receipt_sha256 IS NULL
+          ))
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'provider usage receipt identity is immutable');
+      END;
+      DROP TRIGGER IF EXISTS cinatoken_shard_operation_provider_result_guard;
+      CREATE TRIGGER cinatoken_shard_operation_provider_result_guard
+      BEFORE UPDATE ON cinatoken_shard_operations
+      FOR EACH ROW
+      WHEN OLD.result_object_key IS NULL
+        AND NEW.result_object_key IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM cinatoken_shard_provider_attempts AS attempt
+           WHERE attempt.operation_id = OLD.operation_id
+             AND attempt.owner_generation = OLD.owner_generation
+             AND attempt.status = 'dispatched'
+        )
+        AND NEW.provider_usage_receipt_sha256 IS NULL
+      BEGIN
+        SELECT RAISE(ABORT, 'provider usage receipt is required for provider result');
+      END;
+      DROP TRIGGER IF EXISTS cinatoken_shard_provider_attempt_usage_receipt_guard;
+      CREATE TRIGGER cinatoken_shard_provider_attempt_usage_receipt_guard
+      BEFORE UPDATE ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      WHEN NOT (
+        NEW.provider_usage_receipt_sha256 IS OLD.provider_usage_receipt_sha256
+        OR
+        (OLD.status = 'dispatched' AND NEW.status = 'dispatched'
+          AND OLD.provider_usage_receipt_sha256 IS NULL
+          AND OLD.provider_usage_receipt_attached_at IS NULL
+          AND NEW.provider_usage_receipt_sha256 IS NOT NULL
+          AND NEW.provider_usage_receipt_attached_at IS NOT NULL
+          AND NEW.provider_usage_receipt_attached_at >= OLD.dispatched_at
+          AND length(NEW.provider_usage_receipt_sha256) = 64
+          AND NEW.provider_usage_receipt_sha256 NOT GLOB '*[^0-9a-f]*'
+          AND EXISTS (
+            SELECT 1 FROM cinatoken_shard_operations AS operation
+             WHERE operation.operation_id = OLD.operation_id
+               AND operation.owner_generation = OLD.owner_generation
+               AND operation.status = 'running'
+               AND operation.provider_usage_receipt_sha256 =
+                 NEW.provider_usage_receipt_sha256
+               AND operation.result_object_key IS NOT NULL
+          ))
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'provider attempt usage receipt identity is immutable');
+      END;
+      DROP TRIGGER IF EXISTS cinatoken_shard_provider_attempt_usage_terminal_guard;
+      CREATE TRIGGER cinatoken_shard_provider_attempt_usage_terminal_guard
+      BEFORE UPDATE ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      WHEN
+        (NEW.status = 'succeeded' AND NEW.provider_usage_receipt_sha256 IS NULL)
+        OR
+        (NEW.status IN ('prepared', 'definite_reject', 'cancelled')
+          AND (NEW.provider_usage_receipt_sha256 IS NOT NULL
+            OR NEW.provider_usage_receipt_attached_at IS NOT NULL))
+        OR
+        ((NEW.provider_usage_receipt_sha256 IS NULL) IS NOT
+          (NEW.provider_usage_receipt_attached_at IS NULL))
+        OR
+        (NEW.status = 'ambiguous'
+          AND ((NEW.result_object_key IS NULL) IS NOT
+            (NEW.provider_usage_receipt_sha256 IS NULL)))
+      BEGIN
+        SELECT RAISE(ABORT, 'provider attempt usage receipt terminal state is invalid');
+      END;
+      DROP TRIGGER IF EXISTS cinatoken_shard_provider_attempt_lifecycle_guard;
+      CREATE TRIGGER cinatoken_shard_provider_attempt_lifecycle_guard
+      BEFORE UPDATE ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      WHEN NOT (
+        (OLD.status = 'prepared' AND NEW.status IN ('dispatched', 'cancelled'))
+        OR
+        (OLD.status = 'dispatched'
+          AND NEW.status IN ('succeeded', 'definite_reject', 'ambiguous'))
+        OR
+        (OLD.status = 'dispatched' AND NEW.status = 'dispatched'
+          AND OLD.provider_usage_receipt_sha256 IS NULL
+          AND OLD.provider_usage_receipt_attached_at IS NULL
+          AND NEW.provider_usage_receipt_sha256 IS NOT NULL
+          AND NEW.provider_usage_receipt_attached_at IS NOT NULL)
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'provider attempt lifecycle transition is invalid');
+      END;
+      DROP TRIGGER IF EXISTS cinatoken_shard_provider_attempt_event_append;
+      CREATE TRIGGER cinatoken_shard_provider_attempt_event_append
+      AFTER UPDATE ON cinatoken_shard_provider_attempts
+      FOR EACH ROW
+      WHEN OLD.status IS NOT NEW.status
+      BEGIN
+        INSERT INTO cinatoken_shard_provider_attempt_events
+          (event_id, operation_id, owner_generation, attempt_generation, event_sequence,
+           from_status, to_status, response_status, response_code, egress_profile,
+           egress_worker_version_id, provider_usage_receipt_sha256,
+           provider_usage_receipt_attached_at, observed_at)
+        VALUES (
+          'provider-attempt-v1:' || NEW.operation_id || ':' || NEW.owner_generation || ':' ||
+            NEW.attempt_generation || ':' ||
+            CASE WHEN OLD.status = 'prepared' THEN 2 ELSE 3 END,
+          NEW.operation_id,
+          NEW.owner_generation,
+          NEW.attempt_generation,
+          CASE WHEN OLD.status = 'prepared' THEN 2 ELSE 3 END,
+          OLD.status,
+          NEW.status,
+          NEW.response_status,
+          NEW.response_code,
+          NEW.egress_profile,
+          NEW.egress_worker_version_id,
+          NEW.provider_usage_receipt_sha256,
+          NEW.provider_usage_receipt_attached_at,
+          NEW.updated_at
+        );
+      END;
+    `);
+  }
+
   private readStorageOperation(operationId: string): StorageOperationRow | null {
     return firstRow<StorageOperationRow>(
       this.storage.sql.exec<StorageOperationRow>(
@@ -2300,7 +2622,8 @@ export class RelayShardLedger {
                 input_mode, input_sha256, input_size, input_content_type, request_object_key,
                 object_version, shard_contract_version, ring_generation, shard_count,
                 shard_index, instance_name, trace_id, result_object_key, result_object_version,
-                result_sha256, result_size, result_content_type
+                result_sha256, result_size, result_content_type,
+                provider_usage_receipt_sha256
            FROM cinatoken_shard_operations WHERE operation_id = ?1`,
         operationId,
       ),
@@ -2318,7 +2641,9 @@ export class RelayShardLedger {
                 admission_sha256, request_sha256, egress_profile, egress_worker_version_id,
                 status, response_status, response_code,
                 result_object_key, result_object_version, result_sha256, result_size,
-                result_content_type, prepared_at, dispatched_at, terminal_at, updated_at
+                result_content_type, provider_usage_receipt_sha256,
+                provider_usage_receipt_attached_at,
+                prepared_at, dispatched_at, terminal_at, updated_at
            FROM cinatoken_shard_provider_attempts
           WHERE operation_id = ?1 AND owner_generation = ?2 AND attempt_generation = ?3`,
         operationId,
@@ -2340,7 +2665,9 @@ export class RelayShardLedger {
                 admission_sha256, request_sha256, egress_profile, egress_worker_version_id,
                 status, response_status, response_code,
                 result_object_key, result_object_version, result_sha256, result_size,
-                result_content_type, prepared_at, dispatched_at, terminal_at, updated_at
+                result_content_type, provider_usage_receipt_sha256,
+                provider_usage_receipt_attached_at,
+                prepared_at, dispatched_at, terminal_at, updated_at
            FROM cinatoken_shard_provider_attempts
           WHERE operation_id = ?1 AND owner_generation = ?2
           ORDER BY attempt_generation DESC
@@ -2633,6 +2960,9 @@ function terminalAckPayloadJson(ack: TerminalAckRequest): string {
     result: ack.result,
     shard: ack.shard,
     trace_id: ack.trace_id,
+    ...("provider_usage_binding" in ack
+      ? { provider_usage_binding: ack.provider_usage_binding }
+      : {}),
   });
 }
 
@@ -2719,12 +3049,14 @@ function terminalAckOperationIdentityMatches(
     left.shard.ring_generation === right.shard.ring_generation &&
     left.shard.shard_count === right.shard.shard_count &&
     left.shard.shard_index === right.shard.shard_index &&
-    left.shard.instance_name === right.shard.instance_name
+    left.shard.instance_name === right.shard.instance_name &&
+    terminalAckProviderUsageBindingsMatch(left, right)
   );
 }
 
 function terminalAckOperationMatches(
   operation: StorageOperationRow,
+  providerAttempt: ProviderAttemptRow | null,
   ack: TerminalAckRequest,
 ): boolean {
   return (
@@ -2742,7 +3074,51 @@ function terminalAckOperationMatches(
     operation.trace_id === ack.trace_id &&
     (ack.operation_status !== "completed" ||
       (operation.operation_kind === "health_probe") === (ack.result === null)) &&
-    terminalAckResultMatches(operationStorageResult(operation), ack.result)
+    terminalAckResultMatches(operationStorageResult(operation), ack.result) &&
+    terminalAckProviderUsageBindingMatches(operation, providerAttempt, ack)
+  );
+}
+
+function terminalAckProviderUsageBindingMatches(
+  operation: StorageOperationRow,
+  providerAttempt: ProviderAttemptRow | null,
+  ack: TerminalAckRequest,
+): boolean {
+  const binding =
+    ("provider_usage_binding" in ack ? ack.provider_usage_binding : null) ?? null;
+  if (operation.provider_usage_receipt_sha256 === null) {
+    return binding === null;
+  }
+  const result = operationStorageResult(operation);
+  return (
+    "provider_usage_binding" in ack &&
+    binding !== null &&
+    result !== null &&
+    providerAttempt !== null &&
+    providerAttempt.provider_usage_receipt_attached_at !== null &&
+    providerAttempt.provider_usage_receipt_sha256 ===
+      operation.provider_usage_receipt_sha256 &&
+    binding.attempt_generation === providerAttempt.attempt_generation &&
+    binding.receipt_sha256 === operation.provider_usage_receipt_sha256 &&
+    binding.result_sha256 === result.sha256
+  );
+}
+
+function terminalAckProviderUsageBindingsMatch(
+  left: TerminalAckRequest,
+  right: TerminalAckRequest,
+): boolean {
+  const leftBinding =
+    ("provider_usage_binding" in left ? left.provider_usage_binding : null) ?? null;
+  const rightBinding =
+    ("provider_usage_binding" in right ? right.provider_usage_binding : null) ?? null;
+  return (
+    (leftBinding === null && rightBinding === null) ||
+    (leftBinding !== null &&
+      rightBinding !== null &&
+      leftBinding.attempt_generation === rightBinding.attempt_generation &&
+      leftBinding.receipt_sha256 === rightBinding.receipt_sha256 &&
+      leftBinding.result_sha256 === rightBinding.result_sha256)
   );
 }
 
@@ -2843,6 +3219,7 @@ function storageGrant(
     },
     trace_id: row.trace_id,
     result,
+    provider_usage_receipt_sha256: row.provider_usage_receipt_sha256,
     provider_attempt:
       providerAttempt === null
         ? null
@@ -2855,6 +3232,10 @@ function storageGrant(
             egress_worker_version_id: providerAttempt.egress_worker_version_id,
             status: providerAttempt.status,
             response_status: providerAttempt.response_status,
+            provider_usage_receipt_sha256:
+              providerAttempt.provider_usage_receipt_sha256,
+            provider_usage_receipt_attached_at:
+              providerAttempt.provider_usage_receipt_attached_at,
           },
   };
 }
@@ -3052,10 +3433,23 @@ function validateProviderAttemptRow(row: ProviderAttemptRow): void {
     /^[A-Za-z0-9._:/@-]+$/.test(row.egress_profile) &&
     row.egress_worker_version_id.length <= 128 &&
     /^[A-Za-z0-9._:/@-]+$/.test(row.egress_worker_version_id);
+  const hasNoUsageReceipt =
+    row.provider_usage_receipt_sha256 === null &&
+    row.provider_usage_receipt_attached_at === null;
+  const hasUsageReceipt =
+    row.provider_usage_receipt_sha256 !== null &&
+    /^[0-9a-f]{64}$/.test(row.provider_usage_receipt_sha256) &&
+    row.provider_usage_receipt_attached_at !== null &&
+    Number.isSafeInteger(row.provider_usage_receipt_attached_at) &&
+    row.dispatched_at !== null &&
+    row.provider_usage_receipt_attached_at >= row.dispatched_at &&
+    (row.terminal_at === null || row.provider_usage_receipt_attached_at <= row.terminal_at);
   if (
     (!hasLegacyEgressIdentity && !hasVersionedEgressIdentity) ||
     ((row.status === "prepared" || row.status === "cancelled") &&
-      !hasLegacyEgressIdentity)
+      !hasLegacyEgressIdentity) ||
+    (!hasNoUsageReceipt && !hasUsageReceipt) ||
+    (hasUsageReceipt && !hasVersionedEgressIdentity)
   ) {
     throw new ProtocolError("provider_attempt_corrupt", 503);
   }
@@ -3070,6 +3464,7 @@ function validateProviderAttemptRow(row: ProviderAttemptRow): void {
         row.response_status !== null ||
         row.response_code !== null ||
         result !== null ||
+        !hasNoUsageReceipt ||
         row.updated_at !== row.prepared_at)) ||
     (row.status === "dispatched" &&
       (row.dispatched_at === null ||
@@ -3086,7 +3481,8 @@ function validateProviderAttemptRow(row: ProviderAttemptRow): void {
         row.response_status < 200 ||
         row.response_status > 299 ||
         row.response_code !== null ||
-        result === null)) ||
+        result === null ||
+        (!hasUsageReceipt && !hasNoUsageReceipt))) ||
     (row.status === "definite_reject" &&
       (row.dispatched_at === null ||
         row.terminal_at === null ||
@@ -3095,13 +3491,16 @@ function validateProviderAttemptRow(row: ProviderAttemptRow): void {
         row.response_status < 400 ||
         row.response_status > 599 ||
         !validResponseCode(row.response_code) ||
-        result !== null)) ||
+        result !== null ||
+        !hasNoUsageReceipt)) ||
     (row.status === "ambiguous" &&
       (row.dispatched_at === null ||
         row.terminal_at === null ||
         row.updated_at !== row.terminal_at ||
         row.response_status !== 202 ||
-        !validResponseCode(row.response_code))) ||
+        !validResponseCode(row.response_code) ||
+        (result === null && !hasNoUsageReceipt) ||
+        (result !== null && !hasNoUsageReceipt && !hasUsageReceipt))) ||
     (row.status === "cancelled" &&
       (row.dispatched_at !== null ||
         row.terminal_at === null ||
@@ -3110,7 +3509,8 @@ function validateProviderAttemptRow(row: ProviderAttemptRow): void {
         row.response_status < 400 ||
         row.response_status > 599 ||
         !validResponseCode(row.response_code) ||
-        result !== null))
+        result !== null ||
+        !hasNoUsageReceipt))
   ) {
     throw new ProtocolError("provider_attempt_corrupt", 503);
   }

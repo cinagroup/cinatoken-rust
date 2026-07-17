@@ -18,8 +18,10 @@ import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
   INTERNAL_OPERATION_TERMINAL_ACK_PATH,
+  INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH,
   INTERNAL_OPERATION_STATUS_PATH,
   INTERNAL_OPERATION_STATUS_V2_PATH,
+  INTERNAL_OPERATION_STATUS_V3_PATH,
   INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
   MAX_OPERATION_BODY_BYTES,
@@ -42,11 +44,14 @@ import {
 import {
   handleOperationStatusRequest,
   handleOperationStatusV2Request,
+  handleOperationStatusV3Request,
   type ShardOperationStatusRpcResult,
   type ShardOperationStatusV2RpcResult,
+  type ShardOperationStatusV3RpcResult,
 } from "./operation_status";
 import {
   handleTerminalAckRequest,
+  handleTerminalAckV2Request,
   type ShardTerminalAckRpcResult,
 } from "./terminal_ack";
 import {
@@ -174,11 +179,15 @@ export type ShardRecordProviderAttemptRpcResult =
 export type {
   ShardOperationStatusRpcResult,
   ShardOperationStatusV2RpcResult,
+  ShardOperationStatusV3RpcResult,
 } from "./operation_status";
 export type {
   ShardTerminalAckRpcResult,
   TerminalAckErrorResponse,
+  TerminalAckProviderUsageBinding,
   TerminalAckRequest,
+  TerminalAckRequestV1,
+  TerminalAckRequestV2,
   TerminalAckResponse,
   TerminalAckResultManifest,
 } from "./terminal_ack";
@@ -246,6 +255,33 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           result,
           Math.floor(Date.now() / 1000),
           providerAttemptGeneration,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return { ok: false, error: { code: "storage_result_unavailable", status: 503 } };
+    }
+  }
+
+  async recordProviderUsageResult(
+    operationId: string,
+    ownerGeneration: number,
+    result: StorageResultRecord,
+    attemptGeneration: number,
+    usageReceiptSha256: string,
+  ): Promise<ShardStorageResultRpcResult> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.recordProviderUsageResult(
+          operationId,
+          ownerGeneration,
+          result,
+          attemptGeneration,
+          usageReceiptSha256,
+          Math.floor(Date.now() / 1000),
         ),
       };
     } catch (error) {
@@ -354,6 +390,19 @@ export class RelayShardContainer extends Container<ControllerEnv> {
   async readOperationStatusV2(
     query: OperationStatusQuery,
   ): Promise<ShardOperationStatusV2RpcResult> {
+    try {
+      return { ok: true, snapshot: this.ledger.readOperationStatusSnapshot(query) };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return { ok: false, error: { code: "operation_status_unavailable", status: 503 } };
+    }
+  }
+
+  async readOperationStatusV3(
+    query: OperationStatusQuery,
+  ): Promise<ShardOperationStatusV3RpcResult> {
     try {
       return { ok: true, snapshot: this.ledger.readOperationStatusSnapshot(query) };
     } catch (error) {
@@ -751,8 +800,14 @@ const handler: ExportedHandler<ControllerEnv> = {
       if (path === INTERNAL_OPERATION_STATUS_V2_PATH) {
         return handleOperationStatusV2Request(request, env);
       }
+      if (path === INTERNAL_OPERATION_STATUS_V3_PATH) {
+        return handleOperationStatusV3Request(request, env);
+      }
       if (path === INTERNAL_OPERATION_TERMINAL_ACK_PATH) {
         return handleTerminalAckRequest(request, env);
+      }
+      if (path === INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH) {
+        return handleTerminalAckV2Request(request, env);
       }
       if (path === INTERNAL_STATUS_PATH) {
         await verifyStatusRequest(request, env);

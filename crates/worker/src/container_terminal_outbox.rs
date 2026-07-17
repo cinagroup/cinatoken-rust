@@ -6,7 +6,7 @@ use worker::{D1Database, Env};
 
 use crate::container_controller::{
     acknowledge_terminal_event, ContainerTerminalAckEnvelope, ContainerTerminalAckOutcome,
-    ContainerTerminalAckResult,
+    ContainerTerminalAckProviderUsageBinding, ContainerTerminalAckResult,
 };
 use crate::d1_repositories::{
     claim_relay_container_terminal_outbox, dead_letter_relay_container_terminal_outbox,
@@ -226,6 +226,11 @@ fn terminal_ack_envelope(
         }),
         None => None,
     };
+    let provider_usage_binding = terminal_provider_usage_binding(
+        receipt.provider_usage_receipt_sha256.as_deref(),
+        receipt.provider_result_sha256.as_deref(),
+        receipt.provider_attempt_generation,
+    )?;
     Ok(ContainerTerminalAckEnvelope {
         protocol_version: u32::try_from(operation.protocol_version)
             .map_err(|_| "invalid_protocol_version")?,
@@ -241,6 +246,7 @@ fn terminal_ack_envelope(
         response_status: lease.terminal_ack.response_status,
         response_code: lease.terminal_ack.response_code.clone(),
         result,
+        provider_usage_binding,
         shard: ShardPlan {
             contract_version: u32::try_from(operation.shard_contract_version)
                 .map_err(|_| "invalid_shard_contract_version")?,
@@ -252,6 +258,24 @@ fn terminal_ack_envelope(
         },
         trace_id: operation.trace_id.clone(),
     })
+}
+
+fn terminal_provider_usage_binding(
+    receipt_sha256: Option<&str>,
+    result_sha256: Option<&str>,
+    attempt_generation: Option<i64>,
+) -> Result<Option<ContainerTerminalAckProviderUsageBinding>, &'static str> {
+    match (receipt_sha256, result_sha256, attempt_generation) {
+        (None, None, None) => Ok(None),
+        (Some(receipt_sha256), Some(result_sha256), Some(attempt_generation)) => {
+            Ok(Some(ContainerTerminalAckProviderUsageBinding {
+                attempt_generation,
+                receipt_sha256: receipt_sha256.to_string(),
+                result_sha256: result_sha256.to_string(),
+            }))
+        }
+        _ => Err("invalid_provider_usage_binding"),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -371,6 +395,27 @@ mod tests {
         assert_eq!(container_terminal_outbox_retry_delay(2), 30);
         assert_eq!(container_terminal_outbox_retry_delay(3), 60);
         assert_eq!(container_terminal_outbox_retry_delay(100), 3_600);
+    }
+
+    #[test]
+    fn terminal_outbox_projects_exact_or_null_provider_usage_binding() {
+        assert_eq!(
+            terminal_provider_usage_binding(None, None, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            terminal_provider_usage_binding(Some(&"a".repeat(64)), Some(&"b".repeat(64)), Some(1),)
+                .unwrap(),
+            Some(ContainerTerminalAckProviderUsageBinding {
+                attempt_generation: 1,
+                receipt_sha256: "a".repeat(64),
+                result_sha256: "b".repeat(64),
+            })
+        );
+        assert_eq!(
+            terminal_provider_usage_binding(Some(&"a".repeat(64)), None, Some(1)),
+            Err("invalid_provider_usage_binding")
+        );
     }
 
     #[test]

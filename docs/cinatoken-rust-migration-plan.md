@@ -15039,3 +15039,184 @@ production remains **NO-GO**. The following blockers remain explicit:
 
 No deploy or secret command was run. All tracked gates remain false, Go/VPS
 remains authoritative, and production remains **NO-GO**.
+
+## 22.242 Migration 0049 Provider Usage Provenance Convergence (2026-07-18)
+
+This section supersedes the 0048 statement that the shard DO stores only the
+result manifest and that reconciliation cannot compare R2, D1, DO, and terminal
+receipt identity. It closes that local implementation gap for the bounded
+non-streaming canary. It does not close provider-invoice, final-amount, remote
+rollout, or provider-idempotency gates.
+
+### Authority split
+
+The four local stores retain separate authority:
+
+| Store | Authoritative fact | Must not claim |
+| --- | --- | --- |
+| R2 | create-only provider response bytes, object version/checksum/size/content type, schema-4 custom metadata | billing amount or terminal status |
+| D1 receipt | canonical provider usage JSON, immutable receipt/result/grant/billing identity | DO or R2 availability |
+| shard DO | atomic operation result plus receipt digest, provider attempt state, attachment time, terminal ACK | provider invoice or D1 settlement amount |
+| D1 terminal/reconciliation | immutable terminal tuple and audited convergence decision | direct observation of DO/R2 without Worker evidence |
+
+The Worker is an observer and protocol verifier. It may carry facts between
+these stores only through strict DTOs and exact readback; it is not permitted
+to synthesize a missing receipt, infer equality from a result key, or authorize
+settlement from an HTTP success alone.
+
+### Ordered provider write and recovery
+
+The success path is now:
+
+1. prove 0048/0049-compatible D1 schema while all provider gates remain false;
+2. acquire exact D1 admission/grant and atomically dispatch the version-fenced
+   provider attempt in the shard DO;
+3. make at most one provider request;
+4. drain and validate the bounded provider response and canonical receipt;
+5. create or exactly replay the R2 result with metadata schema 4;
+6. read the immutable D1 receipt through one `first-primary` session; return an
+   exact existing row as a read-only replay, otherwise insert-or-ignore and
+   completely read back the row through that same session;
+7. atomically attach result manifest and receipt digest to both the DO
+   operation and dispatched attempt; and
+8. record provider terminal state, D1 terminal/outbox, ACK v2, and observer
+   convergence only after every preceding identity is exact.
+
+The old provider call to `recordStorageResult` is disabled regardless of
+whether it supplies the optional attempt generation. DO SQLite guards permit a
+single `NULL -> receipt` transition only while the operation and attempt are
+active, require the result/hash pair together, and reject later hash changes.
+The three-event attempt journal remains compatible with old DO table checks:
+the terminal event records the attached receipt digest; no incompatible event
+sequence 4 is required.
+
+Every non-prepared replay reads D1 before deciding its response. It validates
+canonical receipt JSON and digest, operation/owner/attempt, provider operation,
+request digest, egress profile and Worker version, provider status/body digest,
+and complete R2 manifest. A missing or temporarily unavailable row returns a
+non-mutating recovery response and never invokes the provider again. A verified
+row/hash/identity conflict is terminal ambiguous evidence and still fails
+closed. Likewise, an `existing` dispatch result returns recovery without
+changing the active attempt. This prevents a concurrent observer from
+terminalizing the request while the first provider call is in flight. If D1 is
+exact after a lost DO response, the Controller exactly attaches/replays the DO
+pair and completes terminal state. A lost terminal response is resolved from
+the same D1 and DO readbacks. Status 202 remains immutable ambiguous evidence,
+not success.
+
+The crash before the first R2 create is still outside this recovery boundary.
+Without provider-native idempotency or operation lookup, retrying the provider
+could double-charge and is forbidden.
+
+### Status, ACK, and observer contracts
+
+Signed status v3 uses a distinct authority domain/path and returns
+`status_contract_version=3`, the operation receipt digest, and the provider
+attempt receipt digest/attachment time. Status v1/v2 are byte-shape compatible
+and do not leak new fields. V3 also accepts a historical succeeded operation
+whose root and attempt receipt fields are all null; D1 receipt presence, not
+the status parser, determines whether binding is required. A receipt-bearing
+operation cannot be considered converged with null v3 fields or after v3
+fallback; v2/v1 remains useful only for historical no-receipt work.
+
+Terminal ACK v2 has a distinct signed domain/path and carries
+`{attempt_generation, receipt_sha256, result_sha256}`. The DO compares this
+tuple with its immutable operation result and latest provider attempt. V1 or a
+null/divergent v2 tuple cannot acknowledge a receipt-bearing operation.
+Historical no-receipt operations remain readable and acknowledgeable.
+
+The Rust observer validates the immutable D1 receipt/terminal tuple, status v3,
+and a read-only R2 HEAD. R2 must have the derived key, exact object version,
+checksum, size, content type, and exactly twelve schema-4 metadata entries.
+Only a common attempt/receipt/result tuple may become
+`converged_replayable`; unavailable, missing, fallback, partial, or single-bit
+divergent evidence stays non-converged.
+
+### D1 0049 enforcement
+
+Migration 0049 adds reconciliation binding state and canonical attempt,
+receipt, and result fields plus DO, R2, and terminal receipt observations. It
+preserves the complete 0045 lifecycle and adds these rules:
+
+- historical receipt-backed non-terminal observations backfill `pending` with
+  canonical D1 identity but no invented external evidence;
+- historical receipt-backed converged observations remain terminal but become
+  `divergent`, documenting that 0049 cannot retroactively prove them;
+- historical no-receipt observations remain `not_applicable`;
+- an old writer cannot converge a receipt-backed operation without exact
+  `matching` evidence in the same leased transition;
+- canonical D1 identity must match the immutable 0048 row, and matching state
+  must also match the exact D1 terminal event; and
+- canonical and matching evidence cannot be rewritten after persistence.
+
+The Controller's exact D1 replay is read-first and read-only once the receipt
+exists. Migration 0049 intentionally rejects every receipt INSERT after an
+observation has converged, including an otherwise identical `INSERT OR IGNORE`;
+this prevents stale writers from reopening terminal evidence. Reconciliation
+schema readiness first composes the complete 0047/0048 provider-egress
+readiness check, then requires the 0049 columns, guards, index, and the rebuilt
+0045 lifecycle trigger containing audited retry-event semantics.
+
+D1 cannot itself query R2 or the shard DO. Its triggers attest that the strict
+observer wrote a complete tuple and that the D1-local receipt/terminal facts
+agree. Remote truth still requires the observer query evidence and archived
+test artifacts.
+
+### Rollout and N/N-1
+
+There is no rolling provider or reconciliation enablement across 0048/0049.
+The required sequence is:
+
+1. keep edge admission, provider egress, terminal outbox/ACK, reconciliation,
+   compaction, billing settlement, and traffic gates false;
+2. inventory every D1 writer, Controller/Worker version, Queue/Cron/alarm
+   owner, active DO, R2 prefix, and in-flight provider operation;
+3. remove and read back N-1 owners, drain or quarantine active work, and archive
+   a D1 Time Travel bookmark plus complete application-data fingerprint;
+4. apply 0049 and read back the exact migration, columns, normalized triggers,
+   indexes, and unchanged business fingerprints;
+5. deploy/read back the 0049-aware Worker and Controller with status v3 and ACK
+   v2 while all traffic gates remain false;
+6. run isolated staging faults for duplicate delivery, D1/R2/DO response loss,
+   DO eviction, deadline, version skew, R2 missing/divergence, terminal replay,
+   and old-writer convergence rejection; and
+7. require named evidence review before any bounded canary gate changes.
+
+Controller/Worker N-1 may serve historical no-receipt reads only if it cannot
+receive provider traffic or run receipt-backed convergence. Schema 0049 makes
+an old convergence writer fail closed; that failure is containment, not a
+license for mixed-version operation.
+
+Normal rollback is disable-first. Stop admission, provider, terminal,
+reconciliation, and settlement; drain/quarantine work; retain schema 0049,
+receipts, observation evidence, triggers, R2 objects, DO state, and migration
+history; then return only to a version that cannot exercise incompatible
+provider or convergence paths. Do not drop columns/triggers, delete evidence,
+edit `d1_migrations`, or use Time Travel as routine rollback. A destructive
+restore requires all-writer freeze, data-owner/SRE approval, target identity
+proof, prior/undo bookmarks, and full before/after fingerprints.
+
+### Verification and production decision
+
+Local acceptance requires the 49-migration SQLite replay/negative matrix,
+Controller TypeScript/portable/Workerd tests, Rust unit/workspace tests,
+wasm32 checks, formatting, and diff audit. It must prove old-writer rejection,
+atomic DO rollback, exact replay after lost responses, v1/v2 compatibility,
+v3/v2 binding, R2 schema-4 HEAD, and four-store convergence.
+
+This closes only the local R2/D1/DO/terminal hash loop. Production remains
+**NO-GO** because:
+
+- provider invoices are not imported or reconciled with the receipt;
+- D1 does not independently evaluate arbitrary billing expressions or attest
+  the final settlement amount;
+- provider-native idempotency/lookup is absent and provider completion before
+  first R2 persistence remains ambiguous;
+- no production terminal caller or remote 0049 schema/deployment evidence has
+  been approved; and
+- real fault/load/cost/alert data, rollback rehearsal, security review, and
+  C1-C5/G1-G8 approvals remain absent.
+
+No remote migration, deployment, binding, secret, provider, financial, or
+traffic mutation is authorized by this section. All gates remain false and
+Go/VPS remains authoritative.

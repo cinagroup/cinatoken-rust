@@ -40,6 +40,17 @@ export interface OperationStatusPayload extends OperationOutcomePayload {
   provider_attempt: ProviderAttemptStatusPayload | null;
 }
 
+export interface ProviderAttemptStatusV3Payload extends ProviderAttemptStatusPayload {
+  provider_usage_receipt_sha256: string | null;
+  provider_usage_receipt_attached_at: number | null;
+}
+
+export interface OperationStatusV3Payload extends OperationOutcomePayload {
+  status_contract_version: 3;
+  provider_usage_receipt_sha256: string | null;
+  provider_attempt: ProviderAttemptStatusV3Payload | null;
+}
+
 export interface SerializedOperationOutcome {
   http_status: number;
   payload: OperationOutcomePayload;
@@ -225,6 +236,89 @@ export function operationStatusResponse(snapshot: OperationStatusSnapshot): Resp
             response_status: attempt.response_status,
             response_code: attempt.response_code,
             result: attemptResult,
+            prepared_at: attempt.prepared_at,
+            dispatched_at: attempt.dispatched_at,
+            terminal_at: attempt.terminal_at,
+          },
+  };
+  return new Response(JSON.stringify(payload), {
+    status: outcome.http_status,
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
+}
+
+export function operationStatusResponseV3(snapshot: OperationStatusSnapshot): Response {
+  const outcome = serializeOperationOutcome(snapshot.operation);
+  const attempt = snapshot.provider_attempt;
+  if (
+    attempt !== null &&
+    (attempt.operation_id !== snapshot.operation.operation_id ||
+      attempt.owner_generation !== snapshot.operation.owner_generation ||
+      snapshot.operation.status === "claimed" ||
+      (snapshot.operation.status === "running" &&
+        (attempt.status === "ambiguous" || attempt.status === "cancelled")) ||
+      (snapshot.operation.status === "completed" && attempt.status !== "succeeded") ||
+      (snapshot.operation.status === "failed" &&
+        attempt.status !== "definite_reject" &&
+        attempt.status !== "cancelled") ||
+      (snapshot.operation.status === "recovery_required" && attempt.status !== "ambiguous"))
+  ) {
+    throw corruptOutcome();
+  }
+  const attemptResult = attempt === null ? null : operationStorageResult(attempt);
+  const operationResult = outcome.payload.result ?? null;
+  if (
+    attemptResult !== null &&
+    (operationResult === null || !storageResultsMatch(attemptResult, operationResult))
+  ) {
+    throw corruptOutcome();
+  }
+
+  const receiptSha256 = snapshot.operation.provider_usage_receipt_sha256;
+  if (
+    (receiptSha256 !== null && !/^[0-9a-f]{64}$/.test(receiptSha256)) ||
+    (receiptSha256 === null &&
+      attempt !== null &&
+      (attempt.provider_usage_receipt_sha256 !== null ||
+        attempt.provider_usage_receipt_attached_at !== null)) ||
+    (receiptSha256 !== null &&
+      (operationResult === null ||
+        attempt === null ||
+        attempt.provider_usage_receipt_sha256 !== receiptSha256 ||
+        attempt.provider_usage_receipt_attached_at === null ||
+        !Number.isSafeInteger(attempt.provider_usage_receipt_attached_at) ||
+        attempt.provider_usage_receipt_attached_at < 1 ||
+        attempt.dispatched_at === null ||
+        attempt.provider_usage_receipt_attached_at < attempt.dispatched_at ||
+        (attempt.terminal_at !== null &&
+          attempt.provider_usage_receipt_attached_at > attempt.terminal_at) ||
+        !["dispatched", "succeeded", "ambiguous"].includes(attempt.status)))
+  ) {
+    throw corruptOutcome();
+  }
+
+  const payload: OperationStatusV3Payload = {
+    status_contract_version: 3,
+    ...outcome.payload,
+    provider_usage_receipt_sha256: receiptSha256,
+    provider_attempt:
+      attempt === null
+        ? null
+        : {
+            attempt_generation: attempt.attempt_generation,
+            provider_operation_id: attempt.provider_operation_id,
+            admission_sha256: attempt.admission_sha256,
+            request_sha256: attempt.request_sha256,
+            status: attempt.status,
+            response_status: attempt.response_status,
+            response_code: attempt.response_code,
+            result: attemptResult,
+            provider_usage_receipt_sha256: attempt.provider_usage_receipt_sha256,
+            provider_usage_receipt_attached_at:
+              attempt.provider_usage_receipt_attached_at,
             prepared_at: attempt.prepared_at,
             dispatched_at: attempt.dispatched_at,
             terminal_at: attempt.terminal_at,

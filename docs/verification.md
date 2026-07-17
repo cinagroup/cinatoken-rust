@@ -6988,3 +6988,100 @@ before the first R2 create remains an unrecoverable ambiguous window. A remote
 inventory, real fault/load/cost and financial convergence, disable-first
 rollback rehearsal, and C1-C5/G1-G8 approval remain mandatory. No deploy or
 secret command was run; all gates remain false and Go/VPS remains authoritative.
+
+## Migration 0049 Provider Usage Binding Verification (2026-07-18)
+
+This section supersedes only the 0048 local gap for DO receipt persistence and
+R2/D1/DO/terminal reconciliation. It does not claim provider-invoice or remote
+production proof.
+
+The D1 replay and negative suite must prove all of the following:
+
+- all 49 migrations apply in order, 0049 is the head, and the expanded
+  observation columns, index, lifecycle replacement, authority guards,
+  convergence guard, immutable-evidence guards, and late-receipt guard exist;
+- an empty upgrade synthesizes no observations, while historical no-receipt
+  rows retain legacy behavior;
+- a receipt-backed non-terminal observation backfills exact canonical attempt,
+  receipt, and result identity as `pending` without inventing DO/R2/terminal
+  evidence;
+- a historical receipt-backed `converged` row is preserved but marked
+  `divergent`, and cannot later be rewritten to fabricated `matching` evidence;
+- an old writer cannot converge a receipt-backed row, and missing R2 evidence,
+  explicit divergence, a single-bit DO mismatch, or a rewritten canonical
+  result all abort atomically;
+- exact canonical D1, DO, R2, and terminal evidence may transition a valid
+  lease directly to `converged/matching`, after which every binding field is
+  immutable; and
+- the full 0045 claim/retry/dead-letter/retry-apply lifecycle remains intact.
+
+The Workerd DO tests must prove a real SQLite transaction, not only DTO logic:
+
+- the legacy provider result RPC is rejected with or without an attempt
+  generation;
+- result manifest and receipt digest attach atomically to the operation and
+  dispatched attempt, exact replay returns duplicate, and a changed digest or
+  generation conflicts;
+- an attachment failure rolls the operation update back, so retry can consume
+  the already-durable D1 receipt without another provider request;
+- eviction preserves the root/attempt receipt digest and attachment time;
+- terminal success is impossible before attachment, while terminal history
+  contains the exact receipt digest using the existing three-event journal
+  range, preserving old Durable Object table checks; and
+- v1 terminal ACK is rejected for a receipt-bearing operation, whereas v2 is
+  accepted and idempotent only for the exact attempt/receipt/result tuple.
+
+The Controller protocol and gateway tests must preserve byte-level
+compatibility: status v1/v2 do not expose new fields; status v3 uses a distinct
+signed domain and path and returns only the frozen v3 shape; ACK v1/v2 domains
+and paths are isolated; unknown fields and partial binding tuples fail closed.
+The provider gateway must show D1 readback before every non-prepared replay,
+zero second provider calls, recovery from D1-to-DO and terminal-response loss,
+and rejection of a partial DO result without its receipt digest. A concurrent
+second request must observe the dispatched attempt, return non-mutating 202
+while D1 is missing, leave the attempt active, and allow the first request to
+complete with exactly one provider call. An `existing` dispatch has the same
+non-mutating behavior. Verified D1 conflicts still terminalize as ambiguous.
+
+Receipt persistence must prove one `first-primary` session per attempt, a read
+before any insert, insert/readback only when no row exists, and a second exact
+call that performs no write. Direct post-convergence receipt INSERT, including
+identical `INSERT OR IGNORE`, must remain blocked by 0048/0049 guards; runtime
+idempotency is the read-only replay path, not a late SQL write.
+
+The Rust Worker tests must cover exact v3 decoding, all-null historical v3
+success, and v2/v1 fallback. A receipt-backed D1 terminal may never converge
+through null v3 fields or fallback. The observer
+must validate canonical D1 receipt identity, compare DO status v3, perform an
+R2 HEAD requiring metadata schema 4 and exact object version/checksum/size/
+content type/custom metadata, and compare the terminal tuple. Missing,
+unavailable, and divergent cases remain non-converged. Terminal outbox tests
+must serialize ACK v2 binding from the immutable D1 receipt and reject partial
+receipt/result/attempt identity.
+
+Reconciliation readiness must first pass the complete 0047/0048 provider
+egress schema check, then require the 0049 columns, index, ten binding guards,
+and the rebuilt lifecycle trigger whose SQL still references the audited 0045
+retry-event table.
+
+The local release command set is:
+
+```powershell
+python tools/verify_sqlite.py
+npx.cmd --yes bun run check:container-controller
+cargo fmt --all --check
+cargo test -p cinatoken-worker --lib
+cargo test --workspace --exclude cinatoken-worker
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+npx.cmd --yes bun run check
+git diff --check
+```
+
+Passing local tests closes only the implementation-level four-store hash loop.
+Production remains **NO-GO** until a remote 0049 apply/readback and writer
+inventory, deployed N/N-1 isolation, real R2/D1/DO/outbox faults, provider
+invoice reconciliation, provider-native idempotency or lookup, independent D1
+amount authority, load/cost/alerts, disable-first rollback rehearsal, and
+C1-C5/G1-G8 approvals are archived. Provider completion before the first R2
+create remains ambiguous. No deploy, binding, secret, provider, financial, or
+traffic mutation is part of this verification entry.

@@ -12,11 +12,13 @@ pub const MAX_CONTAINER_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CONTAINER_CLIENT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 const INPUT_KEY_PREFIX: &str = "container-inputs/v1";
+const RESULT_KEY_PREFIX: &str = "container-results/v1";
 const CLIENT_RESPONSE_KEY_PREFIX: &str = "container-client-responses/v1";
 const CLIENT_RESPONSE_HEADERS_MAX_BYTES: usize = 4 * 1024;
 const METADATA_VERSION: &str = "1";
 const RESULT_ATTEMPT_METADATA_VERSION: &str = "2";
 const RESULT_EGRESS_METADATA_VERSION: &str = "3";
+const RESULT_USAGE_RECEIPT_METADATA_VERSION: &str = "4";
 const CLIENT_RESPONSE_ALLOWED_HEADERS: [&str; 6] = [
     "anthropic-request-id",
     "cache-control",
@@ -33,6 +35,25 @@ pub struct ContainerArtifactManifest {
     pub sha256: String,
     pub size: u64,
     pub content_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerResultArtifactIdentity {
+    pub operation_id: String,
+    pub owner_generation: i64,
+    pub provider_operation_id: String,
+    pub admission_sha256: String,
+    pub attempt_generation: i64,
+    pub egress_profile: String,
+    pub egress_worker_version_id: String,
+    pub usage_receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerResultObjectState {
+    Missing,
+    Matching,
+    Divergent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,19 +183,29 @@ fn result_metadata_contract_valid(metadata: &HashMap<String, String>) -> bool {
                     .is_some_and(|value| valid_result_attempt_generation(value))
         }
         Some(RESULT_EGRESS_METADATA_VERSION) => {
-            metadata.len() == 11
+            metadata.len() == 11 && result_attempt_egress_metadata_contract_valid(metadata)
+        }
+        Some(RESULT_USAGE_RECEIPT_METADATA_VERSION) => {
+            metadata.len() == 12
+                && result_attempt_egress_metadata_contract_valid(metadata)
                 && metadata
-                    .get("attempt_generation")
-                    .is_some_and(|value| valid_result_attempt_generation(value))
-                && metadata
-                    .get("egress_profile")
-                    .is_some_and(|value| metadata_identifier_valid(value, 64))
-                && metadata
-                    .get("egress_worker_version_id")
-                    .is_some_and(|value| metadata_identifier_valid(value, 128))
+                    .get("usage_receipt_sha256")
+                    .is_some_and(|value| validate_sha256(value).is_ok())
         }
         _ => false,
     }
+}
+
+fn result_attempt_egress_metadata_contract_valid(metadata: &HashMap<String, String>) -> bool {
+    metadata
+        .get("attempt_generation")
+        .is_some_and(|value| valid_result_attempt_generation(value))
+        && metadata
+            .get("egress_profile")
+            .is_some_and(|value| metadata_identifier_valid(value, 64))
+        && metadata
+            .get("egress_worker_version_id")
+            .is_some_and(|value| metadata_identifier_valid(value, 128))
 }
 
 fn valid_result_attempt_generation(value: &str) -> bool {
@@ -482,6 +513,45 @@ pub async fn read_verified_container_client_response(
         .with_headers(headers))
 }
 
+pub async fn inspect_container_result(
+    env: &Env,
+    identity: &ContainerResultArtifactIdentity,
+    manifest: &ContainerArtifactManifest,
+) -> worker::Result<ContainerResultObjectState> {
+    validate_container_result_artifact_identity(identity)?;
+    validate_container_artifact_manifest(manifest)?;
+    let expected_key = format!(
+        "{RESULT_KEY_PREFIX}/{}/{}/{}",
+        identity.operation_id, identity.owner_generation, manifest.sha256
+    );
+    if manifest.object_key != expected_key {
+        return Err(artifact_error("container result manifest key is invalid"));
+    }
+    let expected_metadata = result_usage_receipt_metadata(identity, manifest);
+    let bucket = env.bucket(CONTAINER_ARTIFACT_BUCKET)?;
+    let Some(object) = bucket.head(manifest.object_key.clone()).await? else {
+        return Ok(ContainerResultObjectState::Missing);
+    };
+    Ok(
+        if verify_object(
+            &object,
+            &manifest.object_key,
+            Some(&manifest.object_version),
+            &manifest.sha256,
+            manifest.size,
+            &manifest.content_type,
+            None,
+            Some(&expected_metadata),
+        )
+        .is_ok()
+        {
+            ContainerResultObjectState::Matching
+        } else {
+            ContainerResultObjectState::Divergent
+        },
+    )
+}
+
 pub async fn read_verified_container_result(
     env: &Env,
     manifest: &ContainerArtifactManifest,
@@ -708,6 +778,25 @@ pub(crate) fn validate_container_artifact_manifest(
     validate_content_type(&manifest.content_type)
 }
 
+fn validate_container_result_artifact_identity(
+    identity: &ContainerResultArtifactIdentity,
+) -> worker::Result<()> {
+    validate_identifier(&identity.operation_id, "operation id")?;
+    validate_identifier(&identity.provider_operation_id, "provider operation id")?;
+    validate_sha256(&identity.admission_sha256)?;
+    validate_sha256(&identity.usage_receipt_sha256)?;
+    if !(1..=i64::from(i32::MAX)).contains(&identity.owner_generation)
+        || !(1..=3).contains(&identity.attempt_generation)
+        || !metadata_identifier_valid(&identity.egress_profile, 64)
+        || !metadata_identifier_valid(&identity.egress_worker_version_id, 128)
+    {
+        return Err(artifact_error(
+            "container result artifact identity is invalid",
+        ));
+    }
+    Ok(())
+}
+
 fn verify_object(
     object: &R2Object,
     expected_key: &str,
@@ -802,6 +891,50 @@ fn input_metadata(
     ])
 }
 
+fn result_usage_receipt_metadata(
+    identity: &ContainerResultArtifactIdentity,
+    manifest: &ContainerArtifactManifest,
+) -> HashMap<String, String> {
+    HashMap::from([
+        (
+            "gateway_version".to_string(),
+            RESULT_USAGE_RECEIPT_METADATA_VERSION.to_string(),
+        ),
+        ("operation_id".to_string(), identity.operation_id.clone()),
+        (
+            "owner_generation".to_string(),
+            identity.owner_generation.to_string(),
+        ),
+        (
+            "provider_operation_id".to_string(),
+            identity.provider_operation_id.clone(),
+        ),
+        (
+            "admission_sha256".to_string(),
+            identity.admission_sha256.clone(),
+        ),
+        (
+            "attempt_generation".to_string(),
+            identity.attempt_generation.to_string(),
+        ),
+        (
+            "egress_profile".to_string(),
+            identity.egress_profile.clone(),
+        ),
+        (
+            "egress_worker_version_id".to_string(),
+            identity.egress_worker_version_id.clone(),
+        ),
+        (
+            "usage_receipt_sha256".to_string(),
+            identity.usage_receipt_sha256.clone(),
+        ),
+        ("sha256".to_string(), manifest.sha256.clone()),
+        ("size".to_string(), manifest.size.to_string()),
+        ("content_type".to_string(), manifest.content_type.clone()),
+    ])
+}
+
 fn client_response_metadata(
     operation_id: &str,
     owner_generation: i64,
@@ -887,6 +1020,63 @@ fn artifact_error(message: &str) -> worker::Error {
 mod tests {
     use super::*;
 
+    fn legacy_result_metadata() -> HashMap<String, String> {
+        HashMap::from([
+            ("gateway_version".to_string(), METADATA_VERSION.to_string()),
+            ("operation_id".to_string(), "operation-1".to_string()),
+            ("owner_generation".to_string(), "2".to_string()),
+            (
+                "provider_operation_id".to_string(),
+                "provider-operation-1".to_string(),
+            ),
+            ("admission_sha256".to_string(), "a".repeat(64)),
+            ("sha256".to_string(), "b".repeat(64)),
+            ("size".to_string(), "128".to_string()),
+            ("content_type".to_string(), "application/json".to_string()),
+        ])
+    }
+
+    fn schema_three_result_metadata() -> HashMap<String, String> {
+        let mut metadata = legacy_result_metadata();
+        metadata.insert(
+            "gateway_version".to_string(),
+            RESULT_EGRESS_METADATA_VERSION.to_string(),
+        );
+        metadata.insert("attempt_generation".to_string(), "1".to_string());
+        metadata.insert(
+            "egress_profile".to_string(),
+            "openai-chat-completions-canary-v1".to_string(),
+        );
+        metadata.insert(
+            "egress_worker_version_id".to_string(),
+            "worker-version-1".to_string(),
+        );
+        metadata
+    }
+
+    fn result_artifact_identity() -> ContainerResultArtifactIdentity {
+        ContainerResultArtifactIdentity {
+            operation_id: "operation-1".to_string(),
+            owner_generation: 2,
+            provider_operation_id: "provider-operation-1".to_string(),
+            admission_sha256: "a".repeat(64),
+            attempt_generation: 1,
+            egress_profile: "openai-chat-completions-canary-v1".to_string(),
+            egress_worker_version_id: "worker-version-1".to_string(),
+            usage_receipt_sha256: "c".repeat(64),
+        }
+    }
+
+    fn result_artifact_manifest() -> ContainerArtifactManifest {
+        ContainerArtifactManifest {
+            object_key: format!("{RESULT_KEY_PREFIX}/operation-1/2/{}", "b".repeat(64)),
+            object_version: "version-1".to_string(),
+            sha256: "b".repeat(64),
+            size: 128,
+            content_type: "application/json".to_string(),
+        }
+    }
+
     #[test]
     fn inventory_preserves_lane_specific_artifact_bounds() {
         assert_eq!(
@@ -904,20 +1094,8 @@ mod tests {
     }
 
     #[test]
-    fn result_inventory_accepts_exact_metadata_versions_one_through_three() {
-        let mut metadata = HashMap::from([
-            ("gateway_version".to_string(), METADATA_VERSION.to_string()),
-            ("operation_id".to_string(), "operation-1".to_string()),
-            ("owner_generation".to_string(), "2".to_string()),
-            (
-                "provider_operation_id".to_string(),
-                "provider-operation-1".to_string(),
-            ),
-            ("admission_sha256".to_string(), "a".repeat(64)),
-            ("sha256".to_string(), "b".repeat(64)),
-            ("size".to_string(), "128".to_string()),
-            ("content_type".to_string(), "application/json".to_string()),
-        ]);
+    fn result_inventory_preserves_metadata_versions_one_and_two() {
+        let mut metadata = legacy_result_metadata();
         assert!(result_metadata_contract_valid(&metadata));
 
         metadata.insert(
@@ -926,19 +1104,12 @@ mod tests {
         );
         metadata.insert("attempt_generation".to_string(), "1".to_string());
         assert!(result_metadata_contract_valid(&metadata));
+    }
 
-        metadata.insert(
-            "gateway_version".to_string(),
-            RESULT_EGRESS_METADATA_VERSION.to_string(),
-        );
-        metadata.insert(
-            "egress_profile".to_string(),
-            "openai-chat-completions-canary-v1".to_string(),
-        );
-        metadata.insert(
-            "egress_worker_version_id".to_string(),
-            "worker-version-1".to_string(),
-        );
+    #[test]
+    fn result_inventory_preserves_schema_three_compatibility() {
+        let mut metadata = schema_three_result_metadata();
+        assert_eq!(metadata.len(), 11);
         assert!(result_metadata_contract_valid(&metadata));
 
         metadata.insert("attempt_generation".to_string(), "01".to_string());
@@ -949,6 +1120,45 @@ mod tests {
         metadata.remove("unknown");
         metadata.remove("egress_worker_version_id");
         assert!(!result_metadata_contract_valid(&metadata));
+    }
+
+    #[test]
+    fn result_inventory_accepts_valid_schema_four_metadata() {
+        let identity = result_artifact_identity();
+        let manifest = result_artifact_manifest();
+        validate_container_result_artifact_identity(&identity).unwrap();
+        let metadata = result_usage_receipt_metadata(&identity, &manifest);
+
+        assert_eq!(metadata.len(), 12);
+        assert_eq!(
+            metadata.get("gateway_version").map(String::as_str),
+            Some(RESULT_USAGE_RECEIPT_METADATA_VERSION)
+        );
+        assert!(result_metadata_contract_valid(&metadata));
+
+        let mut metadata_with_unknown = metadata;
+        metadata_with_unknown.insert("unknown".to_string(), "value".to_string());
+        assert!(!result_metadata_contract_valid(&metadata_with_unknown));
+    }
+
+    #[test]
+    fn result_inventory_rejects_missing_or_invalid_schema_four_receipt() {
+        let identity = result_artifact_identity();
+        let manifest = result_artifact_manifest();
+        let mut metadata = result_usage_receipt_metadata(&identity, &manifest);
+
+        metadata.remove("usage_receipt_sha256");
+        assert!(!result_metadata_contract_valid(&metadata));
+
+        metadata.insert("usage_receipt_sha256".to_string(), "C".repeat(64));
+        assert!(!result_metadata_contract_valid(&metadata));
+
+        metadata.insert("usage_receipt_sha256".to_string(), "c".repeat(63));
+        assert!(!result_metadata_contract_valid(&metadata));
+
+        let mut invalid_identity = identity;
+        invalid_identity.usage_receipt_sha256 = "C".repeat(64);
+        assert!(validate_container_result_artifact_identity(&invalid_identity).is_err());
     }
 
     #[test]

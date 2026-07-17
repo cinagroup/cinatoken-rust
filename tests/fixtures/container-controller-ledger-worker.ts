@@ -391,6 +391,34 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
       throw error;
     }
   }
+
+  async recordProviderUsageResultOutcome(
+    operationId: string,
+    ownerGeneration: number,
+    result: StorageResultRecord,
+    attemptGeneration: number,
+    usageReceiptSha256: string,
+    now: number,
+  ): Promise<StorageResultOutcome> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.recordProviderUsageResult(
+          operationId,
+          ownerGeneration,
+          result,
+          attemptGeneration,
+          usageReceiptSha256,
+          now,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
+  }
 }
 
 export default {

@@ -2217,3 +2217,84 @@ enabled; provider-native idempotency/lookup is absent; and the
 post-provider/pre-R2 crash window remains ambiguous. No remote schema apply,
 deployment, binding, secret, provider canary, or traffic change has occurred.
 Go/VPS remains authoritative and all Container gates remain false.
+
+## Migration 0049 Provider Usage Binding and Convergence Guard
+
+This section supersedes the 0048 statement that the shard DO and local
+reconciliation path do not bind the provider usage receipt. The local D1 head
+is now 0049. The bounded canary path closes the local R2/D1/DO/terminal loop;
+it does not add provider-invoice evidence or independent D1 amount authority.
+
+The Controller persists a provider result in this order: create-only R2 object
+with metadata schema 4, exact D1 receipt read-before-write/readback, atomic
+shard-DO result-and-receipt attachment, then provider-attempt terminal state. The DO
+stores the same receipt hash on both the operation and active attempt. SQLite
+guards permit only the one-time `NULL -> hash` attachment, keep the result and
+hash inseparable, and make the hash immutable. The old optional
+`recordStorageResult` provider path is rejected even when its caller omits the
+attempt generation.
+
+Post-send replay is read-before-write. A non-prepared attempt first reads and
+revalidates the canonical D1 receipt, including canonical JSON, admission,
+request, egress Worker version, provider status, R2 result manifest, and
+receipt digest. Missing or temporarily unavailable evidence and an `existing`
+dispatch return non-mutating recovery and never send a second provider request;
+only a
+verified row/hash/identity conflict terminalizes the attempt as ambiguous. This
+lets the first in-flight provider request complete under a concurrent replay.
+An exact existing D1 receipt is returned read-only, so a post-convergence
+replay never issues INSERT. If D1 is exact but the DO attachment response was
+lost, the Controller attaches or exactly replays the result/hash pair and then
+records terminal state. Provider status 202 remains ambiguous and cannot be
+converted into success.
+
+The signed Controller status contract is now v3. Status v1 and v2 retain their
+exact historical response shapes; v3 adds the operation receipt digest plus
+the attempt digest and attachment time. The terminal acknowledgement endpoint
+has a v2 signed domain/path and carries the explicit tuple
+`{attempt_generation, receipt_sha256, result_sha256}`. A receipt-bearing
+operation cannot be acknowledged through v1 or with a null/divergent tuple.
+Historical operations without receipts remain readable and may use the legacy
+contract. Status v3 itself accepts a succeeded historical operation only when
+the root digest, attempt digest, and attachment time are all null; a D1-backed
+receipt still requires the exact non-null v3 tuple before convergence.
+
+The Worker observer reads status v3 first, verifies the canonical D1 receipt
+and terminal tuple, and performs a read-only R2 HEAD against exact metadata
+schema 4. It may record `converged_replayable` only when D1, DO, R2, and the
+terminal event expose the same attempt, receipt digest, and result digest.
+Missing v3 evidence, v2/v1 fallback for a receipt-bearing operation, a missing
+R2 object, or any single-bit divergence fails closed.
+
+Migration 0049 expands reconciliation observations with canonical receipt and
+result identity plus DO, R2, and terminal evidence. Receipt-backed historical
+non-terminal rows become `pending`; historical converged rows are retained but
+marked `divergent` because 0049 cannot invent external proof. An old observer
+may continue retry/dead-letter transitions, but D1 rejects its attempt to
+converge a receipt-backed row without `matching` four-store evidence. Matching
+and canonical evidence becomes immutable.
+
+Every receipt INSERT after an observation is converged remains blocked,
+including an identical `INSERT OR IGNORE`; exact replay is the Controller's
+read-only path. Reconciliation readiness composes the full 0047/0048 provider
+grant/receipt guard check and then verifies 0049 plus the rebuilt lifecycle
+trigger still contains the audited 0045 retry-event state machine.
+
+Rollout is default-off and ordered: freeze provider/terminal/reconciliation
+writers; drain or quarantine in-flight provider work; archive a pre-apply D1
+bookmark and complete writer inventory; apply/read back 0049; deploy and read
+back the 0049-aware Controller and Worker; prove status v3, ACK v2, R2 HEAD,
+duplicate/lost-response/eviction/version-skew faults in isolated staging; then
+consider a gated canary. N-1 must not receive provider traffic and must not run
+receipt-backed convergence. Normal rollback disables admission, provider,
+terminal, and reconciliation first, retains 0049 schema/evidence/triggers, and
+returns only to an artifact that cannot exercise the incompatible paths.
+
+Production remains **NO-GO**. Provider-native idempotency or lookup and the
+post-provider/pre-R2 ambiguity remain unresolved. Provider invoice comparison,
+independent D1 billing-expression/final-amount authority, a proven production
+terminal caller, remote migration/readback, real fault/load/cost/alert data,
+rollback rehearsal, and C1-C5/G1-G8 approvals are still absent. No remote
+schema, deployment, binding, secret, provider, financial, or traffic action is
+authorized by this local increment; Go/VPS remains authoritative and every
+Container gate remains false.

@@ -4,6 +4,7 @@ import type { OperationRow, ProviderAttemptRow } from "../src/ledger";
 import {
   operationOutcomeResponse,
   operationStatusResponse,
+  operationStatusResponseV3,
   parseContainerOperationResponse,
   serializeOperationOutcome,
 } from "../src/operation_outcome";
@@ -50,6 +51,7 @@ function operationRow(overrides: Partial<OperationRow> = {}): OperationRow {
     result_sha256: null,
     result_size: null,
     result_content_type: null,
+    provider_usage_receipt_sha256: null,
     ...overrides,
   };
 }
@@ -72,6 +74,8 @@ function providerAttemptRow(overrides: Partial<ProviderAttemptRow> = {}): Provid
     result_sha256: null,
     result_size: null,
     result_content_type: null,
+    provider_usage_receipt_sha256: null,
+    provider_usage_receipt_attached_at: null,
     prepared_at: 1_800_000_001,
     dispatched_at: 1_800_000_002,
     terminal_at: null,
@@ -209,6 +213,107 @@ describe("durable container operation outcomes", () => {
         provider_attempt: providerAttemptRow({ operation_id: "other-operation" }),
       }),
     ).toThrowError("operation_outcome_corrupt");
+  });
+
+  it("keeps receipt fields out of v2 and returns the exact status v3 shape", async () => {
+    const receiptSha256 = "c".repeat(64);
+    const operation = operationRow({
+      ...storedResult,
+      provider_usage_receipt_sha256: receiptSha256,
+    });
+    const attempt = providerAttemptRow({
+      provider_usage_receipt_sha256: receiptSha256,
+      provider_usage_receipt_attached_at: 1_800_000_003,
+    });
+
+    const v2 = (await operationStatusResponse({
+      operation,
+      provider_attempt: attempt,
+    }).json()) as Record<string, unknown>;
+    expect("status_contract_version" in v2).toBe(false);
+    expect("provider_usage_receipt_sha256" in v2).toBe(false);
+    expect(
+      "provider_usage_receipt_sha256" in
+        (v2.provider_attempt as Record<string, unknown>),
+    ).toBe(false);
+
+    const v3 = operationStatusResponseV3({ operation, provider_attempt: attempt });
+    expect(v3.status).toBe(202);
+    expect(await v3.json()).toEqual({
+      status_contract_version: 3,
+      protocol_version: 1,
+      operation_id: operation.operation_id,
+      status: "running",
+      trace_id: operation.trace_id,
+      result: {
+        object_key: storedResult.result_object_key,
+        object_version: storedResult.result_object_version,
+        sha256: storedResult.result_sha256,
+        size: storedResult.result_size,
+        content_type: storedResult.result_content_type,
+      },
+      provider_usage_receipt_sha256: receiptSha256,
+      provider_attempt: {
+        attempt_generation: 1,
+        provider_operation_id: "provider-operation-1",
+        admission_sha256: "a".repeat(64),
+        request_sha256: "b".repeat(64),
+        status: "dispatched",
+        response_status: null,
+        response_code: null,
+        result: null,
+        provider_usage_receipt_sha256: receiptSha256,
+        provider_usage_receipt_attached_at: 1_800_000_003,
+        prepared_at: 1_800_000_001,
+        dispatched_at: 1_800_000_002,
+        terminal_at: null,
+      },
+    });
+  });
+
+  it("fails status v3 closed on divergent provider usage receipt state", () => {
+    const receiptSha256 = "c".repeat(64);
+    const operation = operationRow({
+      ...storedResult,
+      provider_usage_receipt_sha256: receiptSha256,
+    });
+    const attempt = providerAttemptRow({
+      provider_usage_receipt_sha256: receiptSha256,
+      provider_usage_receipt_attached_at: 1_800_000_003,
+    });
+
+    for (const snapshot of [
+      { operation, provider_attempt: null },
+      {
+        operation,
+        provider_attempt: {
+          ...attempt,
+          provider_usage_receipt_sha256: "d".repeat(64),
+        },
+      },
+      {
+        operation,
+        provider_attempt: {
+          ...attempt,
+          provider_usage_receipt_attached_at: null,
+        },
+      },
+      {
+        operation: operationRow(storedResult),
+        provider_attempt: attempt,
+      },
+      {
+        operation,
+        provider_attempt: {
+          ...attempt,
+          provider_usage_receipt_attached_at: 1_800_000_001,
+        },
+      },
+    ]) {
+      expect(() => operationStatusResponseV3(snapshot)).toThrowError(
+        "operation_outcome_corrupt",
+      );
+    }
   });
 
   it("rejects contradictory operation and attempt states or result manifests", () => {

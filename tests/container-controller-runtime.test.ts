@@ -7,6 +7,7 @@ import {
   type OperationEnvelope,
   type OperationStatusQuery,
   type TerminalAckRequest,
+  type TerminalAckRequestV2,
 } from "../services/container-controller/src/protocol";
 import {
   RelayShardLedger,
@@ -687,6 +688,11 @@ describe("RelayShardLedger in Workerd", () => {
       size: 256,
       content_type: "application/json",
     };
+    const usageReceiptSha256 = sha256("c");
+    const egressIdentity = {
+      profile: "openai-chat-completions-canary-v1",
+      worker_version_id: "worker-version-1",
+    };
     await stub.claim(operation, sha256("f"), "dispatch-provider-success", ledgerPolicy(), BASE_NOW);
     await stub.startOperationWithProviderAttemptOutcome(
       operation.operation_id,
@@ -694,7 +700,13 @@ describe("RelayShardLedger in Workerd", () => {
       { maxAttempts: 1, retryEnabled: false },
       BASE_NOW + 1,
     );
-    await stub.dispatchProviderAttemptOutcome(operation.operation_id, 1, 1, BASE_NOW + 2);
+    await stub.dispatchProviderAttemptV2Outcome(
+      operation.operation_id,
+      1,
+      1,
+      egressIdentity,
+      BASE_NOW + 2,
+    );
     await expect(
       stub.recordProviderAttemptOutcome(
         operation.operation_id,
@@ -711,18 +723,87 @@ describe("RelayShardLedger in Workerd", () => {
       stub.recordStorageResultOutcome(operation.operation_id, 1, result, BASE_NOW + 4, 2),
     ).resolves.toEqual({
       ok: false,
-      error: { code: "provider_attempt_result_conflict", status: 409 },
+      error: { code: "provider_usage_result_required", status: 409 },
     });
     await expect(
       stub.recordStorageResultOutcome(operation.operation_id, 1, result, BASE_NOW + 4, 1),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_usage_result_required", status: 409 },
+    });
+    await expect(
+      stub.recordStorageResultOutcome(operation.operation_id, 1, result, BASE_NOW + 4),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_usage_result_required", status: 409 },
+    });
+    await expect(
+      stub.recordProviderUsageResultOutcome(
+        operation.operation_id,
+        1,
+        result,
+        2,
+        usageReceiptSha256,
+        BASE_NOW + 4,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_attempt_result_conflict", status: 409 },
+    });
+    await expect(
+      stub.recordProviderUsageResultOutcome(
+        operation.operation_id,
+        1,
+        result,
+        1,
+        usageReceiptSha256,
+        BASE_NOW + 4,
+      ),
     ).resolves.toMatchObject({ ok: true, result: "recorded" });
+    await expect(
+      stub.recordProviderUsageResultOutcome(
+        operation.operation_id,
+        1,
+        result,
+        1,
+        usageReceiptSha256,
+        BASE_NOW + 4,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: "duplicate" });
+    await expect(
+      stub.recordProviderUsageResultOutcome(
+        operation.operation_id,
+        1,
+        result,
+        1,
+        sha256("d"),
+        BASE_NOW + 4,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_usage_result_conflict", status: 409 },
+    });
+    await evictDurableObject(stub);
+    await expect(stub.authorizeStorageOutcome(operation.operation_id, 1, BASE_NOW + 5)).resolves
+      .toMatchObject({
+        ok: true,
+        grant: {
+          result,
+          provider_usage_receipt_sha256: usageReceiptSha256,
+          provider_attempt: {
+            status: "dispatched",
+            provider_usage_receipt_sha256: usageReceiptSha256,
+            provider_usage_receipt_attached_at: BASE_NOW + 4,
+          },
+        },
+      });
     await expect(
       stub.recordProviderAttemptOutcome(
         operation.operation_id,
         1,
         1,
         { status: "succeeded", response_status: 200, response_code: null },
-        BASE_NOW + 5,
+        BASE_NOW + 6,
       ),
     ).resolves.toMatchObject({ ok: true, result: { kind: "recorded" } });
     await expect(
@@ -733,10 +814,80 @@ describe("RelayShardLedger in Workerd", () => {
         "completed",
         200,
         null,
-        BASE_NOW + 6,
+        BASE_NOW + 7,
         true,
       ),
     ).resolves.toMatchObject({ ok: true, result: { status: "completed" } });
+
+    const legacyAck = terminalAck(operation, { result });
+    await expect(acknowledgeTerminal(stub, legacyAck, BASE_NOW + 8)).resolves.toEqual({
+      ok: false,
+      error: { code: "terminal_ack_conflict", status: 409 },
+    });
+    const boundAck: TerminalAckRequestV2 = {
+      ...legacyAck,
+      provider_usage_binding: {
+        attempt_generation: 1,
+        receipt_sha256: usageReceiptSha256,
+        result_sha256: result.sha256,
+      },
+    };
+    await expect(
+      acknowledgeTerminal(
+        stub,
+        {
+          ...boundAck,
+          provider_usage_binding: {
+            ...boundAck.provider_usage_binding!,
+            receipt_sha256: sha256("d"),
+          },
+        },
+        BASE_NOW + 8,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "terminal_ack_conflict", status: 409 },
+    });
+    await expect(acknowledgeTerminal(stub, boundAck, BASE_NOW + 8)).resolves.toEqual({
+      ok: true,
+      result: { kind: "acknowledged", finalAck: true, acknowledgedAt: BASE_NOW + 8 },
+    });
+    await expect(acknowledgeTerminal(stub, boundAck, BASE_NOW + 9)).resolves.toEqual({
+      ok: true,
+      result: { kind: "duplicate", finalAck: true, acknowledgedAt: BASE_NOW + 8 },
+    });
+    const providerEvents = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql
+        .exec<{
+          event_sequence: number;
+          to_status: string;
+          provider_usage_receipt_sha256: string | null;
+        }>(
+          `SELECT event_sequence, to_status, provider_usage_receipt_sha256
+             FROM cinatoken_shard_provider_attempt_events
+            WHERE operation_id = ?1 AND owner_generation = 1
+            ORDER BY event_sequence`,
+          operation.operation_id,
+        )
+        .toArray(),
+    );
+    expect(providerEvents).toEqual([
+      {
+        event_sequence: 1,
+        to_status: "prepared",
+        provider_usage_receipt_sha256: null,
+      },
+      {
+        event_sequence: 2,
+        to_status: "dispatched",
+        provider_usage_receipt_sha256: null,
+      },
+      {
+        event_sequence: 3,
+        to_status: "succeeded",
+        provider_usage_receipt_sha256: usageReceiptSha256,
+      },
+    ]);
   });
 
   it("reads claimed, running, and post-deadline terminal outcomes without ledger writes", async () => {

@@ -436,6 +436,13 @@ REQUIRED_COLUMNS = {
         "dead_letter_reason",
         "created_at",
         "updated_at",
+        "provider_usage_binding_state",
+        "provider_attempt_generation",
+        "provider_usage_receipt_sha256",
+        "provider_result_sha256",
+        "do_provider_usage_receipt_sha256",
+        "r2_provider_usage_receipt_sha256",
+        "terminal_provider_usage_receipt_sha256",
     },
     "relay_container_reconciliation_cursor": {
         "cursor_name",
@@ -691,6 +698,7 @@ REQUIRED_INDEXES = {
         "idx_relay_container_reconciliation_observations_due": False,
         "idx_relay_container_reconciliation_observations_lease": False,
         "idx_relay_container_reconciliation_observations_class": False,
+        "idx_relay_container_reconciliation_observations_provider_usage_binding": False,
     },
     "relay_container_reconciliation_retry_events": {
         "idx_relay_container_reconciliation_retry_events_operation": False,
@@ -765,6 +773,8 @@ def main() -> int:
     relay_container_provider_egress_grant_rollout_verified = False
     relay_container_provider_usage_receipt_verified = False
     relay_container_provider_usage_receipt_rollout_verified = False
+    relay_container_provider_usage_binding_verified = False
+    relay_container_provider_usage_binding_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -800,6 +810,8 @@ def main() -> int:
         relay_container_provider_egress_grant_rollout_verified = True
         verify_relay_container_provider_usage_receipt_rollout(schema_paths)
         relay_container_provider_usage_receipt_rollout_verified = True
+        verify_relay_container_provider_usage_binding_rollout(schema_paths)
+        relay_container_provider_usage_binding_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -837,6 +849,8 @@ def main() -> int:
         relay_container_r2_inventory_verified = True
         verify_relay_container_reconciliation_retry_apply(conn)
         relay_container_reconciliation_retry_apply_verified = True
+        verify_relay_container_provider_usage_binding(conn)
+        relay_container_provider_usage_binding_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
@@ -924,6 +938,10 @@ def main() -> int:
         message += " + 0048 immutable provider usage receipt settlement linkage"
     if relay_container_provider_usage_receipt_rollout_verified:
         message += " + 0048 default-empty provider usage receipt rollout"
+    if relay_container_provider_usage_binding_verified:
+        message += " + 0049 four-store provider usage convergence guard"
+    if relay_container_provider_usage_binding_rollout_verified:
+        message += " + 0049 expand-only provider usage binding rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -4007,6 +4025,323 @@ def verify_relay_container_provider_usage_receipt(
         (valid["operation_id"],),
     ).fetchone() != ("completed", 200, valid["result_sha256"]):
         raise SystemExit("0048 exact receipt-linked completion did not persist")
+
+
+def verify_relay_container_provider_usage_binding(
+    conn: sqlite3.Connection,
+) -> None:
+    required_triggers = (
+        "relay_container_reconciliation_observation_lifecycle_guard",
+        "relay_container_reconciliation_provider_usage_shape_insert_guard",
+        "relay_container_reconciliation_provider_usage_shape_update_guard",
+        "relay_container_reconciliation_provider_usage_authority_insert_guard",
+        "relay_container_reconciliation_provider_usage_authority_update_guard",
+        "relay_container_reconciliation_provider_usage_canonical_immutable_guard",
+        "relay_container_reconciliation_provider_usage_matching_immutable_guard",
+        "relay_container_reconciliation_provider_usage_matching_terminal_insert_guard",
+        "relay_container_reconciliation_provider_usage_matching_terminal_update_guard",
+        "relay_container_reconciliation_provider_usage_convergence_guard",
+        "relay_container_provider_usage_receipt_reconciliation_guard",
+    )
+    for trigger in required_triggers:
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0049 provider usage binding trigger missing: {trigger}")
+
+    convergence_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_reconciliation_provider_usage_convergence_guard",
+    )
+    authority_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_reconciliation_provider_usage_authority_update_guard",
+    )
+    terminal_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_reconciliation_provider_usage_matching_terminal_update_guard",
+    )
+    lifecycle_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_reconciliation_observation_lifecycle_guard",
+    )
+    for sql, fragment in (
+        (convergence_sql, "NEW.provider_usage_binding_state = 'matching'"),
+        (
+            convergence_sql,
+            "NEW.do_provider_usage_receipt_sha256 IS NEW.provider_usage_receipt_sha256",
+        ),
+        (
+            convergence_sql,
+            "NEW.r2_provider_usage_receipt_sha256 IS NEW.provider_usage_receipt_sha256",
+        ),
+        (
+            convergence_sql,
+            "NEW.terminal_provider_usage_receipt_sha256 IS NEW.provider_usage_receipt_sha256",
+        ),
+        (authority_sql, "receipt.attempt_generation = NEW.provider_attempt_generation"),
+        (authority_sql, "receipt.result_sha256 = NEW.provider_result_sha256"),
+        (terminal_sql, "event.operation_status = 'completed'"),
+        (terminal_sql, "event.billing_action = 'settle'"),
+        (terminal_sql, "event.provider_attempt_generation = NEW.provider_attempt_generation"),
+        (terminal_sql, "event.provider_result_sha256 = NEW.provider_result_sha256"),
+        (lifecycle_sql, "OLD.status = 'dead_letter'"),
+        (lifecycle_sql, "FROM relay_container_reconciliation_retry_events AS event"),
+    ):
+        if sql is None or fragment not in sql:
+            raise SystemExit(f"0049 provider usage binding contract missing: {fragment}")
+
+    operation_id = "0047-valid"
+    operation = conn.execute(
+        "SELECT created_at, owner_generation, reconciliation_id "
+        "FROM relay_container_operations WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    receipt = conn.execute(
+        "SELECT attempt_generation, usage_receipt_sha256, result_sha256 "
+        "FROM relay_container_provider_usage_receipts WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    terminal = conn.execute(
+        "SELECT provider_attempt_generation, provider_usage_receipt_sha256, "
+        "provider_result_sha256 FROM relay_container_terminal_events "
+        "WHERE operation_id = ? AND operation_status = 'completed' "
+        "AND billing_action = 'settle'",
+        (operation_id,),
+    ).fetchone()
+    if operation is None or receipt is None or terminal != receipt:
+        raise SystemExit(
+            f"0049 exact provider usage fixture is unavailable: "
+            f"operation={operation}, receipt={receipt}, terminal={terminal}"
+        )
+    operation_created_at, owner_generation, reconciliation_id = operation
+    attempt_generation, receipt_sha256, result_sha256 = receipt
+
+    observation_created_at = 60_000
+    conn.execute(
+        "INSERT INTO relay_container_reconciliation_observations ("
+        "operation_id, reservation_key, operation_created_at, owner_generation, "
+        "reconciliation_id, available_at, recovery_deadline_at, created_at, updated_at"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            operation_id,
+            operation_id,
+            operation_created_at,
+            owner_generation,
+            reconciliation_id,
+            observation_created_at,
+            observation_created_at + 10_000,
+            observation_created_at,
+            observation_created_at,
+        ),
+    )
+    default_binding = conn.execute(
+        "SELECT provider_usage_binding_state, provider_attempt_generation, "
+        "provider_usage_receipt_sha256, provider_result_sha256, "
+        "do_provider_usage_receipt_sha256, r2_provider_usage_receipt_sha256, "
+        "terminal_provider_usage_receipt_sha256 "
+        "FROM relay_container_reconciliation_observations WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    if default_binding != ("not_applicable", None, None, None, None, None, None):
+        raise SystemExit(f"0049 old observation writer defaults changed: {default_binding}")
+
+    claim_at = observation_created_at + 10
+    conn.execute(
+        "UPDATE relay_container_reconciliation_observations SET "
+        "status = 'leased', claim_generation = 1, claim_owner = ?, "
+        "claim_lease_expires_at = ?, available_at = 0, attempt_count = 1, "
+        "first_observed_at = ?, last_attempt_at = ?, updated_at = ?, "
+        "provider_usage_binding_state = 'pending', "
+        "provider_attempt_generation = ?, provider_usage_receipt_sha256 = ?, "
+        "provider_result_sha256 = ? WHERE operation_id = ?",
+        (
+            "9" * 32,
+            observation_created_at + 1_000,
+            claim_at,
+            claim_at,
+            claim_at,
+            attempt_generation,
+            receipt_sha256,
+            result_sha256,
+            operation_id,
+        ),
+    )
+
+    converge_sql = (
+        "UPDATE relay_container_reconciliation_observations SET "
+        "status = 'converged', claim_owner = '', claim_lease_expires_at = 0, "
+        "available_at = 0, consecutive_failures = 0, last_observed_at = :updated_at, "
+        "last_class = 'converged_replayable', last_error_code = '', "
+        "converged_at = :updated_at, updated_at = :updated_at, "
+        "provider_usage_binding_state = :binding_state, "
+        "provider_attempt_generation = :attempt_generation, "
+        "provider_usage_receipt_sha256 = :receipt_sha256, "
+        "provider_result_sha256 = :result_sha256, "
+        "do_provider_usage_receipt_sha256 = :do_receipt_sha256, "
+        "r2_provider_usage_receipt_sha256 = :r2_receipt_sha256, "
+        "terminal_provider_usage_receipt_sha256 = :terminal_receipt_sha256 "
+        "WHERE operation_id = :operation_id"
+    )
+
+    def convergence_values(updated_at: int) -> dict[str, object]:
+        return {
+            "updated_at": updated_at,
+            "binding_state": "matching",
+            "attempt_generation": attempt_generation,
+            "receipt_sha256": receipt_sha256,
+            "result_sha256": result_sha256,
+            "do_receipt_sha256": receipt_sha256,
+            "r2_receipt_sha256": receipt_sha256,
+            "terminal_receipt_sha256": receipt_sha256,
+            "operation_id": operation_id,
+        }
+
+    old_writer = convergence_values(claim_at + 10)
+    old_writer["binding_state"] = "pending"
+    old_writer["do_receipt_sha256"] = None
+    old_writer["r2_receipt_sha256"] = None
+    old_writer["terminal_receipt_sha256"] = None
+    expect_integrity_error(
+        lambda: conn.execute(converge_sql, old_writer),
+        "0049 old writer converged a receipt-backed observation without evidence",
+        "provider usage binding must match before convergence",
+    )
+
+    missing_evidence = convergence_values(claim_at + 11)
+    missing_evidence["r2_receipt_sha256"] = None
+    expect_integrity_error(
+        lambda: conn.execute(converge_sql, missing_evidence),
+        "0049 accepted matching convergence with missing R2 evidence",
+    )
+
+    conflicting_sha256 = receipt_sha256[:-1] + format(
+        int(receipt_sha256[-1], 16) ^ 1,
+        "x",
+    )
+    divergent = convergence_values(claim_at + 12)
+    divergent["binding_state"] = "divergent"
+    divergent["r2_receipt_sha256"] = conflicting_sha256
+    expect_integrity_error(
+        lambda: conn.execute(converge_sql, divergent),
+        "0049 accepted an explicitly divergent provider usage tuple",
+        "provider usage binding must match before convergence",
+    )
+
+    single_bit_conflict = convergence_values(claim_at + 13)
+    single_bit_conflict["do_receipt_sha256"] = conflicting_sha256
+    expect_integrity_error(
+        lambda: conn.execute(converge_sql, single_bit_conflict),
+        "0049 accepted a single-bit DO receipt conflict",
+    )
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_observations "
+            "SET provider_result_sha256 = ? WHERE operation_id = ?",
+            ("f" * 64, operation_id),
+        ),
+        "0049 allowed the canonical result tuple to be rewritten",
+    )
+
+    divergent_at = claim_at + 14
+    conn.execute(
+        "UPDATE relay_container_reconciliation_observations SET "
+        "status = 'retry', claim_owner = '', claim_lease_expires_at = 0, "
+        "available_at = ?, consecutive_failures = consecutive_failures + 1, "
+        "last_observed_at = ?, last_class = 'terminal_conflict', "
+        "last_error_code = 'provider_usage_divergent', updated_at = ?, "
+        "provider_usage_binding_state = 'divergent', "
+        "do_provider_usage_receipt_sha256 = ?, "
+        "r2_provider_usage_receipt_sha256 = ?, "
+        "terminal_provider_usage_receipt_sha256 = ? WHERE operation_id = ?",
+        (
+            divergent_at + 10,
+            divergent_at,
+            divergent_at,
+            receipt_sha256,
+            conflicting_sha256,
+            receipt_sha256,
+            operation_id,
+        ),
+    )
+    if conn.execute(
+        "SELECT status, provider_usage_binding_state, "
+        "r2_provider_usage_receipt_sha256 "
+        "FROM relay_container_reconciliation_observations WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone() != ("retry", "divergent", conflicting_sha256):
+        raise SystemExit("0049 divergent provider usage evidence was not persisted")
+
+    reclaim_at = divergent_at + 10
+    conn.execute(
+        "UPDATE relay_container_reconciliation_observations SET "
+        "status = 'leased', claim_generation = claim_generation + 1, "
+        "claim_owner = ?, claim_lease_expires_at = ?, available_at = 0, "
+        "attempt_count = attempt_count + 1, last_attempt_at = ?, updated_at = ?, "
+        "provider_usage_binding_state = 'pending', "
+        "do_provider_usage_receipt_sha256 = NULL, "
+        "r2_provider_usage_receipt_sha256 = NULL, "
+        "terminal_provider_usage_receipt_sha256 = NULL WHERE operation_id = ?",
+        (
+            "a" * 32,
+            reclaim_at + 1_000,
+            reclaim_at,
+            reclaim_at,
+            operation_id,
+        ),
+    )
+
+    exact = convergence_values(reclaim_at + 10)
+    conn.execute(converge_sql, exact)
+    persisted = conn.execute(
+        "SELECT status, provider_usage_binding_state, provider_attempt_generation, "
+        "provider_usage_receipt_sha256, provider_result_sha256, "
+        "do_provider_usage_receipt_sha256, r2_provider_usage_receipt_sha256, "
+        "terminal_provider_usage_receipt_sha256 "
+        "FROM relay_container_reconciliation_observations WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    if persisted != (
+        "converged",
+        "matching",
+        attempt_generation,
+        receipt_sha256,
+        result_sha256,
+        receipt_sha256,
+        receipt_sha256,
+        receipt_sha256,
+    ):
+        raise SystemExit(f"0049 exact four-store binding did not persist: {persisted}")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_observations "
+            "SET r2_provider_usage_receipt_sha256 = ? WHERE operation_id = ?",
+            (conflicting_sha256, operation_id),
+        ),
+        "0049 allowed matching/converged evidence to be rewritten",
+    )
+    frozen = conn.execute(
+        "SELECT provider_usage_binding_state, r2_provider_usage_receipt_sha256 "
+        "FROM relay_container_reconciliation_observations WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    if frozen != ("matching", receipt_sha256):
+        raise SystemExit(f"0049 matched provider usage evidence changed: {frozen}")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "INSERT OR IGNORE INTO relay_container_provider_usage_receipts "
+            "SELECT * FROM relay_container_provider_usage_receipts "
+            "WHERE operation_id = ? AND owner_generation = ? "
+            "AND attempt_generation = ?",
+            (operation_id, owner_generation, attempt_generation),
+        ),
+        "0049 allowed a post-convergence receipt INSERT replay",
+    )
 
 
 def verify_relay_container_reconciliation_observer(
@@ -8499,8 +8834,10 @@ def verify_relay_container_provider_usage_receipt_rollout(
     receipt_index = schema_paths.index(receipt_path)
     if receipt_index == 0 or schema_paths[receipt_index - 1] != grant_path:
         raise SystemExit("0048 provider usage receipts must immediately follow 0047")
-    if receipt_index != len(schema_paths) - 1:
-        raise SystemExit("0048 provider usage receipts must be the current D1 migration head")
+    if receipt_index + 1 >= len(schema_paths) or schema_paths[
+        receipt_index + 1
+    ].name != "0049_relay_container_provider_usage_binding.sql":
+        raise SystemExit("0048 provider usage receipts must immediately precede 0049")
 
     receipt_sql = receipt_path.read_text(encoding="utf-8")
     if "if not exists" in receipt_sql.lower():
@@ -8729,6 +9066,361 @@ def verify_relay_container_provider_usage_receipt_rollout(
         "SELECT COUNT(*) FROM relay_container_provider_usage_receipt_identities"
     ).fetchone() != (0,):
         raise SystemExit("0048 provider usage rollout backfilled historical identities")
+
+
+def verify_relay_container_provider_usage_binding_rollout(
+    schema_paths: list[Path],
+) -> None:
+    binding_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0049_relay_container_provider_usage_binding.sql"
+        ),
+        None,
+    )
+    receipt_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0048_relay_container_provider_usage_receipts.sql"
+        ),
+        None,
+    )
+    if binding_path is None or receipt_path is None:
+        raise SystemExit("0048/0049 relay Container provider usage migrations not found")
+    binding_index = schema_paths.index(binding_path)
+    if binding_index == 0 or schema_paths[binding_index - 1] != receipt_path:
+        raise SystemExit("0049 provider usage binding must immediately follow 0048")
+    if binding_index != len(schema_paths) - 1:
+        raise SystemExit("0049 provider usage binding must be the current D1 migration head")
+
+    binding_sql = binding_path.read_text(encoding="utf-8")
+    if "if not exists" in binding_sql.lower():
+        raise SystemExit("0049 critical provider usage binding objects must fail duplicate DDL")
+    required_fragments = (
+        "ADD COLUMN provider_usage_binding_state",
+        "ADD COLUMN provider_attempt_generation",
+        "ADD COLUMN provider_usage_receipt_sha256",
+        "ADD COLUMN provider_result_sha256",
+        "ADD COLUMN do_provider_usage_receipt_sha256",
+        "ADD COLUMN r2_provider_usage_receipt_sha256",
+        "ADD COLUMN terminal_provider_usage_receipt_sha256",
+        "WHEN observation.status = 'converged' THEN 'divergent'",
+        "ELSE 'pending'",
+        "DROP TRIGGER relay_container_reconciliation_observation_lifecycle_guard",
+        "CREATE TRIGGER relay_container_reconciliation_observation_lifecycle_guard",
+        "CREATE INDEX idx_relay_container_reconciliation_observations_provider_usage_binding",
+        "CREATE TRIGGER relay_container_reconciliation_provider_usage_shape_insert_guard",
+        "CREATE TRIGGER relay_container_reconciliation_provider_usage_shape_update_guard",
+        "CREATE TRIGGER relay_container_reconciliation_provider_usage_authority_insert_guard",
+        "CREATE TRIGGER relay_container_reconciliation_provider_usage_authority_update_guard",
+        "CREATE TRIGGER relay_container_reconciliation_provider_usage_canonical_immutable_guard",
+        "CREATE TRIGGER relay_container_reconciliation_provider_usage_matching_immutable_guard",
+        "CREATE TRIGGER relay_container_reconciliation_provider_usage_matching_terminal_insert_guard",
+        "CREATE TRIGGER relay_container_reconciliation_provider_usage_matching_terminal_update_guard",
+        "CREATE TRIGGER relay_container_reconciliation_provider_usage_convergence_guard",
+        "CREATE TRIGGER relay_container_provider_usage_receipt_reconciliation_guard",
+        "NEW.provider_usage_binding_state = 'matching'",
+        "receipt.attempt_generation = NEW.provider_attempt_generation",
+        "receipt.usage_receipt_sha256 = NEW.provider_usage_receipt_sha256",
+        "receipt.result_sha256 = NEW.provider_result_sha256",
+        "event.provider_attempt_generation = NEW.provider_attempt_generation",
+        "event.provider_usage_receipt_sha256 = NEW.terminal_provider_usage_receipt_sha256",
+        "event.provider_result_sha256 = NEW.provider_result_sha256",
+    )
+    for fragment in required_fragments:
+        if fragment not in binding_sql:
+            raise SystemExit(f"0049 provider usage binding rollout missing: {fragment}")
+    for forbidden in (
+        "UPDATE relay_container_operations",
+        "UPDATE relay_container_provider_usage_receipts",
+        "UPDATE relay_container_terminal_events",
+        "DELETE FROM relay_container_operations",
+        "DELETE FROM relay_container_provider_usage_receipts",
+        "DELETE FROM relay_container_terminal_events",
+        "FROM relay_container_r2_inventory_findings",
+    ):
+        if forbidden in binding_sql:
+            raise SystemExit(
+                f"0049 provider usage binding exceeds D1 observer authority: {forbidden}"
+            )
+
+    def apply_before_binding(conn: sqlite3.Connection) -> None:
+        for schema_path in schema_paths:
+            if schema_path == binding_path:
+                break
+            conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    empty_conn = sqlite3.connect(":memory:")
+    apply_before_binding(empty_conn)
+    lifecycle_before = sqlite_object_sql(
+        empty_conn,
+        "trigger",
+        "relay_container_reconciliation_observation_lifecycle_guard",
+    )
+    if lifecycle_before is None:
+        raise SystemExit("0049 empty-upgrade fixture is missing the 0045 lifecycle trigger")
+    if empty_conn.execute(
+        "SELECT COUNT(*) FROM relay_container_reconciliation_observations"
+    ).fetchone() != (0,):
+        raise SystemExit("0049 empty-upgrade fixture unexpectedly has observations")
+    empty_conn.executescript(binding_sql)
+    if empty_conn.execute(
+        "SELECT COUNT(*) FROM relay_container_reconciliation_observations"
+    ).fetchone() != (0,):
+        raise SystemExit("0049 empty upgrade synthesized reconciliation observations")
+    expected_columns = {
+        "provider_usage_binding_state",
+        "provider_attempt_generation",
+        "provider_usage_receipt_sha256",
+        "provider_result_sha256",
+        "do_provider_usage_receipt_sha256",
+        "r2_provider_usage_receipt_sha256",
+        "terminal_provider_usage_receipt_sha256",
+    }
+    missing_columns = expected_columns - table_columns(
+        empty_conn, "relay_container_reconciliation_observations"
+    )
+    if missing_columns:
+        raise SystemExit(f"0049 empty upgrade missed columns: {sorted(missing_columns)}")
+    if not trigger_exists(
+        empty_conn,
+        "relay_container_reconciliation_provider_usage_convergence_guard",
+    ):
+        raise SystemExit("0049 empty upgrade did not install the convergence guard")
+    lifecycle_after = sqlite_object_sql(
+        empty_conn,
+        "trigger",
+        "relay_container_reconciliation_observation_lifecycle_guard",
+    )
+    if lifecycle_after is None or " ".join(lifecycle_after.split()) != " ".join(
+        lifecycle_before.split()
+    ):
+        raise SystemExit("0049 did not preserve the complete 0045 lifecycle state machine")
+
+    conn = sqlite3.connect(":memory:")
+    apply_before_binding(conn)
+    verify_relay_container_provider_egress_grant(conn)
+    verify_relay_container_provider_usage_receipt(conn)
+
+    def insert_observation(operation_id: str, created_at: int) -> None:
+        operation = conn.execute(
+            "SELECT created_at, owner_generation, reconciliation_id "
+            "FROM relay_container_operations WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if operation is None:
+            raise SystemExit(f"0049 rollout operation fixture missing: {operation_id}")
+        operation_created_at, owner_generation, reconciliation_id = operation
+        conn.execute(
+            "INSERT INTO relay_container_reconciliation_observations ("
+            "operation_id, reservation_key, operation_created_at, owner_generation, "
+            "reconciliation_id, available_at, recovery_deadline_at, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                operation_id,
+                operation_id,
+                operation_created_at,
+                owner_generation,
+                reconciliation_id,
+                created_at,
+                created_at + 10_000,
+                created_at,
+                created_at,
+            ),
+        )
+
+    def claim_observation(operation_id: str, updated_at: int, owner: str) -> None:
+        conn.execute(
+            "UPDATE relay_container_reconciliation_observations SET "
+            "status = 'leased', claim_generation = claim_generation + 1, "
+            "claim_owner = ?, claim_lease_expires_at = ?, available_at = 0, "
+            "attempt_count = attempt_count + 1, "
+            "first_observed_at = CASE WHEN first_observed_at = 0 THEN ? "
+            "ELSE first_observed_at END, last_attempt_at = ?, updated_at = ? "
+            "WHERE operation_id = ?",
+            (owner, updated_at + 1_000, updated_at, updated_at, updated_at, operation_id),
+        )
+
+    def converge_old_writer(operation_id: str, updated_at: int) -> None:
+        conn.execute(
+            "UPDATE relay_container_reconciliation_observations SET "
+            "status = 'converged', claim_owner = '', claim_lease_expires_at = 0, "
+            "available_at = 0, consecutive_failures = 0, "
+            "last_observed_at = ?, last_class = 'converged_replayable', "
+            "last_error_code = '', converged_at = ?, updated_at = ? "
+            "WHERE operation_id = ?",
+            (updated_at, updated_at, updated_at, operation_id),
+        )
+
+    historical_converged_id = "0047-valid"
+    pending_receipt_id = "0047-accepted-202"
+    historical_no_receipt_id = "0047-non-canary"
+    insert_observation(historical_converged_id, 20_000)
+    claim_observation(historical_converged_id, 20_010, "8" * 32)
+    converge_old_writer(historical_converged_id, 20_020)
+    insert_observation(pending_receipt_id, 21_000)
+    insert_observation(historical_no_receipt_id, 22_000)
+
+    operation_ids = (
+        historical_converged_id,
+        pending_receipt_id,
+        historical_no_receipt_id,
+    )
+    old_observation_columns = tuple(
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(relay_container_reconciliation_observations)"
+        ).fetchall()
+    )
+    quoted_old_columns = ", ".join(f'"{name}"' for name in old_observation_columns)
+    placeholders = ",".join("?" for _ in operation_ids)
+    observations_before = conn.execute(
+        f"SELECT {quoted_old_columns} "
+        "FROM relay_container_reconciliation_observations "
+        f"WHERE operation_id IN ({placeholders}) ORDER BY operation_id",
+        operation_ids,
+    ).fetchall()
+    protected_before = {
+        "operations": conn.execute(
+            "SELECT * FROM relay_container_operations "
+            f"WHERE operation_id IN ({placeholders}) ORDER BY operation_id",
+            operation_ids,
+        ).fetchall(),
+        "receipts": conn.execute(
+            "SELECT * FROM relay_container_provider_usage_receipts "
+            f"WHERE operation_id IN ({placeholders}) ORDER BY operation_id",
+            operation_ids,
+        ).fetchall(),
+        "terminal_events": conn.execute(
+            "SELECT * FROM relay_container_terminal_events "
+            f"WHERE operation_id IN ({placeholders}) ORDER BY operation_id, billing_event_id",
+            operation_ids,
+        ).fetchall(),
+    }
+
+    conn.executescript(binding_sql)
+
+    observations_after = conn.execute(
+        f"SELECT {quoted_old_columns} "
+        "FROM relay_container_reconciliation_observations "
+        f"WHERE operation_id IN ({placeholders}) ORDER BY operation_id",
+        operation_ids,
+    ).fetchall()
+    if observations_after != observations_before:
+        raise SystemExit("0049 rollout changed historical observation business columns")
+    protected_after = {
+        "operations": conn.execute(
+            "SELECT * FROM relay_container_operations "
+            f"WHERE operation_id IN ({placeholders}) ORDER BY operation_id",
+            operation_ids,
+        ).fetchall(),
+        "receipts": conn.execute(
+            "SELECT * FROM relay_container_provider_usage_receipts "
+            f"WHERE operation_id IN ({placeholders}) ORDER BY operation_id",
+            operation_ids,
+        ).fetchall(),
+        "terminal_events": conn.execute(
+            "SELECT * FROM relay_container_terminal_events "
+            f"WHERE operation_id IN ({placeholders}) ORDER BY operation_id, billing_event_id",
+            operation_ids,
+        ).fetchall(),
+    }
+    if protected_after != protected_before:
+        raise SystemExit("0049 rollout changed receipt, terminal, or operation authority")
+
+    def canonical_tuple(operation_id: str) -> tuple[object, ...]:
+        row = conn.execute(
+            "SELECT attempt_generation, usage_receipt_sha256, result_sha256 "
+            "FROM relay_container_provider_usage_receipts WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            raise SystemExit(f"0049 rollout canonical receipt missing: {operation_id}")
+        return row
+
+    pending_tuple = canonical_tuple(pending_receipt_id)
+    pending_binding = conn.execute(
+        "SELECT status, provider_usage_binding_state, provider_attempt_generation, "
+        "provider_usage_receipt_sha256, provider_result_sha256, "
+        "do_provider_usage_receipt_sha256, r2_provider_usage_receipt_sha256, "
+        "terminal_provider_usage_receipt_sha256 "
+        "FROM relay_container_reconciliation_observations WHERE operation_id = ?",
+        (pending_receipt_id,),
+    ).fetchone()
+    if pending_binding != (
+        "pending",
+        "pending",
+        *pending_tuple,
+        None,
+        None,
+        None,
+    ):
+        raise SystemExit(f"0049 pending receipt backfill is not exact: {pending_binding}")
+
+    converged_tuple = canonical_tuple(historical_converged_id)
+    historical_binding = conn.execute(
+        "SELECT status, provider_usage_binding_state, provider_attempt_generation, "
+        "provider_usage_receipt_sha256, provider_result_sha256, "
+        "do_provider_usage_receipt_sha256, r2_provider_usage_receipt_sha256, "
+        "terminal_provider_usage_receipt_sha256 "
+        "FROM relay_container_reconciliation_observations WHERE operation_id = ?",
+        (historical_converged_id,),
+    ).fetchone()
+    if historical_binding != (
+        "converged",
+        "divergent",
+        *converged_tuple,
+        None,
+        None,
+        None,
+    ):
+        raise SystemExit(
+            f"0049 historical convergence was not marked unprovable: {historical_binding}"
+        )
+
+    no_receipt_binding = conn.execute(
+        "SELECT provider_usage_binding_state, provider_attempt_generation, "
+        "provider_usage_receipt_sha256, provider_result_sha256, "
+        "do_provider_usage_receipt_sha256, r2_provider_usage_receipt_sha256, "
+        "terminal_provider_usage_receipt_sha256 "
+        "FROM relay_container_reconciliation_observations WHERE operation_id = ?",
+        (historical_no_receipt_id,),
+    ).fetchone()
+    if no_receipt_binding != ("not_applicable", None, None, None, None, None, None):
+        raise SystemExit(f"0049 changed historical no-receipt behavior: {no_receipt_binding}")
+
+    claim_observation(historical_no_receipt_id, 22_010, "7" * 32)
+    converge_old_writer(historical_no_receipt_id, 22_020)
+    if conn.execute(
+        "SELECT status, provider_usage_binding_state "
+        "FROM relay_container_reconciliation_observations WHERE operation_id = ?",
+        (historical_no_receipt_id,),
+    ).fetchone() != ("converged", "not_applicable"):
+        raise SystemExit("0049 broke historical no-receipt convergence")
+
+    claim_observation(pending_receipt_id, 21_010, "6" * 32)
+    expect_integrity_error(
+        lambda: converge_old_writer(pending_receipt_id, 21_020),
+        "0049 rollout old writer converged a receipt-backed observation",
+        "provider usage binding must match before convergence",
+    )
+    if conn.execute(
+        "SELECT status, provider_usage_binding_state "
+        "FROM relay_container_reconciliation_observations WHERE operation_id = ?",
+        (pending_receipt_id,),
+    ).fetchone() != ("leased", "pending"):
+        raise SystemExit("0049 rejected old writer left a partial convergence update")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_reconciliation_observations "
+            "SET provider_usage_binding_state = 'matching' WHERE operation_id = ?",
+            (historical_converged_id,),
+        ),
+        "0049 allowed historical converged evidence to be silently rewritten",
+    )
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

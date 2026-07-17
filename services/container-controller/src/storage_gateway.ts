@@ -201,6 +201,22 @@ export interface ProviderUsageReceiptOutcome {
   persisted_at: number;
 }
 
+export interface ProviderUsageReceiptReadback {
+  operation_id: string;
+  owner_generation: number;
+  attempt_generation: number;
+  provider_operation_id: string;
+  admission_sha256: string;
+  request_sha256: string;
+  egress_profile: string;
+  egress_worker_version_id: string;
+  provider_response_status: number;
+  provider_response_sha256: string;
+  usage_receipt_sha256: string;
+  persisted_at: number;
+  result: ProviderUsageReceiptResult;
+}
+
 interface StorageRoute {
   host: string;
   method: "GET" | "PUT";
@@ -1220,6 +1236,23 @@ export async function requireD1ProviderUsageReceipt(
 
   try {
     const session = database.withSession("first-primary");
+    const existing = await session
+      .prepare(PROVIDER_USAGE_RECEIPT_READBACK_SQL)
+      .bind(receipt.operation_id, receipt.owner_generation, receipt.attempt_generation)
+      .first<Record<string, unknown>>();
+    if (existing !== null) {
+      const row = await requireMatchingProviderUsageReceiptRow(
+        existing,
+        admission,
+        evidence,
+        result,
+        billingSnapshotSha256,
+        0,
+        persistedAt,
+      );
+      return { replayed: true, persisted_at: row.persisted_at };
+    }
+
     const write = await session
       .prepare(PROVIDER_USAGE_RECEIPT_INSERT_SQL)
       .bind(
@@ -1272,12 +1305,83 @@ export async function requireD1ProviderUsageReceipt(
         changes === 1 ? 502 : 409,
       );
     }
-    if (!isProviderUsageReceiptRow(row)) {
-      throw new GatewayError("provider_usage_receipt_readback_invalid", 502);
+    const matched = await requireMatchingProviderUsageReceiptRow(
+      row,
+      admission,
+      evidence,
+      result,
+      billingSnapshotSha256,
+      changes,
+      persistedAt,
+    );
+    return { replayed: changes === 0, persisted_at: matched.persisted_at };
+  } catch (error) {
+    if (error instanceof GatewayError) {
+      throw new ProtocolError(error.code, error.status);
     }
-    if ((await sha256Utf8(row.usage_receipt_json)) !== row.usage_receipt_sha256) {
-      throw new GatewayError("provider_usage_receipt_readback_invalid", 502);
+    throw new ProtocolError("provider_usage_receipt_unavailable", 503);
+  }
+}
+
+export async function requireD1ProviderUsageReceiptReadback(
+  env: StorageGatewayEnvironment,
+  admission: D1AdmissionSnapshot,
+  attemptGeneration: number,
+): Promise<ProviderUsageReceiptReadback> {
+  if (
+    !validAdmissionSnapshot(admission) ||
+    admission.reservation_status !== "reserved" ||
+    admission.operation_status !== "dispatched" ||
+    !isPositiveInteger(attemptGeneration) ||
+    attemptGeneration > 3
+  ) {
+    throw new ProtocolError("provider_usage_receipt_authority_mismatch", 409);
+  }
+
+  const database = env.CONTAINER_STORAGE_ADMISSION_DB;
+  if (database === undefined || typeof database.withSession !== "function") {
+    throw new ProtocolError("provider_usage_receipt_unavailable", 503);
+  }
+
+  try {
+    const session = database.withSession("first-primary");
+    const value = await session
+      .prepare(PROVIDER_USAGE_RECEIPT_READBACK_SQL)
+      .bind(admission.operation_id, admission.owner_generation, attemptGeneration)
+      .first<Record<string, unknown>>();
+    if (value === null) {
+      throw new ProtocolError("provider_usage_receipt_not_found", 404);
     }
+    if (!isProviderUsageReceiptRow(value)) {
+      throw new ProtocolError("provider_usage_receipt_readback_invalid", 502);
+    }
+    const row = value;
+    let receiptValue: unknown;
+    try {
+      receiptValue = JSON.parse(row.usage_receipt_json);
+    } catch {
+      throw new ProtocolError("provider_usage_receipt_readback_invalid", 502);
+    }
+    if (
+      !isProviderUsageReceipt(receiptValue) ||
+      JSON.stringify(receiptValue) !== row.usage_receipt_json ||
+      (await sha256Utf8(row.usage_receipt_json)) !== row.usage_receipt_sha256
+    ) {
+      throw new ProtocolError("provider_usage_receipt_readback_invalid", 502);
+    }
+    const evidence: CanonicalProviderUsageReceipt = {
+      receipt: receiptValue,
+      json: row.usage_receipt_json,
+      sha256: row.usage_receipt_sha256,
+    };
+    const result: ProviderUsageReceiptResult = {
+      object_key: row.result_object_key,
+      object_version: row.result_object_version,
+      sha256: row.result_sha256,
+      size: row.result_size,
+      content_type: row.result_content_type,
+    };
+    const billingSnapshotSha256 = await sha256Utf8(admission.billing_snapshot_json);
     if (
       !providerUsageReceiptRowMatches(
         row,
@@ -1285,17 +1389,29 @@ export async function requireD1ProviderUsageReceipt(
         evidence,
         result,
         billingSnapshotSha256,
-        changes,
-        persistedAt,
+        0,
+        row.persisted_at,
       )
     ) {
-      throw new GatewayError("provider_usage_receipt_conflict", 409);
+      throw new ProtocolError("provider_usage_receipt_conflict", 409);
     }
-    return { replayed: changes === 0, persisted_at: row.persisted_at };
+    return {
+      operation_id: row.operation_id,
+      owner_generation: row.owner_generation,
+      attempt_generation: row.attempt_generation,
+      provider_operation_id: row.provider_operation_id,
+      admission_sha256: row.admission_sha256,
+      request_sha256: row.request_sha256,
+      egress_profile: row.egress_profile,
+      egress_worker_version_id: row.egress_worker_version_id,
+      provider_response_status: row.provider_response_status,
+      provider_response_sha256: row.provider_response_sha256,
+      usage_receipt_sha256: row.usage_receipt_sha256,
+      persisted_at: row.persisted_at,
+      result,
+    };
   } catch (error) {
-    if (error instanceof GatewayError) {
-      throw new ProtocolError(error.code, error.status);
-    }
+    if (error instanceof ProtocolError) throw error;
     throw new ProtocolError("provider_usage_receipt_unavailable", 503);
   }
 }
@@ -1843,6 +1959,37 @@ function providerUsageReceiptRowMatches(
     row.persisted_at <= persistedAt &&
     (changes === 0 || row.persisted_at === persistedAt)
   );
+}
+
+async function requireMatchingProviderUsageReceiptRow(
+  value: Record<string, unknown>,
+  admission: D1AdmissionSnapshot,
+  evidence: CanonicalProviderUsageReceipt,
+  result: ProviderUsageReceiptResult,
+  billingSnapshotSha256: string,
+  changes: 0 | 1,
+  persistedAt: number,
+): Promise<ProviderUsageReceiptRow> {
+  if (!isProviderUsageReceiptRow(value)) {
+    throw new GatewayError("provider_usage_receipt_readback_invalid", 502);
+  }
+  if ((await sha256Utf8(value.usage_receipt_json)) !== value.usage_receipt_sha256) {
+    throw new GatewayError("provider_usage_receipt_readback_invalid", 502);
+  }
+  if (
+    !providerUsageReceiptRowMatches(
+      value,
+      admission,
+      evidence,
+      result,
+      billingSnapshotSha256,
+      changes,
+      persistedAt,
+    )
+  ) {
+    throw new GatewayError("provider_usage_receipt_conflict", 409);
+  }
+  return value;
 }
 
 function validBillingContract(kind: unknown, contract: unknown): contract is string {

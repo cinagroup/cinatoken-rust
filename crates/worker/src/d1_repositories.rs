@@ -53,6 +53,8 @@ pub(crate) const RELAY_CONTAINER_PROVIDER_EGRESS_GRANT_MIGRATION: &str =
     "0047_relay_container_provider_egress_grants.sql";
 pub(crate) const RELAY_CONTAINER_PROVIDER_USAGE_RECEIPT_MIGRATION: &str =
     "0048_relay_container_provider_usage_receipts.sql";
+pub(crate) const RELAY_CONTAINER_PROVIDER_USAGE_BINDING_MIGRATION: &str =
+    "0049_relay_container_provider_usage_binding.sql";
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
     &["pending", "leased", "retry", "converged", "dead_letter"];
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
@@ -417,12 +419,20 @@ pub enum RelayContainerReconciliationRecord<'a> {
     },
     Converged {
         class: &'a str,
+        provider_usage: Option<RelayContainerProviderUsageConvergence<'a>>,
     },
     DeadLetter {
         class: &'a str,
         error_code: &'a str,
         reason: &'a str,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayContainerProviderUsageConvergence<'a> {
+    pub attempt_generation: i64,
+    pub receipt_sha256: &'a str,
+    pub result_sha256: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2773,6 +2783,34 @@ struct RelayContainerProviderUsageReceiptRow {
     persisted_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerProviderUsageReceiptIdentity {
+    pub operation_id: String,
+    pub owner_generation: i64,
+    pub attempt_generation: i64,
+    pub provider_operation_id: String,
+    pub admission_sha256: String,
+    pub request_sha256: String,
+    pub egress_profile: String,
+    pub egress_worker_version_id: String,
+    pub provider_response_status: i64,
+    pub provider_response_sha256: String,
+    pub result_object_key: String,
+    pub result_object_version: String,
+    pub result_sha256: String,
+    pub result_size: i64,
+    pub result_content_type: String,
+    pub usage_receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayContainerProviderUsageReceiptReadback {
+    NotExpected,
+    Missing,
+    Matching(RelayContainerProviderUsageReceiptIdentity),
+    Divergent,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct RelayContainerProviderUsageReceiptPayload {
@@ -3080,6 +3118,116 @@ fn relay_container_provider_usage_row_matches(
         && payload.owner_generation == operation.owner_generation
         && payload.provider_operation_id == operation.provider_operation_id
         && payload.request_sha256 == operation.input_sha256
+}
+
+pub async fn relay_container_provider_usage_receipt_readback(
+    db: &D1Database,
+    operation: &RelayContainerOperation,
+    receipt: &RelayContainerFinancialTerminalReceipt,
+) -> worker::Result<RelayContainerProviderUsageReceiptReadback> {
+    if !relay_container_financial_receipt_integrity_valid(receipt)
+        || !relay_container_terminal_outbox_receipt_routes_to_operation(receipt, operation)
+    {
+        return Ok(RelayContainerProviderUsageReceiptReadback::Divergent);
+    }
+    let (expected_receipt_sha256, expected_result_sha256, expected_attempt_generation) = match (
+        receipt.provider_usage_receipt_sha256.as_deref(),
+        receipt.provider_result_sha256.as_deref(),
+        receipt.provider_attempt_generation,
+    ) {
+        (None, None, None) => return Ok(RelayContainerProviderUsageReceiptReadback::NotExpected),
+        (Some(receipt_sha256), Some(result_sha256), Some(attempt_generation)) => {
+            (receipt_sha256, result_sha256, attempt_generation)
+        }
+        _ => return Ok(RelayContainerProviderUsageReceiptReadback::Divergent),
+    };
+    if receipt.operation_from_status != "dispatched"
+        || receipt.billing_action != "settle"
+        || receipt.operation_status != "completed"
+        || expected_attempt_generation != 1
+    {
+        return Ok(RelayContainerProviderUsageReceiptReadback::Divergent);
+    }
+    let (
+        Some(response_status),
+        Some(result_object_key),
+        Some(result_object_version),
+        Some(result_sha256),
+        Some(result_size),
+        Some(result_content_type),
+    ) = (
+        receipt.operation_response_status,
+        receipt.operation_result_object_key.as_deref(),
+        receipt.operation_result_object_version.as_deref(),
+        receipt.operation_result_sha256.as_deref(),
+        receipt.operation_result_size,
+        receipt.operation_result_content_type.as_deref(),
+    )
+    else {
+        return Ok(RelayContainerProviderUsageReceiptReadback::Divergent);
+    };
+    if result_sha256 != expected_result_sha256 {
+        return Ok(RelayContainerProviderUsageReceiptReadback::Divergent);
+    }
+    let Some(row) = relay_container_provider_usage_receipt(
+        db,
+        &operation.operation_id,
+        operation.owner_generation,
+        expected_attempt_generation,
+    )
+    .await?
+    else {
+        return Ok(RelayContainerProviderUsageReceiptReadback::Missing);
+    };
+    let payload = match parse_relay_container_provider_usage_payload(&row) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(RelayContainerProviderUsageReceiptReadback::Divergent),
+    };
+    let Some(reservation) = relay_billing_reservation(db, &operation.reservation_key).await? else {
+        return Ok(RelayContainerProviderUsageReceiptReadback::Divergent);
+    };
+    let terminal = RelayContainerOperationTerminalRecord::Completed {
+        response_status,
+        result: RelayContainerOperationResultRecord {
+            object_key: result_object_key,
+            object_version: result_object_version,
+            sha256: result_sha256,
+            size: result_size,
+            content_type: result_content_type,
+        },
+    };
+    if !relay_container_provider_usage_row_matches(
+        &row,
+        &payload,
+        operation,
+        &reservation,
+        terminal,
+        expected_receipt_sha256,
+        expected_result_sha256,
+        expected_attempt_generation,
+    ) {
+        return Ok(RelayContainerProviderUsageReceiptReadback::Divergent);
+    }
+    Ok(RelayContainerProviderUsageReceiptReadback::Matching(
+        RelayContainerProviderUsageReceiptIdentity {
+            operation_id: row.operation_id,
+            owner_generation: row.owner_generation,
+            attempt_generation: row.attempt_generation,
+            provider_operation_id: row.provider_operation_id,
+            admission_sha256: row.admission_sha256,
+            request_sha256: row.request_sha256,
+            egress_profile: row.egress_profile,
+            egress_worker_version_id: row.egress_worker_version_id,
+            provider_response_status: row.provider_response_status,
+            provider_response_sha256: row.provider_response_sha256,
+            result_object_key: row.result_object_key,
+            result_object_version: row.result_object_version,
+            result_sha256: row.result_sha256,
+            result_size: row.result_size,
+            result_content_type: row.result_content_type,
+            usage_receipt_sha256: row.usage_receipt_sha256,
+        },
+    ))
 }
 
 fn relay_container_provider_usage_final_quota(
@@ -6677,13 +6825,20 @@ pub async fn relay_container_provider_egress_schema_ready(db: &D1Database) -> wo
 }
 
 pub async fn relay_container_reconciliation_schema_ready(db: &D1Database) -> worker::Result<bool> {
-    let args = [D1Type::Text(RELAY_CONTAINER_RECONCILIATION_MIGRATION)];
+    if !relay_container_provider_egress_schema_ready(db).await? {
+        return Ok(false);
+    }
+    let args = [
+        D1Type::Text(RELAY_CONTAINER_RECONCILIATION_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_PROVIDER_USAGE_RECEIPT_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_PROVIDER_USAGE_BINDING_MIGRATION),
+    ];
     let row = db
         .prepare(
             r#"
-            SELECT COUNT(1) AS count
+            SELECT COUNT(DISTINCT name) AS count
             FROM d1_migrations
-            WHERE name = ?1
+            WHERE name IN (?1, ?2, ?3)
               AND EXISTS (
                 SELECT 1 FROM sqlite_master
                 WHERE type = 'table'
@@ -6694,12 +6849,65 @@ pub async fn relay_container_reconciliation_schema_ready(db: &D1Database) -> wor
                 WHERE type = 'table'
                   AND name = 'relay_container_reconciliation_cursor'
               )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_provider_usage_receipts'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_terminal_events'
+              )
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_table_info('relay_container_reconciliation_observations')
+                WHERE name IN (
+                  'provider_usage_binding_state',
+                  'provider_attempt_generation',
+                  'provider_usage_receipt_sha256',
+                  'provider_result_sha256',
+                  'do_provider_usage_receipt_sha256',
+                  'r2_provider_usage_receipt_sha256',
+                  'terminal_provider_usage_receipt_sha256'
+                )
+              ) = 7
+              AND EXISTS (
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'index'
+                  AND name = 'idx_relay_container_reconciliation_observations_provider_usage_binding'
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'relay_container_reconciliation_observation_lifecycle_guard'
+                  AND sql LIKE '%relay_container_reconciliation_retry_events%'
+              )
+              AND (
+                SELECT COUNT(1)
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name IN (
+                    'relay_container_reconciliation_provider_usage_shape_insert_guard',
+                    'relay_container_reconciliation_provider_usage_shape_update_guard',
+                    'relay_container_reconciliation_provider_usage_authority_insert_guard',
+                    'relay_container_reconciliation_provider_usage_authority_update_guard',
+                    'relay_container_reconciliation_provider_usage_canonical_immutable_guard',
+                    'relay_container_reconciliation_provider_usage_matching_immutable_guard',
+                    'relay_container_reconciliation_provider_usage_matching_terminal_insert_guard',
+                    'relay_container_reconciliation_provider_usage_matching_terminal_update_guard',
+                    'relay_container_reconciliation_provider_usage_convergence_guard',
+                    'relay_container_provider_usage_receipt_reconciliation_guard'
+                  )
+              ) = 10
             "#,
         )
         .bind_refs(&args)?
         .first::<CountRow>(None)
         .await?;
-    Ok(row.is_some_and(|row| row.count == 1))
+    Ok(row.is_some_and(|row| row.count == 3))
 }
 
 pub async fn relay_container_reconciliation_runtime_snapshot(
@@ -7873,6 +8081,25 @@ pub async fn record_relay_container_reconciliation(
     if let RelayContainerReconciliationRecord::DeadLetter { reason, .. } = record {
         validate_relay_container_lower_id(reason, "reconciliation dead letter reason", 1, 64)?;
     }
+    if let RelayContainerReconciliationRecord::Converged {
+        provider_usage: Some(provider_usage),
+        ..
+    } = record
+    {
+        if provider_usage.attempt_generation != 1 {
+            return Err(worker::Error::RustError(
+                "relay container reconciliation provider attempt is invalid".to_string(),
+            ));
+        }
+        validate_relay_container_sha256(
+            provider_usage.receipt_sha256,
+            "reconciliation provider usage receipt sha256",
+        )?;
+        validate_relay_container_sha256(
+            provider_usage.result_sha256,
+            "reconciliation provider result sha256",
+        )?;
+    }
     let generation = lease.claim_generation.to_string();
     let now_text = now.to_string();
     let operation_updated_at = operation.updated_at.to_string();
@@ -7923,7 +8150,22 @@ pub async fn record_relay_container_reconciliation(
             .run()
             .await?
         }
-        RelayContainerReconciliationRecord::Converged { class } => {
+        RelayContainerReconciliationRecord::Converged {
+            class,
+            provider_usage,
+        } => {
+            let binding_state = if provider_usage.is_some() {
+                "matching"
+            } else {
+                "not_applicable"
+            };
+            let attempt_generation = match provider_usage {
+                Some(provider_usage) => relay_container_d1_integer(
+                    provider_usage.attempt_generation,
+                    "reconciliation provider attempt generation",
+                )?,
+                None => D1Type::Null,
+            };
             let args = [
                 D1Type::Text(&lease.operation_id),
                 D1Type::Text(&lease.claim_owner),
@@ -7932,6 +8174,14 @@ pub async fn record_relay_container_reconciliation(
                 D1Type::Text(&now_text),
                 D1Type::Text(&operation.status),
                 D1Type::Text(&operation_updated_at),
+                D1Type::Text(binding_state),
+                attempt_generation,
+                provider_usage
+                    .map(|provider_usage| D1Type::Text(provider_usage.receipt_sha256))
+                    .unwrap_or(D1Type::Null),
+                provider_usage
+                    .map(|provider_usage| D1Type::Text(provider_usage.result_sha256))
+                    .unwrap_or(D1Type::Null),
             ];
             db.prepare(
                 r#"
@@ -7942,6 +8192,13 @@ pub async fn record_relay_container_reconciliation(
                     last_observed_at = CAST(?5 AS INTEGER),
                     last_class = ?4, last_error_code = '',
                     converged_at = CAST(?5 AS INTEGER),
+                    provider_usage_binding_state = ?8,
+                    provider_attempt_generation = ?9,
+                    provider_usage_receipt_sha256 = ?10,
+                    provider_result_sha256 = ?11,
+                    do_provider_usage_receipt_sha256 = ?10,
+                    r2_provider_usage_receipt_sha256 = ?10,
+                    terminal_provider_usage_receipt_sha256 = ?10,
                     updated_at = CAST(?5 AS INTEGER)
                 WHERE operation_id = ?1 AND status = 'leased'
                   AND claim_owner = ?2
@@ -8030,7 +8287,7 @@ impl<'a> RelayContainerReconciliationRecord<'a> {
     fn class(self) -> &'a str {
         match self {
             Self::Retry { class, .. }
-            | Self::Converged { class }
+            | Self::Converged { class, .. }
             | Self::DeadLetter { class, .. } => class,
         }
     }
@@ -22476,6 +22733,85 @@ mod tests {
             );
         }
         assert!(readiness.contains(") = 11"));
+    }
+
+    #[test]
+    fn relay_container_reconciliation_schema_ready_requires_0049_binding_contract() {
+        let source = include_str!("d1_repositories.rs");
+        let start = source
+            .find("pub async fn relay_container_reconciliation_schema_ready")
+            .unwrap();
+        let end = source
+            .find("pub async fn relay_container_reconciliation_runtime_snapshot")
+            .unwrap();
+        let readiness = &source[start..end];
+
+        assert!(readiness.contains("relay_container_provider_egress_schema_ready(db).await?"));
+        assert!(readiness.contains("RELAY_CONTAINER_RECONCILIATION_MIGRATION"));
+        assert!(readiness.contains("RELAY_CONTAINER_PROVIDER_USAGE_RECEIPT_MIGRATION"));
+        assert!(readiness.contains("RELAY_CONTAINER_PROVIDER_USAGE_BINDING_MIGRATION"));
+        assert!(readiness.contains("relay_container_provider_usage_receipts"));
+        assert!(readiness.contains("relay_container_terminal_events"));
+        for column in [
+            "provider_usage_binding_state",
+            "provider_attempt_generation",
+            "provider_usage_receipt_sha256",
+            "provider_result_sha256",
+            "do_provider_usage_receipt_sha256",
+            "r2_provider_usage_receipt_sha256",
+            "terminal_provider_usage_receipt_sha256",
+        ] {
+            assert!(
+                readiness.contains(column),
+                "missing readiness column {column}"
+            );
+        }
+        assert!(readiness.contains(") = 7"));
+        assert!(readiness
+            .contains("idx_relay_container_reconciliation_observations_provider_usage_binding"));
+        assert!(readiness.contains("relay_container_reconciliation_observation_lifecycle_guard"));
+        assert!(readiness.contains("relay_container_reconciliation_retry_events"));
+        for trigger in [
+            "relay_container_reconciliation_provider_usage_shape_insert_guard",
+            "relay_container_reconciliation_provider_usage_shape_update_guard",
+            "relay_container_reconciliation_provider_usage_authority_insert_guard",
+            "relay_container_reconciliation_provider_usage_authority_update_guard",
+            "relay_container_reconciliation_provider_usage_canonical_immutable_guard",
+            "relay_container_reconciliation_provider_usage_matching_immutable_guard",
+            "relay_container_reconciliation_provider_usage_matching_terminal_insert_guard",
+            "relay_container_reconciliation_provider_usage_matching_terminal_update_guard",
+            "relay_container_reconciliation_provider_usage_convergence_guard",
+            "relay_container_provider_usage_receipt_reconciliation_guard",
+        ] {
+            assert!(
+                readiness.contains(trigger),
+                "missing provider usage binding readiness trigger {trigger}"
+            );
+        }
+        assert!(readiness.contains(") = 10"));
+    }
+
+    #[test]
+    fn relay_container_reconciliation_convergence_writes_exact_0049_evidence() {
+        let source = include_str!("d1_repositories.rs");
+        let start = source
+            .find("pub async fn record_relay_container_reconciliation")
+            .unwrap();
+        let end = source
+            .find("impl<'a> RelayContainerReconciliationRecord<'a>")
+            .unwrap();
+        let writer = &source[start..end];
+
+        assert!(writer.contains("provider_usage_binding_state = ?8"));
+        assert!(writer.contains("provider_attempt_generation = ?9"));
+        assert!(writer.contains("provider_usage_receipt_sha256 = ?10"));
+        assert!(writer.contains("provider_result_sha256 = ?11"));
+        assert!(writer.contains("do_provider_usage_receipt_sha256 = ?10"));
+        assert!(writer.contains("r2_provider_usage_receipt_sha256 = ?10"));
+        assert!(writer.contains("terminal_provider_usage_receipt_sha256 = ?10"));
+        assert!(writer.contains("let binding_state = if provider_usage.is_some()"));
+        assert!(writer.contains("\"matching\""));
+        assert!(writer.contains("\"not_applicable\""));
     }
 
     #[test]

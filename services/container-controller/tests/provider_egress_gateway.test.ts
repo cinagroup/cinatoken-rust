@@ -53,6 +53,7 @@ class FakePort implements ProviderEgressGatewayPort {
   terminal: ProviderAttemptTerminal | null = null;
   failStorageAttach = false;
   failDispatchTransport = false;
+  forceExistingDispatch = false;
   corruptDispatchIdentity = false;
   loseTerminalResponseOnce = false;
   readonly events: string[];
@@ -86,6 +87,7 @@ class FakePort implements ProviderEgressGatewayPort {
       },
       trace_id: "trace-1",
       result: null,
+      provider_usage_receipt_sha256: null,
       provider_attempt: {
         attempt_generation: 1,
         provider_operation_id: "provider-operation-1",
@@ -95,6 +97,8 @@ class FakePort implements ProviderEgressGatewayPort {
         egress_worker_version_id: null,
         status,
         response_status: null,
+        provider_usage_receipt_sha256: null,
+        provider_usage_receipt_attached_at: null,
       },
     };
   }
@@ -120,6 +124,15 @@ class FakePort implements ProviderEgressGatewayPort {
     this.grant.provider_attempt!.egress_worker_version_id = egressIdentity.worker_version_id;
     const row = attemptRow("dispatched", this.grant);
     if (this.corruptDispatchIdentity) row.egress_worker_version_id = "different-worker-version";
+    if (this.forceExistingDispatch) {
+      return {
+        ok: true,
+        result: {
+          kind: "existing",
+          row,
+        },
+      };
+    }
     return {
       ok: true,
       result: {
@@ -129,22 +142,33 @@ class FakePort implements ProviderEgressGatewayPort {
     };
   }
 
-  async recordStorageResult(
+  async recordProviderUsageResult(
     _operationId: string,
     _ownerGeneration: number,
     result: StorageResultRecord,
+    _attemptGeneration: number,
+    usageReceiptSha256: string,
   ): Promise<
     | { ok: true; result: "recorded" }
     | { ok: false; error: { code: string; status: number } }
   > {
-    this.events.push("do-storage-attach");
+    this.events.push("do-provider-usage-attach");
     if (this.failStorageAttach) {
       return {
         ok: false,
         error: { code: "storage_result_unavailable", status: 503 },
       };
     }
+    if (this.grant.provider_attempt?.status !== "dispatched") {
+      return {
+        ok: false,
+        error: { code: "provider_attempt_transition_conflict", status: 409 },
+      };
+    }
     this.grant.result = result;
+    this.grant.provider_usage_receipt_sha256 = usageReceiptSha256;
+    this.grant.provider_attempt!.provider_usage_receipt_sha256 = usageReceiptSha256;
+    this.grant.provider_attempt!.provider_usage_receipt_attached_at = Math.floor(Date.now() / 1000);
     return { ok: true as const, result: "recorded" as const };
   }
 
@@ -294,9 +318,10 @@ describe("provider egress gateway", () => {
       "provider-send",
       "r2-put",
       "d1-session:first-primary",
+      "d1-receipt-read",
       "d1-receipt-write",
       "d1-receipt-read",
-      "do-storage-attach",
+      "do-provider-usage-attach",
     ]);
   });
 
@@ -346,7 +371,7 @@ describe("provider egress gateway", () => {
     });
     expect(events.indexOf("r2-put")).toBeLessThan(events.indexOf("d1-receipt-write"));
     expect(events.indexOf("d1-receipt-write")).toBeLessThan(
-      events.indexOf("do-storage-attach"),
+      events.indexOf("do-provider-usage-attach"),
     );
   });
 
@@ -555,7 +580,7 @@ describe("provider egress gateway", () => {
       if (scenario === "replayed") {
         expect(response.status).toBe(200);
         expect(events.indexOf("d1-receipt-read")).toBeLessThan(
-          events.indexOf("do-storage-attach"),
+          events.indexOf("do-provider-usage-attach"),
         );
       } else {
         expect(response.status).toBe(202);
@@ -563,7 +588,7 @@ describe("provider egress gateway", () => {
           status: "ambiguous",
           code: "provider_usage_receipt_persistence_ambiguous",
         });
-        expect(events).not.toContain("do-storage-attach");
+        expect(events).not.toContain("do-provider-usage-attach");
       }
     }
   });
@@ -776,10 +801,94 @@ describe("provider egress gateway", () => {
     expect(response.status).toBe(202);
     expect(brokerCalls).toBe(0);
     expect(port.dispatches).toBe(0);
-    expect(port.terminal?.status).toBe("ambiguous");
+    expect(port.terminal).toBeNull();
+    expect(port.grant.provider_attempt?.status).toBe("dispatched");
   });
 
-  test("keeps an attached result ambiguous without receipt-bound terminal evidence", async () => {
+  test("keeps an existing dispatch active without another provider send", async () => {
+    const requestSha256 = await sha256(requestBody);
+    const port = new FakePort();
+    port.forceExistingDispatch = true;
+    applyRequestSha(port.grant, requestSha256);
+    let brokerCalls = 0;
+
+    const response = await handleProviderEgressGatewayRequest(
+      await providerRequest(requestSha256),
+      gatewayEnv(port.grant, {
+        broker: async () => {
+          brokerCalls += 1;
+          return providerResponse();
+        },
+      }),
+      port,
+      identity,
+    );
+
+    expect(response.status).toBe(202);
+    expect(brokerCalls).toBe(0);
+    expect(port.dispatches).toBe(1);
+    expect(port.terminal).toBeNull();
+    expect(port.grant.provider_attempt?.status).toBe("dispatched");
+  });
+
+  test("keeps a concurrent replay non-mutating while the first provider call completes", async () => {
+    const requestSha256 = await sha256(requestBody);
+    const providerSha256 = await sha256(providerBody);
+    const port = new FakePort();
+    applyRequestSha(port.grant, requestSha256);
+    let providerCalls = 0;
+    let markProviderStarted: (() => void) | undefined;
+    let releaseProvider: (() => void) | undefined;
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const env = gatewayEnv(port.grant, {
+      broker: async () => {
+        providerCalls += 1;
+        markProviderStarted?.();
+        await providerGate;
+        return providerResponse();
+      },
+      r2Put: async (key, _value, options) =>
+        r2Object(
+          key,
+          "result-version-concurrent",
+          providerBody.byteLength,
+          providerSha256,
+          options.customMetadata,
+        ),
+    });
+
+    const first = handleProviderEgressGatewayRequest(
+      await providerRequest(requestSha256),
+      env,
+      port,
+      identity,
+    );
+    await providerStarted;
+
+    const replay = await handleProviderEgressGatewayRequest(
+      await providerRequest(requestSha256),
+      env,
+      port,
+      identity,
+    );
+    expect(replay.status).toBe(202);
+    expect(providerCalls).toBe(1);
+    expect(port.terminal).toBeNull();
+    expect(port.grant.provider_attempt?.status).toBe("dispatched");
+
+    releaseProvider?.();
+    const completed = await first;
+    expect(completed.status).toBe(200);
+    expect(providerCalls).toBe(1);
+    expect(port.terminal?.status).toBe("succeeded");
+  });
+
+  test("rejects a partial DO result that is not atomically receipt-bound", async () => {
     const requestSha256 = await sha256(requestBody);
     const providerSha256 = await sha256(providerBody);
     const port = new FakePort("dispatched");
@@ -805,17 +914,13 @@ describe("provider egress gateway", () => {
       port,
       identity,
     );
-    expect(response.status).toBe(202);
+    expect(response.status).toBe(403);
     expect(brokerCalls).toBe(0);
     expect(port.dispatches).toBe(0);
-    expect(port.terminal).toEqual({
-      status: "ambiguous",
-      response_status: 202,
-      response_code: "provider_terminal_ambiguous",
-    });
+    expect(port.terminal).toBeNull();
   });
 
-  test("marks R2-to-DO attach uncertainty ambiguous without another provider call", async () => {
+  test("recovers a D1-to-DO attach failure without another provider call", async () => {
     const requestSha256 = await sha256(requestBody);
     const providerSha256 = await sha256(providerBody);
     const port = new FakePort();
@@ -849,11 +954,27 @@ describe("provider egress gateway", () => {
     expect(response.status).toBe(202);
     expect(brokerCalls).toBe(1);
     expect(r2Puts).toBe(1);
-    expect(port.terminal).toEqual({
-      status: "ambiguous",
-      response_status: 202,
-      response_code: "provider_result_persistence_ambiguous",
+    expect(port.terminal).toBeNull();
+    expect(port.grant.provider_attempt?.status).toBe("dispatched");
+
+    port.failStorageAttach = false;
+    const recovered = await handleProviderEgressGatewayRequest(
+      await providerRequest(requestSha256),
+      env,
+      port,
+      identity,
+    );
+    expect(recovered.status).toBe(200);
+    await expect(recovered.json()).resolves.toMatchObject({
+      status: "succeeded",
+      provider_status: 200,
     });
+    expect(brokerCalls).toBe(1);
+    expect(r2Puts).toBe(1);
+    expect(port.grant.provider_usage_receipt_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(port.grant.provider_attempt?.provider_usage_receipt_sha256).toBe(
+      port.grant.provider_usage_receipt_sha256,
+    );
   });
 
   test("reads canonical DO state after a lost terminal RPC response", async () => {
@@ -926,7 +1047,7 @@ describe("provider egress gateway", () => {
 
     const invalidDeadlinePort = new FakePort();
     applyRequestSha(invalidDeadlinePort.grant, requestSha256);
-    invalidDeadlinePort.grant.deadline_at = Math.floor(Date.now() / 1000) + 301;
+    invalidDeadlinePort.grant.deadline_at = Math.floor(Date.now() / 1000) + 600;
     const invalidDeadline = await handleProviderEgressGatewayRequest(
       await providerRequest(requestSha256),
       gatewayEnv(invalidDeadlinePort.grant),
@@ -1321,12 +1442,20 @@ function attemptRow(
     result_sha256: grant.result?.sha256 ?? null,
     result_size: grant.result?.size ?? null,
     result_content_type: grant.result?.content_type ?? null,
+    provider_usage_receipt_sha256:
+      grant.provider_attempt?.provider_usage_receipt_sha256 ?? null,
+    provider_usage_receipt_attached_at:
+      grant.provider_attempt?.provider_usage_receipt_attached_at ?? null,
     prepared_at: 100,
     dispatched_at: status === "prepared" ? null : 101,
     terminal_at: ["succeeded", "definite_reject", "ambiguous", "cancelled"].includes(status)
       ? 102
       : null,
-    updated_at: status === "prepared" ? 100 : 101,
+    updated_at: ["succeeded", "definite_reject", "ambiguous", "cancelled"].includes(status)
+      ? 102
+      : status === "prepared"
+        ? 100
+        : 101,
   };
 }
 

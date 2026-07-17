@@ -2,6 +2,7 @@ import type { TerminalAckLedgerOutcome } from "./ledger";
 import {
   ProtocolError,
   verifyTerminalAckRequest,
+  verifyTerminalAckV2Request,
   type AuthorityEnvironment,
   type TerminalAckRequest,
 } from "./protocol";
@@ -70,7 +71,45 @@ export async function handleTerminalAckRequest(
   }
 }
 
-export type { TerminalAckRequest, TerminalAckResultManifest } from "./protocol";
+export async function handleTerminalAckV2Request(
+  request: Request,
+  env: TerminalAckEnvironment,
+  now = Math.floor(Date.now() / 1000),
+): Promise<Response> {
+  try {
+    const verified = await verifyTerminalAckV2Request(request, env, now);
+    if (env.CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED !== "true") {
+      return jsonError("container_global_terminal_ack_disabled", 503);
+    }
+    const stub = env.RELAY_SHARDS.getByName(verified.ack.shard.instance_name);
+    const outcome = await stub.acknowledgeGlobalTerminal(verified.ack);
+    if (!outcome.ok) return jsonError(outcome.error.code, outcome.error.status);
+    const body: TerminalAckResponse = {
+      protocol_version: verified.ack.protocol_version,
+      billing_event_id: verified.ack.billing_event_id,
+      operation_id: verified.ack.operation_id,
+      reconciliation_revision: verified.ack.reconciliation_revision,
+      status: outcome.result.kind,
+      final_ack: outcome.result.finalAck,
+      acknowledged_at: outcome.result.acknowledgedAt,
+    };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: jsonHeaders,
+    });
+  } catch (error) {
+    if (error instanceof ProtocolError) return jsonError(error.code, error.status);
+    return jsonError("terminal_ack_unavailable", 503);
+  }
+}
+
+export type {
+  TerminalAckProviderUsageBinding,
+  TerminalAckRequest,
+  TerminalAckRequestV1,
+  TerminalAckRequestV2,
+  TerminalAckResultManifest,
+} from "./protocol";
 
 const jsonHeaders = {
   "cache-control": "no-store",

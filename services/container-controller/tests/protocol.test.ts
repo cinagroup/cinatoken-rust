@@ -4,8 +4,10 @@ import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
   INTERNAL_OPERATION_TERMINAL_ACK_PATH,
+  INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH,
   INTERNAL_OPERATION_STATUS_PATH,
   INTERNAL_OPERATION_STATUS_V2_PATH,
+  INTERNAL_OPERATION_STATUS_V3_PATH,
   INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
   MAX_OPERATION_STATUS_BODY_BYTES,
@@ -13,29 +15,37 @@ import {
   MAX_TERMINAL_ACK_BODY_BYTES,
   MAX_READINESS_BODY_BYTES,
   MAX_EXECUTION_WINDOW_SECONDS,
+  OPERATION_STATUS_V3_AUTHORITY_DOMAIN,
   ProtocolError,
+  TERMINAL_ACK_V2_AUTHORITY_DOMAIN,
   createAuthorityTokenForTest,
   parseOperationEnvelope,
   sha256Hex,
   verifyOperationRequest,
   verifyOperationStatusRequest,
   verifyOperationStatusV2Request,
+  verifyOperationStatusV3Request,
   verifyReadinessRequest,
   verifyStatusRequest,
   verifyTerminalAckRequest,
+  verifyTerminalAckV2Request,
   type AuthorityClaims,
   type AuthorityEnvironment,
   type OperationEnvelope,
   type OperationStatusQuery,
+  type TerminalAckRequestV1,
+  type TerminalAckRequestV2,
 } from "../src/protocol";
 import {
   handleTerminalAckRequest,
+  handleTerminalAckV2Request,
   type TerminalAckEnvironment,
   type TerminalAckRequest,
 } from "../src/terminal_ack";
 import {
   handleOperationStatusRequest,
   handleOperationStatusV2Request,
+  handleOperationStatusV3Request,
   type OperationStatusEnvironment,
 } from "../src/operation_status";
 
@@ -103,8 +113,8 @@ function operationStatusQuery(
 }
 
 function terminalAck(
-  overrides: Partial<TerminalAckRequest> = {},
-): TerminalAckRequest {
+  overrides: Partial<TerminalAckRequestV1> = {},
+): TerminalAckRequestV1 {
   const operation = envelope();
   const resultSha256 = "c".repeat(64);
   return {
@@ -130,6 +140,21 @@ function terminalAck(
     },
     shard: operation.shard,
     trace_id: operation.trace_id,
+    ...overrides,
+  };
+}
+
+function terminalAckV2(
+  overrides: Partial<TerminalAckRequestV2> = {},
+): TerminalAckRequestV2 {
+  const ack = terminalAck();
+  return {
+    ...ack,
+    provider_usage_binding: {
+      attempt_generation: 1,
+      receipt_sha256: "9".repeat(64),
+      result_sha256: ack.result!.sha256,
+    },
     ...overrides,
   };
 }
@@ -168,6 +193,7 @@ async function signedOperationStatusRequest(
   value = operationStatusQuery(),
   overrides: Partial<AuthorityClaims> = {},
   path = INTERNAL_OPERATION_STATUS_PATH,
+  authorityDomain?: string,
 ): Promise<Request> {
   const body = new TextEncoder().encode(JSON.stringify(value));
   const claims: AuthorityClaims = {
@@ -187,6 +213,7 @@ async function signedOperationStatusRequest(
     secret,
     env.CONTAINER_AUTHORITY_CURRENT_KID,
     claims,
+    authorityDomain,
   );
   return new Request(`https://controller.internal${path}`, {
     method: "POST",
@@ -202,9 +229,24 @@ async function signedOperationStatusV2Request(
   return signedOperationStatusRequest(value, overrides, INTERNAL_OPERATION_STATUS_V2_PATH);
 }
 
+async function signedOperationStatusV3Request(
+  value = operationStatusQuery(),
+  overrides: Partial<AuthorityClaims> = {},
+  authorityDomain = OPERATION_STATUS_V3_AUTHORITY_DOMAIN,
+): Promise<Request> {
+  return signedOperationStatusRequest(
+    value,
+    overrides,
+    INTERNAL_OPERATION_STATUS_V3_PATH,
+    authorityDomain,
+  );
+}
+
 async function signedTerminalAckRequest(
   value: unknown = terminalAck(),
   overrides: Partial<AuthorityClaims> = {},
+  path = INTERNAL_OPERATION_TERMINAL_ACK_PATH,
+  authorityDomain?: string,
 ): Promise<Request> {
   const body = new TextEncoder().encode(JSON.stringify(value));
   const claims: AuthorityClaims = {
@@ -214,7 +256,7 @@ async function signedTerminalAckRequest(
     protocol_version: 1,
     dispatch_id: "terminal-ack-test-1",
     method: "POST",
-    path: INTERNAL_OPERATION_TERMINAL_ACK_PATH,
+    path,
     body_sha256: await sha256Hex(body),
     issued_at: now,
     expires_at: now + 30,
@@ -224,12 +266,26 @@ async function signedTerminalAckRequest(
     secret,
     env.CONTAINER_AUTHORITY_CURRENT_KID,
     claims,
+    authorityDomain,
   );
-  return new Request(`https://controller.internal${INTERNAL_OPERATION_TERMINAL_ACK_PATH}`, {
+  return new Request(`https://controller.internal${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", [AUTHORITY_HEADER]: token },
     body,
   });
+}
+
+async function signedTerminalAckV2Request(
+  value: unknown = terminalAckV2(),
+  overrides: Partial<AuthorityClaims> = {},
+  authorityDomain = TERMINAL_ACK_V2_AUTHORITY_DOMAIN,
+): Promise<Request> {
+  return signedTerminalAckRequest(
+    value,
+    overrides,
+    INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH,
+    authorityDomain,
+  );
 }
 
 async function signedRequest(value = envelope(), overrides: Partial<AuthorityClaims> = {}): Promise<Request> {
@@ -361,6 +417,44 @@ describe("container controller private protocol", () => {
     ).rejects.toMatchObject({ code: "authority_claim_mismatch", status: 403 });
   });
 
+  test("isolates the signed status v3 contract by domain and path", async () => {
+    const query = operationStatusQuery();
+    const verified = await verifyOperationStatusV3Request(
+      await signedOperationStatusV3Request(query),
+      env,
+      now + 1,
+    );
+    expect(verified.query).toEqual(query);
+
+    await expect(
+      verifyOperationStatusV3Request(
+        await signedOperationStatusRequest(
+          query,
+          {},
+          INTERNAL_OPERATION_STATUS_V3_PATH,
+        ),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_authority", status: 403 });
+    await expect(
+      verifyOperationStatusV3Request(
+        await signedOperationStatusV3Request(query, {
+          path: INTERNAL_OPERATION_STATUS_V2_PATH,
+        }),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "authority_claim_mismatch", status: 403 });
+    await expect(
+      verifyOperationStatusV2Request(
+        await signedOperationStatusV3Request(query),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "route_not_found", status: 404 });
+  });
+
   test("status query rejects malformed fences and oversized bodies", async () => {
     await expect(
       verifyOperationStatusRequest(
@@ -472,6 +566,118 @@ describe("container controller private protocol", () => {
     });
   });
 
+  test("terminal ack v2 is body-bound, exact, and isolates provider usage binding", async () => {
+    const ack = terminalAckV2();
+    const verified = await verifyTerminalAckV2Request(
+      await signedTerminalAckV2Request(ack),
+      env,
+      now + 1,
+    );
+    expect(verified.ack).toEqual(ack);
+
+    const historical = terminalAckV2({ provider_usage_binding: null });
+    await expect(
+      verifyTerminalAckV2Request(
+        await signedTerminalAckV2Request(historical),
+        env,
+        now + 1,
+      ),
+    ).resolves.toMatchObject({ ack: historical });
+
+    await expect(
+      verifyTerminalAckRequest(
+        await signedTerminalAckRequest(ack),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_terminal_ack", status: 400 });
+    await expect(
+      verifyTerminalAckV2Request(
+        await signedTerminalAckV2Request(terminalAck()),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_terminal_ack", status: 400 });
+
+    await expect(
+      verifyTerminalAckV2Request(
+        await signedTerminalAckRequest(
+          ack,
+          {},
+          INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH,
+        ),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_authority", status: 403 });
+    await expect(
+      verifyTerminalAckV2Request(
+        await signedTerminalAckV2Request(ack, {
+          path: INTERNAL_OPERATION_TERMINAL_ACK_PATH,
+        }),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "authority_claim_mismatch", status: 403 });
+
+    const signed = await signedTerminalAckV2Request();
+    const tampered = new Request(signed.url, {
+      method: "POST",
+      headers: signed.headers,
+      body: (await signed.text()).replace(
+        `"receipt_sha256":"${"9".repeat(64)}"`,
+        `"receipt_sha256":"${"8".repeat(64)}"`,
+      ),
+    });
+    await expect(
+      verifyTerminalAckV2Request(tampered, env, now + 1),
+    ).rejects.toMatchObject({ code: "authority_claim_mismatch", status: 403 });
+  });
+
+  test("terminal ack v2 rejects invalid provider usage binding combinations", async () => {
+    const invalidValues: unknown[] = [
+      { ...terminalAckV2(), unexpected: true },
+      {
+        ...terminalAckV2(),
+        provider_usage_binding: {
+          ...terminalAckV2().provider_usage_binding!,
+          unexpected: true,
+        },
+      },
+      terminalAckV2({
+        provider_usage_binding: {
+          ...terminalAckV2().provider_usage_binding!,
+          result_sha256: "8".repeat(64),
+        },
+      }),
+      terminalAckV2({
+        result: null,
+        provider_usage_binding: terminalAckV2().provider_usage_binding,
+      }),
+      terminalAckV2({
+        provider_usage_binding: {
+          ...terminalAckV2().provider_usage_binding!,
+          attempt_generation: 0,
+        },
+      }),
+      terminalAckV2({
+        provider_usage_binding: {
+          ...terminalAckV2().provider_usage_binding!,
+          receipt_sha256: "A".repeat(64),
+        },
+      }),
+    ];
+    for (const value of invalidValues) {
+      await expect(
+        verifyTerminalAckV2Request(
+          await signedTerminalAckV2Request(value),
+          env,
+          now + 1,
+        ),
+      ).rejects.toMatchObject({ code: "invalid_terminal_ack", status: 400 });
+    }
+  });
+
   test("terminal ack handler is default-off and returns the exact no-store response", async () => {
     let calls = 0;
     const routeEnv: TerminalAckEnvironment = {
@@ -525,9 +731,53 @@ describe("container controller private protocol", () => {
     expect(calls).toBe(1);
   });
 
+  test("terminal ack v2 handler preserves the provider usage binding through RPC", async () => {
+    const ack = terminalAckV2();
+    let seen: TerminalAckRequest | null = null;
+    const routeEnv: TerminalAckEnvironment = {
+      ...env,
+      CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED: "true",
+      RELAY_SHARDS: {
+        getByName(name: string) {
+          expect(name).toBe(ack.shard.instance_name);
+          return {
+            async acknowledgeGlobalTerminal(value: TerminalAckRequest) {
+              seen = value;
+              return {
+                ok: true as const,
+                result: {
+                  kind: "duplicate" as const,
+                  finalAck: true,
+                  acknowledgedAt: now + 2,
+                },
+              };
+            },
+          };
+        },
+      },
+    };
+    const response = await handleTerminalAckV2Request(
+      await signedTerminalAckV2Request(ack),
+      routeEnv,
+      now + 1,
+    );
+    expect(response.status).toBe(200);
+    expect(seen).toEqual(ack);
+    expect(await response.json()).toEqual({
+      protocol_version: 1,
+      billing_event_id: ack.billing_event_id,
+      operation_id: ack.operation_id,
+      reconciliation_revision: 1,
+      status: "duplicate",
+      final_ack: true,
+      acknowledged_at: now + 2,
+    });
+  });
+
   test("status replays use only the ledger RPC and return the existing bounded outcome", async () => {
     const seen: OperationStatusQuery[] = [];
     const seenV2: OperationStatusQuery[] = [];
+    const seenV3: OperationStatusQuery[] = [];
     let forbiddenCalls = 0;
     const routeEnv: OperationStatusEnvironment & { DB: { prepare(): never } } = {
       ...env,
@@ -559,6 +809,7 @@ describe("container controller private protocol", () => {
                   result_sha256: null,
                   result_size: null,
                   result_content_type: null,
+                  provider_usage_receipt_sha256: null,
                 },
               };
             },
@@ -581,6 +832,7 @@ describe("container controller private protocol", () => {
                     result_sha256: null,
                     result_size: null,
                     result_content_type: null,
+                    provider_usage_receipt_sha256: null,
                   },
                   provider_attempt: {
                     operation_id: query.operation_id,
@@ -599,6 +851,56 @@ describe("container controller private protocol", () => {
                     result_sha256: null,
                     result_size: null,
                     result_content_type: null,
+                    provider_usage_receipt_sha256: null,
+                    provider_usage_receipt_attached_at: null,
+                    prepared_at: now + 1,
+                    dispatched_at: now + 2,
+                    terminal_at: null,
+                    updated_at: now + 2,
+                  },
+                },
+              };
+            },
+            async readOperationStatusV3(query: OperationStatusQuery) {
+              seenV3.push(query);
+              return {
+                ok: true as const,
+                snapshot: {
+                  operation: {
+                    operation_id: query.operation_id,
+                    owner_generation: query.owner_generation,
+                    operation_kind: "health_probe",
+                    trace_id: query.trace_id,
+                    envelope_sha256: "a".repeat(64),
+                    status: "running" as const,
+                    response_status: null,
+                    response_code: null,
+                    result_object_key: null,
+                    result_object_version: null,
+                    result_sha256: null,
+                    result_size: null,
+                    result_content_type: null,
+                    provider_usage_receipt_sha256: null,
+                  },
+                  provider_attempt: {
+                    operation_id: query.operation_id,
+                    owner_generation: query.owner_generation,
+                    attempt_generation: 1,
+                    provider_operation_id: envelope().provider_operation_id,
+                    admission_sha256: envelope().admission_sha256,
+                    request_sha256: envelope().input.sha256,
+                    egress_profile: null,
+                    egress_worker_version_id: null,
+                    status: "dispatched" as const,
+                    response_status: null,
+                    response_code: null,
+                    result_object_key: null,
+                    result_object_version: null,
+                    result_sha256: null,
+                    result_size: null,
+                    result_content_type: null,
+                    provider_usage_receipt_sha256: null,
+                    provider_usage_receipt_attached_at: null,
                     prepared_at: now + 1,
                     dispatched_at: now + 2,
                     terminal_at: null,
@@ -645,8 +947,24 @@ describe("container controller private protocol", () => {
     expect(await v2.json()).toMatchObject({
       provider_attempt: { attempt_generation: 1, status: "dispatched" },
     });
+    const v3 = await handleOperationStatusV3Request(
+      await signedOperationStatusV3Request(),
+      routeEnv,
+      now + 1,
+    );
+    expect(v3.status).toBe(202);
+    expect(await v3.json()).toMatchObject({
+      status_contract_version: 3,
+      provider_usage_receipt_sha256: null,
+      provider_attempt: {
+        attempt_generation: 1,
+        provider_usage_receipt_sha256: null,
+        provider_usage_receipt_attached_at: null,
+      },
+    });
     expect(seen).toEqual([operationStatusQuery(), operationStatusQuery()]);
     expect(seenV2).toEqual([operationStatusQuery()]);
+    expect(seenV3).toEqual([operationStatusQuery()]);
     expect(forbiddenCalls).toBe(0);
   });
 

@@ -25,9 +25,11 @@ import {
   requireD1ProviderEgressAdmission,
   requireD1ProviderEgressGrant,
   requireD1ProviderUsageReceipt,
+  requireD1ProviderUsageReceiptReadback,
   requireD1ProviderUsageReceiptSchema,
   type CanonicalProviderUsageReceipt,
   type D1AdmissionSnapshot,
+  type ProviderUsageReceiptReadback,
   type R2ResultPutGrant,
   type StorageGatewayEnvironment,
 } from "./storage_gateway";
@@ -73,11 +75,12 @@ export interface ProviderEgressGatewayPort {
     attemptGeneration: number,
     identity: ProviderEgressIdentity,
   ): Promise<RpcResult<DispatchProviderAttemptOutcome>>;
-  recordStorageResult(
+  recordProviderUsageResult(
     operationId: string,
     ownerGeneration: number,
     result: StorageResultRecord,
-    providerAttemptGeneration?: number,
+    attemptGeneration: number,
+    usageReceiptSha256: string,
   ): Promise<RpcResult<RecordStorageResultOutcome>>;
   recordProviderAttemptOutcome(
     operationId: string,
@@ -138,9 +141,6 @@ export async function handleProviderEgressGatewayRequest(
     return jsonError("provider_egress_access_denied", 403);
   }
 
-  const replay = await replayWithoutProviderSend(port, grant, attemptGeneration);
-  if (replay !== null) return replay;
-
   let admission: D1AdmissionSnapshot;
   try {
     admission = await requireD1ProviderEgressAdmission(env, grant);
@@ -157,6 +157,15 @@ export async function handleProviderEgressGatewayRequest(
       ? jsonError(error.code, error.status)
       : jsonError("provider_usage_receipt_schema_unavailable", 503);
   }
+
+  const replay = await replayWithoutProviderSend(
+    env,
+    port,
+    grant,
+    admission,
+    attemptGeneration,
+  );
+  if (replay !== null) return replay;
 
   const broker = env.PROVIDER_EGRESS;
   if (broker === undefined) {
@@ -199,7 +208,7 @@ export async function handleProviderEgressGatewayRequest(
   }
   if (!dispatch.ok) return jsonError(dispatch.error.code, dispatch.error.status);
   if (dispatch.result.kind !== "dispatched") {
-    return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_replay_ambiguous");
+    return recoveryResponse(grant, "provider_egress_replay_ambiguous");
   }
   if (!providerAttemptEgressIdentityMatches(dispatch.result.row, egressIdentity)) {
     return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_identity_ambiguous");
@@ -290,26 +299,27 @@ export async function handleProviderEgressGatewayRequest(
   try {
     result = await persistResult(env, resultGrant, providerBody);
   } catch {
-    return ambiguousResponse(port, grant, attemptGeneration, "provider_result_persistence_ambiguous");
+    return recoveryResponse(grant, "provider_result_persistence_ambiguous");
   }
   try {
     await requireD1ProviderUsageReceipt(env, admission, usageReceipt, result);
   } catch {
-    return ambiguousResponse(
-      port,
-      grant,
-      attemptGeneration,
-      "provider_usage_receipt_persistence_ambiguous",
-    );
+    return recoveryResponse(grant, "provider_usage_receipt_persistence_ambiguous");
   }
-  const attached = await port.recordStorageResult(
-    grant.operation_id,
-    grant.owner_generation,
-    result,
-    attemptGeneration,
-  );
+  let attached: RpcResult<RecordStorageResultOutcome>;
+  try {
+    attached = await port.recordProviderUsageResult(
+      grant.operation_id,
+      grant.owner_generation,
+      result,
+      attemptGeneration,
+      usageReceipt.sha256,
+    );
+  } catch {
+    return recoveryResponse(grant, "provider_result_persistence_ambiguous");
+  }
   if (!attached.ok) {
-    return ambiguousResponse(port, grant, attemptGeneration, "provider_result_persistence_ambiguous");
+    return recoveryResponse(grant, "provider_result_persistence_ambiguous");
   }
   if (upstreamStatus === 202) {
     return ambiguousResponse(
@@ -331,7 +341,13 @@ export async function handleProviderEgressGatewayRequest(
       grant.owner_generation,
     );
     const recovered = refreshed.ok
-      ? await replayWithoutProviderSend(port, refreshed.grant, attemptGeneration)
+      ? await replayWithoutProviderSend(
+          env,
+          port,
+          refreshed.grant,
+          admission,
+          attemptGeneration,
+        )
       : null;
     return recovered ?? jsonResponse(ambiguousPayload(grant, "provider_terminal_ambiguous"), 202);
   }
@@ -384,6 +400,21 @@ function matchesCanaryGrant(
   requestSize: number,
 ): boolean {
   const attempt = grant.provider_attempt;
+  const hasNoProviderUsageResult =
+    grant.result === null &&
+    grant.provider_usage_receipt_sha256 === null &&
+    (attempt === null ||
+      (attempt.provider_usage_receipt_sha256 === null &&
+        attempt.provider_usage_receipt_attached_at === null));
+  const hasProviderUsageResult =
+    grant.result !== null &&
+    grant.provider_usage_receipt_sha256 !== null &&
+    validSha256(grant.provider_usage_receipt_sha256) &&
+    attempt !== null &&
+    attempt.provider_usage_receipt_sha256 === grant.provider_usage_receipt_sha256 &&
+    attempt.provider_usage_receipt_attached_at !== null &&
+    Number.isSafeInteger(attempt.provider_usage_receipt_attached_at) &&
+    attempt.provider_usage_receipt_attached_at > 0;
   return (
     attempt !== null &&
     grant.operation_kind === PROVIDER_CANARY_OPERATION_KIND &&
@@ -392,7 +423,9 @@ function matchesCanaryGrant(
     grant.input.sha256 === requestSha256 &&
     grant.input.size === requestSize &&
     validProviderDeadline(grant.deadline_at) &&
-    (attempt.status !== "prepared" || grant.result === null) &&
+    (attempt.status !== "prepared"
+      ? hasNoProviderUsageResult || hasProviderUsageResult
+      : hasNoProviderUsageResult) &&
     attempt.attempt_generation === attemptGeneration &&
     attempt.provider_operation_id === grant.provider_operation_id &&
     attempt.admission_sha256 === grant.admission_sha256 &&
@@ -401,27 +434,200 @@ function matchesCanaryGrant(
 }
 
 async function replayWithoutProviderSend(
+  env: ProviderEgressGatewayEnvironment,
   port: ProviderEgressGatewayPort,
   grant: StorageAccessGrant,
+  admission: D1AdmissionSnapshot,
   attemptGeneration: number,
 ): Promise<Response | null> {
   const attempt = grant.provider_attempt;
   if (attempt === null || attempt.status === "prepared") return null;
-  if (grant.result !== null && attempt.status === "dispatched") {
-    return ambiguousResponse(port, grant, attemptGeneration, "provider_terminal_ambiguous");
-  }
-  if (grant.result !== null && attempt.status === "succeeded") {
-    if (
-      attempt.response_status === null ||
-      attempt.response_status < 200 ||
-      attempt.response_status > 299 ||
-      attempt.response_status === 202
-    ) {
-      return ambiguousResponse(port, grant, attemptGeneration, "provider_terminal_ambiguous");
+
+  let receipt: ProviderUsageReceiptReadback;
+  try {
+    receipt = await requireD1ProviderUsageReceiptReadback(
+      env,
+      admission,
+      attemptGeneration,
+    );
+  } catch (error) {
+    if (error instanceof ProtocolError && (error.status === 409 || error.status === 502)) {
+      return ambiguousResponse(
+        port,
+        grant,
+        attemptGeneration,
+        "provider_usage_receipt_replay_ambiguous",
+      );
     }
-    return successResponse(grant, attemptGeneration, attempt.response_status, grant.result);
+    return recoveryResponse(grant, "provider_usage_receipt_replay_ambiguous");
   }
-  return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_replay_ambiguous");
+  if (!providerUsageReceiptReadbackMatchesGrant(receipt, grant, attemptGeneration)) {
+    return ambiguousResponse(
+      port,
+      grant,
+      attemptGeneration,
+      "provider_usage_receipt_replay_conflict",
+    );
+  }
+
+  let currentGrant = grant;
+  if (
+    currentGrant.result === null &&
+    currentGrant.provider_usage_receipt_sha256 === null &&
+    attempt.provider_usage_receipt_sha256 === null &&
+    attempt.provider_usage_receipt_attached_at === null &&
+    attempt.status === "dispatched"
+  ) {
+    let attached: RpcResult<RecordStorageResultOutcome>;
+    try {
+      attached = await port.recordProviderUsageResult(
+        currentGrant.operation_id,
+        currentGrant.owner_generation,
+        receipt.result,
+        attemptGeneration,
+        receipt.usage_receipt_sha256,
+      );
+    } catch {
+      return recoveryResponse(grant, "provider_result_persistence_ambiguous");
+    }
+    if (!attached.ok) {
+      return recoveryResponse(grant, "provider_result_persistence_ambiguous");
+    }
+    const refreshed = await port.authorizeStorageAccess(
+      currentGrant.operation_id,
+      currentGrant.owner_generation,
+    );
+    if (!refreshed.ok) {
+      return recoveryResponse(grant, "provider_result_persistence_ambiguous");
+    }
+    currentGrant = refreshed.grant;
+  }
+
+  const currentAttempt = currentGrant.provider_attempt;
+  if (
+    currentAttempt === null ||
+    currentGrant.provider_usage_receipt_sha256 !== receipt.usage_receipt_sha256 ||
+    currentAttempt.provider_usage_receipt_sha256 !== receipt.usage_receipt_sha256 ||
+    currentAttempt.provider_usage_receipt_attached_at === null ||
+    !storageResultMatchesReadback(currentGrant.result, receipt.result)
+  ) {
+    return ambiguousResponse(
+      port,
+      currentGrant,
+      attemptGeneration,
+      "provider_usage_receipt_replay_conflict",
+    );
+  }
+
+  if (currentAttempt.status === "dispatched") {
+    if (receipt.provider_response_status === 202) {
+      return ambiguousResponse(
+        port,
+        currentGrant,
+        attemptGeneration,
+        "provider_response_accepted_ambiguous",
+      );
+    }
+    let terminal: RpcResult<RecordProviderAttemptOutcome>;
+    try {
+      terminal = await port.recordProviderAttemptOutcome(
+        currentGrant.operation_id,
+        currentGrant.owner_generation,
+        attemptGeneration,
+        {
+          status: "succeeded",
+          response_status: receipt.provider_response_status,
+          response_code: null,
+        },
+      );
+    } catch {
+      terminal = {
+        ok: false,
+        error: { code: "provider_attempt_unavailable", status: 503 },
+      };
+    }
+    if (!terminal.ok) {
+      const refreshed = await port.authorizeStorageAccess(
+        currentGrant.operation_id,
+        currentGrant.owner_generation,
+      );
+      if (!refreshed.ok) {
+        return jsonResponse(ambiguousPayload(currentGrant, "provider_terminal_ambiguous"), 202);
+      }
+      currentGrant = refreshed.grant;
+    } else {
+      currentGrant = {
+        ...currentGrant,
+        provider_attempt: {
+          ...currentAttempt,
+          status: terminal.result.row.status,
+          response_status: terminal.result.row.response_status,
+        },
+      };
+    }
+  }
+
+  const terminalAttempt = currentGrant.provider_attempt;
+  if (
+    terminalAttempt !== null &&
+    terminalAttempt.status === "succeeded" &&
+    terminalAttempt.response_status === receipt.provider_response_status &&
+    receipt.provider_response_status >= 200 &&
+    receipt.provider_response_status <= 299 &&
+    receipt.provider_response_status !== 202 &&
+    currentGrant.result !== null
+  ) {
+    return successResponse(
+      currentGrant,
+      attemptGeneration,
+      receipt.provider_response_status,
+      currentGrant.result,
+    );
+  }
+  return ambiguousResponse(
+    port,
+    currentGrant,
+    attemptGeneration,
+    "provider_terminal_ambiguous",
+  );
+}
+
+function providerUsageReceiptReadbackMatchesGrant(
+  receipt: ProviderUsageReceiptReadback,
+  grant: StorageAccessGrant,
+  attemptGeneration: number,
+): boolean {
+  const attempt = grant.provider_attempt;
+  return (
+    attempt !== null &&
+    receipt.operation_id === grant.operation_id &&
+    receipt.owner_generation === grant.owner_generation &&
+    receipt.attempt_generation === attemptGeneration &&
+    receipt.provider_operation_id === grant.provider_operation_id &&
+    receipt.admission_sha256 === grant.admission_sha256 &&
+    receipt.request_sha256 === grant.input.sha256 &&
+    receipt.egress_profile === attempt.egress_profile &&
+    receipt.egress_worker_version_id === attempt.egress_worker_version_id &&
+    receipt.provider_response_sha256 === receipt.result.sha256
+  );
+}
+
+function storageResultMatchesReadback(
+  left: StorageResultRecord | null,
+  right: StorageResultRecord,
+): boolean {
+  return (
+    left !== null &&
+    left.object_key === right.object_key &&
+    left.object_version === right.object_version &&
+    left.sha256 === right.sha256 &&
+    left.size === right.size &&
+    left.content_type === right.content_type
+  );
+}
+
+function recoveryResponse(grant: StorageAccessGrant, code: string): Response {
+  return jsonResponse(ambiguousPayload(grant, code), 202);
 }
 
 async function ambiguousResponse(

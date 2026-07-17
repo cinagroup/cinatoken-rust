@@ -1,10 +1,17 @@
 const AUTHORITY_DOMAIN = "cinatoken-container-authority:v1\0";
+export const OPERATION_STATUS_V3_AUTHORITY_DOMAIN =
+  "cinatoken-container-operation-status:v3\0";
+export const TERMINAL_ACK_V2_AUTHORITY_DOMAIN =
+  "cinatoken-container-terminal-ack:v2\0";
 export const AUTHORITY_HEADER = "x-cinatoken-container-authority";
 export const INTERNAL_OPERATION_PATH = "/internal/v1/operations";
 export const INTERNAL_OPERATION_TERMINAL_ACK_PATH =
   "/internal/v1/operations/terminal-ack";
+export const INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH =
+  "/internal/v2/operations/terminal-ack";
 export const INTERNAL_OPERATION_STATUS_PATH = "/internal/v1/operations/status";
 export const INTERNAL_OPERATION_STATUS_V2_PATH = "/internal/v2/operations/status";
+export const INTERNAL_OPERATION_STATUS_V3_PATH = "/internal/v3/operations/status";
 export const INTERNAL_READINESS_PATH = "/internal/v1/shards/readiness";
 export const INTERNAL_STATUS_PATH = "/internal/v1/status";
 export const MAX_OPERATION_BODY_BYTES = 64 * 1024;
@@ -120,7 +127,7 @@ export interface TerminalAckResultManifest {
  * keys, response bodies or headers, billing data, credentials, audit data, and
  * client idempotency plaintext are rejected.
  */
-export interface TerminalAckRequest {
+interface TerminalAckRequestBase {
   protocol_version: 1;
   billing_event_id: string;
   terminal_contract_sha256: string;
@@ -138,8 +145,30 @@ export interface TerminalAckRequest {
   trace_id: string;
 }
 
+export interface TerminalAckProviderUsageBinding {
+  attempt_generation: number;
+  receipt_sha256: string;
+  result_sha256: string;
+}
+
+export interface TerminalAckRequestV1 extends TerminalAckRequestBase {
+  provider_usage_binding?: never;
+}
+
+export interface TerminalAckRequestV2 extends TerminalAckRequestBase {
+  provider_usage_binding: TerminalAckProviderUsageBinding | null;
+}
+
+export type TerminalAckRequest = TerminalAckRequestV1 | TerminalAckRequestV2;
+
 export interface VerifiedTerminalAckRequest {
-  ack: TerminalAckRequest;
+  ack: TerminalAckRequestV1;
+  claims: AuthorityClaims;
+  body: Uint8Array;
+}
+
+export interface VerifiedTerminalAckV2Request {
+  ack: TerminalAckRequestV2;
   claims: AuthorityClaims;
   body: Uint8Array;
 }
@@ -215,6 +244,20 @@ export async function verifyOperationStatusV2Request(
   );
 }
 
+export async function verifyOperationStatusV3Request(
+  request: Request,
+  env: AuthorityEnvironment,
+  now = Math.floor(Date.now() / 1000),
+): Promise<VerifiedOperationStatusQuery> {
+  return verifyOperationStatusRequestForPath(
+    request,
+    env,
+    INTERNAL_OPERATION_STATUS_V3_PATH,
+    now,
+    OPERATION_STATUS_V3_AUTHORITY_DOMAIN,
+  );
+}
+
 export async function verifyTerminalAckRequest(
   request: Request,
   env: AuthorityEnvironment,
@@ -248,11 +291,46 @@ export async function verifyTerminalAckRequest(
   return { ack, claims, body };
 }
 
+export async function verifyTerminalAckV2Request(
+  request: Request,
+  env: AuthorityEnvironment,
+  now = Math.floor(Date.now() / 1000),
+): Promise<VerifiedTerminalAckV2Request> {
+  if (
+    request.method !== "POST" ||
+    new URL(request.url).pathname !== INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH
+  ) {
+    throw new ProtocolError("route_not_found", 404);
+  }
+  const body = await readBoundedBody(
+    request,
+    true,
+    MAX_TERMINAL_ACK_BODY_BYTES,
+    "terminal_ack_too_large",
+    "invalid_terminal_ack",
+  );
+  const claims = await verifyAuthority(
+    requiredAuthority(request),
+    request.method,
+    INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH,
+    body,
+    env,
+    now,
+    TERMINAL_ACK_V2_AUTHORITY_DOMAIN,
+  );
+  const ack = parseTerminalAckV2Request(body);
+  if (ack.protocol_version !== claims.protocol_version) {
+    throw new ProtocolError("protocol_mismatch", 426);
+  }
+  return { ack, claims, body };
+}
+
 async function verifyOperationStatusRequestForPath(
   request: Request,
   env: AuthorityEnvironment,
   path: string,
   now: number,
+  authorityDomain = AUTHORITY_DOMAIN,
 ): Promise<VerifiedOperationStatusQuery> {
   if (
     request.method !== "POST" ||
@@ -274,6 +352,7 @@ async function verifyOperationStatusRequestForPath(
     body,
     env,
     now,
+    authorityDomain,
   );
   const query = parseOperationStatusQuery(body);
   if (query.protocol_version !== claims.protocol_version) {
@@ -338,6 +417,7 @@ export async function verifyAuthority(
   body: Uint8Array,
   env: AuthorityEnvironment,
   now: number,
+  authorityDomain = AUTHORITY_DOMAIN,
 ): Promise<AuthorityClaims> {
   validateAuthorityKeyring(env);
   if (token.length === 0 || token.length > MAX_TOKEN_BYTES) {
@@ -366,7 +446,7 @@ export async function verifyAuthority(
     false,
     ["verify"],
   );
-  const signed = new TextEncoder().encode(`${AUTHORITY_DOMAIN}${headerPart}.${claimsPart}`);
+  const signed = new TextEncoder().encode(`${authorityDomain}${headerPart}.${claimsPart}`);
   if (!(await crypto.subtle.verify("HMAC", key, copyArrayBuffer(signature), copyArrayBuffer(signed)))) {
     throw new ProtocolError("invalid_authority", 403);
   }
@@ -550,11 +630,38 @@ export function parseOperationStatusQuery(body: Uint8Array): OperationStatusQuer
   );
 }
 
-export function parseTerminalAckRequest(body: Uint8Array): TerminalAckRequest {
-  return validateTerminalAckRequest(parseJsonObject(body, "invalid_terminal_ack"));
+export function parseTerminalAckRequest(body: Uint8Array): TerminalAckRequestV1 {
+  return validateTerminalAckV1Request(parseJsonObject(body, "invalid_terminal_ack"));
+}
+
+export function parseTerminalAckV2Request(body: Uint8Array): TerminalAckRequestV2 {
+  return validateTerminalAckV2Request(parseJsonObject(body, "invalid_terminal_ack"));
+}
+
+export function validateTerminalAckV1Request(value: unknown): TerminalAckRequestV1 {
+  return validateTerminalAckRequestForContract(value, 1) as TerminalAckRequestV1;
+}
+
+export function validateTerminalAckV2Request(value: unknown): TerminalAckRequestV2 {
+  return validateTerminalAckRequestForContract(value, 2) as TerminalAckRequestV2;
 }
 
 export function validateTerminalAckRequest(value: unknown): TerminalAckRequest {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.prototype.hasOwnProperty.call(value, "provider_usage_binding")
+  ) {
+    return validateTerminalAckV2Request(value);
+  }
+  return validateTerminalAckV1Request(value);
+}
+
+function validateTerminalAckRequestForContract(
+  value: unknown,
+  contractVersion: 1 | 2,
+): TerminalAckRequest {
   const code = "invalid_terminal_ack";
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new ProtocolError(code, 400);
@@ -578,6 +685,7 @@ export function validateTerminalAckRequest(value: unknown): TerminalAckRequest {
       "result",
       "shard",
       "trace_id",
+      ...(contractVersion === 2 ? ["provider_usage_binding"] : []),
     ],
     code,
   );
@@ -671,6 +779,41 @@ export function validateTerminalAckRequest(value: unknown): TerminalAckRequest {
     };
   }
 
+  let providerUsageBinding: TerminalAckProviderUsageBinding | null = null;
+  if (contractVersion === 2 && record.provider_usage_binding !== null) {
+    const bindingValue = readObject(record, "provider_usage_binding", code);
+    assertExactKeys(
+      bindingValue,
+      ["attempt_generation", "receipt_sha256", "result_sha256"],
+      code,
+    );
+    providerUsageBinding = {
+      attempt_generation: readInteger(
+        bindingValue,
+        "attempt_generation",
+        1,
+        MAX_SAFE_INTEGER,
+        code,
+      ),
+      receipt_sha256: readString(
+        bindingValue,
+        "receipt_sha256",
+        64,
+        64,
+        LOWER_HEX_64,
+        code,
+      ),
+      result_sha256: readString(
+        bindingValue,
+        "result_sha256",
+        64,
+        64,
+        LOWER_HEX_64,
+        code,
+      ),
+    };
+  }
+
   const shardValue = readObject(record, "shard", code);
   assertExactKeys(
     shardValue,
@@ -725,6 +868,9 @@ export function validateTerminalAckRequest(value: unknown): TerminalAckRequest {
     !transitionValid ||
     !revisionValid ||
     !outcomeValid ||
+    (contractVersion === 2 &&
+      providerUsageBinding !== null &&
+      (result === null || providerUsageBinding.result_sha256 !== result.sha256)) ||
     (result !== null &&
       result.object_key !==
         `container-results/v1/${operationId}/${ownerGeneration}/${result.sha256}`)
@@ -732,7 +878,7 @@ export function validateTerminalAckRequest(value: unknown): TerminalAckRequest {
     throw new ProtocolError(code, 400);
   }
 
-  return {
+  const ack = {
     protocol_version: 1,
     billing_event_id: billingEventId,
     terminal_contract_sha256: readString(
@@ -763,6 +909,9 @@ export function validateTerminalAckRequest(value: unknown): TerminalAckRequest {
     shard,
     trace_id: readString(record, "trace_id", 1, 128, ID, code),
   };
+  return contractVersion === 1
+    ? (ack as TerminalAckRequestV1)
+    : ({ ...ack, provider_usage_binding: providerUsageBinding } as TerminalAckRequestV2);
 }
 
 export function validateOperationStatusQuery(value: unknown): OperationStatusQuery {
@@ -869,6 +1018,7 @@ export async function createAuthorityTokenForTest(
   secret: string,
   kid: string,
   claims: AuthorityClaims,
+  authorityDomain = AUTHORITY_DOMAIN,
 ): Promise<string> {
   const header: AuthorityHeader = { typ: "CINATOKEN-CONTAINER-AUTH", alg: "HS256", kid };
   const headerPart = encodeBase64Url(new TextEncoder().encode(JSON.stringify(header)));
@@ -880,7 +1030,7 @@ export async function createAuthorityTokenForTest(
     false,
     ["sign"],
   );
-  const signed = new TextEncoder().encode(`${AUTHORITY_DOMAIN}${headerPart}.${claimsPart}`);
+  const signed = new TextEncoder().encode(`${authorityDomain}${headerPart}.${claimsPart}`);
   const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, signed));
   return `${headerPart}.${claimsPart}.${encodeBase64Url(signature)}`;
 }

@@ -1276,9 +1276,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 48,
+        d1_migration_applied_count: 49,
         d1_expected_migration:
-          "0048_relay_container_provider_usage_receipts.sql",
+          "0049_relay_container_provider_usage_binding.sql",
         d1_migration_ready: true,
         task_v2_contract_version: 5,
         task_submit_operation_contract_version: 1,
@@ -2272,7 +2272,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
 
   it("constructs the terminal ack Service Binding request contract", () => {
     const request = new Request(
-      "https://cinatoken-container-controller.internal/internal/v1/operations/terminal-ack",
+      "https://cinatoken-container-controller.internal/internal/v2/operations/terminal-ack",
       {
         method: "POST",
         headers: {
@@ -2287,7 +2287,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(request.method).toBe("POST");
     expect(request.redirect).toBe("manual");
     expect(new URL(request.url).pathname).toBe(
-      "/internal/v1/operations/terminal-ack",
+      "/internal/v2/operations/terminal-ack",
     );
   });
 
@@ -2386,7 +2386,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     await seedContainerTerminalOutboxAccount();
     const seeded = await seedContainerTerminalRecoveryEvent("response-loss");
     const controllerResponse = await env.CONTAINER_CONTROLLER.fetch(
-      "https://cinatoken-container-controller.internal/internal/v1/operations/terminal-ack",
+      "https://cinatoken-container-controller.internal/internal/v2/operations/terminal-ack",
       {
         method: "POST",
         headers: {
@@ -5299,6 +5299,7 @@ async function seedContainerTerminalRecoveryEvent(suffix) {
       response_status: 202,
       response_code: reason,
       result: null,
+      provider_usage_binding: null,
       shard: {
         contract_version: 1,
         ring_generation: 1,

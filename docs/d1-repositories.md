@@ -175,3 +175,48 @@ disable-first and retains schema, rows, triggers, R2 evidence, and migration
 history; a rolled-back 0047 artifact must have no provider traffic. No remote
 schema, deployment, binding, or secret action is implied by this repository
 contract. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Migration 0049 Four-Store Binding Repository Boundary
+
+Migration 0049 makes the D1 repository the persistence boundary for observed
+provider-usage convergence without pretending that D1 can read R2 or a Durable
+Object. The repository first reads and validates the immutable 0048 receipt
+identity and its exact terminal event. The observer separately proves DO status
+v3 and R2 metadata v4; only then may it pass the verified tuple into the D1
+transition.
+
+`RelayContainerReconciliationRecord::Converged` now optionally carries the
+verified provider tuple. For a receipt-backed operation it must contain attempt
+1, the canonical receipt digest, and canonical result digest. The repository
+updates the leased observation to `converged` and writes canonical, DO, R2, and
+terminal receipt evidence in the same D1 statement. Migration triggers compare
+canonical fields to the immutable 0048 receipt and terminal event, require all
+three external/local evidence digests to equal the canonical digest, and freeze
+the row after matching.
+
+The repository cannot use a null provider tuple to bypass this rule. A legacy
+no-receipt observation may still converge as `not_applicable`; if a canonical
+0048 receipt exists, the 0049 convergence trigger rejects an old or incomplete
+writer. Retry and dead-letter records do not manufacture binding evidence and
+preserve the 0045 lifecycle.
+
+Schema readiness now requires 0049 and its exact observation columns and
+guards. It first composes the full 0047/0048 provider-egress readiness check,
+then verifies the 0049 binding index and the rebuilt lifecycle trigger still
+contains the 0045 retry-event state machine. This is intentionally asymmetric
+rolling compatibility: old observers
+may read, retry, or dead-letter, but cannot converge receipt-backed work. Apply
+0049 only with reconciliation disabled and old owners drained/read back. Normal
+rollback keeps 0049 and all evidence, disables provider/terminal/reconciliation
+first, and uses an artifact that will not exercise an incompatible writer.
+
+Controller receipt idempotency is read-first in one `first-primary` session.
+An exact existing row returns without issuing `INSERT`; only an absent row
+reaches `INSERT OR IGNORE` and complete readback. This distinction is required
+after convergence: 0049 intentionally blocks every late receipt INSERT,
+including an identical one, so stale writers cannot reopen terminal evidence.
+
+This boundary proves local R2/D1/DO/terminal agreement only. Provider invoice,
+arbitrary billing-expression and final-amount authority, remote staging
+evidence, and production terminal operation remain outside this repository and
+keep production **NO-GO**.

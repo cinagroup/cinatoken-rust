@@ -186,7 +186,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0048_relay_container_provider_usage_receipts.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0049_relay_container_provider_usage_binding.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -272,6 +272,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0046_relay_container_financial_terminal_enforce.sql",
     "0047_relay_container_provider_egress_grants.sql",
     "0048_relay_container_provider_usage_receipts.sql",
+    "0049_relay_container_provider_usage_binding.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -4713,14 +4714,14 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0048_relay_container_provider_usage_receipts.sql"
+            "0049_relay_container_provider_usage_binding.sql"
         );
         assert_eq!(
             &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 3..],
             &[
-                "0046_relay_container_financial_terminal_enforce.sql",
                 "0047_relay_container_provider_egress_grants.sql",
                 "0048_relay_container_provider_usage_receipts.sql",
+                "0049_relay_container_provider_usage_binding.sql",
             ]
         );
         assert!(
@@ -4901,6 +4902,12 @@ mod tests {
             .contains("relay_container_terminal_event_provider_usage_guard"));
         assert!(relay_container_provider_usage_receipts
             .contains("relay_container_operation_provider_usage_terminal_guard"));
+        let relay_container_provider_usage_binding =
+            include_str!("../../../migrations/d1/0049_relay_container_provider_usage_binding.sql");
+        assert!(relay_container_provider_usage_binding
+            .contains("relay_container_reconciliation_provider_usage_convergence_guard"));
+        assert!(relay_container_provider_usage_binding
+            .contains("relay_container_provider_usage_receipt_reconciliation_guard"));
     }
 
     #[test]

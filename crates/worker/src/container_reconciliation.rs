@@ -7,21 +7,24 @@ use std::collections::BTreeMap;
 use worker::{D1Database, Env, Response};
 
 use crate::container_artifacts::{
-    inspect_container_client_response, read_verified_container_client_response,
-    validate_container_client_response_manifest, ContainerArtifactManifest,
-    ContainerClientResponseManifest, ContainerClientResponseObjectState,
+    inspect_container_client_response, inspect_container_result,
+    read_verified_container_client_response, validate_container_client_response_manifest,
+    ContainerArtifactManifest, ContainerClientResponseManifest, ContainerClientResponseObjectState,
+    ContainerResultArtifactIdentity, ContainerResultObjectState,
 };
 use crate::container_controller::{
     query_operation_status, ContainerOperationEnvelope, ContainerOperationInput,
-    ContainerOperationOutcome, ContainerOperationStatus,
+    ContainerOperationOutcome, ContainerOperationStatus, ContainerProviderAttemptStatus,
 };
 use crate::d1_repositories::{
     advance_relay_container_reconciliation_cursor, claim_relay_container_reconciliation,
     claim_relay_container_reconciliation_run, complete_relay_container_reconciliation_run,
     record_relay_container_reconciliation, relay_container_financial_receipt_integrity_valid,
     relay_container_financial_terminal_receipt_for_operation, relay_container_operation,
-    relay_container_reconciliation_candidates, relay_container_reconciliation_schema_ready,
-    RelayContainerFinancialTerminalReceipt, RelayContainerOperation,
+    relay_container_provider_usage_receipt_readback, relay_container_reconciliation_candidates,
+    relay_container_reconciliation_schema_ready, RelayContainerFinancialTerminalReceipt,
+    RelayContainerOperation, RelayContainerProviderUsageConvergence,
+    RelayContainerProviderUsageReceiptIdentity, RelayContainerProviderUsageReceiptReadback,
     RelayContainerReconciliationClaimOutcome, RelayContainerReconciliationLease,
     RelayContainerReconciliationRecord, RelayContainerReconciliationRecordOutcome,
     RelayContainerReconciliationRunClaimOutcome, RelayContainerReconciliationRunLease,
@@ -78,6 +81,15 @@ pub enum ContainerResponseObservation {
     Matching,
     Divergent,
     Orphan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerProviderUsageObservation {
+    NotExpected,
+    Unavailable,
+    Missing,
+    Matching,
+    Divergent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +243,14 @@ pub fn classify_container_divergence(
 struct ContainerReconciliationObservation {
     class: ContainerDivergenceClass,
     error_code: &'static str,
+    provider_usage_convergence: Option<ContainerProviderUsageConvergence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContainerProviderUsageConvergence {
+    attempt_generation: i64,
+    receipt_sha256: String,
+    result_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -420,6 +440,7 @@ async fn run_container_reconciliation_observer_inner(
                     ContainerReconciliationObservation {
                         class: ContainerDivergenceClass::StoreUnavailable,
                         error_code: "retry_horizon_exhausted",
+                        provider_usage_convergence: None,
                     }
                 } else {
                     observe_container_operation(env, db, &operation).await
@@ -441,6 +462,13 @@ async fn run_container_reconciliation_observer_inner(
                     ContainerReconciliationDecision::Converged => {
                         RelayContainerReconciliationRecord::Converged {
                             class: observation.class.as_str(),
+                            provider_usage: observation.provider_usage_convergence.as_ref().map(
+                                |provider_usage| RelayContainerProviderUsageConvergence {
+                                    attempt_generation: provider_usage.attempt_generation,
+                                    receipt_sha256: &provider_usage.receipt_sha256,
+                                    result_sha256: &provider_usage.result_sha256,
+                                },
+                            ),
                         }
                     }
                     ContainerReconciliationDecision::DeadLetter { reason } => {
@@ -542,12 +570,14 @@ async fn observe_container_operation(
                         return ContainerReconciliationObservation {
                             class: ContainerDivergenceClass::ContractViolation,
                             error_code: "d1_terminal_receipt_missing",
+                            provider_usage_convergence: None,
                         };
                     }
                     Err(_) => {
                         return ContainerReconciliationObservation {
                             class: ContainerDivergenceClass::StoreUnavailable,
                             error_code: "d1_terminal_receipt_unavailable",
+                            provider_usage_convergence: None,
                         };
                     }
                 }
@@ -568,12 +598,14 @@ async fn observe_container_operation(
                     return ContainerReconciliationObservation {
                         class: ContainerDivergenceClass::ContractViolation,
                         error_code: "d1_terminal_receipt_missing",
+                        provider_usage_convergence: None,
                     };
                 }
                 Err(_) => {
                     return ContainerReconciliationObservation {
                         class: ContainerDivergenceClass::StoreUnavailable,
                         error_code: "d1_terminal_receipt_unavailable",
+                        provider_usage_convergence: None,
                     };
                 }
             }
@@ -582,8 +614,46 @@ async fn observe_container_operation(
             return ContainerReconciliationObservation {
                 class: ContainerDivergenceClass::ContractViolation,
                 error_code: "d1_operation_status_invalid",
+                provider_usage_convergence: None,
             };
         }
+    };
+
+    let provider_usage_identity = if d1 == ContainerD1Observation::TerminalWithReceipt {
+        let Some(receipt) = receipt.as_ref() else {
+            return ContainerReconciliationObservation {
+                class: ContainerDivergenceClass::ContractViolation,
+                error_code: "d1_terminal_receipt_missing",
+                provider_usage_convergence: None,
+            };
+        };
+        match relay_container_provider_usage_receipt_readback(db, operation, receipt).await {
+            Ok(RelayContainerProviderUsageReceiptReadback::NotExpected) => None,
+            Ok(RelayContainerProviderUsageReceiptReadback::Matching(identity)) => Some(identity),
+            Ok(RelayContainerProviderUsageReceiptReadback::Missing) => {
+                return ContainerReconciliationObservation {
+                    class: ContainerDivergenceClass::ContractViolation,
+                    error_code: "d1_provider_usage_receipt_missing",
+                    provider_usage_convergence: None,
+                };
+            }
+            Ok(RelayContainerProviderUsageReceiptReadback::Divergent) => {
+                return ContainerReconciliationObservation {
+                    class: ContainerDivergenceClass::ContractViolation,
+                    error_code: "d1_provider_usage_receipt_divergent",
+                    provider_usage_convergence: None,
+                };
+            }
+            Err(_) => {
+                return ContainerReconciliationObservation {
+                    class: ContainerDivergenceClass::StoreUnavailable,
+                    error_code: "d1_provider_usage_receipt_unavailable",
+                    provider_usage_convergence: None,
+                };
+            }
+        }
+    } else {
+        None
     };
 
     let envelope = match container_operation_envelope(operation) {
@@ -592,34 +662,70 @@ async fn observe_container_operation(
             return ContainerReconciliationObservation {
                 class: ContainerDivergenceClass::ContractViolation,
                 error_code: "d1_operation_identity_invalid",
+                provider_usage_convergence: None,
             };
         }
     };
-    let (controller, controller_error) = match query_operation_status(env, &envelope).await {
-        Ok(outcome) => (controller_observation(operation, &outcome), ""),
-        Err("operation_status_not_found") => (ContainerDoObservation::NotFound, ""),
-        Err(
-            "authority_rejected"
-            | "route_not_found"
-            | "operation_fence_rejected"
-            | "operation_conflict"
-            | "protocol_rejected"
-            | "contract_mismatch"
-            | "invalid_operation_envelope",
-        ) => (
-            ContainerDoObservation::ContractViolation,
-            "controller_contract_violation",
-        ),
-        Err(_) => (
-            ContainerDoObservation::Unavailable,
-            "controller_status_unavailable",
-        ),
+    let (controller, controller_error, do_provider_usage_matching) =
+        match query_operation_status(env, &envelope).await {
+            Ok(outcome)
+                if provider_usage_identity.is_some() && outcome.status_contract_version != 3 =>
+            {
+                (
+                    ContainerDoObservation::Unavailable,
+                    "controller_status_v3_unavailable",
+                    false,
+                )
+            }
+            Ok(outcome) => {
+                let provider_usage_matching =
+                    provider_usage_identity.as_ref().is_some_and(|identity| {
+                        controller_provider_usage_matches(Some(identity), &outcome)
+                    });
+                (
+                    controller_observation(
+                        operation,
+                        &outcome,
+                        provider_usage_identity.as_ref(),
+                        d1 == ContainerD1Observation::TerminalWithReceipt,
+                    ),
+                    "",
+                    provider_usage_matching,
+                )
+            }
+            Err("operation_status_not_found") => (ContainerDoObservation::NotFound, "", false),
+            Err(
+                "authority_rejected"
+                | "route_not_found"
+                | "operation_fence_rejected"
+                | "operation_conflict"
+                | "protocol_rejected"
+                | "contract_mismatch"
+                | "invalid_operation_envelope",
+            ) => (
+                ContainerDoObservation::ContractViolation,
+                "controller_contract_violation",
+                false,
+            ),
+            Err(_) => (
+                ContainerDoObservation::Unavailable,
+                "controller_status_unavailable",
+                false,
+            ),
+        };
+    let provider_usage = match provider_usage_identity.as_ref() {
+        Some(identity) => match inspect_provider_usage_result(env, identity).await {
+            Ok(observation) => observation,
+            Err(_) => ContainerProviderUsageObservation::Unavailable,
+        },
+        None => ContainerProviderUsageObservation::NotExpected,
     };
     let response = if d1 == ContainerD1Observation::TerminalWithReceipt {
         let Some(receipt) = receipt.as_ref() else {
             return ContainerReconciliationObservation {
                 class: ContainerDivergenceClass::ContractViolation,
                 error_code: "d1_terminal_receipt_missing",
+                provider_usage_convergence: None,
             };
         };
         let manifest = match client_response_manifest_from_receipt(receipt) {
@@ -628,6 +734,7 @@ async fn observe_container_operation(
                 return ContainerReconciliationObservation {
                     class: ContainerDivergenceClass::ContractViolation,
                     error_code: "client_response_manifest_invalid",
+                    provider_usage_convergence: None,
                 };
             }
         };
@@ -653,16 +760,30 @@ async fn observe_container_operation(
     } else {
         ContainerResponseObservation::NotExpected
     };
-    let class = classify_container_divergence(d1, controller, response);
+    let class = gate_provider_usage_convergence(
+        classify_container_divergence(d1, controller, response),
+        provider_usage,
+    );
+    let provider_usage_convergence = provider_usage_convergence_evidence(
+        class,
+        do_provider_usage_matching,
+        provider_usage,
+        provider_usage_identity.as_ref(),
+    );
     ContainerReconciliationObservation {
         class,
-        error_code: if class == ContainerDivergenceClass::StoreUnavailable
-            && response == ContainerResponseObservation::Unavailable
-        {
-            "r2_response_unavailable"
-        } else {
-            controller_error
+        error_code: match provider_usage {
+            ContainerProviderUsageObservation::Unavailable => "provider_result_r2_unavailable",
+            ContainerProviderUsageObservation::Missing => "provider_result_r2_missing",
+            ContainerProviderUsageObservation::Divergent => "provider_result_r2_divergent",
+            _ if class == ContainerDivergenceClass::StoreUnavailable
+                && response == ContainerResponseObservation::Unavailable =>
+            {
+                "r2_response_unavailable"
+            }
+            _ => controller_error,
         },
+        provider_usage_convergence,
     }
 }
 
@@ -709,10 +830,90 @@ fn container_operation_envelope(
     })
 }
 
+async fn inspect_provider_usage_result(
+    env: &Env,
+    identity: &RelayContainerProviderUsageReceiptIdentity,
+) -> worker::Result<ContainerProviderUsageObservation> {
+    let manifest = ContainerArtifactManifest {
+        object_key: identity.result_object_key.clone(),
+        object_version: identity.result_object_version.clone(),
+        sha256: identity.result_sha256.clone(),
+        size: u64::try_from(identity.result_size)
+            .map_err(|_| reconciliation_error("provider result size is invalid"))?,
+        content_type: identity.result_content_type.clone(),
+    };
+    let artifact_identity = ContainerResultArtifactIdentity {
+        operation_id: identity.operation_id.clone(),
+        owner_generation: identity.owner_generation,
+        provider_operation_id: identity.provider_operation_id.clone(),
+        admission_sha256: identity.admission_sha256.clone(),
+        attempt_generation: identity.attempt_generation,
+        egress_profile: identity.egress_profile.clone(),
+        egress_worker_version_id: identity.egress_worker_version_id.clone(),
+        usage_receipt_sha256: identity.usage_receipt_sha256.clone(),
+    };
+    Ok(
+        match inspect_container_result(env, &artifact_identity, &manifest).await? {
+            ContainerResultObjectState::Missing => ContainerProviderUsageObservation::Missing,
+            ContainerResultObjectState::Matching => ContainerProviderUsageObservation::Matching,
+            ContainerResultObjectState::Divergent => ContainerProviderUsageObservation::Divergent,
+        },
+    )
+}
+
+fn gate_provider_usage_convergence(
+    class: ContainerDivergenceClass,
+    provider_usage: ContainerProviderUsageObservation,
+) -> ContainerDivergenceClass {
+    if class != ContainerDivergenceClass::ConvergedReplayable {
+        return class;
+    }
+    match provider_usage {
+        ContainerProviderUsageObservation::NotExpected
+        | ContainerProviderUsageObservation::Matching => class,
+        ContainerProviderUsageObservation::Unavailable => {
+            ContainerDivergenceClass::StoreUnavailable
+        }
+        ContainerProviderUsageObservation::Missing => {
+            ContainerDivergenceClass::TerminalResponseMissing
+        }
+        ContainerProviderUsageObservation::Divergent => {
+            ContainerDivergenceClass::TerminalResponseDivergent
+        }
+    }
+}
+
+fn provider_usage_convergence_evidence(
+    class: ContainerDivergenceClass,
+    do_provider_usage_matching: bool,
+    provider_usage: ContainerProviderUsageObservation,
+    identity: Option<&RelayContainerProviderUsageReceiptIdentity>,
+) -> Option<ContainerProviderUsageConvergence> {
+    if class != ContainerDivergenceClass::ConvergedReplayable
+        || !do_provider_usage_matching
+        || provider_usage != ContainerProviderUsageObservation::Matching
+    {
+        return None;
+    }
+    let identity = identity?;
+    Some(ContainerProviderUsageConvergence {
+        attempt_generation: identity.attempt_generation,
+        receipt_sha256: identity.usage_receipt_sha256.clone(),
+        result_sha256: identity.result_sha256.clone(),
+    })
+}
+
 fn controller_observation(
     operation: &RelayContainerOperation,
     outcome: &ContainerOperationOutcome,
+    expected_provider_usage: Option<&RelayContainerProviderUsageReceiptIdentity>,
+    enforce_provider_usage: bool,
 ) -> ContainerDoObservation {
+    if enforce_provider_usage
+        && !controller_provider_usage_matches(expected_provider_usage, outcome)
+    {
+        return ContainerDoObservation::ConflictingTerminal;
+    }
     match outcome.status {
         ContainerOperationStatus::Claimed => ContainerDoObservation::Claimed,
         ContainerOperationStatus::Running => ContainerDoObservation::Running,
@@ -746,6 +947,43 @@ fn controller_observation(
             }
         }
     }
+}
+
+fn controller_provider_usage_matches(
+    expected: Option<&RelayContainerProviderUsageReceiptIdentity>,
+    outcome: &ContainerOperationOutcome,
+) -> bool {
+    let Some(expected) = expected else {
+        return outcome.provider_usage_receipt_sha256.is_none()
+            && outcome
+                .provider_attempt
+                .as_ref()
+                .is_none_or(|attempt| attempt.provider_usage_receipt_sha256.is_none());
+    };
+    if outcome.status_contract_version != 3
+        || outcome.provider_usage_receipt_sha256.as_deref()
+            != Some(expected.usage_receipt_sha256.as_str())
+    {
+        return false;
+    }
+    let Some(attempt) = outcome.provider_attempt.as_ref() else {
+        return false;
+    };
+    attempt.attempt_generation as i64 == expected.attempt_generation
+        && attempt.status == ContainerProviderAttemptStatus::Succeeded
+        && attempt.response_status.map(i64::from) == Some(expected.provider_response_status)
+        && attempt.response_code.is_none()
+        && attempt.provider_usage_receipt_sha256.as_deref()
+            == Some(expected.usage_receipt_sha256.as_str())
+        && attempt.provider_usage_receipt_attached_at.is_some()
+        && attempt.result.as_ref().is_some_and(|result| {
+            result.object_key == expected.result_object_key
+                && result.object_version == expected.result_object_version
+                && result.sha256 == expected.result_sha256
+                && result.sha256 == expected.provider_response_sha256
+                && i64::try_from(result.size).ok() == Some(expected.result_size)
+                && result.content_type == expected.result_content_type
+        })
 }
 
 fn terminal_outcome_matches(
@@ -960,6 +1198,7 @@ fn reconciliation_error(message: &str) -> worker::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::container_controller::ContainerProviderAttemptOutcome;
 
     fn test_operation(status: &str) -> RelayContainerOperation {
         RelayContainerOperation {
@@ -1004,6 +1243,7 @@ mod tests {
 
     fn terminal_outcome(status: ContainerOperationStatus) -> ContainerOperationOutcome {
         ContainerOperationOutcome {
+            status_contract_version: 2,
             status,
             http_status: 200,
             code: Some("ok".to_string()),
@@ -1014,6 +1254,7 @@ mod tests {
                 size: 256,
                 content_type: "application/json".to_string(),
             }),
+            provider_usage_receipt_sha256: None,
             provider_attempt: None,
         }
     }
@@ -1197,12 +1438,16 @@ mod tests {
             controller_observation(
                 &prepared,
                 &ContainerOperationOutcome {
+                    status_contract_version: 1,
                     status: ContainerOperationStatus::Claimed,
                     http_status: 202,
                     code: None,
                     result: None,
+                    provider_usage_receipt_sha256: None,
                     provider_attempt: None,
                 },
+                None,
+                false,
             ),
             ContainerDoObservation::Claimed
         );
@@ -1218,12 +1463,16 @@ mod tests {
             controller_observation(
                 &dispatched,
                 &ContainerOperationOutcome {
+                    status_contract_version: 2,
                     status: ContainerOperationStatus::Running,
                     http_status: 202,
                     code: None,
                     result: None,
+                    provider_usage_receipt_sha256: None,
                     provider_attempt: None,
                 },
+                None,
+                false,
             ),
             ContainerDoObservation::Running
         );
@@ -1239,6 +1488,8 @@ mod tests {
             controller_observation(
                 &prepared,
                 &terminal_outcome(ContainerOperationStatus::Completed),
+                None,
+                false,
             ),
             ContainerDoObservation::DefinitiveTerminal
         );
@@ -1249,15 +1500,158 @@ mod tests {
         let completed = test_operation("completed");
         let matching = terminal_outcome(ContainerOperationStatus::Completed);
         assert_eq!(
-            controller_observation(&completed, &matching),
+            controller_observation(&completed, &matching, None, true),
             ContainerDoObservation::MatchingTerminal
         );
 
         let mut conflicting = matching;
         conflicting.result.as_mut().expect("result").sha256 = "0".repeat(64);
         assert_eq!(
-            controller_observation(&completed, &conflicting),
+            controller_observation(&completed, &conflicting, None, true),
             ContainerDoObservation::ConflictingTerminal
+        );
+    }
+
+    #[test]
+    fn provider_usage_gate_requires_exact_do_and_r2_receipt_identity() {
+        let identity = RelayContainerProviderUsageReceiptIdentity {
+            operation_id: "operation-1".to_string(),
+            owner_generation: 1,
+            attempt_generation: 1,
+            provider_operation_id: "provider-operation-1".to_string(),
+            admission_sha256: "a".repeat(64),
+            request_sha256: "b".repeat(64),
+            egress_profile: "openai-chat-completions-canary-v1".to_string(),
+            egress_worker_version_id: "worker-version-1".to_string(),
+            provider_response_status: 200,
+            provider_response_sha256: "f".repeat(64),
+            result_object_key: "container-results/v1/operation-1/1/result".to_string(),
+            result_object_version: "result-version-1".to_string(),
+            result_sha256: "f".repeat(64),
+            result_size: 256,
+            result_content_type: "application/json".to_string(),
+            usage_receipt_sha256: "9".repeat(64),
+        };
+        let result = ContainerArtifactManifest {
+            object_key: identity.result_object_key.clone(),
+            object_version: identity.result_object_version.clone(),
+            sha256: identity.result_sha256.clone(),
+            size: 256,
+            content_type: identity.result_content_type.clone(),
+        };
+        let mut outcome = ContainerOperationOutcome {
+            status_contract_version: 3,
+            status: ContainerOperationStatus::Completed,
+            http_status: 200,
+            code: None,
+            result: Some(result.clone()),
+            provider_usage_receipt_sha256: Some(identity.usage_receipt_sha256.clone()),
+            provider_attempt: Some(ContainerProviderAttemptOutcome {
+                attempt_generation: 1,
+                status: ContainerProviderAttemptStatus::Succeeded,
+                response_status: Some(200),
+                response_code: None,
+                result: Some(result),
+                provider_usage_receipt_sha256: Some(identity.usage_receipt_sha256.clone()),
+                provider_usage_receipt_attached_at: Some(1_050),
+                prepared_at: 1_000,
+                dispatched_at: Some(1_025),
+                terminal_at: Some(1_075),
+            }),
+        };
+        assert!(controller_provider_usage_matches(Some(&identity), &outcome));
+
+        outcome.status_contract_version = 2;
+        assert!(!controller_provider_usage_matches(
+            Some(&identity),
+            &outcome
+        ));
+        outcome.status_contract_version = 3;
+        outcome
+            .provider_attempt
+            .as_mut()
+            .unwrap()
+            .provider_usage_receipt_sha256 = Some("8".repeat(64));
+        assert!(!controller_provider_usage_matches(
+            Some(&identity),
+            &outcome
+        ));
+
+        assert_eq!(
+            gate_provider_usage_convergence(
+                ContainerDivergenceClass::ConvergedReplayable,
+                ContainerProviderUsageObservation::Matching,
+            ),
+            ContainerDivergenceClass::ConvergedReplayable
+        );
+        assert_eq!(
+            gate_provider_usage_convergence(
+                ContainerDivergenceClass::ConvergedReplayable,
+                ContainerProviderUsageObservation::Missing,
+            ),
+            ContainerDivergenceClass::TerminalResponseMissing
+        );
+        assert_eq!(
+            gate_provider_usage_convergence(
+                ContainerDivergenceClass::ConvergedReplayable,
+                ContainerProviderUsageObservation::Divergent,
+            ),
+            ContainerDivergenceClass::TerminalResponseDivergent
+        );
+        assert_eq!(
+            gate_provider_usage_convergence(
+                ContainerDivergenceClass::ConvergedReplayable,
+                ContainerProviderUsageObservation::Unavailable,
+            ),
+            ContainerDivergenceClass::StoreUnavailable
+        );
+
+        assert_eq!(
+            provider_usage_convergence_evidence(
+                ContainerDivergenceClass::ConvergedReplayable,
+                true,
+                ContainerProviderUsageObservation::Matching,
+                Some(&identity),
+            ),
+            Some(ContainerProviderUsageConvergence {
+                attempt_generation: 1,
+                receipt_sha256: "9".repeat(64),
+                result_sha256: "f".repeat(64),
+            })
+        );
+        for (do_matching, r2_observation) in [
+            (false, ContainerProviderUsageObservation::Matching),
+            (true, ContainerProviderUsageObservation::Missing),
+            (true, ContainerProviderUsageObservation::Divergent),
+            (true, ContainerProviderUsageObservation::Unavailable),
+        ] {
+            assert_eq!(
+                provider_usage_convergence_evidence(
+                    ContainerDivergenceClass::ConvergedReplayable,
+                    do_matching,
+                    r2_observation,
+                    Some(&identity),
+                ),
+                None
+            );
+        }
+        assert_eq!(
+            provider_usage_convergence_evidence(
+                ContainerDivergenceClass::TerminalConflict,
+                true,
+                ContainerProviderUsageObservation::Matching,
+                Some(&identity),
+            ),
+            None
+        );
+        assert_eq!(
+            provider_usage_convergence_evidence(
+                ContainerDivergenceClass::ConvergedReplayable,
+                true,
+                ContainerProviderUsageObservation::Matching,
+                None,
+            ),
+            None
         );
     }
 }

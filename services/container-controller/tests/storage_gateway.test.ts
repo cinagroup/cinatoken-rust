@@ -1080,10 +1080,18 @@ describe("container storage gateway", () => {
     ).resolves.toEqual({ replayed: true, persisted_at: persistedAt });
 
     expect(constraints).toEqual(["first-primary", "first-primary"]);
-    expect(prepared[0]).toContain(
+    expect(prepared[0]).toContain("FROM relay_container_provider_usage_receipts");
+    expect(prepared[1]).toContain(
       "INSERT OR IGNORE INTO relay_container_provider_usage_receipts",
     );
-    expect(prepared[1]).toContain("FROM relay_container_provider_usage_receipts");
+    expect(prepared[2]).toContain("FROM relay_container_provider_usage_receipts");
+    expect(prepared[3]).toContain("FROM relay_container_provider_usage_receipts");
+    expect(
+      prepared.filter((sql) =>
+        sql.includes("INSERT OR IGNORE INTO relay_container_provider_usage_receipts"),
+      ),
+    ).toHaveLength(1);
+    expect(writeBindings).toHaveLength(1);
     expect(writeBindings[0]?.[11]).toBe(tieredBillingSnapshotSha256);
     expect(writeBindings[0]?.[24]).toBe(0);
     expect(writeBindings[0]?.[26]).toBe(0);
@@ -1143,6 +1151,7 @@ describe("container storage gateway", () => {
 
     for (const scenario of ["conflict", "malformed"] as const) {
       let writeValues: unknown[] = [];
+      let writeAttempted = false;
       const session = {
         prepare() {
           let values: unknown[] = [];
@@ -1153,6 +1162,7 @@ describe("container storage gateway", () => {
             },
             async run() {
               writeValues = values;
+              writeAttempted = true;
               return {
                 success: true,
                 meta: { changes: scenario === "malformed" ? 1 : 0 },
@@ -1160,6 +1170,7 @@ describe("container storage gateway", () => {
               };
             },
             async first<T>() {
+              if (!writeAttempted) return null;
               const row = providerUsageReceiptRowFromBindings(writeValues);
               if (scenario === "conflict") {
                 const conflictingReceipt: ProviderUsageReceipt = {

@@ -4,12 +4,15 @@
 //! default-off. A configured service binding proves reachability only after the
 //! controller accepts the shared authority token and reports the expected ring.
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use cinatoken_container_authority::{
     body_sha256, sign_authority, AuthorityInput, MIN_SECRET_BYTES,
 };
 use cinatoken_sharding::ShardPlan;
 use futures_util::future::{select, Either};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::time::Duration;
 use worker::{Delay, Env, Fetcher, Headers, Method, Request, RequestInit, RequestRedirect};
 
@@ -43,9 +46,14 @@ const OPERATION_STATUS_URL: &str =
 const OPERATION_STATUS_V2_PATH: &str = "/internal/v2/operations/status";
 const OPERATION_STATUS_V2_URL: &str =
     "https://cinatoken-container-controller.internal/internal/v2/operations/status";
-const TERMINAL_ACK_PATH: &str = "/internal/v1/operations/terminal-ack";
+const OPERATION_STATUS_V3_PATH: &str = "/internal/v3/operations/status";
+const OPERATION_STATUS_V3_URL: &str =
+    "https://cinatoken-container-controller.internal/internal/v3/operations/status";
+const OPERATION_STATUS_V3_AUTHORITY_DOMAIN: &[u8] = b"cinatoken-container-operation-status:v3\0";
+const TERMINAL_ACK_PATH: &str = "/internal/v2/operations/terminal-ack";
 const TERMINAL_ACK_URL: &str =
-    "https://cinatoken-container-controller.internal/internal/v1/operations/terminal-ack";
+    "https://cinatoken-container-controller.internal/internal/v2/operations/terminal-ack";
+const TERMINAL_ACK_V2_AUTHORITY_DOMAIN: &[u8] = b"cinatoken-container-terminal-ack:v2\0";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(12);
 const STATUS_MAX_BYTES: usize = 4 * 1024;
@@ -110,6 +118,14 @@ pub struct ContainerTerminalAckResult {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct ContainerTerminalAckProviderUsageBinding {
+    pub attempt_generation: i64,
+    pub receipt_sha256: String,
+    pub result_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ContainerTerminalAckEnvelope {
     pub protocol_version: u32,
     pub billing_event_id: String,
@@ -124,6 +140,7 @@ pub struct ContainerTerminalAckEnvelope {
     pub response_status: i64,
     pub response_code: Option<String>,
     pub result: Option<ContainerTerminalAckResult>,
+    pub provider_usage_binding: Option<ContainerTerminalAckProviderUsageBinding>,
     pub shard: ShardPlan,
     pub trace_id: String,
 }
@@ -176,6 +193,54 @@ struct ControllerOperationPayload {
     provider_attempt: Option<ControllerProviderAttempt>,
 }
 
+fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerOperationStatusV1Payload {
+    protocol_version: u32,
+    operation_id: String,
+    status: String,
+    code: Option<String>,
+    trace_id: String,
+    result: Option<ControllerOperationResult>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerOperationStatusV2Payload {
+    protocol_version: u32,
+    operation_id: String,
+    status: String,
+    code: Option<String>,
+    trace_id: String,
+    result: Option<ControllerOperationResult>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    provider_attempt: Option<ControllerProviderAttempt>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerOperationStatusV3Payload {
+    protocol_version: u32,
+    status_contract_version: u32,
+    operation_id: String,
+    status: String,
+    code: Option<String>,
+    trace_id: String,
+    result: Option<ControllerOperationResult>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    provider_usage_receipt_sha256: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    provider_attempt: Option<ControllerProviderAttemptV3>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct ControllerOperationResult {
@@ -197,6 +262,26 @@ struct ControllerProviderAttempt {
     response_status: Option<u16>,
     response_code: Option<String>,
     result: Option<ControllerOperationResult>,
+    prepared_at: i64,
+    dispatched_at: Option<i64>,
+    terminal_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerProviderAttemptV3 {
+    attempt_generation: u32,
+    provider_operation_id: String,
+    admission_sha256: String,
+    request_sha256: String,
+    status: String,
+    response_status: Option<u16>,
+    response_code: Option<String>,
+    result: Option<ControllerOperationResult>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    provider_usage_receipt_sha256: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    provider_usage_receipt_attached_at: Option<i64>,
     prepared_at: i64,
     dispatched_at: Option<i64>,
     terminal_at: Option<i64>,
@@ -235,6 +320,8 @@ pub struct ContainerProviderAttemptOutcome {
     pub response_status: Option<u16>,
     pub response_code: Option<String>,
     pub result: Option<ContainerArtifactManifest>,
+    pub provider_usage_receipt_sha256: Option<String>,
+    pub provider_usage_receipt_attached_at: Option<i64>,
     pub prepared_at: i64,
     pub dispatched_at: Option<i64>,
     pub terminal_at: Option<i64>,
@@ -242,10 +329,12 @@ pub struct ContainerProviderAttemptOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerOperationOutcome {
+    pub status_contract_version: u32,
     pub status: ContainerOperationStatus,
     pub http_status: u16,
     pub code: Option<String>,
     pub result: Option<ContainerArtifactManifest>,
+    pub provider_usage_receipt_sha256: Option<String>,
     pub provider_attempt: Option<ContainerProviderAttemptOutcome>,
 }
 
@@ -519,21 +608,38 @@ pub async fn query_operation_status(
         &authority,
         envelope,
         &body,
-        OPERATION_STATUS_V2_PATH,
-        OPERATION_STATUS_V2_URL,
+        OPERATION_STATUS_V3_PATH,
+        OPERATION_STATUS_V3_URL,
+        3,
     )
     .await
     {
         Err("route_not_found") => {
-            query_operation_status_path(
+            match query_operation_status_path(
                 &fetcher,
                 &authority,
                 envelope,
                 &body,
-                OPERATION_STATUS_PATH,
-                OPERATION_STATUS_URL,
+                OPERATION_STATUS_V2_PATH,
+                OPERATION_STATUS_V2_URL,
+                2,
             )
             .await
+            {
+                Err("route_not_found") => {
+                    query_operation_status_path(
+                        &fetcher,
+                        &authority,
+                        envelope,
+                        &body,
+                        OPERATION_STATUS_PATH,
+                        OPERATION_STATUS_URL,
+                        1,
+                    )
+                    .await
+                }
+                result => result,
+            }
         }
         result => result,
     }
@@ -558,13 +664,14 @@ pub async fn acknowledge_terminal_event(
     let body = serde_json::to_vec(envelope)
         .map_err(|_| ContainerTerminalAckError::Permanent("request_encode_failed"))?;
     let now = (worker::Date::now().as_millis() / 1000) as i64;
-    let token = sign_bound_authority(
+    let token = sign_bound_authority_with_domain(
         &authority,
         &dispatch_id,
         "POST",
         TERMINAL_ACK_PATH,
         &body,
         now,
+        TERMINAL_ACK_V2_AUTHORITY_DOMAIN,
     )
     .ok_or(ContainerTerminalAckError::Retryable(
         "authority_sign_failed",
@@ -590,14 +697,27 @@ async fn query_operation_status_path(
     body: &[u8],
     path: &'static str,
     url: &'static str,
+    status_contract_version: u32,
 ) -> Result<ContainerOperationOutcome, &'static str> {
     let dispatch_id = random_dispatch_id("operation-status").ok_or("entropy_unavailable")?;
     let now = (worker::Date::now().as_millis() / 1000) as i64;
-    let token = sign_bound_authority(authority, &dispatch_id, "POST", path, body, now)
-        .ok_or("authority_sign_failed")?;
+    let token = if status_contract_version == 3 {
+        sign_bound_authority_with_domain(
+            authority,
+            &dispatch_id,
+            "POST",
+            path,
+            body,
+            now,
+            OPERATION_STATUS_V3_AUTHORITY_DOMAIN,
+        )
+    } else {
+        sign_bound_authority(authority, &dispatch_id, "POST", path, body, now)
+    }
+    .ok_or("authority_sign_failed")?;
     let request =
         operation_status_request(url, &token, body).map_err(|_| "request_build_failed")?;
-    let operation = execute_operation(fetcher, request, envelope);
+    let operation = execute_operation_status(fetcher, request, envelope, status_contract_version);
     let delay = Delay::from(OPERATION_STATUS_TIMEOUT);
     futures_util::pin_mut!(operation);
     futures_util::pin_mut!(delay);
@@ -732,6 +852,191 @@ async fn execute_operation(
             Err(classify_operation_error(status, &error))
         }
     }
+}
+
+async fn execute_operation_status(
+    fetcher: &Fetcher,
+    request: Request,
+    envelope: &ContainerOperationEnvelope,
+    status_contract_version: u32,
+) -> Result<ContainerOperationOutcome, &'static str> {
+    let mut response = fetcher
+        .fetch_request(request)
+        .await
+        .map_err(|_| "request_failed")?;
+    let status = response.status_code();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !content_type.starts_with("application/json") {
+        return Err("invalid_content_type");
+    }
+    let body =
+        crate::relay::read_response_bytes_limited(&mut response, OPERATION_RESPONSE_MAX_BYTES)
+            .await
+            .map_err(|_| "invalid_response_size")?;
+    match status_contract_version {
+        1 => {
+            if let Ok(payload) = serde_json::from_slice::<ControllerOperationStatusV1Payload>(&body)
+            {
+                return operation_status_v1_outcome(status, payload, envelope);
+            }
+        }
+        2 => {
+            if let Ok(payload) = serde_json::from_slice::<ControllerOperationStatusV2Payload>(&body)
+            {
+                return operation_status_v2_outcome(status, payload, envelope);
+            }
+        }
+        3 => {
+            if let Ok(payload) = serde_json::from_slice::<ControllerOperationStatusV3Payload>(&body)
+            {
+                return operation_status_v3_outcome(status, payload, envelope);
+            }
+        }
+        _ => return Err("contract_mismatch"),
+    }
+    let error = serde_json::from_slice::<ControllerOperationErrorPayload>(&body)
+        .map_err(|_| "invalid_response_body")?;
+    Err(classify_operation_error(status, &error))
+}
+
+fn operation_status_v1_outcome(
+    http_status: u16,
+    payload: ControllerOperationStatusV1Payload,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerOperationOutcome, &'static str> {
+    let mut outcome = operation_outcome(
+        http_status,
+        ControllerOperationPayload {
+            protocol_version: payload.protocol_version,
+            operation_id: payload.operation_id,
+            status: payload.status,
+            code: payload.code,
+            trace_id: payload.trace_id,
+            result: payload.result,
+            provider_attempt: None,
+        },
+        envelope,
+    )?;
+    outcome.status_contract_version = 1;
+    Ok(outcome)
+}
+
+fn operation_status_v2_outcome(
+    http_status: u16,
+    payload: ControllerOperationStatusV2Payload,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerOperationOutcome, &'static str> {
+    let mut outcome = operation_outcome(
+        http_status,
+        ControllerOperationPayload {
+            protocol_version: payload.protocol_version,
+            operation_id: payload.operation_id,
+            status: payload.status,
+            code: payload.code,
+            trace_id: payload.trace_id,
+            result: payload.result,
+            provider_attempt: payload.provider_attempt,
+        },
+        envelope,
+    )?;
+    outcome.status_contract_version = 2;
+    Ok(outcome)
+}
+
+fn operation_status_v3_outcome(
+    http_status: u16,
+    payload: ControllerOperationStatusV3Payload,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerOperationOutcome, &'static str> {
+    if payload.status_contract_version != 3 {
+        return Err("contract_mismatch");
+    }
+    let root_receipt_sha256 = payload.provider_usage_receipt_sha256;
+    let provider_attempt = payload.provider_attempt;
+    let attempt_receipt = provider_attempt.as_ref().map(|attempt| {
+        (
+            attempt.provider_usage_receipt_sha256.clone(),
+            attempt.provider_usage_receipt_attached_at,
+        )
+    });
+    let legacy_attempt = provider_attempt.map(|attempt| ControllerProviderAttempt {
+        attempt_generation: attempt.attempt_generation,
+        provider_operation_id: attempt.provider_operation_id,
+        admission_sha256: attempt.admission_sha256,
+        request_sha256: attempt.request_sha256,
+        status: attempt.status,
+        response_status: attempt.response_status,
+        response_code: attempt.response_code,
+        result: attempt.result,
+        prepared_at: attempt.prepared_at,
+        dispatched_at: attempt.dispatched_at,
+        terminal_at: attempt.terminal_at,
+    });
+    let mut outcome = operation_outcome(
+        http_status,
+        ControllerOperationPayload {
+            protocol_version: payload.protocol_version,
+            operation_id: payload.operation_id,
+            status: payload.status,
+            code: payload.code,
+            trace_id: payload.trace_id,
+            result: payload.result,
+            provider_attempt: legacy_attempt,
+        },
+        envelope,
+    )?;
+    if root_receipt_sha256
+        .as_deref()
+        .is_some_and(|value| !valid_sha256(value))
+    {
+        return Err("contract_mismatch");
+    }
+    if let Some((receipt_sha256, attached_at)) = attempt_receipt {
+        let pair_valid = match (receipt_sha256.as_deref(), attached_at) {
+            (None, None) => true,
+            (Some(receipt_sha256), Some(attached_at)) => {
+                valid_sha256(receipt_sha256)
+                    && attached_at > 0
+                    && outcome.provider_attempt.as_ref().is_some_and(|attempt| {
+                        attempt
+                            .dispatched_at
+                            .is_some_and(|value| attached_at >= value)
+                            && attempt.terminal_at.is_none_or(|value| attached_at <= value)
+                    })
+            }
+            _ => false,
+        };
+        let attempt = outcome
+            .provider_attempt
+            .as_mut()
+            .ok_or("contract_mismatch")?;
+        if !pair_valid
+            || receipt_sha256.as_deref() != root_receipt_sha256.as_deref()
+            || (matches!(
+                attempt.status,
+                ContainerProviderAttemptStatus::Prepared
+                    | ContainerProviderAttemptStatus::DefiniteReject
+                    | ContainerProviderAttemptStatus::Cancelled
+            ) && receipt_sha256.is_some())
+            || (matches!(attempt.status, ContainerProviderAttemptStatus::Ambiguous)
+                && attempt.result.is_some() != receipt_sha256.is_some())
+        {
+            return Err("contract_mismatch");
+        }
+        attempt.provider_usage_receipt_sha256 = receipt_sha256;
+        attempt.provider_usage_receipt_attached_at = attached_at;
+    } else if root_receipt_sha256.is_some() {
+        return Err("contract_mismatch");
+    }
+    outcome.status_contract_version = 3;
+    outcome.provider_usage_receipt_sha256 = root_receipt_sha256;
+    Ok(outcome)
 }
 
 async fn execute_terminal_ack(
@@ -920,10 +1225,12 @@ fn operation_outcome(
         return Err("contract_mismatch");
     }
     Ok(ContainerOperationOutcome {
+        status_contract_version: 1,
         status,
         http_status,
         code: payload.code,
         result,
+        provider_usage_receipt_sha256: None,
         provider_attempt,
     })
 }
@@ -1034,6 +1341,8 @@ fn provider_attempt_outcome(
         response_status: attempt.response_status,
         response_code: attempt.response_code,
         result,
+        provider_usage_receipt_sha256: None,
+        provider_usage_receipt_attached_at: None,
         prepared_at: attempt.prepared_at,
         dispatched_at: attempt.dispatched_at,
         terminal_at: attempt.terminal_at,
@@ -1170,13 +1479,33 @@ fn validate_terminal_ack_envelope(
                     envelope.operation_id, envelope.owner_generation, result.sha256
                 )
     });
+    let provider_usage_binding_valid =
+        envelope
+            .provider_usage_binding
+            .as_ref()
+            .is_none_or(|binding| {
+                envelope.operation_status == "completed"
+                    && binding.attempt_generation > 0
+                    && binding.attempt_generation <= i64::from(i32::MAX)
+                    && valid_sha256(&binding.receipt_sha256)
+                    && valid_sha256(&binding.result_sha256)
+                    && envelope
+                        .result
+                        .as_ref()
+                        .is_some_and(|result| result.sha256 == binding.result_sha256)
+            });
     let transition_valid = match envelope.operation_from_status.as_str() {
         "prepared" => envelope.operation_status != "completed",
         "dispatched" => true,
         "recovery_required" => envelope.operation_status != "recovery_required",
         _ => false,
     };
-    if !predecessor_valid || !transition_valid || !outcome_valid || !result_valid {
+    if !predecessor_valid
+        || !transition_valid
+        || !outcome_valid
+        || !result_valid
+        || !provider_usage_binding_valid
+    {
         return Err("invalid_terminal_ack");
     }
     Ok(())
@@ -1443,6 +1772,32 @@ fn sign_bound_authority(
     .ok()
 }
 
+fn sign_bound_authority_with_domain(
+    authority: &AuthorityConfig,
+    dispatch_id: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    now: i64,
+    domain: &[u8],
+) -> Option<String> {
+    let token = sign_bound_authority(authority, dispatch_id, method, path, body, now)?;
+    let mut segments = token.split('.');
+    let protected = segments.next()?;
+    let claims = segments.next()?;
+    segments.next()?;
+    if segments.next().is_some() {
+        return None;
+    }
+    let mut mac = Hmac::<Sha256>::new_from_slice(authority.secret.as_bytes()).ok()?;
+    mac.update(domain);
+    mac.update(protected.as_bytes());
+    mac.update(b".");
+    mac.update(claims.as_bytes());
+    let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    Some(format!("{protected}.{claims}.{signature}"))
+}
+
 fn status_request(token: &str) -> worker::Result<Request> {
     let mut headers = Headers::new();
     headers.set("accept", "application/json")?;
@@ -1561,7 +1916,7 @@ fn runtime_flag(env: &Env, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cinatoken_container_authority::{verify_authority, AuthorityExpectation};
+    use cinatoken_container_authority::{verify_authority, AuthorityClaims, AuthorityExpectation};
 
     #[derive(Deserialize)]
     struct GoldenVector {
@@ -1636,6 +1991,19 @@ mod tests {
         }
     }
 
+    fn authority_claims_for_domain(token: &str, secret: &[u8], domain: &[u8]) -> AuthorityClaims {
+        let segments = token.split('.').collect::<Vec<_>>();
+        assert_eq!(segments.len(), 3);
+        let signature = URL_SAFE_NO_PAD.decode(segments[2]).unwrap();
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+        mac.update(domain);
+        mac.update(segments[0].as_bytes());
+        mac.update(b".");
+        mac.update(segments[1].as_bytes());
+        mac.verify_slice(&signature).unwrap();
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(segments[1]).unwrap()).unwrap()
+    }
+
     fn test_shard() -> ShardPlan {
         ShardPlan {
             contract_version: 1,
@@ -1696,6 +2064,7 @@ mod tests {
                 size: 256,
                 content_type: "application/json".to_string(),
             }),
+            provider_usage_binding: None,
             shard: test_shard(),
             trace_id: "trace-op-1".to_string(),
         }
@@ -1839,37 +2208,189 @@ mod tests {
     }
 
     #[test]
+    fn operation_status_v3_uses_its_domain_separated_authority() {
+        let envelope = test_operation();
+        let body = serde_json::to_vec(&ContainerOperationStatusQuery {
+            protocol_version: envelope.protocol_version,
+            operation_id: &envelope.operation_id,
+            owner_generation: envelope.owner_generation,
+            shard: &envelope.shard,
+            trace_id: &envelope.trace_id,
+        })
+        .unwrap();
+        let authority = test_authority();
+        let token = sign_bound_authority_with_domain(
+            &authority,
+            "operation-status-v3-test-1",
+            "POST",
+            OPERATION_STATUS_V3_PATH,
+            &body,
+            1_800_000_000,
+            OPERATION_STATUS_V3_AUTHORITY_DOMAIN,
+        )
+        .unwrap();
+        let claims = authority_claims_for_domain(
+            &token,
+            authority.secret.as_bytes(),
+            OPERATION_STATUS_V3_AUTHORITY_DOMAIN,
+        );
+        assert_eq!(claims.dispatch_id, "operation-status-v3-test-1");
+        assert_eq!(claims.path, OPERATION_STATUS_V3_PATH);
+        assert_eq!(claims.body_sha256, body_sha256(&body));
+    }
+
+    #[test]
+    fn operation_status_contracts_are_exact_and_v3_binds_provider_usage() {
+        let envelope = test_operation();
+        let base = serde_json::json!({
+            "protocol_version": 1,
+            "operation_id": envelope.operation_id,
+            "status": "running",
+            "trace_id": envelope.trace_id,
+        });
+        let v1: ControllerOperationStatusV1Payload = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(
+            operation_status_v1_outcome(202, v1, &envelope)
+                .unwrap()
+                .status_contract_version,
+            1
+        );
+
+        let mut v1_extra = base.clone();
+        v1_extra["provider_attempt"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ControllerOperationStatusV1Payload>(v1_extra).is_err());
+        assert!(serde_json::from_value::<ControllerOperationStatusV2Payload>(base).is_err());
+
+        let v2: ControllerOperationStatusV2Payload = serde_json::from_value(serde_json::json!({
+            "protocol_version": 1,
+            "operation_id": envelope.operation_id,
+            "status": "running",
+            "trace_id": envelope.trace_id,
+            "provider_attempt": null,
+        }))
+        .unwrap();
+        assert_eq!(
+            operation_status_v2_outcome(202, v2, &envelope)
+                .unwrap()
+                .status_contract_version,
+            2
+        );
+
+        let receipt_sha256 = "d".repeat(64);
+        let result = serde_json::json!({
+            "object_key": format!(
+                "container-results/v1/relayreserve-test/2/{}",
+                "c".repeat(64)
+            ),
+            "object_version": "version-result-1",
+            "sha256": "c".repeat(64),
+            "size": 256,
+            "content_type": "application/json",
+        });
+        let v3_json = serde_json::json!({
+            "protocol_version": 1,
+            "status_contract_version": 3,
+            "operation_id": envelope.operation_id,
+            "status": "completed",
+            "trace_id": envelope.trace_id,
+            "result": result,
+            "provider_usage_receipt_sha256": receipt_sha256,
+            "provider_attempt": {
+                "attempt_generation": 1,
+                "provider_operation_id": envelope.provider_operation_id,
+                "admission_sha256": envelope.admission_sha256,
+                "request_sha256": envelope.input.sha256,
+                "status": "succeeded",
+                "response_status": 200,
+                "response_code": null,
+                "result": result,
+                "provider_usage_receipt_sha256": receipt_sha256,
+                "provider_usage_receipt_attached_at": 1_800_000_101,
+                "prepared_at": 1_800_000_100,
+                "dispatched_at": 1_800_000_101,
+                "terminal_at": 1_800_000_102,
+            },
+        });
+        let v3: ControllerOperationStatusV3Payload =
+            serde_json::from_value(v3_json.clone()).unwrap();
+        let outcome = operation_status_v3_outcome(200, v3, &envelope).unwrap();
+        assert_eq!(outcome.status_contract_version, 3);
+        assert_eq!(
+            outcome.provider_usage_receipt_sha256.as_deref(),
+            Some(receipt_sha256.as_str())
+        );
+        assert_eq!(
+            outcome
+                .provider_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.provider_usage_receipt_attached_at),
+            Some(1_800_000_101)
+        );
+
+        let mut legacy_without_receipt = v3_json.clone();
+        legacy_without_receipt["provider_usage_receipt_sha256"] = serde_json::Value::Null;
+        legacy_without_receipt["provider_attempt"]["provider_usage_receipt_sha256"] =
+            serde_json::Value::Null;
+        legacy_without_receipt["provider_attempt"]["provider_usage_receipt_attached_at"] =
+            serde_json::Value::Null;
+        let legacy_outcome = operation_status_v3_outcome(
+            200,
+            serde_json::from_value(legacy_without_receipt).unwrap(),
+            &envelope,
+        )
+        .unwrap();
+        assert_eq!(legacy_outcome.status_contract_version, 3);
+        assert_eq!(legacy_outcome.provider_usage_receipt_sha256, None);
+        assert_eq!(
+            legacy_outcome
+                .provider_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.provider_usage_receipt_sha256.as_deref()),
+            None
+        );
+
+        let mut missing_root = v3_json.clone();
+        missing_root
+            .as_object_mut()
+            .unwrap()
+            .remove("provider_usage_receipt_sha256");
+        assert!(
+            serde_json::from_value::<ControllerOperationStatusV3Payload>(missing_root).is_err()
+        );
+        let mut divergent = v3_json;
+        divergent["provider_usage_receipt_sha256"] = serde_json::json!("e".repeat(64));
+        assert_eq!(
+            operation_status_v3_outcome(200, serde_json::from_value(divergent).unwrap(), &envelope,),
+            Err("contract_mismatch")
+        );
+    }
+
+    #[test]
     fn terminal_ack_is_body_bound_and_strictly_fenced() {
         let authority = test_authority();
         let envelope = test_terminal_ack();
         validate_terminal_ack_envelope(&envelope).unwrap();
         let body = serde_json::to_vec(&envelope).unwrap();
-        let token = sign_bound_authority(
+        let token = sign_bound_authority_with_domain(
             &authority,
             "terminal-ack-test-1",
             "POST",
             TERMINAL_ACK_PATH,
             &body,
             1_800_000_000,
+            TERMINAL_ACK_V2_AUTHORITY_DOMAIN,
         )
         .unwrap();
         let body_hash = body_sha256(&body);
-        let claims = verify_authority(
-            authority.secret.as_bytes(),
-            &authority.kid,
+        let claims = authority_claims_for_domain(
             &token,
-            AuthorityExpectation {
-                issuer: &authority.issuer,
-                audience: &authority.audience,
-                protocol_version: 1,
-                body_sha256: &body_hash,
-                method: "POST",
-                path: TERMINAL_ACK_PATH,
-                now: 1_800_000_001,
-            },
-        )
-        .unwrap();
+            authority.secret.as_bytes(),
+            TERMINAL_ACK_V2_AUTHORITY_DOMAIN,
+        );
         assert_eq!(claims.dispatch_id, "terminal-ack-test-1");
+        assert_eq!(claims.path, TERMINAL_ACK_PATH);
+        assert_eq!(claims.method, "POST");
+        assert_eq!(claims.body_sha256, body_hash);
 
         let mut invalid = envelope.clone();
         invalid.shard.instance_name = "cinatoken-relay-shard-v1-0004".to_string();
@@ -1885,6 +2406,51 @@ mod tests {
         invalid.response_status = 502;
         invalid.response_code = Some("provider_failed".to_string());
         assert!(validate_terminal_ack_envelope(&invalid).is_err());
+    }
+
+    #[test]
+    fn terminal_ack_v2_provider_usage_binding_is_exact_or_explicitly_null() {
+        let legacy = test_terminal_ack();
+        validate_terminal_ack_envelope(&legacy).unwrap();
+        let legacy_json = serde_json::to_value(&legacy).unwrap();
+        assert!(legacy_json
+            .get("provider_usage_binding")
+            .is_some_and(serde_json::Value::is_null));
+        assert_eq!(TERMINAL_ACK_PATH, "/internal/v2/operations/terminal-ack");
+
+        let mut bound = legacy;
+        bound.provider_usage_binding = Some(ContainerTerminalAckProviderUsageBinding {
+            attempt_generation: 1,
+            receipt_sha256: "a".repeat(64),
+            result_sha256: "c".repeat(64),
+        });
+        validate_terminal_ack_envelope(&bound).unwrap();
+        let binding = serde_json::to_value(&bound).unwrap()["provider_usage_binding"].clone();
+        assert_eq!(binding["attempt_generation"], 1);
+        assert_eq!(binding["receipt_sha256"], "a".repeat(64));
+        assert_eq!(binding["result_sha256"], "c".repeat(64));
+
+        let mut divergent = bound.clone();
+        divergent
+            .provider_usage_binding
+            .as_mut()
+            .unwrap()
+            .result_sha256 = "d".repeat(64);
+        assert_eq!(
+            validate_terminal_ack_envelope(&divergent),
+            Err("invalid_terminal_ack")
+        );
+
+        let mut invalid_attempt = bound;
+        invalid_attempt
+            .provider_usage_binding
+            .as_mut()
+            .unwrap()
+            .attempt_generation = 0;
+        assert_eq!(
+            validate_terminal_ack_envelope(&invalid_attempt),
+            Err("invalid_terminal_ack")
+        );
     }
 
     #[test]

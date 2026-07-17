@@ -6,6 +6,7 @@ const requestKeys = [
   "owner_generation",
   "predecessor_billing_event_id",
   "protocol_version",
+  "provider_usage_binding",
   "reconciliation_id",
   "reconciliation_revision",
   "response_code",
@@ -32,7 +33,7 @@ export default {
     const url = new URL(request.url);
     if (
       request.method !== "POST" ||
-      url.pathname !== "/internal/v1/operations/terminal-ack"
+      url.pathname !== "/internal/v2/operations/terminal-ack"
     ) {
       return json({ error: "route_not_found" }, 404);
     }

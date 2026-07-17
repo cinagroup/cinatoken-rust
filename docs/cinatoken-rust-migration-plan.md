@@ -14268,3 +14268,74 @@ premature staging enablement would eventually apply bounded backpressure
 rather than discard evidence. No remote migration, deployment, provider call,
 R2 mutation, financial mutation, or traffic switch occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.235 Default-Off Private Provider Egress Canary (2026-07-17)
+
+This increment closes the local transport gap between the durable attempt
+journal and the Rust Linux runtime without treating that closure as production
+readiness. The refreshed Go audit keeps channel selection, model mapping,
+credential policy, billing pre-consumption, usage parsing, settlement/refund,
+channel health, and request-local retry outside the broker. The refreshed
+cinaVibeSDK audit keeps deterministic named ownership, persist-before-effect,
+server-side credential injection, and structured process termination while
+rejecting public bearer runners, local-disk truth, uncancelled timeout races,
+modulo routing, and POST retries.
+
+The compiled path has five independent trust boundaries:
+
+1. The Rust Container client accepts only `chat_completions_canary`, R2 input,
+   non-streaming JSON, a 4 MiB body, and the operation's absolute deadline. It
+   reads and re-hashes the exact input before any provider request.
+2. `RelayShardContainer` keeps `enableInternet=false` and permits only the
+   synthetic `provider-egress.cinatoken.internal` host. The actual provider host
+   never enters the Container allowlist.
+3. The Controller derives the exact shard DO from `ctx.containerId`, reloads the
+   immutable grant, proves the global D1 operation is exactly `dispatched`, and
+   consumes the DO's one-shot attempt transition.
+4. The `PROVIDER_EGRESS` Service Binding targets a separate Worker with no
+   public route, `workers_dev=false`, preview URLs disabled, and its own false
+   runtime gate.
+5. That Worker owns one fixed `openai-chat-completions-canary-v1` profile and
+   the secret API key. It repeats identity, digest, model, streaming, size, and
+   five-minute deadline checks, constructs a new fixed-host request, denies
+   redirects, explicitly aborts at the deadline, bounds the response to 4 MiB,
+   and performs no retry.
+
+The transaction order is deliberately asymmetric. Every Controller-owned
+deterministic check precedes the DO `prepared -> dispatched` commit, including
+Service Binding presence. After that commit, binding transport failure,
+broker gate/model/credential rejection, timeout, non-2xx, malformed/oversized
+body, R2 create/readback uncertainty, DO result-attach uncertainty, or terminal
+RPC uncertainty is classified as ambiguous. None may call the provider again. A
+dispatched replay without a result becomes recovery without a broker call. An
+exact attached-result replay records/returns success without a broker call. A
+lost terminal RPC rereads canonical DO state before returning ambiguity.
+
+On the successful path the Controller hashes the bounded provider JSON, writes
+or verifies one create-only R2 result, attaches its exact version/digest/size/
+content type to attempt generation 1, and only then records attempt success.
+The Container receives only the strict result manifest or a recovery-required
+outcome. Credentials are absent from the Container environment, operation
+envelope, DO SQLite, D1, R2 metadata, and response contract.
+
+The new Controller variables are
+`CONTAINER_PROVIDER_CLIENT_ENABLED=false` and
+`CONTAINER_PROVIDER_EGRESS_ENABLED=false` in development, staging, and
+production. Existing journal/retry/staging gates remain false and maximum
+attempts remains one. The broker's tracked gate is false and its model is empty
+in all environments; the secret is intentionally unprovisioned by source.
+Deployment order is broker target first, binding readback second, Controller
+and image with all gates false third, then synthetic pre-dispatch proof. The
+first provider request requires a separately approved isolated-staging window.
+
+This profile cannot yet support production traffic. It lacks immutable
+egress-profile/version identity in D1 and DO, provider-native idempotency or
+lookup, durable upstream status/header provenance, definite provider rejection
+classification, global D1 terminal acknowledgement and journal compaction,
+multi-provider adapters, streaming, actual remote Linux Container evidence,
+a pre-dispatch broker readiness/readback RPC, N/N-1, secret rotation, real
+R2/DO/network faults, load/cost/alert evidence, exact edge replay, financial
+convergence, rollback drills, and C1-C5 approval. Migration 0046 remains
+reserved for legacy enforcement after old-writer drain. No remote migration,
+deployment, provider call, financial mutation, or traffic switch occurred.
+Go/VPS remains authoritative and production remains **NO-GO**.

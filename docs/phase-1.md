@@ -1911,3 +1911,43 @@ egress broker, DO retry scheduler, global D1 terminal ack, multi-attempt R2
 contract, actual Linux Container client, N/N-1 deployment drill, and remote
 fault evidence are still absent. Migration 0046 remains reserved for legacy
 enforcement. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-17 Phase 1 Default-Off Private Provider Egress Canary
+
+The local execution plane now connects the real Rust Linux runtime client to a
+private credential-owning Worker broker, but every tracked activation gate is
+still false. The Container reads and re-hashes the exact owner-fenced R2 input,
+then can call only `provider-egress.cinatoken.internal` through the Controller's
+`outboundByHost`. Direct internet remains disabled and the real provider host
+is not in the Container allowlist.
+
+The Controller validates the immutable DO grant and exact global D1
+`dispatched` row before consuming one-shot attempt authority. Only the first
+committed `prepared -> dispatched` transition may call the `PROVIDER_EGRESS`
+Service Binding. The broker owns one fixed, non-streaming chat-completions
+profile, injects its secret internally, denies redirects, bounds request and
+response bodies to 4 MiB, enforces an absolute five-minute deadline, and never
+retries or interprets usage.
+
+Success is persisted to create-only R2, attached to the same attempt generation,
+and then recorded terminal. Every uncertainty after dispatch becomes a strict
+202 ambiguous outcome. Dispatch replay never calls the broker; an attached
+result replay finishes from durable evidence; a lost terminal RPC rereads the
+DO. Tests cover success, broker loss, dispatched replay, attached-result replay,
+R2-to-DO uncertainty, terminal RPC loss, disabled/malformed requests, deadline
+rejection, and non-dispatched D1 admission.
+
+`CONTAINER_PROVIDER_CLIENT_ENABLED=false` and
+`CONTAINER_PROVIDER_EGRESS_ENABLED=false` join the existing false journal,
+retry, and staging-proof gates. The separate broker Worker also has a false
+gate, empty model, no route, and disabled development/preview URLs. No secret is
+tracked, no remote deployment or provider call occurred, and no public relay
+path is wired.
+
+Before isolated staging, the migration still needs immutable egress-profile
+identity, provider-native idempotency or lookup, durable upstream response
+provenance, global terminal acknowledgement/compaction, exact edge replay and
+financial convergence, actual Container lifecycle and R2/DO/network faults,
+a pre-dispatch broker readiness/readback RPC, N/N-1, secret rotation,
+load/cost/alerts, rollback, and C1-C5 approvals. Go/VPS remains authoritative
+and production remains **NO-GO**.

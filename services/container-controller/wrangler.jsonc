@@ -19,6 +19,8 @@
     "CONTAINER_STORAGE_KV_READ_ENABLED": "false",
     "CONTAINER_STORAGE_D1_READ_ENABLED": "false",
     "CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED": "false",
+    "CONTAINER_PROVIDER_CLIENT_ENABLED": "false",
+    "CONTAINER_PROVIDER_EGRESS_ENABLED": "false",
     "CONTAINER_PROVIDER_RETRY_ENABLED": "false",
     "CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED": "false",
     "CONTAINER_MAX_PROVIDER_ATTEMPTS": "1",
@@ -50,6 +52,12 @@
     {
       "binding": "FILE_BUCKET",
       "bucket_name": "cinatoken-rust-files"
+    }
+  ],
+  "services": [
+    {
+      "binding": "PROVIDER_EGRESS",
+      "service": "cinatoken-container-egress-local"
     }
   ],
   "durable_objects": {

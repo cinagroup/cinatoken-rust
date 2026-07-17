@@ -16,11 +16,25 @@ const operationStatusSource = await Bun.file(
 const providerAttemptGatewaySource = await Bun.file(
   new URL("../services/container-controller/src/provider_attempt_gateway.ts", import.meta.url),
 ).text();
+const providerEgressGatewaySource = await Bun.file(
+  new URL("../services/container-controller/src/provider_egress_gateway.ts", import.meta.url),
+).text();
+const providerEgressSource = await Bun.file(
+  new URL("../crates/container-egress/src/lib.rs", import.meta.url),
+).text();
+const providerEgressConfig = Bun.TOML.parse(
+  await Bun.file(new URL("../crates/container-egress/wrangler.toml", import.meta.url)).text(),
+);
 const configFiles = [
   "wrangler.jsonc",
   "wrangler.staging.jsonc",
   "wrangler.production.jsonc",
 ];
+const providerEgressTargets = {
+  "wrangler.jsonc": "cinatoken-container-egress-local",
+  "wrangler.staging.jsonc": "cinatoken-container-egress-staging",
+  "wrangler.production.jsonc": "cinatoken-container-egress-production",
+};
 
 describe("isolated container controller configuration", () => {
   for (const file of configFiles) {
@@ -40,6 +54,8 @@ describe("isolated container controller configuration", () => {
       expect(config.vars.CONTAINER_STORAGE_KV_READ_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_STORAGE_D1_READ_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_PROVIDER_CLIENT_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_PROVIDER_EGRESS_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_PROVIDER_RETRY_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED).toBe("false");
       expect(config.vars.CONTAINER_MAX_PROVIDER_ATTEMPTS).toBe("1");
@@ -53,6 +69,12 @@ describe("isolated container controller configuration", () => {
       expect(config.kv_namespaces[0].binding).toBe("CONFIG_KV");
       expect(config.r2_buckets).toHaveLength(1);
       expect(config.r2_buckets[0].binding).toBe("FILE_BUCKET");
+      expect(config.services).toEqual([
+        {
+          binding: "PROVIDER_EGRESS",
+          service: providerEgressTargets[file],
+        },
+      ]);
       expect(config.durable_objects.bindings).toEqual([
         { name: "RELAY_SHARDS", class_name: "RelayShardContainer" },
       ]);
@@ -84,6 +106,8 @@ describe("isolated container controller configuration", () => {
       expect(controllerSource).toContain(host.split(".")[0].replaceAll("-", "_").toUpperCase());
       expect(storageGatewaySource).toContain(`\"${host}\"`);
     }
+    expect(controllerSource).toContain("PROVIDER_EGRESS_HOST");
+    expect(providerEgressGatewaySource).toContain('"provider-egress.cinatoken.internal"');
     expect(storageGatewaySource).not.toMatch(/\.list\(|\.delete\(/);
     expect(storageGatewaySource).toContain("operation.operation_id = ?1");
     expect(storageGatewaySource).toContain("operation.owner_generation = ?2");
@@ -93,9 +117,30 @@ describe("isolated container controller configuration", () => {
       controllerSource.indexOf("const claim = this.ledger.claimOperation("),
     );
     expect(controllerSource).toContain("PROVIDER_ATTEMPT_HOST");
+    expect(controllerSource).toContain("PROVIDER_EGRESS_HOST");
     expect(providerAttemptGatewaySource).toContain('"provider-attempt.cinatoken.internal"');
     expect(providerAttemptGatewaySource).not.toContain("prepareProviderAttempt(");
     expect(controllerSource).toContain("if (retryEnabled || maxAttempts !== 1)");
+  });
+
+  test("provider egress is a private default-off fixed-profile service", () => {
+    expect(providerEgressConfig.workers_dev).toBe(false);
+    expect(providerEgressConfig.preview_urls).toBe(false);
+    expect(providerEgressConfig.routes).toBeUndefined();
+    expect(providerEgressConfig.vars.CINATOKEN_CONTAINER_PROVIDER_EGRESS_ENABLED).toBe("false");
+    expect(providerEgressConfig.vars.CINATOKEN_CONTAINER_PROVIDER_MODEL).toBe("");
+    expect(providerEgressConfig.env.staging.name).toBe("cinatoken-container-egress-staging");
+    expect(providerEgressConfig.env.production.name).toBe("cinatoken-container-egress-production");
+    expect(providerEgressGatewaySource).toContain("requireD1ProviderEgressAdmission");
+    expect(providerEgressGatewaySource).toContain("dispatchProviderAttempt");
+    expect(providerEgressGatewaySource.indexOf("requireD1ProviderEgressAdmission")).toBeLessThan(
+      providerEgressGatewaySource.indexOf("dispatchProviderAttempt"),
+    );
+    expect(providerEgressSource).toContain('const API_KEY_ENV: &str = "CINATOKEN_CONTAINER_PROVIDER_API_KEY"');
+    expect(providerEgressSource).toContain('pub const UPSTREAM_HOST: &str = "api.openai.com"');
+    expect(providerEgressSource).toContain('pub const UPSTREAM_PATH: &str = "/v1/chat/completions"');
+    expect(providerEgressSource).not.toMatch(/BASE_URL_ENV|UPSTREAM_URL_ENV|env\.secret\([^A]/);
+    expect(packageJson.scripts["check:container-egress"]).toContain("wasm32-unknown-unknown");
   });
 
   test("operation status is routed through a ledger-only RPC", () => {

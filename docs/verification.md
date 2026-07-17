@@ -6247,3 +6247,108 @@ deployment readback, N/N-1, one deterministic non-provider canary, real R2 and
 Container faults, global terminal ack/compaction, accounting convergence, load,
 cost, alerts, and rollback. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## Private Provider Egress Canary Verification (2026-07-17)
+
+This overlay verifies the default-off local transport from the Rust Linux
+runtime through the Controller and one-shot DO attempt journal to a separate
+private credential-owning Worker. It does not verify a remote Container,
+provider call, production secret, deployment, traffic switch, retry, streaming,
+or financial terminalization.
+
+```powershell
+cargo test -p cinatoken-container-egress
+# PASS: 3 tests; 0 failed.
+
+cargo check -p cinatoken-container-egress --target wasm32-unknown-unknown
+worker-build --release
+# PASS: wasm32 check and optimized broker Wasm/JS package.
+
+cargo test -p cinatoken-container-runtime
+# PASS: 12 unit tests plus 7 HTTP tests; 0 failed.
+
+node node_modules/typescript/bin/tsc `
+  -p services/container-controller/tsconfig.json --noEmit
+
+node node_modules/vitest/vitest.mjs run `
+  --config vitest.container-controller-protocol.config.mjs
+# PASS: 5 files, 52 tests.
+
+node node_modules/vitest/vitest.mjs run `
+  --config vitest.container-controller.config.mjs
+# PASS: 22 Workerd/DO SQLite tests.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 771 tests; 0 failed.
+
+cargo test --workspace --exclude cinatoken-worker
+# PASS: all non-Worker unit, integration, and doc tests.
+
+node node_modules/vitest/vitest.mjs run --config vitest.do.config.mjs
+# PASS: 45 Workerd lifecycle tests.
+
+python tools/verify_sqlite.py
+node tools/audit_d1_migration_config.mjs --json
+# PASS: 45 contiguous migrations, 43 tables, 434 incremental columns,
+# 64 key indexes; runtime and configuration head remain 0045.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo check -p cinatoken-wfp-tenant --target wasm32-unknown-unknown
+cargo check -p cinatoken-wfp-outbound --target wasm32-unknown-unknown
+cargo fmt --all -- --check
+git diff --check
+# PASS.
+```
+
+The portable gateway suite proves one successful provider call, create-only R2
+result persistence, exact attempt attachment, and terminal success. It also
+proves broker transport loss becomes ambiguous, dispatched replay never calls
+the broker, attached-result replay converges without a provider call, R2-to-DO
+attach uncertainty cannot resend, and a lost terminal RPC rereads canonical DO
+state. Disabled or malformed requests, invalid deadlines, missing Service
+Bindings, and non-dispatched global D1 state all fail before one-shot dispatch.
+
+The broker's native tests enforce exact lowercase SHA-256, fixed configured
+model, non-streaming JSON, bounded identity syntax, and a deadline no more than
+five minutes ahead. Final source additionally bounds both request and provider
+response bodies to 4 MiB, constructs a fixed upstream host/path, injects only
+the broker secret, uses manual redirects, explicitly aborts the upstream fetch
+at the absolute deadline, and contains no retry loop.
+
+The runtime tests prove the execution gate remains false by default, health
+still works while execution is disabled, only `chat_completions_canary` reaches
+the injected executor, executor success returns only its exact manifest, and an
+unknown execution result becomes recovery. The real client uses only internal
+HTTP hosts, rechecks R2 input length/hash/type, applies the same absolute
+deadline to transport and bounded body reads, and strictly validates the
+gateway identity and success/ambiguity shape.
+
+Wrangler generated-type checking reported the checked file current, and the
+Controller dry-run bundled successfully with the `PROVIDER_EGRESS` Service
+Binding and both new gates false. Wrangler could not write its optional
+user-profile debug log under the filesystem sandbox but exited 0. Independent
+PowerShell assertions parsed all three Controller JSON configurations and
+proved private URLs, exact environment-specific broker targets, journal/client/
+egress/retry false, and maximum attempts one. A separate source assertion proved
+the broker TOML has no route, disables development and preview URLs, and keeps
+its gate false and model empty in all three environments.
+
+The optimized broker build used the Cargo.lock-matched global `wasm-bindgen
+0.2.125` and repository-local esbuild binary. The package succeeded with the
+existing optional missing-license-file and generated panic-hook warnings; no
+dependency was downgraded. Bun is unavailable in this shell, so `bun run check`
+and the Bun-native configuration test were not run. TypeScript, portable
+Vitest, Workerd, Cargo workspace, Wasm, Wrangler, SQLite, syntax, configuration,
+formatter, and diff checks cover the changed paths directly.
+
+A focused credential/egress scan found the real provider host and Authorization
+construction only in `cinatoken-container-egress`; the Controller contains one
+broker fetch and the Container has no credential. The Container allowlist holds
+only synthetic internal hosts and `enableInternet=false`. Remote evidence is
+still empty: no API key was provisioned, no Worker or Container was deployed,
+no Docker image was started, no R2/D1/DO remote state changed, and no provider
+request was sent. Pre-dispatch broker readiness/readback, immutable egress
+profile identity, provider-native idempotency/lookup, durable upstream response
+provenance, global terminal acknowledgement, edge replay, financial convergence,
+N/N-1, real fault/load/cost/alert/rollback evidence, and C1-C5 approval remain
+mandatory. Go/VPS remains authoritative and production remains **NO-GO**.

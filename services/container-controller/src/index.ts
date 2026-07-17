@@ -46,10 +46,17 @@ import {
   handleProviderAttemptGatewayRequest,
 } from "./provider_attempt_gateway";
 import {
+  PROVIDER_EGRESS_HOST,
+  handleProviderEgressGatewayRequest,
+  type ProviderEgressGatewayEnvironment,
+} from "./provider_egress_gateway";
+import {
   CONTENT_SHA256_HEADER,
   D1_ADMISSION_HOST,
   KV_CONFIG_HOST,
   MAX_R2_OBJECT_BYTES,
+  OPERATION_ID_HEADER,
+  OWNER_GENERATION_HEADER,
   PROVIDER_ATTEMPT_GENERATION_HEADER,
   R2_INPUT_HOST,
   R2_OBJECT_VERSION_HEADER,
@@ -76,6 +83,8 @@ interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
   CONTAINER_STORAGE_KV_READ_ENABLED: string;
   CONTAINER_STORAGE_D1_READ_ENABLED: string;
   CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED: string;
+  CONTAINER_PROVIDER_CLIENT_ENABLED: string;
+  CONTAINER_PROVIDER_EGRESS_ENABLED: string;
   CONTAINER_PROVIDER_RETRY_ENABLED: string;
   CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED: string;
   CONTAINER_MAX_PROVIDER_ATTEMPTS: string;
@@ -162,7 +171,11 @@ export class RelayShardContainer extends Container<ControllerEnv> {
   override requiredPorts = [8080];
   override sleepAfter = "10m";
   override entrypoint = ["/usr/local/bin/cinatoken-container-runtime"];
-  override envVars: Record<string, string> = { CINATOKEN_CONTAINER_PORT: "8080" };
+  override envVars: Record<string, string> = {
+    CINATOKEN_CONTAINER_PORT: "8080",
+    CINATOKEN_CONTAINER_PROVIDER_CLIENT_ENABLED:
+      this.env.CONTAINER_PROVIDER_CLIENT_ENABLED === "true" ? "true" : "false",
+  };
   override enableInternet = false;
   override interceptHttps = true;
   override allowedHosts: string[] = [
@@ -171,6 +184,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     KV_CONFIG_HOST,
     D1_ADMISSION_HOST,
     PROVIDER_ATTEMPT_HOST,
+    PROVIDER_EGRESS_HOST,
   ];
   override pingEndpoint = "/healthz";
 
@@ -654,6 +668,7 @@ RelayShardContainer.outboundByHost = {
   [KV_CONFIG_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET),
   [D1_ADMISSION_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET),
   [PROVIDER_ATTEMPT_HOST]: providerAttemptOutboundHandler,
+  [PROVIDER_EGRESS_HOST]: providerEgressOutboundHandler,
 };
 
 const handler: ExportedHandler<ControllerEnv> = {
@@ -817,9 +832,6 @@ function finalizeOperationOutcome(
   }
 }
 
-const STORAGE_OPERATION_ID_HEADER = "x-cinatoken-operation-id";
-const STORAGE_OWNER_GENERATION_HEADER = "x-cinatoken-owner-generation";
-
 async function providerAttemptOutboundHandler(
   request: Request,
   env: Cloudflare.Env,
@@ -842,6 +854,31 @@ async function providerAttemptOutboundHandler(
     return jsonError("provider_attempt_access_denied", 403);
   }
   return handleProviderAttemptGatewayRequest(request, env.RELAY_SHARDS.get(id), identity);
+}
+
+async function providerEgressOutboundHandler(
+  request: Request,
+  env: Cloudflare.Env,
+  context: { containerId: string },
+): Promise<Response> {
+  const identity = storageOperationIdentity(request);
+  if (identity === null) {
+    await cancelRequestBody(request);
+    return jsonError("provider_egress_access_denied", 403);
+  }
+  let id: DurableObjectId;
+  try {
+    id = env.RELAY_SHARDS.idFromString(context.containerId);
+  } catch {
+    await cancelRequestBody(request);
+    return jsonError("provider_egress_access_denied", 403);
+  }
+  return handleProviderEgressGatewayRequest(
+    request,
+    providerEgressEnv(env),
+    env.RELAY_SHARDS.get(id),
+    identity,
+  );
 }
 
 function storageOutboundHandler(action: StorageGatewayAction) {
@@ -906,8 +943,8 @@ function storageActionEnabled(
 function storageOperationIdentity(
   request: Request,
 ): { operationId: string; ownerGeneration: number } | null {
-  const operationId = request.headers.get(STORAGE_OPERATION_ID_HEADER);
-  const generation = request.headers.get(STORAGE_OWNER_GENERATION_HEADER);
+  const operationId = request.headers.get(OPERATION_ID_HEADER);
+  const generation = request.headers.get(OWNER_GENERATION_HEADER);
   if (
     operationId === null ||
     operationId.length < 1 ||
@@ -1033,6 +1070,23 @@ function storageGatewayEnv(
     CONTAINER_STORAGE_RESULT_R2: env.FILE_BUCKET,
     CONTAINER_STORAGE_CONFIG_KV: env.CONFIG_KV,
     CONTAINER_STORAGE_ADMISSION_DB: env.DB,
+  };
+}
+
+function providerEgressEnv(
+  env: Pick<
+    ControllerEnv,
+    | "FILE_BUCKET"
+    | "CONFIG_KV"
+    | "DB"
+    | "PROVIDER_EGRESS"
+    | "CONTAINER_PROVIDER_EGRESS_ENABLED"
+  >,
+): ProviderEgressGatewayEnvironment {
+  return {
+    ...storageGatewayEnv(env),
+    CONTAINER_PROVIDER_EGRESS_ENABLED: env.CONTAINER_PROVIDER_EGRESS_ENABLED,
+    PROVIDER_EGRESS: env.PROVIDER_EGRESS,
   };
 }
 

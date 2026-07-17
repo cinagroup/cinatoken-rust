@@ -3,11 +3,13 @@ use std::{
     error::Error,
     ffi::OsString,
     fmt,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
     body::Bytes,
+    extract::State,
     extract::{rejection::BytesRejection, DefaultBodyLimit},
     http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -16,12 +18,17 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+mod client;
+
+use client::{ExecutionError, ExecutionOutcome, InternalProviderClient, OperationExecutor};
+
 pub const DEFAULT_PORT: u16 = 8080;
 pub const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 pub const MAX_EXECUTION_WINDOW_SECONDS: u64 = 300;
 pub const CONTAINER_PROTOCOL_HEADER: &str = "x-cinatoken-container-protocol";
 pub const EXECUTION_NOT_ENABLED_CODE: &str = "execution_not_enabled";
 pub const AMBIGUOUS_EXECUTION_CODE: &str = "ambiguous_execution";
+pub const PROVIDER_INPUT_UNAVAILABLE_CODE: &str = "provider_input_unavailable";
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const SHARD_CONTRACT_VERSION: u32 = 1;
@@ -37,11 +44,28 @@ const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CONTAINER_SHARDS: u16 = 1_024;
 
 pub fn app() -> Router {
+    let execution_enabled = env::var("CINATOKEN_CONTAINER_PROVIDER_CLIENT_ENABLED")
+        .ok()
+        .is_some_and(|value| value == "true");
+    app_with_state(AppState {
+        executor: Arc::new(InternalProviderClient::new()),
+        execution_enabled,
+    })
+}
+
+fn app_with_state(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/v1/operations", post(operations))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .with_state(state)
+}
+
+#[derive(Clone)]
+struct AppState {
+    executor: Arc<dyn OperationExecutor>,
+    execution_enabled: bool,
 }
 
 pub fn container_port() -> Result<u16, PortConfigError> {
@@ -75,16 +99,20 @@ async fn healthz() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
-async fn readyz() -> Json<ReadinessResponse> {
+async fn readyz(State(state): State<AppState>) -> Json<ReadinessResponse> {
     Json(ReadinessResponse {
         status: "ready",
         protocol_version: PROTOCOL_VERSION,
         shard_contract_version: SHARD_CONTRACT_VERSION,
-        execution_enabled: false,
+        execution_enabled: state.execution_enabled,
     })
 }
 
-async fn operations(headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Response {
+async fn operations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
     let body = match body {
         Ok(body) => body,
         Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
@@ -149,17 +177,57 @@ async fn operations(headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> 
         return error_response(StatusCode::BAD_REQUEST, error.code, error.message);
     }
 
-    let completed = envelope.operation_kind == "health_probe";
-    let response = if completed {
-        OperationResponse::completed(envelope.operation_id, envelope.trace_id)
-    } else {
-        OperationResponse::rejected_execution_not_enabled(envelope.operation_id, envelope.trace_id)
-    };
+    if envelope.operation_kind == "health_probe" {
+        return (
+            StatusCode::OK,
+            Json(OperationResponse::completed(
+                envelope.operation_id,
+                envelope.trace_id,
+            )),
+        )
+            .into_response();
+    }
+    if !state.execution_enabled || envelope.operation_kind != client::PROVIDER_CANARY_OPERATION_KIND
+    {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(OperationResponse::rejected_execution_not_enabled(
+                envelope.operation_id,
+                envelope.trace_id,
+            )),
+        )
+            .into_response();
+    }
 
-    if completed {
-        (StatusCode::OK, Json(response)).into_response()
-    } else {
-        (StatusCode::NOT_IMPLEMENTED, Json(response)).into_response()
+    match state.executor.execute(&envelope).await {
+        Ok(ExecutionOutcome::Completed(result)) => (
+            StatusCode::OK,
+            Json(OperationResponse::completed_with_result(
+                envelope.operation_id,
+                envelope.trace_id,
+                result,
+            )),
+        )
+            .into_response(),
+        Ok(ExecutionOutcome::RecoveryRequired) | Err(ExecutionError::Ambiguous) => (
+            StatusCode::ACCEPTED,
+            Json(
+                OperationResponse::recovery_required_for_ambiguous_execution(
+                    envelope.operation_id,
+                    envelope.trace_id,
+                ),
+            ),
+        )
+            .into_response(),
+        Err(ExecutionError::InputUnavailable) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(OperationResponse::rejected(
+                envelope.operation_id,
+                envelope.trace_id,
+                PROVIDER_INPUT_UNAVAILABLE_CODE,
+            )),
+        )
+            .into_response(),
     }
 }
 
@@ -361,11 +429,15 @@ impl OperationResponse {
     }
 
     pub fn rejected_execution_not_enabled(operation_id: String, trace_id: String) -> Self {
+        Self::rejected(operation_id, trace_id, EXECUTION_NOT_ENABLED_CODE)
+    }
+
+    pub fn rejected(operation_id: String, trace_id: String, code: &str) -> Self {
         Self::new(
             operation_id,
             trace_id,
             OperationOutcomeStatus::Rejected,
-            Some(EXECUTION_NOT_ENABLED_CODE.to_string()),
+            Some(code.to_string()),
             None,
         )
     }
@@ -496,18 +568,18 @@ impl<'de> Deserialize<'de> for OperationResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OperationEnvelope {
-    protocol_version: u32,
-    operation_id: String,
-    operation_kind: String,
-    owner_generation: u64,
-    owner_lease_expires_at: u64,
-    execution_deadline_at: u64,
-    provider_operation_id: String,
-    admission_sha256: String,
-    input: OperationInput,
-    shard: OperationShard,
-    trace_id: String,
+pub(crate) struct OperationEnvelope {
+    pub(crate) protocol_version: u32,
+    pub(crate) operation_id: String,
+    pub(crate) operation_kind: String,
+    pub(crate) owner_generation: u64,
+    pub(crate) owner_lease_expires_at: u64,
+    pub(crate) execution_deadline_at: u64,
+    pub(crate) provider_operation_id: String,
+    pub(crate) admission_sha256: String,
+    pub(crate) input: OperationInput,
+    pub(crate) shard: OperationShard,
+    pub(crate) trace_id: String,
 }
 
 impl OperationEnvelope {
@@ -560,13 +632,13 @@ impl OperationEnvelope {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OperationInput {
-    mode: String,
-    sha256: String,
-    size: u64,
-    content_type: String,
-    request_object_key: Option<String>,
-    object_version: Option<String>,
+pub(crate) struct OperationInput {
+    pub(crate) mode: String,
+    pub(crate) sha256: String,
+    pub(crate) size: u64,
+    pub(crate) content_type: String,
+    pub(crate) request_object_key: Option<String>,
+    pub(crate) object_version: Option<String>,
 }
 
 impl OperationInput {
@@ -635,12 +707,12 @@ impl OperationInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OperationShard {
-    contract_version: u32,
-    ring_generation: u64,
-    shard_count: u16,
-    shard_index: u16,
-    instance_name: String,
+pub(crate) struct OperationShard {
+    pub(crate) contract_version: u32,
+    pub(crate) ring_generation: u64,
+    pub(crate) shard_count: u16,
+    pub(crate) shard_index: u16,
+    pub(crate) instance_name: String,
 }
 
 impl OperationShard {
@@ -811,7 +883,34 @@ fn validate_sha256(value: &str, code: &'static str) -> Result<(), ValidationErro
 
 #[cfg(test)]
 mod tests {
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
     use super::*;
+
+    struct FakeExecutor {
+        outcome: Result<ExecutionOutcome, ExecutionError>,
+    }
+
+    #[async_trait::async_trait]
+    impl OperationExecutor for FakeExecutor {
+        async fn execute(
+            &self,
+            _envelope: &OperationEnvelope,
+        ) -> Result<ExecutionOutcome, ExecutionError> {
+            match &self.outcome {
+                Ok(ExecutionOutcome::Completed(result)) => {
+                    Ok(ExecutionOutcome::Completed(result.clone()))
+                }
+                Ok(ExecutionOutcome::RecoveryRequired) => Ok(ExecutionOutcome::RecoveryRequired),
+                Err(ExecutionError::InputUnavailable) => Err(ExecutionError::InputUnavailable),
+                Err(ExecutionError::Ambiguous) => Err(ExecutionError::Ambiguous),
+            }
+        }
+    }
 
     fn valid_operation(now: u64) -> OperationEnvelope {
         OperationEnvelope {
@@ -1076,5 +1175,120 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "invalid_result_sha256");
+    }
+
+    #[tokio::test]
+    async fn enabled_canary_returns_only_the_executor_manifest() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let operation = serde_json::json!({
+            "protocol_version": 1,
+            "operation_id": "operation-123",
+            "operation_kind": client::PROVIDER_CANARY_OPERATION_KIND,
+            "owner_generation": 1,
+            "owner_lease_expires_at": now + 120,
+            "execution_deadline_at": now + 60,
+            "provider_operation_id": "provider-operation-123",
+            "admission_sha256": "a".repeat(64),
+            "input": {
+                "mode": "r2",
+                "sha256": "b".repeat(64),
+                "size": 42,
+                "content_type": "application/json",
+                "request_object_key": "container-inputs/v1/operation-123/input.json",
+                "object_version": "input-version-1"
+            },
+            "shard": {
+                "contract_version": 1,
+                "ring_generation": 1,
+                "shard_count": 8,
+                "shard_index": 3,
+                "instance_name": "cinatoken-relay-shard-v1-0003"
+            },
+            "trace_id": "trace-123"
+        });
+        let router = app_with_state(AppState {
+            executor: Arc::new(FakeExecutor {
+                outcome: Ok(ExecutionOutcome::Completed(result_manifest())),
+            }),
+            execution_enabled: true,
+        });
+        let response = router
+            .oneshot(
+                Request::post("/v1/operations")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(CONTAINER_PROTOCOL_HEADER, "1")
+                    .body(Body::from(operation.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), MAX_REQUEST_BODY_BYTES)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["result"]["object_version"], "version-123");
+        assert!(value.get("code").is_none());
+    }
+
+    #[tokio::test]
+    async fn enabled_canary_converts_unknown_execution_into_recovery() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let operation = serde_json::json!({
+            "protocol_version": 1,
+            "operation_id": "operation-ambiguous",
+            "operation_kind": client::PROVIDER_CANARY_OPERATION_KIND,
+            "owner_generation": 1,
+            "owner_lease_expires_at": now + 120,
+            "execution_deadline_at": now + 60,
+            "provider_operation_id": "provider-operation-ambiguous",
+            "admission_sha256": "a".repeat(64),
+            "input": {
+                "mode": "r2",
+                "sha256": "b".repeat(64),
+                "size": 42,
+                "content_type": "application/json",
+                "request_object_key": "container-inputs/v1/operation-ambiguous/input.json",
+                "object_version": "input-version-1"
+            },
+            "shard": {
+                "contract_version": 1,
+                "ring_generation": 1,
+                "shard_count": 8,
+                "shard_index": 3,
+                "instance_name": "cinatoken-relay-shard-v1-0003"
+            },
+            "trace_id": "trace-ambiguous"
+        });
+        let router = app_with_state(AppState {
+            executor: Arc::new(FakeExecutor {
+                outcome: Err(ExecutionError::Ambiguous),
+            }),
+            execution_enabled: true,
+        });
+        let response = router
+            .oneshot(
+                Request::post("/v1/operations")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(CONTAINER_PROTOCOL_HEADER, "1")
+                    .body(Body::from(operation.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), MAX_REQUEST_BODY_BYTES)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["status"], "recovery_required");
+        assert_eq!(value["code"], AMBIGUOUS_EXECUTION_CODE);
     }
 }

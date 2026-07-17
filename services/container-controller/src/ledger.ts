@@ -54,6 +54,9 @@ export interface StorageAccessGrant {
   result: StorageResultRecord | null;
   provider_attempt: {
     attempt_generation: number;
+    provider_operation_id: string;
+    admission_sha256: string;
+    request_sha256: string;
     status: ProviderAttemptStatus;
   } | null;
 }
@@ -2338,6 +2341,9 @@ function storageGrant(
         ? null
         : {
             attempt_generation: providerAttempt.attempt_generation,
+            provider_operation_id: providerAttempt.provider_operation_id,
+            admission_sha256: providerAttempt.admission_sha256,
+            request_sha256: providerAttempt.request_sha256,
             status: providerAttempt.status,
           },
   };

@@ -397,10 +397,11 @@ The first real business canary must preserve the existing relay lifecycle:
 6. Sign and send the operation envelope over the private Controller Service
    Binding. An edge timeout queries the same operation ID and never creates a
    second provider attempt.
-7. The Container checks reserved admission, reads exact R2 input, runs the
-   deterministic local OpenAI-compatible canary, writes immutable R2 output,
-   and returns its exact result manifest.
-8. The DO attaches the result before completion. The edge verifies and reads
+7. The Container checks reserved admission, reads and re-hashes exact R2 input,
+   and calls only the fixed internal provider-egress host. The Controller
+   consumes one DO attempt dispatch, calls the private credential-owning broker,
+   writes immutable R2 output, and returns its exact result manifest.
+8. The DO attaches the result before attempt success. The edge verifies and reads
    the same R2 object, then reuses the normal usage parser, settlement, and
    audit path.
 9. Repeat the same idempotency key and prove one provider/canary execution, one
@@ -429,10 +430,13 @@ The following are still mandatory:
   default, then one approved Root + fresh-step-up drill, exact duplicate
   readback, same-batch audit, zero protected-state delta, alerts, and
   disable-first rollback;
-- wire the implemented dispatch-before-send journal to an atomic private
-  provider egress broker, then add the DO-owned retry scheduler without
-  exposing prepare or retry authority to the Container;
-- deterministic local provider canary in the actual Linux image;
+- deploy and prove the implemented dispatch-before-send journal, private
+  provider egress broker, and Linux client in isolated staging while every
+  tracked gate remains false by default;
+- add immutable egress-profile identity and provider-native idempotency or
+  lookup before any broader provider canary;
+- add the DO-owned retry scheduler without exposing prepare or retry authority
+  to the Container;
 - wire the implemented create-only exact client-response R2 write and verified
   byte replay into the narrow edge canary without enabling any broader route;
 - after old writers drain and remote 0042/0043/0044/0045 invariants pass, add a separate 0046
@@ -535,3 +539,58 @@ This can fill the bounded ledger and return capacity backpressure; it must not
 be bypassed by deleting attempts or events. Global terminal/outbox integration,
 alerting, compaction acknowledgement, Linux lifecycle faults, and remote mixed-
 version proof remain mandatory before any isolated staging enablement.
+
+## Private Provider Egress And Recovery Boundary
+
+The local canary now connects the Linux client to the attempt journal through a
+private Service Binding broker. The broker executes exactly one already-resolved
+attempt. It does not select a channel, rotate credentials, retry, parse usage,
+settle billing, disable a channel, or create a later attempt.
+
+The send boundary has two phases:
+
+| Phase | Durable evidence | Allowed outcome | Provider resend |
+| --- | --- | --- | --- |
+| Before DO dispatch | Attempt remains `prepared` | Reject input, identity, D1 state, deadline, or policy as definite pre-send failure | Not needed; no send authority was consumed |
+| DO dispatch committed, broker not called or result unknown | Attempt is `dispatched` | Record/return ambiguous and enter recovery | Forbidden |
+| Provider response persisted in R2, DO attach unknown | Immutable object may exist; attempt is dispatched | Re-observe R2 and DO, then attach or classify divergence | Forbidden |
+| Result attached, success RPC unknown | Exact manifest is in the DO grant | Reread DO and finish the same attempt | Forbidden |
+| Attempt already succeeded | Exact attempt and manifest are durable | Return the same result manifest | Forbidden |
+
+The Controller performs all deterministic checks it owns before consuming dispatch:
+exact synthetic host/path/method, bounded JSON, body digest, operation kind,
+R2 input identity, provider/admission/request digests, owner and attempt
+generation, five-minute deadline, and global D1 `dispatched` state. The broker
+binding must also be present before dispatch. The broker repeats the
+security-sensitive profile, model, digest, identity, deadline, body-size, and
+non-streaming checks before credential injection. This
+duplication is a trust-boundary check, not a second source of routing policy.
+
+After dispatch, transport-level evidence cannot distinguish "provider did not
+receive" from "provider accepted but the response was lost". Therefore broker
+binding transport loss, broker gate/model/credential rejection, absolute
+timeout, non-2xx, redirect, malformed or oversized response, R2 write/readback
+uncertainty, DO attach uncertainty, and terminal RPC uncertainty all converge
+to recovery instead of another request. A replay of a dispatched attempt never
+calls the Service Binding. The current canary does not claim a pre-dispatch
+broker readiness RPC, provider-native idempotency key, or status lookup.
+
+The successful path is persist-before-terminal: bound provider response bytes,
+validate JSON, compute SHA-256, create-or-verify the immutable R2 object, attach
+the exact manifest to the same attempt generation, then record attempt success.
+If the final RPC response is lost, the Controller rereads canonical DO state.
+The current replay uses status 200 because upstream status provenance is not yet
+durable independently of the terminal transition; broader rollout requires a
+versioned response-provenance record.
+
+Tracked Controller environments keep
+`CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED`,
+`CONTAINER_PROVIDER_CLIENT_ENABLED`, and
+`CONTAINER_PROVIDER_EGRESS_ENABLED` false. Retry and staging verification also
+remain false, and maximum attempts remains one. The broker's own gate and model
+are false/empty in every tracked environment. No remote canary is authorized
+until target-first binding deployment, secret provisioning and rotation proof,
+real Container lifecycle tests, R2/DO/D1 fault injection, N/N-1 compatibility,
+global terminal acknowledgement, exact edge replay, and financial convergence
+all have dated evidence. Go/VPS remains authoritative and production remains
+**NO-GO**.

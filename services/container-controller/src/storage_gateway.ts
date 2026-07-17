@@ -19,6 +19,8 @@ export const CONTENT_SHA256_HEADER = "x-cinatoken-content-sha256";
 export const R2_OBJECT_VERSION_HEADER = "x-cinatoken-r2-version";
 export const PROVIDER_ATTEMPT_GENERATION_HEADER =
   "x-cinatoken-provider-attempt-generation";
+export const OPERATION_ID_HEADER = "x-cinatoken-operation-id";
+export const OWNER_GENERATION_HEADER = "x-cinatoken-owner-generation";
 export const MAX_R2_OBJECT_BYTES = 64 * 1024 * 1024;
 export const MAX_KV_CONFIG_BYTES = 32 * 1024;
 export const KV_OPERATION_CONFIG_PREFIX = "container-operation-config/v1/";
@@ -87,6 +89,27 @@ export interface StorageGatewayEnvironment {
   CONTAINER_STORAGE_RESULT_R2?: Pick<R2Bucket, "head" | "put">;
   CONTAINER_STORAGE_CONFIG_KV?: Pick<KVNamespace, "get">;
   CONTAINER_STORAGE_ADMISSION_DB?: Pick<D1Database, "prepare">;
+}
+
+export interface ProviderEgressAdmission {
+  protocol_version: number;
+  operation_id: string;
+  operation_kind: string;
+  owner_generation: number;
+  owner_lease_expires_at: number;
+  deadline_at: number;
+  provider_operation_id: string;
+  admission_sha256: string;
+  input: {
+    mode: "inline" | "r2";
+    sha256: string;
+    size: number;
+    content_type: string;
+    request_object_key: string | null;
+    object_version: string | null;
+  };
+  shard: OperationShard;
+  trace_id: string;
 }
 
 interface StorageRoute {
@@ -380,6 +403,50 @@ export async function requireD1OperationAdmission(
   } catch (error) {
     if (error instanceof GatewayError) throw new ProtocolError(error.code, error.status);
     throw new ProtocolError("admission_unavailable", 503);
+  }
+}
+
+export async function requireD1ProviderEgressAdmission(
+  env: StorageGatewayEnvironment,
+  admission: ProviderEgressAdmission,
+  now = Math.floor(Date.now() / 1000),
+): Promise<void> {
+  const grant: D1AdmissionGetGrant = {
+    action: STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET,
+    protocol_version: admission.protocol_version,
+    operation_id: admission.operation_id,
+    operation_kind: admission.operation_kind,
+    owner_generation: admission.owner_generation,
+    owner_lease_expires_at: admission.owner_lease_expires_at,
+    execution_deadline_at: admission.deadline_at,
+    provider_operation_id: admission.provider_operation_id,
+    admission_sha256: admission.admission_sha256,
+    input: {
+      mode: admission.input.mode,
+      sha256: admission.input.sha256,
+      size: admission.input.size,
+      content_type: admission.input.content_type,
+      ...(admission.input.request_object_key === null
+        ? {}
+        : { request_object_key: admission.input.request_object_key }),
+      ...(admission.input.object_version === null
+        ? {}
+        : { object_version: admission.input.object_version }),
+    },
+    shard: admission.shard,
+    trace_id: admission.trace_id,
+  };
+  if (!isStorageAccessGrant(grant)) {
+    throw new ProtocolError("provider_egress_admission_mismatch", 409);
+  }
+  try {
+    const row = await readD1Admission(env, grant, now);
+    if (row.operation_status !== "dispatched") {
+      throw new GatewayError("provider_egress_not_dispatched", 409);
+    }
+  } catch (error) {
+    if (error instanceof GatewayError) throw new ProtocolError(error.code, error.status);
+    throw new ProtocolError("provider_egress_admission_unavailable", 503);
   }
 }
 

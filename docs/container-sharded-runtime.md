@@ -339,8 +339,11 @@ capacity evidence.
 - SBOM, dependency/license scan, image signature/digest pin, and vulnerability
   policy.
 
-The current server executes only `health_probe`; every other valid operation
-returns `execution_not_enabled`. Provider transport and credentials are absent.
+The current server always executes `health_probe`. It also compiles one
+`chat_completions_canary` client, but the client is injected only when
+`CINATOKEN_CONTAINER_PROVIDER_CLIENT_ENABLED=true`; every tracked Controller
+environment derives that Container variable from a false gate. The image never
+receives a provider credential and direct internet access remains disabled.
 
 Exit: local Docker and remote staging prove cold start, sleep, restart, OOM,
 ephemeral disk, and protocol N/N-1 behavior without financial mutation.
@@ -385,6 +388,12 @@ CONTAINER_SCHEDULER_RING_GENERATION=1
 CONTAINER_SCHEDULER_SHARD_COUNT=8
 CONTAINER_SCHEDULER_ENABLED=false
 CONTAINER_SCHEDULER_STAGING_VERIFIED=false
+CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED=false
+CONTAINER_PROVIDER_CLIENT_ENABLED=false
+CONTAINER_PROVIDER_EGRESS_ENABLED=false
+CONTAINER_PROVIDER_RETRY_ENABLED=false
+CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED=false
+CONTAINER_MAX_PROVIDER_ATTEMPTS=1
 ```
 
 Tracked controller configuration now includes explicit `max_instances`,
@@ -606,3 +615,82 @@ remain invalid until a DO-owned schedule callback, generation-fenced alarm or
 Container schedule contract, versioned multi-attempt R2 manifest, global D1
 terminal ack, and restart/duplicate fault campaign are implemented and
 reviewed. Production remains **NO-GO**.
+
+## 2026-07-17 Private Provider Egress Canary
+
+The missing local provider transport is now compiled as a deliberately narrow,
+default-off canary. It is not a generic relay proxy and it does not move channel
+selection, model mapping, billing snapshots, usage interpretation, settlement,
+retry policy, or channel health into the Container plane. Those decisions stay
+at the edge before the immutable operation is admitted.
+
+The private path is fixed:
+
+```text
+Rust Linux Container
+  -> provider-egress.cinatoken.internal
+  -> RelayShardContainer.outboundByHost (exact ctx.containerId)
+  -> exact shard DO attempt journal + global D1 admission read
+  -> PROVIDER_EGRESS Service Binding
+  -> cinatoken-container-egress Worker
+  -> one fixed HTTPS upstream profile
+```
+
+`enableInternet=false` remains authoritative. The Container allowlist contains
+only the synthetic internal host; it never contains the real provider host.
+Cloudflare evaluates the allowlist before the outbound handler, and the handler
+runs in the Controller Worker trust domain with D1, R2, the Service Binding, and
+the exact Container identity. The broker Worker has no route, disables
+`workers_dev` and preview URLs, and receives its API key only as the
+`CINATOKEN_CONTAINER_PROVIDER_API_KEY` secret.
+
+The only compiled profile is
+`openai-chat-completions-canary-v1`. It accepts POST JSON up to 4 MiB, requires
+the exact body SHA-256, operation/owner/attempt identity, a configured model,
+`stream=false`, and an absolute deadline no more than five minutes ahead. It
+constructs a fresh outbound request with a fixed host/path and header set,
+injects the credential inside the broker, denies redirects, aborts at the
+deadline, bounds the provider response to 4 MiB, and never retries. The
+Container, DO, D1, R2, logs, and response manifests never receive that secret.
+
+Authority is consumed in this order:
+
+1. The Linux client reads and re-hashes the exact owner-fenced R2 input.
+2. The Controller rereads the exact DO grant and rejects identity, kind, input,
+   attempt, hash, size, content type, or five-minute deadline drift.
+3. A strict D1 read proves the global operation is already `dispatched` with
+   the same immutable admission fields.
+4. The DO commits the one-shot `prepared -> dispatched` attempt transition.
+5. Only that first committed result may cross the private Service Binding.
+6. A successful JSON response is content-hashed and written create-only to R2,
+   attached to the same DO attempt generation, and then recorded as succeeded.
+
+Every deterministic validation owned by the Controller, including Service
+Binding presence, occurs before step 4. After step 4, binding transport loss,
+broker gate/model/credential rejection, timeout, non-2xx response,
+invalid/oversized response, R2 uncertainty, DO attach uncertainty, or terminal
+RPC uncertainty is recovery evidence. It returns a strict 202 ambiguous outcome
+and cannot authorize a second provider send. A dispatched replay without an
+attached result converges
+to ambiguous without calling the broker. A replay with an attached exact result
+finishes the same attempt without calling the broker. A lost terminal RPC first
+rereads canonical DO state.
+
+Deployment must remain target-first and disable-first: deploy the broker with
+its gate false and no public route; verify the target Worker and binding; deploy
+the Controller with journal/client/egress gates false; deploy the image; then
+exercise only health, storage, and synthetic pre-dispatch rejection. The first
+real provider request requires an approved isolated staging operation and all
+three journal/client/egress gates, while retry and staging-verification remain
+false. Rollback first closes client admission at the Controller, then egress,
+and preserves DO/R2/D1 evidence for every accepted operation.
+
+This is still not production-ready. The fixed profile is deployment-local, not
+an immutable D1/DO egress-profile version. Provider-native idempotency or lookup,
+durable upstream status/header provenance, definite non-2xx classification,
+global terminal acknowledgement and compaction, multi-provider adapters,
+streaming, a pre-dispatch broker readiness/readback RPC, real Linux/Cloudflare
+Container execution, N/N-1, credential rotation, remote R2/DO/network fault
+campaigns, load/cost/alert evidence, exact edge replay, financial convergence,
+and C1-C5 approvals remain open. All tracked gates stay false, no provider or
+remote deployment was invoked, and production remains **NO-GO**.

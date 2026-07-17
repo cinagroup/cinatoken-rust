@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const workerBuildVersion = "0.1.14";
-const supportedCrates = ["worker", "wfp-tenant", "wfp-outbound"];
+const supportedCrates = ["worker", "wfp-tenant", "wfp-outbound", "container-egress"];
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const cargoLockPath = join(root, "Cargo.lock");
 
@@ -212,6 +212,17 @@ function runSelfTest() {
   const outboundTarget = parseBuildTarget(["--crate", "wfp-outbound", "--release"]);
   if (outboundTarget.crate !== "wfp-outbound" || outboundTarget.args.join(" ") !== "--release") {
     throw new Error("worker build self-test failed to parse outbound crate target");
+  }
+  const containerEgressTarget = parseBuildTarget([
+    "--crate",
+    "container-egress",
+    "--release",
+  ]);
+  if (
+    containerEgressTarget.crate !== "container-egress" ||
+    containerEgressTarget.args.join(" ") !== "--release"
+  ) {
+    throw new Error("worker build self-test failed to parse container egress crate target");
   }
   for (const invalid of ["", "wasm-bindgen 0.2", "wasm-bindgen-cli 0.2.125"]) {
     try {

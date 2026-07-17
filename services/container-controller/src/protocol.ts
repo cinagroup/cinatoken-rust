@@ -1,14 +1,18 @@
 const AUTHORITY_DOMAIN = "cinatoken-container-authority:v1\0";
 export const AUTHORITY_HEADER = "x-cinatoken-container-authority";
 export const INTERNAL_OPERATION_PATH = "/internal/v1/operations";
+export const INTERNAL_OPERATION_TERMINAL_ACK_PATH =
+  "/internal/v1/operations/terminal-ack";
 export const INTERNAL_OPERATION_STATUS_PATH = "/internal/v1/operations/status";
 export const INTERNAL_OPERATION_STATUS_V2_PATH = "/internal/v2/operations/status";
 export const INTERNAL_READINESS_PATH = "/internal/v1/shards/readiness";
 export const INTERNAL_STATUS_PATH = "/internal/v1/status";
 export const MAX_OPERATION_BODY_BYTES = 64 * 1024;
 export const MAX_OPERATION_STATUS_BODY_BYTES = 4 * 1024;
+export const MAX_TERMINAL_ACK_BODY_BYTES = 4 * 1024;
 export const MAX_READINESS_BODY_BYTES = 4 * 1024;
 export const MAX_EXECUTION_WINDOW_SECONDS = 300;
+export const MAX_STORAGE_OBJECT_VERSION_BYTES = 128;
 const MAX_TOKEN_BYTES = 4096;
 const MAX_JSON_SEGMENT_BYTES = 2048;
 const MAX_AUTHORITY_LIFETIME_SECONDS = 60;
@@ -101,6 +105,45 @@ export interface VerifiedOperationStatusQuery {
   body: Uint8Array;
 }
 
+export interface TerminalAckResultManifest {
+  object_key: string;
+  object_version: string;
+  sha256: string;
+  size: number;
+  content_type: string;
+}
+
+/**
+ * Exact JSON body for POST /internal/v1/operations/terminal-ack.
+ *
+ * The body is intentionally flat except for `result` and `shard`. Additional
+ * keys, response bodies or headers, billing data, credentials, audit data, and
+ * client idempotency plaintext are rejected.
+ */
+export interface TerminalAckRequest {
+  protocol_version: 1;
+  billing_event_id: string;
+  terminal_contract_sha256: string;
+  reconciliation_id: string;
+  reconciliation_revision: 1 | 2;
+  predecessor_billing_event_id: string | null;
+  operation_id: string;
+  owner_generation: number;
+  operation_from_status: "prepared" | "dispatched" | "recovery_required";
+  operation_status: "completed" | "failed" | "recovery_required";
+  response_status: number;
+  response_code: string | null;
+  result: TerminalAckResultManifest | null;
+  shard: OperationShard;
+  trace_id: string;
+}
+
+export interface VerifiedTerminalAckRequest {
+  ack: TerminalAckRequest;
+  claims: AuthorityClaims;
+  body: Uint8Array;
+}
+
 export interface ShardReadinessProbe {
   protocol_version: number;
   shard: OperationShard;
@@ -170,6 +213,39 @@ export async function verifyOperationStatusV2Request(
     INTERNAL_OPERATION_STATUS_V2_PATH,
     now,
   );
+}
+
+export async function verifyTerminalAckRequest(
+  request: Request,
+  env: AuthorityEnvironment,
+  now = Math.floor(Date.now() / 1000),
+): Promise<VerifiedTerminalAckRequest> {
+  if (
+    request.method !== "POST" ||
+    new URL(request.url).pathname !== INTERNAL_OPERATION_TERMINAL_ACK_PATH
+  ) {
+    throw new ProtocolError("route_not_found", 404);
+  }
+  const body = await readBoundedBody(
+    request,
+    true,
+    MAX_TERMINAL_ACK_BODY_BYTES,
+    "terminal_ack_too_large",
+    "invalid_terminal_ack",
+  );
+  const claims = await verifyAuthority(
+    requiredAuthority(request),
+    request.method,
+    INTERNAL_OPERATION_TERMINAL_ACK_PATH,
+    body,
+    env,
+    now,
+  );
+  const ack = parseTerminalAckRequest(body);
+  if (ack.protocol_version !== claims.protocol_version) {
+    throw new ProtocolError("protocol_mismatch", 426);
+  }
+  return { ack, claims, body };
 }
 
 async function verifyOperationStatusRequestForPath(
@@ -398,7 +474,13 @@ export function parseOperationEnvelope(
     input.request_object_key = readString(inputValue, "request_object_key", 8, 512, /^[A-Za-z0-9/_.:-]+$/);
   }
   if (inputValue.object_version !== undefined) {
-    input.object_version = readString(inputValue, "object_version", 1, 128, ID);
+    input.object_version = readString(
+      inputValue,
+      "object_version",
+      1,
+      MAX_STORAGE_OBJECT_VERSION_BYTES,
+      ID,
+    );
   }
   if (
     (mode === "inline" && (input.request_object_key !== undefined || input.object_version !== undefined)) ||
@@ -466,6 +548,221 @@ export function parseOperationStatusQuery(body: Uint8Array): OperationStatusQuer
   return validateOperationStatusQuery(
     parseJsonObject(body, "invalid_operation_status_query"),
   );
+}
+
+export function parseTerminalAckRequest(body: Uint8Array): TerminalAckRequest {
+  return validateTerminalAckRequest(parseJsonObject(body, "invalid_terminal_ack"));
+}
+
+export function validateTerminalAckRequest(value: unknown): TerminalAckRequest {
+  const code = "invalid_terminal_ack";
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProtocolError(code, 400);
+  }
+  const record = value as Record<string, unknown>;
+  assertExactKeys(
+    record,
+    [
+      "protocol_version",
+      "billing_event_id",
+      "terminal_contract_sha256",
+      "reconciliation_id",
+      "reconciliation_revision",
+      "predecessor_billing_event_id",
+      "operation_id",
+      "owner_generation",
+      "operation_from_status",
+      "operation_status",
+      "response_status",
+      "response_code",
+      "result",
+      "shard",
+      "trace_id",
+    ],
+    code,
+  );
+
+  const protocolVersion = readInteger(record, "protocol_version", 1, 255, code);
+  if (protocolVersion !== 1) throw new ProtocolError("unsupported_protocol", 426);
+  const billingEventId = readString(
+    record,
+    "billing_event_id",
+    64,
+    64,
+    LOWER_HEX_64,
+    code,
+  );
+  const predecessorBillingEventId =
+    record.predecessor_billing_event_id === null
+      ? null
+      : readString(
+          record,
+          "predecessor_billing_event_id",
+          64,
+          64,
+          LOWER_HEX_64,
+          code,
+        );
+  const reconciliationRevision = readInteger(
+    record,
+    "reconciliation_revision",
+    1,
+    2,
+    code,
+  ) as 1 | 2;
+  const operationId = readString(record, "operation_id", 1, 128, ID, code);
+  const ownerGeneration = readInteger(
+    record,
+    "owner_generation",
+    1,
+    MAX_SAFE_INTEGER,
+    code,
+  );
+  const operationFromStatus = readString(
+    record,
+    "operation_from_status",
+    8,
+    17,
+    /^(prepared|dispatched|recovery_required)$/,
+    code,
+  ) as TerminalAckRequest["operation_from_status"];
+  const operationStatus = readString(
+    record,
+    "operation_status",
+    6,
+    17,
+    /^(completed|failed|recovery_required)$/,
+    code,
+  ) as TerminalAckRequest["operation_status"];
+  const responseStatus = readInteger(record, "response_status", 100, 599, code);
+  const responseCode =
+    record.response_code === null
+      ? null
+      : readString(record, "response_code", 1, 64, /^[a-z0-9_:-]+$/, code);
+
+  let result: TerminalAckResultManifest | null = null;
+  if (record.result !== null) {
+    const resultValue = readObject(record, "result", code);
+    assertExactKeys(
+      resultValue,
+      ["object_key", "object_version", "sha256", "size", "content_type"],
+      code,
+    );
+    result = {
+      object_key: readString(
+        resultValue,
+        "object_key",
+        8,
+        512,
+        /^[A-Za-z0-9/_.:-]+$/,
+        code,
+      ),
+      object_version: readString(
+        resultValue,
+        "object_version",
+        1,
+        MAX_STORAGE_OBJECT_VERSION_BYTES,
+        ID,
+        code,
+      ),
+      sha256: readString(resultValue, "sha256", 64, 64, LOWER_HEX_64, code),
+      size: readInteger(resultValue, "size", 0, 64 * 1024 * 1024, code),
+      content_type: readString(resultValue, "content_type", 3, 128, CONTENT_TYPE, code),
+    };
+  }
+
+  const shardValue = readObject(record, "shard", code);
+  assertExactKeys(
+    shardValue,
+    ["contract_version", "ring_generation", "shard_count", "shard_index", "instance_name"],
+    code,
+  );
+  const shard: OperationShard = {
+    contract_version: readInteger(shardValue, "contract_version", 1, 1, code),
+    ring_generation: readInteger(shardValue, "ring_generation", 1, MAX_SAFE_INTEGER, code),
+    shard_count: readInteger(shardValue, "shard_count", 1, 1024, code),
+    shard_index: readInteger(shardValue, "shard_index", 0, 1023, code),
+    instance_name: readString(
+      shardValue,
+      "instance_name",
+      29,
+      64,
+      /^[a-z0-9-]+$/,
+      code,
+    ),
+  };
+  const expectedName =
+    `cinatoken-relay-shard-v1-${shard.shard_index.toString().padStart(4, "0")}`;
+  if (shard.shard_index >= shard.shard_count || shard.instance_name !== expectedName) {
+    throw new ProtocolError(code, 400);
+  }
+
+  const transitionValid =
+    (operationFromStatus === "prepared" && operationStatus !== "completed") ||
+    operationFromStatus === "dispatched" ||
+    (operationFromStatus === "recovery_required" && operationStatus !== "recovery_required");
+  const revisionValid =
+    (reconciliationRevision === 1 &&
+      operationFromStatus !== "recovery_required" &&
+      predecessorBillingEventId === null) ||
+    (reconciliationRevision === 2 &&
+      operationFromStatus === "recovery_required" &&
+      predecessorBillingEventId !== null);
+  const outcomeValid =
+    (operationStatus === "completed" &&
+      responseStatus >= 200 &&
+      responseStatus <= 299 &&
+      responseStatus !== 202 &&
+      responseCode === null) ||
+    (operationStatus === "failed" &&
+      responseStatus >= 400 &&
+      responseCode !== null &&
+      result === null) ||
+    (operationStatus === "recovery_required" &&
+      responseStatus === 202 &&
+      responseCode !== null);
+  if (
+    !transitionValid ||
+    !revisionValid ||
+    !outcomeValid ||
+    (result !== null &&
+      result.object_key !==
+        `container-results/v1/${operationId}/${ownerGeneration}/${result.sha256}`)
+  ) {
+    throw new ProtocolError(code, 400);
+  }
+
+  return {
+    protocol_version: 1,
+    billing_event_id: billingEventId,
+    terminal_contract_sha256: readString(
+      record,
+      "terminal_contract_sha256",
+      64,
+      64,
+      LOWER_HEX_64,
+      code,
+    ),
+    reconciliation_id: readString(
+      record,
+      "reconciliation_id",
+      64,
+      64,
+      LOWER_HEX_64,
+      code,
+    ),
+    reconciliation_revision: reconciliationRevision,
+    predecessor_billing_event_id: predecessorBillingEventId,
+    operation_id: operationId,
+    owner_generation: ownerGeneration,
+    operation_from_status: operationFromStatus,
+    operation_status: operationStatus,
+    response_status: responseStatus,
+    response_code: responseCode,
+    result,
+    shard,
+    trace_id: readString(record, "trace_id", 1, 128, ID, code),
+  };
 }
 
 export function validateOperationStatusQuery(value: unknown): OperationStatusQuery {

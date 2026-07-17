@@ -3,11 +3,14 @@ import goldenVector from "../../../tests/fixtures/container-authority-v1.json";
 import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
+  INTERNAL_OPERATION_TERMINAL_ACK_PATH,
   INTERNAL_OPERATION_STATUS_PATH,
   INTERNAL_OPERATION_STATUS_V2_PATH,
   INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
   MAX_OPERATION_STATUS_BODY_BYTES,
+  MAX_STORAGE_OBJECT_VERSION_BYTES,
+  MAX_TERMINAL_ACK_BODY_BYTES,
   MAX_READINESS_BODY_BYTES,
   MAX_EXECUTION_WINDOW_SECONDS,
   ProtocolError,
@@ -19,11 +22,17 @@ import {
   verifyOperationStatusV2Request,
   verifyReadinessRequest,
   verifyStatusRequest,
+  verifyTerminalAckRequest,
   type AuthorityClaims,
   type AuthorityEnvironment,
   type OperationEnvelope,
   type OperationStatusQuery,
 } from "../src/protocol";
+import {
+  handleTerminalAckRequest,
+  type TerminalAckEnvironment,
+  type TerminalAckRequest,
+} from "../src/terminal_ack";
 import {
   handleOperationStatusRequest,
   handleOperationStatusV2Request,
@@ -87,6 +96,38 @@ function operationStatusQuery(
     protocol_version: operation.protocol_version,
     operation_id: operation.operation_id,
     owner_generation: operation.owner_generation,
+    shard: operation.shard,
+    trace_id: operation.trace_id,
+    ...overrides,
+  };
+}
+
+function terminalAck(
+  overrides: Partial<TerminalAckRequest> = {},
+): TerminalAckRequest {
+  const operation = envelope();
+  const resultSha256 = "c".repeat(64);
+  return {
+    protocol_version: 1,
+    billing_event_id: "d".repeat(64),
+    terminal_contract_sha256: "e".repeat(64),
+    reconciliation_id: "f".repeat(64),
+    reconciliation_revision: 1,
+    predecessor_billing_event_id: null,
+    operation_id: operation.operation_id,
+    owner_generation: operation.owner_generation,
+    operation_from_status: "dispatched",
+    operation_status: "completed",
+    response_status: 200,
+    response_code: null,
+    result: {
+      object_key:
+        `container-results/v1/${operation.operation_id}/${operation.owner_generation}/${resultSha256}`,
+      object_version: "result-version-1",
+      sha256: resultSha256,
+      size: 2,
+      content_type: "application/json",
+    },
     shard: operation.shard,
     trace_id: operation.trace_id,
     ...overrides,
@@ -159,6 +200,36 @@ async function signedOperationStatusV2Request(
   overrides: Partial<AuthorityClaims> = {},
 ): Promise<Request> {
   return signedOperationStatusRequest(value, overrides, INTERNAL_OPERATION_STATUS_V2_PATH);
+}
+
+async function signedTerminalAckRequest(
+  value: unknown = terminalAck(),
+  overrides: Partial<AuthorityClaims> = {},
+): Promise<Request> {
+  const body = new TextEncoder().encode(JSON.stringify(value));
+  const claims: AuthorityClaims = {
+    authority_version: 1,
+    issuer: env.CONTAINER_AUTHORITY_ISSUER,
+    audience: env.CONTAINER_AUTHORITY_AUDIENCE,
+    protocol_version: 1,
+    dispatch_id: "terminal-ack-test-1",
+    method: "POST",
+    path: INTERNAL_OPERATION_TERMINAL_ACK_PATH,
+    body_sha256: await sha256Hex(body),
+    issued_at: now,
+    expires_at: now + 30,
+    ...overrides,
+  };
+  const token = await createAuthorityTokenForTest(
+    secret,
+    env.CONTAINER_AUTHORITY_CURRENT_KID,
+    claims,
+  );
+  return new Request(`https://controller.internal${INTERNAL_OPERATION_TERMINAL_ACK_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", [AUTHORITY_HEADER]: token },
+    body,
+  });
 }
 
 async function signedRequest(value = envelope(), overrides: Partial<AuthorityClaims> = {}): Promise<Request> {
@@ -316,6 +387,142 @@ describe("container controller private protocol", () => {
     await expect(
       verifyOperationStatusRequest(oversized, env, now),
     ).rejects.toMatchObject({ code: "operation_status_query_too_large", status: 413 });
+  });
+
+  test("terminal ack is flat, body-bound, strict, and accepts recovery results", async () => {
+    const verified = await verifyTerminalAckRequest(
+      await signedTerminalAckRequest(),
+      env,
+      now + 1,
+    );
+    expect(verified.ack).toEqual(terminalAck());
+    expect(verified.claims.dispatch_id).toBe("terminal-ack-test-1");
+
+    const signed = await signedTerminalAckRequest();
+    const tampered = new Request(signed.url, {
+      method: "POST",
+      headers: signed.headers,
+      body: (await signed.text()).replace('"response_status":200', '"response_status":201'),
+    });
+    await expect(verifyTerminalAckRequest(tampered, env, now + 1)).rejects.toMatchObject({
+      code: "authority_claim_mismatch",
+      status: 403,
+    });
+    await expect(
+      verifyTerminalAckRequest(
+        await signedTerminalAckRequest({ ...terminalAck(), audit_payload: {} }),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_terminal_ack", status: 400 });
+    const recovery = terminalAck({
+      operation_status: "recovery_required",
+      response_status: 202,
+      response_code: "container_execution_ambiguous",
+    });
+    await expect(
+      verifyTerminalAckRequest(
+        await signedTerminalAckRequest(recovery),
+        env,
+        now + 1,
+      ),
+    ).resolves.toMatchObject({ ack: recovery });
+
+    const healthProbe = terminalAck({ result: null });
+    await expect(
+      verifyTerminalAckRequest(
+        await signedTerminalAckRequest(healthProbe),
+        env,
+        now + 1,
+      ),
+    ).resolves.toMatchObject({ ack: healthProbe });
+
+    const maxVersion = terminalAck();
+    maxVersion.result!.object_version = "v".repeat(MAX_STORAGE_OBJECT_VERSION_BYTES);
+    await expect(
+      verifyTerminalAckRequest(
+        await signedTerminalAckRequest(maxVersion),
+        env,
+        now + 1,
+      ),
+    ).resolves.toMatchObject({ ack: maxVersion });
+    const oversizedVersion = terminalAck();
+    oversizedVersion.result!.object_version = "v".repeat(
+      MAX_STORAGE_OBJECT_VERSION_BYTES + 1,
+    );
+    await expect(
+      verifyTerminalAckRequest(
+        await signedTerminalAckRequest(oversizedVersion),
+        env,
+        now + 1,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_terminal_ack", status: 400 });
+
+    const oversized = new Request(
+      `https://controller.internal${INTERNAL_OPERATION_TERMINAL_ACK_PATH}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", [AUTHORITY_HEADER]: "not-used" },
+        body: "x".repeat(MAX_TERMINAL_ACK_BODY_BYTES + 1),
+      },
+    );
+    await expect(verifyTerminalAckRequest(oversized, env, now)).rejects.toMatchObject({
+      code: "terminal_ack_too_large",
+      status: 413,
+    });
+  });
+
+  test("terminal ack handler is default-off and returns the exact no-store response", async () => {
+    let calls = 0;
+    const routeEnv: TerminalAckEnvironment = {
+      ...env,
+      CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED: "true",
+      RELAY_SHARDS: {
+        getByName(name: string) {
+          expect(name).toBe(terminalAck().shard.instance_name);
+          return {
+            async acknowledgeGlobalTerminal(value: TerminalAckRequest) {
+              calls += 1;
+              expect(value).toEqual(terminalAck());
+              return {
+                ok: true as const,
+                result: {
+                  kind: "acknowledged" as const,
+                  finalAck: true,
+                  acknowledgedAt: now + 1,
+                },
+              };
+            },
+          };
+        },
+      },
+    };
+    const response = await handleTerminalAckRequest(
+      await signedTerminalAckRequest(),
+      routeEnv,
+      now + 1,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      protocol_version: 1,
+      billing_event_id: terminalAck().billing_event_id,
+      operation_id: terminalAck().operation_id,
+      reconciliation_revision: 1,
+      status: "acknowledged",
+      final_ack: true,
+      acknowledged_at: now + 1,
+    });
+
+    const disabled = await handleTerminalAckRequest(
+      await signedTerminalAckRequest(),
+      { ...routeEnv, CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED: "false" },
+      now + 1,
+    );
+    expect(disabled.status).toBe(503);
+    expect(disabled.headers.get("cache-control")).toBe("no-store");
+    expect(await disabled.json()).toEqual({ error: "container_global_terminal_ack_disabled" });
+    expect(calls).toBe(1);
   });
 
   test("status replays use only the ledger RPC and return the existing bounded outcome", async () => {

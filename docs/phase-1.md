@@ -2004,3 +2004,46 @@ global D1 egress provenance remains a later 0047 task. Remote version readback,
 mixed-version proof, full edge/controller/DO/container provenance, provider
 idempotency, real faults, and production evidence remain open. All gates stay
 false; Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-17 Phase 1 Global Terminal Acknowledgement
+
+The existing D1 financial terminal outbox now has a bounded local path to the
+owning shard Durable Object. The scheduled Worker claims rows with a
+generation-fenced 30-second lease, scans four by default and eight at most,
+retries transient failures with capped exponential delay, and dead-letters only
+explicit permanent conflicts. Revision 2 remains blocked until revision 1 is
+delivered.
+
+The private Controller request is signed over its exact 4 KiB-bounded JSON body
+and contains only terminal event, operation, optional result manifest, shard,
+and trace identity. It omits financial mutations, audit/client payloads, and
+credentials. Controller responses are strict no-store JSON and every echoed
+identity is checked before the D1 lease can become delivered. Old Controllers
+return exact route-not-found and the row safely retries.
+
+The shard ledger stores canonical acknowledgement evidence transactionally in
+a dedicated table that does not depend on provider journaling. Exact replay is
+idempotent, including the locally proven response-loss case where the retry
+receives `duplicate`. Recovery revision 1 is non-final; revision 2 must
+name the predecessor and is checked against the frozen recovery snapshot while
+the DO operation stays `recovery_required`; an exact recovery result manifest
+is legal. A separate `compaction_authorized_at` field remains null, and the
+false compaction gate short-circuits both age and count deletion, so
+acknowledgement cannot release terminal history.
+
+The financial writer's first transactional insert also requires the exact
+revision-1 predecessor before revision 2. Missing evidence leaves all dependent
+outbox, operation, billing, and accounting writes unchanged. This is a
+writer-side guard only: migration 0046 remains reserved for database-level
+enforcement after old-writer drain and deployed-version proof.
+
+The edge producer/staging gates and Controller acknowledgement/compaction gates
+are false in every tracked environment. Operators have an admin-only aggregate
+outbox status endpoint with no event or operation identifiers. No D1 migration
+was added and 0046 remains reserved.
+
+This is local acknowledgement and retention evidence only. Remote schema and
+binding readback, key rotation, mixed-version rollout, real Container/network
+faults, provider-native idempotency or lookup, end-to-end provenance, exact
+edge replay, financial convergence, load/cost/alerts, rollback, and approvals
+remain open. Go/VPS remains authoritative and production remains **NO-GO**.

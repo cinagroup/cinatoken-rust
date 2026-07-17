@@ -691,3 +691,60 @@ Controller still verifies the returned runtime ID. Remote deployment readback,
 target-first N/N-1 drills, provider-native idempotency or lookup, and global D1
 provenance remain required. D1 migration 0046 is still reserved; a later 0047
 must add the global provider-egress identity after old-writer drain.
+
+## Global Terminal Acknowledgement And Retention Fence
+
+The migration-0042 terminal outbox now has a local delivery implementation,
+but it remains disabled in every tracked environment. The edge Cron worker
+claims a D1 row with a 30-second generation lease, sends one strict signed
+request over the private Controller Service Binding, and completes, retries, or
+dead-letters only under the same generation and expiry. The default scan is
+four rows, the hard maximum is eight, and retry grows from 15 seconds to a
+one-hour cap. An exact old Controller `route_not_found` response retries without
+changing event identity.
+
+The body is an immutable projection of the terminal event, not the full outbox
+JSON. It contains the event and terminal-contract digests, reconciliation
+revision and predecessor, operation terminal outcome, optional R2 result
+manifest, shard fence, and trace ID. Accounting statements, audit payloads,
+client response bytes, credentials, and plaintext idempotency values never
+cross this boundary. Both request and response are bounded to 4 KiB; authority
+is body-bound and the response is strict JSON with `Cache-Control: no-store`.
+
+Shard SQLite accepts exact duplicate acknowledgements and rejects divergent
+ones through the dedicated `cinatoken_shard_terminal_acks` table; this path is
+independent of the optional provider-attempt journal, so journal-disabled
+operations are still acknowledged and retained. A normal completed or failed
+revision 1 is final. A revision-1
+`recovery_required` event is retained as non-final; a later revision 2 must
+identify it as predecessor, preserve reconciliation and operation/shard
+identity, and can resolve to completed or failed. The DO validates revision 2
+against its stored revision-1 recovery snapshot because the local operation
+correctly remains `recovery_required` while global D1 owns financial
+resolution. The recovery snapshot may include the exact result manifest.
+
+Global acknowledgement still does not permit journal compaction. The ledger
+requires `final_acked_at` plus a separate `compaction_authorized_at` value in
+the acknowledgement table, and the acknowledgement route never writes the
+latter. Both age and count compaction first require the independent runtime
+gate, then both evidence fields. The tracked acknowledgement and compaction
+gates are both false. Until full execution provenance and remote retention
+evidence exist, terminal operations, attempts, and events remain durable even
+after an acknowledgement.
+
+The D1 financial writer atomically refuses revision 2 unless the exact
+revision-1 recovery predecessor already exists for the same operation, owner
+generation, and reconciliation ID. This writer-side guard prevents a new
+undeliverable successor without consuming migration 0046. Because migration
+0042 itself is not rewritten, old-writer drain and deployed-version proof stay
+mandatory before activation; 0046 remains the future database enforcement
+boundary.
+
+The redacted admin status endpoint reports aggregate outbox lifecycle counts
+only. Controller-first rollout keeps all gates false, then enables Controller
+acknowledgement before the edge producer in isolated staging. Rollback disables
+the edge producer first, drains or expires leases, and rolls the Controller back
+last. Local Workerd also proves response-loss replay: a Controller-side prior
+acceptance returns `duplicate`, and overlapping schedulers converge one D1
+delivery generation. Migration 0046 remains untouched. Go/VPS remains
+authoritative and production remains **NO-GO**.

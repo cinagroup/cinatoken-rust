@@ -6593,3 +6593,113 @@ artifact identity, provider-native idempotency or lookup, real fault/load/cost
 evidence, terminal acknowledgement, financial convergence, rollback, and C1-C5
 approval remain required. All gates stay false; Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+## Global Terminal Acknowledgement Verification (2026-07-17)
+
+This overlay verifies the default-off D1 terminal-outbox delivery path and the
+non-compacting shard acknowledgement ledger. It does not authorize a remote
+migration, deployment, provider request, financial mutation, or traffic switch.
+
+```powershell
+cargo test -p cinatoken-worker --lib
+# PASS: 783 passed; 0 failed.
+
+cargo test --workspace --exclude cinatoken-worker
+# PASS: all non-Worker unit, integration, and doc tests.
+
+node node_modules/vitest/vitest.mjs run --config vitest.do.config.mjs
+# PASS: 1 file, 48 Workerd/D1 tests. Expected fault-injection exceptions and
+# queue-to-DLQ warnings were observed; the suite passed.
+
+node node_modules/vitest/vitest.mjs run `
+  --config vitest.container-controller-protocol.config.mjs
+# PASS: 5 files, 60 protocol/gateway tests.
+
+node node_modules/vitest/vitest.mjs run `
+  --config vitest.container-controller.config.mjs
+# PASS: 1 file, 27 Durable Object SQLite tests.
+
+node node_modules/typescript/bin/tsc `
+  -p services/container-controller/tsconfig.json --noEmit
+
+node node_modules/wrangler/bin/wrangler.js types `
+  services/container-controller/worker-configuration.d.ts `
+  --config services/container-controller/wrangler.jsonc `
+  --env-interface ContainerControllerEnv --check
+# PASS: Controller source and generated Env types are current.
+
+# Run separately with each local, staging, and production Controller JSONC.
+node node_modules/wrangler/bin/wrangler.js deploy `
+  --config <controller-config> --dry-run `
+  --containers-rollout none --outdir <isolated-outdir>
+# PASS: all three bundles; both terminal ACK and compaction gates report false.
+
+python tools/verify_sqlite.py
+# PASS: 45 migrations, 43 tables, 434 incremental columns, 64 key indexes.
+
+node tools/audit_d1_migration_config.mjs --json
+# PASS: 45 contiguous migrations; config/runtime head is 0045.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+cargo fmt --all -- --check
+node --check tests/do-lifecycle-runtime.test.mjs
+node --check tests/fixtures/container-terminal-ack-mock.mjs
+node --check vitest.do.config.mjs
+git diff --check
+# PASS.
+
+# From crates/worker with the locked wasm-bindgen and local esbuild binaries.
+worker-build --release
+# PASS: optimized Wasm and bundled Worker JavaScript generated from final Rust.
+```
+
+The Worker validates immutable event and operation identity before claiming one
+30-second generation lease. D1 completion, retry, and dead-letter updates all
+require the same generation, attempt count, expiry, and prior update timestamp.
+Revision 2 is excluded from selection and claim until its exact revision-1
+predecessor is delivered. The financial writer also refuses to create revision
+2 unless that predecessor already exists for the same operation, owner
+generation, and reconciliation ID; all dependent business updates then remain
+unchanged. Migration 0042 was not rewritten and migration 0046 was not consumed.
+
+The private Service Binding request is body-signed, bounded to 4 KiB, uses a
+three-second timeout, and carries only terminal, result-manifest, shard, and
+trace identity. Strict response validation checks status, JSON/no-store shape,
+and every echoed identity. The Workerd fixture covers success, retry, permanent
+conflict, old-state preservation, overlapping schedulers, and a lost-response
+window: a Controller-side prior acceptance returns `duplicate` and converges
+the original D1 row at delivery generation 1. Error classification keeps an
+old Controller's exact `route_not_found` response retryable for rolling
+upgrade, while the current Controller's exact `terminal_ack_not_found` response
+is a permanent dead letter rather than an infinite retry. An exact
+`authority_expired` response is retryable so the next attempt receives a fresh
+body-bound authority token instead of dead-lettering valid durable work.
+
+The Controller stores acknowledgements in the dedicated
+`cinatoken_shard_terminal_acks` table, independent of provider journaling.
+Tests prove journal-disabled final ACK, exact duplicate/conflict handling,
+old-object schema creation across eviction, a recovery revision 1 with a result
+manifest, and ordered revision-2 completion. The bounded protocol permits a
+result-free successful envelope for `health_probe`, while the DO ledger's exact
+stored-operation comparison rejects a missing result for every relay operation.
+The Controller storage boundary, terminal protocol, Rust manifest validator,
+and D1 contract share the same 128-character object-version maximum. A terminal
+ACK may set
+`final_acked_at` but never `compaction_authorized_at`. The compaction function
+first checks the separately false runtime gate, and both age- and count-based
+deletion additionally require both evidence fields. Tests exercise both
+retention paths while the gate is false.
+
+The Bun executable is unavailable in this shell, so `bun run check` and the
+Bun-native TOML/config wrapper were not run. Changed-path behavior is covered by
+Rust config assertions, TypeScript, protocol Vitest, compiled Workerd, generated
+types, all three Controller Wrangler dry-runs, SQLite replay, syntax checks,
+formatter, and the optimized Worker build.
+
+Production remains blocked on deployed D1/Service Binding/version readback,
+authority rotation, old-writer drain, migration 0046 enforcement, target-first
+N/N-1 drills, real Container/network/R2/DO faults, alert and backlog ownership,
+provider-native idempotency or lookup, full execution and financial
+reconciliation, retention/archive/restore approval, load/cost evidence,
+rollback, and C1-C5/G1-G8 approval. Every tracked activation and compaction gate
+remains false; Go/VPS remains authoritative and production remains **NO-GO**.

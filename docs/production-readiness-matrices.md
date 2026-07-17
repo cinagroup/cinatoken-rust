@@ -850,6 +850,24 @@ rollback target without recording credentials or request bodies.
 | Protocol rollout | v1 shape unchanged; signed v2 plus new-Worker fallback on exact route-not-found | Controller-first N/N-1 deployment and rollback with long in-flight operations | Local only |
 | Retry | Projection supports bounded definite-reject-only policy tests, but runtime rejects retry=true and max above one | Separate DO scheduler, versioned multi-attempt R2 contract, max-2 canary, duplicate alarm and horizon proof | Blocked |
 | Provider egress | No atomic private broker and no Linux client; dispatch grant does not perform provider fetch | Service Binding broker with credential isolation, allowlist, absolute deadline, bounded I/O, native idempotency/lookup, and terminal classification | Blocked |
-| Global terminal ack | Null ack prevents journaled operation compaction and therefore preserves evidence through backpressure | D1 terminal/outbox correlation, exactly-once ack, no-ack alert, compaction and disaster-recovery proof | Blocked |
+| Global terminal ack | Default-off signed D1 outbox delivery and exact DO duplicate/conflict handling pass locally; acknowledgement is separate from still-null compaction authority | Remote correlation, no-ack/dead-letter alerting, mixed-version faults, retention and disaster-recovery proof | Local only |
 | Configuration | All tracked flags false, max attempts one; runtime hard-rejects retry misconfiguration | Exact deployed readback, separate scoped secrets, approved candidate and disable-first rollback | Local only |
 | Cutover | No remote action or provider call occurred | Linux lifecycle, provider/accounting convergence, load/cost, rollback, and C1-C5 approval | **NO-GO** |
+
+## 2026-07-17 Global Terminal Acknowledgement Matrix
+
+| Gate | Current local state | Production acceptance | Status |
+| --- | --- | --- | --- |
+| D1 outbox ownership | Ordered scan, generation/expiry CAS lease, stale completion fence, bounded retry, explicit dead letter | Remote 0042 schema/readback, overlap/expiry fault campaign, alert ownership, sustained backlog evidence | Local only |
+| Minimal payload | Body-bound 4 KiB JSON projection excludes accounting, audit, response bytes, credentials, and plaintext idempotency | Captured staging request-shape proof and secret-redaction review | Local only |
+| Private transport | `CONTAINER_CONTROLLER` Service Binding, three-second timeout, strict JSON/no-store response | Target-first binding readback, authority rotation, N/N-1 and outage drills | Local only |
+| Recovery ordering | Revision 1 recovery is non-final; D1 writer and delivery both require the exact predecessor before revision 2; recovery result manifests remain legal | Old-writer drain, 0046 enforcement, remote duplicate/reorder/loss/eviction campaign with financial convergence | Local only |
+| DO acknowledgement | Dedicated SQLite ACK table gives transactional exact replay/409 conflict even with provider journal disabled; local response-loss replay converges `duplicate` | Actual deployed DO storage readback, old-object upgrade, long-retention/load proof | Local only |
+| Compaction authority | `final_acked_at` and `compaction_authorized_at` are separate; gate false short-circuits both age/count deletion and ACK never grants authority | Complete end-to-end provenance, signed retention policy, archive/readback, deletion rehearsal and approval | Blocked |
+| Operator status | Admin-only no-store aggregate counts and timestamps; no identifiers | Auth, privacy, alert thresholds, dashboard/runbook and incident drill | Local only |
+| Tracked config | Edge enabled/staging false; Controller ack/compaction false in all environments | Exact deployed Settings/Content readback and signed candidate | Local only |
+| Rollout | Controller first, edge producer last; rollback edge first and Controller last | Timed target-first rollout, lease drain, rollback and zero-loss reconciliation | Blocked |
+| Cutover | No remote action; Go/VPS remains authoritative | Provider idempotency/lookup, provenance, financial convergence, faults, load/cost, G1-G8 and C1-C5 | NO-GO |
+
+This matrix records a local acknowledgement transport, not compaction approval.
+Migration 0046 remains reserved and production remains **NO-GO**.

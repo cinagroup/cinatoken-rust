@@ -1358,3 +1358,57 @@ operations are classified and globally acknowledged. Preserve DO attempts,
 events, R2 objects, D1 operation/financial rows, and provider evidence. Never
 delete an unacknowledged attempt to regain capacity. Go/VPS remains the traffic
 and financial authority throughout these steps; production remains **NO-GO**.
+
+## 2026-07-17 Terminal Outbox Acknowledgement Rollout Order
+
+This sequence remains blocked before remote step 1. Local code and tests are not
+authorization to enable the feature.
+
+0. Preserve migration 0046 and confirm remote migration 0042 exact schema,
+   triggers, indexes, and immutable terminal/outbox rows. Do not create an ad
+   hoc acknowledgement migration.
+1. Deploy the Controller first with
+   `CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED=false` and
+   `CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED=false`. Verify the private
+   edge binding target, Durable Object class/migration, all resource IDs,
+   authority key names, compatibility date, and generated Env types without
+   recording secret values.
+2. Prove Controller N/N-1 before enabling: an old edge Worker ignores the new
+   route; a new edge Worker receiving exact `404 route_not_found` from an old
+   Controller retains and retries the D1 row; a new Controller accepts the
+   strict signed body; malformed, oversized, unsigned, cross-shard, and
+   conflicting bodies fail closed.
+3. Deploy the edge Worker with `CONTAINER_TERMINAL_OUTBOX_ENABLED=false` and
+   `CONTAINER_TERMINAL_OUTBOX_STAGING_VERIFIED=false`. Archive deployed config,
+   binding, route, and D1 schema readback. Confirm the aggregate status endpoint
+   remains admin-only and identifier-free.
+4. In isolated staging, enable Controller acknowledgement only. Seed immutable
+   non-provider fixtures for completed, failed, recovery revision 1, and ordered
+   revision 2. Exercise duplicate delivery, stale/expired leases, Controller
+   timeout/503/429, authority rotation, old-route 404, permanent conflict,
+   Worker interruption after remote acceptance, overlapping schedulers, and DO
+   eviction. Confirm journal-disabled operations use the dedicated ACK table.
+5. Review the archived results, then set the edge staging proof and bounded
+   producer gate for at most four rows per Cron. Require one Controller result
+   for each D1 event, exact duplicate convergence after lost responses, zero
+   skipped revision-2 predecessors, zero unexplained dead letters, and bounded
+   backlog/latency/cost.
+6. Reconcile terminal event, outbox state, global operation, reservation,
+   accounting, audit, Controller operation, provider retry state, attempt
+   events, R2 manifest, and provider invoice. Any missing identity or financial
+   delta disables the edge producer and leaves all rows retained.
+7. Keep compaction false. A separate future release must add complete
+   execution-provenance evidence, retention/archive policy, authenticated
+   readback, restore proof, and explicit approval before any path can write
+   `compaction_authorized_at`. Before 0046 database enforcement, prove every
+   old financial writer is drained and the deployed writer rejects revision 2
+   without the exact revision-1 recovery predecessor.
+8. Only after remote fault/load/cost/alert evidence, rollback rehearsal,
+   provider idempotency or lookup, financial convergence, and C1-C5/G1-G8
+   approval may this acknowledgement chain become a cutover prerequisite.
+
+Rollback order is edge producer gate off, allow active 30-second leases to
+complete or expire, reconcile pending/leased/dead-letter rows, Controller
+acknowledgement off, then Controller rollback. Never clear D1 outbox or DO
+journal rows to make rollback appear complete. Go/VPS remains authoritative and
+production remains **NO-GO**.

@@ -31,6 +31,8 @@ mod container_r2_inventory_admin;
 mod container_reconciliation;
 mod container_reconciliation_admin;
 mod container_scheduler;
+mod container_terminal_outbox;
+mod container_terminal_outbox_admin;
 mod d1_repositories;
 // Foundational mutable-flow-state substrate (item 2.1). Its consumers
 // (secure-verification step-up, Turnstile, OAuth/2FA/passkey) land in following
@@ -206,6 +208,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             |req, ctx| async move {
                 container_reconciliation_admin::status(req, ctx.env).await
             },
+        )
+        .get_async(
+            "/api/platform/container/terminal-outbox/status",
+            |req, ctx| async move { container_terminal_outbox_admin::status(req, ctx.env).await },
         )
         .get_async(
             "/api/platform/container/reconciliations",
@@ -1539,6 +1545,20 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "v1beta".to_string());
     let now = (worker::Date::now().as_millis() / 1000) as i64;
+    let terminal_outbox = container_terminal_outbox::container_terminal_outbox_runtime_config(&env);
+    if terminal_outbox.enabled {
+        match container_terminal_outbox::run_container_terminal_outbox(&env, &db, now).await {
+            Ok(summary) => match serde_json::to_string(&summary) {
+                Ok(summary) => worker::console_log!("container terminal outbox: {summary}"),
+                Err(_) => {
+                    worker::console_error!("container terminal outbox summary serialization failed")
+                }
+            },
+            Err(err) => worker::console_error!("container terminal outbox failed: {err}"),
+        }
+    } else if !terminal_outbox.valid {
+        worker::console_error!("container terminal outbox configuration is invalid");
+    }
     if container_scheduler::container_operation_runtime_status(&env)
         .operation_reconciliation_enabled
     {

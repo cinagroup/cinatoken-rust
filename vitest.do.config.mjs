@@ -46,6 +46,14 @@ export default defineConfig({
           CONTAINER_SCHEDULER_ENABLED: "false",
           CONTAINER_SCHEDULER_STAGING_VERIFIED: "false",
           CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED: "true",
+          CONTAINER_TERMINAL_OUTBOX_ENABLED: "true",
+          CONTAINER_TERMINAL_OUTBOX_STAGING_VERIFIED: "true",
+          CONTAINER_TERMINAL_OUTBOX_SCAN_LIMIT: "4",
+          CONTAINER_AUTHORITY_ISSUER: "cinatoken-edge-runtime-test",
+          CONTAINER_AUTHORITY_AUDIENCE: "container-terminal-ack-mock",
+          CONTAINER_AUTHORITY_CURRENT_KID: "runtime-test-v1",
+          CONTAINER_AUTHORITY_CURRENT_SECRET: authoritySecret,
+          CONTAINER_PROTOCOL_VERSION: "1",
           CONTAINER_R2_ORPHAN_INVENTORY_ENABLED: "true",
           CONTAINER_R2_ORPHAN_INVENTORY_SCAN_LIMIT: "1",
           CONTAINER_R2_ORPHAN_INVENTORY_GRACE_SECONDS: "0",
@@ -100,6 +108,7 @@ export default defineConfig({
           WFP_OUTBOUND_WRONG_CONTEXT: "wfp-outbound-wrong-context",
           WFP_PROVIDER_MOCK: "wfp-provider-mock",
           REALTIME_PROVIDER_MOCK: "realtime-provider-mock",
+          CONTAINER_CONTROLLER: "container-terminal-ack-mock",
         },
         durableObjects: {
           REALTIME_SESSIONS: {
@@ -235,6 +244,12 @@ export default defineConfig({
             durableObjects: {
               MOCK_REALTIME_PROVIDER: "MockRealtimeProvider",
             },
+          },
+          {
+            name: "container-terminal-ack-mock",
+            scriptPath: "./tests/fixtures/container-terminal-ack-mock.mjs",
+            modules: true,
+            compatibilityDate: "2026-07-13",
           },
         ],
       },

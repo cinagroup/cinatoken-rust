@@ -2270,6 +2270,155 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(staleApply.status).toBe(409);
   });
 
+  it("constructs the terminal ack Service Binding request contract", () => {
+    const request = new Request(
+      "https://cinatoken-container-controller.internal/internal/v1/operations/terminal-ack",
+      {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "x-cinatoken-container-authority": "diagnostic-authority",
+        },
+        body: "{}",
+        redirect: "manual",
+      },
+    );
+    expect(request.method).toBe("POST");
+    expect(request.redirect).toBe("manual");
+    expect(new URL(request.url).pathname).toBe(
+      "/internal/v1/operations/terminal-ack",
+    );
+  });
+
+  it("delivers terminal outbox events with retry and dead-letter fences", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const { cookie } = await setupAndLoginBillingRoot();
+    await seedContainerTerminalOutboxAccount();
+    const success = await seedContainerTerminalRecoveryEvent("success");
+    const retry = await seedContainerTerminalRecoveryEvent("retry");
+    const conflict = await seedContainerTerminalRecoveryEvent("conflict");
+
+    await runScheduledRecovery();
+    const rows = await terminalOutboxRows();
+    expect(rows).toEqual([
+      {
+        operation_id: conflict.operationId,
+        status: "dead_letter",
+        delivery_generation: 1,
+        delivery_attempt_count: 1,
+        lease_expires_at: 0,
+        delivered_at: 0,
+        last_error: "terminal_ack_conflict",
+      },
+      {
+        operation_id: retry.operationId,
+        status: "pending",
+        delivery_generation: 1,
+        delivery_attempt_count: 1,
+        lease_expires_at: 0,
+        delivered_at: 0,
+        last_error: "controller_unavailable",
+      },
+      {
+        operation_id: success.operationId,
+        status: "delivered",
+        delivery_generation: 1,
+        delivery_attempt_count: 1,
+        lease_expires_at: 0,
+        delivered_at: expect.any(Number),
+        last_error: "",
+      },
+    ]);
+    expect(rows[2].delivered_at).toBeGreaterThan(0);
+
+    await runScheduledRecovery();
+    expect(await terminalOutboxRows()).toEqual(rows);
+
+    const statusUrl =
+      "https://cinatoken.test/api/platform/container/terminal-outbox/status";
+    const anonymous = await SELF.fetch(statusUrl);
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.headers.get("cache-control")).toBe("no-store");
+    const response = await SELF.fetch(statusUrl, { headers: { cookie } });
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(body).toMatchObject({
+      success: true,
+      data: {
+        contract_version: 1,
+        delivery_compiled: true,
+        configured: true,
+        configuration_valid: true,
+        requested: true,
+        staging_verified: true,
+        runtime_enabled: true,
+        schema_ready: true,
+        scan_limit: 4,
+        counts: {
+          total: 3,
+          pending: 1,
+          leased: 0,
+          delivered: 1,
+          dead_letter: 1,
+          due: 0,
+          expired_leases: 0,
+        },
+      },
+    });
+    const serialized = JSON.stringify(body);
+    for (const raw of [
+      success.operationId,
+      retry.operationId,
+      conflict.operationId,
+      success.billingEventId,
+      retry.billingEventId,
+      conflict.billingEventId,
+    ]) {
+      expect(serialized).not.toContain(raw);
+    }
+  }, 60_000);
+
+  it("converges a terminal outbox replay after the acknowledgement response is lost", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await setupAndLoginBillingRoot();
+    await seedContainerTerminalOutboxAccount();
+    const seeded = await seedContainerTerminalRecoveryEvent("response-loss");
+    const controllerResponse = await env.CONTAINER_CONTROLLER.fetch(
+      "https://cinatoken-container-controller.internal/internal/v1/operations/terminal-ack",
+      {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "x-cinatoken-container-authority": "response-loss-test-authority",
+        },
+        body: JSON.stringify(seeded.ackBody),
+      },
+    );
+    expect(controllerResponse.status).toBe(200);
+    expect(await controllerResponse.json()).toMatchObject({
+      status: "acknowledged",
+      billing_event_id: seeded.billingEventId,
+      operation_id: seeded.operationId,
+      reconciliation_revision: 1,
+    });
+
+    await Promise.all([runScheduledRecovery(), runScheduledRecovery()]);
+    expect(await terminalOutboxRows()).toEqual([
+      {
+        operation_id: seeded.operationId,
+        status: "delivered",
+        delivery_generation: 1,
+        delivery_attempt_count: 1,
+        lease_expires_at: 0,
+        delivered_at: expect.any(Number),
+        last_error: "",
+      },
+    ]);
+  });
+
   it("inventories R2 orphans across fenced generations without mutation authority", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const { cookie } = await setupAndLoginBillingRoot();
@@ -4931,6 +5080,263 @@ async function seedRelayBillingReservation({
       leaseExpiresAt,
     )
     .run();
+}
+
+async function seedContainerTerminalOutboxAccount() {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET quota = 1000 WHERE id = 1"),
+    env.DB.prepare(
+      `INSERT INTO tokens
+        (id, user_id, "key", status, name, created_time, accessed_time,
+         expired_time, remain_quota, unlimited_quota, model_limits_enabled,
+         model_limits, allow_ips, used_quota, "group", cross_group_retry, deleted_at)
+       VALUES (1, 1, 'terminal-outbox-runtime-token', 1, 'terminal outbox runtime',
+         ?1, 0, -1, 1000, 0, 0, '', '', 0, 'default', 0, NULL)`,
+    ).bind(now),
+    env.DB.prepare(
+      `INSERT INTO channels (id, "key", name, status, "group", used_quota)
+       VALUES (42, 'terminal-outbox-runtime-upstream', 'terminal outbox runtime',
+         1, 'default', 0)`,
+    ),
+  ]);
+}
+
+async function seedContainerTerminalRecoveryEvent(suffix) {
+  const now = Math.floor(Date.now() / 1000);
+  const eventAt = now - 5;
+  const createdAt = eventAt - 2;
+  const operationId = `relaycontainer-terminal-outbox-${suffix}`;
+  const reason = "provider_ambiguous";
+  const encoder = new TextEncoder();
+  const clientIdempotencySha256 = await sha256Hex(
+    encoder.encode(`terminal-outbox-client:${suffix}`),
+  );
+  const clientRequestSha256 = await sha256Hex(
+    encoder.encode(`terminal-outbox-request:${suffix}`),
+  );
+  const reconciliationId = await sha256Hex(
+    encoder.encode(`terminal-outbox-reconciliation:${suffix}`),
+  );
+  const auditPayload = { kind: "terminal_ack_runtime" };
+  const auditPayloadJson = canonicalJson(auditPayload);
+  const auditPayloadSha256 = await sha256Hex(encoder.encode(auditPayloadJson));
+  const terminalContract = {
+    admission_sha256: "a".repeat(64),
+    audit_payload_sha256: auditPayloadSha256,
+    billing: {
+      action: "recovery_required",
+      channel_used_quota_delta: 0,
+      final_quota: null,
+      from_status: "reserved",
+      owner_generation: 2,
+      pre_consumed_quota: 100,
+      reason,
+      request_accounted: 0,
+      request_count_delta: 0,
+      token_quota_delta: 0,
+      user_quota_delta: 0,
+      user_used_quota_delta: 0,
+    },
+    client_idempotency_hmac_sha256: clientIdempotencySha256,
+    client_request_sha256: clientRequestSha256,
+    client_response: null,
+    operation: {
+      from_status: "dispatched",
+      id: operationId,
+      owner_generation: 2,
+      response_code: reason,
+      response_status: 202,
+      result: null,
+      to_status: "recovery_required",
+    },
+    reconciliation_id: reconciliationId,
+    reconciliation_revision: 1,
+    schema_version: 1,
+  };
+  const terminalContractJson = canonicalJson(terminalContract);
+  const terminalContractSha256 = await sha256Hex(
+    encoder.encode(terminalContractJson),
+  );
+  const eventIdentity = {
+    domain: "cinatoken:relay-container-financial-terminal:v1",
+    operation_from_status: "dispatched",
+    operation_id: operationId,
+    owner_generation: 2,
+    reconciliation_id: reconciliationId,
+    reconciliation_revision: 1,
+  };
+  const billingEventId = await sha256Hex(
+    encoder.encode(canonicalJson(eventIdentity)),
+  );
+  const outboxPayload = {
+    audit_payload: auditPayload,
+    audit_payload_sha256: auditPayloadSha256,
+    billing_event_id: billingEventId,
+    schema_version: 1,
+    terminal_contract: terminalContract,
+    terminal_contract_sha256: terminalContractSha256,
+  };
+  const outboxPayloadJson = canonicalJson(outboxPayload);
+  const outboxPayloadSha256 = await sha256Hex(
+    encoder.encode(outboxPayloadJson),
+  );
+  const leaseExpiresAt = now + 600;
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO relay_billing_reservations (
+         reservation_key, user_id, token_id, model_name, endpoint_path,
+         expr_hash, candidate_group_count, reservation_strategy,
+         pre_consumed_quota, status, channel_id, selected_group, selected_at,
+         owner_generation, owner_deadline_at, created_at, updated_at,
+         lease_expires_at
+       ) VALUES (?1, 1, 1, 'gpt-runtime', 'chat/completions', 'sha256:runtime',
+         1, 'selected_group', 100, 'reserved', 42, 'default', ?2, 2, ?3,
+         ?2, ?2, ?3)`,
+    ).bind(operationId, createdAt, leaseExpiresAt),
+    env.DB.prepare(
+      `INSERT INTO relay_container_operations (
+         reservation_key, operation_id, owner_generation,
+         owner_lease_expires_at, channel_id, selected_group, operation_kind,
+         provider_operation_id, admission_sha256, protocol_version,
+         shard_contract_version, ring_generation, shard_count, shard_index,
+         instance_name, execution_deadline_at, input_mode, input_object_key,
+         input_object_version, input_sha256, input_size, input_content_type,
+         trace_id, client_idempotency_hmac_sha256, client_request_sha256,
+         reconciliation_id, status, created_at, updated_at
+       ) VALUES (?1, ?1, 2, ?2, 42, 'default', 'health_probe', ?3,
+         ?4, 1, 1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003', ?5,
+         'r2', ?6, ?7, ?8, 0, 'application/json', ?9, ?10, ?11, ?12,
+         'prepared', ?13, ?13)`,
+    ).bind(
+      operationId,
+      leaseExpiresAt,
+      `provider-terminal-outbox-${suffix}`,
+      "a".repeat(64),
+      now + 300,
+      `container-inputs/v1/${operationId}/2/${"b".repeat(64)}`,
+      `input-terminal-outbox-${suffix}`,
+      "b".repeat(64),
+      `trace-terminal-outbox-${suffix}`,
+      clientIdempotencySha256,
+      clientRequestSha256,
+      reconciliationId,
+      createdAt,
+    ),
+    env.DB.prepare(
+      `UPDATE relay_container_operations
+       SET status = 'dispatched', updated_at = ?2
+       WHERE operation_id = ?1 AND status = 'prepared'`,
+    ).bind(operationId, createdAt + 1),
+    env.DB.prepare(
+      `INSERT INTO relay_container_terminal_events (
+         billing_event_id, reservation_key, operation_id, owner_generation,
+         operation_from_status, operation_status, terminal_contract_sha256,
+         billing_action, billing_owner_generation, billing_from_status,
+         billing_final_quota, billing_request_accounted, billing_reason,
+         pre_consumed_quota, user_quota_delta, token_quota_delta,
+         user_used_quota_delta, channel_used_quota_delta, request_count_delta,
+         reconciliation_id, reconciliation_revision, client_response_status,
+         client_response_headers_json, client_response_headers_sha256,
+         client_response_object_key, client_response_object_version,
+         client_response_sha256, client_response_size,
+         client_response_content_type, outbox_schema_version,
+         outbox_payload_json, outbox_payload_sha256, created_at
+       ) VALUES (?1, ?2, ?2, 2, 'dispatched', 'recovery_required', ?3,
+         'recovery_required', 2, 'reserved', NULL, 0, ?4, 100,
+         0, 0, 0, 0, 0, ?5, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+         NULL, 1, ?6, ?7, ?8)`,
+    ).bind(
+      billingEventId,
+      operationId,
+      terminalContractSha256,
+      reason,
+      reconciliationId,
+      outboxPayloadJson,
+      outboxPayloadSha256,
+      eventAt,
+    ),
+    env.DB.prepare(
+      `INSERT INTO relay_container_terminal_outbox_state (
+         billing_event_id, status, delivery_generation,
+         delivery_attempt_count, lease_expires_at, available_at, delivered_at,
+         last_error, created_at, updated_at
+       ) VALUES (?1, 'pending', 0, 0, 0, ?2, 0, '', ?2, ?2)`,
+    ).bind(billingEventId, eventAt),
+    env.DB.prepare(
+      `UPDATE relay_container_operations
+       SET status = 'recovery_required', response_status = 202,
+           response_code = ?2, result_object_key = NULL,
+           result_object_version = NULL, result_sha256 = NULL,
+           result_size = NULL, result_content_type = NULL, updated_at = ?3
+       WHERE operation_id = ?1 AND status = 'dispatched'`,
+    ).bind(operationId, reason, eventAt),
+    env.DB.prepare(
+      `UPDATE relay_billing_reservations
+       SET status = 'recovery_required', owner_generation = 3,
+           final_quota = 0, finalization_reason = ?2, request_accounted = 0,
+           recovery_required_at = ?3, recovery_attempt_count = 1,
+           recovery_last_attempt_at = ?3, recovery_next_attempt_at = 0,
+           updated_at = ?3
+       WHERE reservation_key = ?1 AND status = 'reserved'`,
+    ).bind(operationId, reason, eventAt),
+  ]);
+  return {
+    operationId,
+    billingEventId,
+    ackBody: {
+      protocol_version: 1,
+      billing_event_id: billingEventId,
+      terminal_contract_sha256: terminalContractSha256,
+      reconciliation_id: reconciliationId,
+      reconciliation_revision: 1,
+      predecessor_billing_event_id: null,
+      operation_id: operationId,
+      owner_generation: 2,
+      operation_from_status: "dispatched",
+      operation_status: "recovery_required",
+      response_status: 202,
+      response_code: reason,
+      result: null,
+      shard: {
+        contract_version: 1,
+        ring_generation: 1,
+        shard_count: 8,
+        shard_index: 3,
+        instance_name: "cinatoken-relay-shard-v1-0003",
+      },
+      trace_id: `trace-terminal-outbox-${suffix}`,
+    },
+  };
+}
+
+async function terminalOutboxRows() {
+  return (
+    await env.DB.prepare(
+      `SELECT event.operation_id, outbox.status, outbox.delivery_generation,
+              outbox.delivery_attempt_count, outbox.lease_expires_at,
+              outbox.delivered_at, outbox.last_error
+       FROM relay_container_terminal_outbox_state AS outbox
+       JOIN relay_container_terminal_events AS event
+         ON event.billing_event_id = outbox.billing_event_id
+       ORDER BY event.operation_id`,
+    ).all()
+  ).results;
+}
+
+function canonicalJson(value) {
+  return JSON.stringify(canonicalValue(value));
+}
+
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, canonicalValue(value[key])]),
+  );
 }
 
 async function relayBillingState(reservationKey) {

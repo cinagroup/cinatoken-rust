@@ -13915,6 +13915,108 @@ all eight Container gates remain false. No remote migration, R2 write,
 deployment, provider call, or traffic switch occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
 
+## 22.238 Global Terminal Acknowledgement Without Compaction Authority (2026-07-17)
+
+The existing migration-0042 financial terminal outbox now has a default-off,
+generation-fenced delivery path to the owning Container shard Durable Object.
+No D1 migration was added: migration 0046 remains reserved, and the delivery
+reader consumes only the immutable terminal event, outbox lifecycle row, and
+operation identity already committed by the financial terminal transaction.
+
+The main Worker scheduled handler scans at most four due rows by default and
+never more than eight. Claim is a D1 compare-and-swap that increments both
+delivery generation and attempt count, grants a 30-second lease, and permits an
+expired lease to be reclaimed without accepting a stale completion. Retry is
+deterministic exponential backoff from 15 seconds to one hour. Explicit
+contract conflicts and the current Controller's exact
+`terminal_ack_not_found` response become `dead_letter`; transport, binding,
+authority, rate-limit, the old Controller's exact `route_not_found`, and
+controller-availability failures return to `pending`. The exact transient
+`authority_expired` response also retries with a newly signed request. Revision
+2 cannot be selected or claimed until the matching revision-1 event is
+delivered.
+
+Delivery sends one body-bound authority request through the private
+`CONTAINER_CONTROLLER` Service Binding. The exact payload contains only event,
+operation, result-manifest, shard, and trace identity. It excludes accounting
+deltas, billing reasons, audit payloads, client response bytes, authorization
+headers, provider credentials, and client idempotency plaintext. Request and
+response bodies are bounded to 4 KiB, responses must be JSON plus `no-store`,
+and the Rust client validates every echoed identity before completing the D1
+lease. An exact old-Controller `404 route_not_found` is retryable, so the
+Controller can be deployed before the edge producer without losing an event.
+
+The Controller route is separately gated by
+`CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED=false` in local, staging, and production.
+It verifies the signed body before selecting the named shard and repeats the
+gate inside the Durable Object RPC. Shard SQLite persists the complete canonical
+acknowledgement identity in the dedicated `cinatoken_shard_terminal_acks`
+table, independent of the optional provider-attempt journal. Journal-disabled
+operations therefore still acknowledge and retain terminal evidence. Exact
+replay returns `duplicate`; a conflicting event, generation, shard, result, or
+terminal contract returns 409. A revision-1
+`recovery_required` acknowledgement is deliberately non-final. Revision 2 must
+name that exact predecessor and reconciliation ID, and is validated against the
+stored revision-1 recovery snapshot while the local operation remains
+`recovery_required`. That recovery snapshot may legally retain an exact result
+manifest; it is not weakened to a result-free special case.
+
+The terminal envelope permits a result-free successful acknowledgement because
+`health_probe` completes without an R2 result. This does not weaken relay
+completion: the shard ledger compares the acknowledgement to the stored
+operation and exact stored result, so only a genuine result-free health probe
+matches. Result object versions are bounded to the existing 128-character D1
+contract at Controller storage ingestion, ledger validation, terminal parsing,
+and the Rust client; an overlong version is rejected before it can create an
+unacknowledgeable terminal state.
+
+Acknowledgement is not deletion authority. The ledger now stores
+`final_acked_at` separately from `compaction_authorized_at` in that dedicated
+table. This route never writes the latter, and both age-based and count-based
+operation deletion first require the independent compaction gate and then both
+pieces of evidence. The tracked
+`CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED` value is false and no runtime
+path can promote compaction evidence. This prevents the new acknowledgement
+chain from deleting provider attempts or operation history before complete
+edge/controller/DO/container/provider provenance exists.
+
+The financial writer also rejects a revision-2 event inside its first
+transactional `INSERT ... SELECT` unless the same operation, owner generation,
+and reconciliation ID already have the exact revision-1 recovery predecessor.
+Every later outbox, operation, billing, and accounting statement depends on
+that insert, so a missing predecessor leaves the batch with no business-state
+mutation. Migration 0042 is intentionally unchanged: until the reserved 0046
+enforcement migration is applied, production activation additionally requires
+old-writer drain and exact deployed-writer readback.
+
+Operators receive only aggregate, admin-authenticated, no-store state from
+`GET /api/platform/container/terminal-outbox/status`: configuration, schema
+readiness, total/pending/leased/delivered/dead-letter/due/expired counts, and
+bounded timestamps. It exposes no event, operation, reservation, trace, token,
+or provider identity.
+
+Rollout order is Controller code and bindings first with both Controller gates
+false, then edge code with both outbox gates false, then isolated staging
+readback, then Controller acknowledgement, and only then the bounded edge
+producer. Rollback disables the edge producer first, waits for or expires its
+30-second leases, disables Controller acknowledgement, and rolls the Controller
+back last. Durable D1 and DO rows are retained throughout.
+
+Local Workerd coverage includes overlapping schedulers and the response-loss
+window where the Controller has already accepted an event but D1 has not: the
+retry receives `duplicate` and converges the original outbox row without a
+second generation or divergent payload.
+
+This closes the local acknowledgement transport and two-phase ordering gap; it
+does not approve compaction or traffic. Remote binding/config readback,
+authority rotation, N/N-1 deployment drills, actual Container lifecycle faults,
+provider-native idempotency or lookup, end-to-end execution provenance, exact
+edge replay, financial convergence, load/cost/alerts, rollback evidence, and
+C1-C5 approval remain mandatory. Every tracked activation and compaction gate
+is false. No remote mutation, deployment, provider call, secret provisioning,
+or traffic switch occurred. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
 ## 22.229 Bounded Container Reconciliation Observer (2026-07-16)
 
 The source audit was repeated against the cinaVibeSDK execution lifecycle and

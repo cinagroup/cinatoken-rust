@@ -43,12 +43,17 @@ const OPERATION_STATUS_URL: &str =
 const OPERATION_STATUS_V2_PATH: &str = "/internal/v2/operations/status";
 const OPERATION_STATUS_V2_URL: &str =
     "https://cinatoken-container-controller.internal/internal/v2/operations/status";
+const TERMINAL_ACK_PATH: &str = "/internal/v1/operations/terminal-ack";
+const TERMINAL_ACK_URL: &str =
+    "https://cinatoken-container-controller.internal/internal/v1/operations/terminal-ack";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(12);
 const STATUS_MAX_BYTES: usize = 4 * 1024;
 const READINESS_MAX_BYTES: usize = 4 * 1024;
 const OPERATION_RESPONSE_MAX_BYTES: usize = 8 * 1024;
 const OPERATION_STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+const TERMINAL_ACK_RESPONSE_MAX_BYTES: usize = 4 * 1024;
+const TERMINAL_ACK_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Serialize)]
 struct ShardReadinessRequest<'a> {
@@ -91,6 +96,72 @@ struct ContainerOperationStatusQuery<'a> {
     owner_generation: i64,
     shard: &'a ShardPlan,
     trace_id: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerTerminalAckResult {
+    pub object_key: String,
+    pub object_version: String,
+    pub sha256: String,
+    pub size: u64,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerTerminalAckEnvelope {
+    pub protocol_version: u32,
+    pub billing_event_id: String,
+    pub terminal_contract_sha256: String,
+    pub reconciliation_id: String,
+    pub reconciliation_revision: i64,
+    pub predecessor_billing_event_id: Option<String>,
+    pub operation_id: String,
+    pub owner_generation: i64,
+    pub operation_from_status: String,
+    pub operation_status: String,
+    pub response_status: i64,
+    pub response_code: Option<String>,
+    pub result: Option<ContainerTerminalAckResult>,
+    pub shard: ShardPlan,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerTerminalAckPayload {
+    protocol_version: u32,
+    billing_event_id: String,
+    operation_id: String,
+    reconciliation_revision: i64,
+    status: String,
+    final_ack: bool,
+    acknowledged_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerTerminalAckOutcome {
+    Acknowledged { final_ack: bool },
+    Duplicate { final_ack: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerTerminalAckError {
+    Retryable(&'static str),
+    Permanent(&'static str),
+}
+
+impl ContainerTerminalAckError {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Retryable(code) | Self::Permanent(code) => code,
+        }
+    }
+
+    pub fn retryable(self) -> bool {
+        matches!(self, Self::Retryable(_))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -468,6 +539,50 @@ pub async fn query_operation_status(
     }
 }
 
+pub async fn acknowledge_terminal_event(
+    env: &Env,
+    envelope: &ContainerTerminalAckEnvelope,
+) -> Result<ContainerTerminalAckOutcome, ContainerTerminalAckError> {
+    validate_terminal_ack_envelope(envelope).map_err(ContainerTerminalAckError::Permanent)?;
+    let fetcher = env
+        .service(CONTAINER_CONTROLLER_BINDING)
+        .map_err(|_| ContainerTerminalAckError::Retryable("binding_unavailable"))?;
+    let authority = authority_config(env).ok_or(ContainerTerminalAckError::Retryable(
+        "authority_unavailable",
+    ))?;
+    if envelope.protocol_version != authority.protocol_version {
+        return Err(ContainerTerminalAckError::Retryable("protocol_mismatch"));
+    }
+    let dispatch_id = random_dispatch_id("terminal-ack")
+        .ok_or(ContainerTerminalAckError::Retryable("entropy_unavailable"))?;
+    let body = serde_json::to_vec(envelope)
+        .map_err(|_| ContainerTerminalAckError::Permanent("request_encode_failed"))?;
+    let now = (worker::Date::now().as_millis() / 1000) as i64;
+    let token = sign_bound_authority(
+        &authority,
+        &dispatch_id,
+        "POST",
+        TERMINAL_ACK_PATH,
+        &body,
+        now,
+    )
+    .ok_or(ContainerTerminalAckError::Retryable(
+        "authority_sign_failed",
+    ))?;
+    let request = terminal_ack_request(&token, &body).map_err(|err| {
+        worker::console_error!("container terminal ack request construction failed: {err}");
+        ContainerTerminalAckError::Retryable("request_build_failed")
+    })?;
+    let operation = execute_terminal_ack(&fetcher, request, envelope);
+    let delay = Delay::from(TERMINAL_ACK_TIMEOUT);
+    futures_util::pin_mut!(operation);
+    futures_util::pin_mut!(delay);
+    match select(operation, delay).await {
+        Either::Left((result, _)) => result,
+        Either::Right(((), _)) => Err(ContainerTerminalAckError::Retryable("timeout")),
+    }
+}
+
 async fn query_operation_status_path(
     fetcher: &Fetcher,
     authority: &AuthorityConfig,
@@ -616,6 +731,108 @@ async fn execute_operation(
                 .map_err(|_| "invalid_response_body")?;
             Err(classify_operation_error(status, &error))
         }
+    }
+}
+
+async fn execute_terminal_ack(
+    fetcher: &Fetcher,
+    request: Request,
+    envelope: &ContainerTerminalAckEnvelope,
+) -> Result<ContainerTerminalAckOutcome, ContainerTerminalAckError> {
+    let mut response = fetcher
+        .fetch_request(request)
+        .await
+        .map_err(|_| ContainerTerminalAckError::Retryable("request_failed"))?;
+    let status = response.status_code();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let cache_control = response
+        .headers()
+        .get("cache-control")
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !content_type.starts_with("application/json") || !cache_control.contains("no-store") {
+        return Err(ContainerTerminalAckError::Retryable(
+            "invalid_response_headers",
+        ));
+    }
+    let body =
+        crate::relay::read_response_bytes_limited(&mut response, TERMINAL_ACK_RESPONSE_MAX_BYTES)
+            .await
+            .map_err(|_| ContainerTerminalAckError::Retryable("invalid_response_size"))?;
+    if status == 200 {
+        let payload = serde_json::from_slice::<ControllerTerminalAckPayload>(&body)
+            .map_err(|_| ContainerTerminalAckError::Retryable("invalid_response_body"))?;
+        return terminal_ack_outcome(payload, envelope);
+    }
+    let error = serde_json::from_slice::<ControllerOperationErrorPayload>(&body)
+        .map_err(|_| ContainerTerminalAckError::Retryable("invalid_response_body"))?;
+    Err(classify_terminal_ack_error(status, &error))
+}
+
+fn terminal_ack_outcome(
+    payload: ControllerTerminalAckPayload,
+    envelope: &ContainerTerminalAckEnvelope,
+) -> Result<ContainerTerminalAckOutcome, ContainerTerminalAckError> {
+    let expected_final = envelope.operation_status != "recovery_required";
+    let timestamp_valid = if expected_final {
+        payload.acknowledged_at.is_some_and(|value| value > 0)
+    } else {
+        payload.acknowledged_at.is_none()
+    };
+    if payload.protocol_version != envelope.protocol_version
+        || payload.billing_event_id != envelope.billing_event_id
+        || payload.operation_id != envelope.operation_id
+        || payload.reconciliation_revision != envelope.reconciliation_revision
+        || payload.final_ack != expected_final
+        || !timestamp_valid
+    {
+        return Err(ContainerTerminalAckError::Permanent(
+            "terminal_ack_contract_mismatch",
+        ));
+    }
+    match payload.status.as_str() {
+        "acknowledged" => Ok(ContainerTerminalAckOutcome::Acknowledged {
+            final_ack: payload.final_ack,
+        }),
+        "duplicate" => Ok(ContainerTerminalAckOutcome::Duplicate {
+            final_ack: payload.final_ack,
+        }),
+        _ => Err(ContainerTerminalAckError::Permanent(
+            "terminal_ack_contract_mismatch",
+        )),
+    }
+}
+
+fn classify_terminal_ack_error(
+    http_status: u16,
+    payload: &ControllerOperationErrorPayload,
+) -> ContainerTerminalAckError {
+    match (http_status, payload.error.as_str(), payload.retryable) {
+        (400, "invalid_terminal_ack", _) | (409, "terminal_ack_conflict", _) => {
+            ContainerTerminalAckError::Permanent("terminal_ack_conflict")
+        }
+        (404, "route_not_found", _) => ContainerTerminalAckError::Retryable("route_not_found"),
+        (404, "terminal_ack_not_found", _) => {
+            ContainerTerminalAckError::Permanent("terminal_ack_not_found")
+        }
+        (403, _, _) => ContainerTerminalAckError::Retryable("authority_rejected"),
+        (409, "stale_shard_fence", _) => {
+            ContainerTerminalAckError::Retryable("shard_fence_rejected")
+        }
+        (409, "authority_expired", _) => ContainerTerminalAckError::Retryable("authority_expired"),
+        (409, _, _) => ContainerTerminalAckError::Permanent("terminal_ack_conflict"),
+        (426, _, _) => ContainerTerminalAckError::Retryable("protocol_rejected"),
+        (429, _, _) => ContainerTerminalAckError::Retryable("controller_rate_limited"),
+        (503, _, _) => ContainerTerminalAckError::Retryable("controller_unavailable"),
+        _ => ContainerTerminalAckError::Retryable("unexpected_status"),
     }
 }
 
@@ -862,6 +1079,107 @@ fn classify_operation_error(
         (503, _, _) => "controller_unavailable",
         _ => "unexpected_status",
     }
+}
+
+fn validate_terminal_ack_envelope(
+    envelope: &ContainerTerminalAckEnvelope,
+) -> Result<(), &'static str> {
+    if envelope.protocol_version == 0
+        || envelope.protocol_version > 255
+        || !valid_sha256(&envelope.billing_event_id)
+        || !valid_sha256(&envelope.terminal_contract_sha256)
+        || !valid_sha256(&envelope.reconciliation_id)
+        || !matches!(envelope.reconciliation_revision, 1 | 2)
+        || !valid_identifier(&envelope.operation_id, 128)
+        || envelope.owner_generation <= 0
+        || envelope.owner_generation > i64::from(i32::MAX)
+        || !matches!(
+            envelope.operation_from_status.as_str(),
+            "prepared" | "dispatched" | "recovery_required"
+        )
+        || !matches!(
+            envelope.operation_status.as_str(),
+            "completed" | "failed" | "recovery_required"
+        )
+        || envelope.response_status < 100
+        || envelope.response_status > 599
+        || !valid_identifier(&envelope.trace_id, 128)
+        || envelope.shard.contract_version != 1
+        || envelope.shard.ring_generation == 0
+        || envelope.shard.shard_count == 0
+        || envelope.shard.shard_count > 1_024
+        || envelope.shard.shard_index >= envelope.shard.shard_count
+        || envelope.shard.instance_name
+            != format!("cinatoken-relay-shard-v1-{:04}", envelope.shard.shard_index)
+    {
+        return Err("invalid_terminal_ack");
+    }
+    let predecessor_valid = match envelope.reconciliation_revision {
+        1 => {
+            envelope.predecessor_billing_event_id.is_none()
+                && matches!(
+                    envelope.operation_from_status.as_str(),
+                    "prepared" | "dispatched"
+                )
+        }
+        2 => {
+            envelope
+                .predecessor_billing_event_id
+                .as_deref()
+                .is_some_and(valid_sha256)
+                && envelope.operation_from_status == "recovery_required"
+        }
+        _ => false,
+    };
+    let outcome_valid = match envelope.operation_status.as_str() {
+        "completed" => {
+            (200..=299).contains(&envelope.response_status)
+                && envelope.response_status != 202
+                && envelope.response_code.is_none()
+        }
+        "failed" => {
+            (400..=599).contains(&envelope.response_status)
+                && envelope
+                    .response_code
+                    .as_deref()
+                    .is_some_and(valid_response_code)
+                && envelope.result.is_none()
+        }
+        "recovery_required" => {
+            envelope.reconciliation_revision == 1
+                && envelope.response_status == 202
+                && envelope
+                    .response_code
+                    .as_deref()
+                    .is_some_and(valid_response_code)
+        }
+        _ => false,
+    };
+    let result_valid = envelope.result.as_ref().is_none_or(|result| {
+        let manifest = ContainerArtifactManifest {
+            object_key: result.object_key.clone(),
+            object_version: result.object_version.clone(),
+            sha256: result.sha256.clone(),
+            size: result.size,
+            content_type: result.content_type.clone(),
+        };
+        validate_container_artifact_manifest(&manifest).is_ok()
+            && result.object_key
+                == format!(
+                    "container-results/v1/{}/{}/{}",
+                    envelope.operation_id, envelope.owner_generation, result.sha256
+                )
+    });
+    let transition_valid = match envelope.operation_from_status.as_str() {
+        "prepared" => envelope.operation_status != "completed",
+        "dispatched" => true,
+        "recovery_required" => envelope.operation_status != "recovery_required",
+        _ => false,
+    };
+    if !predecessor_valid || !transition_valid || !outcome_valid || !result_valid {
+        return Err("invalid_terminal_ack");
+    }
+    Ok(())
 }
 
 fn validate_operation_envelope_at(
@@ -1175,6 +1493,31 @@ fn operation_status_request(url: &str, token: &str, body: &[u8]) -> worker::Resu
     Request::new_with_init(url, &init)
 }
 
+fn terminal_ack_request(token: &str, body: &[u8]) -> worker::Result<Request> {
+    let mut headers = Headers::new();
+    headers.set("accept", "application/json")?;
+    headers.set("content-type", "application/json")?;
+    headers.set(AUTHORITY_HEADER, token)?;
+    let body = std::str::from_utf8(body).map_err(|_| {
+        worker::Error::RustError("container terminal ack JSON body is not UTF-8".to_string())
+    })?;
+    // Avoid worker-rs 0.5 legacy `cf` defaults; Workerd's no-follow mode is manual.
+    let init = web_sys::RequestInit::new();
+    init.set_method("POST");
+    init.set_headers(headers.as_ref());
+    init.set_body(&wasm_bindgen::JsValue::from_str(body));
+    init.set_redirect(web_sys::RequestRedirect::Manual);
+    web_sys::Request::new_with_str_and_init(TERMINAL_ACK_URL, &init)
+        .map(Request::from)
+        .map_err(|error| {
+            worker::Error::JsError(
+                error
+                    .as_string()
+                    .unwrap_or_else(|| "invalid terminal ack request options".to_string()),
+            )
+        })
+}
+
 fn status_matches(
     payload: &ControllerStatusPayload,
     authority: &AuthorityConfig,
@@ -1329,6 +1672,35 @@ mod tests {
         }
     }
 
+    fn test_terminal_ack() -> ContainerTerminalAckEnvelope {
+        ContainerTerminalAckEnvelope {
+            protocol_version: 1,
+            billing_event_id: "d".repeat(64),
+            terminal_contract_sha256: "e".repeat(64),
+            reconciliation_id: "f".repeat(64),
+            reconciliation_revision: 1,
+            predecessor_billing_event_id: None,
+            operation_id: "relayreserve-test".to_string(),
+            owner_generation: 2,
+            operation_from_status: "dispatched".to_string(),
+            operation_status: "completed".to_string(),
+            response_status: 200,
+            response_code: None,
+            result: Some(ContainerTerminalAckResult {
+                object_key: format!(
+                    "container-results/v1/relayreserve-test/2/{}",
+                    "c".repeat(64)
+                ),
+                object_version: "version-result-1".to_string(),
+                sha256: "c".repeat(64),
+                size: 256,
+                content_type: "application/json".to_string(),
+            }),
+            shard: test_shard(),
+            trace_id: "trace-op-1".to_string(),
+        }
+    }
+
     fn idle_readiness() -> PersistedReadinessSnapshot {
         PersistedReadinessSnapshot {
             generation: 0,
@@ -1464,6 +1836,147 @@ mod tests {
         )
         .unwrap();
         assert_eq!(claims.dispatch_id, "operation-status-test-1");
+    }
+
+    #[test]
+    fn terminal_ack_is_body_bound_and_strictly_fenced() {
+        let authority = test_authority();
+        let envelope = test_terminal_ack();
+        validate_terminal_ack_envelope(&envelope).unwrap();
+        let body = serde_json::to_vec(&envelope).unwrap();
+        let token = sign_bound_authority(
+            &authority,
+            "terminal-ack-test-1",
+            "POST",
+            TERMINAL_ACK_PATH,
+            &body,
+            1_800_000_000,
+        )
+        .unwrap();
+        let body_hash = body_sha256(&body);
+        let claims = verify_authority(
+            authority.secret.as_bytes(),
+            &authority.kid,
+            &token,
+            AuthorityExpectation {
+                issuer: &authority.issuer,
+                audience: &authority.audience,
+                protocol_version: 1,
+                body_sha256: &body_hash,
+                method: "POST",
+                path: TERMINAL_ACK_PATH,
+                now: 1_800_000_001,
+            },
+        )
+        .unwrap();
+        assert_eq!(claims.dispatch_id, "terminal-ack-test-1");
+
+        let mut invalid = envelope.clone();
+        invalid.shard.instance_name = "cinatoken-relay-shard-v1-0004".to_string();
+        assert_eq!(
+            validate_terminal_ack_envelope(&invalid),
+            Err("invalid_terminal_ack")
+        );
+        invalid = envelope.clone();
+        invalid.predecessor_billing_event_id = Some("a".repeat(64));
+        assert!(validate_terminal_ack_envelope(&invalid).is_err());
+        invalid = envelope;
+        invalid.operation_status = "failed".to_string();
+        invalid.response_status = 502;
+        invalid.response_code = Some("provider_failed".to_string());
+        assert!(validate_terminal_ack_envelope(&invalid).is_err());
+    }
+
+    #[test]
+    fn terminal_ack_recovery_requires_an_ordered_second_revision() {
+        let mut recovery = test_terminal_ack();
+        recovery.operation_from_status = "dispatched".to_string();
+        recovery.operation_status = "recovery_required".to_string();
+        recovery.response_status = 202;
+        recovery.response_code = Some("provider_ambiguous".to_string());
+        recovery.result = test_terminal_ack().result;
+        validate_terminal_ack_envelope(&recovery).unwrap();
+        recovery.result = None;
+        validate_terminal_ack_envelope(&recovery).unwrap();
+
+        let mut resolution = test_terminal_ack();
+        resolution.reconciliation_revision = 2;
+        resolution.predecessor_billing_event_id = Some(recovery.billing_event_id.clone());
+        resolution.operation_from_status = "recovery_required".to_string();
+        validate_terminal_ack_envelope(&resolution).unwrap();
+
+        resolution.predecessor_billing_event_id = None;
+        assert_eq!(
+            validate_terminal_ack_envelope(&resolution),
+            Err("invalid_terminal_ack")
+        );
+
+        let mut health_probe = test_terminal_ack();
+        health_probe.result = None;
+        validate_terminal_ack_envelope(&health_probe).unwrap();
+    }
+
+    #[test]
+    fn terminal_ack_response_and_error_classification_fail_closed() {
+        let envelope = test_terminal_ack();
+        let acknowledged = ControllerTerminalAckPayload {
+            protocol_version: 1,
+            billing_event_id: envelope.billing_event_id.clone(),
+            operation_id: envelope.operation_id.clone(),
+            reconciliation_revision: 1,
+            status: "acknowledged".to_string(),
+            final_ack: true,
+            acknowledged_at: Some(1_800_000_001),
+        };
+        assert_eq!(
+            terminal_ack_outcome(acknowledged, &envelope),
+            Ok(ContainerTerminalAckOutcome::Acknowledged { final_ack: true })
+        );
+
+        let conflict = classify_terminal_ack_error(
+            409,
+            &ControllerOperationErrorPayload {
+                error: "terminal_ack_conflict".to_string(),
+                retryable: Some(false),
+            },
+        );
+        assert_eq!(
+            conflict,
+            ContainerTerminalAckError::Permanent("terminal_ack_conflict")
+        );
+        let old_controller = classify_terminal_ack_error(
+            404,
+            &ControllerOperationErrorPayload {
+                error: "route_not_found".to_string(),
+                retryable: None,
+            },
+        );
+        assert_eq!(
+            old_controller,
+            ContainerTerminalAckError::Retryable("route_not_found")
+        );
+        let missing_operation = classify_terminal_ack_error(
+            404,
+            &ControllerOperationErrorPayload {
+                error: "terminal_ack_not_found".to_string(),
+                retryable: None,
+            },
+        );
+        assert_eq!(
+            missing_operation,
+            ContainerTerminalAckError::Permanent("terminal_ack_not_found")
+        );
+        let expired_authority = classify_terminal_ack_error(
+            409,
+            &ControllerOperationErrorPayload {
+                error: "authority_expired".to_string(),
+                retryable: None,
+            },
+        );
+        assert_eq!(
+            expired_authority,
+            ContainerTerminalAckError::Retryable("authority_expired")
+        );
     }
 
     #[test]

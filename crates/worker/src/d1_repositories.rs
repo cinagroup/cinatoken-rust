@@ -81,6 +81,11 @@ pub(crate) const RELAY_CONTAINER_R2_INVENTORY_CLASSES: &[&str] = &[
 const RELAY_CONTAINER_OPERATION_RECOVERY_MAX_LIMIT: i64 = 64;
 const RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION: i64 = 1;
 const RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_BYTES: usize = 64 * 1024;
+const RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_LIMIT: i64 = 64;
+const RELAY_CONTAINER_TERMINAL_OUTBOX_MIN_LEASE_SECONDS: i64 = 15;
+const RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_LEASE_SECONDS: i64 = 60;
+const RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_RETRY_DELAY_SECONDS: i64 = 7 * 86_400;
+const RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_ERROR_BYTES: usize = 4_096;
 pub(crate) const RELAY_FLAT_BILLING_INTENT_MIGRATION: &str = "0029_flat_billing_intents.sql";
 pub(crate) const REALTIME_USAGE_RECONCILIATION_MIGRATION: &str =
     "0027_realtime_usage_reconciliation.sql";
@@ -765,6 +770,74 @@ pub struct RelayContainerFinancialTerminalReceipt {
     pub billing_current_reason: String,
     pub billing_current_request_accounted: i64,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerTerminalOutboxCandidate {
+    pub billing_event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RelayContainerTerminalOutboxResultManifest {
+    pub object_key: String,
+    pub object_version: String,
+    pub sha256: String,
+    pub size: i64,
+    pub content_type: String,
+}
+
+/// Event-specific terminal response fields decoded from the immutable outbox payload.
+///
+/// These fields intentionally do not come from the operation's current-state aliases,
+/// which can describe revision 2 while a superseded revision-1 event is delivered.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RelayContainerTerminalOutboxAck {
+    pub response_status: i64,
+    pub response_code: Option<String>,
+    pub result: Option<RelayContainerTerminalOutboxResultManifest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerTerminalOutboxLease {
+    pub billing_event_id: String,
+    pub delivery_generation: i64,
+    pub delivery_attempt_count: i64,
+    pub lease_expires_at: i64,
+    /// The validated event-specific response used to build the shard acknowledgement.
+    pub terminal_ack: RelayContainerTerminalOutboxAck,
+    pub receipt: RelayContainerFinancialTerminalReceipt,
+    pub operation: RelayContainerOperation,
+    pub predecessor_billing_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayContainerTerminalOutboxClaimOutcome {
+    Applied(RelayContainerTerminalOutboxLease),
+    NotDue,
+    AlreadyLeased,
+    Terminal,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayContainerTerminalOutboxTransitionOutcome {
+    Applied,
+    StaleLease,
+    Terminal,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerTerminalOutboxRuntimeSnapshot {
+    pub total_count: i64,
+    pub pending_count: i64,
+    pub leased_count: i64,
+    pub delivered_count: i64,
+    pub dead_letter_count: i64,
+    pub due_count: i64,
+    pub expired_lease_count: i64,
+    pub oldest_due_at: i64,
+    pub latest_updated_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2591,6 +2664,20 @@ struct RelayContainerTerminalEventFingerprint {
     outbox_payload_sha256: String,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerTerminalOutboxState {
+    billing_event_id: String,
+    status: String,
+    delivery_generation: i64,
+    delivery_attempt_count: i64,
+    lease_expires_at: i64,
+    available_at: i64,
+    delivered_at: i64,
+    last_error: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
 /// Commits the Container operation outcome and its financial effects as one D1 transaction.
 ///
 /// R2 and the shard Durable Object remain outside this transaction. Their immutable manifests
@@ -3170,6 +3257,28 @@ fn relay_container_terminal_event_statement(
           AND reservation.selected_group = operation.selected_group
           AND reservation.lease_expires_at = operation.owner_lease_expires_at
           AND reservation.pre_consumed_quota = ?14
+          AND (
+            ?21 = 1
+            OR (
+              ?21 = 2
+              AND EXISTS (
+                SELECT 1
+                FROM relay_container_terminal_events AS predecessor
+                WHERE predecessor.reservation_key = operation.reservation_key
+                  AND predecessor.operation_id = operation.operation_id
+                  AND predecessor.owner_generation = operation.owner_generation
+                  AND predecessor.operation_from_status IN ('prepared', 'dispatched')
+                  AND predecessor.operation_status = 'recovery_required'
+                  AND predecessor.billing_action = 'recovery_required'
+                  AND predecessor.billing_owner_generation = predecessor.owner_generation
+                  AND predecessor.billing_from_status = 'reserved'
+                  AND predecessor.reconciliation_id = operation.reconciliation_id
+                  AND predecessor.reconciliation_revision = 1
+                  AND predecessor.billing_owner_generation + 1 = ?9
+                  AND predecessor.created_at <= ?33
+              )
+            )
+          )
         ON CONFLICT(billing_event_id) DO NOTHING
         "#,
     )
@@ -4057,6 +4166,1519 @@ pub(crate) fn relay_container_financial_receipt_integrity_valid(
         .is_ok()
         && expected_key.is_ok_and(|expected| expected == object_key)
         && (0..=MAX_CONTAINER_CLIENT_RESPONSE_BYTES as i64).contains(&size)
+}
+
+fn relay_container_terminal_outbox_receipt_routes_to_operation(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+    operation: &RelayContainerOperation,
+) -> bool {
+    receipt.reservation_key == operation.reservation_key
+        && receipt.operation_id == operation.operation_id
+        && receipt.owner_generation == operation.owner_generation
+        && receipt.reconciliation_id == operation.reconciliation_id
+        && receipt.operation_reconciliation_id == operation.reconciliation_id
+        && receipt.operation_client_idempotency_hmac_sha256
+            == operation.client_idempotency_hmac_sha256
+        && receipt.operation_client_request_sha256 == operation.client_request_sha256
+        && receipt.operation_current_status == operation.status
+        && receipt.operation_response_status == operation.response_status
+        && receipt.operation_response_code == operation.response_code
+        && receipt.operation_result_object_key == operation.result_object_key
+        && receipt.operation_result_object_version == operation.result_object_version
+        && receipt.operation_result_sha256 == operation.result_sha256
+        && receipt.operation_result_size == operation.result_size
+        && receipt.operation_result_content_type == operation.result_content_type
+        && operation.created_at <= receipt.created_at
+}
+
+fn relay_container_terminal_outbox_event_shape_valid(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+) -> bool {
+    if receipt.reservation_key != receipt.operation_id
+        || receipt.owner_generation <= 0
+        || receipt.billing_owner_generation <= 0
+        || receipt.pre_consumed_quota < 0
+        || receipt.billing_reason.is_empty()
+        || receipt.billing_reason.len() > 256
+        || !matches!(receipt.billing_request_accounted, 0 | 1)
+        || receipt.created_at <= 0
+        || receipt.created_at > i64::from(i32::MAX)
+    {
+        return false;
+    }
+    let revision_valid = match receipt.reconciliation_revision {
+        1 => {
+            matches!(
+                receipt.operation_from_status.as_str(),
+                "prepared" | "dispatched"
+            ) && receipt.billing_from_status == "reserved"
+                && receipt.billing_owner_generation == receipt.owner_generation
+        }
+        2 => {
+            receipt.operation_from_status == "recovery_required"
+                && receipt.billing_from_status == "recovery_required"
+                && receipt.billing_owner_generation == receipt.owner_generation.saturating_add(1)
+        }
+        _ => false,
+    };
+    if !revision_valid {
+        return false;
+    }
+    match receipt.billing_action.as_str() {
+        "settle" => {
+            matches!(
+                receipt.operation_from_status.as_str(),
+                "dispatched" | "recovery_required"
+            ) && receipt.operation_status == "completed"
+                && receipt.billing_final_quota.is_some_and(|quota| quota >= 0)
+                && receipt.billing_request_accounted == 1
+                && receipt.user_quota_delta
+                    == receipt
+                        .pre_consumed_quota
+                        .saturating_sub(receipt.billing_final_quota.unwrap_or_default())
+                && receipt.user_used_quota_delta == receipt.billing_final_quota.unwrap_or_default()
+                && receipt.channel_used_quota_delta
+                    == receipt.billing_final_quota.unwrap_or_default()
+                && receipt.request_count_delta == 1
+        }
+        "refund" => {
+            receipt.operation_status == "failed"
+                && receipt.billing_final_quota.is_none()
+                && receipt.user_quota_delta == receipt.pre_consumed_quota
+                && receipt.user_used_quota_delta == 0
+                && receipt.channel_used_quota_delta == 0
+                && receipt.request_count_delta == receipt.billing_request_accounted
+        }
+        "recovery_required" => {
+            matches!(
+                receipt.operation_from_status.as_str(),
+                "prepared" | "dispatched"
+            ) && receipt.operation_status == "recovery_required"
+                && receipt.billing_final_quota.is_none()
+                && receipt.billing_request_accounted == 0
+                && receipt.user_quota_delta == 0
+                && receipt.token_quota_delta == 0
+                && receipt.user_used_quota_delta == 0
+                && receipt.channel_used_quota_delta == 0
+                && receipt.request_count_delta == 0
+        }
+        _ => false,
+    }
+}
+
+fn relay_container_terminal_outbox_event_immutable_integrity_valid(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+    operation: &RelayContainerOperation,
+) -> bool {
+    if !relay_container_terminal_outbox_receipt_routes_to_operation(receipt, operation)
+        || !relay_container_terminal_outbox_event_shape_valid(receipt)
+        || validate_relay_container_sha256(&receipt.billing_event_id, "billing event id").is_err()
+        || validate_relay_container_sha256(
+            &receipt.terminal_contract_sha256,
+            "terminal contract sha256",
+        )
+        .is_err()
+        || validate_relay_container_sha256(&receipt.outbox_payload_sha256, "outbox payload sha256")
+            .is_err()
+        || validate_relay_container_sha256(&receipt.reconciliation_id, "reconciliation id").is_err()
+        || validate_relay_container_sha256(&operation.admission_sha256, "admission sha256").is_err()
+        || validate_relay_container_sha256(
+            &operation.client_idempotency_hmac_sha256,
+            "client idempotency hmac sha256",
+        )
+        .is_err()
+        || validate_relay_container_sha256(
+            &operation.client_request_sha256,
+            "client request sha256",
+        )
+        .is_err()
+        || receipt.outbox_payload_json.len() > RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_BYTES
+        || relay_container_sha256_hex(receipt.outbox_payload_json.as_bytes())
+            != receipt.outbox_payload_sha256
+        || !matches!(
+            receipt.outbox_status.as_str(),
+            "pending" | "leased" | "delivered" | "dead_letter"
+        )
+    {
+        return false;
+    }
+    let expected_event_identity = serde_json::json!({
+        "domain": "cinatoken:relay-container-financial-terminal:v1",
+        "operation_id": receipt.operation_id,
+        "owner_generation": receipt.owner_generation,
+        "operation_from_status": receipt.operation_from_status,
+        "reconciliation_id": receipt.reconciliation_id,
+        "reconciliation_revision": receipt.reconciliation_revision,
+    });
+    let Ok(expected_event_identity_json) = serde_json::to_string(&expected_event_identity) else {
+        return false;
+    };
+    if relay_container_sha256_hex(expected_event_identity_json.as_bytes())
+        != receipt.billing_event_id
+    {
+        return false;
+    }
+
+    let Ok(payload) = serde_json::from_str::<Value>(&receipt.outbox_payload_json) else {
+        return false;
+    };
+    let Ok(canonical_payload) = serde_json::to_string(&payload) else {
+        return false;
+    };
+    let Some(payload_object) = payload.as_object() else {
+        return false;
+    };
+    if canonical_payload != receipt.outbox_payload_json
+        || payload_object.len() != 6
+        || payload.get("schema_version").and_then(Value::as_i64)
+            != Some(RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION)
+        || payload.get("billing_event_id").and_then(Value::as_str)
+            != Some(receipt.billing_event_id.as_str())
+        || payload
+            .get("terminal_contract_sha256")
+            .and_then(Value::as_str)
+            != Some(receipt.terminal_contract_sha256.as_str())
+    {
+        return false;
+    }
+    let Some(audit_payload) = payload.get("audit_payload") else {
+        return false;
+    };
+    let Some(audit_payload_sha256) = payload.get("audit_payload_sha256").and_then(Value::as_str)
+    else {
+        return false;
+    };
+    let Ok(audit_payload_json) = serde_json::to_string(audit_payload) else {
+        return false;
+    };
+    if !audit_payload.is_object()
+        || validate_relay_container_sha256(audit_payload_sha256, "audit payload sha256").is_err()
+        || relay_container_sha256_hex(audit_payload_json.as_bytes()) != audit_payload_sha256
+    {
+        return false;
+    }
+    let Some(contract) = payload.get("terminal_contract") else {
+        return false;
+    };
+    let Ok(contract_json) = serde_json::to_string(contract) else {
+        return false;
+    };
+    relay_container_sha256_hex(contract_json.as_bytes()) == receipt.terminal_contract_sha256
+        && relay_container_terminal_outbox_contract_integrity_valid(
+            receipt,
+            operation,
+            contract,
+            audit_payload_sha256,
+        )
+}
+
+fn relay_container_terminal_outbox_contract_integrity_valid(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+    operation: &RelayContainerOperation,
+    contract: &Value,
+    audit_payload_sha256: &str,
+) -> bool {
+    let Some(contract_object) = contract.as_object() else {
+        return false;
+    };
+    let Some(contract_operation) = contract.get("operation") else {
+        return false;
+    };
+    let Some(contract_billing) = contract.get("billing") else {
+        return false;
+    };
+    if contract_object.len() != 10
+        || contract_operation.as_object().map(|value| value.len()) != Some(7)
+        || contract_billing.as_object().map(|value| value.len()) != Some(12)
+        || contract.get("schema_version").and_then(Value::as_i64)
+            != Some(RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION)
+        || contract.get("admission_sha256").and_then(Value::as_str)
+            != Some(operation.admission_sha256.as_str())
+        || contract.get("audit_payload_sha256").and_then(Value::as_str)
+            != Some(audit_payload_sha256)
+        || contract
+            .get("client_idempotency_hmac_sha256")
+            .and_then(Value::as_str)
+            != Some(operation.client_idempotency_hmac_sha256.as_str())
+        || contract
+            .get("client_request_sha256")
+            .and_then(Value::as_str)
+            != Some(operation.client_request_sha256.as_str())
+        || contract.get("reconciliation_id").and_then(Value::as_str)
+            != Some(receipt.reconciliation_id.as_str())
+        || contract
+            .get("reconciliation_revision")
+            .and_then(Value::as_i64)
+            != Some(receipt.reconciliation_revision)
+        || contract_operation.get("id").and_then(Value::as_str)
+            != Some(receipt.operation_id.as_str())
+        || contract_operation
+            .get("owner_generation")
+            .and_then(Value::as_i64)
+            != Some(receipt.owner_generation)
+        || contract_operation
+            .get("from_status")
+            .and_then(Value::as_str)
+            != Some(receipt.operation_from_status.as_str())
+        || contract_operation.get("to_status").and_then(Value::as_str)
+            != Some(receipt.operation_status.as_str())
+        || contract_billing.get("action").and_then(Value::as_str)
+            != Some(receipt.billing_action.as_str())
+        || contract_billing.get("from_status").and_then(Value::as_str)
+            != Some(receipt.billing_from_status.as_str())
+        || contract_billing
+            .get("owner_generation")
+            .and_then(Value::as_i64)
+            != Some(receipt.billing_owner_generation)
+        || contract_billing.get("final_quota").and_then(Value::as_i64)
+            != receipt.billing_final_quota
+        || contract_billing.get("reason").and_then(Value::as_str)
+            != Some(receipt.billing_reason.as_str())
+        || contract_billing
+            .get("request_accounted")
+            .and_then(Value::as_i64)
+            != Some(receipt.billing_request_accounted)
+        || contract_billing
+            .get("pre_consumed_quota")
+            .and_then(Value::as_i64)
+            != Some(receipt.pre_consumed_quota)
+        || contract_billing
+            .get("user_quota_delta")
+            .and_then(Value::as_i64)
+            != Some(receipt.user_quota_delta)
+        || contract_billing
+            .get("token_quota_delta")
+            .and_then(Value::as_i64)
+            != Some(receipt.token_quota_delta)
+        || contract_billing
+            .get("user_used_quota_delta")
+            .and_then(Value::as_i64)
+            != Some(receipt.user_used_quota_delta)
+        || contract_billing
+            .get("channel_used_quota_delta")
+            .and_then(Value::as_i64)
+            != Some(receipt.channel_used_quota_delta)
+        || contract_billing
+            .get("request_count_delta")
+            .and_then(Value::as_i64)
+            != Some(receipt.request_count_delta)
+    {
+        return false;
+    }
+
+    let response_status = contract_operation
+        .get("response_status")
+        .and_then(Value::as_i64);
+    let response_code = contract_operation
+        .get("response_code")
+        .and_then(Value::as_str);
+    let result = contract_operation.get("result");
+    let operation_terminal_valid = match receipt.operation_status.as_str() {
+        "completed" => {
+            receipt.billing_action == "settle"
+                && response_status
+                    .is_some_and(|status| (200..=299).contains(&status) && status != 202)
+                && response_status == receipt.client_response_status
+                && response_code.is_none()
+                && result.is_some_and(|result| {
+                    relay_container_terminal_outbox_result_integrity_valid(
+                        result,
+                        &receipt.operation_id,
+                        receipt.owner_generation,
+                    )
+                })
+        }
+        "failed" => {
+            receipt.billing_action == "refund"
+                && response_status.is_some_and(|status| (400..=599).contains(&status))
+                && response_status == receipt.client_response_status
+                && response_code.is_some_and(|code| {
+                    validate_relay_container_lower_id(code, "response code", 1, 64).is_ok()
+                })
+                && result.is_some_and(Value::is_null)
+        }
+        "recovery_required" => {
+            receipt.billing_action == "recovery_required"
+                && response_status == Some(202)
+                && response_code.is_some_and(|code| {
+                    validate_relay_container_lower_id(code, "response code", 1, 64).is_ok()
+                })
+                && result.is_some_and(|result| {
+                    result.is_null()
+                        || relay_container_terminal_outbox_result_integrity_valid(
+                            result,
+                            &receipt.operation_id,
+                            receipt.owner_generation,
+                        )
+                })
+        }
+        _ => false,
+    };
+    operation_terminal_valid
+        && contract.get("client_response").is_some_and(|response| {
+            relay_container_terminal_outbox_client_response_integrity_valid(receipt, response)
+        })
+}
+
+fn relay_container_terminal_outbox_result_integrity_valid(
+    result: &Value,
+    operation_id: &str,
+    owner_generation: i64,
+) -> bool {
+    let Some(result_object) = result.as_object() else {
+        return false;
+    };
+    let (Some(object_key), Some(object_version), Some(sha256), Some(size), Some(content_type)) = (
+        result.get("object_key").and_then(Value::as_str),
+        result.get("object_version").and_then(Value::as_str),
+        result.get("sha256").and_then(Value::as_str),
+        result.get("size").and_then(Value::as_i64),
+        result.get("content_type").and_then(Value::as_str),
+    ) else {
+        return false;
+    };
+    result_object.len() == 5
+        && validate_relay_container_result_record(
+            operation_id,
+            owner_generation,
+            RelayContainerOperationResultRecord {
+                object_key,
+                object_version,
+                sha256,
+                size,
+                content_type,
+            },
+        )
+        .is_ok()
+}
+
+fn relay_container_terminal_outbox_ack_from_receipt(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+) -> worker::Result<RelayContainerTerminalOutboxAck> {
+    let invalid = || {
+        worker::Error::RustError(
+            "relay container terminal outbox ack projection is invalid".to_string(),
+        )
+    };
+    if relay_container_sha256_hex(receipt.outbox_payload_json.as_bytes())
+        != receipt.outbox_payload_sha256
+    {
+        return Err(invalid());
+    }
+    let payload = relay_container_canonical_json(
+        &receipt.outbox_payload_json,
+        "terminal outbox payload",
+        RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_BYTES,
+        true,
+    )?;
+    let contract = payload.get("terminal_contract").ok_or_else(&invalid)?;
+    let contract_json = serde_json::to_string(contract).map_err(|_| invalid())?;
+    if relay_container_sha256_hex(contract_json.as_bytes()) != receipt.terminal_contract_sha256 {
+        return Err(invalid());
+    }
+    let operation = contract.get("operation").ok_or_else(&invalid)?;
+    if operation.as_object().map(|value| value.len()) != Some(7)
+        || operation.get("id").and_then(Value::as_str) != Some(receipt.operation_id.as_str())
+        || operation.get("owner_generation").and_then(Value::as_i64)
+            != Some(receipt.owner_generation)
+        || operation.get("from_status").and_then(Value::as_str)
+            != Some(receipt.operation_from_status.as_str())
+        || operation.get("to_status").and_then(Value::as_str)
+            != Some(receipt.operation_status.as_str())
+    {
+        return Err(invalid());
+    }
+    let response_status = operation
+        .get("response_status")
+        .and_then(Value::as_i64)
+        .ok_or_else(&invalid)?;
+    let response_code = match operation.get("response_code").ok_or_else(&invalid)? {
+        Value::Null => None,
+        Value::String(value) => Some(value.clone()),
+        _ => return Err(invalid()),
+    };
+    let result = match operation.get("result").ok_or_else(&invalid)? {
+        Value::Null => None,
+        value => {
+            let (
+                Some(object_key),
+                Some(object_version),
+                Some(sha256),
+                Some(size),
+                Some(content_type),
+            ) = (
+                value.get("object_key").and_then(Value::as_str),
+                value.get("object_version").and_then(Value::as_str),
+                value.get("sha256").and_then(Value::as_str),
+                value.get("size").and_then(Value::as_i64),
+                value.get("content_type").and_then(Value::as_str),
+            )
+            else {
+                return Err(invalid());
+            };
+            if value.as_object().map(|object| object.len()) != Some(5)
+                || validate_relay_container_result_record(
+                    &receipt.operation_id,
+                    receipt.owner_generation,
+                    RelayContainerOperationResultRecord {
+                        object_key,
+                        object_version,
+                        sha256,
+                        size,
+                        content_type,
+                    },
+                )
+                .is_err()
+            {
+                return Err(invalid());
+            }
+            Some(RelayContainerTerminalOutboxResultManifest {
+                object_key: object_key.to_string(),
+                object_version: object_version.to_string(),
+                sha256: sha256.to_string(),
+                size,
+                content_type: content_type.to_string(),
+            })
+        }
+    };
+    let terminal_shape_valid = match receipt.operation_status.as_str() {
+        "completed" => {
+            receipt.billing_action == "settle"
+                && (200..=299).contains(&response_status)
+                && response_status != 202
+                && receipt.client_response_status == Some(response_status)
+                && response_code.is_none()
+                && result.is_some()
+        }
+        "failed" => {
+            receipt.billing_action == "refund"
+                && (400..=599).contains(&response_status)
+                && receipt.client_response_status == Some(response_status)
+                && response_code.as_deref().is_some_and(|code| {
+                    validate_relay_container_lower_id(code, "response code", 1, 64).is_ok()
+                })
+                && result.is_none()
+        }
+        "recovery_required" => {
+            receipt.billing_action == "recovery_required"
+                && response_status == 202
+                && response_code.as_deref().is_some_and(|code| {
+                    validate_relay_container_lower_id(code, "response code", 1, 64).is_ok()
+                })
+        }
+        _ => false,
+    };
+    if !terminal_shape_valid {
+        return Err(invalid());
+    }
+    Ok(RelayContainerTerminalOutboxAck {
+        response_status,
+        response_code,
+        result,
+    })
+}
+
+fn relay_container_terminal_outbox_client_response_integrity_valid(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+    response: &Value,
+) -> bool {
+    let response_fields = [
+        receipt.client_response_status.is_some(),
+        receipt.client_response_headers_json.is_some(),
+        receipt.client_response_headers_sha256.is_some(),
+        receipt.client_response_object_key.is_some(),
+        receipt.client_response_object_version.is_some(),
+        receipt.client_response_sha256.is_some(),
+        receipt.client_response_size.is_some(),
+        receipt.client_response_content_type.is_some(),
+    ];
+    if receipt.billing_action == "recovery_required" {
+        return response.is_null() && response_fields.iter().all(|present| !present);
+    }
+    let Some(response_object) = response.as_object() else {
+        return false;
+    };
+    let (
+        Some(status),
+        Some(headers_json),
+        Some(headers_sha256),
+        Some(object_key),
+        Some(object_version),
+        Some(sha256),
+        Some(size),
+        Some(content_type),
+    ) = (
+        response.get("status").and_then(Value::as_i64),
+        response.get("headers_json").and_then(Value::as_str),
+        response.get("headers_sha256").and_then(Value::as_str),
+        response.get("object_key").and_then(Value::as_str),
+        response.get("object_version").and_then(Value::as_str),
+        response.get("sha256").and_then(Value::as_str),
+        response.get("size").and_then(Value::as_i64),
+        response.get("content_type").and_then(Value::as_str),
+    )
+    else {
+        return false;
+    };
+    let status_valid = match receipt.billing_action.as_str() {
+        "settle" => (200..=299).contains(&status) && status != 202,
+        "refund" => (400..=599).contains(&status),
+        _ => false,
+    };
+    let expected_key =
+        container_client_response_key(&receipt.operation_id, receipt.owner_generation, sha256);
+    response_object.len() == 8
+        && response_fields.iter().all(|present| *present)
+        && receipt.client_response_status == Some(status)
+        && receipt.client_response_headers_json.as_deref() == Some(headers_json)
+        && receipt.client_response_headers_sha256.as_deref() == Some(headers_sha256)
+        && receipt.client_response_object_key.as_deref() == Some(object_key)
+        && receipt.client_response_object_version.as_deref() == Some(object_version)
+        && receipt.client_response_sha256.as_deref() == Some(sha256)
+        && receipt.client_response_size == Some(size)
+        && receipt.client_response_content_type.as_deref() == Some(content_type)
+        && status_valid
+        && validate_relay_container_sha256(headers_sha256, "response headers sha256").is_ok()
+        && validate_relay_container_id(object_version, "client response object version", 1, 128)
+            .is_ok()
+        && validate_relay_container_sha256(sha256, "client response sha256").is_ok()
+        && validate_relay_container_content_type(content_type, "client response content type")
+            .is_ok()
+        && validate_container_client_response_headers_json(
+            headers_json,
+            headers_sha256,
+            content_type,
+        )
+        .is_ok()
+        && expected_key.is_ok_and(|expected| expected == object_key)
+        && (0..=MAX_CONTAINER_CLIENT_RESPONSE_BYTES as i64).contains(&size)
+}
+
+fn relay_container_terminal_outbox_predecessor_chain_valid(
+    predecessor: &RelayContainerFinancialTerminalReceipt,
+    successor: &RelayContainerFinancialTerminalReceipt,
+) -> bool {
+    predecessor.billing_event_id != successor.billing_event_id
+        && predecessor.reservation_key == successor.reservation_key
+        && predecessor.operation_id == successor.operation_id
+        && predecessor.owner_generation == successor.owner_generation
+        && predecessor.reconciliation_id == successor.reconciliation_id
+        && predecessor.reconciliation_revision == 1
+        && successor.reconciliation_revision == 2
+        && matches!(
+            predecessor.operation_from_status.as_str(),
+            "prepared" | "dispatched"
+        )
+        && predecessor.operation_status == "recovery_required"
+        && predecessor.billing_action == "recovery_required"
+        && predecessor.billing_from_status == "reserved"
+        && predecessor.billing_owner_generation == predecessor.owner_generation
+        && successor.operation_from_status == "recovery_required"
+        && successor.billing_from_status == "recovery_required"
+        && successor.billing_owner_generation
+            == predecessor.billing_owner_generation.saturating_add(1)
+        && predecessor.created_at <= successor.created_at
+}
+
+fn relay_container_terminal_outbox_claimed_integrity_valid(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+    operation: &RelayContainerOperation,
+    counterpart: Option<&RelayContainerFinancialTerminalReceipt>,
+    state: &RelayContainerTerminalOutboxState,
+    delivery_generation: i64,
+    now: i64,
+) -> bool {
+    if receipt.billing_event_id != state.billing_event_id
+        || receipt.outbox_status != "leased"
+        || receipt.created_at != state.created_at
+        || !relay_container_terminal_outbox_active_state_valid(state, delivery_generation, now)
+        || !relay_container_terminal_outbox_event_immutable_integrity_valid(receipt, operation)
+    {
+        return false;
+    }
+    match (receipt.reconciliation_revision, counterpart) {
+        (1, None) => relay_container_financial_receipt_integrity_valid(receipt),
+        (1, Some(successor)) => {
+            successor.outbox_status == "pending"
+                && relay_container_terminal_outbox_event_immutable_integrity_valid(
+                    successor, operation,
+                )
+                && relay_container_terminal_outbox_predecessor_chain_valid(receipt, successor)
+                && relay_container_financial_receipt_integrity_valid(successor)
+        }
+        (2, Some(predecessor)) => {
+            predecessor.outbox_status == "delivered"
+                && relay_container_terminal_outbox_event_immutable_integrity_valid(
+                    predecessor,
+                    operation,
+                )
+                && relay_container_terminal_outbox_predecessor_chain_valid(predecessor, receipt)
+                && relay_container_financial_receipt_integrity_valid(receipt)
+        }
+        _ => false,
+    }
+}
+
+pub async fn relay_container_terminal_outbox_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    let args = [D1Type::Text(RELAY_CONTAINER_FINANCIAL_TERMINAL_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT CASE WHEN
+              EXISTS (
+                SELECT 1 FROM d1_migrations WHERE name = ?1
+              )
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'table'
+                  AND name IN (
+                    'relay_container_terminal_events',
+                    'relay_container_terminal_outbox_state'
+                  )
+              ) = 2
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'index'
+                  AND name IN (
+                    'idx_relay_container_terminal_events_operation_identity',
+                    'idx_relay_container_terminal_events_reconciliation_identity',
+                    'idx_relay_container_terminal_outbox_pending',
+                    'idx_relay_container_terminal_outbox_leased'
+                  )
+              ) = 4
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name IN (
+                    'relay_container_terminal_event_insert_guard',
+                    'relay_container_terminal_event_update_guard',
+                    'relay_container_terminal_event_delete_guard',
+                    'relay_container_terminal_outbox_insert_guard',
+                    'relay_container_terminal_outbox_identity_immutable_guard',
+                    'relay_container_terminal_outbox_lifecycle_guard',
+                    'relay_container_terminal_outbox_delete_guard'
+                  )
+              ) = 7
+            THEN 1 ELSE 0 END AS count
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn relay_container_terminal_outbox_due_candidates(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<Vec<RelayContainerTerminalOutboxCandidate>> {
+    validate_relay_container_terminal_outbox_time(now, "candidate time")?;
+    let args = [
+        relay_container_d1_integer(now, "terminal outbox candidate time")?,
+        relay_container_d1_integer(
+            limit.clamp(1, RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_LIMIT),
+            "terminal outbox candidate limit",
+        )?,
+    ];
+    db.prepare(
+        r#"
+        SELECT outbox.billing_event_id
+        FROM relay_container_terminal_outbox_state AS outbox
+        JOIN relay_container_terminal_events AS event
+          ON event.billing_event_id = outbox.billing_event_id
+        WHERE (
+            (outbox.status = 'pending' AND outbox.available_at <= ?1)
+            OR (
+              outbox.status = 'leased'
+              AND outbox.lease_expires_at <= ?1
+            )
+          )
+          AND (
+            event.reconciliation_revision = 1
+            OR (
+              event.reconciliation_revision = 2
+              AND EXISTS (
+                SELECT 1
+                FROM relay_container_terminal_events AS predecessor
+                JOIN relay_container_terminal_outbox_state AS predecessor_outbox
+                  ON predecessor_outbox.billing_event_id = predecessor.billing_event_id
+                WHERE predecessor.operation_id = event.operation_id
+                  AND predecessor.reconciliation_id = event.reconciliation_id
+                  AND predecessor.reconciliation_revision = 1
+                  AND predecessor_outbox.status = 'delivered'
+              )
+            )
+          )
+        ORDER BY
+          CASE outbox.status
+            WHEN 'pending' THEN outbox.available_at
+            ELSE outbox.lease_expires_at
+          END ASC,
+          event.created_at ASC,
+          outbox.billing_event_id ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RelayContainerTerminalOutboxCandidate>()
+}
+
+pub async fn relay_container_terminal_outbox_runtime_snapshot(
+    db: &D1Database,
+    now: i64,
+) -> worker::Result<RelayContainerTerminalOutboxRuntimeSnapshot> {
+    validate_relay_container_terminal_outbox_time(now, "runtime snapshot time")?;
+    let args = [relay_container_d1_integer(
+        now,
+        "terminal outbox runtime snapshot time",
+    )?];
+    db.prepare(
+        r#"
+        SELECT
+          COUNT(1) AS total_count,
+          COALESCE(SUM(CASE WHEN outbox.status = 'pending' THEN 1 ELSE 0 END), 0)
+            AS pending_count,
+          COALESCE(SUM(CASE WHEN outbox.status = 'leased' THEN 1 ELSE 0 END), 0)
+            AS leased_count,
+          COALESCE(SUM(CASE WHEN outbox.status = 'delivered' THEN 1 ELSE 0 END), 0)
+            AS delivered_count,
+          COALESCE(SUM(CASE WHEN outbox.status = 'dead_letter' THEN 1 ELSE 0 END), 0)
+            AS dead_letter_count,
+          COALESCE(SUM(CASE WHEN
+            (
+              (outbox.status = 'pending' AND outbox.available_at <= ?1)
+              OR (
+                outbox.status = 'leased'
+                AND outbox.lease_expires_at <= ?1
+              )
+            )
+            AND (
+              event.reconciliation_revision = 1
+              OR (
+                event.reconciliation_revision = 2
+                AND EXISTS (
+                  SELECT 1
+                  FROM relay_container_terminal_events AS predecessor
+                  JOIN relay_container_terminal_outbox_state AS predecessor_outbox
+                    ON predecessor_outbox.billing_event_id = predecessor.billing_event_id
+                  WHERE predecessor.operation_id = event.operation_id
+                    AND predecessor.reconciliation_id = event.reconciliation_id
+                    AND predecessor.reconciliation_revision = 1
+                    AND predecessor_outbox.status = 'delivered'
+                )
+              )
+            )
+            THEN 1 ELSE 0 END), 0) AS due_count,
+          COALESCE(SUM(CASE WHEN
+            outbox.status = 'leased' AND outbox.lease_expires_at <= ?1
+            THEN 1 ELSE 0 END), 0) AS expired_lease_count,
+          COALESCE(MIN(CASE WHEN
+            (
+              (outbox.status = 'pending' AND outbox.available_at <= ?1)
+              OR (
+                outbox.status = 'leased'
+                AND outbox.lease_expires_at <= ?1
+              )
+            )
+            AND (
+              event.reconciliation_revision = 1
+              OR (
+                event.reconciliation_revision = 2
+                AND EXISTS (
+                  SELECT 1
+                  FROM relay_container_terminal_events AS predecessor
+                  JOIN relay_container_terminal_outbox_state AS predecessor_outbox
+                    ON predecessor_outbox.billing_event_id = predecessor.billing_event_id
+                  WHERE predecessor.operation_id = event.operation_id
+                    AND predecessor.reconciliation_id = event.reconciliation_id
+                    AND predecessor.reconciliation_revision = 1
+                    AND predecessor_outbox.status = 'delivered'
+                )
+              )
+            )
+            THEN CASE outbox.status
+              WHEN 'pending' THEN outbox.available_at
+              ELSE outbox.lease_expires_at
+            END
+          END), 0) AS oldest_due_at,
+          COALESCE(MAX(outbox.updated_at), 0) AS latest_updated_at
+        FROM relay_container_terminal_outbox_state AS outbox
+        JOIN relay_container_terminal_events AS event
+          ON event.billing_event_id = outbox.billing_event_id
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerTerminalOutboxRuntimeSnapshot>(None)
+    .await?
+    .ok_or_else(|| {
+        worker::Error::RustError(
+            "relay container terminal outbox runtime snapshot is missing".to_string(),
+        )
+    })
+}
+
+async fn relay_container_terminal_outbox_state(
+    db: &D1Database,
+    billing_event_id: &str,
+) -> worker::Result<Option<RelayContainerTerminalOutboxState>> {
+    let args = [D1Type::Text(billing_event_id)];
+    db.prepare(
+        r#"
+        SELECT billing_event_id, status, delivery_generation,
+               delivery_attempt_count, lease_expires_at, available_at,
+               delivered_at, last_error, created_at, updated_at
+        FROM relay_container_terminal_outbox_state
+        WHERE billing_event_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerTerminalOutboxState>(None)
+    .await
+}
+
+async fn relay_container_terminal_receipt_for_revision(
+    db: &D1Database,
+    operation_id: &str,
+    reconciliation_id: &str,
+    reconciliation_revision: i64,
+) -> worker::Result<Option<RelayContainerFinancialTerminalReceipt>> {
+    let args = [
+        D1Type::Text(operation_id),
+        D1Type::Text(reconciliation_id),
+        relay_container_d1_integer(
+            reconciliation_revision,
+            "terminal outbox reconciliation revision",
+        )?,
+    ];
+    let Some(row) = db
+        .prepare(
+            r#"
+            SELECT billing_event_id
+            FROM relay_container_terminal_events
+            WHERE operation_id = ?1
+              AND reconciliation_id = ?2
+              AND reconciliation_revision = ?3
+            LIMIT 1
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<RelayContainerTerminalEventIdRow>(None)
+        .await?
+    else {
+        return Ok(None);
+    };
+    relay_container_financial_terminal_receipt(db, &row.billing_event_id).await
+}
+
+async fn relay_container_terminal_outbox_revision_ready(
+    db: &D1Database,
+    billing_event_id: &str,
+) -> worker::Result<bool> {
+    let args = [D1Type::Text(billing_event_id)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS count
+            FROM relay_container_terminal_events AS event
+            WHERE event.billing_event_id = ?1
+              AND (
+                event.reconciliation_revision = 1
+                OR (
+                  event.reconciliation_revision = 2
+                  AND EXISTS (
+                    SELECT 1
+                    FROM relay_container_terminal_events AS predecessor
+                    JOIN relay_container_terminal_outbox_state AS predecessor_outbox
+                      ON predecessor_outbox.billing_event_id = predecessor.billing_event_id
+                    WHERE predecessor.operation_id = event.operation_id
+                      AND predecessor.reconciliation_id = event.reconciliation_id
+                      AND predecessor.reconciliation_revision = 1
+                      AND predecessor_outbox.status = 'delivered'
+                  )
+                )
+              )
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn claim_relay_container_terminal_outbox(
+    db: &D1Database,
+    billing_event_id: &str,
+    now: i64,
+    lease_seconds: i64,
+) -> worker::Result<RelayContainerTerminalOutboxClaimOutcome> {
+    validate_relay_container_sha256(billing_event_id, "terminal outbox billing event id")?;
+    validate_relay_container_terminal_outbox_time(now, "claim time")?;
+    if !(RELAY_CONTAINER_TERMINAL_OUTBOX_MIN_LEASE_SECONDS
+        ..=RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_LEASE_SECONDS)
+        .contains(&lease_seconds)
+    {
+        return Err(worker::Error::RustError(
+            "relay container terminal outbox lease policy is invalid".to_string(),
+        ));
+    }
+    let lease_expires_at = now.checked_add(lease_seconds).ok_or_else(|| {
+        worker::Error::RustError(
+            "relay container terminal outbox lease expiry is invalid".to_string(),
+        )
+    })?;
+    validate_relay_container_terminal_outbox_time(lease_expires_at, "lease expiry")?;
+    let args = [
+        D1Type::Text(billing_event_id),
+        relay_container_d1_integer(now, "terminal outbox claim time")?,
+        relay_container_d1_integer(lease_expires_at, "terminal outbox lease expiry")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_container_terminal_outbox_state
+            SET status = 'leased',
+                delivery_generation = delivery_generation + 1,
+                delivery_attempt_count = delivery_attempt_count + 1,
+                lease_expires_at = ?3,
+                last_error = '',
+                updated_at = MAX(?2, updated_at + 1)
+            WHERE billing_event_id = ?1
+              AND (
+                (status = 'pending' AND available_at <= ?2)
+                OR (status = 'leased' AND lease_expires_at <= ?2)
+              )
+              AND MAX(?2, updated_at + 1) < ?3
+              AND EXISTS (
+                SELECT 1
+                FROM relay_container_terminal_events AS event
+                WHERE event.billing_event_id =
+                      relay_container_terminal_outbox_state.billing_event_id
+                  AND (
+                    event.reconciliation_revision = 1
+                    OR (
+                      event.reconciliation_revision = 2
+                      AND EXISTS (
+                        SELECT 1
+                        FROM relay_container_terminal_events AS predecessor
+                        JOIN relay_container_terminal_outbox_state AS predecessor_outbox
+                          ON predecessor_outbox.billing_event_id = predecessor.billing_event_id
+                        WHERE predecessor.operation_id = event.operation_id
+                          AND predecessor.reconciliation_id = event.reconciliation_id
+                          AND predecessor.reconciliation_revision = 1
+                          AND predecessor_outbox.status = 'delivered'
+                      )
+                    )
+                  )
+              )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        let state = relay_container_terminal_outbox_state(db, billing_event_id)
+            .await?
+            .ok_or_else(|| {
+                worker::Error::RustError(
+                    "relay container terminal outbox claim readback is missing".to_string(),
+                )
+            })?;
+        if state.lease_expires_at != lease_expires_at {
+            return Err(worker::Error::RustError(
+                "relay container terminal outbox claim readback is inconsistent".to_string(),
+            ));
+        }
+        let delivery_generation = state.delivery_generation;
+        let lease =
+            relay_container_terminal_outbox_lease_from_state(db, state, delivery_generation, now)
+                .await?
+                .ok_or_else(|| {
+                    worker::Error::RustError(
+                        "relay container terminal outbox claimed lease is inactive".to_string(),
+                    )
+                })?;
+        return Ok(RelayContainerTerminalOutboxClaimOutcome::Applied(lease));
+    }
+
+    let Some(state) = relay_container_terminal_outbox_state(db, billing_event_id).await? else {
+        return Ok(RelayContainerTerminalOutboxClaimOutcome::Conflict);
+    };
+    Ok(match state.status.as_str() {
+        "delivered" | "dead_letter" => RelayContainerTerminalOutboxClaimOutcome::Terminal,
+        "leased" if state.lease_expires_at > now => {
+            RelayContainerTerminalOutboxClaimOutcome::AlreadyLeased
+        }
+        "pending" if state.available_at > now => RelayContainerTerminalOutboxClaimOutcome::NotDue,
+        "pending" | "leased"
+            if !relay_container_terminal_outbox_revision_ready(db, billing_event_id).await? =>
+        {
+            RelayContainerTerminalOutboxClaimOutcome::NotDue
+        }
+        _ => RelayContainerTerminalOutboxClaimOutcome::Conflict,
+    })
+}
+
+pub async fn relay_container_terminal_outbox_active_lease(
+    db: &D1Database,
+    billing_event_id: &str,
+    delivery_generation: i64,
+    now: i64,
+) -> worker::Result<Option<RelayContainerTerminalOutboxLease>> {
+    validate_relay_container_sha256(billing_event_id, "terminal outbox billing event id")?;
+    validate_relay_container_terminal_outbox_time(now, "lease readback time")?;
+    if delivery_generation <= 0 || delivery_generation > i64::from(i32::MAX) {
+        return Err(worker::Error::RustError(
+            "relay container terminal outbox delivery generation is invalid".to_string(),
+        ));
+    }
+    let Some(state) = relay_container_terminal_outbox_state(db, billing_event_id).await? else {
+        return Ok(None);
+    };
+    relay_container_terminal_outbox_lease_from_state(db, state, delivery_generation, now).await
+}
+
+async fn relay_container_terminal_outbox_lease_from_state(
+    db: &D1Database,
+    state: RelayContainerTerminalOutboxState,
+    delivery_generation: i64,
+    now: i64,
+) -> worker::Result<Option<RelayContainerTerminalOutboxLease>> {
+    if !relay_container_terminal_outbox_active_state_valid(&state, delivery_generation, now) {
+        return Ok(None);
+    }
+    let receipt = relay_container_financial_terminal_receipt(db, &state.billing_event_id)
+        .await?
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "relay container terminal outbox event readback is missing".to_string(),
+            )
+        })?;
+    let operation = relay_container_operation(db, &receipt.operation_id)
+        .await?
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "relay container terminal outbox operation readback is missing".to_string(),
+            )
+        })?;
+    let counterpart_revision = match receipt.reconciliation_revision {
+        1 => 2,
+        2 => 1,
+        _ => {
+            return Err(worker::Error::RustError(
+                "relay container terminal outbox event revision is invalid".to_string(),
+            ))
+        }
+    };
+    let counterpart = relay_container_terminal_receipt_for_revision(
+        db,
+        &receipt.operation_id,
+        &receipt.reconciliation_id,
+        counterpart_revision,
+    )
+    .await?;
+    if !relay_container_terminal_outbox_claimed_integrity_valid(
+        &receipt,
+        &operation,
+        counterpart.as_ref(),
+        &state,
+        delivery_generation,
+        now,
+    ) {
+        return Err(worker::Error::RustError(
+            "relay container terminal outbox claimed event is inconsistent".to_string(),
+        ));
+    }
+    let predecessor_billing_event_id = if receipt.reconciliation_revision == 2 {
+        counterpart
+            .as_ref()
+            .map(|predecessor| predecessor.billing_event_id.clone())
+    } else {
+        None
+    };
+    let terminal_ack = relay_container_terminal_outbox_ack_from_receipt(&receipt)?;
+    Ok(Some(RelayContainerTerminalOutboxLease {
+        billing_event_id: state.billing_event_id,
+        delivery_generation: state.delivery_generation,
+        delivery_attempt_count: state.delivery_attempt_count,
+        lease_expires_at: state.lease_expires_at,
+        terminal_ack,
+        receipt,
+        operation,
+        predecessor_billing_event_id,
+    }))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RelayContainerTerminalOutboxTransition<'a> {
+    Delivered,
+    Retry { available_at: i64, error: &'a str },
+    DeadLetter { error: &'a str },
+}
+
+pub async fn mark_relay_container_terminal_outbox_delivered(
+    db: &D1Database,
+    lease: &RelayContainerTerminalOutboxLease,
+    now: i64,
+) -> worker::Result<RelayContainerTerminalOutboxTransitionOutcome> {
+    transition_relay_container_terminal_outbox(
+        db,
+        lease,
+        RelayContainerTerminalOutboxTransition::Delivered,
+        now,
+    )
+    .await
+}
+
+pub async fn retry_relay_container_terminal_outbox(
+    db: &D1Database,
+    lease: &RelayContainerTerminalOutboxLease,
+    available_at: i64,
+    error: &str,
+    now: i64,
+) -> worker::Result<RelayContainerTerminalOutboxTransitionOutcome> {
+    transition_relay_container_terminal_outbox(
+        db,
+        lease,
+        RelayContainerTerminalOutboxTransition::Retry {
+            available_at,
+            error,
+        },
+        now,
+    )
+    .await
+}
+
+pub async fn dead_letter_relay_container_terminal_outbox(
+    db: &D1Database,
+    lease: &RelayContainerTerminalOutboxLease,
+    error: &str,
+    now: i64,
+) -> worker::Result<RelayContainerTerminalOutboxTransitionOutcome> {
+    transition_relay_container_terminal_outbox(
+        db,
+        lease,
+        RelayContainerTerminalOutboxTransition::DeadLetter { error },
+        now,
+    )
+    .await
+}
+
+async fn transition_relay_container_terminal_outbox(
+    db: &D1Database,
+    lease: &RelayContainerTerminalOutboxLease,
+    transition: RelayContainerTerminalOutboxTransition<'_>,
+    now: i64,
+) -> worker::Result<RelayContainerTerminalOutboxTransitionOutcome> {
+    validate_relay_container_terminal_outbox_lease_identity(lease)?;
+    validate_relay_container_terminal_outbox_time(now, "transition time")?;
+    match transition {
+        RelayContainerTerminalOutboxTransition::Delivered => {}
+        RelayContainerTerminalOutboxTransition::Retry {
+            available_at,
+            error,
+        } => {
+            validate_relay_container_terminal_outbox_error(error)?;
+            validate_relay_container_terminal_outbox_time(available_at, "retry availability")?;
+            let latest_available_at = now
+                .checked_add(RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_RETRY_DELAY_SECONDS)
+                .ok_or_else(|| {
+                    worker::Error::RustError(
+                        "relay container terminal outbox retry availability is invalid".to_string(),
+                    )
+                })?;
+            if available_at < now || available_at > latest_available_at {
+                return Err(worker::Error::RustError(
+                    "relay container terminal outbox retry availability is invalid".to_string(),
+                ));
+            }
+        }
+        RelayContainerTerminalOutboxTransition::DeadLetter { error } => {
+            validate_relay_container_terminal_outbox_error(error)?;
+        }
+    }
+
+    let Some(state) = relay_container_terminal_outbox_state(db, &lease.billing_event_id).await?
+    else {
+        return Ok(RelayContainerTerminalOutboxTransitionOutcome::Conflict);
+    };
+    if matches!(state.status.as_str(), "delivered" | "dead_letter") {
+        return Ok(RelayContainerTerminalOutboxTransitionOutcome::Terminal);
+    }
+    if !relay_container_terminal_outbox_state_matches_lease(&state, lease)
+        || state.status != "leased"
+    {
+        return Ok(RelayContainerTerminalOutboxTransitionOutcome::StaleLease);
+    }
+    let Some(transition_at) = relay_container_terminal_outbox_safe_transition_at(
+        now,
+        state.updated_at,
+        state.lease_expires_at,
+    ) else {
+        return Ok(RelayContainerTerminalOutboxTransitionOutcome::StaleLease);
+    };
+
+    let result = match transition {
+        RelayContainerTerminalOutboxTransition::Delivered => {
+            let args = [
+                D1Type::Text(&lease.billing_event_id),
+                relay_container_d1_integer(
+                    lease.delivery_generation,
+                    "terminal outbox delivery generation",
+                )?,
+                relay_container_d1_integer(
+                    lease.delivery_attempt_count,
+                    "terminal outbox delivery attempt",
+                )?,
+                relay_container_d1_integer(
+                    lease.lease_expires_at,
+                    "terminal outbox expected lease expiry",
+                )?,
+                relay_container_d1_integer(
+                    transition_at,
+                    "terminal outbox delivered transition time",
+                )?,
+                relay_container_d1_integer(
+                    state.updated_at,
+                    "terminal outbox expected update time",
+                )?,
+            ];
+            db.prepare(
+                r#"
+                UPDATE relay_container_terminal_outbox_state
+                SET status = 'delivered', lease_expires_at = 0,
+                    delivered_at = ?5, last_error = '', updated_at = ?5
+                WHERE billing_event_id = ?1
+                  AND status = 'leased'
+                  AND delivery_generation = ?2
+                  AND delivery_attempt_count = ?3
+                  AND lease_expires_at = ?4
+                  AND updated_at = ?6
+                  AND lease_expires_at > ?5
+                "#,
+            )
+            .bind_refs(&args)?
+            .run()
+            .await?
+        }
+        RelayContainerTerminalOutboxTransition::Retry {
+            available_at,
+            error,
+        } => {
+            let effective_available_at = available_at.max(transition_at);
+            let args = [
+                D1Type::Text(&lease.billing_event_id),
+                relay_container_d1_integer(
+                    lease.delivery_generation,
+                    "terminal outbox delivery generation",
+                )?,
+                relay_container_d1_integer(
+                    lease.delivery_attempt_count,
+                    "terminal outbox delivery attempt",
+                )?,
+                relay_container_d1_integer(
+                    lease.lease_expires_at,
+                    "terminal outbox expected lease expiry",
+                )?,
+                relay_container_d1_integer(transition_at, "terminal outbox retry transition time")?,
+                relay_container_d1_integer(
+                    state.updated_at,
+                    "terminal outbox expected update time",
+                )?,
+                relay_container_d1_integer(
+                    effective_available_at,
+                    "terminal outbox retry availability",
+                )?,
+                D1Type::Text(error),
+            ];
+            db.prepare(
+                r#"
+                UPDATE relay_container_terminal_outbox_state
+                SET status = 'pending', lease_expires_at = 0,
+                    available_at = ?7, delivered_at = 0,
+                    last_error = ?8, updated_at = ?5
+                WHERE billing_event_id = ?1
+                  AND status = 'leased'
+                  AND delivery_generation = ?2
+                  AND delivery_attempt_count = ?3
+                  AND lease_expires_at = ?4
+                  AND updated_at = ?6
+                  AND lease_expires_at > ?5
+                "#,
+            )
+            .bind_refs(&args)?
+            .run()
+            .await?
+        }
+        RelayContainerTerminalOutboxTransition::DeadLetter { error } => {
+            let args = [
+                D1Type::Text(&lease.billing_event_id),
+                relay_container_d1_integer(
+                    lease.delivery_generation,
+                    "terminal outbox delivery generation",
+                )?,
+                relay_container_d1_integer(
+                    lease.delivery_attempt_count,
+                    "terminal outbox delivery attempt",
+                )?,
+                relay_container_d1_integer(
+                    lease.lease_expires_at,
+                    "terminal outbox expected lease expiry",
+                )?,
+                relay_container_d1_integer(
+                    transition_at,
+                    "terminal outbox dead-letter transition time",
+                )?,
+                relay_container_d1_integer(
+                    state.updated_at,
+                    "terminal outbox expected update time",
+                )?,
+                D1Type::Text(error),
+            ];
+            db.prepare(
+                r#"
+                UPDATE relay_container_terminal_outbox_state
+                SET status = 'dead_letter', lease_expires_at = 0,
+                    delivered_at = 0, last_error = ?7, updated_at = ?5
+                WHERE billing_event_id = ?1
+                  AND status = 'leased'
+                  AND delivery_generation = ?2
+                  AND delivery_attempt_count = ?3
+                  AND lease_expires_at = ?4
+                  AND updated_at = ?6
+                  AND lease_expires_at > ?5
+                "#,
+            )
+            .bind_refs(&args)?
+            .run()
+            .await?
+        }
+    };
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayContainerTerminalOutboxTransitionOutcome::Applied);
+    }
+    let current = relay_container_terminal_outbox_state(db, &lease.billing_event_id).await?;
+    Ok(relay_container_terminal_outbox_transition_conflict(
+        current.as_ref(),
+        lease,
+        now,
+    ))
+}
+
+fn relay_container_terminal_outbox_transition_conflict(
+    state: Option<&RelayContainerTerminalOutboxState>,
+    lease: &RelayContainerTerminalOutboxLease,
+    now: i64,
+) -> RelayContainerTerminalOutboxTransitionOutcome {
+    let Some(state) = state else {
+        return RelayContainerTerminalOutboxTransitionOutcome::Conflict;
+    };
+    if matches!(state.status.as_str(), "delivered" | "dead_letter") {
+        RelayContainerTerminalOutboxTransitionOutcome::Terminal
+    } else if !relay_container_terminal_outbox_state_matches_lease(state, lease)
+        || state.status != "leased"
+        || state.lease_expires_at <= now
+    {
+        RelayContainerTerminalOutboxTransitionOutcome::StaleLease
+    } else {
+        RelayContainerTerminalOutboxTransitionOutcome::Conflict
+    }
+}
+
+fn relay_container_terminal_outbox_state_matches_lease(
+    state: &RelayContainerTerminalOutboxState,
+    lease: &RelayContainerTerminalOutboxLease,
+) -> bool {
+    state.billing_event_id == lease.billing_event_id
+        && state.delivery_generation == lease.delivery_generation
+        && state.delivery_attempt_count == lease.delivery_attempt_count
+        && state.lease_expires_at == lease.lease_expires_at
+}
+
+fn relay_container_terminal_outbox_active_state_valid(
+    state: &RelayContainerTerminalOutboxState,
+    delivery_generation: i64,
+    now: i64,
+) -> bool {
+    state.status == "leased"
+        && state.delivery_generation == delivery_generation
+        && state.delivery_generation > 0
+        && state.delivery_generation == state.delivery_attempt_count
+        && state.lease_expires_at > now
+        && state.lease_expires_at > state.updated_at
+        && state.available_at <= state.updated_at
+        && state.delivered_at == 0
+        && state.last_error.is_empty()
+        && state.created_at > 0
+        && state.updated_at > state.created_at
+}
+
+fn relay_container_terminal_outbox_safe_transition_at(
+    now: i64,
+    updated_at: i64,
+    lease_expires_at: i64,
+) -> Option<i64> {
+    let transition_at = now.max(updated_at.checked_add(1)?);
+    (transition_at > updated_at
+        && transition_at < lease_expires_at
+        && transition_at <= i64::from(i32::MAX))
+    .then_some(transition_at)
+}
+
+fn validate_relay_container_terminal_outbox_lease_identity(
+    lease: &RelayContainerTerminalOutboxLease,
+) -> worker::Result<()> {
+    validate_relay_container_sha256(&lease.billing_event_id, "terminal outbox billing event id")?;
+    let expected_terminal_ack = relay_container_terminal_outbox_ack_from_receipt(&lease.receipt)?;
+    if lease.billing_event_id != lease.receipt.billing_event_id
+        || lease.terminal_ack != expected_terminal_ack
+        || lease.receipt.operation_id != lease.operation.operation_id
+        || lease.receipt.reservation_key != lease.operation.reservation_key
+        || lease.delivery_generation <= 0
+        || lease.delivery_generation > i64::from(i32::MAX)
+        || lease.delivery_attempt_count != lease.delivery_generation
+        || lease.lease_expires_at <= 0
+        || lease.lease_expires_at > i64::from(i32::MAX)
+        || (lease.receipt.reconciliation_revision == 1
+            && lease.predecessor_billing_event_id.is_some())
+        || (lease.receipt.reconciliation_revision == 2
+            && lease.predecessor_billing_event_id.is_none())
+    {
+        return Err(worker::Error::RustError(
+            "relay container terminal outbox lease identity is invalid".to_string(),
+        ));
+    }
+    if let Some(predecessor) = lease.predecessor_billing_event_id.as_deref() {
+        validate_relay_container_sha256(
+            predecessor,
+            "terminal outbox predecessor billing event id",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_relay_container_terminal_outbox_time(value: i64, field: &str) -> worker::Result<()> {
+    if value <= 0 || value > i64::from(i32::MAX) {
+        return Err(worker::Error::RustError(format!(
+            "relay container terminal outbox {field} is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_terminal_outbox_error(error: &str) -> worker::Result<()> {
+    if error.is_empty()
+        || error != error.trim()
+        || error.len() > RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_ERROR_BYTES
+    {
+        return Err(worker::Error::RustError(
+            "relay container terminal outbox error is invalid".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub async fn relay_container_operation_recovery_candidates(
@@ -19127,6 +20749,353 @@ mod tests {
         assert_eq!(resolved.reconciliation_revision, 2);
         assert_eq!(resolved.user_quota_delta, 20);
         assert_ne!(resolved.billing_event_id, quarantined.billing_event_id);
+    }
+
+    #[test]
+    fn relay_container_terminal_outbox_sql_is_ordered_and_fenced() {
+        let source = include_str!("d1_repositories.rs");
+        let event_start = source
+            .find("fn relay_container_terminal_event_statement")
+            .unwrap();
+        let event_end = source
+            .find("fn relay_container_terminal_outbox_statement")
+            .unwrap();
+        let event_insert = &source[event_start..event_end];
+        assert!(event_insert.contains("?21 = 1"));
+        assert!(event_insert.contains("?21 = 2"));
+        assert!(event_insert.contains("predecessor.owner_generation = operation.owner_generation"));
+        assert!(event_insert.contains("predecessor.operation_status = 'recovery_required'"));
+        assert!(event_insert.contains("predecessor.billing_action = 'recovery_required'"));
+        assert!(
+            event_insert.contains("predecessor.reconciliation_id = operation.reconciliation_id")
+        );
+        assert!(event_insert.contains("predecessor.reconciliation_revision = 1"));
+        assert!(event_insert.contains("predecessor.billing_owner_generation + 1 = ?9"));
+        assert!(event_insert.contains("predecessor.created_at <= ?33"));
+
+        let candidate_start = source
+            .find("pub async fn relay_container_terminal_outbox_due_candidates")
+            .unwrap();
+        let candidate_end = source
+            .find("pub async fn relay_container_terminal_outbox_runtime_snapshot")
+            .unwrap();
+        let candidates = &source[candidate_start..candidate_end];
+        assert!(candidates.contains("predecessor.operation_id = event.operation_id"));
+        assert!(candidates.contains("predecessor.reconciliation_id = event.reconciliation_id"));
+        assert!(candidates.contains("predecessor.reconciliation_revision = 1"));
+        assert!(candidates.contains("predecessor_outbox.status = 'delivered'"));
+        assert!(candidates.contains("event.created_at ASC"));
+        assert!(candidates.contains("outbox.billing_event_id ASC"));
+        assert!(candidates.contains("LIMIT ?2"));
+
+        let claim_start = source
+            .find("pub async fn claim_relay_container_terminal_outbox")
+            .unwrap();
+        let claim_end = source
+            .find("pub async fn relay_container_terminal_outbox_active_lease")
+            .unwrap();
+        let claim = &source[claim_start..claim_end];
+        assert!(claim.contains("delivery_generation = delivery_generation + 1"));
+        assert!(claim.contains("delivery_attempt_count = delivery_attempt_count + 1"));
+        assert!(claim.contains("updated_at = MAX(?2, updated_at + 1)"));
+        assert!(claim.contains("MAX(?2, updated_at + 1) < ?3"));
+        assert!(claim.contains("lease_expires_at <= ?2"));
+        assert!(claim.contains("predecessor_outbox.status = 'delivered'"));
+
+        let transition_start = source
+            .find("pub async fn mark_relay_container_terminal_outbox_delivered")
+            .unwrap();
+        let transition_end = source
+            .find("pub async fn relay_container_operation_recovery_candidates")
+            .unwrap();
+        let transitions = &source[transition_start..transition_end];
+        for status in ["'delivered'", "'pending'", "'dead_letter'"] {
+            assert!(
+                transitions.contains(&format!("SET status = {status}")),
+                "missing transition to {status}"
+            );
+        }
+        assert!(transitions.contains("delivery_generation = ?2"));
+        assert!(transitions.contains("delivery_attempt_count = ?3"));
+        assert!(transitions.contains("lease_expires_at = ?4"));
+        assert!(transitions.contains("updated_at = ?6"));
+        assert!(transitions.contains("lease_expires_at > ?5"));
+
+        let migration = include_str!(
+            "../../../migrations/d1/0042_relay_container_financial_terminal_expand.sql"
+        );
+        assert!(migration.contains("OLD.status = 'pending'\n      AND NEW.status = 'leased'"));
+        assert!(migration.contains("OLD.status = 'leased'\n      AND NEW.status = 'pending'"));
+        assert!(migration.contains("OLD.status = 'leased'\n      AND NEW.status = 'delivered'"));
+        assert!(migration.contains("OLD.status = 'leased'\n      AND NEW.status = 'dead_letter'"));
+        assert!(migration.contains("NEW.updated_at > OLD.updated_at"));
+
+        let integrity_definition = source
+            .find("fn relay_container_terminal_outbox_claimed_integrity_valid")
+            .unwrap();
+        let claim_readback = source
+            .find("async fn relay_container_terminal_outbox_lease_from_state")
+            .unwrap();
+        assert!(integrity_definition < claim_readback);
+    }
+
+    #[test]
+    fn relay_container_terminal_outbox_same_second_transition_stays_inside_lease() {
+        assert_eq!(
+            relay_container_terminal_outbox_safe_transition_at(100, 100, 115),
+            Some(101)
+        );
+        assert_eq!(
+            relay_container_terminal_outbox_safe_transition_at(100, 101, 115),
+            Some(102)
+        );
+        assert_eq!(
+            relay_container_terminal_outbox_safe_transition_at(114, 100, 115),
+            Some(114)
+        );
+        assert_eq!(
+            relay_container_terminal_outbox_safe_transition_at(115, 100, 115),
+            None
+        );
+        assert_eq!(
+            relay_container_terminal_outbox_safe_transition_at(99, 100, 101),
+            None
+        );
+
+        let mut state = RelayContainerTerminalOutboxState {
+            billing_event_id: "a".repeat(64),
+            status: "leased".to_string(),
+            delivery_generation: 2,
+            delivery_attempt_count: 2,
+            lease_expires_at: 115,
+            available_at: 100,
+            delivered_at: 0,
+            last_error: String::new(),
+            created_at: 100,
+            updated_at: 101,
+        };
+        assert!(relay_container_terminal_outbox_active_state_valid(
+            &state, 2, 100
+        ));
+        state.delivery_attempt_count = 1;
+        assert!(!relay_container_terminal_outbox_active_state_valid(
+            &state, 2, 100
+        ));
+        state.delivery_attempt_count = 2;
+        assert!(!relay_container_terminal_outbox_active_state_valid(
+            &state, 2, 115
+        ));
+
+        assert!(validate_relay_container_terminal_outbox_error("delivery_failed").is_ok());
+        assert!(validate_relay_container_terminal_outbox_error("").is_err());
+        assert!(validate_relay_container_terminal_outbox_error(" trailing ").is_err());
+        assert!(validate_relay_container_terminal_outbox_error(&"x".repeat(4_097)).is_err());
+        assert_eq!(RELAY_CONTAINER_TERMINAL_OUTBOX_MIN_LEASE_SECONDS, 15);
+        assert_eq!(RELAY_CONTAINER_TERMINAL_OUTBOX_MAX_LEASE_SECONDS, 60);
+    }
+
+    #[test]
+    fn relay_container_terminal_outbox_integrity_allows_ordered_recovery_chain() {
+        let audit_payload = "{\"action\":\"container_recovery\"}";
+        let audit_sha256 = relay_container_sha256_hex(audit_payload.as_bytes());
+        let mut operation = relay_container_test_operation();
+        operation.status = "dispatched".to_string();
+        let mut reservation = relay_billing_test_reservation("reserved");
+        reservation.final_quota = 0;
+        reservation.finalization_reason.clear();
+        reservation.request_accounted = 0;
+        reservation.lease_expires_at = operation.owner_lease_expires_at;
+        let recovery = RelayContainerFinancialTerminalCommand {
+            reservation_key: &operation.reservation_key,
+            operation_id: &operation.operation_id,
+            operation_owner_generation: operation.owner_generation,
+            expected_operation_status: RelayContainerOperationExpectedStatus::Dispatched,
+            admission_sha256: &operation.admission_sha256,
+            billing_owner_generation: reservation.owner_generation,
+            terminal: RelayContainerOperationTerminalRecord::RecoveryRequired {
+                response_code: "container_execution_ambiguous",
+                result: None,
+            },
+            action: RelayContainerFinancialTerminalAction::RecoveryRequired {
+                finalization_reason: "container_execution_ambiguous",
+            },
+            client_response: None,
+            audit_payload_json: audit_payload,
+            audit_payload_sha256: &audit_sha256,
+            committed_at: 181,
+        };
+        let prepared_recovery =
+            prepare_relay_container_financial_terminal(&recovery, &operation, &reservation)
+                .unwrap();
+        let mut predecessor =
+            relay_container_test_financial_receipt(&recovery, &operation, &prepared_recovery);
+
+        let headers = "{\"cache-control\":\"no-store\",\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}";
+        let headers_sha256 = relay_container_sha256_hex(headers.as_bytes());
+        let response_key = concat!(
+            "container-client-responses/v1/relayreserve-test/2/",
+            "9999999999999999999999999999999999999999999999999999999999999999"
+        );
+        let response = relay_container_test_client_response(200, &headers_sha256, response_key);
+        operation.status = "recovery_required".to_string();
+        reservation.status = "recovery_required".to_string();
+        reservation.owner_generation = operation.owner_generation + 1;
+        reservation.finalization_reason = "container_execution_ambiguous".to_string();
+        let result = relay_container_test_result();
+        let resolution = RelayContainerFinancialTerminalCommand {
+            reservation_key: &operation.reservation_key,
+            operation_id: &operation.operation_id,
+            operation_owner_generation: operation.owner_generation,
+            expected_operation_status: RelayContainerOperationExpectedStatus::RecoveryRequired,
+            admission_sha256: &operation.admission_sha256,
+            billing_owner_generation: reservation.owner_generation,
+            terminal: RelayContainerOperationTerminalRecord::Completed {
+                response_status: 200,
+                result,
+            },
+            action: RelayContainerFinancialTerminalAction::Settle {
+                final_quota: 80,
+                finalization_reason: "container_recovery_settlement",
+            },
+            client_response: Some(response),
+            audit_payload_json: audit_payload,
+            audit_payload_sha256: &audit_sha256,
+            committed_at: 250,
+        };
+        let prepared_resolution =
+            prepare_relay_container_financial_terminal(&resolution, &operation, &reservation)
+                .unwrap();
+        let mut successor =
+            relay_container_test_financial_receipt(&resolution, &operation, &prepared_resolution);
+
+        operation.status = "completed".to_string();
+        operation.response_status = Some(200);
+        operation.response_code = None;
+        operation.result_object_key = Some(result.object_key.to_string());
+        operation.result_object_version = Some(result.object_version.to_string());
+        operation.result_sha256 = Some(result.sha256.to_string());
+        operation.result_size = Some(result.size);
+        operation.result_content_type = Some(result.content_type.to_string());
+        operation.updated_at = 250;
+
+        predecessor.operation_current_status = successor.operation_current_status.clone();
+        predecessor.operation_response_status = successor.operation_response_status;
+        predecessor.operation_response_code = successor.operation_response_code.clone();
+        predecessor.operation_result_object_key = successor.operation_result_object_key.clone();
+        predecessor.operation_result_object_version =
+            successor.operation_result_object_version.clone();
+        predecessor.operation_result_sha256 = successor.operation_result_sha256.clone();
+        predecessor.operation_result_size = successor.operation_result_size;
+        predecessor.operation_result_content_type = successor.operation_result_content_type.clone();
+        predecessor.billing_current_status = successor.billing_current_status.clone();
+        predecessor.billing_current_owner_generation = successor.billing_current_owner_generation;
+        predecessor.billing_current_final_quota = successor.billing_current_final_quota;
+        predecessor.billing_current_reason = successor.billing_current_reason.clone();
+        predecessor.billing_current_request_accounted = successor.billing_current_request_accounted;
+        predecessor.outbox_status = "leased".to_string();
+        successor.outbox_status = "pending".to_string();
+
+        assert!(
+            relay_container_terminal_outbox_event_immutable_integrity_valid(
+                &predecessor,
+                &operation
+            )
+        );
+        assert!(
+            relay_container_terminal_outbox_event_immutable_integrity_valid(&successor, &operation)
+        );
+        assert!(!relay_container_financial_receipt_integrity_valid(
+            &predecessor
+        ));
+        assert!(relay_container_financial_receipt_integrity_valid(
+            &successor
+        ));
+        assert!(relay_container_terminal_outbox_predecessor_chain_valid(
+            &predecessor,
+            &successor
+        ));
+        let predecessor_ack =
+            relay_container_terminal_outbox_ack_from_receipt(&predecessor).unwrap();
+        assert_eq!(operation.response_status, Some(200));
+        assert_eq!(predecessor_ack.response_status, 202);
+        assert_eq!(
+            predecessor_ack.response_code.as_deref(),
+            Some("container_execution_ambiguous")
+        );
+        assert!(predecessor_ack.result.is_none());
+        let successor_ack = relay_container_terminal_outbox_ack_from_receipt(&successor).unwrap();
+        assert_eq!(successor_ack.response_status, 200);
+        assert!(successor_ack.response_code.is_none());
+        assert_eq!(
+            successor_ack
+                .result
+                .as_ref()
+                .map(|result| result.object_key.as_str()),
+            Some(result.object_key)
+        );
+
+        let predecessor_state = RelayContainerTerminalOutboxState {
+            billing_event_id: predecessor.billing_event_id.clone(),
+            status: "leased".to_string(),
+            delivery_generation: 1,
+            delivery_attempt_count: 1,
+            lease_expires_at: 280,
+            available_at: predecessor.created_at,
+            delivered_at: 0,
+            last_error: String::new(),
+            created_at: predecessor.created_at,
+            updated_at: 251,
+        };
+        assert!(relay_container_terminal_outbox_claimed_integrity_valid(
+            &predecessor,
+            &operation,
+            Some(&successor),
+            &predecessor_state,
+            1,
+            250,
+        ));
+        let mut malformed_successor = successor.clone();
+        malformed_successor.created_at = predecessor.created_at - 1;
+        assert!(!relay_container_terminal_outbox_claimed_integrity_valid(
+            &predecessor,
+            &operation,
+            Some(&malformed_successor),
+            &predecessor_state,
+            1,
+            250,
+        ));
+
+        predecessor.outbox_status = "delivered".to_string();
+        successor.outbox_status = "leased".to_string();
+        let successor_state = RelayContainerTerminalOutboxState {
+            billing_event_id: successor.billing_event_id.clone(),
+            status: "leased".to_string(),
+            delivery_generation: 1,
+            delivery_attempt_count: 1,
+            lease_expires_at: 280,
+            available_at: successor.created_at,
+            delivered_at: 0,
+            last_error: String::new(),
+            created_at: successor.created_at,
+            updated_at: 251,
+        };
+        assert!(relay_container_terminal_outbox_claimed_integrity_valid(
+            &successor,
+            &operation,
+            Some(&predecessor),
+            &successor_state,
+            1,
+            250,
+        ));
+        predecessor.outbox_status = "pending".to_string();
+        assert!(!relay_container_terminal_outbox_claimed_integrity_valid(
+            &successor,
+            &operation,
+            Some(&predecessor),
+            &successor_state,
+            1,
+            250,
+        ));
     }
 
     #[test]

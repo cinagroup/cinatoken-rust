@@ -13,6 +13,12 @@ const storageGatewaySource = await Bun.file(
 const operationStatusSource = await Bun.file(
   new URL("../services/container-controller/src/operation_status.ts", import.meta.url),
 ).text();
+const terminalAckSource = await Bun.file(
+  new URL("../services/container-controller/src/terminal_ack.ts", import.meta.url),
+).text();
+const controllerLedgerSource = await Bun.file(
+  new URL("../services/container-controller/src/ledger.ts", import.meta.url),
+).text();
 const providerAttemptGatewaySource = await Bun.file(
   new URL("../services/container-controller/src/provider_attempt_gateway.ts", import.meta.url),
 ).text();
@@ -58,6 +64,8 @@ describe("isolated container controller configuration", () => {
       expect(config.vars.CONTAINER_PROVIDER_EGRESS_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_PROVIDER_RETRY_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED).toBe("false");
+      expect(config.vars.CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_MAX_PROVIDER_ATTEMPTS).toBe("1");
       expect(Number(config.vars.CONTAINER_TERMINAL_RETENTION_SECONDS)).toBeGreaterThanOrEqual(600);
       expect(Number(config.vars.CONTAINER_MAX_TERMINAL_OPERATIONS)).toBeGreaterThan(0);
@@ -179,6 +187,22 @@ describe("isolated container controller configuration", () => {
     expect(operationStatusSource).toContain("stub.readOperationStatus(verified.query)");
     expect(operationStatusSource).not.toMatch(
       /containerFetch|requireD1OperationAdmission|claimOperation|\.schedule\(|wake_container/,
+    );
+  });
+
+  test("terminal ack is routed through a default-off non-compacting ledger RPC", () => {
+    expect(controllerSource).toContain("if (path === INTERNAL_OPERATION_TERMINAL_ACK_PATH)");
+    expect(controllerSource).toContain("return handleTerminalAckRequest(request, env)");
+    expect(terminalAckSource).toContain("stub.acknowledgeGlobalTerminal(verified.ack)");
+    expect(terminalAckSource).toContain('"cache-control": "no-store"');
+    expect(terminalAckSource).not.toMatch(/containerFetch|requireD1OperationAdmission|\.schedule\(/);
+    expect(controllerLedgerSource).toContain("cinatoken_shard_terminal_acks");
+    expect(controllerLedgerSource).toContain(
+      "if (!policy.globalTerminalCompactionEnabled) return",
+    );
+    expect(controllerLedgerSource).toContain("ack.compaction_authorized_at IS NOT NULL");
+    expect(controllerLedgerSource).not.toMatch(
+      /SET[\s\S]{0,200}compaction_authorized_at\s*=/,
     );
   });
 });

@@ -547,6 +547,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
  "worker",
  "worker-sys",
 ]

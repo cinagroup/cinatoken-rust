@@ -17,17 +17,20 @@ import {
 import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
+  INTERNAL_OPERATION_TERMINAL_ACK_PATH,
   INTERNAL_OPERATION_STATUS_PATH,
   INTERNAL_OPERATION_STATUS_V2_PATH,
   INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
   MAX_OPERATION_BODY_BYTES,
+  MAX_STORAGE_OBJECT_VERSION_BYTES,
   ProtocolError,
   type AuthorityEnvironment,
   type OperationEnvelope,
   type OperationShard,
   type OperationStatusQuery,
   type ShardReadinessProbe,
+  type TerminalAckRequest,
   verifyOperationRequest,
   verifyReadinessRequest,
   verifyStatusRequest,
@@ -42,6 +45,10 @@ import {
   type ShardOperationStatusRpcResult,
   type ShardOperationStatusV2RpcResult,
 } from "./operation_status";
+import {
+  handleTerminalAckRequest,
+  type ShardTerminalAckRpcResult,
+} from "./terminal_ack";
 import {
   PROVIDER_ATTEMPT_HOST,
   handleProviderAttemptGatewayRequest,
@@ -88,6 +95,8 @@ interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
   CONTAINER_PROVIDER_EGRESS_ENABLED: string;
   CONTAINER_PROVIDER_RETRY_ENABLED: string;
   CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED: string;
+  CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED: string;
+  CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED: string;
   CONTAINER_MAX_PROVIDER_ATTEMPTS: string;
   CONTAINER_MAX_IN_FLIGHT_PER_SHARD: string;
   CONTAINER_TERMINAL_RETENTION_SECONDS: string;
@@ -166,6 +175,13 @@ export type {
   ShardOperationStatusRpcResult,
   ShardOperationStatusV2RpcResult,
 } from "./operation_status";
+export type {
+  ShardTerminalAckRpcResult,
+  TerminalAckErrorResponse,
+  TerminalAckRequest,
+  TerminalAckResponse,
+  TerminalAckResultManifest,
+} from "./terminal_ack";
 
 export class RelayShardContainer extends Container<ControllerEnv> {
   override defaultPort = 8080;
@@ -345,6 +361,31 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         return { ok: false, error: { code: error.code, status: error.status } };
       }
       return { ok: false, error: { code: "operation_status_unavailable", status: 503 } };
+    }
+  }
+
+  async acknowledgeGlobalTerminal(
+    ack: TerminalAckRequest,
+  ): Promise<ShardTerminalAckRpcResult> {
+    if (this.env.CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED !== "true") {
+      return {
+        ok: false,
+        error: { code: "container_global_terminal_ack_disabled", status: 503 },
+      };
+    }
+    try {
+      return {
+        ok: true,
+        result: this.ledger.acknowledgeGlobalTerminal(
+          ack,
+          Math.floor(Date.now() / 1000),
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return { ok: false, error: { code: "terminal_ack_unavailable", status: 503 } };
     }
   }
 
@@ -709,6 +750,9 @@ const handler: ExportedHandler<ControllerEnv> = {
       }
       if (path === INTERNAL_OPERATION_STATUS_V2_PATH) {
         return handleOperationStatusV2Request(request, env);
+      }
+      if (path === INTERNAL_OPERATION_TERMINAL_ACK_PATH) {
+        return handleTerminalAckRequest(request, env);
       }
       if (path === INTERNAL_STATUS_PATH) {
         await verifyStatusRequest(request, env);
@@ -1136,7 +1180,7 @@ async function persistStorageResultResponse(
   if (
     objectVersion === null ||
     objectVersion.length < 1 ||
-    objectVersion.length > 256 ||
+    objectVersion.length > MAX_STORAGE_OBJECT_VERSION_BYTES ||
     !/^[A-Za-z0-9._:-]+$/.test(objectVersion)
   ) {
     await response.body?.cancel("storage_result_invalid").catch(() => undefined);
@@ -1227,6 +1271,8 @@ function controllerLedgerPolicy(env: ControllerRuntimeEnvironment): RelayShardLe
       31_536_000,
     ),
     maxTerminalOperations: configuredInteger(env.CONTAINER_MAX_TERMINAL_OPERATIONS, 1, 1_000_000),
+    globalTerminalCompactionEnabled:
+      env.CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED === "true",
   };
 }
 

@@ -6,11 +6,13 @@ import {
   ProtocolError,
   type OperationEnvelope,
   type OperationStatusQuery,
+  type TerminalAckRequest,
 } from "../services/container-controller/src/protocol";
 import {
   RelayShardLedger,
   type OperationStatus,
   type RelayShardLedgerPolicy,
+  type StorageResultRecord,
 } from "../services/container-controller/src/ledger";
 import type { ContainerControllerLedgerTestObject } from "./fixtures/container-controller-ledger-worker";
 
@@ -97,8 +99,89 @@ function ledgerPolicy(
     dispatchRetentionSeconds: 60,
     terminalRetentionSeconds: 300,
     maxTerminalOperations: 100,
+    globalTerminalCompactionEnabled: false,
     ...overrides,
   };
+}
+
+async function authorizeTerminalCompactionForTest(
+  stub: DurableObjectStub<ContainerControllerLedgerTestObject>,
+  operationIds: readonly string[],
+  now: number,
+): Promise<void> {
+  await runInDurableObject(stub, (_instance, state) => {
+    for (const operationId of operationIds) {
+      state.storage.sql.exec(
+        `INSERT INTO cinatoken_shard_terminal_acks
+           (operation_id, owner_generation, billing_event_id,
+            terminal_contract_sha256, reconciliation_id, reconciliation_revision,
+            predecessor_billing_event_id, ack_payload_json, recovery_payload_json,
+            final_acked_at, compaction_authorized_at, created_at, updated_at)
+         VALUES (?1, 1, ?2, ?3, ?4, 1, NULL, '{}', NULL, ?5, ?5, ?5, ?5)`,
+        operationId,
+        sha256("1"),
+        sha256("2"),
+        sha256("3"),
+        now,
+      );
+    }
+  });
+}
+
+function operationResult(operation: OperationEnvelope): StorageResultRecord {
+  const resultSha256 = sha256("c");
+  return {
+    object_key:
+      `container-results/v1/${operation.operation_id}/${operation.owner_generation}/${resultSha256}`,
+    object_version: "result-version-1",
+    sha256: resultSha256,
+    size: 2,
+    content_type: "application/json",
+  };
+}
+
+function terminalAck(
+  operation: OperationEnvelope,
+  overrides: Partial<TerminalAckRequest> = {},
+): TerminalAckRequest {
+  return {
+    protocol_version: 1,
+    billing_event_id: sha256("d"),
+    terminal_contract_sha256: sha256("e"),
+    reconciliation_id: sha256("f"),
+    reconciliation_revision: 1,
+    predecessor_billing_event_id: null,
+    operation_id: operation.operation_id,
+    owner_generation: operation.owner_generation,
+    operation_from_status: "dispatched",
+    operation_status: "completed",
+    response_status: 200,
+    response_code: null,
+    result: operationResult(operation),
+    shard: operation.shard,
+    trace_id: operation.trace_id,
+    ...overrides,
+  };
+}
+
+async function acknowledgeTerminal(
+  stub: DurableObjectStub<ContainerControllerLedgerTestObject>,
+  ack: TerminalAckRequest,
+  now: number,
+) {
+  return runInDurableObject(stub, (_instance, state) => {
+    try {
+      return {
+        ok: true as const,
+        result: new RelayShardLedger(state.storage).acknowledgeGlobalTerminal(ack, now),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false as const, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
+  });
 }
 
 function ledgerStub(name: string): DurableObjectStub<ContainerControllerLedgerTestObject> {
@@ -857,6 +940,338 @@ describe("RelayShardLedger in Workerd", () => {
     });
   });
 
+  it("acks journal-disabled outcomes and retains them across age/count maintenance", async () => {
+    const stub = ledgerStub("terminal-ack-retained");
+    const operation = operationEnvelope("terminal-ack-retained");
+    await stub.claim(operation, sha256("1"), "dispatch-terminal-ack", ledgerPolicy(), BASE_NOW);
+    await stub.transition(
+      operation.operation_id,
+      operation.owner_generation,
+      "claimed",
+      "running",
+      null,
+      BASE_NOW + 1,
+      true,
+    );
+    await stub.recordStorageResultOutcome(
+      operation.operation_id,
+      operation.owner_generation,
+      operationResult(operation),
+      BASE_NOW + 2,
+    );
+    await stub.finalizeOutcome(
+      operation.operation_id,
+      operation.owner_generation,
+      "running",
+      "completed",
+      200,
+      null,
+      BASE_NOW + 3,
+      true,
+    );
+
+    const ack = terminalAck(operation);
+    await expect(acknowledgeTerminal(stub, ack, BASE_NOW + 4)).resolves.toEqual({
+      ok: true,
+      result: { kind: "acknowledged", finalAck: true, acknowledgedAt: BASE_NOW + 4 },
+    });
+    await expect(acknowledgeTerminal(stub, ack, BASE_NOW + 5)).resolves.toEqual({
+      ok: true,
+      result: { kind: "duplicate", finalAck: true, acknowledgedAt: BASE_NOW + 4 },
+    });
+    await expect(
+      acknowledgeTerminal(
+        stub,
+        { ...ack, terminal_contract_sha256: sha256("a") },
+        BASE_NOW + 6,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "terminal_ack_conflict", status: 409 },
+    });
+
+    await expect(
+      stub.claim(
+        operationEnvelope("terminal-ack-age-maintenance", {
+          owner_lease_expires_at: BASE_NOW + 1_600,
+          execution_deadline_at: BASE_NOW + 1_300,
+        }),
+        sha256("2"),
+        "dispatch-terminal-ack-age-maintenance",
+        ledgerPolicy({
+          dispatchRetentionSeconds: 10,
+          terminalRetentionSeconds: 30,
+        }),
+        BASE_NOW + 1_000,
+      ),
+    ).resolves.toEqual({ kind: "new" });
+    await stub.transition(
+      "terminal-ack-age-maintenance",
+      1,
+      "claimed",
+      "completed",
+      200,
+      BASE_NOW + 1_001,
+    );
+    await expect(
+      stub.claim(
+        operationEnvelope("terminal-ack-count-maintenance", {
+          owner_lease_expires_at: BASE_NOW + 1_600,
+          execution_deadline_at: BASE_NOW + 1_300,
+        }),
+        sha256("3"),
+        "dispatch-terminal-ack-count-maintenance",
+        ledgerPolicy({
+          dispatchRetentionSeconds: 10,
+          terminalRetentionSeconds: 30,
+          maxTerminalOperations: 1,
+        }),
+        BASE_NOW + 1_002,
+      ),
+    ).resolves.toEqual({ kind: "new" });
+    await runInDurableObject(stub, (_instance, state) => {
+      const operationRows = state.storage.sql
+        .exec<{ operation_id: string }>(
+          `SELECT operation_id FROM cinatoken_shard_operations
+            WHERE operation_id IN (?1, ?2) ORDER BY operation_id`,
+          operation.operation_id,
+          "terminal-ack-age-maintenance",
+        )
+        .toArray();
+      const ackRow = state.storage.sql
+        .exec<{
+          final_acked_at: number | null;
+          compaction_authorized_at: number | null;
+        }>(
+          `SELECT final_acked_at, compaction_authorized_at
+             FROM cinatoken_shard_terminal_acks
+            WHERE operation_id = ?1 AND owner_generation = ?2`,
+          operation.operation_id,
+          operation.owner_generation,
+        )
+        .one();
+      const retryCount = state.storage.sql
+        .exec<{ count: number }>(
+          `SELECT COUNT(*) AS count FROM cinatoken_shard_provider_retry_state
+            WHERE operation_id = ?1 AND owner_generation = ?2`,
+          operation.operation_id,
+          operation.owner_generation,
+        )
+        .one().count;
+      expect(operationRows).toEqual([
+        { operation_id: "terminal-ack-age-maintenance" },
+        { operation_id: operation.operation_id },
+      ]);
+      expect(ackRow).toEqual({
+        final_acked_at: BASE_NOW + 4,
+        compaction_authorized_at: null,
+      });
+      expect(retryCount).toBe(0);
+    });
+  });
+
+  it("acks result-free health probes but requires the stored result for relay completion", async () => {
+    const healthStub = ledgerStub("terminal-ack-health-probe");
+    const healthOperation = operationEnvelope("terminal-ack-health-probe", {
+      operation_kind: "health_probe",
+    });
+    await healthStub.claim(
+      healthOperation,
+      sha256("1"),
+      "dispatch-terminal-ack-health-probe",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await healthStub.transition(
+      healthOperation.operation_id,
+      healthOperation.owner_generation,
+      "claimed",
+      "completed",
+      200,
+      BASE_NOW + 1,
+    );
+    await expect(
+      acknowledgeTerminal(
+        healthStub,
+        terminalAck(healthOperation, { result: null }),
+        BASE_NOW + 2,
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      result: { kind: "acknowledged", finalAck: true, acknowledgedAt: BASE_NOW + 2 },
+    });
+
+    const relayStub = ledgerStub("terminal-ack-relay-result-required");
+    const relayOperation = operationEnvelope("terminal-ack-relay-result-required");
+    await relayStub.claim(
+      relayOperation,
+      sha256("2"),
+      "dispatch-terminal-ack-relay-result-required",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await relayStub.transition(
+      relayOperation.operation_id,
+      relayOperation.owner_generation,
+      "claimed",
+      "completed",
+      200,
+      BASE_NOW + 1,
+    );
+    await expect(
+      acknowledgeTerminal(
+        relayStub,
+        terminalAck(relayOperation, { result: null }),
+        BASE_NOW + 2,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "terminal_ack_conflict", status: 409 },
+    });
+  });
+
+  it("orders recovery revision 1 before a revision 2 final acknowledgement", async () => {
+    const stub = ledgerStub("terminal-ack-two-phase");
+    const operation = operationEnvelope("terminal-ack-two-phase");
+    await stub.claim(operation, sha256("3"), "dispatch-terminal-recovery", ledgerPolicy(), BASE_NOW);
+    await stub.transition(
+      operation.operation_id,
+      operation.owner_generation,
+      "claimed",
+      "running",
+      null,
+      BASE_NOW + 1,
+      true,
+    );
+    const result = operationResult(operation);
+    await stub.recordStorageResultOutcome(
+      operation.operation_id,
+      operation.owner_generation,
+      result,
+      BASE_NOW + 2,
+    );
+    await stub.finalizeOutcome(
+      operation.operation_id,
+      operation.owner_generation,
+      "running",
+      "recovery_required",
+      202,
+      "container_execution_ambiguous",
+      BASE_NOW + 3,
+      true,
+    );
+
+    const recovery = terminalAck(operation, {
+      billing_event_id: sha256("4"),
+      terminal_contract_sha256: sha256("5"),
+      operation_status: "recovery_required",
+      response_status: 202,
+      response_code: "container_execution_ambiguous",
+      result,
+    });
+    await expect(acknowledgeTerminal(stub, recovery, BASE_NOW + 4)).resolves.toEqual({
+      ok: true,
+      result: { kind: "acknowledged", finalAck: false, acknowledgedAt: null },
+    });
+
+    const resolution = terminalAck(operation, {
+      billing_event_id: sha256("6"),
+      terminal_contract_sha256: sha256("7"),
+      reconciliation_revision: 2,
+      predecessor_billing_event_id: recovery.billing_event_id,
+      operation_from_status: "recovery_required",
+      operation_status: "completed",
+      response_status: 200,
+      response_code: null,
+      result,
+    });
+    await expect(
+      acknowledgeTerminal(
+        stub,
+        { ...resolution, predecessor_billing_event_id: sha256("8") },
+        BASE_NOW + 5,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "terminal_ack_conflict", status: 409 },
+    });
+    await expect(acknowledgeTerminal(stub, resolution, BASE_NOW + 6)).resolves.toEqual({
+      ok: true,
+      result: { kind: "acknowledged", finalAck: true, acknowledgedAt: BASE_NOW + 6 },
+    });
+    await expect(acknowledgeTerminal(stub, recovery, BASE_NOW + 7)).resolves.toEqual({
+      ok: true,
+      result: { kind: "duplicate", finalAck: false, acknowledgedAt: null },
+    });
+    await expect(acknowledgeTerminal(stub, resolution, BASE_NOW + 8)).resolves.toEqual({
+      ok: true,
+      result: { kind: "duplicate", finalAck: true, acknowledgedAt: BASE_NOW + 6 },
+    });
+    await runInDurableObject(stub, (_instance, state) => {
+      const row = state.storage.sql
+        .exec<{
+          status: string;
+          billing_event_id: string;
+          predecessor_billing_event_id: string;
+          final_acked_at: number;
+          compaction_authorized_at: number | null;
+        }>(
+          `SELECT operation.status, ack.billing_event_id,
+                  ack.predecessor_billing_event_id,
+                  ack.final_acked_at,
+                  ack.compaction_authorized_at
+             FROM cinatoken_shard_operations AS operation
+             JOIN cinatoken_shard_terminal_acks AS ack
+               ON ack.operation_id = operation.operation_id
+              AND ack.owner_generation = operation.owner_generation
+            WHERE operation.operation_id = ?1`,
+          operation.operation_id,
+        )
+        .one();
+      expect(row).toEqual({
+        status: "recovery_required",
+        billing_event_id: resolution.billing_event_id,
+        predecessor_billing_event_id: recovery.billing_event_id,
+        final_acked_at: BASE_NOW + 6,
+        compaction_authorized_at: null,
+      });
+    });
+  });
+
+  it("adds the terminal-ack table to an old schema and preserves it across eviction", async () => {
+    const stub = ledgerStub("terminal-ack-schema-upgrade");
+    const expectedColumns = [
+      "operation_id",
+      "owner_generation",
+      "billing_event_id",
+      "terminal_contract_sha256",
+      "reconciliation_id",
+      "reconciliation_revision",
+      "predecessor_billing_event_id",
+      "ack_payload_json",
+      "recovery_payload_json",
+      "final_acked_at",
+      "compaction_authorized_at",
+    ];
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("DROP TABLE cinatoken_shard_terminal_acks");
+      new RelayShardLedger(state.storage).ensureSchema();
+      const columns = state.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(cinatoken_shard_terminal_acks)")
+        .toArray()
+        .map(({ name }) => name);
+      expect(expectedColumns.every((name) => columns.includes(name))).toBe(true);
+    });
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, (_instance, state) => {
+      const columns = state.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(cinatoken_shard_terminal_acks)")
+        .toArray()
+        .map(({ name }) => name);
+      expect(expectedColumns.every((name) => columns.includes(name))).toBe(true);
+    });
+  });
+
   it("compacts terminal operations by age and maximum row count", async () => {
     const stub = ledgerStub("terminal-compaction");
     const seedPolicy = ledgerPolicy({
@@ -889,6 +1304,11 @@ describe("RelayShardLedger in Workerd", () => {
         operation.updatedAt,
       );
     }
+    await authorizeTerminalCompactionForTest(
+      stub,
+      terminalOperations.map(({ id }) => id),
+      BASE_NOW + 95,
+    );
 
     await expect(
       stub.claim(
@@ -900,6 +1320,7 @@ describe("RelayShardLedger in Workerd", () => {
           dispatchRetentionSeconds: 10,
           terminalRetentionSeconds: 30,
           maxTerminalOperations: 2,
+          globalTerminalCompactionEnabled: true,
         }),
         BASE_NOW + 100,
       ),
@@ -938,6 +1359,7 @@ describe("RelayShardLedger in Workerd", () => {
       dispatchRetentionSeconds: 60,
       terminalRetentionSeconds: 300,
       maxTerminalOperations: 2,
+      globalTerminalCompactionEnabled: true,
     });
 
     for (let index = 0; index < 3; index += 1) {
@@ -979,6 +1401,11 @@ describe("RelayShardLedger in Workerd", () => {
         BASE_NOW + 7,
       ),
     ).resolves.toMatchObject({ kind: "existing", row: { status: "completed" } });
+    await authorizeTerminalCompactionForTest(
+      stub,
+      ["protected-0", "protected-1", "protected-2"],
+      BASE_NOW + 8,
+    );
 
     await expect(
       stub.claim(
@@ -1377,6 +1804,17 @@ describe("RelayShardLedger in Workerd", () => {
         trace_id: operation.trace_id,
         result: null,
       },
+    });
+    await expect(
+      stub.recordStorageResultOutcome(
+        operation.operation_id,
+        1,
+        { ...result, object_version: "v".repeat(129) },
+        BASE_NOW + 2,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "invalid_storage_result", status: 400 },
     });
     await expect(
       stub.recordStorageResultOutcome(operation.operation_id, 1, result, BASE_NOW + 2),

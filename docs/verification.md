@@ -7347,3 +7347,41 @@ The next implementation verification packet must compare the Go and Rust
 response interpreters for exact HTTP-200 success, typed error bodies carried by
 HTTP 200, non-200 compatible error envelopes and header filtering, and usage
 retained across interrupted streams. Production remains **NO-GO**.
+
+## 2026-07-18 Response Interpreter Verification Contract
+
+The candidate verification packet is source-bound to Go commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703` and interpreter contract
+`go-openai-response-v1`. Local acceptance requires all of the following:
+
+```powershell
+bun tools/generate_go_response_interpreter_manifest.mjs --check
+bun tools/generate_go_response_interpreter_manifest.mjs --verify-artifact --json
+cargo test -p cinatoken-relay
+cargo test -p cinatoken-container-egress
+cargo test -p cinatoken-worker --lib
+cargo check -p cinatoken-container-egress --target wasm32-unknown-unknown
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+```
+
+The immutable corpus must prove exact 200 versus every other 2xx, HTTP-200
+typed object/string/scalar/message-only errors, malformed/empty/array bodies,
+non-200 message precedence, error-header suppression, the six-header success
+allowlist, usage parsing, and usage retained before stream interruption. It must
+also verify source/template/script hashes, unique case names, exact counts, and
+the canonical manifest digest.
+
+Thin Worker and Container tests must show that each adapter consumes the shared
+facts without changing classification, client status, error body, header
+decision, usage, or raw hash. Container non-success remains recovery/ambiguous
+until response-artifact protocol v3 and migration 0052 exist; this is the
+required fail-closed result, not a canary pass. No remote verification is
+authorized by this packet.
+
+The 2026-07-18 local run passed with manifest digest
+`3384f8ec568e082fd2b95ea300df80379d926b4f607cd1d9d80e78f51a8b789a`
+and class counts `4/3/3/17` for success/typed-error/invalid-body/HTTP-error.
+Relay ran 102 unit plus 2 manifest tests, Container egress ran 13 tests, Worker
+ran 833 tests, both wasm checks passed, and `bun run check` completed
+successfully. The source replay left its explicit Go roots clean and removed
+the injected test. These are local results only; remote evidence remains open.

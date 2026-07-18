@@ -378,3 +378,24 @@ This is local contract evidence, not live Tencent parity. Rotated-credential
 staging must still prove TC3 acceptance, UTC/skew behavior, error/retry classes,
 usage, reserve/settle/refund, D1/provider reconciliation, disable/recovery, and
 Go rollback. Production remains **NO-GO**.
+
+## 2026-07-18 Provider Response Boundary
+
+Buffered JSON responses now use the shared `go-openai-response-v1` interpreter
+before audit, estimation, settlement, affinity success, or client delivery.
+Only exact HTTP 200 with an object body and no typed top-level error is ordinary
+success. A typed error inside HTTP 200 keeps client status 200 but uses failure
+audit semantics; malformed HTTP-200 bodies become local `bad_response_body`
+errors; every non-200 response is rebuilt as a compatible local error envelope.
+
+Successful responses expose only the six shared public headers documented in
+`docs/response-interpreter-production-plan.md`. Provider headers are never
+inherited by interpreted errors. Requested streaming enters the streaming path
+only for an exact upstream 200; a non-200 response to a streaming request is
+buffered and interpreted instead. The existing stream accumulator continues to
+retain usage observed before an interrupted read.
+
+This is local packet-1 semantics, not Container production parity. Receipt v1
+remains immutable, and Container canary remains blocked on response-artifact
+migration 0052, protocol v3, durable raw/client artifacts, financial terminal
+ownership, remote faults, and approvals. Production remains **NO-GO**.

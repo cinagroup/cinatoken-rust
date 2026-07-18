@@ -1331,3 +1331,24 @@ blue/green rollback, jurisdiction, provider-call counter, load/cost/SLO/alert,
 and signed approvals remain open. The next code milestone is shared Go-parity
 response/error/usage interpretation. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+### Response interpretation update
+
+The source is pinned to Go commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703` and the local pure Rust contract is
+`go-openai-response-v1`. Exact-200 success, typed HTTP-200 errors, compatible
+non-200 envelopes, success-only usage, a six-header success allowlist, and zero
+provider error headers are now the frozen packet-1 boundary.
+
+This is not migration completion. The Container path still lacks migration
+0052 raw-provider evidence plus separate interpreted client artifacts, protocol
+v3, a DO/runtime rejected outcome that separates provider and client status,
+financial terminal linkage, remote proof, and approvals. Receipt v1 remains
+unchanged and canary remains blocked. See
+`docs/response-interpreter-production-plan.md`.
+
+Local packet P1 is now implemented and verified: the source-pinned 27-case Go
+manifest, shared interpreter, Worker adapter, fail-closed Container egress
+adapter, exact-200 receipt gate, header boundary, affinity guard, missing-usage
+fallback preservation, wasm checks, and full `bun run check` all pass. This
+changes no remote or production readiness verdict; packets P2-P5 remain open.

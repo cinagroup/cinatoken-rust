@@ -186,3 +186,21 @@ Remaining gaps to close:
   this file.
 - The estimate fallback uses `docs/source-token-estimation-parity.md`; the
   usage->billing mapping uses `docs/source-billing-expr-parity.md`.
+
+## 2026-07-18 Response Interpreter Boundary
+
+`go-openai-response-v1` now decides whether a bounded non-stream provider body
+is eligible to supply usage before any estimation or settlement runs. Only an
+exact HTTP 200 JSON object without a typed top-level OpenAI error is ordinary
+success. Typed errors carried by HTTP 200, malformed success bodies, and every
+non-200 response contribute zero provider usage and cannot enter success
+billing.
+
+This shared interpreter does not replace the caller-owned missing-usage rules
+above. For an ordinary success, Worker still applies the existing OpenAI or
+Gemini completion-text fallback, the frozen prompt estimate, `ValidUsage`, and
+`usage_locally_estimated` audit source. Streaming remains independently owned by
+`SseUsageAccumulator`; a transport fault does not erase usage observed before
+the fault. The pinned source, differential corpus, Container fail-closed bridge,
+and future durable artifact protocol are specified in
+`docs/response-interpreter-production-plan.md`.

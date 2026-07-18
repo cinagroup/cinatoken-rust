@@ -1170,3 +1170,11 @@ rollback evidence. Production remains **NO-GO**.
 The next implementation milestone is the shared Go-authoritative response
 interpreter for exact HTTP-200 success, HTTP-200 typed errors, compatible
 non-200 envelopes/header filtering, and interrupted-stream usage retention.
+
+That contract is now specified as `go-openai-response-v1`, pinned to Go commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703`, with a pure implementation in
+`crates/relay`. This does not make the Container response path replayable.
+Receipt v1 cannot encode rejected provider evidence or a rebuilt client body;
+the runtime remains blocked on response-artifact migration 0052, protocol v3,
+and separate provider/client status. The complete design is in
+`docs/response-interpreter-production-plan.md`.

@@ -1,0 +1,2680 @@
+{
+  "schema_version": 1,
+  "contract": "go-openai-response-v1",
+  "source": {
+    "repository": "github.com/cinagroup/cinatoken",
+    "commit": "73652508abc5cb09214dde02d51d69d1d1ccc703",
+    "files_sha256": {
+      "relay/compatible_handler.go": "25c2e08c5b6578606f3be973c4efc3ea670cb4867a0d06df2966e3f4f19e1d1c",
+      "relay/channel/openai/relay-openai.go": "6f77e513529a507b93b7497142b337fab8526ecfe86cb161c41f64392db03e21",
+      "dto/openai_response.go": "d73185735bd90e54903d04b29b70b8974dbc9b4df908c2770278596946ac8afd",
+      "dto/error.go": "a0057a822e77cbd77c384835343d9a08d625a525fb04175f556be50f8bdbc03e",
+      "service/error.go": "b30909e5f1ae79d9e2f9b61d5fdef4d0b00049a7eafad49a6c0f04332b8e0239",
+      "service/http.go": "89dc0e0aba019d75249083ebb8a55a1352b61cb67cd143b96dfb61c66833a2f5",
+      "types/error.go": "db3d798d35efbccc3f8d4656aa9cdf3d34eab8958f8ba0f2023baecea16877fa"
+    }
+  },
+  "generator": {
+    "runtime": "go test ./relay/channel/openai against pinned source",
+    "injected_target": "relay/channel/openai/zz_cinatoken_response_interpreter_manifest_test.go",
+    "script_sha256": "9d6f735c00c54e7b8b6b9903709cb1e8fb7e03dd32a43c4cd469770ef6954bf7",
+    "template_name": "embedded_go_response_interpreter_manifest_test.go",
+    "template_sha256": "105d51c7daf129cbd2b0e920e03fa848075f12895d7d80e31f81e39903ecb65c"
+  },
+  "capabilities": {
+    "buffered_provider_response": true,
+    "stream_partial_usage_shared_api": false
+  },
+  "cases": [
+    {
+      "name": "buffered_success_usage",
+      "status": 200,
+      "body": "{\"id\":\"chatcmpl-usage\",\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18,\"prompt_tokens_details\":{\"cached_tokens\":3,\"cached_creation_tokens\":2,\"image_tokens\":4,\"audio_tokens\":5},\"completion_tokens_details\":{\"image_tokens\":6,\"audio_tokens\":7},\"claude_cache_creation_5_m_tokens\":8,\"claude_cache_creation_1_h_tokens\":9,\"usage_semantic\":\"anthropic\",\"cost\":0.0125}}",
+      "expected": {
+        "class": "success",
+        "upstream_status": 200,
+        "client_status": 200,
+        "audit_status": 200,
+        "success": true,
+        "has_json_object": true,
+        "body_sha256": "7f58f6f7e840f196d0ef07a6f7c58b2dd0de48cd9d8b192704bbcbf79f1486ff",
+        "error": null,
+        "usage": {
+          "prompt_tokens": 11,
+          "completion_tokens": 7,
+          "total_tokens": 18,
+          "cached_tokens": 3,
+          "cache_creation_tokens": 2,
+          "claude_cache_creation_5m_tokens": 8,
+          "claude_cache_creation_1h_tokens": 9,
+          "image_input_tokens": 4,
+          "image_output_tokens": 6,
+          "audio_input_tokens": 5,
+          "audio_output_tokens": 7,
+          "is_anthropic_usage_semantic": true,
+          "usage_semantic_source": "upstream_explicit",
+          "provider_cost_usd": "0.0125",
+          "cache_creation_source": "upstream_aggregate",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "buffered_success_no_usage",
+      "status": 200,
+      "body": "{\"id\":\"chatcmpl-empty\",\"choices\":[]}",
+      "expected": {
+        "class": "success",
+        "upstream_status": 200,
+        "client_status": 200,
+        "audit_status": 200,
+        "success": true,
+        "has_json_object": true,
+        "body_sha256": "196cf5ed0533145e33c374946a82f1614d69a71ee91e43e9d60bf776d20a2a5e",
+        "error": null,
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "buffered_success_message_only_error",
+      "status": 200,
+      "body": "{\"error\":{\"message\":\"not typed\",\"code\":\"ignored\"},\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}",
+      "expected": {
+        "class": "success",
+        "upstream_status": 200,
+        "client_status": 200,
+        "audit_status": 200,
+        "success": true,
+        "has_json_object": true,
+        "body_sha256": "13d7f37cc8be30020c4943488b0e8130d0335e1bc06f03cd4cb26947772f2d54",
+        "error": null,
+        "usage": {
+          "prompt_tokens": 2,
+          "completion_tokens": 3,
+          "total_tokens": 5,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "buffered_success_null_error",
+      "status": 200,
+      "body": "{\"error\":null,\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}",
+      "expected": {
+        "class": "success",
+        "upstream_status": 200,
+        "client_status": 200,
+        "audit_status": 200,
+        "success": true,
+        "has_json_object": true,
+        "body_sha256": "de3e36eecfd3ce0282a0c81a8e3cbaa335193b4a54a9f72a82f3e6e5d4e20cec",
+        "error": null,
+        "usage": {
+          "prompt_tokens": 1,
+          "completion_tokens": 1,
+          "total_tokens": 2,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": true
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "buffered_typed_error_object",
+      "status": 200,
+      "body": "{\"error\":{\"message\":\"rate limited\",\"type\":\"rate_limit_error\",\"param\":\"model\",\"code\":429},\"usage\":{\"prompt_tokens\":99,\"completion_tokens\":1,\"total_tokens\":100}}",
+      "expected": {
+        "class": "typed_error",
+        "upstream_status": 200,
+        "client_status": 200,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "afb07b6b46b07b175fc17e1e627e9834c385c2a195de3e356bc90691a687ac42",
+        "error": {
+          "message": "rate limited",
+          "type": "rate_limit_error",
+          "param": "model",
+          "code": 429,
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "buffered_typed_error_string",
+      "status": 200,
+      "body": "{\"error\":\"provider failed\"}",
+      "expected": {
+        "class": "typed_error",
+        "upstream_status": 200,
+        "client_status": 200,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "0ce35e7e3f29d740944aca7e087f297e34d563d59e7e6fe04a8906b6107bd9ef",
+        "error": {
+          "message": "provider failed",
+          "type": "error",
+          "param": "",
+          "code": null,
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "buffered_typed_error_type_only",
+      "status": 200,
+      "body": "{\"error\":{\"type\":\"provider_error\",\"code\":\"typed_without_message\"}}",
+      "expected": {
+        "class": "typed_error",
+        "upstream_status": 200,
+        "client_status": 200,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "b1e87f143cf57818ac067f76ff0ae1d43872ff0f6e596bad4a94a9ec2fa7893d",
+        "error": {
+          "message": "",
+          "type": "provider_error",
+          "param": "",
+          "code": "typed_without_message",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "buffered_invalid_empty",
+      "status": 200,
+      "body": "",
+      "expected": {
+        "class": "invalid_body",
+        "upstream_status": 200,
+        "client_status": 500,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": false,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "error": {
+          "message": "invalid upstream JSON response",
+          "type": "bad_response_body",
+          "param": "",
+          "code": "bad_response_body",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "buffered_invalid_malformed",
+      "status": 200,
+      "body": "{",
+      "expected": {
+        "class": "invalid_body",
+        "upstream_status": 200,
+        "client_status": 500,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": false,
+        "body_sha256": "021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96",
+        "error": {
+          "message": "invalid upstream JSON response",
+          "type": "bad_response_body",
+          "param": "",
+          "code": "bad_response_body",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "buffered_invalid_array",
+      "status": 200,
+      "body": "[{\"id\":\"not-an-object-envelope\"}]",
+      "expected": {
+        "class": "invalid_body",
+        "upstream_status": 200,
+        "client_status": 500,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": false,
+        "body_sha256": "5870398bdb5fb87671b93c41d9985870d39d0980ffb2f643a64d4567d4782dcf",
+        "error": {
+          "message": "invalid upstream JSON response",
+          "type": "bad_response_body",
+          "param": "",
+          "code": "bad_response_body",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_201_is_http_error",
+      "status": 201,
+      "body": "{\"id\":\"created\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 201,
+        "client_status": 201,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "910e16ebb4bcf7ff1adf78cc9a996e6a7e577b34e69371906e1743bdfeb5f2fe",
+        "error": {
+          "message": "bad response status code 201",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_202_is_http_error",
+      "status": 202,
+      "body": "{\"id\":\"accepted\",\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 202,
+        "client_status": 202,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "2470d0de3e25520083f42845c379d1abaac4e3bdb46ee8af141625f5a0d7d5fd",
+        "error": {
+          "message": "bad response status code 202",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_204_is_http_error",
+      "status": 204,
+      "body": "",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 204,
+        "client_status": 204,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": false,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "error": {
+          "message": "bad response status code 204",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_300_message",
+      "status": 300,
+      "body": "{\"message\":\"choose another endpoint\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 300,
+        "client_status": 300,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "11121e0bff4ed2aafd48eba4f8c02c056843418c794ab330d09d7d2a17aac209",
+        "error": {
+          "message": "choose another endpoint",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_302_error_string",
+      "status": 302,
+      "body": "{\"error\":\"redirect denied\",\"message\":\"ignored\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 302,
+        "client_status": 302,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "b07cfdf0bf9d111c35b4fce3920bfd865c239690123b202554475515102c6835",
+        "error": {
+          "message": "redirect denied",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_399_detail",
+      "status": 399,
+      "body": "{\"detail\":\"redirect boundary\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 399,
+        "client_status": 399,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "c651b30ff998b5921b78978e1fa71a83e86645a42db770c9c57fdda5afa3f13b",
+        "error": {
+          "message": "redirect boundary",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_400_openai_error_precedence",
+      "status": 400,
+      "body": "{\"error\":{\"message\":\"structured wins\",\"type\":\"invalid_request_error\",\"param\":\"model\",\"code\":\"bad_model\"},\"message\":\"message ignored\",\"msg\":\"msg ignored\",\"detail\":\"detail ignored\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 400,
+        "client_status": 400,
+        "audit_status": 400,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "b94c4884178e4f35e53f4002173f45bf4a9e5c1c0bbe021c0a8dbf23ad86807b",
+        "error": {
+          "message": "structured wins",
+          "type": "invalid_request_error",
+          "param": "model",
+          "code": "bad_model",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_401_message_precedence",
+      "status": 401,
+      "body": "{\"message\":\"message wins\",\"msg\":\"msg ignored\",\"err\":\"err ignored\",\"error_msg\":\"error_msg ignored\",\"detail\":\"detail ignored\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 401,
+        "client_status": 401,
+        "audit_status": 401,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "3395818d4ab84c3c262bdc465b39e8c90fbc6282332137ded65ffbedf306b1fb",
+        "error": {
+          "message": "message wins",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_404_msg_precedence",
+      "status": 404,
+      "body": "{\"msg\":\"msg wins\",\"err\":\"err ignored\",\"error_msg\":\"error_msg ignored\",\"detail\":\"detail ignored\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 404,
+        "client_status": 404,
+        "audit_status": 404,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "76644b672744eb0d77074a4cbe2e3096ef446f69a7da5eec750888703f1503aa",
+        "error": {
+          "message": "msg wins",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_409_err_precedence",
+      "status": 409,
+      "body": "{\"err\":\"err wins\",\"error_msg\":\"error_msg ignored\",\"detail\":\"detail ignored\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 409,
+        "client_status": 409,
+        "audit_status": 409,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "1dddb32064197207d41d38817746eda708a0f7b83484ac79f982584ce8f3d19b",
+        "error": {
+          "message": "err wins",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_422_error_msg_precedence",
+      "status": 422,
+      "body": "{\"error_msg\":\"error_msg wins\",\"detail\":\"detail ignored\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 422,
+        "client_status": 422,
+        "audit_status": 422,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "eb5fad9ac03f035883c08224ac38f010296211350b008519760d6f8fa9b5463d",
+        "error": {
+          "message": "error_msg wins",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_429_error_string_precedence",
+      "status": 429,
+      "body": "{\"error\":\"string error wins\",\"message\":\"message ignored\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 429,
+        "client_status": 429,
+        "audit_status": 429,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "253f5a763a333b2888733a6218a1cd94af0b5f4428e3ee396809a0cfcdda1b0a",
+        "error": {
+          "message": "string error wins",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_500_detail_precedence",
+      "status": 500,
+      "body": "{\"detail\":\"detail wins\",\"header\":{\"message\":\"header ignored\"}}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 500,
+        "client_status": 500,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "998bd007dfbc5eee9c7c59c6d9a2a8ba9dea757655e66123eb24fbbfa56be772",
+        "error": {
+          "message": "detail wins",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_500_message_only_error_object",
+      "status": 500,
+      "body": "{\"error\":{\"message\":\"object message\",\"code\":null},\"message\":\"ignored\"}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 500,
+        "client_status": 500,
+        "audit_status": 500,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "7fdb656418c188af1963ac8d4ffce96026c1ad99d9c2740635c60823864fcad3",
+        "error": {
+          "message": "object message",
+          "type": "upstream_error",
+          "param": "",
+          "code": null,
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_502_header_message",
+      "status": 502,
+      "body": "{\"header\":{\"message\":\"header wins\"},\"response\":{\"error\":{\"message\":\"nested ignored\"}}}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 502,
+        "client_status": 502,
+        "audit_status": 502,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "409399a91f36ac1f0f14c88b6c447a49ceca4f07bc796d0d9aa4333a0a61ecdd",
+        "error": {
+          "message": "header wins",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_503_nested_response_message",
+      "status": 503,
+      "body": "{\"response\":{\"error\":{\"message\":\"nested response wins\"}}}",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 503,
+        "client_status": 503,
+        "audit_status": 503,
+        "success": false,
+        "has_json_object": true,
+        "body_sha256": "b4b00d26802cab81f447821924b6cb6b546e8127b7b2863e6c31a762919db5d3",
+        "error": {
+          "message": "nested response wins",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_599_malformed",
+      "status": 599,
+      "body": "not-json",
+      "expected": {
+        "class": "http_error",
+        "upstream_status": 599,
+        "client_status": 599,
+        "audit_status": 599,
+        "success": false,
+        "has_json_object": false,
+        "body_sha256": "0c21a879c732a67910d80988df4919d794f6a070aab610ef865032a28046b021",
+        "error": {
+          "message": "bad response status code 599",
+          "type": "bad_response_status_code",
+          "param": "",
+          "code": "bad_response_status_code",
+          "metadata": null
+        },
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cached_tokens": 0,
+          "cache_creation_tokens": 0,
+          "claude_cache_creation_5m_tokens": 0,
+          "claude_cache_creation_1h_tokens": 0,
+          "image_input_tokens": 0,
+          "image_output_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
+          "is_anthropic_usage_semantic": false,
+          "usage_semantic_source": "openai_default",
+          "provider_cost_usd": null,
+          "cache_creation_source": "none",
+          "responses_web_search_calls": 0,
+          "responses_file_search_calls": 0,
+          "claude_web_search_calls": 0,
+          "image_generation_present": false
+        },
+        "header_decisions": [
+          {
+            "name": "Content-Type",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "content-language",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Retry-After",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "X-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "request-id",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "OpenAI-Request-ID",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Content-Length",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "X-Oneapi-Request-Id",
+            "source_eligible": false,
+            "public_forward": false
+          },
+          {
+            "name": "Set-Cookie",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Authorization",
+            "source_eligible": true,
+            "public_forward": false
+          },
+          {
+            "name": "Transfer-Encoding",
+            "source_eligible": true,
+            "public_forward": false
+          }
+        ]
+      }
+    }
+  ],
+  "manifest_sha256": "3384f8ec568e082fd2b95ea300df80379d926b4f607cd1d9d80e78f51a8b789a"
+}

@@ -2458,3 +2458,26 @@ exact HTTP-200 success policy, HTTP-200 typed errors, compatible non-200 error
 envelopes/header filtering, and interrupted-stream usage settlement. Stable
 logical-shard naming stays canonical; jurisdiction selection and provenance
 remain separate blockers. Production remains **NO-GO**.
+
+## 2026-07-18 Phase 1 Response Interpreter Contract
+
+Response parity now has a pinned source and versioned ABI. Go commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703` is authoritative and the Rust
+contract is `go-openai-response-v1`. The pure `crates/relay` foundation freezes
+exact-200 success, typed errors inside HTTP 200, malformed-success handling,
+Go-compatible non-200 envelopes, a six-header success allowlist, zero error
+header forwarding, success-only usage, and independent stream-fault/usage
+facts.
+
+This closes only the semantic foundation. Container canary remains blocked by
+the lack of separate durable raw-provider evidence and interpreted client
+artifacts. Receipt v1 stays immutable; response-artifact migration 0052,
+protocol v3, a new DO interpreted-reject shape, exact financial terminal
+linkage, remote fault evidence, and approvals remain future conjunctive gates.
+The detailed sequence and abort conditions are frozen in
+`docs/response-interpreter-production-plan.md`.
+
+The response packet does not change either Durable Alarm Intent v1 gate. The
+alarm bridge remains DO-local and still needs no D1 schema of its own; the new
+0052 reservation applies only to future response evidence. All execution,
+provider-egress, and canary gates stay false. Production remains **NO-GO**.

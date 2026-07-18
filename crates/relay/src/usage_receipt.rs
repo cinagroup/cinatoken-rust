@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::openai_compatible::{
-    usage_summary_from_body, ImageGenerationQuality, ImageGenerationSize,
+use crate::{
+    interpret_buffered_provider_response,
+    openai_compatible::{ImageGenerationQuality, ImageGenerationSize, UsageCacheFieldPolicy},
+    ProviderResponseProfile,
 };
 
 pub const PROVIDER_USAGE_RECEIPT_SCHEMA_VERSION: u32 = 1;
@@ -144,12 +146,19 @@ impl ProviderUsageReceiptV1 {
     pub fn from_provider_response(
         input: ProviderUsageReceiptInput<'_>,
     ) -> Result<Self, ProviderUsageReceiptError> {
-        let body = str::from_utf8(input.provider_response_body)
-            .map_err(|_| ProviderUsageReceiptError::InvalidProviderResponse)?;
-        let value: Value = serde_json::from_slice(input.provider_response_body)
-            .map_err(|_| ProviderUsageReceiptError::InvalidProviderResponse)?;
+        let interpreted = interpret_buffered_provider_response(
+            ProviderResponseProfile::OpenAiCompatible(UsageCacheFieldPolicy::Standard),
+            input.provider_response_status,
+            input.provider_response_body,
+        );
+        if !interpreted.is_success() {
+            return Err(ProviderUsageReceiptError::InvalidProviderResponse);
+        }
+        let value = interpreted
+            .json_value()
+            .ok_or(ProviderUsageReceiptError::InvalidProviderResponse)?;
         validate_reported_usage_values(&value)?;
-        let summary = usage_summary_from_body(body);
+        let summary = interpreted.usage();
         let reported_usage_fields = reported_usage_fields(&value);
         let image_generation = summary.tool_usage.image_generation;
 
@@ -167,7 +176,7 @@ impl ProviderUsageReceiptV1 {
             egress_profile: PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE.to_string(),
             egress_worker_version_id: input.egress_worker_version_id.to_string(),
             provider_response_status: input.provider_response_status,
-            provider_response_sha256: sha256_lower_hex(input.provider_response_body),
+            provider_response_sha256: interpreted.body_sha256().to_string(),
             provider_request_id: input.provider_request_id.map(str::to_string),
             provider_completed_at: input.provider_completed_at,
             usage_present: reported_usage_fields & REQUIRED_USAGE_FIELDS == REQUIRED_USAGE_FIELDS,

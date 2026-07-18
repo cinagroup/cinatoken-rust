@@ -4,6 +4,7 @@ use cinatoken_core::{ApiResult, ChatCompletionRequest};
 pub mod cache;
 pub mod multipart;
 pub mod openai_compatible;
+pub mod provider_response;
 pub mod retry;
 pub mod usage_receipt;
 
@@ -36,6 +37,13 @@ pub use openai_compatible::{
     CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VOLCENGINE,
     CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4, GEMINI_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES,
     RERANK_CHANNEL_TYPES,
+};
+pub use provider_response::{
+    first_safe_provider_request_id, interpret_buffered_provider_response,
+    should_forward_public_response_header, valid_provider_request_id, BufferedProviderResponse,
+    OpenAiCompatibleError, OpenAiCompatibleErrorEnvelope, ProviderResponseClass,
+    ProviderResponseProfile, MAX_PROVIDER_REQUEST_ID_BYTES, PROVIDER_RESPONSE_INTERPRETER_CONTRACT,
+    PUBLIC_SUCCESS_RESPONSE_HEADERS,
 };
 pub use retry::{
     is_auto_disable_status, is_retryable_status, parse_retry_times_env, RetryConfig,

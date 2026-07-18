@@ -8,8 +8,12 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use cinatoken_relay::{
-    ProviderUsageReceiptInput, ProviderUsageReceiptV1, MAX_PROVIDER_USAGE_RECEIPT_ENCODED_BYTES,
+    first_safe_provider_request_id, interpret_buffered_provider_response,
+    should_forward_public_response_header, BufferedProviderResponse, OpenAiCompatibleErrorEnvelope,
+    ProviderResponseClass, ProviderResponseProfile, ProviderUsageReceiptInput,
+    ProviderUsageReceiptV1, UsageCacheFieldPolicy, MAX_PROVIDER_USAGE_RECEIPT_ENCODED_BYTES,
     MAX_PROVIDER_USAGE_RECEIPT_JSON_BYTES, PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE,
+    PUBLIC_SUCCESS_RESPONSE_HEADERS,
 };
 use futures_util::{future::Either, pin_mut, StreamExt};
 use serde_json::Value;
@@ -50,15 +54,6 @@ const DEADLINE_HEADER: &str = "x-cinatoken-provider-deadline";
 const CONTENT_SHA256_HEADER: &str = "x-cinatoken-content-sha256";
 pub const PROVIDER_USAGE_RECEIPT_HEADER: &str = "x-cinatoken-provider-usage-receipt";
 pub const PROVIDER_USAGE_RECEIPT_SHA256_HEADER: &str = "x-cinatoken-provider-usage-receipt-sha256";
-
-const FORWARDED_RESPONSE_HEADERS: &[&str] = &[
-    "content-type",
-    "content-language",
-    "retry-after",
-    "x-request-id",
-    "request-id",
-    "openai-request-id",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EgressError {
@@ -174,21 +169,6 @@ pub async fn fetch(mut request: Request, env: Env, _ctx: Context) -> WorkerResul
         upstream_abort.abort();
         return versioned_policy_error(EgressError::Redirect, &worker_version_id);
     }
-    let provider_request_id = match provider_request_id(upstream.headers()) {
-        Ok(value) => value,
-        Err(error) => {
-            upstream_abort.abort();
-            return Err(error);
-        }
-    };
-    let mut response_headers = match public_response_headers(upstream.headers(), &worker_version_id)
-    {
-        Ok(value) => value,
-        Err(error) => {
-            upstream_abort.abort();
-            return Err(error);
-        }
-    };
     let response_body =
         match read_bounded_response(&mut upstream, request_metadata.deadline_at, upstream_abort)
             .await
@@ -196,34 +176,48 @@ pub async fn fetch(mut request: Request, env: Env, _ctx: Context) -> WorkerResul
             Ok(body) => body,
             Err(_) => return versioned_policy_error(EgressError::Upstream, &worker_version_id),
         };
-    if (200..=299).contains(&status) {
-        let provider_completed_at = js_sys::Date::now().floor() as i64;
-        let receipt_headers = match provider_usage_receipt_headers(
-            &request_metadata,
-            &worker_version_id,
-            status,
-            &response_body,
-            provider_request_id.as_deref(),
-            provider_completed_at,
-        ) {
-            Ok(headers) => headers,
-            Err(error) => return versioned_policy_error(error, &worker_version_id),
-        };
-        if response_headers
-            .set(PROVIDER_USAGE_RECEIPT_HEADER, &receipt_headers.encoded)
-            .and_then(|_| {
-                response_headers.set(
-                    PROVIDER_USAGE_RECEIPT_SHA256_HEADER,
-                    &receipt_headers.sha256,
-                )
-            })
-            .is_err()
-        {
-            return versioned_policy_error(EgressError::Receipt, &worker_version_id);
+    let interpreted = interpret_provider_response(status, &response_body);
+    match interpreted.class() {
+        ProviderResponseClass::Success if provider_response_allows_receipt(&interpreted) => {}
+        ProviderResponseClass::Success => {
+            return versioned_policy_error(EgressError::Upstream, &worker_version_id)
+        }
+        ProviderResponseClass::TypedError
+        | ProviderResponseClass::HttpError
+        | ProviderResponseClass::InvalidBody => {
+            return normalized_provider_error_response(&interpreted, &worker_version_id)
         }
     }
+
+    let provider_request_id = provider_request_id(upstream.headers())?;
+    let mut response_headers =
+        public_response_headers(upstream.headers(), &worker_version_id, interpreted.class())?;
+    let provider_completed_at = js_sys::Date::now().floor() as i64;
+    let receipt_headers = match provider_usage_receipt_headers(
+        &request_metadata,
+        &worker_version_id,
+        interpreted.upstream_status(),
+        &response_body,
+        provider_request_id.as_deref(),
+        provider_completed_at,
+    ) {
+        Ok(headers) => headers,
+        Err(error) => return versioned_policy_error(error, &worker_version_id),
+    };
+    if response_headers
+        .set(PROVIDER_USAGE_RECEIPT_HEADER, &receipt_headers.encoded)
+        .and_then(|_| {
+            response_headers.set(
+                PROVIDER_USAGE_RECEIPT_SHA256_HEADER,
+                &receipt_headers.sha256,
+            )
+        })
+        .is_err()
+    {
+        return versioned_policy_error(EgressError::Receipt, &worker_version_id);
+    }
     Ok(Response::from_bytes(response_body)?
-        .with_status(status)
+        .with_status(interpreted.client_status())
         .with_headers(response_headers))
 }
 
@@ -538,28 +532,78 @@ fn provider_usage_receipt_headers(
     })
 }
 
+fn interpret_provider_response(status: u16, body: &[u8]) -> BufferedProviderResponse {
+    interpret_buffered_provider_response(
+        ProviderResponseProfile::OpenAiCompatible(UsageCacheFieldPolicy::Standard),
+        status,
+        body,
+    )
+}
+
+fn provider_response_allows_receipt(response: &BufferedProviderResponse) -> bool {
+    response.class() == ProviderResponseClass::Success
+        && response.upstream_status() == 200
+        && response.client_status() == 200
+}
+
+fn normalized_provider_error(
+    response: &BufferedProviderResponse,
+) -> Option<(u16, OpenAiCompatibleErrorEnvelope)> {
+    response
+        .error_envelope()
+        .map(|envelope| (response.client_status(), envelope))
+}
+
+fn normalized_provider_error_response(
+    response: &BufferedProviderResponse,
+    worker_version_id: &str,
+) -> WorkerResult<Response> {
+    let Some((client_status, envelope)) = normalized_provider_error(response) else {
+        return versioned_policy_error(EgressError::Upstream, worker_version_id);
+    };
+    let mut headers = no_store_json_headers()?;
+    headers.set(WORKER_VERSION_HEADER, worker_version_id)?;
+    Ok(Response::from_json(&envelope)?
+        .with_status(client_status)
+        .with_headers(headers))
+}
+
 fn provider_request_id(source: &Headers) -> WorkerResult<Option<String>> {
-    let candidates = [
-        source.get("x-request-id")?,
-        source.get("openai-request-id")?,
-        source.get("request-id")?,
-    ];
-    Ok(first_safe_provider_request_id(&candidates))
+    let x_request_id = source.get("x-request-id")?;
+    let openai_request_id = source.get("openai-request-id")?;
+    let request_id = source.get("request-id")?;
+    Ok(select_provider_request_id(
+        x_request_id.as_deref(),
+        openai_request_id.as_deref(),
+        request_id.as_deref(),
+    ))
 }
 
-fn first_safe_provider_request_id(candidates: &[Option<String>]) -> Option<String> {
-    for value in candidates.iter().flatten() {
-        if valid_identifier(Some(value), 128) {
-            return Some(value.clone());
-        }
-    }
-    None
+fn select_provider_request_id(
+    x_request_id: Option<&str>,
+    openai_request_id: Option<&str>,
+    request_id: Option<&str>,
+) -> Option<String> {
+    first_safe_provider_request_id([x_request_id, openai_request_id, request_id])
 }
 
-fn public_response_headers(source: &Headers, worker_version_id: &str) -> WorkerResult<Headers> {
+fn projected_public_response_header_names(
+    class: ProviderResponseClass,
+) -> impl Iterator<Item = &'static str> {
+    PUBLIC_SUCCESS_RESPONSE_HEADERS
+        .iter()
+        .copied()
+        .filter(move |name| should_forward_public_response_header(name, class))
+}
+
+fn public_response_headers(
+    source: &Headers,
+    worker_version_id: &str,
+    class: ProviderResponseClass,
+) -> WorkerResult<Headers> {
     let mut result = Headers::new();
     result.set(WORKER_VERSION_HEADER, worker_version_id)?;
-    for name in FORWARDED_RESPONSE_HEADERS {
+    for name in projected_public_response_header_names(class) {
         if let Some(value) = source.get(name)? {
             result.set(name, &value)?;
         }
@@ -731,22 +775,107 @@ mod tests {
     }
 
     #[test]
-    fn response_headers_force_no_store_after_upstream_projection() {
-        assert!(!FORWARDED_RESPONSE_HEADERS.contains(&"cache-control"));
-        let source = include_str!("lib.rs");
-        let projection = source
-            .split("fn public_response_headers")
-            .nth(1)
-            .and_then(|value| value.split("fn policy_error").next())
-            .unwrap();
-        assert!(
-            projection
-                .rfind("result.set(\"cache-control\", \"no-store\")")
-                .unwrap()
-                > projection
-                    .find("for name in FORWARDED_RESPONSE_HEADERS")
-                    .unwrap()
+    fn exact_200_success_is_receipt_eligible() {
+        let response = interpret_provider_response(
+            200,
+            br#"{"id":"chatcmpl-1","usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}"#,
         );
+
+        assert_eq!(response.class(), ProviderResponseClass::Success);
+        assert_eq!(response.upstream_status(), 200);
+        assert_eq!(response.client_status(), 200);
+        assert!(provider_response_allows_receipt(&response));
+        assert!(normalized_provider_error(&response).is_none());
+    }
+
+    #[test]
+    fn created_and_accepted_responses_are_rejected_without_receipts() {
+        for status in [201, 202] {
+            let response = interpret_provider_response(status, br#"{"id":"chatcmpl-1"}"#);
+
+            assert_eq!(response.class(), ProviderResponseClass::HttpError);
+            assert_eq!(response.client_status(), status);
+            assert!(!provider_response_allows_receipt(&response));
+            let (client_status, envelope) = normalized_provider_error(&response).unwrap();
+            assert_eq!(client_status, status);
+            assert_eq!(
+                serde_json::to_value(envelope).unwrap(),
+                serde_json::json!({
+                    "error": {
+                        "message": format!("bad response status code {status}"),
+                        "type": "bad_response_status_code",
+                        "param": "",
+                        "code": "bad_response_status_code"
+                    }
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn typed_error_inside_200_uses_normalized_envelope_without_receipt() {
+        let response = interpret_provider_response(
+            200,
+            br#"{"error":{"message":"rate limited","type":"rate_limit_error","param":"model","code":429}}"#,
+        );
+
+        assert_eq!(response.class(), ProviderResponseClass::TypedError);
+        assert!(!provider_response_allows_receipt(&response));
+        let (client_status, envelope) = normalized_provider_error(&response).unwrap();
+        assert_eq!(client_status, 200);
+        assert_eq!(
+            serde_json::to_value(envelope).unwrap(),
+            serde_json::json!({
+                "error": {
+                    "message": "rate limited",
+                    "type": "rate_limit_error",
+                    "param": "model",
+                    "code": 429
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_200_becomes_normalized_500_without_receipt() {
+        let response = interpret_provider_response(200, b"not-json");
+
+        assert_eq!(response.class(), ProviderResponseClass::InvalidBody);
+        assert!(!provider_response_allows_receipt(&response));
+        let (client_status, envelope) = normalized_provider_error(&response).unwrap();
+        assert_eq!(client_status, 500);
+        assert_eq!(
+            serde_json::to_value(envelope).unwrap(),
+            serde_json::json!({
+                "error": {
+                    "message": "invalid upstream JSON response",
+                    "type": "bad_response_body",
+                    "param": "",
+                    "code": "bad_response_body"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn header_projection_uses_shared_success_allowlist_and_denies_errors() {
+        let success_headers =
+            projected_public_response_header_names(ProviderResponseClass::Success)
+                .collect::<Vec<_>>();
+        assert_eq!(success_headers, PUBLIC_SUCCESS_RESPONSE_HEADERS);
+        assert!(!success_headers.contains(&"cache-control"));
+        assert!(!should_forward_public_response_header(
+            "set-cookie",
+            ProviderResponseClass::Success
+        ));
+
+        for class in [
+            ProviderResponseClass::TypedError,
+            ProviderResponseClass::HttpError,
+            ProviderResponseClass::InvalidBody,
+        ] {
+            assert_eq!(projected_public_response_header_names(class).count(), 0);
+        }
     }
 
     #[test]
@@ -844,29 +973,28 @@ mod tests {
     #[test]
     fn provider_request_id_uses_ordered_conservative_ascii_or_null() {
         assert_eq!(
-            first_safe_provider_request_id(&[
-                Some("x-request-1".to_string()),
-                Some("openai-request-1".to_string()),
-            ]),
+            select_provider_request_id(
+                Some("x-request-1"),
+                Some("openai-request-1"),
+                Some("request-1"),
+            ),
             Some("x-request-1".to_string())
         );
         assert_eq!(
-            first_safe_provider_request_id(&[
-                None,
-                Some("openai-request-1".to_string()),
-                Some("request-1".to_string()),
-            ]),
+            select_provider_request_id(None, Some("openai-request-1"), Some("request-1"),),
             Some("openai-request-1".to_string())
         );
         assert_eq!(
-            first_safe_provider_request_id(&[
-                Some("unsafe request".to_string()),
-                Some("fallback-safe-request".to_string()),
-            ]),
+            select_provider_request_id(
+                Some("unsafe request"),
+                Some("fallback-safe-request"),
+                Some("later-request"),
+            ),
             Some("fallback-safe-request".to_string())
         );
+        let oversized = "x".repeat(cinatoken_relay::MAX_PROVIDER_REQUEST_ID_BYTES + 1);
         assert_eq!(
-            first_safe_provider_request_id(&[Some("x".repeat(129))]),
+            select_provider_request_id(Some(&oversized), None, None),
             None
         );
     }

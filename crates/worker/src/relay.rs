@@ -54,12 +54,11 @@ use cinatoken_providers::{
 };
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
-    first_channel_key, gemini_response_completion_text, ip_allowlist_matches,
-    is_auto_disable_status, is_retryable_status, mapped_model_name,
-    usage_summary_from_anthropic_body, usage_summary_from_body_with_cache_policy,
-    usage_summary_from_gemini_body, usage_summary_from_moonshot_body,
-    usage_summary_from_rerank_body, CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath,
-    ImageGenerationQuality, ImageGenerationSize, RelayCacheKeys, SseUsageAccumulator,
+    first_channel_key, gemini_response_completion_text, interpret_buffered_provider_response,
+    ip_allowlist_matches, is_auto_disable_status, is_retryable_status, mapped_model_name,
+    should_forward_public_response_header, BufferedProviderResponse, CachedAuthenticatedToken,
+    CachedRelayChannel, GeminiNativePath, ImageGenerationQuality, ImageGenerationSize,
+    ProviderResponseClass, ProviderResponseProfile, RelayCacheKeys, SseUsageAccumulator,
     UsageCacheFieldPolicy, UsageSummary, ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ALI,
     CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA,
     CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER,
@@ -4011,19 +4010,6 @@ async fn relay_endpoint_with_auth(
     }
     model_route_audit.ai_gateway_direct_fallback = ai_gateway_direct_fallback;
 
-    // Record affinity on a successful upstream response so subsequent requests
-    // stick to this channel. Best-effort and fail-open; only when enabled.
-    if let Some(key) = affinity_key.as_deref() {
-        if upstream_response.status_code() < 400 {
-            affinity::record_preferred_channel(
-                &env,
-                key,
-                channel.id,
-                affinity::AFFINITY_TTL_SECONDS,
-            )
-            .await;
-        }
-    }
     let affinity_audit = affinity_key.as_deref().map(|key| {
         affinity::affinity_audit_context(
             key,
@@ -4075,12 +4061,16 @@ async fn relay_endpoint_with_auth(
         ali_image_usage: None,
         provider_usage_source: relay_provider_usage_source(selected_provider, channel.channel_type),
         stream_lease_heartbeat: None,
+        affinity_key,
         affinity: affinity_audit,
         model_route: model_route_audit,
         attempts: attempt_audits,
     };
 
-    if should_relay_stream {
+    if should_complete_streaming_relay_response(
+        should_relay_stream,
+        upstream_response.status_code(),
+    ) {
         let context = context.expect("streaming context checked before reserve");
         return complete_streaming_relay_response(
             upstream_response,
@@ -9027,17 +9017,13 @@ async fn forward_gemini_native(
 ///
 /// A `Response` returned by `fetch()` has immutable headers on the Workers
 /// runtime, so content-type / CORS cannot be set on it directly (doing so
-/// throws `TypeError: Can't modify immutable headers`). Copy its headers into a
-/// fresh, mutable `Headers`, carry over the status and (possibly streaming)
-/// body, then apply the content-type override and CORS.
+/// throws `TypeError: Can't modify immutable headers`). Copy only the shared
+/// public allowlist into fresh mutable headers, carry over the status and body,
+/// then apply the content-type override and CORS.
 fn finalize_relay_response(upstream: Response, content_type: &str) -> worker::Result<Response> {
     let status = upstream.status_code();
-    let mut headers = Headers::new();
-    for (name, value) in upstream.headers().entries() {
-        // Best-effort copy: skip any single header the runtime rejects on
-        // re-emit rather than failing the whole relay response.
-        let _ = headers.set(&name, &value);
-    }
+    let headers =
+        public_provider_response_headers(&upstream, provider_response_class_for_status(status));
     let (_, body) = upstream.into_parts();
     let mut response = Response::from_body(body)?
         .with_status(status)
@@ -9047,16 +9033,38 @@ fn finalize_relay_response(upstream: Response, content_type: &str) -> worker::Re
     Ok(response)
 }
 
+fn provider_response_class_for_status(status: u16) -> ProviderResponseClass {
+    if status == 200 {
+        ProviderResponseClass::Success
+    } else {
+        ProviderResponseClass::HttpError
+    }
+}
+
+fn relay_response_header_is_approved(name: &str, class: ProviderResponseClass) -> bool {
+    should_forward_public_response_header(name, class)
+}
+
+fn public_provider_response_headers(upstream: &Response, class: ProviderResponseClass) -> Headers {
+    let mut headers = Headers::new();
+    for (name, value) in upstream.headers().entries() {
+        if relay_response_header_is_approved(&name, class) {
+            // Best-effort copy: skip any single header the runtime rejects on
+            // re-emit rather than failing the whole relay response.
+            let _ = headers.set(&name, &value);
+        }
+    }
+    headers
+}
+
 fn finalize_buffered_relay_bytes(
     upstream: &Response,
     bytes: Vec<u8>,
     status: u16,
     content_type: &str,
 ) -> worker::Result<Response> {
-    let mut headers = Headers::new();
-    for (name, value) in upstream.headers().entries() {
-        let _ = headers.set(&name, &value);
-    }
+    let headers =
+        public_provider_response_headers(upstream, provider_response_class_for_status(status));
     let mut response = Response::from_bytes(bytes)?
         .with_status(status)
         .with_headers(headers);
@@ -9232,8 +9240,16 @@ async fn complete_audio_speech_response(
     finalize_buffered_relay_bytes(&upstream, bytes, status, &content_type)
 }
 
+fn should_complete_streaming_relay_response(requested_stream: bool, upstream_status: u16) -> bool {
+    requested_stream && upstream_status == 200
+}
+
+fn should_record_relay_affinity(final_audit_status: u16) -> bool {
+    final_audit_status == 200
+}
+
 async fn complete_relay_response(
-    mut upstream: Response,
+    upstream: Response,
     env: Env,
     db: D1Database,
     context: Option<Context>,
@@ -9340,7 +9356,7 @@ async fn complete_relay_response(
         )
         .await;
     }
-    if endpoint_path == "audio/speech" {
+    if status == 200 && endpoint_path == "audio/speech" {
         return complete_audio_speech_response(
             upstream,
             &env,
@@ -9355,14 +9371,49 @@ async fn complete_relay_response(
         )
         .await;
     }
-    if !parse_usage {
-        let billing_reservation = audit
-            .billing_preflight
-            .as_ref()
-            .is_some_and(RelayBillingPreflight::reserve_applied);
-        let usage_less_billing_contract =
-            status < 400 && usage_less_request_contract_applies(&endpoint_path, false);
-        if billing_reservation || usage_less_billing_contract {
+    if parse_usage || status != 200 {
+        return complete_buffered_relay_response(
+            upstream,
+            &env,
+            &db,
+            &auth,
+            &channel,
+            &model,
+            &group,
+            &endpoint_path,
+            provider,
+            &audit,
+            max_json_response_bytes,
+        )
+        .await;
+    }
+
+    let billing_reservation = audit
+        .billing_preflight
+        .as_ref()
+        .is_some_and(RelayBillingPreflight::reserve_applied);
+    let usage_less_billing_contract = usage_less_request_contract_applies(&endpoint_path, false);
+    if billing_reservation || usage_less_billing_contract {
+        if let Err(err) = record_relay_audit(
+            &env,
+            &db,
+            &auth,
+            &channel,
+            &model,
+            &group,
+            &endpoint_path,
+            status,
+            &UsageSummary::default(),
+            &audit,
+            upstream_request_id.as_deref(),
+            false,
+        )
+        .await
+        {
+            worker::console_error!("failed to record relay audit: {}", err);
+        }
+    } else if let Some(context) = context {
+        context.wait_until(async move {
             if let Err(err) = record_relay_audit(
                 &env,
                 &db,
@@ -9381,142 +9432,8 @@ async fn complete_relay_response(
             {
                 worker::console_error!("failed to record relay audit: {}", err);
             }
-        } else if let Some(context) = context {
-            context.wait_until(async move {
-                if let Err(err) = record_relay_audit(
-                    &env,
-                    &db,
-                    &auth,
-                    &channel,
-                    &model,
-                    &group,
-                    &endpoint_path,
-                    status,
-                    &UsageSummary::default(),
-                    &audit,
-                    upstream_request_id.as_deref(),
-                    false,
-                )
-                .await
-                {
-                    worker::console_error!("failed to record relay audit: {}", err);
-                }
-            });
-        } else if let Err(err) = record_relay_audit(
-            &env,
-            &db,
-            &auth,
-            &channel,
-            &model,
-            &group,
-            &endpoint_path,
-            status,
-            &UsageSummary::default(),
-            &audit,
-            upstream_request_id.as_deref(),
-            false,
-        )
-        .await
-        {
-            worker::console_error!("failed to record relay audit: {}", err);
-        }
-
-        return finalize_relay_response(upstream, &content_type);
-    }
-
-    let billing_reservation = audit
-        .billing_preflight
-        .as_ref()
-        .is_some_and(RelayBillingPreflight::reserve_applied);
-    if status < 400 || billing_reservation {
-        return complete_buffered_relay_response(
-            upstream,
-            &env,
-            &db,
-            &auth,
-            &channel,
-            &model,
-            &group,
-            &endpoint_path,
-            provider,
-            &audit,
-            max_json_response_bytes,
-        )
-        .await;
-    }
-
-    if let Some(context) = context {
-        let mut audit_response = match upstream.cloned() {
-            Ok(response) => response,
-            Err(err) => {
-                worker::console_error!(
-                    "failed to initialize non-streaming audit branch: {}; falling back to buffered relay response",
-                    err
-                );
-                return complete_buffered_relay_response(
-                    upstream,
-                    &env,
-                    &db,
-                    &auth,
-                    &channel,
-                    &model,
-                    &group,
-                    &endpoint_path,
-                    provider,
-                    &audit,
-                    max_json_response_bytes,
-                )
-                .await;
-            }
-        };
-
-        context.wait_until(async move {
-            let mut audit = audit;
-            let (usage, usage_locally_estimated) = match response_usage_summary(
-                &mut audit_response,
-                provider,
-                channel.channel_type,
-                &endpoint_path,
-                max_json_response_bytes,
-                &model,
-                audit.estimated_prompt_tokens,
-                audit.missing_usage_estimate_enabled,
-            )
-            .await
-            {
-                Ok(resolved) => resolved,
-                Err(err) => {
-                    worker::console_error!("failed to parse non-streaming relay usage: {}", err);
-                    audit.non_stream_usage_parse_failed = true;
-                    (UsageSummary::default(), false)
-                }
-            };
-            audit.usage_locally_estimated = usage_locally_estimated;
-            if let Err(err) = record_relay_audit(
-                &env,
-                &db,
-                &auth,
-                &channel,
-                &model,
-                &group,
-                &endpoint_path,
-                status,
-                &usage,
-                &audit,
-                upstream_request_id.as_deref(),
-                false,
-            )
-            .await
-            {
-                worker::console_error!("failed to record relay audit: {}", err);
-            }
         });
-
-        return finalize_relay_response(upstream, &content_type);
-    }
-
-    complete_buffered_relay_response(
-        upstream,
+    } else if let Err(err) = record_relay_audit(
         &env,
         &db,
         &auth,
@@ -9524,11 +9441,18 @@ async fn complete_relay_response(
         &model,
         &group,
         &endpoint_path,
-        provider,
+        status,
+        &UsageSummary::default(),
         &audit,
-        max_json_response_bytes,
+        upstream_request_id.as_deref(),
+        false,
     )
     .await
+    {
+        worker::console_error!("failed to record relay audit: {}", err);
+    }
+
+    finalize_relay_response(upstream, &content_type)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10092,7 +10016,7 @@ async fn complete_buffered_relay_response(
         .flatten()
         .unwrap_or_else(|| "application/json".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
-    let body = match read_response_text_limited(&mut upstream, max_json_response_bytes).await {
+    let body = match read_response_bytes_limited(&mut upstream, max_json_response_bytes).await {
         Ok(body) => body,
         Err(err) if !err.body_consumed() => {
             worker::console_error!(
@@ -10101,10 +10025,11 @@ async fn complete_buffered_relay_response(
             );
             let mut parse_failure_audit = audit.clone();
             parse_failure_audit.non_stream_usage_parse_failed = true;
-            let positive_billing_reservation = audit
-                .billing_preflight
-                .as_ref()
-                .is_some_and(RelayBillingPreflight::can_settle_uninspectable);
+            let positive_billing_reservation = status == 200
+                && audit
+                    .billing_preflight
+                    .as_ref()
+                    .is_some_and(RelayBillingPreflight::can_settle_uninspectable);
             if let Err(err) = record_relay_audit(
                 env,
                 db,
@@ -10169,45 +10094,47 @@ async fn complete_buffered_relay_response(
             );
         }
     };
-    if !body.trim().is_empty() && serde_json::from_str::<Value>(&body).is_err() {
-        let mut parse_failure_audit = audit.clone();
-        parse_failure_audit.non_stream_usage_parse_failed = true;
-        if let Err(audit_err) = record_relay_audit(
-            env,
-            db,
-            auth,
-            channel,
-            model,
-            group,
+    let interpreted = interpret_buffered_provider_response(
+        provider_response_profile(provider, endpoint_path, channel.channel_type),
+        status,
+        &body,
+    );
+    let raw_usage = interpreted_provider_usage(&interpreted, &body, channel.channel_type);
+    let (usage, usage_locally_estimated) = if interpreted.is_success() {
+        resolve_buffered_provider_usage(
+            raw_usage,
+            std::str::from_utf8(&body).unwrap_or_default(),
+            provider,
             endpoint_path,
-            502,
-            &UsageSummary::default(),
-            &parse_failure_audit,
-            upstream_request_id.as_deref(),
-            false,
+            model,
+            audit.estimated_prompt_tokens,
+            audit.missing_usage_estimate_enabled,
         )
-        .await
-        {
-            worker::console_error!(
-                "failed to finalize malformed non-streaming relay response: {}",
-                audit_err
-            );
-        }
-        return openai_error_response("invalid upstream JSON response".to_string(), 502);
+    } else {
+        (raw_usage, false)
+    };
+    if usage_locally_estimated {
+        worker::console_log!(
+            "relay usage missing; locally estimated non-stream usage for {} (prompt={}, completion={})",
+            model,
+            usage.prompt_tokens,
+            usage.completion_tokens
+        );
     }
-    let usage = usage_summary_for_provider(&body, provider, endpoint_path, channel.channel_type);
+    let mut response_audit = audit.clone();
+    response_audit.usage_locally_estimated = usage_locally_estimated;
 
     if let Err(err) = record_relay_audit(
-        &env,
+        env,
         db,
         auth,
         channel,
         model,
         group,
         endpoint_path,
-        status,
+        interpreted.audit_status(),
         &usage,
-        audit,
+        &response_audit,
         upstream_request_id.as_deref(),
         false,
     )
@@ -10216,33 +10143,107 @@ async fn complete_buffered_relay_response(
         worker::console_error!("failed to record relay audit: {}", err);
     }
 
-    let mut response = Response::ok(body)?.with_status(status);
-    response.headers_mut().set("content-type", &content_type)?;
+    if !interpreted.is_success() {
+        return normalized_provider_error_response(&interpreted);
+    }
+
+    finalize_buffered_relay_bytes(&upstream, body, interpreted.client_status(), &content_type)
+}
+
+fn normalized_provider_error_parts(
+    interpreted: &BufferedProviderResponse,
+) -> worker::Result<(u16, Value)> {
+    let envelope = interpreted.error_envelope().ok_or_else(|| {
+        worker::Error::RustError(
+            "provider response interpreter returned an error without an envelope".to_string(),
+        )
+    })?;
+    Ok((interpreted.client_status(), serde_json::to_value(envelope)?))
+}
+
+fn normalized_provider_error_response(
+    interpreted: &BufferedProviderResponse,
+) -> worker::Result<Response> {
+    let (status, envelope) = normalized_provider_error_parts(interpreted)?;
+    let mut response = Response::from_json(&envelope)?.with_status(status);
+    response
+        .headers_mut()
+        .set("content-type", "application/json")?;
+    response.headers_mut().set("cache-control", "no-store")?;
     set_cors_headers(&mut response)?;
     Ok(response)
 }
 
-async fn response_usage_summary(
-    response: &mut Response,
+fn usage_summary_for_provider(
+    body: &str,
     provider: RelayProviderKind,
-    channel_type: i32,
     endpoint_path: &str,
-    max_json_response_bytes: usize,
+    channel_type: i32,
+) -> UsageSummary {
+    let interpreted = interpret_buffered_provider_response(
+        provider_response_profile(provider, endpoint_path, channel_type),
+        200,
+        body.as_bytes(),
+    );
+    interpreted_provider_usage(&interpreted, body.as_bytes(), channel_type)
+}
+
+fn provider_response_profile(
+    provider: RelayProviderKind,
+    endpoint_path: &str,
+    channel_type: i32,
+) -> ProviderResponseProfile {
+    if endpoint_path == "rerank"
+        && matches!(
+            provider,
+            RelayProviderKind::AliOpenAi
+                | RelayProviderKind::OpenAiCompatible
+                | RelayProviderKind::MoonshotOpenAi
+        )
+    {
+        return ProviderResponseProfile::Rerank;
+    }
+
+    match provider {
+        RelayProviderKind::MoonshotOpenAi => ProviderResponseProfile::Moonshot,
+        RelayProviderKind::AliMessages
+        | RelayProviderKind::AnthropicMessages
+        | RelayProviderKind::DeepSeekMessages
+        | RelayProviderKind::MoonshotMessages => ProviderResponseProfile::Anthropic,
+        RelayProviderKind::GeminiNative => ProviderResponseProfile::Gemini,
+        _ => ProviderResponseProfile::OpenAiCompatible(usage_cache_field_policy(
+            provider,
+            channel_type,
+        )),
+    }
+}
+
+fn interpreted_provider_usage(
+    interpreted: &BufferedProviderResponse,
+    body: &[u8],
+    channel_type: i32,
+) -> UsageSummary {
+    let mut usage = interpreted.usage();
+    if interpreted.is_success() && usage.cached_tokens <= 0 && channel_type == CHANNEL_TYPE_OPENAI {
+        usage.cached_tokens = serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|value| value.pointer("/timings/cache_n").and_then(Value::as_i64))
+            .map(clamp_i64_to_i32)
+            .unwrap_or_default()
+            .max(0);
+    }
+    usage
+}
+
+fn resolve_buffered_provider_usage(
+    usage: UsageSummary,
+    body: &str,
+    provider: RelayProviderKind,
+    endpoint_path: &str,
     model: &str,
     estimated_prompt_tokens: i64,
     estimate_enabled: bool,
-) -> worker::Result<(UsageSummary, bool)> {
-    let body = read_response_text_limited(response, max_json_response_bytes)
-        .await
-        .map_err(|err| worker::Error::RustError(err.message("relay response body")))?;
-    if !body.trim().is_empty() {
-        serde_json::from_str::<Value>(&body).map_err(|err| {
-            worker::Error::RustError(format!("invalid relay response JSON: {err}"))
-        })?;
-    }
-    let usage = usage_summary_for_provider(&body, provider, endpoint_path, channel_type);
-    // Rerank carries its own usage. Native Gemini needs the same prompt fallback
-    // as Go, but extracts completion text from Gemini candidates.
+) -> (UsageSummary, bool) {
     let estimate_applicable = estimate_enabled
         && matches!(
             provider,
@@ -10260,10 +10261,10 @@ async fn response_usage_summary(
                 | RelayProviderKind::GeminiNative
         )
         && endpoint_path != "rerank";
-    let (usage, locally_estimated) = if provider == RelayProviderKind::GeminiNative {
+    if provider == RelayProviderKind::GeminiNative {
         resolve_native_provider_usage(
             usage,
-            &gemini_response_completion_text(&body),
+            &gemini_response_completion_text(body),
             model,
             estimated_prompt_tokens,
             estimate_applicable,
@@ -10273,71 +10274,12 @@ async fn response_usage_summary(
     } else {
         resolve_non_stream_usage(
             usage,
-            &body,
+            body,
             model,
             estimated_prompt_tokens,
             estimate_applicable,
         )
-    };
-    if locally_estimated {
-        worker::console_log!(
-            "relay usage missing; locally estimated non-stream usage for {} (prompt={}, completion={})",
-            model,
-            usage.prompt_tokens,
-            usage.completion_tokens
-        );
     }
-    Ok((usage, locally_estimated))
-}
-
-fn usage_summary_for_provider(
-    body: &str,
-    provider: RelayProviderKind,
-    endpoint_path: &str,
-    channel_type: i32,
-) -> UsageSummary {
-    let cache_policy = usage_cache_field_policy(provider, channel_type);
-    let mut usage = match provider {
-        RelayProviderKind::AliOpenAi if endpoint_path == "rerank" => {
-            usage_summary_from_rerank_body(body)
-        }
-        RelayProviderKind::AliOpenAi => {
-            usage_summary_from_body_with_cache_policy(body, cache_policy)
-        }
-        RelayProviderKind::AliMessages => usage_summary_from_anthropic_body(body),
-        RelayProviderKind::OpenAiCompatible if endpoint_path == "rerank" => {
-            usage_summary_from_rerank_body(body)
-        }
-        RelayProviderKind::MoonshotOpenAi if endpoint_path == "rerank" => {
-            usage_summary_from_rerank_body(body)
-        }
-        RelayProviderKind::MoonshotOpenAi => usage_summary_from_moonshot_body(body),
-        RelayProviderKind::BaiduV2OpenAi
-        | RelayProviderKind::OpenAiCompatible
-        | RelayProviderKind::DeepSeekOpenAi
-        | RelayProviderKind::MistralOpenAi
-        | RelayProviderKind::PerplexityOpenAi
-        | RelayProviderKind::SiliconFlowOpenAi
-        | RelayProviderKind::SubmodelOpenAi
-        | RelayProviderKind::TencentHunyuan
-        | RelayProviderKind::XaiOpenAi
-        | RelayProviderKind::VolcEngineOpenAi => {
-            usage_summary_from_body_with_cache_policy(body, cache_policy)
-        }
-        RelayProviderKind::AnthropicMessages
-        | RelayProviderKind::DeepSeekMessages
-        | RelayProviderKind::MoonshotMessages => usage_summary_from_anthropic_body(body),
-        RelayProviderKind::GeminiNative => usage_summary_from_gemini_body(body),
-    };
-    if usage.cached_tokens <= 0 && channel_type == CHANNEL_TYPE_OPENAI {
-        usage.cached_tokens = serde_json::from_str::<Value>(body)
-            .ok()
-            .and_then(|value| value.pointer("/timings/cache_n").and_then(Value::as_i64))
-            .map(clamp_i64_to_i32)
-            .unwrap_or_default()
-            .max(0);
-    }
-    usage
 }
 
 fn usage_cache_field_policy(
@@ -10959,6 +10901,9 @@ struct RelayAuditContext {
     /// This is populated by the cloned stream branch and never contains the
     /// reservation key or account identity.
     stream_lease_heartbeat: Option<RelayBillingStreamLeaseHeartbeatAudit>,
+    /// Internal Durable Object key used only to record a preferred channel
+    /// after final response interpretation. It is never serialized to audit.
+    affinity_key: Option<String>,
     /// Fixed-rule channel affinity diagnostics for usage-log UI and upstream
     /// cache-hit stats. `None` when affinity is disabled or unavailable.
     affinity: Option<affinity::AffinityAuditContext>,
@@ -11907,6 +11852,18 @@ async fn record_relay_audit(
         upstream_request_id: upstream_request_id.unwrap_or(empty),
         other: &other_json,
     };
+
+    if should_record_relay_affinity(upstream_status) {
+        if let Some(key) = audit.affinity_key.as_deref() {
+            affinity::record_preferred_channel(
+                env,
+                key,
+                channel.id,
+                affinity::AFFINITY_TTL_SECONDS,
+            )
+            .await;
+        }
+    }
 
     let action = if is_stream { "streamed" } else { "forwarded" };
     let content = if billing_applied {
@@ -15297,6 +15254,235 @@ mod tests {
     use super::*;
     use cinatoken_billing::compute_flat_quota;
     use serde_json::json;
+
+    #[test]
+    fn provider_response_profiles_preserve_existing_usage_families() {
+        assert_eq!(
+            provider_response_profile(
+                RelayProviderKind::OpenAiCompatible,
+                "chat/completions",
+                CHANNEL_TYPE_ZHIPU_V4,
+            ),
+            ProviderResponseProfile::OpenAiCompatible(UsageCacheFieldPolicy::Zhipu)
+        );
+        assert_eq!(
+            provider_response_profile(
+                RelayProviderKind::DeepSeekOpenAi,
+                "chat/completions",
+                CHANNEL_TYPE_DEEPSEEK,
+            ),
+            ProviderResponseProfile::OpenAiCompatible(UsageCacheFieldPolicy::DeepSeek)
+        );
+        assert_eq!(
+            provider_response_profile(
+                RelayProviderKind::MoonshotOpenAi,
+                "chat/completions",
+                CHANNEL_TYPE_MOONSHOT,
+            ),
+            ProviderResponseProfile::Moonshot
+        );
+        assert_eq!(
+            provider_response_profile(
+                RelayProviderKind::AnthropicMessages,
+                "messages",
+                CHANNEL_TYPE_OPENAI,
+            ),
+            ProviderResponseProfile::Anthropic
+        );
+        assert_eq!(
+            provider_response_profile(
+                RelayProviderKind::GeminiNative,
+                "models/gemini:generateContent",
+                CHANNEL_TYPE_OPENAI,
+            ),
+            ProviderResponseProfile::Gemini
+        );
+        for provider in [
+            RelayProviderKind::AliOpenAi,
+            RelayProviderKind::OpenAiCompatible,
+            RelayProviderKind::MoonshotOpenAi,
+        ] {
+            assert_eq!(
+                provider_response_profile(provider, "rerank", CHANNEL_TYPE_OPENAI),
+                ProviderResponseProfile::Rerank
+            );
+        }
+    }
+
+    #[test]
+    fn normalized_provider_errors_preserve_client_status_and_envelope() {
+        let typed = interpret_buffered_provider_response(
+            ProviderResponseProfile::default(),
+            200,
+            br#"{"error":{"message":"slow down","type":"rate_limit_error","param":"model","code":429}}"#,
+        );
+        assert_eq!(typed.class(), ProviderResponseClass::TypedError);
+        assert_eq!(typed.audit_status(), 500);
+        assert_eq!(
+            normalized_provider_error_parts(&typed).unwrap(),
+            (
+                200,
+                json!({
+                    "error": {
+                        "message": "slow down",
+                        "type": "rate_limit_error",
+                        "param": "model",
+                        "code": 429,
+                    }
+                }),
+            )
+        );
+
+        let http_error = interpret_buffered_provider_response(
+            ProviderResponseProfile::default(),
+            503,
+            br#"{"msg":"try later"}"#,
+        );
+        assert_eq!(
+            normalized_provider_error_parts(&http_error).unwrap(),
+            (
+                503,
+                json!({
+                    "error": {
+                        "message": "try later",
+                        "type": "bad_response_status_code",
+                        "param": "",
+                        "code": "bad_response_status_code",
+                    }
+                }),
+            )
+        );
+
+        for body in [b"".as_slice(), b"[]".as_slice(), b"not-json".as_slice()] {
+            let invalid =
+                interpret_buffered_provider_response(ProviderResponseProfile::default(), 200, body);
+            let (status, envelope) = normalized_provider_error_parts(&invalid).unwrap();
+            assert_eq!(status, 500);
+            assert_eq!(envelope["error"]["type"], "bad_response_body");
+            assert_eq!(envelope["error"]["code"], "bad_response_body");
+        }
+    }
+
+    #[test]
+    fn buffered_usage_estimation_runs_after_interpreter_raw_usage() {
+        let openai_body =
+            r#"{"choices":[{"message":{"role":"assistant","content":"Hello world"}}]}"#;
+        let openai = interpret_buffered_provider_response(
+            ProviderResponseProfile::default(),
+            200,
+            openai_body.as_bytes(),
+        );
+        assert_eq!(openai.usage(), UsageSummary::default());
+        let (openai_usage, openai_estimated) = resolve_buffered_provider_usage(
+            openai.usage(),
+            openai_body,
+            RelayProviderKind::OpenAiCompatible,
+            "chat/completions",
+            "gpt-4o",
+            50,
+            true,
+        );
+        assert!(openai_estimated);
+        assert_eq!(openai_usage.prompt_tokens, 50);
+        assert!(openai_usage.completion_tokens > 0);
+        assert_eq!(
+            openai_usage.total_tokens,
+            openai_usage.prompt_tokens + openai_usage.completion_tokens
+        );
+
+        let gemini_body = r#"{"candidates":[{"content":{"parts":[{"text":"Hello world"}]}}]}"#;
+        let gemini = interpret_buffered_provider_response(
+            ProviderResponseProfile::Gemini,
+            200,
+            gemini_body.as_bytes(),
+        );
+        assert_eq!(gemini.usage(), UsageSummary::default());
+        let (gemini_usage, gemini_estimated) = resolve_buffered_provider_usage(
+            gemini.usage(),
+            gemini_body,
+            RelayProviderKind::GeminiNative,
+            "models/gemini:generateContent",
+            "gemini-2.5-pro",
+            20,
+            true,
+        );
+        assert!(gemini_estimated);
+        assert_eq!(gemini_usage.prompt_tokens, 20);
+        assert!(gemini_usage.completion_tokens > 0);
+        assert_eq!(
+            gemini_usage.total_tokens,
+            gemini_usage.prompt_tokens + gemini_usage.completion_tokens
+        );
+
+        let (disabled, disabled_estimated) = resolve_buffered_provider_usage(
+            UsageSummary::default(),
+            openai_body,
+            RelayProviderKind::OpenAiCompatible,
+            "chat/completions",
+            "gpt-4o",
+            50,
+            false,
+        );
+        assert!(!disabled_estimated);
+        assert_eq!(disabled, UsageSummary::default());
+    }
+
+    #[test]
+    fn typed_http_200_is_not_a_preferred_channel_success() {
+        let success = interpret_buffered_provider_response(
+            ProviderResponseProfile::default(),
+            200,
+            br#"{"id":"chatcmpl-1"}"#,
+        );
+        assert!(should_record_relay_affinity(success.audit_status()));
+
+        let typed = interpret_buffered_provider_response(
+            ProviderResponseProfile::default(),
+            200,
+            br#"{"error":{"message":"failed","type":"provider_error"}}"#,
+        );
+        assert_eq!(typed.client_status(), 200);
+        assert_eq!(typed.audit_status(), 500);
+        assert!(!should_record_relay_affinity(typed.audit_status()));
+
+        let unsupported_success = interpret_buffered_provider_response(
+            ProviderResponseProfile::default(),
+            201,
+            br#"{"id":"chatcmpl-1"}"#,
+        );
+        assert!(!should_record_relay_affinity(
+            unsupported_success.audit_status()
+        ));
+    }
+
+    #[test]
+    fn streaming_completion_requires_exact_http_200() {
+        assert!(should_complete_streaming_relay_response(true, 200));
+        assert!(!should_complete_streaming_relay_response(false, 200));
+        for status in [199, 201, 204, 206, 299, 300, 400, 500] {
+            assert!(!should_complete_streaming_relay_response(true, status));
+        }
+    }
+
+    #[test]
+    fn relay_success_header_filter_uses_shared_allowlist() {
+        for name in cinatoken_relay::PUBLIC_SUCCESS_RESPONSE_HEADERS {
+            assert!(relay_response_header_is_approved(
+                name,
+                ProviderResponseClass::Success
+            ));
+            assert!(!relay_response_header_is_approved(
+                name,
+                ProviderResponseClass::HttpError
+            ));
+        }
+        for name in ["set-cookie", "server", "cf-ray", "x-provider-secret"] {
+            assert!(!relay_response_header_is_approved(
+                name,
+                ProviderResponseClass::Success
+            ));
+        }
+    }
 
     #[test]
     fn admin_probe_endpoint_mapping_is_strict_and_complete() {

@@ -1996,3 +1996,22 @@ cross-layer provenance, remote load/cost/alerts, and mixed-version deployment.
 The next implementation packet must also close Go-parity HTTP 200/non-200 and
 stream-interruption response interpretation before canary promotion. Production
 remains **NO-GO**.
+
+## 2026-07-18 Response Interpretation Execution Addendum
+
+This addendum is governed by `docs/response-interpreter-production-plan.md` and
+pins Go commit `73652508abc5cb09214dde02d51d69d1d1ccc703` plus Rust contract
+`go-openai-response-v1`.
+
+| Step | Required action | Exit evidence | Abort condition |
+| --- | --- | --- | --- |
+| R0 source freeze | Regenerate the clean-commit Go corpus and verify source/template/script/manifest hashes | Exact immutable case count and Rust replay | source, case, or digest drift |
+| R1 shared adapters | Route bounded Worker and Container egress responses through one pure ABI | Exact 200, typed-200, non-200, malformed, headers, usage, and stream-fault tests | caller-specific semantic fork |
+| R2 evidence readers | Add migration 0052 readers and protocol-v3 parsers while writers remain false | Local/remote schema and mixed-version readback | old artifact can receive new state |
+| R3 dual writers | Persist create-only raw provider evidence, then interpreted client artifact | R2/D1/DO exact replay and orphan inventory | overwrite, digest mismatch, or evidence conflation |
+| R4 terminal owner | Bind success receipt or interpreted reject to one financial terminal decision | duplicate/lost-response/fault convergence | second provider or quota mutation |
+| R5 isolated staging | Run real Container, N/N-1, faults, load/cost/SLO/alerts, and rollback | signed evidence bundle and zero unexplained divergence | customer traffic or missing rollback proof |
+
+R0-R1 are local semantic work only. R2-R5 remain required before any canary.
+All response-artifact, execution, provider-egress, scheduler, and traffic gates
+stay false until their named step exits.

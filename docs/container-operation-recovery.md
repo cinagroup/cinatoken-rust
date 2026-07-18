@@ -966,6 +966,14 @@ headers, and the interpreter must apply the same success/error and usage rules
 before creating the client artifact. Raw-body replay is useful integrity
 evidence but is not source-equivalent behavior.
 
+The production contract is now frozen in
+`docs/response-interpreter-production-plan.md`. It keeps migration 0048 receipt
+v1 immutable and reserves response-artifact migration 0052 for separate raw
+provider evidence and interpreted client artifacts. Exact success bodies may be
+byte-identical, but their records and object namespaces remain separate. Error
+terminalization requires protocol v3 and cannot reuse a successful result or
+usage receipt.
+
 All of these paths remain default-off. No remote schema, deployment, secret,
 provider, financial, or traffic operation is authorized; production is
 **NO-GO**.

@@ -15959,3 +15959,43 @@ arrive with HTTP 200, and interrupted streams may still settle already observed
 usage. One shared response/error/usage interpreter must serve Worker and
 Container paths before any canary. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-18 Response Interpreter Production Contract
+
+The Go authority is now pinned to clean source commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703`. The Rust contract name is
+`go-openai-response-v1`. The transport-neutral implementation belongs in
+`crates/relay` and returns upstream/client/audit status, response class,
+normalized OpenAI error, usage, parsed JSON, and raw body SHA-256. It contains
+no Worker, Hyper, D1, R2, Durable Object, or billing type.
+
+The frozen success/error boundary is exact: only HTTP 200 with a JSON object and
+no typed top-level error is ordinary success. A typed error carried by HTTP 200
+retains client status 200 but cannot enter success billing. Malformed, empty,
+scalar, or array HTTP-200 JSON is `bad_response_body` at client/audit status
+500. Every non-200 retains its status, uses the Go-compatible error-message
+precedence, contributes no usage, and inherits no provider headers. Successful
+responses may expose only `content-type`, `content-language`, `retry-after`,
+`x-request-id`, `request-id`, and `openai-request-id`.
+
+Receipt v1 and migration 0048 remain frozen. They cannot safely represent
+non-200 evidence, HTTP-200 typed errors, or rebuilt client envelopes because a
+successful result and usage receipt are structurally coupled. The next durable
+packet therefore reserves D1 migration 0052 for two append-only records: raw
+provider-response evidence and a separately hashed interpreted client artifact.
+The earlier Durable Alarm Intent v1 correctly required no 0052; the response
+artifact schema is a new ownership boundary.
+
+Implementation is split into five conjunctive packets:
+
+1. shared semantics, Worker/egress adapters, exact header policy, and a
+   source-pinned differential corpus;
+2. migration 0052 plus create-only raw/client R2 namespaces and reconciliation;
+3. egress/Controller/DO/runtime protocol v3 with separate provider/client status;
+4. interpreted-reject and success-receipt financial terminal ownership; and
+5. isolated staging, N/N-1 or blue/green, fault/load/cost/SLO, rollback, and
+   signed approval evidence.
+
+The full schema, protocol, corpus, promotion, and rollback contract is in
+`docs/response-interpreter-production-plan.md`. Finishing packet 1 does not
+close packets 2-5 and does not permit canary activation.

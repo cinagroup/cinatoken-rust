@@ -210,23 +210,29 @@ bidirectional sync, pending work, and rollback bundle. `fail`, `unknown`, or
 1. Confirm go/no-go from every role.
 2. Capture final Go/VPS source backup/export for selected scope.
 3. With compatible P3/P4 readers deployed and every action gate false, prove
-   the pre-0052 writer/operation drain, then apply ordered 0052 and 0053 for the
-   selected scope.
-4. Read back the exact 0053/53, 57-table, 674-column, 81-index baseline; verify
-   unchanged business fingerprints, direct old-writer negatives, and zero
-   provider or financial delta before any canary admission.
-5. Confirm billing shadow/apply mode and abort thresholds.
-6. Warm caches for selected token/channel/model groups where applicable.
-7. Upload Worker version without sending customer traffic, if using Cloudflare
+   the pre-0052 writer/operation drain, then apply ordered 0052, 0053, and
+   default-off 0054 for the selected scope.
+4. Read back the exact 0054/54, 58-table, 694-column, 83-index baseline; verify
+   unchanged business fingerprints, direct old-writer negatives, an empty
+   activation ledger, and zero provider or financial delta before any canary
+   admission.
+5. Confirm the staging P5 packet used a sealed same-version one-time activation
+   campaign, explicit all-page Cloudflare inventory, and the actual signed
+   `evidence/foundation-capture.json`. A static-gate version toggle or digest-
+   only claim is not acceptable evidence.
+6. Confirm billing shadow/apply mode and abort thresholds.
+7. Warm caches for selected token/channel/model groups where applicable.
+8. Upload Worker version without sending customer traffic, if using Cloudflare
    version deployments.
-8. Run production smoke against internal tokens.
-9. Start canary.
-10. Watch logs/traces/metrics continuously during the observation window.
-11. Record every promotion decision with timestamp, metrics, and approver.
+9. Run production smoke against internal tokens.
+10. Start canary.
+11. Watch logs/traces/metrics continuously during the observation window.
+12. Record every promotion decision with timestamp, metrics, and approver.
 
-Rollback keeps migration 0053, protocol-v3 response readers, financial-terminal
-v2/ACK-v3 readers, both response-artifact namespaces, and immutable evidence
-until every accepted operation is completed or quarantined.
+Rollback keeps migrations 0053 and 0054, protocol-v3 response readers,
+financial-terminal-v2/ACK-v3 readers, the activation rows, both
+response-artifact namespaces, and immutable evidence until every accepted
+operation is completed or quarantined.
 
 ## Cloudflare Worker Version Canary
 

@@ -102,10 +102,15 @@ import {
   type LegacyOperationRecoverySchedule,
   type RelayShardAlarmIntentV1,
 } from "./relay_shard_durable_state";
+import {
+  SHARD_ACTIVATION_WRITE_ENABLED_ENV,
+  recordShardActivation,
+} from "./shard_activation";
 
 export { ContainerProxy };
 
 interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
+  ENVIRONMENT: string;
   CONTAINER_CONTROLLER_ENABLED: string;
   CONTAINER_EXECUTION_ENABLED: string;
   CONTAINER_READINESS_PROBE_ENABLED: string;
@@ -127,6 +132,8 @@ interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
   CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED: string;
   CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED: string;
   CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED: string;
+  CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED: string;
+  CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID: string;
   CONTAINER_MAX_PROVIDER_ATTEMPTS: string;
   CONTAINER_MAX_IN_FLIGHT_PER_SHARD: string;
   CONTAINER_TERMINAL_RETENTION_SECONDS: string;
@@ -172,6 +179,7 @@ interface RuntimeReadinessSnapshot {
   execution_ready: boolean;
   protocol_version: number;
   shard_contract_version: number;
+  runtime_build_id: string | null;
   execution_enabled: boolean;
 }
 
@@ -786,6 +794,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           execution_ready: executionReady,
           protocol_version: readiness.protocol_version,
           shard_contract_version: readiness.shard_contract_version,
+          runtime_build_id: readiness.runtime_build_id,
           execution_enabled: readiness.execution_enabled,
         };
         resultCode = !processReady
@@ -1081,6 +1090,72 @@ async function handleTerminalAckV3Request(
   }
 }
 
+async function persistShardActivationIfEnabled(
+  env: ControllerEnv,
+  result: ShardReadinessResult,
+): Promise<void> {
+  if (
+    env[SHARD_ACTIVATION_WRITE_ENABLED_ENV] !== "true"
+  ) {
+    return;
+  }
+  const expectedRuntimeBuildId =
+    env.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID;
+  if (!/^[0-9a-f]{64}$/.test(expectedRuntimeBuildId)) {
+    throw new ProtocolError("shard_activation_candidate_unconfigured", 503);
+  }
+  if (
+    result.mode !== "live" ||
+    result.wake_requested !== true ||
+    result.container_state?.status !== "healthy" ||
+    result.runtime?.process_ready !== true ||
+    result.runtime.runtime_build_id === null ||
+    ![
+      "process_ready_execution_disabled",
+      "execution_ready",
+    ].includes(result.result_code)
+  ) {
+    return;
+  }
+  if (result.runtime.runtime_build_id !== expectedRuntimeBuildId) {
+    throw new ProtocolError("shard_activation_runtime_build_mismatch", 409);
+  }
+  if (env.ENVIRONMENT !== "staging" && env.ENVIRONMENT !== "production") {
+    throw new ProtocolError("shard_activation_environment_invalid", 503);
+  }
+  const probeGeneration = result.ledger.readiness.generation;
+  if (!Number.isSafeInteger(probeGeneration) || probeGeneration < 1) {
+    throw new ProtocolError("shard_activation_probe_invalid", 502);
+  }
+  const outcome = await recordShardActivation(env.DB, {
+    controllerVersionId: env.CF_VERSION_METADATA.id,
+    shard: result.shard,
+    runtimeProtocolVersion: result.runtime.protocol_version,
+    runtimeContractVersion: result.runtime.shard_contract_version,
+    runtimeBuildId: result.runtime.runtime_build_id,
+    activationGeneration: 1,
+    activationProbeGeneration: probeGeneration,
+    environment: env.ENVIRONMENT,
+    containerStatus: "healthy",
+    readinessResultCode: result.result_code as
+      | "process_ready_execution_disabled"
+      | "execution_ready",
+    processReady: true,
+    runtimeExecutionEnabled: result.runtime.execution_enabled,
+    controllerExecutionEnabled: env.CONTAINER_EXECUTION_ENABLED === "true",
+    activatedAt: result.checked_at,
+  });
+  console.log(
+    JSON.stringify({
+      event: "relay_container_shard_activation",
+      outcome,
+      controller_version_id: env.CF_VERSION_METADATA.id,
+      ring_generation: result.shard.ring_generation,
+      shard_index: result.shard.shard_index,
+    }),
+  );
+}
+
 const handler: ExportedHandler<ControllerEnv> = {
   async fetch(request, env): Promise<Response> {
     try {
@@ -1115,6 +1190,13 @@ const handler: ExportedHandler<ControllerEnv> = {
             protocol_version: Number(env.CONTAINER_PROTOCOL_VERSION),
             ring_generation: Number(env.CONTAINER_RING_GENERATION),
             shard_count: Number(env.CONTAINER_SHARD_COUNT),
+            controller_version_id: env.CF_VERSION_METADATA.id,
+            shard_activation_write_enabled:
+              env[SHARD_ACTIVATION_WRITE_ENABLED_ENV] === "true",
+            shard_activation_candidate_build_configured:
+              /^[0-9a-f]{64}$/.test(
+                env.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID,
+              ),
             authority_current_secret_configured: authoritySecretConfigured(
               env.CONTAINER_AUTHORITY_CURRENT_SECRET,
             ),
@@ -1145,6 +1227,7 @@ const handler: ExportedHandler<ControllerEnv> = {
           verified.claims.dispatch_id,
         );
         if (!outcome.ok) return jsonError(outcome.error.code, outcome.error.status);
+        await persistShardActivationIfEnabled(env, outcome.result);
         return new Response(
           JSON.stringify({
             protocol_version: verified.probe.protocol_version,
@@ -1769,6 +1852,7 @@ function validateRuntimeReadinessResponse(
 ): {
   protocol_version: number;
   shard_contract_version: number;
+  runtime_build_id: string | null;
   execution_enabled: boolean;
 } {
   const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
@@ -1785,13 +1869,26 @@ function validateRuntimeReadinessResponse(
     throw new ProtocolError("invalid_container_readiness", 502);
   }
   const record = value as Record<string, unknown>;
-  const expectedKeys = ["status", "protocol_version", "shard_contract_version", "execution_enabled"];
+  const legacyKeys = [
+    "status",
+    "protocol_version",
+    "shard_contract_version",
+    "execution_enabled",
+  ];
+  const candidateKeys = [...legacyKeys, "runtime_build_id"];
+  const keys = Object.keys(record);
+  const exactLegacy =
+    keys.length === legacyKeys.length && legacyKeys.every((key) => key in record);
+  const exactCandidate =
+    keys.length === candidateKeys.length && candidateKeys.every((key) => key in record);
   if (
-    Object.keys(record).length !== expectedKeys.length ||
-    expectedKeys.some((key) => !(key in record)) ||
+    (!exactLegacy && !exactCandidate) ||
     record.status !== "ready" ||
     record.protocol_version !== 1 ||
     record.shard_contract_version !== 1 ||
+    (exactCandidate &&
+      (typeof record.runtime_build_id !== "string" ||
+        !/^[0-9a-f]{64}$/.test(record.runtime_build_id))) ||
     typeof record.execution_enabled !== "boolean"
   ) {
     throw new ProtocolError("invalid_container_readiness", 502);
@@ -1799,6 +1896,7 @@ function validateRuntimeReadinessResponse(
   return {
     protocol_version: record.protocol_version,
     shard_contract_version: record.shard_contract_version,
+    runtime_build_id: exactCandidate ? (record.runtime_build_id as string) : null,
     execution_enabled: record.execution_enabled,
   };
 }

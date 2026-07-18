@@ -47,6 +47,11 @@ const providerEgressTargets = {
   "wrangler.staging.jsonc": "cinatoken-container-egress-staging",
   "wrangler.production.jsonc": "cinatoken-container-egress-production",
 };
+const controllerEnvironments = {
+  "wrangler.jsonc": "local",
+  "wrangler.staging.jsonc": "staging",
+  "wrangler.production.jsonc": "production",
+};
 const rootEnvironmentForControllerConfig = {
   "wrangler.jsonc": rootConfig,
   "wrangler.staging.jsonc": rootConfig.env.staging,
@@ -62,6 +67,8 @@ describe("isolated container controller configuration", () => {
       expect(config.workers_dev).toBe(false);
       expect(config.preview_urls).toBe(false);
       expect(config.routes).toBeUndefined();
+      expect(config.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
+      expect(config.vars.ENVIRONMENT).toBe(controllerEnvironments[file]);
       expect(config.vars.CONTAINER_CONTROLLER_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_EXECUTION_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_READINESS_PROBE_ENABLED).toBe("false");
@@ -85,6 +92,10 @@ describe("isolated container controller configuration", () => {
       expect(
         config.vars.CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED,
       ).toBe("false");
+      expect(config.vars.CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED).toBe("false");
+      expect(
+        config.vars.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID,
+      ).toBe("");
       expect(config.vars.CONTAINER_MAX_PROVIDER_ATTEMPTS).toBe("1");
       expect(Number(config.vars.CONTAINER_TERMINAL_RETENTION_SECONDS)).toBeGreaterThanOrEqual(600);
       expect(Number(config.vars.CONTAINER_MAX_TERMINAL_OPERATIONS)).toBeGreaterThan(0);

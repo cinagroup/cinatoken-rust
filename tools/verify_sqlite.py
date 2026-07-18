@@ -231,6 +231,7 @@ REQUIRED_TABLES = [
     "relay_billing_recovery_state",
     "relay_billing_finalization_incidents",
     "relay_container_operations",
+    "relay_container_shard_activations",
     "relay_container_atomic_admissions",
     "relay_container_idempotency_aliases",
     "relay_container_scheduled_terminalizations",
@@ -494,6 +495,28 @@ REQUIRED_COLUMNS = {
         "result_content_type",
         "created_at",
         "updated_at",
+    },
+    "relay_container_shard_activations": {
+        "activation_id",
+        "controller_version_id",
+        "ring_generation",
+        "shard_count",
+        "shard_index",
+        "instance_name",
+        "shard_contract_version",
+        "runtime_protocol_version",
+        "runtime_contract_version",
+        "runtime_build_id",
+        "activation_generation",
+        "activation_probe_generation",
+        "environment",
+        "container_status",
+        "readiness_result_code",
+        "process_ready",
+        "runtime_execution_enabled",
+        "controller_execution_enabled",
+        "activation_digest_sha256",
+        "activated_at",
     },
     "relay_container_atomic_admissions": {
         "reservation_key",
@@ -1066,6 +1089,10 @@ REQUIRED_INDEXES = {
         "idx_relay_container_operations_input_object_identity": False,
         "idx_relay_container_operations_result_object_identity": False,
     },
+    "relay_container_shard_activations": {
+        "idx_relay_container_shard_activations_identity": True,
+        "idx_relay_container_shard_activations_instance": True,
+    },
     "relay_container_atomic_admissions": {
         "idx_relay_container_atomic_admissions_created": False,
         "idx_relay_container_atomic_admissions_response_artifact_identity": True,
@@ -1198,6 +1225,7 @@ def main() -> int:
     relay_container_response_artifacts_rollout_verified = False
     relay_container_financial_terminal_v2_verified = False
     relay_container_financial_terminal_v2_rollout_verified = False
+    relay_container_shard_activation_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -1243,6 +1271,8 @@ def main() -> int:
         relay_container_response_artifacts_rollout_verified = True
         verify_relay_container_financial_terminal_v2_rollout(schema_paths)
         relay_container_financial_terminal_v2_rollout_verified = True
+        verify_relay_container_shard_activation_rollout(schema_paths)
+        relay_container_shard_activation_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -1441,6 +1471,8 @@ def main() -> int:
         message += " + 0053 P3-bound financial terminal v2 authority"
     if relay_container_financial_terminal_v2_rollout_verified:
         message += " + 0053 drained financial-terminal v2 rollout"
+    if relay_container_shard_activation_rollout_verified:
+        message += " + 0054 immutable shard activation ledger"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -12701,7 +12733,7 @@ def verify_relay_container_provider_usage_binding_rollout(
     binding_index = schema_paths.index(binding_path)
     if binding_index == 0 or schema_paths[binding_index - 1] != receipt_path:
         raise SystemExit("0049 provider usage binding must immediately follow 0048")
-    if binding_index != len(schema_paths) - 5 or schema_paths[binding_index + 1].name != (
+    if binding_index != len(schema_paths) - 6 or schema_paths[binding_index + 1].name != (
         "0050_relay_container_atomic_admission.sql"
     ):
         raise SystemExit("0049 provider usage binding must immediately precede 0050")
@@ -13065,12 +13097,12 @@ def verify_relay_container_scheduled_terminalization_rollout(
     )
     if response_artifact_path is None:
         raise SystemExit("0051/0052 relay Container response migrations not found")
-    if len(schema_paths) != 53:
+    if len(schema_paths) != 54:
         raise SystemExit(
-            f"0051 scheduled terminalization compatibility requires exactly 53 D1 migrations, got {len(schema_paths)}"
+            f"0051 scheduled terminalization compatibility requires exactly 54 D1 migrations, got {len(schema_paths)}"
         )
     scheduled_index = schema_paths.index(scheduled_path)
-    if scheduled_index != len(schema_paths) - 3:
+    if scheduled_index != len(schema_paths) - 4:
         raise SystemExit("0051 scheduled terminalization must immediately precede 0052")
     if scheduled_index == 0 or schema_paths[scheduled_index - 1] != atomic_path:
         raise SystemExit("0051 scheduled terminalization must immediately follow 0050")
@@ -13137,12 +13169,12 @@ def verify_relay_container_response_artifacts_rollout(
     )
     if response_path is None or scheduled_path is None:
         raise SystemExit("0051/0052 relay Container response-artifact migrations not found")
-    if len(schema_paths) != 53:
+    if len(schema_paths) != 54:
         raise SystemExit(
-            f"0052 response artifacts require exactly 53 D1 migrations, got {len(schema_paths)}"
+            f"0052 response artifacts require exactly 54 D1 migrations, got {len(schema_paths)}"
         )
     response_index = schema_paths.index(response_path)
-    if response_index != len(schema_paths) - 2:
+    if response_index != len(schema_paths) - 3:
         raise SystemExit("0052 response artifacts must immediately precede 0053")
     if response_index == 0 or schema_paths[response_index - 1] != scheduled_path:
         raise SystemExit("0052 response artifacts must immediately follow 0051")
@@ -13430,18 +13462,28 @@ def verify_relay_container_financial_terminal_v2_rollout(
         ),
         None,
     )
-    if v2_path is None or response_path is None:
-        raise SystemExit("0052/0053 relay Container terminal v2 migrations not found")
-    if len(schema_paths) != 53:
+    activation_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0054_relay_container_shard_activations.sql"
+        ),
+        None,
+    )
+    if v2_path is None or response_path is None or activation_path is None:
+        raise SystemExit("0052/0053/0054 relay Container migrations not found")
+    if len(schema_paths) != 54:
         raise SystemExit(
-            "0053 financial terminal v2 requires exactly 53 D1 migrations, "
+            "0053 financial terminal v2 requires exactly 54 D1 migrations, "
             f"got {len(schema_paths)}"
         )
     v2_index = schema_paths.index(v2_path)
-    if v2_index != len(schema_paths) - 1:
-        raise SystemExit("0053 financial terminal v2 must be the D1 migration head")
+    if v2_index != len(schema_paths) - 2:
+        raise SystemExit("0053 financial terminal v2 must immediately precede 0054")
     if v2_index == 0 or schema_paths[v2_index - 1] != response_path:
         raise SystemExit("0053 financial terminal v2 must immediately follow 0052")
+    if schema_paths[v2_index + 1] != activation_path:
+        raise SystemExit("0053 financial terminal v2 must immediately precede 0054")
 
     v2_sql = v2_path.read_text(encoding="utf-8")
     if "if not exists" in v2_sql.lower():
@@ -13827,6 +13869,428 @@ def verify_relay_container_financial_terminal_v2_rollout(
     schema_conn.close()
 
 
+def verify_relay_container_shard_activation_rollout(
+    schema_paths: list[Path],
+) -> None:
+    activation_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0054_relay_container_shard_activations.sql"
+        ),
+        None,
+    )
+    v2_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0053_relay_container_financial_terminal_v2.sql"
+        ),
+        None,
+    )
+    if activation_path is None or v2_path is None:
+        raise SystemExit("0053/0054 relay Container activation migrations not found")
+    if len(schema_paths) != 54:
+        raise SystemExit(
+            "0054 shard activations require exactly 54 D1 migrations, "
+            f"got {len(schema_paths)}"
+        )
+    activation_index = schema_paths.index(activation_path)
+    if activation_index != len(schema_paths) - 1:
+        raise SystemExit("0054 shard activations must be the D1 migration head")
+    if activation_index == 0 or schema_paths[activation_index - 1] != v2_path:
+        raise SystemExit("0054 shard activations must immediately follow 0053")
+
+    activation_sql = activation_path.read_text(encoding="utf-8")
+    if "if not exists" in activation_sql.lower():
+        raise SystemExit("0054 critical activation objects must fail duplicate DDL")
+
+    def normalized_migration_sql(sql: str) -> str:
+        uncommented = []
+        for line in sql.splitlines():
+            content = line.split("--", 1)[0].strip()
+            if content:
+                uncommented.append(content)
+        return " ".join(" ".join(uncommented).split())
+
+    statements: list[str] = []
+    pending = ""
+    for line in activation_sql.splitlines():
+        content = line.split("--", 1)[0].strip()
+        if not content:
+            continue
+        pending = f"{pending}\n{content}".strip()
+        if sqlite3.complete_statement(pending):
+            statements.append(pending)
+            pending = ""
+    if pending:
+        raise SystemExit("0054 migration has an incomplete SQL statement")
+    if len(statements) != 5:
+        raise SystemExit(
+            f"0054 migration must contain exactly 5 statements, got {len(statements)}"
+        )
+    normalized_statements = [
+        normalized_migration_sql(statement).upper() for statement in statements
+    ]
+    expected_statement_prefixes = (
+        "CREATE TABLE RELAY_CONTAINER_SHARD_ACTIVATIONS",
+        "CREATE UNIQUE INDEX IDX_RELAY_CONTAINER_SHARD_ACTIVATIONS_IDENTITY",
+        "CREATE UNIQUE INDEX IDX_RELAY_CONTAINER_SHARD_ACTIVATIONS_INSTANCE",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_UPDATE_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_DELETE_GUARD",
+    )
+    for statement, expected_prefix in zip(
+        normalized_statements, expected_statement_prefixes, strict=True
+    ):
+        if not statement.startswith(expected_prefix):
+            raise SystemExit(
+                "0054 migration contains an unexpected statement: "
+                f"{statement[:100]}"
+            )
+
+    normalized_activation_sql = normalized_migration_sql(activation_sql)
+    required_fragments = (
+        "activation_id INTEGER PRIMARY KEY",
+        "typeof(controller_version_id) = 'text'",
+        "length(controller_version_id) BETWEEN 1 AND 128",
+        "substr(controller_version_id, 1, 1) GLOB '[A-Za-z0-9]'",
+        "controller_version_id NOT GLOB '*[^A-Za-z0-9._:-]*'",
+        "typeof(ring_generation) = 'integer'",
+        "ring_generation BETWEEN 1 AND 1000000",
+        "typeof(shard_count) = 'integer'",
+        "shard_count BETWEEN 1 AND 1024",
+        "typeof(shard_index) = 'integer'",
+        "shard_index BETWEEN 0 AND shard_count - 1",
+        "instance_name = printf('cinatoken-relay-shard-v1-%04d', shard_index)",
+        "shard_contract_version BETWEEN 1 AND 1000000",
+        "runtime_protocol_version BETWEEN 1 AND 1000000",
+        "runtime_contract_version BETWEEN 1 AND 1000000",
+        "length(runtime_build_id) = 64",
+        "runtime_build_id NOT GLOB '*[^0-9a-f]*'",
+        "activation_generation BETWEEN 1 AND 1000000",
+        "activation_probe_generation BETWEEN 1 AND 1000000",
+        "environment IN ('staging', 'production')",
+        "container_status = 'healthy'",
+        "readiness_result_code IN ('process_ready_execution_disabled', 'execution_ready')",
+        "process_ready = 1",
+        "runtime_execution_enabled IN (0, 1)",
+        "controller_execution_enabled IN (0, 1)",
+        "length(activation_digest_sha256) = 64",
+        "activation_digest_sha256 NOT GLOB '*[^0-9a-f]*'",
+        "typeof(activated_at) = 'integer' AND activated_at > 0",
+        "readiness_result_code = 'execution_ready' AND runtime_execution_enabled = 1 AND controller_execution_enabled = 1",
+        "readiness_result_code = 'process_ready_execution_disabled' AND (runtime_execution_enabled = 0 OR controller_execution_enabled = 0)",
+        "CREATE UNIQUE INDEX idx_relay_container_shard_activations_identity",
+        "CREATE UNIQUE INDEX idx_relay_container_shard_activations_instance",
+        "CREATE TRIGGER relay_container_shard_activation_update_guard",
+        "CREATE TRIGGER relay_container_shard_activation_delete_guard",
+        "RAISE(ABORT, 'relay container shard activation rows are immutable')",
+    )
+    for fragment in required_fragments:
+        if fragment not in normalized_activation_sql:
+            raise SystemExit(f"0054 shard activation rollout missing: {fragment}")
+
+    schema_conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        schema_conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    expected_columns = (
+        "activation_id",
+        "controller_version_id",
+        "ring_generation",
+        "shard_count",
+        "shard_index",
+        "instance_name",
+        "shard_contract_version",
+        "runtime_protocol_version",
+        "runtime_contract_version",
+        "runtime_build_id",
+        "activation_generation",
+        "activation_probe_generation",
+        "environment",
+        "container_status",
+        "readiness_result_code",
+        "process_ready",
+        "runtime_execution_enabled",
+        "controller_execution_enabled",
+        "activation_digest_sha256",
+        "activated_at",
+    )
+    column_rows = schema_conn.execute(
+        'PRAGMA table_info("relay_container_shard_activations")'
+    ).fetchall()
+    actual_columns = tuple(row[1] for row in column_rows)
+    if len(column_rows) != 20 or actual_columns != expected_columns:
+        raise SystemExit(
+            "0054 shard activation table must expose exactly 20 ordered columns: "
+            f"{actual_columns}"
+        )
+    integer_columns = {
+        "activation_id",
+        "ring_generation",
+        "shard_count",
+        "shard_index",
+        "shard_contract_version",
+        "runtime_protocol_version",
+        "runtime_contract_version",
+        "activation_generation",
+        "activation_probe_generation",
+        "process_ready",
+        "runtime_execution_enabled",
+        "controller_execution_enabled",
+        "activated_at",
+    }
+    for row in column_rows:
+        column = row[1]
+        expected_type = "INTEGER" if column in integer_columns else "TEXT"
+        expected_not_null = column != "activation_id"
+        expected_primary_key = column == "activation_id"
+        actual_shape = (row[2].upper(), bool(row[3]), row[4], bool(row[5]))
+        expected_shape = (
+            expected_type,
+            expected_not_null,
+            None,
+            expected_primary_key,
+        )
+        if actual_shape != expected_shape:
+            raise SystemExit(
+                f"0054 shard activation column differs for {column}: "
+                f"actual={actual_shape}, expected={expected_shape}"
+            )
+
+    expected_indexes = {
+        "idx_relay_container_shard_activations_identity": (
+            "controller_version_id",
+            "runtime_build_id",
+            "ring_generation",
+            "shard_index",
+        ),
+        "idx_relay_container_shard_activations_instance": (
+            "controller_version_id",
+            "runtime_build_id",
+            "ring_generation",
+            "instance_name",
+        ),
+    }
+    index_rows = schema_conn.execute(
+        'PRAGMA index_list("relay_container_shard_activations")'
+    ).fetchall()
+    actual_index_names = {row[1] for row in index_rows}
+    if actual_index_names != set(expected_indexes):
+        raise SystemExit(
+            "0054 shard activation indexes differ: "
+            f"actual={sorted(actual_index_names)}, expected={sorted(expected_indexes)}"
+        )
+    for row in index_rows:
+        index_name = row[1]
+        if not bool(row[2]) or row[3] != "c" or bool(row[4]):
+            raise SystemExit(f"0054 shard activation index is not unique: {row}")
+        index_columns = tuple(
+            info[2]
+            for info in schema_conn.execute(
+                f'PRAGMA index_info("{index_name}")'
+            ).fetchall()
+        )
+        if index_columns != expected_indexes[index_name]:
+            raise SystemExit(
+                f"0054 shard activation index differs for {index_name}: "
+                f"{index_columns}"
+            )
+
+    expected_triggers = {
+        "relay_container_shard_activation_update_guard": "UPDATE",
+        "relay_container_shard_activation_delete_guard": "DELETE",
+    }
+    trigger_rows = schema_conn.execute(
+        "SELECT name, sql FROM sqlite_master "
+        "WHERE type = 'trigger' AND tbl_name = 'relay_container_shard_activations'"
+    ).fetchall()
+    actual_triggers = {row[0]: row[1] for row in trigger_rows}
+    if set(actual_triggers) != set(expected_triggers):
+        raise SystemExit(
+            "0054 shard activation triggers differ: "
+            f"actual={sorted(actual_triggers)}, expected={sorted(expected_triggers)}"
+        )
+    for trigger_name, operation in expected_triggers.items():
+        trigger_sql = normalized_migration_sql(actual_triggers[trigger_name] or "")
+        for fragment in (
+            f"BEFORE {operation} ON relay_container_shard_activations",
+            "FOR EACH ROW",
+            "RAISE(ABORT, 'relay container shard activation rows are immutable')",
+        ):
+            if fragment not in trigger_sql:
+                raise SystemExit(f"0054 trigger {trigger_name} missing: {fragment}")
+
+    insert_sql = f"""
+        INSERT INTO relay_container_shard_activations (
+          {", ".join(expected_columns)}
+        ) VALUES (
+          {", ".join(f":{column}" for column in expected_columns)}
+        )
+    """
+
+    def insert_activation(
+        target: sqlite3.Connection,
+        **overrides: object,
+    ) -> None:
+        values: dict[str, object] = {
+            "activation_id": 1,
+            "controller_version_id": "controller-v54",
+            "ring_generation": 7,
+            "shard_count": 8,
+            "shard_index": 3,
+            "instance_name": "cinatoken-relay-shard-v1-0003",
+            "shard_contract_version": 1,
+            "runtime_protocol_version": 1,
+            "runtime_contract_version": 1,
+            "runtime_build_id": "a" * 64,
+            "activation_generation": 9,
+            "activation_probe_generation": 10,
+            "environment": "staging",
+            "container_status": "healthy",
+            "readiness_result_code": "execution_ready",
+            "process_ready": 1,
+            "runtime_execution_enabled": 1,
+            "controller_execution_enabled": 1,
+            "activation_digest_sha256": "b" * 64,
+            "activated_at": 1_700_000_054,
+        }
+        values.update(overrides)
+        target.execute(insert_sql, values)
+
+    insert_activation(schema_conn)
+    constraint_negative_cases = (
+        ("empty controller version", {"controller_version_id": ""}),
+        ("oversized controller version", {"controller_version_id": "a" * 129}),
+        ("invalid controller version characters", {"controller_version_id": "bad/version"}),
+        ("invalid controller version prefix", {"controller_version_id": "-controller"}),
+        ("non-integer ring generation", {"ring_generation": "not-an-integer"}),
+        ("zero ring generation", {"ring_generation": 0}),
+        ("oversized ring generation", {"ring_generation": 1_000_001}),
+        ("zero shard count", {"shard_count": 0}),
+        ("oversized shard count", {"shard_count": 1025}),
+        ("negative shard index", {"shard_index": -1}),
+        ("out-of-ring shard index", {"shard_index": 8}),
+        ("non-integer shard index", {"shard_index": "not-an-integer"}),
+        ("mismatched instance name", {"instance_name": "cinatoken-relay-shard-v1-0004"}),
+        ("zero shard contract version", {"shard_contract_version": 0}),
+        ("oversized runtime protocol version", {"runtime_protocol_version": 1_000_001}),
+        ("non-integer runtime contract version", {"runtime_contract_version": "v1"}),
+        ("short runtime build id", {"runtime_build_id": "a" * 63}),
+        ("non-lowercase runtime build id", {"runtime_build_id": "A" * 64}),
+        ("zero activation generation", {"activation_generation": 0}),
+        ("oversized activation probe generation", {"activation_probe_generation": 1_000_001}),
+        ("unknown environment", {"environment": "development"}),
+        ("unhealthy container", {"container_status": "starting"}),
+        ("unknown readiness result", {"readiness_result_code": "unknown"}),
+        ("process not ready", {"process_ready": 0}),
+        ("invalid runtime execution flag", {"runtime_execution_enabled": 2}),
+        ("invalid controller execution flag", {"controller_execution_enabled": -1}),
+        (
+            "execution-ready runtime disagreement",
+            {"runtime_execution_enabled": 0},
+        ),
+        (
+            "execution-disabled controller disagreement",
+            {"readiness_result_code": "process_ready_execution_disabled"},
+        ),
+        ("short activation digest", {"activation_digest_sha256": "b" * 63}),
+        ("non-lowercase activation digest", {"activation_digest_sha256": "B" * 64}),
+        ("zero activation timestamp", {"activated_at": 0}),
+        ("non-integer activation timestamp", {"activated_at": "not-an-integer"}),
+    )
+    for context, changes in constraint_negative_cases:
+        candidate = {"activation_id": 2, **changes}
+        expect_integrity_error(
+            lambda candidate=candidate: insert_activation(schema_conn, **candidate),
+            f"0054 allowed {context}",
+            "CHECK constraint failed",
+        )
+    expect_integrity_error(
+        lambda: insert_activation(schema_conn, activation_id=2, runtime_build_id=None),
+        "0054 allowed a NULL required value",
+        "NOT NULL constraint failed",
+    )
+
+    insert_activation(
+        schema_conn,
+        activation_id=2,
+        controller_version_id="controller-v54-disabled",
+        readiness_result_code="process_ready_execution_disabled",
+        runtime_execution_enabled=0,
+    )
+    if schema_conn.execute(
+        "SELECT COUNT(*) FROM relay_container_shard_activations"
+    ).fetchone() != (2,):
+        raise SystemExit("0054 valid activation readiness states did not persist")
+
+    index_negative_cases = (
+        (
+            "idx_relay_container_shard_activations_identity",
+            "idx_relay_container_shard_activations_instance",
+            "relay_container_shard_activations.shard_index",
+        ),
+        (
+            "idx_relay_container_shard_activations_instance",
+            "idx_relay_container_shard_activations_identity",
+            "relay_container_shard_activations.instance_name",
+        ),
+    )
+    for enforced_index, dropped_index, error_fragment in index_negative_cases:
+        index_conn = sqlite3.connect(":memory:")
+        try:
+            index_conn.executescript(activation_sql)
+            index_conn.execute(f'DROP INDEX "{dropped_index}"')
+            insert_activation(index_conn)
+            expect_integrity_error(
+                lambda: insert_activation(index_conn, activation_id=2),
+                f"0054 unique index did not reject a duplicate: {enforced_index}",
+                error_fragment,
+            )
+        finally:
+            index_conn.close()
+
+    expect_integrity_error(
+        lambda: schema_conn.execute(
+            "UPDATE relay_container_shard_activations "
+            "SET activated_at = activated_at + 1 WHERE activation_id = 1"
+        ),
+        "0054 allowed an activation row update",
+        "relay container shard activation rows are immutable",
+    )
+    expect_integrity_error(
+        lambda: schema_conn.execute(
+            "DELETE FROM relay_container_shard_activations WHERE activation_id = 1"
+        ),
+        "0054 allowed an activation row delete",
+        "relay container shard activation rows are immutable",
+    )
+    if schema_conn.execute(
+        "SELECT activated_at FROM relay_container_shard_activations "
+        "WHERE activation_id = 1"
+    ).fetchone() != (1_700_000_054,):
+        raise SystemExit("0054 rejected mutation changed the activation row")
+
+    schema_before_duplicate = schema_conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        schema_conn.executescript(activation_sql)
+    except sqlite3.Error as error:
+        if "already exists" not in str(error):
+            raise SystemExit(
+                f"0054 duplicate DDL failed for an unexpected reason: {error}"
+            ) from error
+    else:
+        raise SystemExit("0054 critical activation objects accepted duplicate DDL")
+    schema_after_duplicate = schema_conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0054 duplicate DDL attempt changed persistent schema")
+    schema_conn.close()
+
+
 def verify_relay_container_atomic_admission_rollout(
     schema_paths: list[Path],
 ) -> None:
@@ -13848,13 +14312,15 @@ def verify_relay_container_atomic_admission_rollout(
     )
     if atomic_path is None or binding_path is None:
         raise SystemExit("0049/0050 relay Container admission migrations not found")
-    if len(schema_paths) != 53:
+    if len(schema_paths) != 54:
         raise SystemExit(
-            f"0050 atomic admission compatibility requires exactly 53 D1 migrations, got {len(schema_paths)}"
+            f"0050 atomic admission compatibility requires exactly 54 D1 migrations, got {len(schema_paths)}"
         )
     atomic_index = schema_paths.index(atomic_path)
-    if atomic_index != len(schema_paths) - 4:
-        raise SystemExit("0050 atomic admission must remain immediately before 0051, 0052, and 0053")
+    if atomic_index != len(schema_paths) - 5:
+        raise SystemExit(
+            "0050 atomic admission must remain immediately before 0051, 0052, 0053, and 0054"
+        )
     if atomic_index == 0 or schema_paths[atomic_index - 1] != binding_path:
         raise SystemExit("0050 atomic admission must immediately follow 0049")
 

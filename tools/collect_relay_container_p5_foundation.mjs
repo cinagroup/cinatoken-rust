@@ -18,15 +18,20 @@ import {
   executeCloudflareReadback,
   sha256,
 } from "./lib/cloudflare_readback.mjs";
+import {
+  SHARD_REGISTRY_CAPTURE_CONTRACT,
+  sha256Canonical,
+  validateShardRegistryCapture,
+} from "./lib/relay_container_shard_registry.mjs";
 
 export const FOUNDATION_REQUEST_CONTRACT =
   "cinatoken-relay-container-p5-foundation-request-v1";
 export const FOUNDATION_SOURCES_CONTRACT =
-  "cinatoken-relay-container-p5-foundation-sources-v1";
+  "cinatoken-relay-container-p5-foundation-sources-v2";
 export const REPLACEMENT_TOKEN_ENV = "CINATOKEN_P5_READBACK_TOKEN";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const maxInputBytes = 1024 * 1024;
+export const FOUNDATION_MAX_INPUT_BYTES = 4 * 1024 * 1024;
 const minObservationSeconds = 5 * 60;
 const maxObservationSeconds = 2 * 60 * 60;
 const sourceClockSkewMs = 60_000;
@@ -221,7 +226,7 @@ export function validateFoundationRequest(value) {
   return { ...request, candidate };
 }
 
-export function validateFoundationSources(value, candidateDigestSha256) {
+export function validateFoundationSources(value, candidateDigestSha256, candidate) {
   const bundle = requireObject(value, "foundation sources");
   exactKeys(
     bundle,
@@ -237,7 +242,7 @@ export function validateFoundationSources(value, candidateDigestSha256) {
     ],
     "foundation sources",
   );
-  requireExact(bundle.schemaVersion, 1, "source schemaVersion");
+  requireExact(bundle.schemaVersion, 2, "source schemaVersion");
   requireExact(bundle.contract, FOUNDATION_SOURCES_CONTRACT, "source contract");
   requireExact(bundle.environment, "staging", "source environment");
   requireExact(
@@ -256,7 +261,7 @@ export function validateFoundationSources(value, candidateDigestSha256) {
   );
   validateActionGates(sources.actionGates);
   validateSbom(sources.sbom);
-  validateShardRegistry(sources.shardRegistry);
+  validateShardRegistry(sources.shardRegistry, candidate);
   validateR2Inventory(sources.r2Inventory);
   validateTraffic(sources.traffic);
   assertNoCredentialValues(bundle, "foundation sources");
@@ -352,7 +357,11 @@ export async function collectP5Foundation(
   let validatedSources = null;
   let sourceBundleDigestSha256 = null;
   if (sourceBundle !== undefined) {
-    validatedSources = validateFoundationSources(sourceBundle, candidateDigestSha256);
+    validatedSources = validateFoundationSources(
+      sourceBundle,
+      candidateDigestSha256,
+      request.candidate,
+    );
     sourceBundleDigestSha256 = digestCanonical(validatedSources);
   } else if (sourceBundlePath !== null) {
     const sourceFile = await (dependencies.readCanonicalFile ?? readCanonicalJsonFile)(
@@ -362,6 +371,7 @@ export async function collectP5Foundation(
     validatedSources = validateFoundationSources(
       sourceFile.value,
       candidateDigestSha256,
+      request.candidate,
     );
     sourceBundleDigestSha256 = digestCanonical(validatedSources);
   }
@@ -556,15 +566,40 @@ function collectBlockers({
     if (source.status !== "pass") blockers.push(`${name}-source-not-pass`);
   }
   const { actionGates, sbom, shardRegistry, r2Inventory, traffic } = sources.sources;
+  const shardObservationStartedAt = new Date(
+    shardRegistry.capture.observationStartedAt,
+  ).getTime();
+  const shardObservationEndedAt = new Date(
+    shardRegistry.capture.observationEndedAt,
+  ).getTime();
+  if (
+    shardObservationStartedAt > startedAt + sourceClockSkewMs ||
+    shardObservationEndedAt < endedAt - sourceClockSkewMs
+  ) {
+    blockers.push("shard-registry-window-does-not-cover-foundation");
+  }
+  if (capturedAt < shardObservationEndedAt) {
+    blockers.push("source-capture-precedes-shard-registry");
+  }
+  if (
+    actionGates.controllerVersionId !==
+    request.candidate.controllerWorkerVersionId
+  ) {
+    blockers.push("action-gates-controller-version-mismatch");
+  }
   if (actionGates.allActionGatesFalse !== true) blockers.push("action-gates-not-false");
   if (
     sbom.containerImageDigest !== request.candidate.containerImageDigest ||
+    sbom.containerRuntimeBuildId !== request.candidate.containerRuntimeBuildId ||
+    sbom.containerImageProvenanceSha256 !==
+      request.candidate.containerImageProvenanceSha256 ||
     sbom.containerSbomSha256 !== request.candidate.containerSbomSha256
   ) {
     blockers.push("sbom-candidate-mismatch");
   }
   if (
     sbom.containerSignatureVerified !== true ||
+    sbom.runtimeImageProvenanceVerified !== true ||
     sbom.unapprovedCriticalVulnerabilities !== 0 ||
     sbom.unapprovedHighVulnerabilities !== 0
   ) {
@@ -572,9 +607,18 @@ function collectBlockers({
   }
   if (
     shardRegistry.doNamespaceIdSha256 !== request.candidate.doNamespaceIdSha256 ||
-    shardRegistry.ringGeneration !== request.candidate.ringGeneration ||
-    shardRegistry.shardCount !== request.candidate.shardCount ||
-    shardRegistry.verifiedShardCount !== request.candidate.shardCount
+    shardRegistry.capture.candidate.controllerVersionId !==
+      request.candidate.controllerWorkerVersionId ||
+    shardRegistry.capture.candidate.runtimeBuildId !==
+      request.candidate.containerRuntimeBuildId ||
+    shardRegistry.capture.candidate.containerImageDigest !==
+      request.candidate.containerImageDigest ||
+    shardRegistry.capture.candidate.imageProvenanceSha256 !==
+      request.candidate.containerImageProvenanceSha256 ||
+    shardRegistry.capture.candidate.ringGeneration !== request.candidate.ringGeneration ||
+    shardRegistry.capture.candidate.shardCount !== request.candidate.shardCount ||
+    shardRegistry.capture.verifiedShardCount !== request.candidate.shardCount ||
+    shardRegistry.capture.evidenceReady !== true
   ) {
     blockers.push("shard-registry-incomplete");
   }
@@ -598,8 +642,13 @@ function buildEvidenceFacts({ request, sources, artifactInventorySha256 }) {
       controllerWorkerVersionId: request.candidate.controllerWorkerVersionId,
       providerEgressWorkerVersionId: request.candidate.providerEgressWorkerVersionId,
       containerImageDigest: request.candidate.containerImageDigest,
+      containerRuntimeBuildId: request.candidate.containerRuntimeBuildId,
+      containerImageProvenanceSha256:
+        request.candidate.containerImageProvenanceSha256,
       containerSbomSha256: request.candidate.containerSbomSha256,
       containerSignatureVerified: sbom.containerSignatureVerified,
+      runtimeImageProvenanceVerified:
+        sbom.runtimeImageProvenanceVerified,
       unapprovedCriticalVulnerabilities: sbom.unapprovedCriticalVulnerabilities,
       unapprovedHighVulnerabilities: sbom.unapprovedHighVulnerabilities,
       allActionGatesFalse: actionGates.allActionGatesFalse,
@@ -617,9 +666,13 @@ function buildEvidenceFacts({ request, sources, artifactInventorySha256 }) {
       doBinding: request.candidate.doBinding,
       doClass: request.candidate.doClass,
       containerClass: request.candidate.containerClass,
+      containerRuntimeBuildId:
+        shardRegistry.capture.candidate.runtimeBuildId,
+      containerImageProvenanceSha256:
+        shardRegistry.capture.candidate.imageProvenanceSha256,
       ringGeneration: request.candidate.ringGeneration,
       shardCount: request.candidate.shardCount,
-      verifiedShardCount: shardRegistry.verifiedShardCount,
+      verifiedShardCount: shardRegistry.capture.verifiedShardCount,
       unknownWriterCount: r2Inventory.unknownWriterCount,
       unknownObjectCount: r2Inventory.unknownObjectCount,
       customerTrafficCount: traffic.customerTrafficCount,
@@ -663,48 +716,97 @@ function publicSources(bundle) {
 }
 
 function validateActionGates(value) {
-  validateSourceBase(value, "actionGates", ["allActionGatesFalse"]);
+  validateSourceBase(value, "actionGates", [
+    "controllerVersionId",
+    "actionGateInventorySha256",
+    "allActionGatesFalse",
+  ]);
+  requireToken(
+    value.controllerVersionId,
+    opaqueIdPattern,
+    "actionGates Controller version ID",
+  );
+  requireSha256(
+    value.actionGateInventorySha256,
+    "actionGates inventory digest",
+  );
   requireBoolean(value.allActionGatesFalse, "actionGates allActionGatesFalse");
+  validateSourceRecordDigest(value, "actionGates");
 }
 
 function validateSbom(value) {
   validateSourceBase(value, "sbom", [
     "containerImageDigest",
+    "containerRuntimeBuildId",
+    "containerImageProvenanceSha256",
     "containerSbomSha256",
     "containerSignatureVerified",
+    "runtimeImageProvenanceVerified",
     "unapprovedCriticalVulnerabilities",
     "unapprovedHighVulnerabilities",
   ]);
   requireToken(value.containerImageDigest, /^sha256:[0-9a-f]{64}$/, "SBOM image digest");
+  requireSha256(value.containerRuntimeBuildId, "SBOM runtime build ID");
+  requireSha256(value.containerImageProvenanceSha256, "SBOM image provenance digest");
   requireSha256(value.containerSbomSha256, "SBOM digest");
   requireBoolean(value.containerSignatureVerified, "SBOM signature status");
+  requireBoolean(
+    value.runtimeImageProvenanceVerified,
+    "SBOM runtime/image provenance status",
+  );
   requireInteger(value.unapprovedCriticalVulnerabilities, 0, 1_000_000, "SBOM critical count");
   requireInteger(value.unapprovedHighVulnerabilities, 0, 1_000_000, "SBOM high count");
+  validateSourceRecordDigest(value, "sbom");
 }
 
-function validateShardRegistry(value) {
+function validateShardRegistry(value, candidate) {
   validateSourceBase(value, "shardRegistry", [
     "doNamespaceIdSha256",
-    "ringGeneration",
-    "shardCount",
-    "verifiedShardCount",
+    "capture",
   ]);
   requireSha256(value.doNamespaceIdSha256, "shard registry namespace digest");
-  requireInteger(value.ringGeneration, 1, 1_000_000, "shard registry generation");
-  requireInteger(value.shardCount, 1, 4096, "shard registry shardCount");
-  requireInteger(value.verifiedShardCount, 0, 4096, "shard registry verified count");
+  if (candidate === undefined) {
+    throw new P5FoundationCollectorError("shard registry P5 candidate is required");
+  }
+  const capture = validateShardRegistryCapture(value.capture, {
+    controllerVersionId: candidate.controllerWorkerVersionId,
+    runtimeBuildId: candidate.containerRuntimeBuildId,
+    containerImageDigest: candidate.containerImageDigest,
+    imageProvenanceSha256: candidate.containerImageProvenanceSha256,
+    ringGeneration: candidate.ringGeneration,
+    shardCount: candidate.shardCount,
+  });
+  requireExact(
+    value.sourceArtifactSha256,
+    sha256Canonical(capture),
+    "shard registry source artifact digest",
+  );
+  requireExact(capture.contract, SHARD_REGISTRY_CAPTURE_CONTRACT, "shard registry capture contract");
+  if (value.status === "pass") requireExact(capture.evidenceReady, true, "shard registry readiness");
 }
 
 function validateR2Inventory(value) {
   validateSourceBase(value, "r2Inventory", ["unknownWriterCount", "unknownObjectCount"]);
   requireInteger(value.unknownWriterCount, 0, Number.MAX_SAFE_INTEGER, "R2 unknown writer count");
   requireInteger(value.unknownObjectCount, 0, Number.MAX_SAFE_INTEGER, "R2 unknown object count");
+  validateSourceRecordDigest(value, "r2Inventory");
 }
 
 function validateTraffic(value) {
   validateSourceBase(value, "traffic", ["customerTrafficCount", "environmentIsolationVerified"]);
   requireInteger(value.customerTrafficCount, 0, Number.MAX_SAFE_INTEGER, "traffic count");
   requireBoolean(value.environmentIsolationVerified, "traffic isolation status");
+  validateSourceRecordDigest(value, "traffic");
+}
+
+function validateSourceRecordDigest(source, label) {
+  const digestInput = { ...source };
+  delete digestInput.sourceArtifactSha256;
+  requireExact(
+    source.sourceArtifactSha256,
+    sha256Canonical(digestInput),
+    `${label} source artifact digest`,
+  );
 }
 
 function validateSourceBase(value, label, extraKeys) {
@@ -733,7 +835,18 @@ function validateSourceBase(value, label, extraKeys) {
 async function collectorArtifactDigest() {
   const files = [
     path.join(repoRoot, "tools", "collect_relay_container_p5_foundation.mjs"),
+    path.join(
+      repoRoot,
+      "tools",
+      "collect_relay_container_p5_shard_registry.mjs",
+    ),
     path.join(repoRoot, "tools", "lib", "cloudflare_readback.mjs"),
+    path.join(
+      repoRoot,
+      "tools",
+      "lib",
+      "relay_container_shard_registry.mjs",
+    ),
     path.join(repoRoot, "tools", "lib", "bounded_subprocess.mjs"),
     path.join(repoRoot, "tools", "relay_container_p5_evidence_contract.mjs"),
     path.join(repoRoot, "package.json"),
@@ -766,7 +879,7 @@ async function readCanonicalJsonFile(file, label) {
     initial.isSymbolicLink() ||
     initial.nlink !== 1n ||
     initial.size <= 0n ||
-    initial.size > BigInt(maxInputBytes)
+    initial.size > BigInt(FOUNDATION_MAX_INPUT_BYTES)
   ) {
     throw new P5FoundationCollectorError(`${label} must be a bounded regular single-link file`);
   }
@@ -892,6 +1005,8 @@ function selfTestRequest() {
       controllerWorkerVersionId: "controller-version-001",
       providerEgressWorkerVersionId: "egress-version-001",
       containerImageDigest: `sha256:${"4".repeat(64)}`,
+      containerRuntimeBuildId: "a".repeat(64),
+      containerImageProvenanceSha256: "b".repeat(64),
       containerSbomSha256: "5".repeat(64),
       d1DatabaseName: "cinatoken-rust-db-staging",
       d1DatabaseId: "c285553f-7f98-4ec2-b4d6-f84a3b409f3e",
@@ -905,8 +1020,8 @@ function selfTestRequest() {
       containerClass: "RelayShardContainer",
       ringGeneration: 1,
       shardCount: 8,
-      migrationHead: "0053_relay_container_financial_terminal_v2.sql",
-      migrationCount: 53,
+      migrationHead: "0054_relay_container_shard_activations.sql",
+      migrationCount: 54,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,

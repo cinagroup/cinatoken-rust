@@ -7668,3 +7668,77 @@ passed with P5 evidence 38/38, foundation collector 14/14, Go/VPS evidence
 23/23, deploy preflight 22/22, Controller 192/192, portable protocol 176/176,
 Workerd runtime 45/45, DO lifecycle 48/48, Worker Rust unit tests 837/837, and
 the workspace and wasm checks. Production remains **NO-GO**.
+
+## P5 Shard Activation And Foundation Binding (2026-07-19)
+
+This tranche supersedes the P5 and foundation counts above. It remains a local,
+default-off evidence implementation and grants no remote, customer-traffic, or
+production authority.
+
+The implementation now proves that:
+
+- D1 migration 0054 provides an immutable, append-only shard activation ledger;
+  the Controller checks the exact table, column, index, constraint, and trigger
+  catalog before the first primary insert, including a real SQLite catalog test;
+- runtime executable identity is hashed with bounded streaming reads, cached by
+  immutable file identity, and prewarmed at startup; unreadable identity returns
+  a typed 503 instead of panicking or executing;
+- the shard registry collector accepts only the fixed staging Controller origin,
+  bounded streamed responses, generation 1, fresh complete activation rows, and
+  complete pagination;
+- the foundation collector binds canonical collector source digests, bounded
+  source artifacts, before/after readback stability, and the exact shard
+  activation facts; and
+- P5 promotion manifest v2 signs the actual canonical
+  `evidence/foundation-capture.json` file by path, bytes, and SHA-256, then
+  recomputes and compares its candidate and evidence facts.
+
+Confirmed final local commands and results:
+
+```powershell
+bun run check:relay-container:p5-evidence
+# PASS: 42/42 contract and adversarial tests.
+
+bun run check:relay-container:p5-foundation
+# PASS: 16/16 tests, 229 expectations, then the offline self-test.
+
+bun run check:relay-container:p5-shard-registry
+# PASS: 8/8 tests, 39 expectations.
+
+bun run check:container-controller
+# PASS: 197 Bun tests, 176 portable protocol tests, and 45 Workerd runtime tests.
+
+python tools/verify_sqlite.py
+# PASS: 54 migrations, 58 tables, 694 incremental columns, 83 key indexes.
+
+bun tools/audit_d1_migration_config.mjs
+# PASS: 3 bindings and 54 contiguous migrations through 0054.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 839/839.
+
+cargo test --workspace --exclude cinatoken-worker
+# PASS, including Container runtime 13 unit tests and 7 HTTP tests.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS.
+
+bun run check
+# PASS: the complete repository aggregate, including all results above,
+# frontend 71/71, DO lifecycle 48/48, Cloudflare dry-runs, workspace tests,
+# migration/config audits, and all configured wasm checks.
+
+cargo fmt --all -- --check
+git diff --check
+```
+
+No Cloudflare credential, remote mutation, deployment, D1 migration, Container
+wake, provider call, financial mutation, or traffic change was used. A static
+activation-writer environment toggle cannot produce activation rows and a
+false-gate readback for the same Controller version, so it is not an acceptable
+promotion ceremony. A root-authorized, one-time, candidate-bound, expiring,
+single-consumption activation campaign with automatic seal and replay rejection
+must be implemented and proven under one version. Complete Wrangler control
+plane pagination, remote schema/business fingerprints, rotated credentials,
+fresh evidence, and signed approvals also remain mandatory. Go/VPS remains
+authoritative and production remains **NO-GO**.

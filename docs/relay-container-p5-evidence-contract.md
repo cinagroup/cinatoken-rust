@@ -5,6 +5,18 @@ Date: 2026-07-19
 Status: local, credential-free evidence-verifier candidate. It authorizes no
 remote mutation, customer traffic, production cutover, or Go/VPS shutdown.
 
+Current baseline: migration head
+`0054_relay_container_shard_activations.sql`, migration count 54, and the
+locally verified schema shape of 58 tables, 694 incremental columns, and 83
+key indexes. This 0054/54 baseline supersedes every historical 0053/53
+reference retained below. Nothing in this document claims that 0054 was
+applied, deployed, or read back from Cloudflare.
+
+Historical baseline, retained for continuity: P4 ended at
+`0053_relay_container_financial_terminal_v2.sql`, count 53, with 57 tables,
+674 incremental columns, and 81 key indexes. Those values describe the
+superseded pre-activation state and cannot satisfy the current P5 verifier.
+
 ## Purpose
 
 P3 and P4 close the local response and financial terminal contracts. P5 must
@@ -84,6 +96,14 @@ The staging foundation collector is:
 - `tests/relay-container-p5-foundation-collector.test.mjs`; and
 - `docs/relay-container-p5-foundation-collector.md`.
 
+The application-owned shard activation evidence path is:
+
+- `migrations/d1/0054_relay_container_shard_activations.sql`;
+- `tools/collect_relay_container_p5_shard_registry.mjs`;
+- `tools/lib/relay_container_shard_registry.mjs`;
+- `tests/relay-container-p5-shard-registry.test.mjs`; and
+- `docs/relay-container-shard-activation-ledger.md`.
+
 The separately versioned production Go/VPS gate is:
 
 - `tools/go_vps_cutover_evidence_contract.mjs`;
@@ -108,6 +128,7 @@ Run the adversarial local contract suite:
 ```powershell
 bun run check:relay-container:p5-evidence
 bun run check:relay-container:p5-foundation
+bun run check:relay-container:p5-shard-registry
 bun run check:go-vps-cutover:evidence
 bun run check:container-controller:deploy-preflight
 ```
@@ -148,15 +169,31 @@ complete pagination result. Its fixed 13-command Wrangler allowlist performs
 only exact Worker version/deployment, D1, R2, KV, and Container readback. It
 emits digests and status metadata rather than raw control-plane output.
 
+The current Wrangler list commands do not expose enough cursor state for this
+collector to prove that every page was traversed. Every deployments, KV, and
+Container list command is therefore classified as `unverifiable-list`, emits
+`paginationComplete=false`, and remains `not-proven` even when its first page
+is shorter than the requested limit. Foundation and P5 remain **NO-GO** until
+a later control-plane reader explicitly traverses every page and proves a
+terminal cursor. Item count and page size are not substitutes for that work.
+
 Cloudflare Container instance inventory cannot prove sleeping Durable Object
-members. The collector therefore requires a stable app-owned shard
-registry/activation ledger plus separate action-gate, SBOM/signature, R2
-writer/object, and traffic-isolation sources. Missing or incomplete sources
-produce explicit blockers and `paginationComplete=false`; they can never be
-converted into a P5 pass by elapsed time. The complete contract and live SOP
-are in `docs/relay-container-p5-foundation-collector.md`.
+members. The collector therefore requires a stable app-owned shard activation
+ledger plus separate action-gate, SBOM/signature/provenance, R2 writer/object,
+and traffic-isolation sources. The shard source embeds the canonical capture
+under foundation sources v2 and binds its recomputed
+`sourceArtifactSha256`. Missing or incomplete sources produce explicit
+blockers and `paginationComplete=false`; they can never be converted into a
+P5 pass by elapsed time. The complete contracts and live SOP are in
+`docs/relay-container-p5-foundation-collector.md` and
+`docs/relay-container-shard-activation-ledger.md`.
 
 ## Manifest Identity
+
+The operative manifest is schema version 2 with contract
+`cinatoken-relay-container-p5-promotion-manifest-v2`. Version 2 adds the
+required canonical foundation capture artifact record; a version-1 manifest
+cannot be upgraded by inserting an optional field and is rejected.
 
 Every input is canonical JSON: object keys are sorted, numbers are safe
 integers, and the file ends with exactly one newline. This rejects duplicate
@@ -166,15 +203,18 @@ The signed subject binds:
 
 - policy ID, staging environment, decision, generation and expiry times;
 - repository and both source commits;
-- edge, Controller, provider-egress, and Container image identities;
+- edge, Controller, provider-egress, Container image, runtime executable build,
+  and runtime-to-image provenance identities;
 - Container SBOM digest and image signature result;
 - exact D1 name/UUID, R2 bucket, KV namespace digest, Controller/egress service,
   DO namespace digest, binding, class, shard count, and ring generation;
-- D1 head 0053 and count 53;
+- D1 head 0054 and count 54;
 - response protocol 3, status contract 4, financial terminal contract 2, and
   terminal ACK contract 3;
 - a bounded, non-streaming, synthetic `/v1/chat/completions` cohort with no
   customer traffic; and
+- the fixed `evidence/foundation-capture.json` path, byte length, and complete
+  file SHA-256 digest; and
 - the path, byte length, SHA-256 digest, capture time, and expiry of every
   evidence file.
 
@@ -188,15 +228,15 @@ All ten kinds are required exactly once and in contract order:
 
 | Kind | Required proof |
 | --- | --- |
-| `candidate-freeze` | Exact commit/version/image/SBOM inventory, image signature verified, zero unapproved critical/high vulnerabilities, every action gate false |
-| `remote-inventory` | Account digest, exact shared D1/KV/R2 identities, Controller/egress services, DO namespace/binding/class, all shards accounted for, zero unknown writers/objects/customer traffic |
+| `candidate-freeze` | Exact commit/version/image/runtime-build/provenance/SBOM inventory, image signature and runtime-to-image provenance verified, zero unapproved critical/high vulnerabilities, every action gate false |
+| `remote-inventory` | Account digest, exact shared D1/KV/R2 identities, Controller/egress services, DO namespace/binding/class, candidate runtime build and image provenance, all shards accounted for, zero unknown writers/objects/customer traffic |
 | `reader-first-rollout` | Egress before Controller, Controller before edge, readers before writers, every shard on a compatible reader, no new response write, public `/internal` 404, N/N-1 or blue/green skew proof |
-| `schema-readback` | Remote 0053/53 and exact 57-table/674-column/81-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
+| `schema-readback` | Remote 0054/54 and exact 58-table/694-column/83-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
 | `lifecycle-fault-campaign` | Cold/warm start, DO eviction, Container sleep/restart/OOM, duplicate alarm, callback failure, malformed/future payload, N-1, and response loss; zero duplicate provider/financial effects |
 | `response-financial-fault-campaign` | Success, typed error, HTTP error, invalid body, and recovery; every D1 statement fault; response-class totals equal provider operations, one provider operation per send, settled plus refunded terminal conservation, zero request accounting on refund, exact client replay and classified R2 orphans |
 | `cross-layer-provenance` | Complete redacted edge/Controller/DO/Container/broker/provider/D1/R2/financial/audit/client tuple with no identity gap or payload/credential leak |
 | `load-cost-slo` | At least one hour and 1,000 requests, Rust 5xx delta at most 50 basis points, non-stream p95 overhead at most 300 ms, zero D1/resource errors, delivered alert drills, approved 1x/2x/5x cost |
-| `rollback-rehearsal` | Gates disabled first and read back false, all in-flight work classified, zero new Rust admission/resend/duplicate finance, Go authority restored, v3 readers/0053/evidence retained, rollback within 15 minutes |
+| `rollback-rehearsal` | Gates disabled first and read back false, all in-flight work classified, zero new Rust admission/resend/duplicate finance, Go authority restored, P3 readers/0054/evidence retained, rollback within 15 minutes |
 | `security-privacy-review` | Replacement least-privilege credential readback, zero secret/unredacted payload/critical/unapproved-high findings, approved retention/privacy, named incident owner |
 
 An evidence envelope that merely says `status=pass` is insufficient. Each kind
@@ -210,6 +250,30 @@ least five minutes and at most two hours and ends before both evidence
 captures. Any mismatch rejects the whole packet.
 The evidence must be sealed within 15 minutes after the foundation observation
 ends; an otherwise valid but old control-plane window is rejected.
+
+The manifest must also carry the actual canonical foundation capture as
+`evidence/foundation-capture.json`; a digest string copied into two evidence
+records is insufficient. The verifier opens that regular non-symlink file
+under the bundle root, enforces a 4 MiB bound, checks its complete-file digest,
+recomputes the collector subject digest, validates ready/stable/paginated
+readback and the hard-false safety boundary, then requires the capture's
+candidate-freeze and remote-inventory facts to equal the two evidence records
+after removing their seven shared binding fields. The five owner signatures
+therefore bind the capture bytes through the signed manifest subject.
+
+The operative external-source bundle is schema version 2 with contract
+`cinatoken-relay-container-p5-foundation-sources-v2`. Its `shardRegistry`
+source embeds the complete before/after activation capture and must set
+`sourceArtifactSha256` to the SHA-256 of the collector's canonical rebuilt
+capture. A v1 aggregate N/N assertion is historical context only and cannot
+satisfy this baseline.
+
+`containerRuntimeBuildId` and `containerImageProvenanceSha256` are independent
+candidate fields. The first is SHA-256 of the running runtime executable. It
+does not prove which Container image supplied that executable. The second
+binds the external provenance artifact that maps the runtime build to the
+candidate image; the SBOM source must bind both and assert
+`runtimeImageProvenanceVerified=true`.
 
 ## Trust And Approval
 
@@ -253,24 +317,44 @@ files, and every evidence and approval validity window must increase strictly.
 
 1. Rotate the exposed credential and create separate least-privilege deploy
    and readback identities. Do not place either value in a command argument.
-2. Freeze commit, Worker versions, Container digest/SBOM/signature, resource
-   identities, migration SQL, and rollback artifacts while every action gate
-   is false.
-3. Upload a disabled provider-egress version, then a disabled Controller
-   version, then an edge version with the private Service Binding.
-4. Read back exact versions and shared D1/KV/R2 identities. Verify every shard
-   can parse existing and new response state while no new v3 write occurs.
-5. Apply/read back ordered 0052 then 0053 only after old-writer and operation
-   drain checks pass. Run direct negative probes with unchanged business
-   fingerprints.
-6. Run lifecycle and response/financial fault campaigns against a bounded
+2. Freeze commit, Worker versions, Container image digest, runtime executable
+   build ID, SBOM/signature, runtime-to-image provenance, resource identities,
+   migration SQL, and rollback artifacts. Every tracked local, staging, and
+   production action gate defaults to false.
+3. Back up staging D1, prove old-writer and operation drain, apply/read back
+   0054 after the already ordered 0052/0053 reader chain, and verify the exact
+   0054/54 and 58/694/83 baseline with immutable negatives and unchanged
+   business fingerprints.
+4. Upload a disabled provider-egress version, then a Controller reader, then an
+   edge reader with the private Service Binding. Activation recording remains
+   false and the Controller accepts both legacy and build-bearing readiness.
+5. Roll the Container candidate at 10% and 100%. At each stage read back the
+   exact image, compatible runtime protocol/build, zero customer traffic, and
+   zero provider/financial delta.
+6. Before recording, implement and approve a same-Controller-version,
+   one-time activation campaign with a root-authorized nonce, fixed candidate,
+   expiry, per-shard consumption, automatic seal, and immutable audit record.
+   The current static environment-variable gate is not sufficient: toggling it
+   creates another Worker version, so rows written by the enabled version
+   cannot support an all-gates-false capture for the disabled candidate
+   version. Until this dynamic ceremony exists, S3 is **NO-GO**.
+7. After that campaign is sealed and every effective action gate is false,
+   capture the root-only activation ledger before and after 300-7200 seconds
+   using the first page's frozen high watermark and complete keyset traversal.
+   Rows must be fresh for this campaign, activation generation must be one,
+   and sources-v2 action-gate, SBOM/provenance, R2, traffic-isolation, and
+   control-plane facts must overlap the same window.
+8. Implement and archive explicit full pagination for every Cloudflare
+   control-plane list. Until that reader exists, foundation and P5 remain
+   `not-proven` regardless of the activation ledger result.
+9. Run lifecycle and response/financial fault campaigns against a bounded
    synthetic cohort. Pin or blue/green-isolate downstream Service Binding
    versions during skew tests.
-7. Run load/cost/SLO and alert drills, then disable-first rollback while Go/VPS
+10. Run load/cost/SLO and alert drills, then disable-first rollback while Go/VPS
    remains authoritative.
-8. Build canonical evidence files and manifest. Five owners independently
+11. Build canonical evidence files and manifest. Five owners independently
    review the exact subject digest and sign it.
-9. Run the offline verifier. A pass permits only release-commander review of
+12. Run the offline verifier. A pass permits only release-commander review of
    the isolated staging synthetic canary.
 
 ## Production Cutover Extension
@@ -323,10 +407,18 @@ provider or financial effects, refund accounting, weak load, unsafe rollback,
 path traversal, bundled trust roots, missing/stale/wrong-role/tampered approvals,
 and evidence that expires before the decision.
 
-Current focused verification passes 38 P5 verifier tests, 14 foundation
-collector tests plus its offline self-test, 23 Go/VPS cutover tests, and 22
-bounded-subprocess/deploy-preflight tests. These are local contract tests, not
-remote evidence.
+The historical pre-0054 focused run recorded 38 P5 verifier tests, 14
+foundation collector tests plus its offline self-test, 23 Go/VPS cutover
+tests, and 22 bounded-subprocess/deploy-preflight tests. That count is retained
+as history, not as current 0054 activation evidence. The current baseline also
+requires `python tools/verify_sqlite.py` and
+`bun run check:relay-container:p5-shard-registry`; report their actual output
+and never infer a pass from this paragraph.
+
+On the current worktree, the focused 0054 checks pass the 54-migration
+58/694/83 SQLite verifier, 42 P5 verifier tests, 16 foundation collector tests
+plus its offline self-test, 8 shard-registry tests, and 22 deploy-preflight
+tests. These are still local contract checks, not Cloudflare evidence.
 
 Those fixtures are tests of the verifier, not Cloudflare evidence. No remote
 resource, credential, provider, financial row, deployment, or traffic state was

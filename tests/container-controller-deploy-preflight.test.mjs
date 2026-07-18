@@ -26,9 +26,14 @@ function validConfig(environment) {
     workers_dev: false,
     preview_urls: false,
     observability: { enabled: true },
-    vars: Object.fromEntries(
-      REQUIRED_DISABLED_CONTROLLER_VARS.map((name) => [name, "false"]),
-    ),
+    version_metadata: { binding: "CF_VERSION_METADATA" },
+    vars: {
+      ENVIRONMENT: environment,
+      ...Object.fromEntries(
+        REQUIRED_DISABLED_CONTROLLER_VARS.map((name) => [name, "false"]),
+      ),
+      CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID: "",
+    },
     d1_databases: [
       {
         binding: "DB",

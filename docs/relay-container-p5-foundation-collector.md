@@ -15,11 +15,20 @@ are ready for independent evidence assembly and owner review. The other eight
 P5 evidence kinds, the signed manifest, and all five independent approvals are
 still mandatory.
 
+Current local baseline: D1 head 0054/count 54, 58 tables, 694 incremental
+columns, and 83 key indexes. This supersedes the retained historical 0053/53
+foundation text. No live Cloudflare readback, migration application,
+deployment, Durable Object/Container wake, or traffic change is claimed.
+
 ## Local Commands
 
 ```powershell
 bun run check:relay-container:p5-foundation
+bun run check:relay-container:p5-shard-registry
 bun run plan:relay-container:p5-foundation -- --request C:\secure-evidence\p5\foundation-request.json
+bun run collect:relay-container:p5-shard-registry -- `
+  --request C:\secure-evidence\p5\shard-registry-request.json `
+  --dry-run
 ```
 
 Live staging readback is deliberately separate from `bun run check`:
@@ -32,6 +41,20 @@ bun run collect:relay-container:p5-foundation -- `
   --confirm-replacement-token `
   --confirm-observation-window
 ```
+
+The app-owned shard source is collected independently before it is embedded in
+foundation sources v2:
+
+```powershell
+bun run collect:relay-container:p5-shard-registry -- `
+  --request C:\secure-evidence\p5\shard-registry-request.json `
+  --confirm-staging-readback
+```
+
+Provision `CINATOKEN_P5_SHARD_REGISTRY_COOKIE` in the parent process through the
+approved secret workflow. Do not place that cookie in an argument, tracked
+file, evidence output, shell history, or ticket. The shard collector sends it
+only to the validated HTTPS staging origin and emits no credential value.
 
 Provision `CINATOKEN_P5_READBACK_TOKEN` in the parent process through the
 approved secret workflow before the live command. Never put the value in an
@@ -71,8 +94,14 @@ The candidate remains pinned to:
 - Go source commit `73652508abc5cb09214dde02d51d69d1d1ccc703`;
 - cinaVibeSDK source commit
   `918e97480ee44e357abe99bf33c27259d6ac7ebd`;
-- migration `0053_relay_container_financial_terminal_v2.sql`, count 53;
+- Container image digest, runtime executable build SHA-256, and a separate
+  runtime-to-image provenance SHA-256;
+- migration `0054_relay_container_shard_activations.sql`, count 54; and
 - response/status/financial-terminal/terminal-ACK contracts 3/4/2/3.
+
+The earlier 0053/53 candidate was the financial-terminal P4 baseline. It is
+retained as history only; a new foundation request using it must fail the
+current P5 candidate validator.
 
 Unknown fields, production identities, short observation windows, candidate
 drift, unsafe integers, noncanonical JSON, symbolic links, multiply linked
@@ -106,8 +135,17 @@ Raw Wrangler output is never emitted. Each command contributes only its key,
 status, byte count, canonical output digest, optional stderr digest, expected
 identity result, item count, and pagination result. Any reflected credential,
 invalid JSON, invalid UTF-8, output overflow, timeout, command failure,
-unexpected stderr, missing identity, or full 100-item Container page becomes a
-fail-closed blocker.
+unexpected stderr, or missing identity becomes a fail-closed blocker.
+
+More importantly, every Wrangler list operation in the current allowlist is
+classified as `unverifiable-list`. Wrangler's output does not provide the
+collector enough cursor state to prove a terminal page, so deployments, KV
+namespace, Container application, Container instance, and Container image
+lists always return `paginationComplete=false` and `status=not-proven`. A
+short first page, including fewer than 100 Container items, is not evidence of
+completion. The six single-object version/D1/R2/Container-info operations can
+pass locally, but the aggregate 13-command readback cannot establish
+foundation readiness.
 
 ## Observation And Stability
 
@@ -130,9 +168,9 @@ lag even when the original window length was valid.
 
 The collector code inventory is also hashed before and after the observation.
 It includes the collector, readback library, bounded subprocess library, P5
-evidence contract, root package/lock files, and the installed Wrangler package,
-launcher, and executable CLI bundle. Any tool or pinned Wrangler artifact drift
-blocks foundation readiness.
+evidence contract, shard registry collector/library, root package/lock files,
+and the installed Wrangler package, launcher, and executable CLI bundle. Any
+tool or pinned Wrangler artifact drift blocks foundation readiness.
 
 The registry list is stability inventory, not image-digest proof: pinned
 Wrangler filters digest tags from `containers images list`. The exact candidate
@@ -148,25 +186,76 @@ Object member. A live capture therefore remains `not-proven` unless a strict
 canonical source bundle is supplied with contract:
 
 ```text
-cinatoken-relay-container-p5-foundation-sources-v1
+cinatoken-relay-container-p5-foundation-sources-v2
 ```
 
-The bundle is candidate-bound, account-bound, captured inside the observation
-window, pagination-complete, and contains these five independently identified
-source summaries:
+The bundle has `schemaVersion=2`; it is candidate-bound, account-bound,
+captured inside the observation window, pagination-complete, and contains these
+five independently identified source records:
 
 | Source | Required proof |
 | --- | --- |
 | `actionGates` | every admission, execution, writer, retry, recovery, and wake gate is false |
-| `sbom` | exact image digest and SBOM digest, verified signature, zero unapproved critical/high findings |
-| `shardRegistry` | stable app-owned DO namespace/activation ledger, exact ring generation, N/N verified shards |
+| `sbom` | exact image digest, runtime build ID, image-provenance digest and SBOM digest, verified signature/provenance, zero unapproved critical/high findings |
+| `shardRegistry` | stable embedded app-owned activation capture, exact Controller/runtime/ring candidate, derived N/N verified shards |
 | `r2Inventory` | complete writer/object inventory with zero unknown writers and zero unknown objects |
 | `traffic` | zero customer traffic and verified staging isolation |
 
 Each source carries `status`, `collectorId`, `collectorVersion`, and
-`sourceArtifactSha256`. `unknown` and `fail` are representable but always block
-foundation readiness. Omitting the bundle yields explicit blockers for all five
-sources and sets `binding.paginationComplete=false`.
+`sourceArtifactSha256`. The source bundle is bounded to 4 MiB so a canonical
+1024-shard capture can fit without making input unbounded. For action gates,
+SBOM, R2, and traffic, the digest must equal canonical JSON of the exact source
+record with only `sourceArtifactSha256` removed. For `shardRegistry`, the
+foundation validator rebuilds the embedded capture and requires the digest to
+equal that canonical capture. These are integrity bindings; source provenance
+and any external signature must still be retained for owner review.
+`unknown` and `fail` are representable but always block foundation readiness.
+Omitting the bundle yields explicit blockers for all five sources and sets
+`binding.paginationComplete=false`.
+
+## Shard Activation Source
+
+`tools/collect_relay_container_p5_shard_registry.mjs` is the concrete
+`shardRegistry` source collector. Its strict staging request binds Controller
+version ID, runtime build ID, Container image digest, image provenance digest,
+ring generation, and shard count. `observationSeconds` is an integer from 300
+through 7200, and `shardCount` is bounded from 1 through the real 1024-shard
+ceiling.
+
+The origin is exactly `https://staging.cinatoken.com`; arbitrary
+`workers.dev` or sibling origins are rejected. Live collection requires a root
+session cookie from `CINATOKEN_P5_SHARD_REGISTRY_COOKIE`, never a CLI argument.
+Redirects fail, each response has a 15-second deadline, and streamed response
+bytes are cancelled above 1 MiB rather than buffered without a bound.
+
+For both before and after snapshots it calls only root-authenticated,
+`Cache-Control: no-store`
+`GET /api/platform/container/shards/activations`. The first response freezes
+`high_watermark`; every later request sends that same value plus the previous
+page's keyset cursor. Pages contain at most 64 records, sequences and cursors
+must increase strictly, the terminal page must return `next_cursor=null`, and
+the flattened record count and last sequence must equal `total_records` and
+the frozen high watermark. The collector caps this evidence inventory at 4096
+ledger records and 65 pages; exceeding either bound fails closed.
+
+The Worker reader and the offline collector independently recompute every
+`activation_digest_sha256` using the same length-prefixed domain-separated
+contract as the Controller writer. The capture then compares before/after high
+watermarks, record counts, canonical entry digests, and records. From the
+validated records it derives, rather than trusts, `verifiedShardCount`,
+`missingShardCount`, `duplicateShardCount`, and `unknownShardCount`; rebuilding
+the capture rejects any forged derived count. Evidence is ready only for
+exactly one disabled-execution candidate row per shard index `0..N-1` and zero
+missing, duplicate, old-build, wrong-ring, or otherwise unknown rows.
+
+Each accepted row must have `activation_generation=1` and be fresh for the
+capture: no more than two hours before the observation start and no more than
+60 seconds in the future. This prevents a stable historical ledger from being
+replayed as evidence for a new campaign.
+
+The GET path reads D1 directly. It does not resolve a Durable Object stub,
+invoke readiness, or contact a Container, and the collector records
+`shardDoOrContainerWakePerformed=false`.
 
 ## Capture Digest And P5 Assembly
 
@@ -201,6 +290,47 @@ const remoteInventoryFacts = {
 
 Both evidence records must bind the same capture, collector, observation
 window, and pagination result. The offline P5 verifier rejects any mismatch.
+The signed P5 manifest also includes the actual canonical capture as the fixed
+regular file `evidence/foundation-capture.json`, with its complete byte count
+and file SHA-256. The verifier recomputes the capture subject digest and
+requires both evidence fact objects to equal the facts emitted by that file;
+binding only a copied digest string is not accepted.
+
+`containerRuntimeBuildId` and `containerImageProvenanceSha256` remain separate
+in both facts. The runtime build is the SHA-256 of the running executable; it
+is not an image identity. Foundation readiness additionally requires the SBOM
+source and embedded shard candidate to bind the external provenance digest
+that maps that build to the exact Container image, with
+`runtimeImageProvenanceVerified=true`.
+
+## Ordered Rollout Boundary
+
+The evidence order is fixed:
+
+1. rotate the exposed credential and freeze commits, Worker versions, image,
+   runtime build, provenance, SBOM, resources, migration, and rollback facts;
+2. with every tracked action gate at its default `false`, back up D1 and
+   apply/read back 0054/54 after the reader-compatible 0052/0053 chain;
+3. deploy provider-egress, Controller reader, then edge reader while activation
+   recording remains false;
+4. roll the Container image at 10% and 100% and prove its image/runtime identity
+   with zero customer/provider/financial delta;
+5. implement a same-version, root-authorized one-time activation campaign with
+   an approval nonce, fixed candidate, expiry, per-shard consumption and an
+   automatic immutable seal; the current static activation environment toggle
+   cannot satisfy this because changing it creates a different Worker version;
+6. only after the campaign is sealed and every effective action gate is false,
+   capture the fresh stable activation ledger and all other sources-v2
+   artifacts over the same 300-7200 second observation window; and
+7. perform explicit full Cloudflare control-plane pagination before attempting
+   the remaining P5 campaigns, signatures, or isolated-canary review.
+
+Steps 5 and 7 are not implemented: there is no dynamic one-time campaign, and
+the current Wrangler list reader cannot prove terminal pagination. Therefore
+the foundation packet and P5 decision remain **NO-GO** even if a local shard
+fixture is complete. All tracked local/staging/production Controller action
+gates, including activation recording, remain default `false`; editing the
+static environment variable is not an approved workaround.
 
 ## Fail-Closed Meaning
 
@@ -211,5 +341,10 @@ unverified isolation, action gate, SBOM/signature issue, or source timestamp
 outside the observation window.
 
 Passing local tests proves only the collector contract and redaction boundary.
-No authenticated readback was run in this implementation increment, no remote
-resource changed, and production remains **NO-GO**.
+The current worktree passes 16 foundation collector tests plus the offline
+self-test and 8 shard-registry collector tests. Those fixtures inject complete
+pagination where needed; they do not make Wrangler list output complete.
+The current Wrangler list pagination boundary intentionally prevents a live
+foundation pass until an explicit all-pages reader is implemented. No
+authenticated readback was run in this implementation increment, no remote
+resource changed, and foundation, P5, and production remain **NO-GO**.

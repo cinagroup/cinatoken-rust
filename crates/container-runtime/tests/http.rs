@@ -92,15 +92,16 @@ async fn health_and_readiness_endpoints_are_live() {
         .unwrap();
     assert_eq!(readiness.status(), StatusCode::OK);
     let body = to_bytes(readiness.into_body(), usize::MAX).await.unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&body).unwrap(),
-        json!({
-            "status": "ready",
-            "protocol_version": 1,
-            "shard_contract_version": 1,
-            "execution_enabled": false,
-        })
-    );
+    let readiness = serde_json::from_slice::<Value>(&body).unwrap();
+    assert_eq!(readiness["status"], "ready");
+    assert_eq!(readiness["protocol_version"], 1);
+    assert_eq!(readiness["shard_contract_version"], 1);
+    assert_eq!(readiness["execution_enabled"], false);
+    let runtime_build_id = readiness["runtime_build_id"].as_str().unwrap();
+    assert_eq!(runtime_build_id.len(), 64);
+    assert!(runtime_build_id
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
 }
 
 #[tokio::test]

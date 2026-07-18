@@ -3,7 +3,9 @@ use std::{
     error::Error,
     ffi::OsString,
     fmt,
-    sync::Arc,
+    fs::File,
+    io::Read,
+    sync::{Arc, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -17,6 +19,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 mod client;
 
@@ -45,8 +48,10 @@ const MAX_RESPONSE_ARTIFACT_OBJECT_VERSION_BYTES: usize = 128;
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CLIENT_RESPONSE_ARTIFACT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CONTAINER_SHARDS: u16 = 1_024;
+static RUNTIME_BUILD_ID: OnceLock<Result<String, String>> = OnceLock::new();
 
 pub fn app() -> Router {
+    let _ = runtime_build_id();
     let execution_enabled = env::var("CINATOKEN_CONTAINER_PROVIDER_CLIENT_ENABLED")
         .ok()
         .is_some_and(|value| value == "true");
@@ -102,13 +107,48 @@ async fn healthz() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
-async fn readyz(State(state): State<AppState>) -> Json<ReadinessResponse> {
+async fn readyz(State(state): State<AppState>) -> Response {
+    let Ok(runtime_build_id) = runtime_build_id() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runtime_build_id_unavailable",
+            "runtime build identity is unavailable",
+        );
+    };
     Json(ReadinessResponse {
         status: "ready",
         protocol_version: PROTOCOL_VERSION,
         shard_contract_version: SHARD_CONTRACT_VERSION,
+        runtime_build_id,
         execution_enabled: state.execution_enabled,
     })
+    .into_response()
+}
+
+fn runtime_build_id() -> Result<&'static str, &'static str> {
+    RUNTIME_BUILD_ID
+        .get_or_init(compute_runtime_build_id)
+        .as_deref()
+        .map_err(String::as_str)
+}
+
+fn compute_runtime_build_id() -> Result<String, String> {
+    let executable = env::current_exe()
+        .map_err(|_| "container runtime executable path is unavailable".to_string())?;
+    let mut file = File::open(executable)
+        .map_err(|_| "container runtime executable is unreadable".to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|_| "container runtime executable read failed".to_string())?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 async fn operations(
@@ -272,6 +312,7 @@ struct ReadinessResponse {
     status: &'static str,
     protocol_version: u32,
     shard_contract_version: u32,
+    runtime_build_id: &'static str,
     execution_enabled: bool,
 }
 

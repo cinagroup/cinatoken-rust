@@ -40,9 +40,9 @@ Required local state:
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
   so Wrangler's local `workerd` can start.
 - `bun run check:d1:migration-config` passes.
-- `bun run verify:sqlite` reports 53 migrations, 57 required tables, 674
-  incremental columns, and 81 key indexes through
-  `0053_relay_container_financial_terminal_v2.sql`.
+- `bun run verify:sqlite` reports 54 migrations, 58 required tables, 694
+  incremental columns, and 83 key indexes through
+  `0054_relay_container_shard_activations.sql`.
 - `bun run check:cf:billing-queue` passes.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
@@ -139,9 +139,9 @@ bun run check:cf:startup
 Pass criteria:
 
 - No test failures.
-- All three D1 binding tables use `migrations/d1`; migrations 0001-0053 are
-  contiguous; the local SQLite verifier finds all 57 required tables, 674
-  incremental columns, and 81 key indexes.
+- All three D1 binding tables use `migrations/d1`; migrations 0001-0054 are
+  contiguous; the local SQLite verifier finds all 58 required tables, 694
+  incremental columns, and 83 key indexes.
 - No formatting or whitespace errors.
 - Cloudflare dry-run/startup checks pass, or the missing local dependency is
   recorded as a known local limitation.
@@ -155,6 +155,7 @@ and adversarial tests:
 bun run plan:relay-container:p5-evidence
 bun run check:relay-container:p5-evidence
 bun run check:relay-container:p5-foundation
+bun run check:relay-container:p5-shard-registry
 ```
 
 Prepare the strict canonical staging request and optional source bundle, then
@@ -167,11 +168,18 @@ bun run plan:relay-container:p5-foundation -- `
 ```
 
 Live collection is permitted only after the exposed credential is revoked and
-a rotated `CINATOKEN_P5_READBACK_TOKEN` is provisioned outside arguments and
-tracked files. Follow `docs/relay-container-p5-foundation-collector.md`. The
-collector performs fixed read-only before/after Wrangler snapshots and writes
-no file. Redirect its single canonical stdout object only into the approved
-secure evidence store.
+a rotated `CINATOKEN_P5_READBACK_TOKEN` plus a separate root session in
+`CINATOKEN_P5_SHARD_REGISTRY_COOKIE` are provisioned outside arguments and
+tracked files. Follow `docs/relay-container-p5-foundation-collector.md` and
+`docs/relay-container-shard-activation-ledger.md`. The collectors perform only
+bounded read-only snapshots and write no file. Redirect each single canonical
+stdout object only into the approved secure evidence store.
+
+Do not start live activation recording until the same-version one-time
+campaign described in those documents is implemented and approved. Toggling
+the static Controller environment variable creates another Worker version and
+cannot produce candidate-bound all-gates-false evidence. This is a hard
+staging blocker, not an operator confirmation step.
 
 Do not substitute `wrangler containers instances` for the app-owned shard
 registry. Missing shard-ledger, action-gate, SBOM/signature, R2 writer/object,
@@ -179,7 +187,9 @@ traffic, or pagination proof must remain `not-proven`.
 
 Use `docs/relay-container-p5-evidence-contract.md` for the canonical manifest,
 ten evidence kinds, external Ed25519 trust policy, five independent approvals,
-and reader-first order. The local self-test is not staging evidence. A real
+and reader-first order. Archive the collector output exactly as
+`evidence/foundation-capture.json`; the signed manifest binds its complete
+bytes and the verifier compares its emitted facts. The local self-test is not staging evidence. A real
 packet is verified only with:
 
 ```powershell

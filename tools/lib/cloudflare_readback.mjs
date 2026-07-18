@@ -15,6 +15,8 @@ const maxCommandOutputBytes = 4 * 1024 * 1024;
 const commandTimeoutMs = 60_000;
 const containerPageSize = 100;
 const safeTokenPattern = /^[A-Za-z0-9][A-Za-z0-9._:@/+\-=]{0,255}$/;
+const singleObjectPaginationMode = "single-object";
+const unverifiableListPaginationMode = "unverifiable-list";
 
 export const CLOUDFLARE_READBACK_COMMAND_KEYS = Object.freeze([
   "edge-version",
@@ -135,7 +137,6 @@ export function buildCloudflareReadbackPlan(
         "--json",
       ],
       expectedValues: [containerApplicationId],
-      boundedPageSize: containerPageSize,
     }),
     command({
       key: "container-info",
@@ -158,7 +159,6 @@ export function buildCloudflareReadbackPlan(
         "--json",
       ],
       expectedValues: [],
-      boundedPageSize: containerPageSize,
     }),
     command({
       key: "container-images",
@@ -189,8 +189,12 @@ export function assertReadOnlyWranglerCommand(item) {
     throw new CloudflareReadbackError("readback must invoke the pinned Wrangler CLI");
   }
   const args = item.args.slice(1);
-  if (!isAllowedWranglerArgs(args)) {
+  const paginationMode = classifyWranglerPagination(args);
+  if (paginationMode === null) {
     throw new CloudflareReadbackError("Wrangler command is outside the read-only allowlist");
+  }
+  if (item.paginationMode !== paginationMode) {
+    throw new CloudflareReadbackError("Wrangler command pagination classification drifted");
   }
   const forbidden = new Set([
     "build",
@@ -325,9 +329,7 @@ async function executeOne(item, { env, apiToken, runCommand }) {
         parsed,
         item.expectedContainerImageDigest,
       );
-  const paginationComplete =
-    item.boundedPageSize == null ||
-    (Number.isSafeInteger(itemCount) && itemCount < item.boundedPageSize);
+  const paginationComplete = item.paginationMode === singleObjectPaginationMode;
   return {
     key: item.key,
     status:
@@ -355,7 +357,6 @@ function command({
   wranglerArgs,
   expectedValues,
   expectedContainerImageDigest = null,
-  boundedPageSize = null,
   format = "json",
 }) {
   if (
@@ -364,6 +365,10 @@ function command({
   ) {
     throw new CloudflareReadbackError("expected Container image digest is invalid");
   }
+  const paginationMode = classifyWranglerPagination(wranglerArgs);
+  if (paginationMode === null) {
+    throw new CloudflareReadbackError("Wrangler command is outside the read-only allowlist");
+  }
   return {
     key,
     command: path.resolve(runtimeExecutable),
@@ -371,24 +376,28 @@ function command({
     args: [path.resolve(wranglerCliPath), ...wranglerArgs],
     expectedValues: expectedValues.map((value) => String(value)),
     expectedContainerImageDigest,
-    boundedPageSize,
+    paginationMode,
     format,
   };
 }
 
-function isAllowedWranglerArgs(args) {
+function classifyWranglerPagination(args) {
   const token = (value) => typeof value === "string" && safeTokenPattern.test(value);
   const exact = (...values) =>
     args.length === values.length &&
     values.every((value, index) => value === "*" ? token(args[index]) : args[index] === value);
-  return (
+  if (
     exact("versions", "view", "*", "--name", "*", "--json") ||
-    exact("deployments", "list", "--name", "*", "--json") ||
     exact("d1", "info", "*", "--json") ||
     exact("r2", "bucket", "info", "*", "--json") ||
+    exact("containers", "info", "*")
+  ) {
+    return singleObjectPaginationMode;
+  }
+  if (
+    exact("deployments", "list", "--name", "*", "--json") ||
     exact("kv", "namespace", "list") ||
     exact("containers", "list", "--per-page", String(containerPageSize), "--json") ||
-    exact("containers", "info", "*") ||
     exact(
       "containers",
       "instances",
@@ -398,7 +407,10 @@ function isAllowedWranglerArgs(args) {
       "--json",
     ) ||
     exact("containers", "images", "list", "--json")
-  );
+  ) {
+    return unverifiableListPaginationMode;
+  }
+  return null;
 }
 
 function classifyFailure(result) {

@@ -63,6 +63,8 @@ pub(crate) const RELAY_CONTAINER_PROVIDER_RESPONSE_ARTIFACT_MIGRATION: &str =
     "0052_relay_container_provider_response_artifacts.sql";
 pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_V2_MIGRATION: &str =
     "0053_relay_container_financial_terminal_v2.sql";
+pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_MIGRATION: &str =
+    "0054_relay_container_shard_activations.sql";
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
 pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION: i64 = 2;
@@ -630,6 +632,36 @@ pub struct RelayContainerR2InventoryPageStats {
     pub referenced: i64,
     pub anomalies: i64,
     pub resolved: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerShardActivationSnapshot {
+    pub high_watermark: i64,
+    pub record_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerShardActivationRow {
+    pub activation_id: i64,
+    pub controller_version_id: String,
+    pub ring_generation: i64,
+    pub shard_count: i64,
+    pub shard_index: i64,
+    pub instance_name: String,
+    pub shard_contract_version: i64,
+    pub runtime_protocol_version: i64,
+    pub runtime_contract_version: i64,
+    pub runtime_build_id: String,
+    pub activation_generation: i64,
+    pub activation_probe_generation: i64,
+    pub environment: String,
+    pub container_status: String,
+    pub readiness_result_code: String,
+    pub process_ready: i64,
+    pub runtime_execution_enabled: i64,
+    pub controller_execution_enabled: i64,
+    pub activation_digest_sha256: String,
+    pub activated_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10802,6 +10834,154 @@ pub async fn list_relay_container_r2_inventory_findings(
     .all()
     .await?
     .results::<RelayContainerR2InventoryFindingRow>()
+}
+
+pub async fn relay_container_shard_activation_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    let migration = [D1Type::Text(RELAY_CONTAINER_SHARD_ACTIVATION_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS count
+            FROM d1_migrations
+            WHERE name = ?1
+              AND (
+                SELECT COUNT(DISTINCT name)
+                FROM sqlite_master
+                WHERE (type = 'table'
+                    AND name = 'relay_container_shard_activations')
+                   OR (type = 'index' AND name IN (
+                     'idx_relay_container_shard_activations_identity',
+                     'idx_relay_container_shard_activations_instance'
+                   ))
+                   OR (type = 'trigger' AND name IN (
+                     'relay_container_shard_activation_update_guard',
+                     'relay_container_shard_activation_delete_guard'
+                   ))
+              ) = 5
+            "#,
+        )
+        .bind_refs(&migration)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn relay_container_shard_activation_snapshot(
+    db: &D1Database,
+    controller_version_id: &str,
+    ring_generation: i64,
+    high_watermark: i64,
+) -> worker::Result<RelayContainerShardActivationSnapshot> {
+    if !controller_version_id
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+    {
+        return Err(worker::Error::RustError(
+            "Controller version ID is invalid".to_string(),
+        ));
+    }
+    validate_relay_container_token(
+        controller_version_id,
+        "Controller version ID",
+        1,
+        128,
+        |byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'),
+    )?;
+    if !(1..=1_000_000).contains(&ring_generation) || high_watermark < 0 {
+        return Err(worker::Error::RustError(
+            "relay container shard activation snapshot query is invalid".to_string(),
+        ));
+    }
+    let ring_generation = ring_generation.to_string();
+    let high_watermark = high_watermark.to_string();
+    let args = [
+        D1Type::Text(controller_version_id),
+        D1Type::Text(&ring_generation),
+        D1Type::Text(&high_watermark),
+    ];
+    db.prepare(
+        r#"
+        SELECT COALESCE(MAX(activation_id), 0) AS high_watermark,
+               COUNT(1) AS record_count
+        FROM relay_container_shard_activations
+        WHERE controller_version_id = ?1
+          AND ring_generation = CAST(?2 AS INTEGER)
+          AND (CAST(?3 AS INTEGER) = 0 OR activation_id <= CAST(?3 AS INTEGER))
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerShardActivationSnapshot>(None)
+    .await?
+    .ok_or_else(|| {
+        worker::Error::RustError(
+            "relay container shard activation snapshot is unavailable".to_string(),
+        )
+    })
+}
+
+pub async fn list_relay_container_shard_activations(
+    db: &D1Database,
+    controller_version_id: &str,
+    ring_generation: i64,
+    high_watermark: i64,
+    after_activation_id: i64,
+    limit: i64,
+) -> worker::Result<Vec<RelayContainerShardActivationRow>> {
+    if high_watermark <= 0 || after_activation_id < 0 || after_activation_id >= high_watermark {
+        return Err(worker::Error::RustError(
+            "relay container shard activation page query is invalid".to_string(),
+        ));
+    }
+    let snapshot = relay_container_shard_activation_snapshot(
+        db,
+        controller_version_id,
+        ring_generation,
+        high_watermark,
+    )
+    .await?;
+    if snapshot.high_watermark != high_watermark {
+        return Err(worker::Error::RustError(
+            "relay container shard activation high watermark is invalid".to_string(),
+        ));
+    }
+    let ring_generation = ring_generation.to_string();
+    let high_watermark = high_watermark.to_string();
+    let after_activation_id = after_activation_id.to_string();
+    let limit = limit.clamp(1, 65).to_string();
+    let args = [
+        D1Type::Text(controller_version_id),
+        D1Type::Text(&ring_generation),
+        D1Type::Text(&high_watermark),
+        D1Type::Text(&after_activation_id),
+        D1Type::Text(&limit),
+    ];
+    db.prepare(
+        r#"
+        SELECT activation_id, controller_version_id, ring_generation,
+               shard_count, shard_index, instance_name,
+               shard_contract_version, runtime_protocol_version,
+               runtime_contract_version, runtime_build_id,
+               activation_generation, activation_probe_generation,
+               environment, container_status, readiness_result_code,
+               process_ready, runtime_execution_enabled,
+               controller_execution_enabled, activation_digest_sha256,
+               activated_at
+        FROM relay_container_shard_activations
+        WHERE controller_version_id = ?1
+          AND ring_generation = CAST(?2 AS INTEGER)
+          AND activation_id <= CAST(?3 AS INTEGER)
+          AND activation_id > CAST(?4 AS INTEGER)
+        ORDER BY activation_id ASC
+        LIMIT CAST(?5 AS INTEGER)
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RelayContainerShardActivationRow>()
 }
 
 pub async fn claim_relay_container_r2_inventory_run(

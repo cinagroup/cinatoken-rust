@@ -79,7 +79,7 @@ function usage(exitCode, error) {
 function describeContract() {
   return {
     ok: true,
-    schemaVersion: 1,
+    schemaVersion: 2,
     describe: true,
     manifestContract: MANIFEST_CONTRACT,
     foundationCaptureContract: FOUNDATION_CAPTURE_CONTRACT,
@@ -90,6 +90,7 @@ function describeContract() {
     approvalRoles: REQUIRED_APPROVAL_ROLES,
     constraints: {
       canonicalJsonRequired: true,
+      canonicalFoundationCaptureArtifactRequired: true,
       trustPolicyMustBeExternal: true,
       distinctApprovalKeysRequired: true,
       distinctApprovalPublicKeysRequired: true,

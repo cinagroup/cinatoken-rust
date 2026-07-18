@@ -6,6 +6,7 @@ import {
   p5CandidateDigestSha256,
 } from "../tools/relay_container_p5_evidence_contract.mjs";
 import {
+  FOUNDATION_MAX_INPUT_BYTES,
   FOUNDATION_REQUEST_CONTRACT,
   FOUNDATION_SOURCES_CONTRACT,
   collectP5Foundation,
@@ -20,6 +21,13 @@ import {
   executeCloudflareReadback,
   sha256,
 } from "../tools/lib/cloudflare_readback.mjs";
+import {
+  SHARD_ACTIVATION_LEDGER_CONTRACT,
+  activationDigestSha256,
+  buildActivationSnapshot,
+  buildShardRegistryCapture,
+  sha256Canonical,
+} from "../tools/lib/relay_container_shard_registry.mjs";
 
 const replacementToken = "rotated-readback-token-value-001";
 const collectorDigest = "f".repeat(64);
@@ -68,6 +76,15 @@ describe("Relay Container P5 foundation collector", () => {
   test("uses only the fixed read-only Wrangler allowlist", () => {
     const request = requestFixture();
     const { plan } = buildCloudflareReadbackPlan(request);
+    const unverifiableListKeys = [
+      "edge-deployments",
+      "controller-deployments",
+      "provider-egress-deployments",
+      "kv-namespaces",
+      "container-applications",
+      "container-instances",
+      "container-images",
+    ];
     expect(plan).toHaveLength(13);
     for (const item of plan) {
       expect(() => assertReadOnlyWranglerCommand(item)).not.toThrow();
@@ -76,6 +93,26 @@ describe("Relay Container P5 foundation collector", () => {
       expect(item.args).not.toContain("ssh");
       expect(item.args).not.toContain("wake");
     }
+    expect(
+      plan
+        .filter((item) => item.paginationMode === "unverifiable-list")
+        .map((item) => item.key),
+    ).toEqual(unverifiableListKeys);
+    expect(
+      plan
+        .filter((item) => item.paginationMode === "single-object")
+        .map((item) => item.key),
+    ).toEqual(
+      plan
+        .map((item) => item.key)
+        .filter((key) => !unverifiableListKeys.includes(key)),
+    );
+    expect(() =>
+      assertReadOnlyWranglerCommand({
+        ...plan.find((item) => item.key === "container-applications"),
+        paginationMode: "single-object",
+      }),
+    ).toThrow(/pagination classification drifted/);
     expect(() =>
       assertReadOnlyWranglerCommand({
         ...plan[0],
@@ -110,8 +147,8 @@ describe("Relay Container P5 foundation collector", () => {
       },
     });
 
-    expect(report.complete).toBe(true);
-    expect(report.paginationComplete).toBe(true);
+    expect(report.complete).toBe(false);
+    expect(report.paginationComplete).toBe(false);
     expect(calls).toHaveLength(13);
     for (const call of calls) {
       expect(call.args.join(" ")).not.toContain(replacementToken);
@@ -159,7 +196,7 @@ describe("Relay Container P5 foundation collector", () => {
     expect(report.complete).toBe(false);
   });
 
-  test("rejects credential reflection and marks full pages incomplete", async () => {
+  test("rejects credential reflection and cannot prove a short first page is complete", async () => {
     const request = requestFixture();
     const plan = buildCloudflareReadbackPlan(request);
     await expect(
@@ -182,7 +219,7 @@ describe("Relay Container P5 foundation collector", () => {
           return {
             exitCode: 0,
             stdout: JSON.stringify(
-              Array.from({ length: 100 }, (_, index) =>
+              Array.from({ length: 99 }, (_, index) =>
                 index === 0 ? item.expectedValues : [`application-${index}`],
               ).flat(),
             ),
@@ -193,10 +230,34 @@ describe("Relay Container P5 foundation collector", () => {
       },
     });
     expect(incomplete.paginationComplete).toBe(false);
-    expect(
-      incomplete.commands.find((item) => item.key === "container-applications")
-        .status,
-    ).toBe("not-proven");
+    const applications = incomplete.commands.find(
+      (item) => item.key === "container-applications",
+    );
+    expect(applications.itemCount).toBe(99);
+    expect(applications.paginationComplete).toBe(false);
+    expect(applications.status).toBe("not-proven");
+  });
+
+  test("allows non-paginated single-object commands to pass", async () => {
+    const request = requestFixture();
+    const fullPlan = buildCloudflareReadbackPlan(request);
+    const singleObjectPlan = {
+      ...fullPlan,
+      plan: fullPlan.plan.filter(
+        (item) => item.paginationMode === "single-object",
+      ),
+    };
+    let callIndex = 0;
+    const report = await executeCloudflareReadback(singleObjectPlan, {
+      apiToken: replacementToken,
+      runCommand: async () =>
+        successfulCommandResult(singleObjectPlan.plan[callIndex++]),
+    });
+
+    expect(report.commands).toHaveLength(6);
+    expect(report.commands.every((item) => item.status === "pass")).toBe(true);
+    expect(report.complete).toBe(true);
+    expect(report.paginationComplete).toBe(true);
   });
 
   test("keeps missing external inventories not-proven", async () => {
@@ -241,9 +302,15 @@ describe("Relay Container P5 foundation collector", () => {
   test("measures the bounded observation between complete readback snapshots", async () => {
     const request = requestFixture();
     request.observationSeconds = 7200;
+    const sources = retimeShardCapture(
+      sourcesFixture(request),
+      "2026-07-19T10:01:00.000Z",
+      "2026-07-19T12:01:00.000Z",
+    );
+    sources.capturedAt = "2026-07-19T12:01:00.000Z";
     const result = await collectWith({
       request,
-      sourceBundle: sourcesFixture(request),
+      sourceBundle: sources,
       readbackDurationsMs: [60_000, 120_000],
     });
     expect(result.subject.observationStartedAt).toBe(
@@ -273,11 +340,24 @@ describe("Relay Container P5 foundation collector", () => {
     sources.sources.r2Inventory.unknownWriterCount = 1;
     sources.sources.traffic.customerTrafficCount = 1;
     sources.sources.shardRegistry.status = "unknown";
+    refreshSourceDigest(sources.sources.r2Inventory);
+    refreshSourceDigest(sources.sources.traffic);
     const result = await collectWith({ request, sourceBundle: sources });
     expect(result.subject.foundationEvidenceReady).toBe(false);
     expect(result.subject.blockers).toContain("unknown-r2-writers");
     expect(result.subject.blockers).toContain("customer-traffic-present");
     expect(result.subject.blockers).toContain("shardRegistry-source-not-pass");
+
+    const crossVersion = sourcesFixture(request);
+    crossVersion.sources.actionGates.controllerVersionId = "controller-version-002";
+    refreshSourceDigest(crossVersion.sources.actionGates);
+    const crossVersionResult = await collectWith({
+      request,
+      sourceBundle: crossVersion,
+    });
+    expect(crossVersionResult.subject.blockers).toContain(
+      "action-gates-controller-version-mismatch",
+    );
   });
 
   test("requires source capture to overlap the bounded observation", async () => {
@@ -288,22 +368,51 @@ describe("Relay Container P5 foundation collector", () => {
     expect(result.subject.blockers).toContain(
       "source-capture-outside-observation-window",
     );
+
+    const staleShardSources = retimeShardCapture(
+      sourcesFixture(request),
+      "2026-07-19T09:00:00.000Z",
+      "2026-07-19T09:05:00.000Z",
+    );
+    const staleShard = await collectWith({
+      request,
+      sourceBundle: staleShardSources,
+    });
+    expect(staleShard.subject.blockers).toContain(
+      "shard-registry-window-does-not-cover-foundation",
+    );
   });
 
   test("validates the strict source bundle and candidate binding", () => {
     const request = requestFixture();
     const candidateDigest = p5CandidateDigestSha256(request.candidate);
     const sources = sourcesFixture(request);
-    expect(validateFoundationSources(sources, candidateDigest)).toEqual(sources);
+    expect(
+      validateFoundationSources(sources, candidateDigest, request.candidate),
+    ).toEqual(sources);
     expect(() =>
       validateFoundationSources(
         { ...sources, candidateDigestSha256: "0".repeat(64) },
         candidateDigest,
+        request.candidate,
       ),
     ).toThrow(/candidate digest mismatch/);
     expect(() =>
-      validateFoundationSources({ ...sources, rawPayload: "unsafe" }, candidateDigest),
+      validateFoundationSources(
+        { ...sources, rawPayload: "unsafe" },
+        candidateDigest,
+        request.candidate,
+      ),
     ).toThrow(/unknown or missing fields/);
+  });
+
+  test("fits the full 1024-shard capture inside the bounded source input", () => {
+    const request = requestFixture();
+    request.candidate.shardCount = 1_024;
+    const sources = sourcesFixture(request);
+    expect(Buffer.byteLength(`${canonicalJson(sources)}\n`, "utf8")).toBeLessThanOrEqual(
+      FOUNDATION_MAX_INPUT_BYTES,
+    );
   });
 
   test("requires explicit live confirmations and rejects CLI ambiguity", () => {
@@ -422,6 +531,8 @@ function requestFixture() {
       controllerWorkerVersionId: "controller-version-001",
       providerEgressWorkerVersionId: "egress-version-001",
       containerImageDigest: `sha256:${"4".repeat(64)}`,
+      containerRuntimeBuildId: "a".repeat(64),
+      containerImageProvenanceSha256: "b".repeat(64),
       containerSbomSha256: "5".repeat(64),
       d1DatabaseName: "cinatoken-rust-db-staging",
       d1DatabaseId: "c285553f-7f98-4ec2-b4d6-f84a3b409f3e",
@@ -435,8 +546,8 @@ function requestFixture() {
       containerClass: "RelayShardContainer",
       ringGeneration: 1,
       shardCount: 8,
-      migrationHead: "0053_relay_container_financial_terminal_v2.sql",
-      migrationCount: 53,
+      migrationHead: "0054_relay_container_shard_activations.sql",
+      migrationCount: 54,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,
@@ -452,33 +563,39 @@ function sourcesFixture(request) {
     collectorVersion: "1.0.0",
     sourceArtifactSha256: "8".repeat(64),
   });
-  return {
-    schemaVersion: 1,
+  const shardCapture = shardRegistryCaptureFixture(request);
+  const sources = {
+    schemaVersion: 2,
     contract: FOUNDATION_SOURCES_CONTRACT,
     environment: "staging",
     candidateDigestSha256: p5CandidateDigestSha256(request.candidate),
-    capturedAt: "2026-07-19T10:02:00.000Z",
+    capturedAt: "2026-07-19T10:05:00.000Z",
     accountIdSha256: sha256(request.accountId),
     paginationComplete: true,
     sources: {
       actionGates: {
         ...base(),
+        controllerVersionId: request.candidate.controllerWorkerVersionId,
+        actionGateInventorySha256: "9".repeat(64),
         allActionGatesFalse: true,
       },
       sbom: {
         ...base(),
         containerImageDigest: request.candidate.containerImageDigest,
+        containerRuntimeBuildId: request.candidate.containerRuntimeBuildId,
+        containerImageProvenanceSha256:
+          request.candidate.containerImageProvenanceSha256,
         containerSbomSha256: request.candidate.containerSbomSha256,
         containerSignatureVerified: true,
+        runtimeImageProvenanceVerified: true,
         unapprovedCriticalVulnerabilities: 0,
         unapprovedHighVulnerabilities: 0,
       },
       shardRegistry: {
         ...base(),
+        sourceArtifactSha256: sha256Canonical(shardCapture),
         doNamespaceIdSha256: request.candidate.doNamespaceIdSha256,
-        ringGeneration: request.candidate.ringGeneration,
-        shardCount: request.candidate.shardCount,
-        verifiedShardCount: request.candidate.shardCount,
+        capture: shardCapture,
       },
       r2Inventory: {
         ...base(),
@@ -492,6 +609,134 @@ function sourcesFixture(request) {
       },
     },
   };
+  for (const name of ["actionGates", "sbom", "r2Inventory", "traffic"]) {
+    refreshSourceDigest(sources.sources[name]);
+  }
+  return sources;
+}
+
+function shardRegistryCaptureFixture(request) {
+  const candidate = {
+    controllerVersionId: request.candidate.controllerWorkerVersionId,
+    runtimeBuildId: request.candidate.containerRuntimeBuildId,
+    containerImageDigest: request.candidate.containerImageDigest,
+    imageProvenanceSha256:
+      request.candidate.containerImageProvenanceSha256,
+    ringGeneration: request.candidate.ringGeneration,
+    shardCount: request.candidate.shardCount,
+  };
+  const records = Array.from({ length: candidate.shardCount }, (_, shardIndex) => {
+    const record = {
+      registry_event_sequence: shardIndex + 1,
+      shard_count: candidate.shardCount,
+      shard_index: shardIndex,
+      instance_name: `cinatoken-relay-shard-v1-${String(shardIndex).padStart(4, "0")}`,
+      shard_contract_version: 1,
+      runtime_protocol_version: 1,
+      runtime_contract_version: 1,
+      runtime_build_id: candidate.runtimeBuildId,
+      activation_generation: 1,
+      activation_probe_generation: shardIndex + 1,
+      environment: "staging",
+      container_status: "healthy",
+      readiness_result_code: "process_ready_execution_disabled",
+      process_ready: true,
+      runtime_execution_enabled: false,
+      controller_execution_enabled: false,
+      activation_digest_sha256: "",
+      activated_at:
+        Math.floor(Date.parse("2026-07-19T09:59:00.000Z") / 1_000) +
+        (shardIndex % 30),
+    };
+    record.activation_digest_sha256 = activationDigestSha256({
+      controllerVersionId: candidate.controllerVersionId,
+      ringGeneration: candidate.ringGeneration,
+      record,
+    });
+    return record;
+  });
+  const highWatermark = records.at(-1).registry_event_sequence;
+  const pages = [];
+  for (let offset = 0; offset < records.length; offset += 64) {
+    const pageRecords = records.slice(offset, offset + 64);
+    const terminal = offset + pageRecords.length === records.length;
+    pages.push({
+      contract_version: 1,
+      ledger_contract: SHARD_ACTIVATION_LEDGER_CONTRACT,
+      controller_version_id: candidate.controllerVersionId,
+      ring_generation: candidate.ringGeneration,
+      high_watermark: highWatermark,
+      total_records: records.length,
+      count: pageRecords.length,
+      next_cursor: terminal
+        ? null
+        : String(pageRecords.at(-1).registry_event_sequence),
+      pagination_complete: terminal,
+      records: pageRecords,
+    });
+  }
+  const before = buildActivationSnapshot({
+    capturedAt: "2026-07-19T10:00:00.000Z",
+    pages,
+  });
+  const after = {
+    ...before,
+    capturedAt: "2026-07-19T10:05:00.000Z",
+  };
+  return buildShardRegistryCapture({
+    candidate,
+    observationStartedAt: before.capturedAt,
+    observationEndedAt: after.capturedAt,
+    before,
+    after,
+  });
+}
+
+function retimeShardCapture(sources, observationStartedAt, observationEndedAt) {
+  const current = sources.sources.shardRegistry.capture;
+  const activatedAt = Math.floor(Date.parse(observationStartedAt) / 1_000) - 60;
+  const records = current.before.records.map((record, index) => {
+    const adjusted = {
+      ...record,
+      activated_at: activatedAt + (index % 30),
+      activation_digest_sha256: "",
+    };
+    adjusted.activation_digest_sha256 = activationDigestSha256({
+      controllerVersionId: current.candidate.controllerVersionId,
+      ringGeneration: current.candidate.ringGeneration,
+      record: adjusted,
+    });
+    return adjusted;
+  });
+  const entriesSha256 = sha256Canonical(records);
+  const before = {
+    ...current.before,
+    capturedAt: observationStartedAt,
+    entriesSha256,
+    records,
+  };
+  const after = {
+    ...current.after,
+    capturedAt: observationEndedAt,
+    entriesSha256,
+    records,
+  };
+  const capture = buildShardRegistryCapture({
+    candidate: current.candidate,
+    observationStartedAt,
+    observationEndedAt,
+    before,
+    after,
+  });
+  sources.sources.shardRegistry.capture = capture;
+  sources.sources.shardRegistry.sourceArtifactSha256 = sha256Canonical(capture);
+  return sources;
+}
+
+function refreshSourceDigest(source) {
+  const digestInput = { ...source };
+  delete digestInput.sourceArtifactSha256;
+  source.sourceArtifactSha256 = sha256Canonical(digestInput);
 }
 
 function digest(value) {

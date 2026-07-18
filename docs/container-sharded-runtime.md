@@ -1178,3 +1178,44 @@ Receipt v1 cannot encode rejected provider evidence or a rebuilt client body;
 the runtime remains blocked on response-artifact migration 0052, protocol v3,
 and separate provider/client status. The complete design is in
 `docs/response-interpreter-production-plan.md`.
+
+## Immutable Activation Inventory (2026-07-19)
+
+The application now has a local implementation for enumerating logical shard
+activation without iterating Durable Object IDs or waking Containers.
+
+The Container runtime prewarms a chunked executable hash and returns a
+64-character lowercase SHA-256 build ID from `/readyz`; hash failure returns a
+typed 503 rather than panicking. The Controller combines this with Version Metadata, ring generation,
+canonical shard name, runtime/shard protocols, readiness generation, gate
+state, environment, and observation time. It inserts one immutable D1 row only
+when recording is explicitly enabled and the runtime build equals the frozen
+expected candidate. The unique key includes both Controller and runtime build,
+so an N-1 build cannot consume the candidate row during a rollout.
+
+The edge Worker exposes a root-authenticated read-only projection. The first
+page freezes the maximum activation event sequence for one Controller version
+and ring. Later pages must supply that watermark and a strictly increasing
+cursor. The response includes no secret, raw payload, tenant identity, DO ID,
+or Container endpoint. The handler reads D1 only, verifies every row and digest,
+and sets `Cache-Control: no-store`.
+
+The offline collector treats the endpoint as an append-only event ledger, not a
+trusted summary. It recomputes each digest, requires exactly one candidate row
+for every shard index, requires generation one and a row no older than two
+hours at observation start or more than 60 seconds in the future, and compares
+complete before/after canonical records.
+Missing, duplicate, unknown-build, wrong-ring, enabled-execution, cursor, or
+stability failures block P5.
+
+The static activation-recording variable is not yet an executable production
+ceremony. Changing it on and off creates different Controller versions, while
+the ledger and all-gates-false source must bind one exact version. A
+root-authorized same-version campaign with nonce, expiry, per-shard single use,
+automatic seal, and immutable audit remains required before live collection.
+
+This ledger proves application-observed activation. It does not prove the
+Cloudflare namespace has no hidden object, that a sleeping Container is running,
+or that a runtime hash belongs to a specific image. Those claims remain on the
+control-plane inventory and runtime-to-image provenance planes. No remote
+activation evidence exists yet; production remains **NO-GO**.

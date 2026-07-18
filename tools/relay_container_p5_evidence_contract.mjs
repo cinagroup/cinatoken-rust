@@ -7,7 +7,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 
 export const MANIFEST_CONTRACT =
-  "cinatoken-relay-container-p5-promotion-manifest-v1";
+  "cinatoken-relay-container-p5-promotion-manifest-v2";
 export const TRUST_POLICY_CONTRACT =
   "cinatoken-relay-container-p5-trust-policy-v1";
 export const EVIDENCE_CONTRACT =
@@ -16,7 +16,7 @@ export const APPROVAL_DOMAIN =
   "cinatoken-relay-container-p5-approval-v1";
 export const FOUNDATION_CAPTURE_CONTRACT =
   "cinatoken-relay-container-p5-foundation-capture-v1";
-export const FOUNDATION_COLLECTOR_VERSION = 1;
+export const FOUNDATION_COLLECTOR_VERSION = 2;
 
 export const REQUIRED_APPROVAL_ROLES = Object.freeze([
   "security",
@@ -71,6 +71,7 @@ export const REQUIRED_PROVENANCE_SEGMENTS = Object.freeze([
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_POLICY_BYTES = 256 * 1024;
 const MAX_EVIDENCE_BYTES = 1024 * 1024;
+const MAX_FOUNDATION_CAPTURE_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_EVIDENCE_BYTES = 16 * 1024 * 1024;
 const MAX_CLOCK_SKEW_SECONDS = 300;
 const MAX_DECISION_LIFETIME_SECONDS = 24 * 60 * 60;
@@ -86,7 +87,7 @@ const PINNED_GO_SOURCE_COMMIT =
 const PINNED_VIBE_SOURCE_COMMIT =
   "918e97480ee44e357abe99bf33c27259d6ac7ebd";
 const EXPECTED_MIGRATION_HEAD =
-  "0053_relay_container_financial_terminal_v2.sql";
+  "0054_relay_container_shard_activations.sql";
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const gitCommitPattern = /^[0-9a-f]{40}$/;
@@ -99,6 +100,8 @@ const bindingNamePattern = /^[A-Z][A-Z0-9_]{0,63}$/;
 const classNamePattern = /^[A-Z][A-Za-z0-9]{0,63}$/;
 const keyIdPattern = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const relativeEvidencePathPattern = /^evidence\/[a-z0-9][a-z0-9-]{0,63}\.json$/;
+const relativeFoundationCapturePathPattern =
+  /^evidence\/foundation-capture\.json$/;
 const base64UrlPattern = /^[A-Za-z0-9_-]+$/;
 
 export async function verifyP5Bundle({
@@ -137,6 +140,15 @@ export async function verifyP5Bundle({
     throw new Error("[candidate] candidate digest mismatch");
   }
 
+  const foundationRecord = validateFoundationCaptureRecord(
+    manifest.subject.foundationCapture,
+  );
+  const foundation = await readAndValidateFoundationCapture({
+    record: foundationRecord,
+    manifestRoot,
+    candidate,
+    candidateDigestSha256,
+  });
   const cohort = validateCohort(
     manifest.subject.cohort,
     manifest.subject,
@@ -153,6 +165,7 @@ export async function verifyP5Bundle({
     policy,
     now,
   });
+  validateEvidenceFoundationBinding(evidence, foundation);
 
   const subjectDigestSha256 = sha256Hex(
     Buffer.from(canonicalJson(manifest.subject), "utf8"),
@@ -171,7 +184,7 @@ export async function verifyP5Bundle({
 
   return {
     ok: true,
-    schemaVersion: 1,
+    schemaVersion: 2,
     contract: MANIFEST_CONTRACT,
     decision: "eligible-for-isolated-staging-synthetic-canary-review",
     isolatedStagingSyntheticCanaryEligible: true,
@@ -187,6 +200,7 @@ export async function verifyP5Bundle({
     evidenceCount: evidence.items.length,
     latestEvidenceAt: evidence.latestEvidenceAt,
     foundationCaptureSha256: evidence.foundationCaptureSha256,
+    foundationArtifactSha256: foundationRecord.sha256,
     approvalRoles,
     cohort: {
       kind: cohort.kind,
@@ -452,7 +466,7 @@ function validateManifestEnvelope(value) {
     ["schemaVersion", "contract", "subject", "subjectDigestSha256", "approvals"],
     "[manifest] manifest",
   );
-  requireExact(manifest.schemaVersion, 1, "[manifest] schemaVersion");
+  requireExact(manifest.schemaVersion, 2, "[manifest] schemaVersion");
   requireExact(manifest.contract, MANIFEST_CONTRACT, "[manifest] contract");
   requireSha256(manifest.subjectDigestSha256, "[manifest] subjectDigestSha256");
   const subject = requireObject(manifest.subject, "[manifest] subject");
@@ -466,6 +480,7 @@ function validateManifestEnvelope(value) {
       "expiresAt",
       "candidate",
       "candidateDigestSha256",
+      "foundationCapture",
       "cohort",
       "artifacts",
     ],
@@ -520,6 +535,8 @@ function validateCandidate(value) {
       "controllerWorkerVersionId",
       "providerEgressWorkerVersionId",
       "containerImageDigest",
+      "containerRuntimeBuildId",
+      "containerImageProvenanceSha256",
       "containerSbomSha256",
       "d1DatabaseName",
       "d1DatabaseId",
@@ -554,6 +571,11 @@ function validateCandidate(value) {
     requireToken(candidate[field], opaqueIdPattern, `[candidate] ${field}`);
   }
   requireToken(candidate.containerImageDigest, imageDigestPattern, "[candidate] image digest");
+  requireSha256(candidate.containerRuntimeBuildId, "[candidate] runtime build ID");
+  requireSha256(
+    candidate.containerImageProvenanceSha256,
+    "[candidate] image provenance digest",
+  );
   requireSha256(candidate.containerSbomSha256, "[candidate] SBOM digest");
   requireToken(candidate.d1DatabaseName, resourceNamePattern, "[candidate] D1 name");
   requireToken(candidate.d1DatabaseId, uuidPattern, "[candidate] D1 id");
@@ -569,9 +591,9 @@ function validateCandidate(value) {
   requireExact(candidate.doClass, "RelayShardContainer", "[candidate] DO class");
   requireExact(candidate.containerClass, candidate.doClass, "[candidate] class alignment");
   requireInteger(candidate.ringGeneration, 1, 1_000_000, "[candidate] ring generation");
-  requireInteger(candidate.shardCount, 1, 4096, "[candidate] shard count");
+  requireInteger(candidate.shardCount, 1, 1024, "[candidate] shard count");
   requireExact(candidate.migrationHead, EXPECTED_MIGRATION_HEAD, "[candidate] migration head");
-  requireExact(candidate.migrationCount, 53, "[candidate] migration count");
+  requireExact(candidate.migrationCount, 54, "[candidate] migration count");
   requireExact(candidate.responseProtocolVersion, 3, "[candidate] response protocol");
   requireExact(candidate.statusContractVersion, 4, "[candidate] status contract");
   requireExact(candidate.financialTerminalContractVersion, 2, "[candidate] terminal contract");
@@ -651,6 +673,342 @@ function validateArtifactRecords(value) {
   return records;
 }
 
+function validateFoundationCaptureRecord(value) {
+  const record = requireObject(value, "[foundation] capture record");
+  exactKeys(
+    record,
+    ["path", "sha256", "bytes"],
+    "[foundation] capture record",
+  );
+  requireToken(
+    record.path,
+    relativeFoundationCapturePathPattern,
+    "[foundation] capture path",
+  );
+  requireSha256(record.sha256, "[foundation] capture artifact digest");
+  requireInteger(
+    record.bytes,
+    2,
+    MAX_FOUNDATION_CAPTURE_BYTES,
+    "[foundation] capture bytes",
+  );
+  return record;
+}
+
+async function readAndValidateFoundationCapture({
+  record,
+  manifestRoot,
+  candidate,
+  candidateDigestSha256,
+}) {
+  const requested = path.resolve(manifestRoot, ...record.path.split("/"));
+  const requestedStats = await lstat(requested).catch(() => null);
+  if (!requestedStats || !requestedStats.isFile() || requestedStats.isSymbolicLink()) {
+    throw new Error("[foundation] capture must be a regular non-symlink file");
+  }
+  const resolved = await realpath(requested).catch(() => null);
+  if (!resolved || !isWithin(manifestRoot, resolved)) {
+    throw new Error("[foundation] capture path escaped the bundle root");
+  }
+  const file = await readCanonicalJson(
+    resolved,
+    "foundation capture",
+    MAX_FOUNDATION_CAPTURE_BYTES,
+  );
+  if (file.realPath !== resolved) {
+    throw new Error("[foundation] capture path is not stable");
+  }
+  if (file.bytes.length !== record.bytes) {
+    throw new Error("[foundation] capture byte count mismatch");
+  }
+  if (sha256Hex(file.bytes) !== record.sha256) {
+    throw new Error("[foundation] capture artifact digest mismatch");
+  }
+  return validateFoundationCaptureReport(
+    file.value,
+    candidate,
+    candidateDigestSha256,
+  );
+}
+
+function validateFoundationCaptureReport(value, candidate, candidateDigestSha256) {
+  const report = requireObject(value, "[foundation] capture");
+  exactKeys(
+    report,
+    [
+      "schemaVersion",
+      "contract",
+      "foundationCollectorVersion",
+      "foundationCollectorSha256",
+      "foundationCaptureSha256",
+      "binding",
+      "subject",
+    ],
+    "[foundation] capture",
+  );
+  requireExact(report.schemaVersion, 1, "[foundation] schemaVersion");
+  requireExact(report.contract, FOUNDATION_CAPTURE_CONTRACT, "[foundation] contract");
+  requireExact(
+    report.foundationCollectorVersion,
+    FOUNDATION_COLLECTOR_VERSION,
+    "[foundation] collector version",
+  );
+  requireSha256(report.foundationCollectorSha256, "[foundation] collector digest");
+  requireSha256(report.foundationCaptureSha256, "[foundation] subject digest");
+
+  const subject = requireObject(report.subject, "[foundation] subject");
+  exactKeys(
+    subject,
+    [
+      "mode",
+      "environment",
+      "decision",
+      "p5Eligible",
+      "productionEligible",
+      "customerTrafficEligible",
+      "foundationEvidenceReady",
+      "requestDigestSha256",
+      "candidateDigestSha256",
+      "candidate",
+      "observationStartedAt",
+      "observationEndedAt",
+      "observationSeconds",
+      "paginationComplete",
+      "readbackStable",
+      "before",
+      "after",
+      "sourceBundleDigestSha256",
+      "sources",
+      "artifactInventorySha256",
+      "blockers",
+      "evidenceFacts",
+      "safetyBoundary",
+    ],
+    "[foundation] subject",
+  );
+  requireExact(subject.mode, "live-readback", "[foundation] mode");
+  requireExact(subject.environment, "staging", "[foundation] environment");
+  requireExact(subject.decision, "not-proven", "[foundation] decision");
+  requireExact(subject.p5Eligible, false, "[foundation] P5 eligibility");
+  requireExact(subject.productionEligible, false, "[foundation] production eligibility");
+  requireExact(subject.customerTrafficEligible, false, "[foundation] customer traffic");
+  requireExact(subject.foundationEvidenceReady, true, "[foundation] evidence readiness");
+  requireSha256(subject.requestDigestSha256, "[foundation] request digest");
+  requireExact(
+    subject.candidateDigestSha256,
+    candidateDigestSha256,
+    "[foundation] candidate digest",
+  );
+  if (canonicalJson(subject.candidate) !== canonicalJson(candidate)) {
+    throw new Error("[foundation] candidate mismatch");
+  }
+  const startedAt = requireTimestamp(
+    subject.observationStartedAt,
+    "[foundation] observationStartedAt",
+  );
+  const endedAt = requireTimestamp(
+    subject.observationEndedAt,
+    "[foundation] observationEndedAt",
+  );
+  const durationSeconds = (endedAt.getTime() - startedAt.getTime()) / 1000;
+  if (
+    durationSeconds < MIN_FOUNDATION_OBSERVATION_SECONDS ||
+    durationSeconds > MAX_FOUNDATION_OBSERVATION_SECONDS
+  ) {
+    throw new Error("[foundation] observation window is invalid");
+  }
+  requireExact(
+    subject.observationSeconds,
+    Math.floor(durationSeconds),
+    "[foundation] observation seconds",
+  );
+  requireExact(subject.paginationComplete, true, "[foundation] pagination completeness");
+  requireExact(subject.readbackStable, true, "[foundation] readback stability");
+  const before = validateFoundationReadback(subject.before, "before");
+  const after = validateFoundationReadback(subject.after, "after");
+  requireExact(after.digestSha256, before.digestSha256, "[foundation] readback digest");
+  requireSha256(subject.sourceBundleDigestSha256, "[foundation] source bundle digest");
+  validateFoundationSourceSummary(subject.sources, startedAt, endedAt);
+  requireSha256(subject.artifactInventorySha256, "[foundation] artifact inventory digest");
+  if (!Array.isArray(subject.blockers) || subject.blockers.length !== 0) {
+    throw new Error("[foundation] blockers must be empty");
+  }
+  const evidenceFacts = requireObject(
+    subject.evidenceFacts,
+    "[foundation] evidence facts",
+  );
+  exactKeys(
+    evidenceFacts,
+    ["candidateFreeze", "remoteInventory"],
+    "[foundation] evidence facts",
+  );
+  requireObject(evidenceFacts.candidateFreeze, "[foundation] candidate-freeze facts");
+  requireObject(evidenceFacts.remoteInventory, "[foundation] remote-inventory facts");
+  requireExact(
+    evidenceFacts.candidateFreeze.artifactInventorySha256,
+    subject.artifactInventorySha256,
+    "[foundation] evidence inventory digest",
+  );
+  validateFoundationSafetyBoundary(subject.safetyBoundary);
+
+  const recomputedCaptureSha256 = sha256Hex(
+    Buffer.from(canonicalJson(subject), "utf8"),
+  );
+  requireExact(
+    report.foundationCaptureSha256,
+    recomputedCaptureSha256,
+    "[foundation] subject digest",
+  );
+  const binding = validateFoundationCaptureBinding(report.binding, report, subject);
+  return { binding, evidenceFacts };
+}
+
+function validateFoundationReadback(value, label) {
+  const readback = requireObject(value, `[foundation] ${label} readback`);
+  exactKeys(
+    readback,
+    ["digestSha256", "complete", "paginationComplete", "stderrEmpty", "commands"],
+    `[foundation] ${label} readback`,
+  );
+  requireSha256(readback.digestSha256, `[foundation] ${label} readback digest`);
+  requireExact(readback.complete, true, `[foundation] ${label} completeness`);
+  requireExact(
+    readback.paginationComplete,
+    true,
+    `[foundation] ${label} pagination completeness`,
+  );
+  requireExact(readback.stderrEmpty, true, `[foundation] ${label} stderr`);
+  if (
+    !Array.isArray(readback.commands) ||
+    readback.commands.length !== 13 ||
+    readback.commands.some((item) => !isPlainObject(item))
+  ) {
+    throw new Error(`[foundation] ${label} command inventory is invalid`);
+  }
+  return readback;
+}
+
+function validateFoundationSourceSummary(value, startedAt, endedAt) {
+  const sources = requireObject(value, "[foundation] source summary");
+  exactKeys(
+    sources,
+    [
+      "status",
+      "capturedAt",
+      "paginationComplete",
+      "actionGates",
+      "r2Inventory",
+      "sbom",
+      "shardRegistry",
+      "traffic",
+    ],
+    "[foundation] source summary",
+  );
+  requireExact(sources.status, "provided", "[foundation] source status");
+  const capturedAt = requireTimestamp(sources.capturedAt, "[foundation] source capturedAt");
+  if (
+    capturedAt.getTime() < startedAt.getTime() - 60_000 ||
+    capturedAt.getTime() > endedAt.getTime() + 60_000
+  ) {
+    throw new Error("[foundation] source capture is outside the observation window");
+  }
+  requireExact(sources.paginationComplete, true, "[foundation] source pagination");
+  for (const name of ["actionGates", "r2Inventory", "sbom", "shardRegistry", "traffic"]) {
+    requireExact(sources[name], "pass", `[foundation] ${name} source`);
+  }
+}
+
+function validateFoundationSafetyBoundary(value) {
+  const boundary = requireObject(value, "[foundation] safety boundary");
+  exactKeys(
+    boundary,
+    [
+      "credentialsRead",
+      "credentialValuesEmitted",
+      "customerTrafficEligible",
+      "deployOrRollbackExecuted",
+      "networkReadbackPerformed",
+      "p5Eligible",
+      "productionEligible",
+      "providerRequestPerformed",
+      "remoteMutationPerformed",
+      "shellExecuted",
+      "sshOrContainerWakeExecuted",
+      "writesFiles",
+    ],
+    "[foundation] safety boundary",
+  );
+  requireExact(boundary.credentialsRead, true, "[foundation] credentials read");
+  requireExact(boundary.networkReadbackPerformed, true, "[foundation] network readback");
+  for (const name of [
+    "credentialValuesEmitted",
+    "customerTrafficEligible",
+    "deployOrRollbackExecuted",
+    "p5Eligible",
+    "productionEligible",
+    "providerRequestPerformed",
+    "remoteMutationPerformed",
+    "shellExecuted",
+    "sshOrContainerWakeExecuted",
+    "writesFiles",
+  ]) {
+    requireExact(boundary[name], false, `[foundation] ${name}`);
+  }
+}
+
+function validateFoundationCaptureBinding(value, report, subject) {
+  const binding = requireObject(value, "[foundation] binding");
+  exactKeys(
+    binding,
+    [
+      "foundationCaptureContract",
+      "foundationCollectorVersion",
+      "foundationCollectorSha256",
+      "observationStartedAt",
+      "observationEndedAt",
+      "paginationComplete",
+      "foundationCaptureSha256",
+    ],
+    "[foundation] binding",
+  );
+  requireExact(
+    binding.foundationCaptureContract,
+    report.contract,
+    "[foundation] binding contract",
+  );
+  requireExact(
+    binding.foundationCollectorVersion,
+    report.foundationCollectorVersion,
+    "[foundation] binding collector version",
+  );
+  requireExact(
+    binding.foundationCollectorSha256,
+    report.foundationCollectorSha256,
+    "[foundation] binding collector digest",
+  );
+  requireExact(
+    binding.foundationCaptureSha256,
+    report.foundationCaptureSha256,
+    "[foundation] binding subject digest",
+  );
+  requireExact(
+    binding.observationStartedAt,
+    subject.observationStartedAt,
+    "[foundation] binding observation start",
+  );
+  requireExact(
+    binding.observationEndedAt,
+    subject.observationEndedAt,
+    "[foundation] binding observation end",
+  );
+  requireExact(
+    binding.paginationComplete,
+    subject.paginationComplete,
+    "[foundation] binding pagination",
+  );
+  return binding;
+}
+
 async function readAndValidateEvidence({
   artifactRecords,
   manifestRoot,
@@ -664,6 +1022,7 @@ async function readAndValidateEvidence({
   let latestEvidenceAt = 0;
   const items = [];
   const foundationBindings = new Map();
+  const foundationFacts = new Map();
   for (const record of artifactRecords) {
     const requested = path.resolve(manifestRoot, ...record.path.split("/"));
     const requestedStats = await lstat(requested).catch(() => null);
@@ -723,6 +1082,7 @@ async function readAndValidateEvidence({
     );
     if (validation?.foundationBinding) {
       foundationBindings.set(record.kind, validation.foundationBinding);
+      foundationFacts.set(record.kind, evidence.facts);
     }
     latestEvidenceAt = Math.max(latestEvidenceAt, capturedAt.getTime());
     items.push({ kind: record.kind, capturedAt: evidence.capturedAt });
@@ -742,7 +1102,46 @@ async function readAndValidateEvidence({
     items,
     latestEvidenceAt: new Date(latestEvidenceAt).toISOString(),
     foundationCaptureSha256: candidateFreezeFoundation.foundationCaptureSha256,
+    foundationBinding: candidateFreezeFoundation,
+    candidateFreezeFacts: foundationFacts.get("candidate-freeze"),
+    remoteInventoryFacts: foundationFacts.get("remote-inventory"),
   };
+}
+
+function validateEvidenceFoundationBinding(evidence, foundation) {
+  if (
+    canonicalJson(evidence.foundationBinding) !== canonicalJson(foundation.binding)
+  ) {
+    throw new Error("[foundation] evidence does not bind the capture artifact");
+  }
+  for (const [label, actual, expected] of [
+    [
+      "candidate-freeze",
+      evidence.candidateFreezeFacts,
+      foundation.evidenceFacts.candidateFreeze,
+    ],
+    [
+      "remote-inventory",
+      evidence.remoteInventoryFacts,
+      foundation.evidenceFacts.remoteInventory,
+    ],
+  ]) {
+    const facts = { ...requireObject(actual, `[${label}] facts`) };
+    for (const field of [
+      "foundationCaptureContract",
+      "foundationCaptureSha256",
+      "foundationCollectorVersion",
+      "foundationCollectorSha256",
+      "observationStartedAt",
+      "observationEndedAt",
+      "paginationComplete",
+    ]) {
+      delete facts[field];
+    }
+    if (canonicalJson(facts) !== canonicalJson(expected)) {
+      throw new Error(`[foundation] ${label} facts do not match the capture artifact`);
+    }
+  }
 }
 
 function validateEvidenceEnvelope(value, expectedKind) {
@@ -808,8 +1207,11 @@ function validateCandidateFreeze(facts, candidate, evidence) {
       "controllerWorkerVersionId",
       "providerEgressWorkerVersionId",
       "containerImageDigest",
+      "containerRuntimeBuildId",
+      "containerImageProvenanceSha256",
       "containerSbomSha256",
       "containerSignatureVerified",
+      "runtimeImageProvenanceVerified",
       "unapprovedCriticalVulnerabilities",
       "unapprovedHighVulnerabilities",
       "allActionGatesFalse",
@@ -832,12 +1234,19 @@ function validateCandidateFreeze(facts, candidate, evidence) {
     ["controllerWorkerVersionId", "controllerWorkerVersionId"],
     ["providerEgressWorkerVersionId", "providerEgressWorkerVersionId"],
     ["containerImageDigest", "containerImageDigest"],
+    ["containerRuntimeBuildId", "containerRuntimeBuildId"],
+    ["containerImageProvenanceSha256", "containerImageProvenanceSha256"],
     ["containerSbomSha256", "containerSbomSha256"],
   ];
   for (const [factField, candidateField] of matches) {
     requireExact(facts[factField], candidate[candidateField], `[candidate-freeze] ${factField}`);
   }
   requireExact(facts.containerSignatureVerified, true, "[candidate-freeze] signature");
+  requireExact(
+    facts.runtimeImageProvenanceVerified,
+    true,
+    "[candidate-freeze] runtime/image provenance",
+  );
   requireExact(facts.unapprovedCriticalVulnerabilities, 0, "[candidate-freeze] critical vulnerabilities");
   requireExact(facts.unapprovedHighVulnerabilities, 0, "[candidate-freeze] high vulnerabilities");
   requireExact(facts.allActionGatesFalse, true, "[candidate-freeze] action gates");
@@ -866,6 +1275,8 @@ function validateRemoteInventory(facts, candidate, evidence) {
       "doBinding",
       "doClass",
       "containerClass",
+      "containerRuntimeBuildId",
+      "containerImageProvenanceSha256",
       "ringGeneration",
       "shardCount",
       "verifiedShardCount",
@@ -895,6 +1306,8 @@ function validateRemoteInventory(facts, candidate, evidence) {
     "doBinding",
     "doClass",
     "containerClass",
+    "containerRuntimeBuildId",
+    "containerImageProvenanceSha256",
     "ringGeneration",
     "shardCount",
   ]) {
@@ -1029,10 +1442,10 @@ function validateSchemaReadback(facts) {
     "[schema-readback] facts",
   );
   requireExact(facts.migrationHead, EXPECTED_MIGRATION_HEAD, "[schema-readback] migration head");
-  requireExact(facts.migrationCount, 53, "[schema-readback] migration count");
-  requireExact(facts.tableCount, 57, "[schema-readback] table count");
-  requireExact(facts.incrementalColumnCount, 674, "[schema-readback] incremental columns");
-  requireExact(facts.keyIndexCount, 81, "[schema-readback] key indexes");
+  requireExact(facts.migrationCount, 54, "[schema-readback] migration count");
+  requireExact(facts.tableCount, 58, "[schema-readback] table count");
+  requireExact(facts.incrementalColumnCount, 694, "[schema-readback] incremental columns");
+  requireExact(facts.keyIndexCount, 83, "[schema-readback] key indexes");
   requireSha256(facts.schemaFingerprintSha256, "[schema-readback] schema fingerprint");
   requireSha256(facts.businessFingerprintBeforeSha256, "[schema-readback] before fingerprint");
   requireExact(
@@ -1226,7 +1639,7 @@ function validateRollbackRehearsal(facts) {
       "duplicateFinancialMutations",
       "goVpsAuthorityRestored",
       "p3ReadersRetained",
-      "migration0053Retained",
+      "migration0054Retained",
       "evidenceRetained",
       "rollbackDurationSeconds",
     ],
@@ -1237,7 +1650,7 @@ function validateRollbackRehearsal(facts) {
     "allActionGatesFalseReadback",
     "goVpsAuthorityRestored",
     "p3ReadersRetained",
-    "migration0053Retained",
+    "migration0054Retained",
     "evidenceRetained",
   ]) {
     requireExact(facts[field], true, `[rollback-rehearsal] ${field}`);

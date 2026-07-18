@@ -2596,11 +2596,11 @@ the traffic and financial authority until P5 is completed and approved.
 P5 now has an offline, fail-closed evidence contract. It requires one canonical
 candidate plus ten exact evidence kinds and five independent Ed25519 owner
 approvals. Artifact hashes, freshness, candidate identity, reader-first order,
-0053 schema, lifecycle/financial faults, provenance, load/cost/SLO, rollback,
+0054 schema, lifecycle/financial faults, provenance, load/cost/SLO, rollback,
 and security/privacy are verified together rather than accepted as separate
 free-form reports.
 
-The local contract suite passes 38 tests. It rejects noncanonical JSON,
+The local contract suite passes 42 tests. It rejects noncanonical JSON,
 candidate or artifact drift, stale evidence, customer traffic, writer-before-
 reader ordering, incomplete lifecycle/provenance, duplicate provider or
 financial effects, non-conserving response/settle/refund counts, elapsed cohort
@@ -2648,7 +2648,48 @@ LOG_DB snapshots; unique scheduler ownership; zero forward/reverse
 reconciliation delta; complete task/order disposition; and measured rollback.
 A complete packet is review input only and never authorizes cutover.
 
-Focused local verification passes 38 P5 tests, 14 foundation collector tests,
+Focused local verification passes 42 P5 tests, 16 foundation collector tests,
 23 Go/VPS cutover tests, and 22 shared subprocess/deploy-preflight tests. No
 authenticated collection or remote mutation occurred. Phase 1 remains
 production **NO-GO** pending real staging and Go/VPS evidence.
+
+## 2026-07-19 P5 Shard Activation Ledger v1
+
+Phase 1 now has a local, default-disabled implementation for the stable
+app-owned shard inventory required by P5. Migration 0054 adds an immutable
+global activation ledger keyed by Controller version, runtime build, ring, and
+shard. The Controller records only a live, healthy readiness result whose
+runtime build exactly matches the configured candidate. Legacy readiness stays
+readable for rollout compatibility but cannot create an activation row.
+
+The root-only Worker inventory endpoint uses a frozen D1 high watermark and
+bounded keyset pagination. It validates the canonical instance name, protocol
+and gate facts, and cross-runtime SHA-256 before returning a row. It performs no
+DO lookup and cannot wake a Container.
+
+The P5 shard collector derives readiness from each canonical shard index and
+compares complete before/after records. Source bundle v2 binds the actual
+capture digest, candidate Controller version, runtime build, image digest, and
+runtime-to-image provenance. Shard count is capped at 1024. A claimed
+`verifiedShardCount` can no longer substitute for the entries.
+
+The signed P5 subject now binds the actual canonical
+`evidence/foundation-capture.json` file by path, size, and complete SHA-256.
+The verifier recomputes its subject digest and requires its two fact objects to
+equal candidate-freeze and remote-inventory evidence; two copied digest strings
+cannot satisfy the contract.
+
+The static activation environment gate is not yet a valid staging ceremony.
+Enabling it and later disabling it creates different Controller versions,
+while the ledger, action-gate source, and candidate require one exact version.
+Phase 1 therefore requires a root-authorized same-version one-time campaign
+with nonce, expiry, per-shard consumption, automatic seal, and immutable audit
+before live activation collection can begin.
+
+Control-plane list pagination is now fail-closed because the pinned Wrangler
+output cannot prove there is no next page. Therefore this local advance does
+not make foundation evidence ready. Remote 0054 apply/readback, explicit
+Cloudflare API pagination, the one-time activation campaign, real runtime/image
+provenance, all-shard probes,
+fault/load/rollback campaigns, Go/VPS drain, and approvals remain open.
+Production remains **NO-GO**.

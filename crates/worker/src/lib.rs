@@ -32,6 +32,7 @@ mod container_reconciliation;
 mod container_reconciliation_admin;
 mod container_relay_canary;
 mod container_scheduler;
+mod container_shard_activation_admin;
 mod container_terminal_outbox;
 mod container_terminal_outbox_admin;
 mod d1_repositories;
@@ -198,6 +199,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/platform/capabilities", |req, ctx| async move {
             platform_gateway::capabilities(req, ctx.env).await
         })
+        .get_async(
+            "/api/platform/container/shards/activations",
+            |req, ctx| async move { container_shard_activation_admin::list(req, ctx.env).await },
+        )
         .post_async(
             "/api/platform/container/shards/readiness",
             |req, ctx| async move {
@@ -2339,6 +2344,7 @@ mod tests {
             "/api/status",
             "/api/setup",
             "/api/platform/capabilities",
+            "/api/platform/container/shards/activations",
             "/api/platform/container/shards/readiness",
             "/api/platform/container/reconciliation/status",
             "/api/platform/container/reconciliations",

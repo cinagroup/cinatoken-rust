@@ -48,6 +48,7 @@ export const REQUIRED_DISABLED_CONTROLLER_VARS = Object.freeze([
   "CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED",
   "CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED",
   "CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED",
+  "CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED",
 ]);
 
 const D1_DATABASE_ID_PATTERN =
@@ -129,9 +130,24 @@ export function validateControllerConfig(config, environment) {
   if (!isRecord(config.observability) || config.observability.enabled !== true) {
     throw new DeployPreflightError(`${environment} observability must be enabled`);
   }
+  if (
+    !isRecord(config.version_metadata) ||
+    config.version_metadata.binding !== "CF_VERSION_METADATA" ||
+    Object.keys(config.version_metadata).length !== 1
+  ) {
+    throw new DeployPreflightError(
+      `${environment} version_metadata must expose only CF_VERSION_METADATA`,
+    );
+  }
   if (!isRecord(config.vars)) {
     throw new DeployPreflightError(`${environment} vars must be an object`);
   }
+  requireEqual(config.vars.ENVIRONMENT, environment, `${environment} ENVIRONMENT`);
+  requireEqual(
+    config.vars.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID,
+    "",
+    `${environment} CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID`,
+  );
   for (const name of REQUIRED_DISABLED_CONTROLLER_VARS) {
     requireEqual(config.vars[name], "false", `${environment} ${name}`);
   }

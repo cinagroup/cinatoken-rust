@@ -28,6 +28,7 @@ use worker::{
 
 use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
+    require_root_auth,
 };
 use crate::container_controller::{
     probe as probe_container_controller, probe_shard_readiness,
@@ -190,7 +191,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0053_relay_container_financial_terminal_v2.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0054_relay_container_shard_activations.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -281,6 +282,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0051_relay_container_scheduled_terminalization.sql",
     "0052_relay_container_provider_response_artifacts.sql",
     "0053_relay_container_financial_terminal_v2.sql",
+    "0054_relay_container_shard_activations.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -848,10 +850,10 @@ struct ContainerShardReadinessRequest {
     confirm_wake: bool,
 }
 
-/// Admin-only targeted shard inspection. Ledger mode is side-effect free;
+/// Root-only targeted shard inspection. Ledger mode is side-effect free;
 /// live mode is separately gated because it can cold-start a Container.
 pub async fn container_shard_readiness(mut req: Request, env: Env) -> WorkerResult<Response> {
-    let admin = match require_admin_auth(&req, &env).await? {
+    let admin = match require_root_auth(&req, &env).await? {
         Ok(admin) => admin,
         Err(response) => return Ok(response),
     };
@@ -5081,16 +5083,17 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0053_relay_container_financial_terminal_v2.sql"
+            "0054_relay_container_shard_activations.sql"
         );
         assert_eq!(
-            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 5..],
+            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 6..],
             &[
                 "0049_relay_container_provider_usage_binding.sql",
                 "0050_relay_container_atomic_admission.sql",
                 "0051_relay_container_scheduled_terminalization.sql",
                 "0052_relay_container_provider_response_artifacts.sql",
                 "0053_relay_container_financial_terminal_v2.sql",
+                "0054_relay_container_shard_activations.sql",
             ]
         );
         assert!(
@@ -5337,6 +5340,16 @@ mod tests {
             .contains("ADD COLUMN financial_terminal_contract_version"));
         assert!(relay_container_financial_terminal_v2
             .contains("relay_container_financial_terminal_v2_guard"));
+        let relay_container_shard_activations =
+            include_str!("../../../migrations/d1/0054_relay_container_shard_activations.sql");
+        assert!(relay_container_shard_activations
+            .contains("CREATE TABLE relay_container_shard_activations"));
+        assert!(relay_container_shard_activations
+            .contains("CREATE UNIQUE INDEX idx_relay_container_shard_activations_identity"));
+        assert!(relay_container_shard_activations
+            .contains("relay_container_shard_activation_update_guard"));
+        assert!(relay_container_shard_activations
+            .contains("relay_container_shard_activation_delete_guard"));
         assert!(relay_container_provider_response_artifacts
             .contains("relay_container_response_artifact_inventory_cursor_insert_guard"));
         assert!(relay_container_provider_response_artifacts

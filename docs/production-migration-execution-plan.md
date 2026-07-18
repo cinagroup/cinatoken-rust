@@ -389,8 +389,8 @@ environment and is not a Container cutover flag.
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence; authenticated resource and secret-name readback; disabled provider-egress, Controller, then edge reader deployment; remote 0001-0051 with every action gate false; drained 0052 followed by 0053 apply/readback; `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 53/53 replay with 57 tables, 674 checked incremental columns, and 81 key indexes plus clean 0052/0053 pre/post audits are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence; authenticated resource and secret-name readback; disabled provider-egress, Controller, then edge reader deployment; remote 0001-0051 with every action gate false; drained 0052 followed by 0053, then default-off 0054 apply/readback; `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 54/54 replay with 58 tables, 694 checked incremental columns, and 83 key indexes plus clean 0052/0053/0054 pre/post audits are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go, and Container operation/billing/quota/audit terminal state commits atomically | Golden fixtures, cross-ledger D1 batch rollback faults, exact replay, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -404,7 +404,7 @@ environment and is not a Container cutover flag.
 | Workstream | Current Status | Production Target | Next Evidence |
 | --- | --- | --- | --- |
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
-| Data migration | Partial: local exact-set SQLite replay passes 53/53 migrations, 57 tables, 674 checked incremental columns, and 81 key indexes; 0052 adds drained immutable provider/client response evidence and 0053 adds financial terminal v2 while all tracked action gates remain false; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated reader-first remote staging apply with all gates false; exact writer/version inventory; pre-0052 drain; ordered 0052 then 0053 backup/apply/readback/post-audit; immutable negative probes; unchanged business fingerprint; real source inventory; staging import report; rollback point |
+| Data migration | Partial: local exact-set SQLite replay passes 54/54 migrations, 58 tables, 694 checked incremental columns, and 83 key indexes; 0052 adds drained immutable provider/client response evidence, 0053 adds financial terminal v2, and 0054 adds the immutable shard activation ledger while all tracked action gates remain false; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated reader-first remote staging apply with all gates false; exact writer/version inventory; pre-0052 drain; ordered 0052, 0053, then 0054 backup/apply/readback/post-audit; immutable negative probes; unchanged business fingerprint; real source inventory; staging import report; rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
 | Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers plus bounded commit-watermark compaction and a 1.5 MB local JSON guard, but no deployed retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, deployed hot-token window/structured-clone/load/cost report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
@@ -2114,3 +2114,61 @@ and a measured rollback package containing every accepted write.
 business/security/finance/operations/rollback owners remain mandatory. No live
 capture or production action occurred in this addendum; production remains
 **NO-GO**.
+
+## 2026-07-19 Shard Ledger And Control-Plane Pagination Addendum
+
+The production sequence now treats logical shard inventory and Cloudflare
+control-plane inventory as two independent evidence planes. Neither can replace
+the other.
+
+1. Rotate the exposed credential and freeze a replacement least-privilege
+   readback identity. Never place it in arguments, tracked files, evidence, or
+   command output.
+2. Freeze the final staging candidate including Controller Worker version,
+   Container image digest, runtime executable build ID, SBOM, and a signed or
+   otherwise approved provenance artifact that maps that build to that image.
+3. Back up staging D1 and apply 0054 with all execution/provider/financial and
+   activation-recording gates false. Read back the table, indexes, triggers,
+   empty-row state, immutable negatives, and unchanged business fingerprint.
+4. Deploy provider-egress, Controller reader, then edge reader. The Controller
+   must accept both legacy and build-bearing readiness, but no activation row
+   may be written yet.
+5. Roll the Container candidate at 10% and 100%. At each stage, prove the
+   control-plane image, compatible runtime protocol, zero customer traffic,
+   and zero provider/financial delta. Do not infer sleeping shard absence from
+   the running instance list.
+6. Implement and approve a same-Controller-version one-time activation
+   campaign with a root-authorized nonce, exact candidate, expiry, per-shard
+   single consumption, automatic seal and immutable audit. Do not toggle the
+   static activation environment variable: each edit creates another Worker
+   version and breaks candidate/action-gate identity.
+7. Use that campaign to perform one approved live readiness probe per logical
+   shard, then require it to seal with every effective action gate false. Rows
+   must be generation one and fresh for this campaign.
+8. Run the shard collector for 300-7200 seconds. Every page must use the first
+   response's high watermark; cursors and event sequences must be strictly
+   increasing; the final cursor must be null; before/after canonical records
+   must be identical; indexes must equal `0..N-1` with zero noncandidate rows.
+9. In parallel, collect the exact action-gate, SBOM/provenance, R2 inventory,
+   traffic-isolation, Worker deployment, D1/R2/KV, and Container application
+   evidence. All artifacts must overlap one observation window.
+10. Do not mark control-plane pagination complete from page size. Use a direct
+   Cloudflare endpoint with explicit cursor traversal, or keep the foundation
+   packet blocked.
+11. Archive the canonical foundation capture itself at
+    `evidence/foundation-capture.json`; the manifest must bind its byte count
+    and full SHA-256, and its emitted facts must exactly match the two evidence
+    records.
+12. Only after the ten P5 evidence categories and five signatures pass may the
+    isolated synthetic canary be reviewed. Customer and production authority
+    remain separate decisions.
+
+Steps 6 and 10 are currently unimplemented and independently block S3/S4.
+Local fixtures for activation and foundation integrity do not waive either
+requirement.
+
+Rollback disables customer admission, provider/financial writers, schedulers,
+and activation recording before artifact changes. It retains 0054, activation
+rows, P3/P4 readers, R2 artifacts, DO state, and evidence. The hot Go target is
+usable only after the live drain contract proves all process-local work and
+bidirectional synchronization. Production remains **NO-GO**.

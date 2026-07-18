@@ -37,15 +37,9 @@ const generatedAt = "2026-07-19T10:05:00.000Z";
 const signedAt = "2026-07-19T10:06:00.000Z";
 const expiresAt = "2026-07-19T20:00:00.000Z";
 const temporaryRoots = [];
-const foundationBindingFixture = Object.freeze({
-  foundationCaptureContract: FOUNDATION_CAPTURE_CONTRACT,
-  foundationCaptureSha256: "d".repeat(64),
-  foundationCollectorVersion: FOUNDATION_COLLECTOR_VERSION,
-  foundationCollectorSha256: "e".repeat(64),
-  observationStartedAt: "2026-07-19T09:50:00.000Z",
-  observationEndedAt: "2026-07-19T09:58:00.000Z",
-  paginationComplete: true,
-});
+const foundationCollectorSha256 = "e".repeat(64);
+const foundationObservationStartedAt = "2026-07-19T09:50:00.000Z";
+const foundationObservationEndedAt = "2026-07-19T09:58:00.000Z";
 
 afterAll(async () => {
   await Promise.all(
@@ -59,7 +53,10 @@ describe("Relay Container P5 evidence contract", () => {
     const result = await verify(bundle);
     expect(result.ok).toBe(true);
     expect(result.evidenceKinds).toEqual(REQUIRED_EVIDENCE_KINDS);
-    expect(result.foundationCaptureSha256).toBe("d".repeat(64));
+    expect(result.foundationCaptureSha256).toBe(
+      bundle.foundationCaptureSha256,
+    );
+    expect(result.foundationArtifactSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.approvalRoles).toEqual(REQUIRED_APPROVAL_ROLES);
     expect(result.isolatedStagingSyntheticCanaryEligible).toBe(true);
     expect(result.customerTrafficEligible).toBe(false);
@@ -70,13 +67,24 @@ describe("Relay Container P5 evidence contract", () => {
       remoteMutationPerformedByVerifier: false,
       credentialsReadByVerifier: false,
     });
-  });
+  }, 15_000);
 
   test("rejects noncanonical manifest JSON", async () => {
     const bundle = await createBundle();
     const manifest = JSON.parse(await readFile(bundle.manifestPath, "utf8"));
     await writeFile(bundle.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     await expect(verify(bundle)).rejects.toThrow(/canonical JSON/);
+  });
+
+  test("rejects the superseded manifest v1 contract", async () => {
+    const bundle = await createBundle({
+      mutateManifest: (manifest) => {
+        manifest.schemaVersion = 1;
+        manifest.contract =
+          "cinatoken-relay-container-p5-promotion-manifest-v1";
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/schemaVersion/);
   });
 
   test("rejects duplicate JSON members", async () => {
@@ -94,7 +102,7 @@ describe("Relay Container P5 evidence contract", () => {
     await writeFile(
       negativeZero.manifestPath,
       (await readFile(negativeZero.manifestPath, "utf8")).replace(
-        '"schemaVersion":1',
+        '"schemaVersion":2',
         '"schemaVersion":-0',
       ),
     );
@@ -104,7 +112,7 @@ describe("Relay Container P5 evidence contract", () => {
     await writeFile(
       unsafeInteger.manifestPath,
       (await readFile(unsafeInteger.manifestPath, "utf8")).replace(
-        '"schemaVersion":1',
+        '"schemaVersion":2',
         '"schemaVersion":9007199254740992',
       ),
     );
@@ -143,6 +151,39 @@ describe("Relay Container P5 evidence contract", () => {
       },
     });
     await expect(verify(bundle)).rejects.toThrow(/byte count mismatch|digest mismatch/);
+  });
+
+  test("rejects a foundation capture changed after manifest assembly", async () => {
+    const bundle = await createBundle({
+      afterWrite: async ({ foundationPath }) => {
+        await writeFile(foundationPath, "{}\n");
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(
+      /capture byte count mismatch|capture artifact digest mismatch/,
+    );
+  });
+
+  test("rejects a foundation capture whose readiness claims are contradictory", async () => {
+    const bundle = await createBundle({
+      mutateFoundationCapture: (capture) => {
+        capture.subject.readbackStable = false;
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/readback stability/);
+  });
+
+  test("rejects evidence facts that differ from the bound foundation artifact", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "candidate-freeze") {
+          evidence.facts.artifactInventorySha256 = "f".repeat(64);
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(
+      /candidate-freeze facts do not match the capture artifact/,
+    );
   });
 
   test("rejects a symlinked evidence path whose target remains in the bundle", async () => {
@@ -520,6 +561,26 @@ async function createBundle(options = {}) {
   const candidateDigestSha256 = sha256Hex(
     Buffer.from(canonicalJson(candidate), "utf8"),
   );
+  const foundationCapture = foundationCaptureFixture(
+    candidate,
+    candidateDigestSha256,
+  );
+  options.mutateFoundationCapture?.(foundationCapture);
+  const foundationRelativePath = "evidence/foundation-capture.json";
+  const foundationPath = path.join(
+    root,
+    ...foundationRelativePath.split("/"),
+  );
+  const foundationBytes = Buffer.from(
+    `${canonicalJson(foundationCapture)}\n`,
+    "utf8",
+  );
+  await writeFile(foundationPath, foundationBytes);
+  const foundationRecord = {
+    path: foundationRelativePath,
+    sha256: sha256Hex(foundationBytes),
+    bytes: foundationBytes.length,
+  };
   const evidencePaths = new Map();
   const records = [];
   for (const kind of REQUIRED_EVIDENCE_KINDS) {
@@ -532,7 +593,7 @@ async function createBundle(options = {}) {
       capturedAt,
       expiresAt,
       status: "pass",
-      facts: factsFixture(kind, candidate),
+      facts: factsFixture(kind, candidate, foundationCapture.binding),
     };
     options.mutateEvidence?.(kind, evidence);
     const relativePath = `evidence/${kind}.json`;
@@ -572,6 +633,7 @@ async function createBundle(options = {}) {
     expiresAt,
     candidate,
     candidateDigestSha256,
+    foundationCapture: foundationRecord,
     cohort,
     artifacts: records,
   };
@@ -610,7 +672,7 @@ async function createBundle(options = {}) {
   });
   options.mutateApprovals?.(approvals);
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     contract: MANIFEST_CONTRACT,
     subject,
     subjectDigestSha256,
@@ -622,8 +684,22 @@ async function createBundle(options = {}) {
   const trustPolicyPath = path.join(trustRoot, "trust-policy.json");
   await writeCanonical(manifestPath, manifest);
   await writeCanonical(trustPolicyPath, trustPolicy);
-  await options.afterWrite?.({ root, evidencePaths, manifestPath, trustPolicyPath });
-  return { root, manifestPath, trustPolicyPath, evidencePaths };
+  await options.afterWrite?.({
+    root,
+    evidencePaths,
+    foundationPath,
+    manifestPath,
+    trustPolicyPath,
+  });
+  return {
+    root,
+    manifestPath,
+    trustPolicyPath,
+    evidencePaths,
+    foundationPath,
+    foundationCaptureSha256: foundationCapture.foundationCaptureSha256,
+    foundationArtifactSha256: foundationRecord.sha256,
+  };
 }
 
 function candidateFixture() {
@@ -636,6 +712,8 @@ function candidateFixture() {
     controllerWorkerVersionId: "controller-version-001",
     providerEgressWorkerVersionId: "egress-version-001",
     containerImageDigest: `sha256:${"4".repeat(64)}`,
+    containerRuntimeBuildId: "a".repeat(64),
+    containerImageProvenanceSha256: "b".repeat(64),
     containerSbomSha256: "5".repeat(64),
     d1DatabaseName: "cinatoken-rust-db-staging",
     d1DatabaseId: "c285553f-7f98-4ec2-b4d6-f84a3b409f3e",
@@ -649,8 +727,8 @@ function candidateFixture() {
     containerClass: "RelayShardContainer",
     ringGeneration: 1,
     shardCount: 8,
-    migrationHead: "0053_relay_container_financial_terminal_v2.sql",
-    migrationCount: 53,
+    migrationHead: "0054_relay_container_shard_activations.sql",
+    migrationCount: 54,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,
@@ -658,46 +736,158 @@ function candidateFixture() {
   };
 }
 
-function factsFixture(kind, candidate) {
+function foundationCaptureFixture(candidate, candidateDigestSha256) {
+  const evidenceFacts = {
+    candidateFreeze: foundationEvidenceFactsFixture(
+      "candidateFreeze",
+      candidate,
+    ),
+    remoteInventory: foundationEvidenceFactsFixture(
+      "remoteInventory",
+      candidate,
+    ),
+  };
+  const readback = {
+    digestSha256: "c".repeat(64),
+    complete: true,
+    paginationComplete: true,
+    stderrEmpty: true,
+    commands: Array.from({ length: 13 }, (_, index) => ({
+      key: `readback-${index + 1}`,
+      status: "pass",
+    })),
+  };
+  const subject = {
+    mode: "live-readback",
+    environment: "staging",
+    decision: "not-proven",
+    p5Eligible: false,
+    productionEligible: false,
+    customerTrafficEligible: false,
+    foundationEvidenceReady: true,
+    requestDigestSha256: "1".repeat(64),
+    candidateDigestSha256,
+    candidate,
+    observationStartedAt: foundationObservationStartedAt,
+    observationEndedAt: foundationObservationEndedAt,
+    observationSeconds: 480,
+    paginationComplete: true,
+    readbackStable: true,
+    before: structuredClone(readback),
+    after: structuredClone(readback),
+    sourceBundleDigestSha256: "2".repeat(64),
+    sources: {
+      status: "provided",
+      capturedAt: foundationObservationEndedAt,
+      paginationComplete: true,
+      actionGates: "pass",
+      r2Inventory: "pass",
+      sbom: "pass",
+      shardRegistry: "pass",
+      traffic: "pass",
+    },
+    artifactInventorySha256: "8".repeat(64),
+    blockers: [],
+    evidenceFacts,
+    safetyBoundary: {
+      credentialsRead: true,
+      credentialValuesEmitted: false,
+      customerTrafficEligible: false,
+      deployOrRollbackExecuted: false,
+      networkReadbackPerformed: true,
+      p5Eligible: false,
+      productionEligible: false,
+      providerRequestPerformed: false,
+      remoteMutationPerformed: false,
+      shellExecuted: false,
+      sshOrContainerWakeExecuted: false,
+      writesFiles: false,
+    },
+  };
+  const foundationCaptureSha256 = sha256Hex(
+    Buffer.from(canonicalJson(subject), "utf8"),
+  );
+  const binding = {
+    foundationCaptureContract: FOUNDATION_CAPTURE_CONTRACT,
+    foundationCollectorVersion: FOUNDATION_COLLECTOR_VERSION,
+    foundationCollectorSha256,
+    observationStartedAt: foundationObservationStartedAt,
+    observationEndedAt: foundationObservationEndedAt,
+    paginationComplete: true,
+    foundationCaptureSha256,
+  };
+  return {
+    schemaVersion: 1,
+    contract: FOUNDATION_CAPTURE_CONTRACT,
+    foundationCollectorVersion: FOUNDATION_COLLECTOR_VERSION,
+    foundationCollectorSha256,
+    foundationCaptureSha256,
+    binding,
+    subject,
+  };
+}
+
+function foundationEvidenceFactsFixture(kind, candidate) {
+  if (kind === "candidateFreeze") {
+    return {
+      repositoryCommit: candidate.commitSha,
+      goSourceCommit: candidate.goSourceCommit,
+      vibeSourceCommit: candidate.vibeSourceCommit,
+      edgeWorkerVersionId: candidate.edgeWorkerVersionId,
+      controllerWorkerVersionId: candidate.controllerWorkerVersionId,
+      providerEgressWorkerVersionId: candidate.providerEgressWorkerVersionId,
+      containerImageDigest: candidate.containerImageDigest,
+      containerRuntimeBuildId: candidate.containerRuntimeBuildId,
+      containerImageProvenanceSha256:
+        candidate.containerImageProvenanceSha256,
+      containerSbomSha256: candidate.containerSbomSha256,
+      containerSignatureVerified: true,
+      runtimeImageProvenanceVerified: true,
+      unapprovedCriticalVulnerabilities: 0,
+      unapprovedHighVulnerabilities: 0,
+      allActionGatesFalse: true,
+      artifactInventorySha256: "8".repeat(64),
+    };
+  }
+  if (kind === "remoteInventory") {
+    return {
+      accountIdSha256: "9".repeat(64),
+      d1DatabaseName: candidate.d1DatabaseName,
+      d1DatabaseId: candidate.d1DatabaseId,
+      r2BucketName: candidate.r2BucketName,
+      configKvNamespaceIdSha256: candidate.configKvNamespaceIdSha256,
+      controllerServiceName: candidate.controllerServiceName,
+      providerEgressServiceName: candidate.providerEgressServiceName,
+      doNamespaceIdSha256: candidate.doNamespaceIdSha256,
+      doBinding: candidate.doBinding,
+      doClass: candidate.doClass,
+      containerClass: candidate.containerClass,
+      containerRuntimeBuildId: candidate.containerRuntimeBuildId,
+      containerImageProvenanceSha256:
+        candidate.containerImageProvenanceSha256,
+      ringGeneration: candidate.ringGeneration,
+      shardCount: candidate.shardCount,
+      verifiedShardCount: candidate.shardCount,
+      unknownWriterCount: 0,
+      unknownObjectCount: 0,
+      customerTrafficCount: 0,
+      environmentIsolationVerified: true,
+    };
+  }
+  throw new Error(`unsupported foundation facts fixture: ${kind}`);
+}
+
+function factsFixture(kind, candidate, foundationBinding) {
   switch (kind) {
     case "candidate-freeze":
       return {
-        repositoryCommit: candidate.commitSha,
-        goSourceCommit: candidate.goSourceCommit,
-        vibeSourceCommit: candidate.vibeSourceCommit,
-        edgeWorkerVersionId: candidate.edgeWorkerVersionId,
-        controllerWorkerVersionId: candidate.controllerWorkerVersionId,
-        providerEgressWorkerVersionId: candidate.providerEgressWorkerVersionId,
-        containerImageDigest: candidate.containerImageDigest,
-        containerSbomSha256: candidate.containerSbomSha256,
-        containerSignatureVerified: true,
-        unapprovedCriticalVulnerabilities: 0,
-        unapprovedHighVulnerabilities: 0,
-        allActionGatesFalse: true,
-        artifactInventorySha256: "8".repeat(64),
-        ...foundationBindingFixture,
+        ...foundationEvidenceFactsFixture("candidateFreeze", candidate),
+        ...foundationBinding,
       };
     case "remote-inventory":
       return {
-        accountIdSha256: "9".repeat(64),
-        d1DatabaseName: candidate.d1DatabaseName,
-        d1DatabaseId: candidate.d1DatabaseId,
-        r2BucketName: candidate.r2BucketName,
-        configKvNamespaceIdSha256: candidate.configKvNamespaceIdSha256,
-        controllerServiceName: candidate.controllerServiceName,
-        providerEgressServiceName: candidate.providerEgressServiceName,
-        doNamespaceIdSha256: candidate.doNamespaceIdSha256,
-        doBinding: candidate.doBinding,
-        doClass: candidate.doClass,
-        containerClass: candidate.containerClass,
-        ringGeneration: candidate.ringGeneration,
-        shardCount: candidate.shardCount,
-        verifiedShardCount: candidate.shardCount,
-        unknownWriterCount: 0,
-        unknownObjectCount: 0,
-        customerTrafficCount: 0,
-        environmentIsolationVerified: true,
-        ...foundationBindingFixture,
+        ...foundationEvidenceFactsFixture("remoteInventory", candidate),
+        ...foundationBinding,
       };
     case "reader-first-rollout":
       return {
@@ -718,10 +908,10 @@ function factsFixture(kind, candidate) {
     case "schema-readback":
       return {
         migrationHead: candidate.migrationHead,
-        migrationCount: 53,
-        tableCount: 57,
-        incrementalColumnCount: 674,
-        keyIndexCount: 81,
+        migrationCount: 54,
+        tableCount: 58,
+        incrementalColumnCount: 694,
+        keyIndexCount: 83,
         schemaFingerprintSha256: "a".repeat(64),
         businessFingerprintBeforeSha256: "b".repeat(64),
         businessFingerprintAfterSha256: "b".repeat(64),
@@ -802,7 +992,7 @@ function factsFixture(kind, candidate) {
         duplicateFinancialMutations: 0,
         goVpsAuthorityRestored: true,
         p3ReadersRetained: true,
-        migration0053Retained: true,
+        migration0054Retained: true,
         evidenceRetained: true,
         rollbackDurationSeconds: 180,
       };

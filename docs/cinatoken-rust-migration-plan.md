@@ -16229,14 +16229,15 @@ candidate.
 network access, credentials, subprocesses, or file writes. The signed subject
 binds the Rust/Go/cinaVibeSDK commits, Worker versions, Container image/SBOM,
 shared D1/KV/R2/Service Binding/DO identities, shard/ring, protocol versions,
-0053 schema head, bounded synthetic cohort, and every evidence file's path,
+0054 schema head, bounded synthetic cohort, the canonical foundation capture
+artifact, and every evidence file's path,
 size, digest, capture time, and expiry.
 
 Ten evidence kinds are conjunctive: candidate freeze, remote inventory,
 reader-first rollout, schema readback, lifecycle faults, response/financial
 faults, cross-layer provenance, load/cost/SLO, rollback rehearsal, and
 security/privacy review. Exact fact schemas reject a generic `pass` claim.
-Thresholds include all eight shards, 0053/53 with the current schema baseline,
+Thresholds include all eight shards, 0054/54 with the current schema baseline,
 twelve lifecycle scenarios, all P4 outcomes, zero duplicate provider/financial
 effects, exact response-class and settled-plus-refunded operation conservation,
 at least one hour/1,000 load requests, delivered alert drills,
@@ -16254,7 +16255,7 @@ or path invalidates all approvals.
 Even a complete packet returns only
 `eligible-for-isolated-staging-synthetic-canary-review`; customer traffic and
 production eligibility remain false. Local tests cover the complete fixture
-and 33 adversarial classes. `bun run check` now includes that suite.
+and 41 adversarial classes. `bun run check` now includes that suite.
 
 ### Cross-plane config correction
 
@@ -16371,10 +16372,13 @@ return only `eligible-for-production-cutover-review`, while
 
 ```powershell
 bun run check:relay-container:p5-evidence
-# PASS: 38/38.
+# PASS: 42/42.
 
 bun run check:relay-container:p5-foundation
-# PASS: 14/14 plus offline self-test.
+# PASS: 16/16 plus offline self-test.
+
+bun run check:relay-container:p5-shard-registry
+# PASS: 8/8.
 
 bun run check:go-vps-cutover:evidence
 # PASS: 23/23.
@@ -16389,3 +16393,126 @@ or traffic change was used. Next execution remains replacement-credential
 rotation, isolated staging collection, all-shard/source proof, the other eight
 P5 evidence campaigns, signatures, and finally the independently reviewed
 Go/VPS production packet. Production remains **NO-GO**.
+
+## 22.251 Immutable Shard Activation Evidence And VPS Drain Audit (2026-07-19)
+
+This increment replaces the P5 shard-registry aggregate assertion with an
+application-owned, candidate-bound evidence path. It remains local and
+default-inert. No migration was applied remotely, no Container was woken, and
+no traffic or financial authority changed.
+
+### Implemented local boundary
+
+- Migration 0054 adds `relay_container_shard_activations`, two unique identity
+  indexes, and immutable update/delete guards. Identity includes Controller
+  Worker version, runtime binary build ID, ring generation, and shard index, so
+  a rolling N-1 runtime cannot occupy the candidate runtime's unique row.
+- The Linux runtime computes SHA-256 of its running executable once and returns
+  `runtime_build_id` from `/readyz`. The new Controller reader accepts the
+  legacy four-field readiness response during reader-first rollout, but only a
+  five-field response can be recorded.
+- Controller Version Metadata supplies the writer version. Recording requires
+  an explicit evidence gate plus an exact expected runtime build ID; a missing
+  or mismatched candidate fails before D1 insertion. All tracked configs keep
+  recording and execution gates false.
+- The Worker exposes root-only, read-only
+  `GET /api/platform/container/shards/activations`. It checks migration/schema
+  readiness, freezes one high watermark, keyset-paginates at a bounded size,
+  independently recomputes every activation digest, emits `Cache-Control:
+  no-store`, and never looks up a Durable Object or Container stub.
+- `collect_relay_container_p5_shard_registry.mjs` captures complete before and
+  after snapshots over 300-7200 seconds. It rejects missing/repeated cursors,
+  incomplete pages, row or high-watermark drift, malformed identities,
+  noncandidate runtime rows, missing/duplicate shard indexes, execution-ready
+  rows during the disabled campaign, and rings above the real 1024-shard
+  ceiling.
+- Foundation sources v2 embeds the canonical capture and requires
+  `sourceArtifactSha256` to equal the recomputed capture digest. Candidate
+  identity now includes both `containerRuntimeBuildId` and
+  `containerImageProvenanceSha256`; the binary hash alone is not accepted as
+  proof of the deployed Container image.
+
+The cross-language activation digest has one fixed vector shared by the
+Controller writer, Worker reader, and offline collector. This prevents three
+individually valid implementations from silently signing different bytes.
+
+### Ordered staging execution
+
+| Step | Action | Required evidence | Abort condition |
+| --- | --- | --- | --- |
+| S0 credential and candidate freeze | Revoke the exposed credential; create a least-privilege replacement; freeze commits, Worker version IDs, image digest, runtime build ID, SBOM and runtime-to-image provenance | External credential rotation record plus canonical candidate digest | Old credential valid, placeholder identity, or provenance missing |
+| S1 schema reader | With all execution/provider/financial gates false, back up D1, apply/read back 0054, and deploy readers before writers | Exact 0054/54 schema, immutable negative probes, unchanged business fingerprint | Any old incompatible writer, unexpected row, or schema drift |
+| S2 runtime rollout | Deploy the Container image in `[10,100]` stages while activation recording remains false | Control-plane image digest, runtime build readback, N/N-1 compatibility, no provider/financial delta | Unknown image/build, incompatible readiness, or unexplained wake |
+| S3 candidate recording | Deploy the staging Controller candidate with only the expected-build-bound activation recorder enabled; explicitly probe each logical shard | Exactly one candidate row for every index `0..N-1`, zero old/unknown build rows | Missing, duplicate, wrong-build, wrong-ring, or execution-ready row |
+| S4 stability capture | Run the root-authenticated shard collector and all other P5 source collectors during the same bounded window | Frozen high watermark, complete keyset traversal, identical entries digest, source v2 artifact digest | Cursor gap/repeat, snapshot drift, source timestamp miss |
+| S5 P5 campaigns | Run lifecycle/response/financial faults, provenance, load/cost/SLO, rollback, privacy, and owner signatures | Ten evidence kinds and five independent signatures over one subject | Customer traffic, duplicate effect, stale evidence, or failed rollback |
+
+Wrangler's current list output does not expose enough cursor information for the
+existing collector to prove complete traversal. Those list commands now fail
+closed even when the first page contains fewer than 100 items. A direct,
+explicitly paginated Cloudflare API collector or equivalent authoritative
+readback is required before S4 can pass. This is an intentional new blocker,
+not a regression to be bypassed with aggregate counts.
+
+### Go/VPS rollback-target audit
+
+`docs/go-vps-drain-observability-audit.md` pins the source audit to Go commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703`. `/api/status`,
+`/api/status/test`, quiet proxy logs, and `active_connections=0` cannot prove
+that request-local BillingSession state, asynchronous refunds, five batch maps,
+quota export, scheduler work, or task terminal/settlement crash gaps are empty.
+The source has no coordinated `http.Server.Shutdown`, final flush, background
+join, or lease-based scheduler ownership.
+
+Production cutover therefore still requires live per-process evidence,
+four-protocol ingress drain, DB/LOG_DB stability, explicit task/order
+classification, bidirectional write reconciliation, and a measured hot-Go
+rollback. Unknown process-local state is a hard blocker. Go/VPS remains the
+traffic and financial authority, and production remains **NO-GO**.
+
+## 22.252 P5 Capture Binding And Activation Ceremony Audit (2026-07-19)
+
+The latest production audit closes two local integrity gaps without claiming
+remote readiness.
+
+First, promotion manifest v2 now contains a required fixed record for
+`evidence/foundation-capture.json`. The offline verifier reads that canonical
+regular file under the bundle root with a 4 MiB limit, verifies byte count and
+complete-file SHA-256, recomputes the collector subject digest, validates the
+ready/stable/paginated readback and hard-false safety boundary, then compares
+the capture's candidate-freeze and remote-inventory facts with the two signed
+evidence records. Five owner signatures therefore cover the actual capture
+artifact rather than two matching digest strings.
+
+Second, the Controller 0054 pre-write gate now verifies the migration marker,
+20-column catalog, both unique indexes and their ordered columns, both
+immutable trigger bodies, and critical table constraints in a first-primary
+D1 session. A real in-memory SQLite test applies the exact 0054 migration and
+passes through the same writer gate. Remote P5 schema evidence still requires
+the independently normalized 0054/54 schema digest and unchanged business
+fingerprint; the runtime shape check does not replace that proof.
+
+The audit also identifies an intentional execution blocker. The current
+activation writer is controlled by a static Worker environment variable.
+Turning that variable on to record rows and off for the all-gates-false source
+capture creates two Controller versions. Because activation rows and the
+action-gate inventory now bind the exact same candidate Controller version,
+those rows cannot be promoted by pairing them with a later disabled version.
+This must not be bypassed by weakening version identity or excluding the
+activation gate from evidence.
+
+Before staging S3 can run, add a same-version one-time activation campaign with
+a root-authorized approval nonce, exact candidate digest, bounded start/expiry,
+per-shard single consumption, automatic seal after N rows or timeout, immutable
+audit/readback, and replay rejection. S4 may begin only after that campaign is
+sealed and every effective action gate is false. The current shard collector
+also requires `activation_generation=1`, rows no older than two hours at
+observation start, at most 60 seconds of future skew, exact staging origin,
+bounded streaming HTTP responses, and stable all-page snapshots.
+
+Two other remote blockers remain independent: Wrangler list output cannot
+prove terminal control-plane pagination, and source collector provenance or
+external signatures must be archived even though every source record now has
+a canonical self-digest. No credential, Cloudflare API, migration, deployment,
+Container wake, provider call, financial mutation, or traffic switch was used.
+Go/VPS remains authoritative and production remains **NO-GO**.

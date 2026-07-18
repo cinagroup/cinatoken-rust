@@ -2600,7 +2600,7 @@ approvals. Artifact hashes, freshness, candidate identity, reader-first order,
 and security/privacy are verified together rather than accepted as separate
 free-form reports.
 
-The local contract suite passes 34 tests. It rejects noncanonical JSON,
+The local contract suite passes 38 tests. It rejects noncanonical JSON,
 candidate or artifact drift, stale evidence, customer traffic, writer-before-
 reader ordering, incomplete lifecycle/provenance, duplicate provider or
 financial effects, non-conserving response/settle/refund counts, elapsed cohort
@@ -2623,3 +2623,32 @@ it cannot authorize customer traffic or production. Authenticated collectors,
 real faults/load/rollback and approvals remain open. Production cutover also
 requires the separately documented Go/VPS process-state drain and reversible
 data path. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-19 P5 Foundation And Production Drain Contracts
+
+Phase 1 now includes the missing collection boundary behind the offline P5
+verifier. The foundation collector is staging-only, uses a fixed 13-command
+read-only Wrangler allowlist, and captures exact control-plane digests before
+and after a bounded observation window. A dedicated rotated readback token is
+mapped only into the child Wrangler environment; no credential, raw response,
+payload, account ID, KV ID, or Container application ID is emitted.
+
+The collector fails closed unless the before/after snapshots are complete and
+stable and the same window includes app-owned shard-registry, action-gate,
+SBOM/signature, R2 writer/object, and traffic-isolation sources. Container
+instance visibility alone is explicitly insufficient because sleeping Durable
+Objects are outside that running inventory. P5 candidate-freeze and
+remote-inventory records must bind the same capture and pagination result.
+
+The Go/VPS production drain is now a separate offline evidence contract rather
+than a prose-only elapsed-time check. It requires all HTTP, SSE, WebSocket, and
+task-submit ingress to drain; every process-owned BillingSession/refund/batch
+map to reach zero; successful persistence and export windows; stable SQL and
+LOG_DB snapshots; unique scheduler ownership; zero forward/reverse
+reconciliation delta; complete task/order disposition; and measured rollback.
+A complete packet is review input only and never authorizes cutover.
+
+Focused local verification passes 38 P5 tests, 14 foundation collector tests,
+23 Go/VPS cutover tests, and 22 shared subprocess/deploy-preflight tests. No
+authenticated collection or remote mutation occurred. Phase 1 remains
+production **NO-GO** pending real staging and Go/VPS evidence.

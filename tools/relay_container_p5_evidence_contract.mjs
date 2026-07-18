@@ -14,6 +14,9 @@ export const EVIDENCE_CONTRACT =
   "cinatoken-relay-container-p5-evidence-v1";
 export const APPROVAL_DOMAIN =
   "cinatoken-relay-container-p5-approval-v1";
+export const FOUNDATION_CAPTURE_CONTRACT =
+  "cinatoken-relay-container-p5-foundation-capture-v1";
+export const FOUNDATION_COLLECTOR_VERSION = 1;
 
 export const REQUIRED_APPROVAL_ROLES = Object.freeze([
   "security",
@@ -72,6 +75,9 @@ const MAX_TOTAL_EVIDENCE_BYTES = 16 * 1024 * 1024;
 const MAX_CLOCK_SKEW_SECONDS = 300;
 const MAX_DECISION_LIFETIME_SECONDS = 24 * 60 * 60;
 const MAX_EVIDENCE_AGE_SECONDS = 7 * 24 * 60 * 60;
+const MIN_FOUNDATION_OBSERVATION_SECONDS = 5 * 60;
+const MAX_FOUNDATION_OBSERVATION_SECONDS = 2 * 60 * 60;
+const MAX_FOUNDATION_EVIDENCE_LAG_SECONDS = 15 * 60;
 const MIN_LOAD_DURATION_SECONDS = 3600;
 const MIN_LOAD_REQUESTS = 1000;
 const MAX_ROLLBACK_DURATION_SECONDS = 900;
@@ -125,10 +131,8 @@ export async function verifyP5Bundle({
     throw new Error("[policy] trust policy must be supplied outside the evidence bundle");
   }
 
-  const candidate = validateCandidate(manifest.subject.candidate);
-  const candidateDigestSha256 = sha256Hex(
-    Buffer.from(canonicalJson(candidate), "utf8"),
-  );
+  const candidate = validateP5Candidate(manifest.subject.candidate);
+  const candidateDigestSha256 = p5CandidateDigestSha256(candidate);
   if (manifest.subject.candidateDigestSha256 !== candidateDigestSha256) {
     throw new Error("[candidate] candidate digest mismatch");
   }
@@ -182,6 +186,7 @@ export async function verifyP5Bundle({
     evidenceKinds: REQUIRED_EVIDENCE_KINDS,
     evidenceCount: evidence.items.length,
     latestEvidenceAt: evidence.latestEvidenceAt,
+    foundationCaptureSha256: evidence.foundationCaptureSha256,
     approvalRoles,
     cohort: {
       kind: cohort.kind,
@@ -231,6 +236,16 @@ export function canonicalJson(value) {
 
 export function sha256Hex(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+export function validateP5Candidate(value) {
+  return validateCandidate(value);
+}
+
+export function p5CandidateDigestSha256(value) {
+  return sha256Hex(
+    Buffer.from(canonicalJson(validateP5Candidate(value)), "utf8"),
+  );
 }
 
 export function base64UrlEncode(bytes) {
@@ -648,6 +663,7 @@ async function readAndValidateEvidence({
   let totalBytes = 0;
   let latestEvidenceAt = 0;
   const items = [];
+  const foundationBindings = new Map();
   for (const record of artifactRecords) {
     const requested = path.resolve(manifestRoot, ...record.path.split("/"));
     const requestedStats = await lstat(requested).catch(() => null);
@@ -699,13 +715,33 @@ async function readAndValidateEvidence({
     if (expiresAt.getTime() < new Date(subject.expiresAt).getTime()) {
       throw new Error(`[${record.kind}] evidence expires before the decision`);
     }
-    validateEvidenceFacts(record.kind, evidence.facts, candidate);
+    const validation = validateEvidenceFacts(
+      record.kind,
+      evidence.facts,
+      candidate,
+      evidence,
+    );
+    if (validation?.foundationBinding) {
+      foundationBindings.set(record.kind, validation.foundationBinding);
+    }
     latestEvidenceAt = Math.max(latestEvidenceAt, capturedAt.getTime());
     items.push({ kind: record.kind, capturedAt: evidence.capturedAt });
+  }
+  const candidateFreezeFoundation = foundationBindings.get("candidate-freeze");
+  const remoteInventoryFoundation = foundationBindings.get("remote-inventory");
+  if (
+    !candidateFreezeFoundation ||
+    !remoteInventoryFoundation ||
+    canonicalJson(candidateFreezeFoundation) !== canonicalJson(remoteInventoryFoundation)
+  ) {
+    throw new Error(
+      "[foundation] candidate-freeze and remote-inventory must bind the same capture",
+    );
   }
   return {
     items,
     latestEvidenceAt: new Date(latestEvidenceAt).toISOString(),
+    foundationCaptureSha256: candidateFreezeFoundation.foundationCaptureSha256,
   };
 }
 
@@ -734,12 +770,12 @@ function validateEvidenceEnvelope(value, expectedKind) {
   return evidence;
 }
 
-function validateEvidenceFacts(kind, facts, candidate) {
+function validateEvidenceFacts(kind, facts, candidate, evidence) {
   switch (kind) {
     case "candidate-freeze":
-      return validateCandidateFreeze(facts, candidate);
+      return validateCandidateFreeze(facts, candidate, evidence);
     case "remote-inventory":
-      return validateRemoteInventory(facts, candidate);
+      return validateRemoteInventory(facts, candidate, evidence);
     case "reader-first-rollout":
       return validateReaderFirst(facts, candidate);
     case "schema-readback":
@@ -761,7 +797,7 @@ function validateEvidenceFacts(kind, facts, candidate) {
   }
 }
 
-function validateCandidateFreeze(facts, candidate) {
+function validateCandidateFreeze(facts, candidate, evidence) {
   exactKeys(
     facts,
     [
@@ -778,6 +814,13 @@ function validateCandidateFreeze(facts, candidate) {
       "unapprovedHighVulnerabilities",
       "allActionGatesFalse",
       "artifactInventorySha256",
+      "foundationCaptureContract",
+      "foundationCaptureSha256",
+      "foundationCollectorVersion",
+      "foundationCollectorSha256",
+      "observationStartedAt",
+      "observationEndedAt",
+      "paginationComplete",
     ],
     "[candidate-freeze] facts",
   );
@@ -799,9 +842,16 @@ function validateCandidateFreeze(facts, candidate) {
   requireExact(facts.unapprovedHighVulnerabilities, 0, "[candidate-freeze] high vulnerabilities");
   requireExact(facts.allActionGatesFalse, true, "[candidate-freeze] action gates");
   requireSha256(facts.artifactInventorySha256, "[candidate-freeze] inventory digest");
+  return {
+    foundationBinding: validateFoundationBinding(
+      facts,
+      evidence,
+      "candidate-freeze",
+    ),
+  };
 }
 
-function validateRemoteInventory(facts, candidate) {
+function validateRemoteInventory(facts, candidate, evidence) {
   exactKeys(
     facts,
     [
@@ -823,6 +873,13 @@ function validateRemoteInventory(facts, candidate) {
       "unknownObjectCount",
       "customerTrafficCount",
       "environmentIsolationVerified",
+      "foundationCaptureContract",
+      "foundationCaptureSha256",
+      "foundationCollectorVersion",
+      "foundationCollectorSha256",
+      "observationStartedAt",
+      "observationEndedAt",
+      "paginationComplete",
     ],
     "[remote-inventory] facts",
   );
@@ -848,6 +905,68 @@ function validateRemoteInventory(facts, candidate) {
   requireExact(facts.unknownObjectCount, 0, "[remote-inventory] unknown objects");
   requireExact(facts.customerTrafficCount, 0, "[remote-inventory] customer traffic");
   requireExact(facts.environmentIsolationVerified, true, "[remote-inventory] environment isolation");
+  return {
+    foundationBinding: validateFoundationBinding(
+      facts,
+      evidence,
+      "remote-inventory",
+    ),
+  };
+}
+
+function validateFoundationBinding(facts, evidence, label) {
+  requireExact(
+    facts.foundationCaptureContract,
+    FOUNDATION_CAPTURE_CONTRACT,
+    `[${label}] foundation capture contract`,
+  );
+  requireExact(
+    facts.foundationCollectorVersion,
+    FOUNDATION_COLLECTOR_VERSION,
+    `[${label}] foundation collector version`,
+  );
+  requireSha256(
+    facts.foundationCaptureSha256,
+    `[${label}] foundation capture digest`,
+  );
+  requireSha256(
+    facts.foundationCollectorSha256,
+    `[${label}] foundation collector digest`,
+  );
+  requireExact(facts.paginationComplete, true, `[${label}] pagination completeness`);
+  const startedAt = requireTimestamp(
+    facts.observationStartedAt,
+    `[${label}] observationStartedAt`,
+  );
+  const endedAt = requireTimestamp(
+    facts.observationEndedAt,
+    `[${label}] observationEndedAt`,
+  );
+  const durationSeconds = (endedAt.getTime() - startedAt.getTime()) / 1000;
+  if (
+    durationSeconds < MIN_FOUNDATION_OBSERVATION_SECONDS ||
+    durationSeconds > MAX_FOUNDATION_OBSERVATION_SECONDS
+  ) {
+    throw new Error(`[${label}] foundation observation window is invalid`);
+  }
+  if (endedAt.getTime() > new Date(evidence.capturedAt).getTime()) {
+    throw new Error(`[${label}] foundation observation ended after evidence capture`);
+  }
+  if (
+    new Date(evidence.capturedAt).getTime() - endedAt.getTime() >
+    MAX_FOUNDATION_EVIDENCE_LAG_SECONDS * 1000
+  ) {
+    throw new Error(`[${label}] foundation observation is stale for evidence capture`);
+  }
+  return {
+    foundationCaptureContract: facts.foundationCaptureContract,
+    foundationCaptureSha256: facts.foundationCaptureSha256,
+    foundationCollectorVersion: facts.foundationCollectorVersion,
+    foundationCollectorSha256: facts.foundationCollectorSha256,
+    observationStartedAt: facts.observationStartedAt,
+    observationEndedAt: facts.observationEndedAt,
+    paginationComplete: facts.paginationComplete,
+  };
 }
 
 function validateReaderFirst(facts, candidate) {

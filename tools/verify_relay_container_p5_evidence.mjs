@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import {
+  FOUNDATION_CAPTURE_CONTRACT,
   MANIFEST_CONTRACT,
   REQUIRED_APPROVAL_ROLES,
   REQUIRED_EVIDENCE_KINDS,
@@ -81,6 +82,7 @@ function describeContract() {
     schemaVersion: 1,
     describe: true,
     manifestContract: MANIFEST_CONTRACT,
+    foundationCaptureContract: FOUNDATION_CAPTURE_CONTRACT,
     trustPolicyContract: TRUST_POLICY_CONTRACT,
     environment: "staging",
     decision: "isolated-staging-synthetic-canary",
@@ -93,6 +95,10 @@ function describeContract() {
       distinctApprovalPublicKeysRequired: true,
       singleHandleFileSnapshotsRequired: true,
       nonElapsedCohortRequired: true,
+      sharedFoundationCaptureRequired: true,
+      completeFoundationPaginationRequired: true,
+      boundedFoundationObservationRequired: true,
+      freshFoundationEvidenceBindingRequired: true,
       credentialsRead: false,
       networkRequests: false,
       writesFiles: false,
@@ -113,6 +119,7 @@ function printResult(result, json) {
       ? [
           "Relay Container P5 evidence contract",
           `manifest_contract: ${result.manifestContract}`,
+          `foundation_capture_contract: ${result.foundationCaptureContract}`,
           `trust_policy_contract: ${result.trustPolicyContract}`,
           `evidence_kinds: ${result.evidenceKinds.join(",")}`,
           `approval_roles: ${result.approvalRoles.join(",")}`,
@@ -128,6 +135,7 @@ function printResult(result, json) {
       `commit: ${result.commitSha}`,
       `candidate_digest_sha256: ${result.candidateDigestSha256}`,
       `subject_digest_sha256: ${result.subjectDigestSha256}`,
+      `foundation_capture_sha256: ${result.foundationCaptureSha256}`,
       `evidence_count: ${result.evidenceCount}`,
       `production_eligible: ${result.productionEligible}`,
       `customer_traffic_eligible: ${result.customerTrafficEligible}`,

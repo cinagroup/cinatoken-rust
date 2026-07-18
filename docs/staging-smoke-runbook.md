@@ -154,7 +154,28 @@ and adversarial tests:
 ```powershell
 bun run plan:relay-container:p5-evidence
 bun run check:relay-container:p5-evidence
+bun run check:relay-container:p5-foundation
 ```
+
+Prepare the strict canonical staging request and optional source bundle, then
+inspect the credential-free plan:
+
+```powershell
+bun run plan:relay-container:p5-foundation -- `
+  --request C:\secure\cinatoken-p5\foundation-request.json `
+  --source-bundle C:\secure\cinatoken-p5\foundation-sources.json
+```
+
+Live collection is permitted only after the exposed credential is revoked and
+a rotated `CINATOKEN_P5_READBACK_TOKEN` is provisioned outside arguments and
+tracked files. Follow `docs/relay-container-p5-foundation-collector.md`. The
+collector performs fixed read-only before/after Wrangler snapshots and writes
+no file. Redirect its single canonical stdout object only into the approved
+secure evidence store.
+
+Do not substitute `wrangler containers instances` for the app-owned shard
+registry. Missing shard-ledger, action-gate, SBOM/signature, R2 writer/object,
+traffic, or pagination proof must remain `not-proven`.
 
 Use `docs/relay-container-p5-evidence-contract.md` for the canonical manifest,
 ten evidence kinds, external Ed25519 trust policy, five independent approvals,

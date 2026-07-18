@@ -7570,7 +7570,7 @@ cargo check -p cinatoken-worker --target wasm32-unknown-unknown
 # PASS.
 
 bun run check
-# PASS: full repository aggregate, including Controller 189 Bun tests,
+# PASS: full repository aggregate, including Controller 192 Bun tests,
 # 176 portable protocol tests, 45 runtime tests, DO lifecycle 48/48,
 # atomic admission 15/15, frontend 71 tests, both wasm checks,
 # migration/config audits, bundle gates, Wrangler dry-runs, and workspace tests.
@@ -7597,14 +7597,14 @@ bun run plan:relay-container:p5-evidence
 # and false remote/customer/production authority.
 
 bun run check:relay-container:p5-evidence
-# PASS: 34/34 contract and adversarial tests.
+# PASS: 38/38 contract and adversarial tests.
 
 bun test tests/container-controller-config.test.mjs
 # PASS: 12/12, including exact edge/Controller D1/KV/R2/service identities.
 
 bun run check:container-controller:deploy-preflight
-# PASS: 18/18 deploy-preflight tests plus a credential-free tracked-staging
-# self-test; the self-test is explicitly not deploy-ready.
+# PASS: 4/4 bounded-subprocess and 18/18 deploy-preflight tests plus a
+# credential-free tracked-staging self-test; it is explicitly not deploy-ready.
 ```
 
 Negative coverage includes canonical encoding, byte/hash/candidate drift,
@@ -7619,5 +7619,52 @@ timestamp checks.
 
 No real evidence bundle, trust policy, private key, Cloudflare credential,
 remote readback, deployment, provider call, financial mutation, or traffic
-change was used. Full repository verification must still pass after this local
+change was used. The final full repository verification passed after this local
 increment. Production remains **NO-GO**.
+
+## P5 Foundation Collector And Go/VPS Cutover Evidence (2026-07-19)
+
+Focused verification after adding the production evidence foundation:
+
+```powershell
+bun run check:relay-container:p5-foundation
+# PASS: 14/14 tests, 217 expectations, then the offline self-test.
+# Self-test: 13 read-only Wrangler commands; mutation rejected; no credential,
+# network, file write, customer traffic, P5, or production authority.
+
+bun run check:go-vps-cutover:evidence
+# PASS: 23/23 tests, 77 expectations.
+
+bun run plan:go-vps-cutover:evidence
+# PASS: eight evidence kinds; decisions are not-proven or
+# eligible-for-production-cutover-review; authorization is hard false.
+
+bun run plan:relay-container:p5-evidence
+# PASS: shared foundation capture, complete pagination, and bounded observation
+# are required; remote/customer/production authority is hard false.
+
+bun run check:container-controller:deploy-preflight
+# PASS: 22/22 combined security/preflight tests and offline self-test.
+```
+
+Foundation collector negatives cover production requests, request/candidate
+digest drift, mutating Wrangler operations, token reflection, parent-environment
+inheritance, 100-item incomplete Container pages, absent shard/R2/traffic/SBOM
+sources, before/after drift, unknown writers, customer traffic, unknown source
+status, and source timestamps outside the observation. The emitted capture
+contains no token, raw account/KV/Container application identity, raw Wrangler
+response, payload, or secret value.
+
+Go/VPS negatives cover unpinned binaries, candidate/cohort/file digest drift,
+path escape and symlink files, oversized/noncanonical/invalid evidence,
+non-zero protocol/process/batch state, too few flushes, SQL/LOG_DB drift,
+duplicate scheduler owners, forward lag/reverse conflict, incomplete pending
+handoff, incomplete rollback, stale/future timestamps, payload/secret fields,
+and any unknown/not-applicable status. The verifier has no process, network,
+environment-value, SQL, or write capability.
+
+No live Cloudflare readback or Go/VPS packet was used. The final `bun run check`
+passed with P5 evidence 38/38, foundation collector 14/14, Go/VPS evidence
+23/23, deploy preflight 22/22, Controller 192/192, portable protocol 176/176,
+Workerd runtime 45/45, DO lifecycle 48/48, Worker Rust unit tests 837/837, and
+the workspace and wasm checks. Production remains **NO-GO**.

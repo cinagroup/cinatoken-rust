@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { runBoundedSubprocess } from "./lib/bounded_subprocess.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -273,7 +273,14 @@ export function requireSecretNames(
       `${workerLabel} is missing required secret name(s): ${missing.join(", ")}`,
     );
   }
-  return [...requiredNames];
+  const expected = new Set(requiredNames);
+  const unexpected = inventoryNames.filter((name) => !expected.has(name));
+  if (unexpected.length > 0) {
+    throw new DeployPreflightError(
+      `${workerLabel} has unexpected secret name(s): ${unexpected.join(", ")}`,
+    );
+  }
+  return [...requiredNames].sort();
 }
 
 export function validateSecretInventoryResult(
@@ -283,7 +290,8 @@ export function validateSecretInventoryResult(
   if (
     !isRecord(result) ||
     result.outputLimitExceeded === true ||
-    result.timedOut === true
+    result.timedOut === true ||
+    result.invalidUtf8 === true
   ) {
     throw new DeployPreflightError(
       `${workerLabel} secret inventory command did not complete safely`,
@@ -379,65 +387,10 @@ export async function runArgumentArrayCommand(
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300_000) {
     throw new DeployPreflightError("subprocess timeout must be between 1000 and 300000 ms");
   }
-
-  return await new Promise((resolve) => {
-    const child = spawn(command, args, {
-      cwd,
-      shell: false,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const stdout = [];
-    const stderr = [];
-    let outputBytes = 0;
-    let outputLimitExceeded = false;
-    let timedOut = false;
-    let settled = false;
-    let timeoutId;
-    let forceFinishId;
-
-    const capture = (chunks) => (chunk) => {
-      outputBytes += chunk.length;
-      if (outputBytes > maxOutputBytes) {
-        outputLimitExceeded = true;
-        child.kill();
-        return;
-      }
-      chunks.push(Buffer.from(chunk));
-    };
-
-    child.stdout.on("data", capture(stdout));
-    child.stderr.on("data", capture(stderr));
-
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutId);
-      clearTimeout(forceFinishId);
-      resolve(result);
-    };
-
-    timeoutId = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-      forceFinishId = setTimeout(
-        () => finish({ exitCode: null, stdout: "", stderr: "", timedOut: true }),
-        1000,
-      );
-    }, timeoutMs);
-
-    child.once("error", () => {
-      finish({ exitCode: null, stdout: "", stderr: "" });
-    });
-    child.once("close", (exitCode) => {
-      finish({
-        exitCode,
-        stdout: outputLimitExceeded ? "" : Buffer.concat(stdout).toString("utf8"),
-        stderr: outputLimitExceeded ? "" : Buffer.concat(stderr).toString("utf8"),
-        outputLimitExceeded,
-        timedOut,
-      });
-    });
+  return await runBoundedSubprocess(command, args, {
+    cwd,
+    maxOutputBytes,
+    timeoutMs,
   });
 }
 

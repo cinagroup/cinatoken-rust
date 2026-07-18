@@ -16309,3 +16309,83 @@ version upload/override and gradual-deployment evidence, load/cost/alerts, and
 real independent signatures remain absent. No Cloudflare resource or traffic
 state changed in this increment. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 22.250 P5 Foundation Collector And Go/VPS Cutover Contract (2026-07-19)
+
+This increment turns two production-plan gaps into executable, fail-closed
+local contracts. It does not perform authenticated collection or authorize a
+deployment.
+
+### Cloudflare foundation capture
+
+`tools/collect_relay_container_p5_foundation.mjs` now owns a staging-only
+request contract and a canonical foundation capture. It invokes only 13 fixed
+read-only Wrangler operations through the repository-pinned CLI, argument
+arrays, `shell=false`, a minimal child environment, bounded output, fatal
+UTF-8, timeout, and process-tree termination. The rotated parent credential is
+read only from `CINATOKEN_P5_READBACK_TOKEN` and mapped only to child
+`CLOUDFLARE_API_TOKEN`; live mode requires explicit staging, replacement-token,
+and observation-window confirmations.
+
+The capture observes the exact edge, Controller, provider-egress, D1, R2, KV,
+Container application, instance, and image identities before and after a
+five-minute-to-two-hour window. It emits only command status and canonical
+digests. Candidate-freeze and remote-inventory evidence must carry the same
+capture digest, collector artifact digest, start/end times, and complete
+pagination result.
+
+Control-plane Container lists are not treated as a complete Durable Object
+namespace. Foundation readiness also requires a strict candidate-bound source
+bundle with:
+
+1. all action gates false;
+2. exact signed image and SBOM with zero unapproved critical/high findings;
+3. the stable app-owned shard registry/activation ledger with N/N shards;
+4. R2 writer/object inventory with zero unknowns; and
+5. zero customer traffic plus verified staging isolation.
+
+Any absent source, full Container page, unsafe command output, before/after
+drift, collector artifact drift, source timestamp miss, unknown writer/object,
+traffic, or incomplete shard blocks `foundationEvidenceReady`. Every collector
+result still returns `decision=not-proven`, `p5Eligible=false`, and hard-false
+customer/production authority.
+
+### Go/VPS production cutover review
+
+`tools/go_vps_cutover_evidence_contract.mjs` defines a separate canonical
+production review packet pinned to Go commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703`. Eight evidence kinds cover exact
+topology, protocol ingress drain, per-process financial/batch-map drain,
+persistence and export stability, unique scheduler ownership, bidirectional
+sync and reconciliation, pending task/order disposition, and a measured
+rollback bundle.
+
+The verifier reads only bounded canonical regular files under the packet. It
+does not read environment values, spawn a process, execute shell/SQL, use the
+network, emit line payloads, or write files. `fail`, `unknown`, and
+`not-applicable` remain reportable but block review. Even a complete packet can
+return only `eligible-for-production-cutover-review`, while
+`productionCutoverAuthorized` remains false.
+
+### Current local verification
+
+```powershell
+bun run check:relay-container:p5-evidence
+# PASS: 38/38.
+
+bun run check:relay-container:p5-foundation
+# PASS: 14/14 plus offline self-test.
+
+bun run check:go-vps-cutover:evidence
+# PASS: 23/23.
+
+bun run check:container-controller:deploy-preflight
+# PASS: 4 bounded-subprocess + 18 deploy-preflight tests and offline self-test.
+```
+
+No replacement token, authenticated Cloudflare readback, remote source bundle,
+Go process evidence, migration, deployment, provider request, financial write,
+or traffic change was used. Next execution remains replacement-credential
+rotation, isolated staging collection, all-shard/source proof, the other eight
+P5 evidence campaigns, signatures, and finally the independently reviewed
+Go/VPS production packet. Production remains **NO-GO**.

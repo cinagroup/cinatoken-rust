@@ -2070,3 +2070,47 @@ zero, two batch intervals and one export interval are stable, no process-owned
 finance remains, all scheduler owners are unique, source/target reconciliation
 has no unexplained delta, and reverse synchronization contains every accepted
 Cloudflare write. No local verifier fixture satisfies those external gates.
+
+## 2026-07-19 Foundation Collection And Go Drain Addendum
+
+P5 foundation collection is now executable but remains non-authoritative. Use
+`docs/relay-container-p5-foundation-collector.md` for the strict request/source
+contracts and live command. The collector must run only in staging with a
+rotated dedicated readback identity and all action gates false.
+
+The execution order for the foundation packet is fixed:
+
+1. revoke the exposed credential and provision a separate replacement
+   readback token outside arguments and tracked files;
+2. freeze the exact candidate, Container image/SBOM/signature, source
+   collectors, app-owned shard ledger, and rollback artifacts;
+3. run the credential-free dry plan and local collector/P5 tests;
+4. start the read-only before snapshot of the exact three Workers, shared
+   D1/R2/KV, Container application/instances/image, and collector artifacts;
+5. during the bounded observation window, capture action gates, every logical
+   shard from the stable registry/activation ledger, R2 writers/objects, and
+   zero-customer-traffic isolation;
+6. collect the identical after snapshot, require complete pagination and zero
+   drift, and materialize candidate-freeze plus remote-inventory facts from the
+   same capture binding; and
+7. archive the canonical capture for independent review without enabling a
+   writer, waking a Container, deploying, or changing traffic.
+
+Running Container instances are not the namespace ledger. If any shard is
+sleeping or absent from the control-plane list, the app-owned registry still
+must prove its deterministic identity, activation generation, and disposition.
+Any missing source remains `not-proven`.
+
+Production cutover uses the separate contract in
+`docs/go-vps-cutover-evidence-contract.md`. Build its eight canonical evidence
+records only after the live cohort is frozen. The verifier requires exact Go
+topology, four-protocol ingress drain, zero process-owned financial and batch
+state, persistence/export stability, one owner per scheduler, zero
+bidirectional reconciliation delta, complete pending task/order disposition,
+and a measured rollback package containing every accepted write.
+
+`eligible-for-production-cutover-review` is not authorization. The verifier's
+`productionCutoverAuthorized` field is always false, and G8 plus all named
+business/security/finance/operations/rollback owners remain mandatory. No live
+capture or production action occurred in this addendum; production remains
+**NO-GO**.

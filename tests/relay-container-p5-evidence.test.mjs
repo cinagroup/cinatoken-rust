@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   EVIDENCE_CONTRACT,
+  FOUNDATION_CAPTURE_CONTRACT,
+  FOUNDATION_COLLECTOR_VERSION,
   MANIFEST_CONTRACT,
   REQUIRED_APPROVAL_ROLES,
   REQUIRED_EVIDENCE_KINDS,
@@ -35,6 +37,15 @@ const generatedAt = "2026-07-19T10:05:00.000Z";
 const signedAt = "2026-07-19T10:06:00.000Z";
 const expiresAt = "2026-07-19T20:00:00.000Z";
 const temporaryRoots = [];
+const foundationBindingFixture = Object.freeze({
+  foundationCaptureContract: FOUNDATION_CAPTURE_CONTRACT,
+  foundationCaptureSha256: "d".repeat(64),
+  foundationCollectorVersion: FOUNDATION_COLLECTOR_VERSION,
+  foundationCollectorSha256: "e".repeat(64),
+  observationStartedAt: "2026-07-19T09:50:00.000Z",
+  observationEndedAt: "2026-07-19T09:58:00.000Z",
+  paginationComplete: true,
+});
 
 afterAll(async () => {
   await Promise.all(
@@ -48,6 +59,7 @@ describe("Relay Container P5 evidence contract", () => {
     const result = await verify(bundle);
     expect(result.ok).toBe(true);
     expect(result.evidenceKinds).toEqual(REQUIRED_EVIDENCE_KINDS);
+    expect(result.foundationCaptureSha256).toBe("d".repeat(64));
     expect(result.approvalRoles).toEqual(REQUIRED_APPROVAL_ROLES);
     expect(result.isolatedStagingSyntheticCanaryEligible).toBe(true);
     expect(result.customerTrafficEligible).toBe(false);
@@ -177,6 +189,51 @@ describe("Relay Container P5 evidence contract", () => {
       },
     });
     await expect(verify(bundle)).rejects.toThrow(/customer traffic mismatch/);
+  });
+
+  test("rejects different foundation captures across freeze and inventory", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "remote-inventory") {
+          evidence.facts.foundationCaptureSha256 = "f".repeat(64);
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/must bind the same capture/);
+  });
+
+  test("rejects incomplete foundation pagination", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "candidate-freeze") {
+          evidence.facts.paginationComplete = false;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/pagination completeness/);
+  });
+
+  test("rejects a foundation window ending after evidence capture", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "remote-inventory") {
+          evidence.facts.observationEndedAt = "2026-07-19T10:01:00.000Z";
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/ended after evidence capture/);
+  });
+
+  test("rejects a stale foundation window even when its duration is valid", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "candidate-freeze") {
+          evidence.facts.observationStartedAt = "2026-07-19T09:00:00.000Z";
+          evidence.facts.observationEndedAt = "2026-07-19T09:08:00.000Z";
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/stale for evidence capture/);
   });
 
   test("rejects stale evidence even when its hash and approvals match", async () => {
@@ -618,6 +675,7 @@ function factsFixture(kind, candidate) {
         unapprovedHighVulnerabilities: 0,
         allActionGatesFalse: true,
         artifactInventorySha256: "8".repeat(64),
+        ...foundationBindingFixture,
       };
     case "remote-inventory":
       return {
@@ -639,6 +697,7 @@ function factsFixture(kind, candidate) {
         unknownObjectCount: 0,
         customerTrafficCount: 0,
         environmentIsolationVerified: true,
+        ...foundationBindingFixture,
       };
     case "reader-first-rollout":
       return {

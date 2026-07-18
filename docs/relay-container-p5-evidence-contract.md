@@ -77,6 +77,20 @@ The implementation is:
 - `tools/verify_relay_container_p5_evidence.mjs`; and
 - `tests/relay-container-p5-evidence.test.mjs`.
 
+The staging foundation collector is:
+
+- `tools/collect_relay_container_p5_foundation.mjs`;
+- `tools/lib/cloudflare_readback.mjs`;
+- `tests/relay-container-p5-foundation-collector.test.mjs`; and
+- `docs/relay-container-p5-foundation-collector.md`.
+
+The separately versioned production Go/VPS gate is:
+
+- `tools/go_vps_cutover_evidence_contract.mjs`;
+- `tools/verify_go_vps_cutover_evidence.mjs`;
+- `tests/go-vps-cutover-evidence.test.mjs`; and
+- `docs/go-vps-cutover-evidence-contract.md`.
+
 The supporting disabled-deploy boundary is:
 
 - `tools/preflight_container_controller_deploy.mjs`; and
@@ -86,12 +100,15 @@ Inspect the contract without credentials or network access:
 
 ```powershell
 bun run plan:relay-container:p5-evidence
+bun run plan:go-vps-cutover:evidence
 ```
 
 Run the adversarial local contract suite:
 
 ```powershell
 bun run check:relay-container:p5-evidence
+bun run check:relay-container:p5-foundation
+bun run check:go-vps-cutover:evidence
 bun run check:container-controller:deploy-preflight
 ```
 
@@ -123,6 +140,21 @@ read credential environment variables, call `fetch`, spawn Wrangler, write
 files, or handle private signing keys. The separate deploy preflight can issue
 only bounded, argument-array `wrangler secret list` calls; it cannot deploy or
 mutate resources.
+
+The foundation collector is also staging-only and read-only. It binds the
+`candidate-freeze` and `remote-inventory` facts to one canonical capture,
+collector artifact digest, five-minute-to-two-hour observation window, and
+complete pagination result. Its fixed 13-command Wrangler allowlist performs
+only exact Worker version/deployment, D1, R2, KV, and Container readback. It
+emits digests and status metadata rather than raw control-plane output.
+
+Cloudflare Container instance inventory cannot prove sleeping Durable Object
+members. The collector therefore requires a stable app-owned shard
+registry/activation ledger plus separate action-gate, SBOM/signature, R2
+writer/object, and traffic-isolation sources. Missing or incomplete sources
+produce explicit blockers and `paginationComplete=false`; they can never be
+converted into a P5 pass by elapsed time. The complete contract and live SOP
+are in `docs/relay-container-p5-foundation-collector.md`.
 
 ## Manifest Identity
 
@@ -170,6 +202,14 @@ All ten kinds are required exactly once and in contract order:
 An evidence envelope that merely says `status=pass` is insufficient. Each kind
 has an exact fact schema and hard thresholds in the verifier. Unknown or missing
 fields fail closed.
+
+`candidate-freeze` and `remote-inventory` additionally carry the same seven
+foundation-binding fields: capture contract/digest, collector version/digest,
+observation start/end, and `paginationComplete=true`. Their observation is at
+least five minutes and at most two hours and ends before both evidence
+captures. Any mismatch rejects the whole packet.
+The evidence must be sealed within 15 minutes after the foundation observation
+ends; an otherwise valid but old control-plane window is rejected.
 
 ## Trust And Approval
 
@@ -235,9 +275,9 @@ files, and every evidence and approval validity window must increase strictly.
 
 ## Production Cutover Extension
 
-The current v1 verifier intentionally cannot authorize customer traffic or
-production cutover. A production decision must add a separately versioned
-contract with all of these Go/VPS facts:
+The P5 verifier intentionally cannot authorize customer traffic or production
+cutover. The separately versioned Go/VPS contract now verifies these eight
+evidence kinds without credentials, network, shell, SQL, or file writes:
 
 1. live topology: binary/image commit and digest, replicas, DNS/LB, SQL dialect,
    separate LOG_DB state, Redis, and exactly one owner for each scheduler loop;
@@ -251,9 +291,22 @@ contract with all of these Go/VPS facts:
    canonical chunk hashes, quota/request/channel/subscription/task facts, and
    active LOG_DB evidence with zero unexplained difference;
 6. reversible writes: zero CDC lag at freeze and reverse synchronization of
-   every Cloudflare write needed by the hot Go rollback target; and
-7. measured rollback: RTO/RPO, session continuity, restored Go readiness, and
+   every Cloudflare write needed by the hot Go rollback target;
+7. pending tasks/orders: empty or durably handed off with exact target
+   readback and zero unaccounted work; and
+8. measured rollback: RTO/RPO, session continuity, restored Go readiness, and
    a current rollback database containing all accepted writes.
+
+Run its local contract and inspect its decision vocabulary with:
+
+```powershell
+bun run check:go-vps-cutover:evidence
+bun run plan:go-vps-cutover:evidence
+```
+
+A complete packet returns only
+`eligible-for-production-cutover-review`. It always returns
+`productionCutoverAuthorized=false`; a release decision remains independent.
 
 Elapsed time and `/api/status` alone are never drain evidence. `quota_data` and
 pre-consume rows are supporting facts, not proof that process-owned settlement
@@ -269,6 +322,11 @@ evidence, writer-before-reader ordering, missing lifecycle/provenance, duplicate
 provider or financial effects, refund accounting, weak load, unsafe rollback,
 path traversal, bundled trust roots, missing/stale/wrong-role/tampered approvals,
 and evidence that expires before the decision.
+
+Current focused verification passes 38 P5 verifier tests, 14 foundation
+collector tests plus its offline self-test, 23 Go/VPS cutover tests, and 22
+bounded-subprocess/deploy-preflight tests. These are local contract tests, not
+remote evidence.
 
 Those fixtures are tests of the verifier, not Cloudflare evidence. No remote
 resource, credential, provider, financial row, deployment, or traffic state was

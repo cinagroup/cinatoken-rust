@@ -1526,9 +1526,10 @@ traffic and financial authority; production remains **NO-GO**.
 
 ### Verified locally
 
-`bun run check:relay-container:p5-evidence` passes 34/34. The expanded
+`bun run check:relay-container:p5-evidence` passes 38/38. The expanded
 Controller config suite passes 12/12, and the deploy-preflight suite passes
-18/18. The contract-description command reports ten evidence kinds, five
+18/18; its shared bounded-subprocess suite adds 4/4 termination/UTF-8 tests.
+The contract-description command reports ten evidence kinds, five
 approval roles, and explicit false authority for remote mutation, customer
 traffic, and production cutover.
 
@@ -1541,3 +1542,46 @@ alert delivery, rollback rehearsal, and owner signatures remain absent.
 Production additionally needs a lossless Go/VPS drain and reverse data sync;
 Go process maps and request-local billing state make a time-only drain unsafe.
 Production remains **NO-GO**.
+
+## 2026-07-19 P5 Foundation Collection And Go/VPS Cutover Status
+
+### Implemented locally
+
+- A staging-only foundation collector runs a fixed 13-command, argument-array
+  Wrangler readback before and after a bounded five-minute-to-two-hour window.
+  It uses the repository-pinned Wrangler entrypoint, minimal child environment,
+  bounded process-tree termination, fatal UTF-8, and digest-only output.
+- The collector maps only a rotated `CINATOKEN_P5_READBACK_TOKEN` into child
+  `CLOUDFLARE_API_TOKEN`. Live mode requires three explicit confirmations and
+  never accepts a credential argument or writes a file.
+- Candidate-freeze and remote-inventory P5 facts now bind the same canonical
+  foundation capture, collector artifact digest, observation window, and
+  complete pagination result.
+- Stable shard registry/activation ledger, action-gate, SBOM/signature, R2
+  writer/object, and traffic-isolation sources are mandatory. Cloudflare's
+  running-instance view is not treated as proof of every sleeping DO shard.
+- A separately versioned, canonical Go/VPS cutover verifier covers topology,
+  HTTP/SSE/WebSocket/task ingress drain, per-process BillingSession/refund and
+  five batch maps, persistence/export stability, scheduler ownership,
+  bidirectional reconciliation, pending task/order handoff, and rollback.
+- The Go/VPS verifier performs no environment read, network, shell, SQL, or
+  file write. A complete packet is only eligible for production-cutover review;
+  `productionCutoverAuthorized` is always false.
+
+### Verified locally
+
+- P5 evidence verifier: 38/38.
+- P5 foundation collector: 14/14 plus offline self-test.
+- Go/VPS cutover evidence contract: 23/23.
+- Shared bounded subprocess plus Controller deploy preflight: 22/22.
+- Both contract-description commands return hard-false customer/production
+  authority.
+
+### Still blocked
+
+No replacement token was used and no authenticated remote readback, source
+bundle, real shard ledger, SBOM/signature capture, R2 inventory, traffic proof,
+Go process drain, reverse synchronization, rollback rehearsal, deployment, or
+traffic change exists. The collector and verifiers can classify future proof;
+they do not create that proof or approve release. Go/VPS remains authoritative
+and production remains **NO-GO**.

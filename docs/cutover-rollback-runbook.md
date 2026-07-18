@@ -188,7 +188,22 @@ If Cloudflare has accepted any write, the hot Go rollback target must contain
 that write through proven reverse synchronization. A forward-only import with
 no zero-lag CDC or reverse path makes post-write rollback unsafe and blocks
 cutover. The versioned production extension is specified in
-`docs/relay-container-p5-evidence-contract.md`.
+`docs/go-vps-cutover-evidence-contract.md` and is verified offline by:
+
+```powershell
+bun run check:go-vps-cutover:evidence
+bun run plan:go-vps-cutover:evidence
+bun run verify:go-vps-cutover:evidence -- `
+  --manifest C:\secure-evidence\go-vps-cutover\manifest.json `
+  --json
+```
+
+The packet has eight mandatory evidence records: candidate topology, ingress
+drain, process-state drain, persistence stability, scheduler ownership,
+bidirectional sync, pending work, and rollback bundle. `fail`, `unknown`, or
+`not-applicable` blocks review. Even a complete packet returns only
+`eligible-for-production-cutover-review`; the verifier always reports
+`productionCutoverAuthorized=false` and cannot replace the T-0 owner decision.
 
 ## T-0 Cutover Checklist
 

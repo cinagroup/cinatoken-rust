@@ -229,19 +229,22 @@ describe("Wrangler secret inventory validation", () => {
     const names = parseWranglerSecretInventory(
       JSON.stringify([
         { name: REQUIRED_CONTROLLER_SECRET, type: "secret_text", value: rawValue },
-        { name: "UNRELATED_SECRET", type: "secret_text" },
       ]),
       "Controller",
     );
 
-    expect(names).toEqual([
-      REQUIRED_CONTROLLER_SECRET,
-      "UNRELATED_SECRET",
-    ]);
+    expect(names).toEqual([REQUIRED_CONTROLLER_SECRET]);
     expect(JSON.stringify(names)).not.toContain(rawValue);
     expect(
       requireSecretNames(names, [REQUIRED_CONTROLLER_SECRET], "Controller"),
     ).toEqual([REQUIRED_CONTROLLER_SECRET]);
+    expect(() =>
+      requireSecretNames(
+        [REQUIRED_CONTROLLER_SECRET, "UNRELATED_SECRET"],
+        [REQUIRED_CONTROLLER_SECRET],
+        "Controller",
+      ),
+    ).toThrow(/unexpected secret name/);
   });
 
   test("rejects missing names, malformed output, and command failures", () => {
@@ -275,6 +278,15 @@ describe("Wrangler secret inventory validation", () => {
     expect(() =>
       validateSecretInventoryResult(
         { exitCode: null, stdout: "", timedOut: true },
+        {
+          workerLabel: "Controller",
+          requiredNames: [REQUIRED_CONTROLLER_SECRET],
+        },
+      ),
+    ).toThrow(/did not complete safely/);
+    expect(() =>
+      validateSecretInventoryResult(
+        { exitCode: 0, stdout: "", invalidUtf8: true },
         {
           workerLabel: "Controller",
           requiredNames: [REQUIRED_CONTROLLER_SECRET],

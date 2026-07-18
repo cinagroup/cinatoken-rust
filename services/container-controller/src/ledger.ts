@@ -147,6 +147,79 @@ export interface ProviderAttemptTerminal {
   response_code: string | null;
 }
 
+export type ProviderResponseClass =
+  | "success"
+  | "typed_error"
+  | "http_error"
+  | "invalid_body";
+
+export interface ProviderResponseEvidenceManifest {
+  object_key: string;
+  object_version: string;
+  provider_response_evidence_sha256: string;
+  sha256: string;
+  size: number;
+  content_type: string;
+}
+
+export interface ClientResponseArtifactManifest {
+  object_key: string;
+  object_version: string;
+  client_response_artifact_sha256: string;
+  sha256: string;
+  size: number;
+  content_type: "application/json";
+}
+
+export type ProviderResponseArtifactAttachment =
+  | {
+      status: "succeeded";
+      provider_status: 200;
+      client_status: 200;
+      response_class: "success";
+      response_code: null;
+      raw_manifest: ProviderResponseEvidenceManifest;
+      client_manifest: ClientResponseArtifactManifest;
+      provider_usage_receipt_sha256: string | null;
+    }
+  | {
+      status: "interpreted_reject";
+      provider_status: number;
+      client_status: number;
+      response_class: Exclude<ProviderResponseClass, "success">;
+      response_code: string;
+      raw_manifest: ProviderResponseEvidenceManifest;
+      client_manifest: ClientResponseArtifactManifest;
+      provider_usage_receipt_sha256: null;
+    }
+  | {
+      status: "ambiguous";
+      provider_status: null;
+      client_status: null;
+      response_class: null;
+      response_code: string;
+      raw_manifest: null;
+      client_manifest: null;
+      provider_usage_receipt_sha256: null;
+    };
+
+export type ProviderResponseArtifactAttachmentRow =
+  ProviderResponseArtifactAttachment & {
+    operation_id: string;
+    owner_generation: number;
+    attempt_generation: number;
+    provider_operation_id: string;
+    admission_sha256: string;
+    request_sha256: string;
+    egress_profile: string;
+    egress_worker_version_id: string;
+    attached_at: number;
+  };
+
+export type AttachProviderResponseArtifactsOutcome =
+  | { kind: "attached"; row: ProviderResponseArtifactAttachmentRow }
+  | { kind: "duplicate"; row: ProviderResponseArtifactAttachmentRow };
+
 export interface ProviderRetryPolicy {
   maxAttempts: number;
   retryEnabled: boolean;
@@ -355,7 +428,39 @@ interface StorageOperationRow {
   provider_usage_receipt_sha256: string | null;
 }
 
+interface ProviderResponseArtifactAttachmentSqlRow {
+  [key: string]: SqlStorageValue;
+  operation_id: string;
+  owner_generation: number;
+  attempt_generation: number;
+  provider_operation_id: string;
+  admission_sha256: string;
+  request_sha256: string;
+  egress_profile: string;
+  egress_worker_version_id: string;
+  status: "succeeded" | "interpreted_reject" | "ambiguous";
+  provider_status: number | null;
+  client_status: number | null;
+  response_class: ProviderResponseClass | null;
+  response_code: string | null;
+  provider_response_evidence_sha256: string | null;
+  raw_object_key: string | null;
+  raw_object_version: string | null;
+  raw_sha256: string | null;
+  raw_size: number | null;
+  raw_content_type: string | null;
+  client_response_artifact_sha256: string | null;
+  client_object_key: string | null;
+  client_object_version: string | null;
+  client_sha256: string | null;
+  client_size: number | null;
+  client_content_type: string | null;
+  provider_usage_receipt_sha256: string | null;
+  attached_at: number;
+}
+
 const TERMINAL_STATUS_SQL = "'completed', 'failed', 'recovery_required'";
+const MAX_UNIX_TIMESTAMP_SECONDS = 253_402_300_799;
 
 export class RelayShardLedger {
   private schemaReady = false;
@@ -780,6 +885,348 @@ export class RelayShardLedger {
       BEGIN
         SELECT RAISE(ABORT, 'provider attempt cannot be deleted before its operation');
       END;
+      CREATE TABLE IF NOT EXISTS cinatoken_shard_provider_response_attachments (
+        operation_id TEXT NOT NULL,
+        owner_generation INTEGER NOT NULL,
+        attempt_generation INTEGER NOT NULL,
+        provider_operation_id TEXT NOT NULL,
+        admission_sha256 TEXT NOT NULL,
+        request_sha256 TEXT NOT NULL,
+        egress_profile TEXT NOT NULL,
+        egress_worker_version_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        provider_status INTEGER,
+        client_status INTEGER,
+        response_class TEXT,
+        response_code TEXT,
+        provider_response_evidence_sha256 TEXT,
+        raw_object_key TEXT,
+        raw_object_version TEXT,
+        raw_sha256 TEXT,
+        raw_size INTEGER,
+        raw_content_type TEXT,
+        client_response_artifact_sha256 TEXT,
+        client_object_key TEXT,
+        client_object_version TEXT,
+        client_sha256 TEXT,
+        client_size INTEGER,
+        client_content_type TEXT,
+        provider_usage_receipt_sha256 TEXT,
+        attached_at INTEGER NOT NULL,
+        PRIMARY KEY (operation_id, owner_generation, attempt_generation),
+        UNIQUE (provider_response_evidence_sha256),
+        UNIQUE (raw_object_key, raw_object_version),
+        UNIQUE (client_response_artifact_sha256),
+        UNIQUE (client_object_key, client_object_version),
+        CHECK (
+          length(operation_id) BETWEEN 1 AND 128
+          AND operation_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+        ),
+        CHECK (owner_generation > 0),
+        CHECK (attempt_generation BETWEEN 1 AND 3),
+        CHECK (
+          length(provider_operation_id) BETWEEN 1 AND 128
+          AND provider_operation_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+        ),
+        CHECK (
+          length(admission_sha256) = 64
+          AND admission_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+          length(request_sha256) = 64
+          AND request_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+          egress_profile = 'openai-chat-completions-canary-v1'
+        ),
+        CHECK (
+          length(egress_worker_version_id) BETWEEN 1 AND 128
+          AND egress_worker_version_id NOT GLOB '*[^A-Za-z0-9._:/@-]*'
+        ),
+        CHECK (status IN ('succeeded', 'interpreted_reject', 'ambiguous')),
+        CHECK (provider_status IS NULL OR provider_status BETWEEN 100 AND 599),
+        CHECK (client_status IS NULL OR client_status BETWEEN 100 AND 599),
+        CHECK (
+          response_class IS NULL OR
+          response_class IN ('success', 'typed_error', 'http_error', 'invalid_body')
+        ),
+        CHECK (
+          response_code IS NULL OR
+          (length(response_code) BETWEEN 1 AND 64
+            AND response_code NOT GLOB '*[^a-z0-9_:-]*')
+        ),
+        CHECK (
+          (provider_response_evidence_sha256 IS NULL
+            AND raw_object_key IS NULL
+            AND raw_object_version IS NULL
+            AND raw_sha256 IS NULL
+            AND raw_size IS NULL
+            AND raw_content_type IS NULL)
+          OR
+          (provider_response_evidence_sha256 IS NOT NULL
+            AND length(provider_response_evidence_sha256) = 64
+            AND provider_response_evidence_sha256 NOT GLOB '*[^0-9a-f]*'
+            AND raw_object_key IS NOT NULL
+            AND raw_object_key =
+              'container-provider-evidence/v1/' || operation_id || '/' ||
+              owner_generation || '/' || attempt_generation || '/' || raw_sha256
+            AND raw_object_version IS NOT NULL
+            AND length(raw_object_version) BETWEEN 1 AND 128
+            AND raw_object_version NOT GLOB '*[^A-Za-z0-9._:-]*'
+            AND raw_sha256 IS NOT NULL
+            AND length(raw_sha256) = 64
+            AND raw_sha256 NOT GLOB '*[^0-9a-f]*'
+            AND raw_size IS NOT NULL
+            AND raw_size BETWEEN 0 AND 4194304
+            AND raw_content_type IS NOT NULL
+            AND length(raw_content_type) BETWEEN 3 AND 128
+            AND raw_content_type NOT GLOB '*[^ -~]*')
+        ),
+        CHECK (
+          (client_response_artifact_sha256 IS NULL
+            AND client_object_key IS NULL
+            AND client_object_version IS NULL
+            AND client_sha256 IS NULL
+            AND client_size IS NULL
+            AND client_content_type IS NULL)
+          OR
+          (client_response_artifact_sha256 IS NOT NULL
+            AND length(client_response_artifact_sha256) = 64
+            AND client_response_artifact_sha256 NOT GLOB '*[^0-9a-f]*'
+            AND client_object_key IS NOT NULL
+            AND client_object_key =
+              'container-client-artifacts/v1/' || operation_id || '/' ||
+              owner_generation || '/' || client_response_artifact_sha256
+            AND client_object_version IS NOT NULL
+            AND length(client_object_version) BETWEEN 1 AND 128
+            AND client_object_version NOT GLOB '*[^A-Za-z0-9._:-]*'
+            AND client_sha256 IS NOT NULL
+            AND length(client_sha256) = 64
+            AND client_sha256 NOT GLOB '*[^0-9a-f]*'
+            AND client_size IS NOT NULL
+            AND client_size BETWEEN 2 AND 4194304
+            AND client_content_type IS NOT NULL
+            AND client_content_type = 'application/json')
+        ),
+        CHECK (
+          provider_usage_receipt_sha256 IS NULL OR
+          (length(provider_usage_receipt_sha256) = 64
+            AND provider_usage_receipt_sha256 NOT GLOB '*[^0-9a-f]*')
+        ),
+        CHECK (
+          (status = 'succeeded'
+            AND provider_status IS NOT NULL
+            AND provider_status = 200
+            AND client_status IS NOT NULL
+            AND client_status = 200
+            AND response_class IS NOT NULL
+            AND response_class = 'success'
+            AND response_code IS NULL
+            AND provider_response_evidence_sha256 IS NOT NULL
+            AND client_response_artifact_sha256 IS NOT NULL)
+          OR
+          (status = 'interpreted_reject'
+            AND provider_status IS NOT NULL
+            AND client_status IS NOT NULL
+            AND response_class IS NOT NULL
+            AND response_code IS NOT NULL
+            AND provider_response_evidence_sha256 IS NOT NULL
+            AND client_response_artifact_sha256 IS NOT NULL
+            AND provider_usage_receipt_sha256 IS NULL
+            AND (
+              (response_class = 'typed_error'
+                AND provider_status = 200 AND client_status = 200)
+              OR
+              (response_class = 'http_error'
+                AND provider_status <> 200 AND client_status = provider_status)
+              OR
+              (response_class = 'invalid_body'
+                AND provider_status = 200 AND client_status = 500)
+            ))
+          OR
+          (status = 'ambiguous'
+            AND provider_status IS NULL
+            AND client_status IS NULL
+            AND response_class IS NULL
+            AND response_code IS NOT NULL
+            AND provider_response_evidence_sha256 IS NULL
+            AND client_response_artifact_sha256 IS NULL
+            AND provider_usage_receipt_sha256 IS NULL)
+        ),
+        CHECK (attached_at > 0 AND attached_at <= 253402300799)
+      );
+      CREATE INDEX IF NOT EXISTS cinatoken_shard_provider_response_attachments_time
+        ON cinatoken_shard_provider_response_attachments(attached_at, operation_id);
+      CREATE TABLE IF NOT EXISTS cinatoken_shard_provider_response_attachment_identities (
+        operation_id TEXT NOT NULL,
+        owner_generation INTEGER NOT NULL,
+        attempt_generation INTEGER NOT NULL,
+        provider_response_evidence_sha256 TEXT,
+        raw_object_key TEXT,
+        raw_object_version TEXT,
+        client_response_artifact_sha256 TEXT,
+        client_object_key TEXT,
+        client_object_version TEXT,
+        PRIMARY KEY (operation_id, owner_generation, attempt_generation),
+        UNIQUE (provider_response_evidence_sha256),
+        UNIQUE (raw_object_key, raw_object_version),
+        UNIQUE (client_response_artifact_sha256),
+        UNIQUE (client_object_key, client_object_version)
+      ) WITHOUT ROWID;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_response_attachment_insert_guard
+      BEFORE INSERT ON cinatoken_shard_provider_response_attachments
+      FOR EACH ROW
+      WHEN
+        EXISTS (
+          SELECT 1
+            FROM cinatoken_shard_provider_response_attachment_identities AS identity
+           WHERE (identity.operation_id = NEW.operation_id
+               AND identity.owner_generation = NEW.owner_generation
+               AND identity.attempt_generation = NEW.attempt_generation)
+              OR identity.provider_response_evidence_sha256 =
+                   NEW.provider_response_evidence_sha256
+              OR (identity.raw_object_key = NEW.raw_object_key
+                AND identity.raw_object_version = NEW.raw_object_version)
+              OR identity.client_response_artifact_sha256 =
+                   NEW.client_response_artifact_sha256
+              OR (identity.client_object_key = NEW.client_object_key
+                AND identity.client_object_version = NEW.client_object_version)
+        )
+        OR NOT EXISTS (
+          SELECT 1
+            FROM cinatoken_shard_operations AS operation
+            JOIN cinatoken_shard_provider_attempts AS attempt
+              ON attempt.operation_id = operation.operation_id
+             AND attempt.owner_generation = operation.owner_generation
+           WHERE operation.operation_id = NEW.operation_id
+             AND operation.owner_generation = NEW.owner_generation
+             AND operation.operation_kind != 'health_probe'
+             AND operation.provider_operation_id = NEW.provider_operation_id
+             AND operation.admission_sha256 = NEW.admission_sha256
+             AND operation.input_sha256 = NEW.request_sha256
+             AND attempt.attempt_generation = NEW.attempt_generation
+             AND attempt.provider_operation_id = NEW.provider_operation_id
+             AND attempt.admission_sha256 = NEW.admission_sha256
+             AND attempt.request_sha256 = NEW.request_sha256
+             AND attempt.egress_profile = NEW.egress_profile
+             AND attempt.egress_worker_version_id = NEW.egress_worker_version_id
+             AND attempt.status = 'dispatched'
+             AND attempt.dispatched_at IS NOT NULL
+             AND NEW.attached_at >= attempt.dispatched_at
+             AND (
+               (NEW.status = 'ambiguous'
+                 AND operation.status IN ('running', 'recovery_required'))
+               OR
+               (NEW.status IN ('succeeded', 'interpreted_reject')
+                 AND operation.status = 'running'
+                 AND operation.deadline_at > NEW.attached_at
+                 AND operation.owner_lease_expires_at > NEW.attached_at)
+             )
+             AND (
+               (NEW.status = 'succeeded'
+                 AND (
+                   (NEW.provider_usage_receipt_sha256 IS NULL
+                     AND operation.provider_usage_receipt_sha256 IS NULL
+                     AND attempt.provider_usage_receipt_sha256 IS NULL
+                     AND (
+                       operation.result_object_key IS NULL
+                       OR (operation.result_sha256 = NEW.client_sha256
+                         AND operation.result_size = NEW.client_size
+                         AND operation.result_content_type = NEW.client_content_type)
+                     ))
+                   OR
+                   (NEW.provider_usage_receipt_sha256 IS NOT NULL
+                     AND operation.provider_usage_receipt_sha256 =
+                       NEW.provider_usage_receipt_sha256
+                     AND attempt.provider_usage_receipt_sha256 =
+                       NEW.provider_usage_receipt_sha256
+                     AND attempt.provider_usage_receipt_attached_at IS NOT NULL
+                     AND attempt.provider_usage_receipt_attached_at <= NEW.attached_at
+                     AND operation.result_object_key IS NOT NULL
+                     AND operation.result_sha256 = NEW.client_sha256
+                     AND operation.result_size = NEW.client_size
+                     AND operation.result_content_type = NEW.client_content_type)
+                 ))
+               OR
+               (NEW.status IN ('interpreted_reject', 'ambiguous')
+                 AND operation.result_object_key IS NULL
+                 AND operation.result_object_version IS NULL
+                 AND operation.result_sha256 IS NULL
+                 AND operation.result_size IS NULL
+                 AND operation.result_content_type IS NULL
+                 AND operation.provider_usage_receipt_sha256 IS NULL
+                 AND attempt.provider_usage_receipt_sha256 IS NULL
+                 AND attempt.provider_usage_receipt_attached_at IS NULL)
+             )
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'provider response attachment authority mismatch');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_response_attachment_identity_append
+      AFTER INSERT ON cinatoken_shard_provider_response_attachments
+      FOR EACH ROW
+      BEGIN
+        INSERT INTO cinatoken_shard_provider_response_attachment_identities
+          (operation_id, owner_generation, attempt_generation,
+           provider_response_evidence_sha256, raw_object_key, raw_object_version,
+           client_response_artifact_sha256, client_object_key, client_object_version)
+        VALUES (
+          NEW.operation_id,
+          NEW.owner_generation,
+          NEW.attempt_generation,
+          NEW.provider_response_evidence_sha256,
+          NEW.raw_object_key,
+          NEW.raw_object_version,
+          NEW.client_response_artifact_sha256,
+          NEW.client_object_key,
+          NEW.client_object_version
+        );
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_response_attachment_update_guard
+      BEFORE UPDATE ON cinatoken_shard_provider_response_attachments
+      FOR EACH ROW
+      BEGIN
+        SELECT RAISE(ABORT, 'provider response attachment is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_response_attachment_delete_guard
+      BEFORE DELETE ON cinatoken_shard_provider_response_attachments
+      FOR EACH ROW
+      BEGIN
+        SELECT RAISE(ABORT, 'provider response attachment cannot be deleted');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_response_attachment_identity_insert_guard
+      BEFORE INSERT ON cinatoken_shard_provider_response_attachment_identities
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1
+          FROM cinatoken_shard_provider_response_attachment_identities AS identity
+         WHERE (identity.operation_id = NEW.operation_id
+             AND identity.owner_generation = NEW.owner_generation
+             AND identity.attempt_generation = NEW.attempt_generation)
+            OR identity.provider_response_evidence_sha256 =
+                 NEW.provider_response_evidence_sha256
+            OR (identity.raw_object_key = NEW.raw_object_key
+              AND identity.raw_object_version = NEW.raw_object_version)
+            OR identity.client_response_artifact_sha256 =
+                 NEW.client_response_artifact_sha256
+            OR (identity.client_object_key = NEW.client_object_key
+              AND identity.client_object_version = NEW.client_object_version)
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'provider response attachment identity is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_response_attachment_identity_update_guard
+      BEFORE UPDATE ON cinatoken_shard_provider_response_attachment_identities
+      FOR EACH ROW
+      BEGIN
+        SELECT RAISE(ABORT, 'provider response attachment identity is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_provider_response_attachment_identity_delete_guard
+      BEFORE DELETE ON cinatoken_shard_provider_response_attachment_identities
+      FOR EACH ROW
+      BEGIN
+        SELECT RAISE(ABORT, 'provider response attachment identity cannot be deleted');
+      END;
       CREATE TRIGGER IF NOT EXISTS cinatoken_shard_operation_attempt_cleanup
       AFTER DELETE ON cinatoken_shard_operations
       FOR EACH ROW
@@ -952,6 +1399,9 @@ export class RelayShardLedger {
       INSERT OR IGNORE INTO cinatoken_shard_schema_migrations
         (schema_version, migration_name, applied_at)
       VALUES (2, '0002_operation_deadline_alarm_intent_v1', unixepoch());
+      INSERT OR IGNORE INTO cinatoken_shard_schema_migrations
+        (schema_version, migration_name, applied_at)
+      VALUES (3, '0003_provider_response_artifact_attachment_v1', unixepoch());
     `);
     this.validateShardSchemaMigrations();
     this.ensureOperationColumns();
@@ -959,6 +1409,7 @@ export class RelayShardLedger {
     this.ensureProviderUsageReceiptColumns();
     this.installProviderAttemptEgressGuards();
     this.installProviderUsageReceiptGuards();
+    this.validateProviderResponseAttachmentSchema();
     this.storage.sql.exec(
       `UPDATE cinatoken_shard_operations
           SET status = 'failed', response_status = COALESCE(response_status, 503)
@@ -1199,6 +1650,169 @@ export class RelayShardLedger {
       }
       return "recorded";
     });
+  }
+
+  attachProviderResponseArtifacts(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    attachment: ProviderResponseArtifactAttachment,
+    now: number,
+  ): AttachProviderResponseArtifactsOutcome {
+    this.ensureSchema();
+    validateProviderAttemptCommand(operationId, ownerGeneration, now, attemptGeneration);
+    validateProviderResponseArtifactAttachment(
+      operationId,
+      ownerGeneration,
+      attemptGeneration,
+      attachment,
+    );
+    if (now > MAX_UNIX_TIMESTAMP_SECONDS) {
+      throw new ProtocolError("invalid_provider_response_attachment", 400);
+    }
+    return this.storage.transactionSync(() => {
+      const existing = this.readProviderResponseArtifactAttachmentRow(
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (existing !== null) {
+        if (providerResponseArtifactAttachmentMatches(existing, attachment)) {
+          return { kind: "duplicate", row: existing };
+        }
+        throw new ProtocolError("provider_response_attachment_conflict", 409);
+      }
+
+      const operation = this.readStorageOperation(operationId);
+      const attempt = this.readProviderAttempt(
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (
+        operation === null ||
+        attempt === null ||
+        operation.owner_generation !== ownerGeneration ||
+        operation.operation_kind === "health_probe" ||
+        operation.provider_operation_id !== attempt.provider_operation_id ||
+        operation.admission_sha256 !== attempt.admission_sha256 ||
+        operation.input_sha256 !== attempt.request_sha256 ||
+        attempt.status !== "dispatched" ||
+        attempt.dispatched_at === null ||
+        attempt.dispatched_at > now ||
+        attempt.egress_profile !== "openai-chat-completions-canary-v1" ||
+        attempt.egress_worker_version_id === null ||
+        (attachment.status === "ambiguous"
+          ? operation.status !== "running" && operation.status !== "recovery_required"
+          : operation.status !== "running" ||
+            operation.deadline_at <= now ||
+            operation.owner_lease_expires_at <= now)
+      ) {
+        throw new ProtocolError("provider_response_attachment_conflict", 409);
+      }
+
+      const result = operationStorageResult(operation);
+      const hasNoUsageReceipt =
+        operation.provider_usage_receipt_sha256 === null &&
+        attempt.provider_usage_receipt_sha256 === null &&
+        attempt.provider_usage_receipt_attached_at === null;
+      const usageReceiptMatches =
+        attachment.status === "succeeded" &&
+        attachment.provider_usage_receipt_sha256 !== null &&
+        operation.provider_usage_receipt_sha256 ===
+          attachment.provider_usage_receipt_sha256 &&
+        attempt.provider_usage_receipt_sha256 ===
+          attachment.provider_usage_receipt_sha256 &&
+        attempt.provider_usage_receipt_attached_at !== null &&
+        attempt.provider_usage_receipt_attached_at <= now &&
+        result !== null &&
+        storageResultBodyMatches(result, attachment.client_manifest);
+      const noReceiptSuccessMatches =
+        attachment.status === "succeeded" &&
+        attachment.provider_usage_receipt_sha256 === null &&
+        hasNoUsageReceipt &&
+        (result === null || storageResultBodyMatches(result, attachment.client_manifest));
+      const nonSuccessMatches =
+        attachment.status !== "succeeded" && result === null && hasNoUsageReceipt;
+      if (!usageReceiptMatches && !noReceiptSuccessMatches && !nonSuccessMatches) {
+        throw new ProtocolError("provider_response_attachment_conflict", 409);
+      }
+
+      try {
+        this.storage.sql.exec(
+          `INSERT INTO cinatoken_shard_provider_response_attachments
+             (operation_id, owner_generation, attempt_generation, provider_operation_id,
+              admission_sha256, request_sha256, egress_profile, egress_worker_version_id,
+              status, provider_status, client_status, response_class, response_code,
+              provider_response_evidence_sha256, raw_object_key, raw_object_version,
+              raw_sha256, raw_size, raw_content_type,
+              client_response_artifact_sha256, client_object_key, client_object_version,
+              client_sha256, client_size, client_content_type,
+              provider_usage_receipt_sha256, attached_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                   ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                   ?26, ?27)`,
+          operationId,
+          ownerGeneration,
+          attemptGeneration,
+          attempt.provider_operation_id,
+          attempt.admission_sha256,
+          attempt.request_sha256,
+          attempt.egress_profile,
+          attempt.egress_worker_version_id,
+          attachment.status,
+          attachment.provider_status,
+          attachment.client_status,
+          attachment.response_class,
+          attachment.response_code,
+          attachment.raw_manifest?.provider_response_evidence_sha256 ?? null,
+          attachment.raw_manifest?.object_key ?? null,
+          attachment.raw_manifest?.object_version ?? null,
+          attachment.raw_manifest?.sha256 ?? null,
+          attachment.raw_manifest?.size ?? null,
+          attachment.raw_manifest?.content_type ?? null,
+          attachment.client_manifest?.client_response_artifact_sha256 ?? null,
+          attachment.client_manifest?.object_key ?? null,
+          attachment.client_manifest?.object_version ?? null,
+          attachment.client_manifest?.sha256 ?? null,
+          attachment.client_manifest?.size ?? null,
+          attachment.client_manifest?.content_type ?? null,
+          attachment.provider_usage_receipt_sha256,
+          now,
+        );
+      } catch {
+        throw new ProtocolError("provider_response_attachment_conflict", 409);
+      }
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("provider_response_attachment_conflict", 409);
+      }
+      const recorded = this.readProviderResponseArtifactAttachmentRow(
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      );
+      if (
+        recorded === null ||
+        !providerResponseArtifactAttachmentMatches(recorded, attachment)
+      ) {
+        throw new ProtocolError("provider_response_attachment_unavailable", 503);
+      }
+      return { kind: "attached", row: recorded };
+    });
+  }
+
+  readProviderResponseArtifactAttachment(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+  ): ProviderResponseArtifactAttachmentRow | null {
+    this.ensureSchema();
+    validateProviderAttemptCommand(operationId, ownerGeneration, 1, attemptGeneration);
+    return this.readProviderResponseArtifactAttachmentRow(
+      operationId,
+      ownerGeneration,
+      attemptGeneration,
+    );
   }
 
   readOperationOutcome(operationId: string): OperationRow | null {
@@ -2849,6 +3463,10 @@ export class RelayShardLedger {
         schema_version: 2,
         migration_name: "0002_operation_deadline_alarm_intent_v1",
       },
+      {
+        schema_version: 3,
+        migration_name: "0003_provider_response_artifact_attachment_v1",
+      },
     ];
     if (
       rows.length !== expected.length ||
@@ -2857,6 +3475,104 @@ export class RelayShardLedger {
           row.schema_version !== expected[index]?.schema_version ||
           row.migration_name !== expected[index]?.migration_name,
       )
+    ) {
+      throw new ProtocolError("shard_schema_migration_conflict", 500);
+    }
+  }
+
+  private validateProviderResponseAttachmentSchema(): void {
+    const expectedColumns = new Map<string, readonly string[]>([
+      [
+        "cinatoken_shard_provider_response_attachments",
+        [
+          "operation_id",
+          "owner_generation",
+          "attempt_generation",
+          "provider_operation_id",
+          "admission_sha256",
+          "request_sha256",
+          "egress_profile",
+          "egress_worker_version_id",
+          "status",
+          "provider_status",
+          "client_status",
+          "response_class",
+          "response_code",
+          "provider_response_evidence_sha256",
+          "raw_object_key",
+          "raw_object_version",
+          "raw_sha256",
+          "raw_size",
+          "raw_content_type",
+          "client_response_artifact_sha256",
+          "client_object_key",
+          "client_object_version",
+          "client_sha256",
+          "client_size",
+          "client_content_type",
+          "provider_usage_receipt_sha256",
+          "attached_at",
+        ],
+      ],
+      [
+        "cinatoken_shard_provider_response_attachment_identities",
+        [
+          "operation_id",
+          "owner_generation",
+          "attempt_generation",
+          "provider_response_evidence_sha256",
+          "raw_object_key",
+          "raw_object_version",
+          "client_response_artifact_sha256",
+          "client_object_key",
+          "client_object_version",
+        ],
+      ],
+    ]);
+    for (const [table, expected] of expectedColumns) {
+      const actual = this.storage.sql
+        .exec<{ name: string }>(`PRAGMA table_info(${table})`)
+        .toArray()
+        .map(({ name }) => name);
+      if (
+        actual.length !== expected.length ||
+        actual.some((name, index) => name !== expected[index])
+      ) {
+        throw new ProtocolError("shard_schema_migration_conflict", 500);
+      }
+    }
+
+    const expectedObjects = new Map<string, string>([
+      ["cinatoken_shard_provider_response_attachments", "table"],
+      ["cinatoken_shard_provider_response_attachment_identities", "table"],
+      ["cinatoken_shard_provider_response_attachments_time", "index"],
+      ["cinatoken_shard_provider_response_attachment_insert_guard", "trigger"],
+      ["cinatoken_shard_provider_response_attachment_identity_append", "trigger"],
+      ["cinatoken_shard_provider_response_attachment_update_guard", "trigger"],
+      ["cinatoken_shard_provider_response_attachment_delete_guard", "trigger"],
+      [
+        "cinatoken_shard_provider_response_attachment_identity_insert_guard",
+        "trigger",
+      ],
+      [
+        "cinatoken_shard_provider_response_attachment_identity_update_guard",
+        "trigger",
+      ],
+      [
+        "cinatoken_shard_provider_response_attachment_identity_delete_guard",
+        "trigger",
+      ],
+    ]);
+    const objects = this.storage.sql
+      .exec<{ name: string; type: string }>(
+        `SELECT name, type
+           FROM sqlite_master
+          WHERE name LIKE 'cinatoken_shard_provider_response_attachment%'`,
+      )
+      .toArray();
+    if (
+      objects.length !== expectedObjects.size ||
+      objects.some(({ name, type }) => expectedObjects.get(name) !== type)
     ) {
       throw new ProtocolError("shard_schema_migration_conflict", 500);
     }
@@ -3200,6 +3916,31 @@ export class RelayShardLedger {
     );
     if (row !== null) validateProviderAttemptRow(row);
     return row;
+  }
+
+  private readProviderResponseArtifactAttachmentRow(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+  ): ProviderResponseArtifactAttachmentRow | null {
+    const row = firstRow<ProviderResponseArtifactAttachmentSqlRow>(
+      this.storage.sql.exec<ProviderResponseArtifactAttachmentSqlRow>(
+        `SELECT operation_id, owner_generation, attempt_generation, provider_operation_id,
+                admission_sha256, request_sha256, egress_profile, egress_worker_version_id,
+                status, provider_status, client_status, response_class, response_code,
+                provider_response_evidence_sha256, raw_object_key, raw_object_version,
+                raw_sha256, raw_size, raw_content_type,
+                client_response_artifact_sha256, client_object_key, client_object_version,
+                client_sha256, client_size, client_content_type,
+                provider_usage_receipt_sha256, attached_at
+           FROM cinatoken_shard_provider_response_attachments
+          WHERE operation_id = ?1 AND owner_generation = ?2 AND attempt_generation = ?3`,
+        operationId,
+        ownerGeneration,
+        attemptGeneration,
+      ),
+    );
+    return row === null ? null : providerResponseArtifactAttachmentRow(row);
   }
 
   private readLatestProviderAttempt(
@@ -4153,6 +4894,414 @@ function storageResultMatches(
     left.sha256 === right.sha256 &&
     left.size === right.size &&
     left.content_type === right.content_type
+  );
+}
+
+function storageResultBodyMatches(
+  result: StorageResultRecord,
+  manifest: ClientResponseArtifactManifest,
+): boolean {
+  return (
+    result.sha256 === manifest.sha256 &&
+    result.size === manifest.size &&
+    result.content_type === manifest.content_type
+  );
+}
+
+function validateProviderResponseArtifactAttachment(
+  operationId: string,
+  ownerGeneration: number,
+  attemptGeneration: number,
+  attachment: ProviderResponseArtifactAttachment,
+): void {
+  if (
+    !isRecord(attachment) ||
+    !hasExactKeys(attachment, [
+      "status",
+      "provider_status",
+      "client_status",
+      "response_class",
+      "response_code",
+      "raw_manifest",
+      "client_manifest",
+      "provider_usage_receipt_sha256",
+    ]) ||
+    (attachment.provider_usage_receipt_sha256 !== null &&
+      (typeof attachment.provider_usage_receipt_sha256 !== "string" ||
+        !/^[0-9a-f]{64}$/.test(attachment.provider_usage_receipt_sha256)))
+  ) {
+    throw new ProtocolError("invalid_provider_response_attachment", 400);
+  }
+
+  const hasArtifacts =
+    validProviderResponseEvidenceManifest(
+      attachment.raw_manifest,
+      operationId,
+      ownerGeneration,
+      attemptGeneration,
+    ) &&
+    validClientResponseArtifactManifest(
+      attachment.client_manifest,
+      operationId,
+      ownerGeneration,
+    );
+  const validSuccess =
+    attachment.status === "succeeded" &&
+    attachment.provider_status === 200 &&
+    attachment.client_status === 200 &&
+    attachment.response_class === "success" &&
+    attachment.response_code === null &&
+    hasArtifacts;
+  const validInterpretedReject =
+    attachment.status === "interpreted_reject" &&
+    validResponseCode(attachment.response_code) &&
+    attachment.provider_usage_receipt_sha256 === null &&
+    hasArtifacts &&
+    ((attachment.response_class === "typed_error" &&
+      attachment.provider_status === 200 &&
+      attachment.client_status === 200) ||
+      (attachment.response_class === "http_error" &&
+        Number.isSafeInteger(attachment.provider_status) &&
+        attachment.provider_status >= 100 &&
+        attachment.provider_status <= 599 &&
+        attachment.provider_status !== 200 &&
+        attachment.client_status === attachment.provider_status) ||
+      (attachment.response_class === "invalid_body" &&
+        attachment.provider_status === 200 &&
+        attachment.client_status === 500));
+  const validAmbiguous =
+    attachment.status === "ambiguous" &&
+    attachment.provider_status === null &&
+    attachment.client_status === null &&
+    attachment.response_class === null &&
+    validResponseCode(attachment.response_code) &&
+    attachment.raw_manifest === null &&
+    attachment.client_manifest === null &&
+    attachment.provider_usage_receipt_sha256 === null;
+  if (!validSuccess && !validInterpretedReject && !validAmbiguous) {
+    throw new ProtocolError("invalid_provider_response_attachment", 400);
+  }
+}
+
+function validProviderResponseEvidenceManifest(
+  value: unknown,
+  operationId: string,
+  ownerGeneration: number,
+  attemptGeneration: number,
+): value is ProviderResponseEvidenceManifest {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "object_key",
+      "object_version",
+      "provider_response_evidence_sha256",
+      "sha256",
+      "size",
+      "content_type",
+    ]) ||
+    typeof value.object_key !== "string" ||
+    typeof value.object_version !== "string" ||
+    typeof value.provider_response_evidence_sha256 !== "string" ||
+    typeof value.sha256 !== "string" ||
+    typeof value.size !== "number" ||
+    typeof value.content_type !== "string"
+  ) {
+    return false;
+  }
+  return (
+    value.object_key ===
+      `container-provider-evidence/v1/${operationId}/${ownerGeneration}/${attemptGeneration}/${value.sha256}` &&
+    validResponseArtifactObjectVersion(value.object_version) &&
+    /^[0-9a-f]{64}$/.test(value.provider_response_evidence_sha256) &&
+    /^[0-9a-f]{64}$/.test(value.sha256) &&
+    Number.isSafeInteger(value.size) &&
+    value.size >= 0 &&
+    value.size <= 4_194_304 &&
+    validResponseArtifactContentType(value.content_type)
+  );
+}
+
+function validClientResponseArtifactManifest(
+  value: unknown,
+  operationId: string,
+  ownerGeneration: number,
+): value is ClientResponseArtifactManifest {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "object_key",
+      "object_version",
+      "client_response_artifact_sha256",
+      "sha256",
+      "size",
+      "content_type",
+    ]) ||
+    typeof value.object_key !== "string" ||
+    typeof value.object_version !== "string" ||
+    typeof value.client_response_artifact_sha256 !== "string" ||
+    typeof value.sha256 !== "string" ||
+    typeof value.size !== "number" ||
+    value.content_type !== "application/json"
+  ) {
+    return false;
+  }
+  return (
+    value.object_key ===
+      `container-client-artifacts/v1/${operationId}/${ownerGeneration}/${value.client_response_artifact_sha256}` &&
+    validResponseArtifactObjectVersion(value.object_version) &&
+    /^[0-9a-f]{64}$/.test(value.client_response_artifact_sha256) &&
+    /^[0-9a-f]{64}$/.test(value.sha256) &&
+    Number.isSafeInteger(value.size) &&
+    value.size >= 2 &&
+    value.size <= 4_194_304
+  );
+}
+
+function validResponseArtifactObjectVersion(value: string): boolean {
+  return (
+    value.length >= 1 &&
+    value.length <= 128 &&
+    /^[A-Za-z0-9._:-]+$/.test(value)
+  );
+}
+
+function validResponseArtifactContentType(value: string): boolean {
+  return (
+    value.length >= 3 &&
+    value.length <= 128 &&
+    /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?:;[ -~]+)?$/.test(value)
+  );
+}
+
+function providerResponseArtifactAttachmentRow(
+  row: ProviderResponseArtifactAttachmentSqlRow,
+): ProviderResponseArtifactAttachmentRow {
+  let attachment: ProviderResponseArtifactAttachment;
+  try {
+    if (row.status === "ambiguous") {
+      if (
+        row.provider_status !== null ||
+        row.client_status !== null ||
+        row.response_class !== null ||
+        row.response_code === null ||
+        row.provider_response_evidence_sha256 !== null ||
+        row.raw_object_key !== null ||
+        row.raw_object_version !== null ||
+        row.raw_sha256 !== null ||
+        row.raw_size !== null ||
+        row.raw_content_type !== null ||
+        row.client_response_artifact_sha256 !== null ||
+        row.client_object_key !== null ||
+        row.client_object_version !== null ||
+        row.client_sha256 !== null ||
+        row.client_size !== null ||
+        row.client_content_type !== null ||
+        row.provider_usage_receipt_sha256 !== null
+      ) {
+        throw new Error("invalid ambiguous attachment");
+      }
+      attachment = {
+        status: "ambiguous",
+        provider_status: null,
+        client_status: null,
+        response_class: null,
+        response_code: row.response_code,
+        raw_manifest: null,
+        client_manifest: null,
+        provider_usage_receipt_sha256: null,
+      };
+    } else {
+      if (
+        row.provider_status === null ||
+        row.client_status === null ||
+        row.response_class === null ||
+        row.provider_response_evidence_sha256 === null ||
+        row.raw_object_key === null ||
+        row.raw_object_version === null ||
+        row.raw_sha256 === null ||
+        row.raw_size === null ||
+        row.raw_content_type === null ||
+        row.client_response_artifact_sha256 === null ||
+        row.client_object_key === null ||
+        row.client_object_version === null ||
+        row.client_sha256 === null ||
+        row.client_size === null ||
+        row.client_content_type !== "application/json"
+      ) {
+        throw new Error("incomplete response artifact attachment");
+      }
+      const rawManifest: ProviderResponseEvidenceManifest = {
+        object_key: row.raw_object_key,
+        object_version: row.raw_object_version,
+        provider_response_evidence_sha256:
+          row.provider_response_evidence_sha256,
+        sha256: row.raw_sha256,
+        size: row.raw_size,
+        content_type: row.raw_content_type,
+      };
+      const clientManifest: ClientResponseArtifactManifest = {
+        object_key: row.client_object_key,
+        object_version: row.client_object_version,
+        client_response_artifact_sha256:
+          row.client_response_artifact_sha256,
+        sha256: row.client_sha256,
+        size: row.client_size,
+        content_type: row.client_content_type,
+      };
+      if (row.status === "succeeded") {
+        if (
+          row.provider_status !== 200 ||
+          row.client_status !== 200 ||
+          row.response_class !== "success" ||
+          row.response_code !== null
+        ) {
+          throw new Error("invalid succeeded attachment");
+        }
+        attachment = {
+          status: "succeeded",
+          provider_status: 200,
+          client_status: 200,
+          response_class: "success",
+          response_code: null,
+          raw_manifest: rawManifest,
+          client_manifest: clientManifest,
+          provider_usage_receipt_sha256:
+            row.provider_usage_receipt_sha256,
+        };
+      } else {
+        if (
+          row.response_class === "success" ||
+          row.response_code === null ||
+          row.provider_usage_receipt_sha256 !== null
+        ) {
+          throw new Error("invalid interpreted rejection attachment");
+        }
+        attachment = {
+          status: "interpreted_reject",
+          provider_status: row.provider_status,
+          client_status: row.client_status,
+          response_class: row.response_class,
+          response_code: row.response_code,
+          raw_manifest: rawManifest,
+          client_manifest: clientManifest,
+          provider_usage_receipt_sha256: null,
+        };
+      }
+    }
+    validateProviderAttemptCommand(
+      row.operation_id,
+      row.owner_generation,
+      row.attached_at,
+      row.attempt_generation,
+    );
+    if (
+      row.attached_at > MAX_UNIX_TIMESTAMP_SECONDS ||
+      row.provider_operation_id.length < 1 ||
+      row.provider_operation_id.length > 128 ||
+      !/^[A-Za-z0-9._:-]+$/.test(row.provider_operation_id) ||
+      !/^[0-9a-f]{64}$/.test(row.admission_sha256) ||
+      !/^[0-9a-f]{64}$/.test(row.request_sha256) ||
+      row.egress_profile !== "openai-chat-completions-canary-v1" ||
+      row.egress_worker_version_id.length < 1 ||
+      row.egress_worker_version_id.length > 128 ||
+      !/^[A-Za-z0-9._:/@-]+$/.test(row.egress_worker_version_id)
+    ) {
+      throw new Error("invalid attachment identity");
+    }
+    validateProviderResponseArtifactAttachment(
+      row.operation_id,
+      row.owner_generation,
+      row.attempt_generation,
+      attachment,
+    );
+  } catch {
+    throw new ProtocolError("provider_response_attachment_corrupt", 503);
+  }
+  return {
+    ...attachment,
+    operation_id: row.operation_id,
+    owner_generation: row.owner_generation,
+    attempt_generation: row.attempt_generation,
+    provider_operation_id: row.provider_operation_id,
+    admission_sha256: row.admission_sha256,
+    request_sha256: row.request_sha256,
+    egress_profile: row.egress_profile,
+    egress_worker_version_id: row.egress_worker_version_id,
+    attached_at: row.attached_at,
+  };
+}
+
+function providerResponseArtifactAttachmentMatches(
+  row: ProviderResponseArtifactAttachmentRow,
+  attachment: ProviderResponseArtifactAttachment,
+): boolean {
+  return (
+    row.status === attachment.status &&
+    row.provider_status === attachment.provider_status &&
+    row.client_status === attachment.client_status &&
+    row.response_class === attachment.response_class &&
+    row.response_code === attachment.response_code &&
+    row.provider_usage_receipt_sha256 ===
+      attachment.provider_usage_receipt_sha256 &&
+    providerResponseEvidenceManifestMatches(
+      row.raw_manifest,
+      attachment.raw_manifest,
+    ) &&
+    clientResponseArtifactManifestMatches(
+      row.client_manifest,
+      attachment.client_manifest,
+    )
+  );
+}
+
+function providerResponseEvidenceManifestMatches(
+  left: ProviderResponseEvidenceManifest | null,
+  right: ProviderResponseEvidenceManifest | null,
+): boolean {
+  return (
+    (left === null && right === null) ||
+    (left !== null &&
+      right !== null &&
+      left.object_key === right.object_key &&
+      left.object_version === right.object_version &&
+      left.provider_response_evidence_sha256 ===
+        right.provider_response_evidence_sha256 &&
+      left.sha256 === right.sha256 &&
+      left.size === right.size &&
+      left.content_type === right.content_type)
+  );
+}
+
+function clientResponseArtifactManifestMatches(
+  left: ClientResponseArtifactManifest | null,
+  right: ClientResponseArtifactManifest | null,
+): boolean {
+  return (
+    (left === null && right === null) ||
+    (left !== null &&
+      right !== null &&
+      left.object_key === right.object_key &&
+      left.object_version === right.object_version &&
+      left.client_response_artifact_sha256 ===
+        right.client_response_artifact_sha256 &&
+      left.sha256 === right.sha256 &&
+      left.size === right.size &&
+      left.content_type === right.content_type)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    keys.length === expected.length &&
+    expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
   );
 }
 

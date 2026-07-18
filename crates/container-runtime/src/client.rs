@@ -14,7 +14,10 @@ use hyper_util::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::{OperationEnvelope, OperationResultManifest};
+use crate::{
+    ClientResponseArtifactManifest, OperationEnvelope, OperationResultManifest,
+    ProviderRejectedOutcome, ProviderResponseClassification, INTERPRETED_PROVIDER_REJECTION_STATUS,
+};
 
 pub(crate) const PROVIDER_CANARY_OPERATION_KIND: &str = "chat_completions_canary";
 const R2_INPUT_URL: &str = "http://r2-input.cinatoken.internal/v1/input";
@@ -30,6 +33,7 @@ const MAX_GATEWAY_RESPONSE_BYTES: usize = 8 * 1024;
 #[derive(Debug)]
 pub(crate) enum ExecutionOutcome {
     Completed(OperationResultManifest),
+    Rejected(ProviderRejectedOutcome),
     RecoveryRequired,
 }
 
@@ -135,7 +139,10 @@ impl InternalProviderClient {
             .await
             .map_err(|_| ExecutionError::Ambiguous)?;
         let status = response.status();
-        if status != StatusCode::OK && status != StatusCode::ACCEPTED {
+        if status != StatusCode::OK
+            && status != StatusCode::ACCEPTED
+            && status != INTERPRETED_PROVIDER_REJECTION_STATUS
+        {
             return Err(ExecutionError::Ambiguous);
         }
         if response
@@ -193,9 +200,15 @@ struct ProviderExecutionResponse {
     #[serde(default)]
     provider_status: Option<u16>,
     #[serde(default)]
+    client_status: Option<u16>,
+    #[serde(default)]
+    classification: Option<ProviderResponseClassification>,
+    #[serde(default)]
     code: Option<String>,
     #[serde(default)]
     result: Option<OperationResultManifest>,
+    #[serde(default)]
+    client_artifact: Option<ClientResponseArtifactManifest>,
     trace_id: String,
 }
 
@@ -203,6 +216,7 @@ struct ProviderExecutionResponse {
 #[serde(rename_all = "snake_case")]
 enum ProviderExecutionStatus {
     Succeeded,
+    Rejected,
     Ambiguous,
 }
 
@@ -223,18 +237,43 @@ impl ProviderExecutionResponse {
         match self.status {
             ProviderExecutionStatus::Succeeded
                 if http_status == StatusCode::OK
-                    && self
-                        .provider_status
-                        .is_some_and(|status| (200..=299).contains(&status))
+                    && self.provider_status == Some(200)
+                    && self.client_status.is_none()
+                    && self.classification.is_none()
                     && self.code.is_none()
-                    && self.result.is_some() =>
+                    && self.result.is_some()
+                    && self.client_artifact.is_none() =>
             {
                 Ok(ExecutionOutcome::Completed(self.result.unwrap()))
+            }
+            ProviderExecutionStatus::Rejected
+                if http_status == INTERPRETED_PROVIDER_REJECTION_STATUS
+                    && self.result.is_none()
+                    && self.provider_status.is_some()
+                    && self.client_status.is_some()
+                    && self.classification.is_some()
+                    && self.code.as_deref().is_some_and(valid_outcome_code)
+                    && self.client_artifact.is_some() =>
+            {
+                let rejected = ProviderRejectedOutcome {
+                    classification: self.classification.unwrap(),
+                    provider_status: self.provider_status.unwrap(),
+                    client_status: self.client_status.unwrap(),
+                    code: self.code.unwrap(),
+                    client_artifact: self.client_artifact.unwrap(),
+                };
+                if !rejected.valid(&envelope.operation_id, envelope.owner_generation) {
+                    return Err(ExecutionError::Ambiguous);
+                }
+                Ok(ExecutionOutcome::Rejected(rejected))
             }
             ProviderExecutionStatus::Ambiguous
                 if http_status == StatusCode::ACCEPTED
                     && self.provider_status.is_none()
+                    && self.client_status.is_none()
+                    && self.classification.is_none()
                     && self.result.is_none()
+                    && self.client_artifact.is_none()
                     && self.code.as_deref().is_some_and(valid_outcome_code) =>
             {
                 Ok(ExecutionOutcome::RecoveryRequired)
@@ -347,8 +386,11 @@ mod tests {
             attempt_generation: 1,
             status: ProviderExecutionStatus::Succeeded,
             provider_status: Some(200),
+            client_status: None,
+            classification: None,
             code: None,
             result: Some(result),
+            client_artifact: None,
             trace_id: operation.trace_id.clone(),
         };
         assert!(matches!(
@@ -362,13 +404,51 @@ mod tests {
             attempt_generation: 1,
             status: ProviderExecutionStatus::Ambiguous,
             provider_status: None,
+            client_status: None,
+            classification: None,
             code: Some(crate::AMBIGUOUS_EXECUTION_CODE.to_string()),
             result: None,
+            client_artifact: None,
             trace_id: operation.trace_id.clone(),
         };
         assert!(matches!(
             ambiguous.validate(&operation, StatusCode::ACCEPTED),
             Ok(ExecutionOutcome::RecoveryRequired)
+        ));
+
+        let artifact_digest = "d".repeat(64);
+        let rejected = ProviderExecutionResponse {
+            protocol_version: 1,
+            operation_id: operation.operation_id.clone(),
+            owner_generation: operation.owner_generation,
+            attempt_generation: 1,
+            status: ProviderExecutionStatus::Rejected,
+            provider_status: Some(202),
+            client_status: Some(202),
+            classification: Some(ProviderResponseClassification::HttpError),
+            code: Some("provider_http_error".to_string()),
+            result: None,
+            client_artifact: Some(
+                ClientResponseArtifactManifest::try_new(
+                    format!("container-client-artifacts/v1/operation-1/2/{artifact_digest}"),
+                    "artifact-version-1".to_string(),
+                    artifact_digest,
+                    "e".repeat(64),
+                    64,
+                    "application/json".to_string(),
+                )
+                .unwrap(),
+            ),
+            trace_id: operation.trace_id.clone(),
+        };
+        assert!(matches!(
+            rejected.validate(&operation, INTERPRETED_PROVIDER_REJECTION_STATUS),
+            Ok(ExecutionOutcome::Rejected(ProviderRejectedOutcome {
+                classification: ProviderResponseClassification::HttpError,
+                provider_status: 202,
+                client_status: 202,
+                ..
+            }))
         ));
     }
 }

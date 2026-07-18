@@ -8,11 +8,13 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use cinatoken_relay::{
-    first_safe_provider_request_id, interpret_buffered_provider_response,
-    should_forward_public_response_header, BufferedProviderResponse, OpenAiCompatibleErrorEnvelope,
-    ProviderResponseClass, ProviderResponseProfile, ProviderUsageReceiptInput,
-    ProviderUsageReceiptV1, UsageCacheFieldPolicy, MAX_PROVIDER_USAGE_RECEIPT_ENCODED_BYTES,
-    MAX_PROVIDER_USAGE_RECEIPT_JSON_BYTES, PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE,
+    build_provider_response_v3, first_safe_provider_request_id,
+    interpret_buffered_provider_response, should_forward_public_response_header,
+    BufferedProviderResponse, OpenAiCompatibleErrorEnvelope, ProviderResponseClass,
+    ProviderResponseEnvelopeV3Input, ProviderResponseHeaderV3, ProviderResponseProfile,
+    ProviderUsageReceiptInput, ProviderUsageReceiptV1, UsageCacheFieldPolicy,
+    MAX_PROVIDER_USAGE_RECEIPT_ENCODED_BYTES, MAX_PROVIDER_USAGE_RECEIPT_JSON_BYTES,
+    PROVIDER_RESPONSE_V3_CONTENT_TYPE, PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE,
     PUBLIC_SUCCESS_RESPONSE_HEADERS,
 };
 use futures_util::{future::Either, pin_mut, StreamExt};
@@ -27,13 +29,16 @@ use worker::{
 
 pub const EGRESS_PROTOCOL_VERSION: &str = "1";
 pub const EGRESS_EXECUTION_PROTOCOL_VERSION: &str = "2";
+pub const EGRESS_EXECUTION_PROTOCOL_V3: &str = "3";
 pub const EGRESS_PROFILE: &str = PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE;
 pub const INTERNAL_EGRESS_HOST: &str = "provider-egress.cinatoken.internal";
 pub const INTERNAL_EGRESS_PATH: &str = "/internal/v1/provider-attempts/execute";
+pub const INTERNAL_EGRESS_V3_PATH: &str = "/internal/v3/provider-attempts/execute";
 pub const INTERNAL_EGRESS_READINESS_PATH: &str = "/internal/v1/provider-egress/readiness";
 pub const UPSTREAM_HOST: &str = "api.openai.com";
 pub const UPSTREAM_PATH: &str = "/v1/chat/completions";
 pub const MAX_PROVIDER_BODY_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_PROVIDER_RESPONSE_V3_OPERATIONAL_BODY_BYTES: usize = 1024 * 1024;
 const MAX_JSON_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 const ENABLED_ENV: &str = "CINATOKEN_CONTAINER_PROVIDER_EGRESS_ENABLED";
@@ -79,12 +84,19 @@ enum EgressError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProviderAttemptMetadata {
+    execution_protocol: ExecutionProtocol,
     deadline_at: u64,
     operation_id: String,
     owner_generation: i64,
     attempt_generation: i64,
     provider_operation_id: String,
     request_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionProtocol {
+    V2,
+    V3,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,13 +181,31 @@ pub async fn fetch(mut request: Request, env: Env, _ctx: Context) -> WorkerResul
         upstream_abort.abort();
         return versioned_policy_error(EgressError::Redirect, &worker_version_id);
     }
-    let response_body =
-        match read_bounded_response(&mut upstream, request_metadata.deadline_at, upstream_abort)
-            .await
-        {
-            Ok(body) => body,
-            Err(_) => return versioned_policy_error(EgressError::Upstream, &worker_version_id),
+    let response_body = match read_bounded_response(
+        &mut upstream,
+        request_metadata.deadline_at,
+        provider_response_body_limit(request_metadata.execution_protocol),
+        upstream_abort,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(_) => return versioned_policy_error(EgressError::Upstream, &worker_version_id),
+    };
+    let provider_completed_at = js_sys::Date::now().floor() as i64;
+    if request_metadata.execution_protocol == ExecutionProtocol::V3 {
+        return match provider_response_v3_response(
+            &request_metadata,
+            &worker_version_id,
+            status,
+            upstream.headers(),
+            &response_body,
+            provider_completed_at,
+        ) {
+            Ok(response) => Ok(response),
+            Err(_) => versioned_policy_error(EgressError::Receipt, &worker_version_id),
         };
+    }
     let interpreted = interpret_provider_response(status, &response_body);
     match interpreted.class() {
         ProviderResponseClass::Success if provider_response_allows_receipt(&interpreted) => {}
@@ -192,7 +222,6 @@ pub async fn fetch(mut request: Request, env: Env, _ctx: Context) -> WorkerResul
     let provider_request_id = provider_request_id(upstream.headers())?;
     let mut response_headers =
         public_response_headers(upstream.headers(), &worker_version_id, interpreted.class())?;
-    let provider_completed_at = js_sys::Date::now().floor() as i64;
     let receipt_headers = match provider_usage_receipt_headers(
         &request_metadata,
         &worker_version_id,
@@ -284,7 +313,7 @@ fn validate_request_metadata(
     }
     if url.scheme() != "https"
         || url.host_str() != Some(INTERNAL_EGRESS_HOST)
-        || url.path() != INTERNAL_EGRESS_PATH
+        || !matches!(url.path(), INTERNAL_EGRESS_PATH | INTERNAL_EGRESS_V3_PATH)
         || url.port().is_some()
         || !url.username().is_empty()
         || url.password().is_some()
@@ -298,11 +327,18 @@ fn validate_request_metadata(
     }
     let protocol = header(headers, PROTOCOL_HEADER);
     let expected_worker_version = header(headers, EXPECTED_WORKER_VERSION_HEADER);
-    validate_execution_version(
+    let execution_protocol = validate_execution_version(
         protocol.as_deref(),
         expected_worker_version.as_deref(),
         worker_version_id,
     )?;
+    let expected_path = match execution_protocol {
+        ExecutionProtocol::V2 => INTERNAL_EGRESS_PATH,
+        ExecutionProtocol::V3 => INTERNAL_EGRESS_V3_PATH,
+    };
+    if url.path() != expected_path {
+        return Err(EgressError::Protocol);
+    }
     let operation_id = header(headers, OPERATION_ID_HEADER).unwrap_or_default();
     let owner_generation = header(headers, OWNER_GENERATION_HEADER).unwrap_or_default();
     let attempt_generation = header(headers, ATTEMPT_GENERATION_HEADER).unwrap_or_default();
@@ -313,6 +349,7 @@ fn validate_request_metadata(
         parse_owner_generation(&owner_generation).ok_or(EgressError::Identity)?;
     let now = (js_sys::Date::now() / 1000.0).floor() as u64;
     if !valid_identifier(Some(&operation_id), 128)
+        || (execution_protocol == ExecutionProtocol::V3 && owner_generation_value != 2)
         || attempt_generation != "1"
         || !valid_identifier(Some(&provider_operation_id), 128)
         || !valid_positive_integer(Some(&deadline), 16)
@@ -341,6 +378,7 @@ fn validate_request_metadata(
         return Err(EgressError::BodyHash);
     }
     Ok(ProviderAttemptMetadata {
+        execution_protocol,
         deadline_at,
         operation_id,
         owner_generation: owner_generation_value,
@@ -356,16 +394,26 @@ fn validate_execution_version(
     protocol: Option<&str>,
     expected_worker_version: Option<&str>,
     worker_version_id: &str,
-) -> Result<(), EgressError> {
+) -> Result<ExecutionProtocol, EgressError> {
     match protocol {
-        Some(EGRESS_PROTOCOL_VERSION) if expected_worker_version.is_none() => Ok(()),
+        Some(EGRESS_PROTOCOL_VERSION) if expected_worker_version.is_none() => {
+            Ok(ExecutionProtocol::V2)
+        }
         Some(EGRESS_EXECUTION_PROTOCOL_VERSION)
             if valid_identifier(expected_worker_version, 128)
                 && expected_worker_version == Some(worker_version_id) =>
         {
-            Ok(())
+            Ok(ExecutionProtocol::V2)
         }
-        Some(EGRESS_EXECUTION_PROTOCOL_VERSION) => Err(EgressError::VersionMismatch),
+        Some(EGRESS_EXECUTION_PROTOCOL_V3)
+            if valid_identifier(expected_worker_version, 128)
+                && expected_worker_version == Some(worker_version_id) =>
+        {
+            Ok(ExecutionProtocol::V3)
+        }
+        Some(EGRESS_EXECUTION_PROTOCOL_VERSION | EGRESS_EXECUTION_PROTOCOL_V3) => {
+            Err(EgressError::VersionMismatch)
+        }
         _ => Err(EgressError::Protocol),
     }
 }
@@ -454,13 +502,14 @@ async fn read_bounded_body(request: &mut Request) -> Result<Vec<u8>, EgressError
 async fn read_bounded_response(
     response: &mut Response,
     deadline_at: u64,
+    max_bytes: usize,
     controller: AbortController,
 ) -> Result<Vec<u8>, EgressError> {
     let Some(remaining_ms) = deadline_remaining_ms(deadline_at, js_sys::Date::now()) else {
         controller.abort();
         return Err(EgressError::Upstream);
     };
-    let read = read_bounded_response_inner(response);
+    let read = read_bounded_response_inner(response, max_bytes);
     let timeout = Delay::from(Duration::from_millis(remaining_ms));
     pin_mut!(read, timeout);
     match futures_util::future::select(read, timeout).await {
@@ -476,23 +525,92 @@ async fn read_bounded_response(
     }
 }
 
-async fn read_bounded_response_inner(response: &mut Response) -> Result<Vec<u8>, EgressError> {
-    if let Some(length) = header(response.headers(), "content-length") {
+async fn read_bounded_response_inner(
+    response: &mut Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, EgressError> {
+    let declared_length = if let Some(length) = header(response.headers(), "content-length") {
         let length = length.parse::<usize>().map_err(|_| EgressError::Upstream)?;
-        if length > MAX_PROVIDER_BODY_BYTES {
+        if length > max_bytes {
             return Err(EgressError::Upstream);
         }
-    }
+        Some(length)
+    } else {
+        None
+    };
     let mut stream = response.stream().map_err(|_| EgressError::Upstream)?;
-    let mut body = Vec::new();
+    let mut body = Vec::with_capacity(declared_length.unwrap_or(0));
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| EgressError::Upstream)?;
-        if body.len().saturating_add(chunk.len()) > MAX_PROVIDER_BODY_BYTES {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
             return Err(EgressError::Upstream);
         }
         body.extend_from_slice(&chunk);
     }
     Ok(body)
+}
+
+fn provider_response_body_limit(protocol: ExecutionProtocol) -> usize {
+    match protocol {
+        ExecutionProtocol::V2 => MAX_PROVIDER_BODY_BYTES,
+        ExecutionProtocol::V3 => MAX_PROVIDER_RESPONSE_V3_OPERATIONAL_BODY_BYTES,
+    }
+}
+
+fn provider_response_v3_response(
+    metadata: &ProviderAttemptMetadata,
+    worker_version_id: &str,
+    provider_status: u16,
+    provider_headers: &Headers,
+    provider_body: &[u8],
+    provider_completed_at: i64,
+) -> WorkerResult<Response> {
+    let mut owned_headers = Vec::new();
+    for name in PUBLIC_SUCCESS_RESPONSE_HEADERS {
+        if let Some(value) = provider_headers.get(name)? {
+            owned_headers.push(((*name).to_string(), value));
+        }
+    }
+    let header_views = owned_headers
+        .iter()
+        .map(|(name, value)| ProviderResponseHeaderV3::new(name, value))
+        .collect::<Vec<_>>();
+    let interpreted = interpret_provider_response(provider_status, provider_body);
+    let include_usage_receipt = provider_response_allows_receipt(&interpreted);
+    let completed_at = u64::try_from(provider_completed_at)
+        .map_err(|_| worker::Error::RustError("invalid provider completion time".to_string()))?;
+    let envelope = build_provider_response_v3(ProviderResponseEnvelopeV3Input {
+        operation_id: &metadata.operation_id,
+        owner_generation: u64::try_from(metadata.owner_generation).map_err(|_| {
+            worker::Error::RustError("invalid provider owner generation".to_string())
+        })?,
+        attempt_generation: u64::try_from(metadata.attempt_generation).map_err(|_| {
+            worker::Error::RustError("invalid provider attempt generation".to_string())
+        })?,
+        provider_operation_id: &metadata.provider_operation_id,
+        request_sha256: &metadata.request_sha256,
+        egress_profile: EGRESS_PROFILE,
+        egress_worker_version_id: worker_version_id,
+        provider_status,
+        raw_headers: &header_views,
+        raw_body: provider_body,
+        completed_at,
+        include_usage_receipt,
+    })
+    .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    let canonical = serde_json::to_vec(&envelope).map_err(|_| {
+        worker::Error::RustError("provider-response v3 serialization failed".into())
+    })?;
+    let mut headers = Headers::new();
+    headers.set("cache-control", "no-store")?;
+    headers.set("content-type", PROVIDER_RESPONSE_V3_CONTENT_TYPE)?;
+    headers.set("content-length", &canonical.len().to_string())?;
+    headers.set(PROTOCOL_HEADER, EGRESS_EXECUTION_PROTOCOL_V3)?;
+    headers.set(PROFILE_HEADER, EGRESS_PROFILE)?;
+    headers.set(WORKER_VERSION_HEADER, worker_version_id)?;
+    Ok(Response::from_bytes(canonical)?
+        .with_status(200)
+        .with_headers(headers))
 }
 
 fn provider_usage_receipt_headers(
@@ -775,6 +893,18 @@ mod tests {
     }
 
     #[test]
+    fn v3_uses_the_isolate_safe_provider_body_limit() {
+        assert_eq!(
+            provider_response_body_limit(ExecutionProtocol::V2),
+            MAX_PROVIDER_BODY_BYTES
+        );
+        assert_eq!(
+            provider_response_body_limit(ExecutionProtocol::V3),
+            MAX_PROVIDER_RESPONSE_V3_OPERATIONAL_BODY_BYTES
+        );
+    }
+
+    #[test]
     fn exact_200_success_is_receipt_eligible() {
         let response = interpret_provider_response(
             200,
@@ -879,14 +1009,14 @@ mod tests {
     }
 
     #[test]
-    fn execution_v2_requires_the_exact_runtime_worker_version() {
+    fn execution_v2_and_v3_require_the_exact_runtime_worker_version() {
         assert_eq!(
             validate_execution_version(
                 Some(EGRESS_EXECUTION_PROTOCOL_VERSION),
                 Some("worker-version-1"),
                 "worker-version-1",
             ),
-            Ok(())
+            Ok(ExecutionProtocol::V2)
         );
         for expected in [None, Some("worker-version-2"), Some("bad version")] {
             assert_eq!(
@@ -900,7 +1030,7 @@ mod tests {
         }
         assert_eq!(
             validate_execution_version(Some(EGRESS_PROTOCOL_VERSION), None, "worker-version-1"),
-            Ok(())
+            Ok(ExecutionProtocol::V2)
         );
         assert_eq!(
             validate_execution_version(
@@ -909,6 +1039,22 @@ mod tests {
                 "worker-version-1",
             ),
             Err(EgressError::Protocol)
+        );
+        assert_eq!(
+            validate_execution_version(
+                Some(EGRESS_EXECUTION_PROTOCOL_V3),
+                Some("worker-version-1"),
+                "worker-version-1",
+            ),
+            Ok(ExecutionProtocol::V3)
+        );
+        assert_eq!(
+            validate_execution_version(
+                Some(EGRESS_EXECUTION_PROTOCOL_V3),
+                Some("worker-version-2"),
+                "worker-version-1",
+            ),
+            Err(EgressError::VersionMismatch)
         );
     }
 
@@ -923,6 +1069,7 @@ mod tests {
     #[test]
     fn receipt_headers_bind_exact_body_without_changing_status_or_body() {
         let metadata = ProviderAttemptMetadata {
+            execution_protocol: ExecutionProtocol::V2,
             deadline_at: 1_752_710_460,
             operation_id: "operation-1".to_string(),
             owner_generation: 7,
@@ -1002,6 +1149,7 @@ mod tests {
     #[test]
     fn receipt_construction_fails_closed_for_non_2xx_or_invalid_json() {
         let metadata = ProviderAttemptMetadata {
+            execution_protocol: ExecutionProtocol::V2,
             deadline_at: 1_752_710_460,
             operation_id: "operation-1".to_string(),
             owner_generation: 1,

@@ -4,6 +4,9 @@ import {
   RelayShardLedger,
   operationRecoveryIntentPayload,
   operationStorageResult,
+  type AttachProviderResponseArtifactsOutcome,
+  type ProviderResponseArtifactAttachment,
+  type ProviderResponseArtifactAttachmentRow,
   type OperationRecoveryIntent,
   type OperationRecoveryIntentOutcome,
   type OperationRow,
@@ -106,6 +109,10 @@ interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
   CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED: string;
   CONTAINER_PROVIDER_CLIENT_ENABLED: string;
   CONTAINER_PROVIDER_EGRESS_ENABLED: string;
+  CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED: string;
+  CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED: string;
+  CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED: string;
+  CONTAINER_PROVIDER_RESPONSE_TERMINAL_ENABLED: string;
   CONTAINER_PROVIDER_RETRY_ENABLED: string;
   CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED: string;
   CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED: string;
@@ -191,6 +198,14 @@ export type ShardDispatchProviderAttemptRpcResult =
 
 export type ShardRecordProviderAttemptRpcResult =
   | { ok: true; result: RecordProviderAttemptOutcome }
+  | { ok: false; error: { code: string; status: number } };
+
+export type ShardAttachProviderResponseArtifactsRpcResult =
+  | { ok: true; result: AttachProviderResponseArtifactsOutcome }
+  | { ok: false; error: { code: string; status: number } };
+
+export type ShardReadProviderResponseArtifactsRpcResult =
+  | { ok: true; row: ProviderResponseArtifactAttachmentRow | null }
   | { ok: false; error: { code: string; status: number } };
 
 export type {
@@ -429,6 +444,70 @@ export class RelayShardContainer extends Container<ControllerEnv> {
       };
     } catch (error) {
       return providerAttemptRpcError(error);
+    }
+  }
+
+  async attachProviderResponseArtifacts(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    attachment: ProviderResponseArtifactAttachment,
+  ): Promise<ShardAttachProviderResponseArtifactsRpcResult> {
+    if (
+      this.env.CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED !== "true" ||
+      this.env.CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED !== "true" ||
+      this.env.CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED !== "true" ||
+      this.env.CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED !== "true"
+    ) {
+      return {
+        ok: false,
+        error: { code: "provider_response_artifact_attachment_disabled", status: 503 },
+      };
+    }
+    try {
+      return {
+        ok: true,
+        result: this.ledger.attachProviderResponseArtifacts(
+          operationId,
+          ownerGeneration,
+          attemptGeneration,
+          attachment,
+          Math.floor(Date.now() / 1000),
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return {
+        ok: false,
+        error: { code: "provider_response_artifact_attachment_unavailable", status: 503 },
+      };
+    }
+  }
+
+  async readProviderResponseArtifacts(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+  ): Promise<ShardReadProviderResponseArtifactsRpcResult> {
+    try {
+      return {
+        ok: true,
+        row: this.ledger.readProviderResponseArtifactAttachment(
+          operationId,
+          ownerGeneration,
+          attemptGeneration,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return {
+        ok: false,
+        error: { code: "provider_response_artifact_attachment_unavailable", status: 503 },
+      };
     }
   }
 
@@ -1346,11 +1425,23 @@ function providerEgressEnv(
     | "DB"
     | "PROVIDER_EGRESS"
     | "CONTAINER_PROVIDER_EGRESS_ENABLED"
+    | "CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED"
+    | "CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED"
+    | "CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED"
+    | "CONTAINER_PROVIDER_RESPONSE_TERMINAL_ENABLED"
   >,
 ): ProviderEgressGatewayEnvironment {
   return {
     ...storageGatewayEnv(env),
     CONTAINER_PROVIDER_EGRESS_ENABLED: env.CONTAINER_PROVIDER_EGRESS_ENABLED,
+    CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED:
+      env.CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED,
+    CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED:
+      env.CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED,
+    CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED:
+      env.CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED,
+    CONTAINER_PROVIDER_RESPONSE_TERMINAL_ENABLED:
+      env.CONTAINER_PROVIDER_RESPONSE_TERMINAL_ENABLED,
     PROVIDER_EGRESS: env.PROVIDER_EGRESS,
   };
 }

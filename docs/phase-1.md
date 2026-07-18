@@ -2494,9 +2494,78 @@ itself still needs no global D1 schema, and no action gate is activated.
 | D1 0052 | Drained old-writer apply fence; separate immutable raw/client records and identity ledgers; terminal/convergence guards; exact schema fingerprints and negative fixtures | Authenticated account/name/UUID-bound staging apply/readback after every pre-0052 writer and operation is drained | Local candidate |
 | R2 evidence | Distinct provider/client namespaces, server-derived keys, 4 MiB bounds, create-only conditional writes, exact replay/conflict checks | Real R2 response-loss/concurrency/orphan/divergence campaign with retention and cost evidence | Local candidate |
 | Inventory | Separate immutable cursor/finding ledgers, provider/client classification, observe-only and hard-zero apply/delete authority | Reviewed scanner, default-false activation, alerts, retention disposition, and proof it cannot mutate authoritative rows or objects | Schema only; inert |
-| Protocol v3 | Exact envelope, canonicalization, digest, status, write-order, compatibility, and failure contract is frozen | Implement egress encoder, Controller verifier, DO schema migration 3, runtime rejected outcome, edge replay, and N/N-1 or blue/green proof | **Blocked (P3)** |
+| Protocol v3 | Exact envelope, Rust encoder, Controller verifier/store/replay, DO schema migration 3, and runtime rejected outcome are locally verified and default-inert | N/N-1 or isolated blue/green proof plus P4/P5 promotion evidence | Local candidate (P3) |
 | Financial terminal | 0052 can bind an artifact to existing successful terminal evidence | Add typed-200/non-200 interpreted reject and exact-200 success ownership with one immutable financial CAS/outbox/audit decision | **Blocked (P4)** |
 | Remote proof | No Cloudflare state changed | Reader-first apply/deploy, real Container/DO lifecycle and faults, provider-call counter, load/cost/SLO/alerts, rollback, security and approvals | **NO-GO (P5)** |
 
 The current development order is P3 protocol, P4 terminal ownership, then P5
 staging proof. Go/VPS remains the traffic and financial authority.
+
+## 2026-07-18 Response Protocol P3 Local Candidate
+
+P3 is now implemented as a local, default-inert candidate. This supersedes the
+preceding table row that described the protocol-v3 encoder, verifier, DO schema,
+runtime rejected outcome, and exact replay as unimplemented. It does not
+supersede any P4, P5, production, or approval blocker.
+
+The local boundary now contains all of the following:
+
+- a canonical Rust protocol-v3 envelope for exact success, typed HTTP-200
+  error, non-200 HTTP error, and invalid HTTP-200 body;
+- an exact TypeScript reader that rejects mixed versions, noncanonical JSON,
+  invalid UTF-8/base64url, duplicate/reordered/unknown fields, dishonest sizes,
+  digest drift, and contradictory receipt or interpretation facts;
+- a Controller pre-dispatch 0052 schema/authority/recovery preflight before
+  readiness, DO dispatch, or provider I/O;
+- phased raw and client writers using create-only R2 objects and append-only D1
+  rows, with exact readback and conflict handling at every boundary;
+- the 0048/0052-compatible success order: raw R2/D1, client R2, byte-identical
+  `container-results/v1` with exact `application/json`, immutable usage receipt,
+  client D1, DO result/receipt attachment, then DO response-manifest attachment;
+- receipt-less success rejected before raw R2, preventing a knowingly
+  unrecoverable partial success inventory;
+- error paths that never create the compatibility result or success receipt;
+- DO-local schema migration 3 and immutable generation-fenced attachment of
+  separate raw/client manifests, provider/client status, response class, and
+  optional success receipt digest; and
+- a Linux runtime `Rejected` outcome with outer 422, while provider 202 remains
+  an interpreted HTTP error and runtime recovery remains outer 202.
+
+Pre-dispatch recovery distinguishes `none`, `raw_only`, and `complete` using
+strict D1 readback. A complete row can reconstruct and attach the canonical DO
+record without R2 body access or provider I/O. A raw-only, R2-only, existing
+dispatch, unavailable readback, or integrity conflict cannot authorize another
+provider call. Live parse-only and raw-only runs are quarantined as ambiguous;
+complete P3 artifacts remain recovery-required until P4 owns the terminal
+decision.
+
+The current P3 rollout cap is narrower than the frozen 4 MiB storage schema:
+protocol-3 egress reads at most 1 MiB of provider bytes and Controller reads at
+most a 3.2 MB envelope. Exact `content-length` preallocation, canonical text
+comparison without a duplicate byte array, and removal of decoded base64 text
+preserve concurrency headroom under the shared 128 MB Worker isolate limit.
+Raising these bounds requires a streaming/direct-persistence design and remote
+memory/load evidence, not only a configuration change.
+
+The four rollout gates remain independent and exact `false` in default,
+staging, and production configuration:
+
+- `CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED`;
+- `CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED`;
+- `CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED`; and
+- `CONTAINER_PROVIDER_RESPONSE_TERMINAL_ENABLED`.
+
+Gate coherence is fail-closed: raw requires parse, client requires raw, and
+terminal requires client. Because P4 is not present, terminal `true` is rejected
+before provider I/O even when all preceding gates are true. No tracked
+configuration enables a P3 writer.
+
+P4 is now the next code milestone. It must atomically bind exact-success or
+interpreted-reject evidence to one financial disposition, terminal event,
+outbox, audit digest, client/scheduler replay result, and DO/global convergence
+decision. P4 must preserve receipt v1 compatibility for exact success, keep
+typed/non-200 errors receipt-free, and inject crashes before and after every
+financial statement, DO ACK, and delivery boundary. P5 remains the isolated
+reader-first Cloudflare migration, real lifecycle/fault/load/cost campaign,
+disable-first rollback drill, security review, and signed approvals. Go/VPS
+remains authoritative and production remains **NO-GO**.

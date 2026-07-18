@@ -16049,8 +16049,102 @@ P5 remains the reader-first remote migration, real lifecycle/fault/load/cost
 campaign, rollback drill, and signed approvals. Go/VPS remains authoritative;
 production remains **NO-GO**.
 
-P3/P4 must also close a deliberately tested schema interlock: 0052 may store a
-typed HTTP-200, non-200 2xx/3xx, or receipt-less success artifact, but the old
-operation/financial terminal shapes cannot safely finalize all of them. No
-canary may write response artifacts until the versioned rejected outcome and
-financial disposition exist.
+P3/P4 must also close a deliberately tested schema interlock: 0052 can represent
+a typed HTTP-200, non-200 2xx/3xx, or receipt-less success artifact, but the old
+operation/financial terminal shapes cannot safely finalize all of them. The P3
+operational profile therefore rejects receipt-less success before raw R2 I/O;
+schema representability is not runtime authorization. No canary may write
+response artifacts until the versioned rejected outcome and financial
+disposition exist.
+
+## 22.247 Provider Response Protocol P3 Local Candidate (2026-07-18)
+
+P3 now closes the local transport, evidence, DO, and runtime implementation gap
+identified by section 22.246 and the Response Evidence P2 Candidate. It remains
+a disabled implementation candidate, not migration or production authority.
+
+### Executable ownership split
+
+The completed local path preserves four separate authorities:
+
+| Layer | P3 authority | Explicit non-authority |
+| --- | --- | --- |
+| Rust private egress | one bounded provider HTTP response, source-pinned interpretation, canonical v3 envelope and success-only usage receipt | storage, retry, settlement, or client delivery |
+| Controller plus D1/R2 | strict transport verification, create-only raw/client bytes, append-only evidence, exact replay and conflict classification | semantic reinterpretation or financial terminal choice |
+| Shard DO | immutable operation/owner/attempt/egress attachment and replay fence | global accounting or provider invoice truth |
+| Linux runtime | completed, interpreted rejected, or recovery-required operation response | direct provider access or settlement authority |
+
+The egress Worker always returns outer 200 only for a fully buffered provider
+response envelope. Synthetic credential, policy, redirect, timeout, transport,
+read-limit, or serialization failures remain non-envelope broker errors. The
+Controller accepts v3 only when the exact Worker version, protocol header `3`,
+profile, media type, canonical bytes, identity, interpretation, receipt, and
+both attestations converge.
+
+### Durable order and crash recovery
+
+The exact write sequence is:
+
+1. verify 0052 schema, 0048 schema, atomic-admission authority, and existing
+   response state through primary-session readback before readiness or dispatch;
+2. atomically acquire the existing version-fenced DO provider dispatch;
+3. make at most one provider request and strictly verify the v3 envelope;
+4. create/exactly replay raw R2 evidence, then append/exactly read raw D1;
+5. create/exactly replay the canonical client R2 artifact;
+6. for exact success only, create/exactly replay the byte-identical legacy
+   result with exact `application/json` metadata and immutable 0048 receipt;
+7. append/exactly read client D1;
+8. for exact success, atomically attach that result and receipt digest to the
+   DO operation/attempt, then attach both manifests to DO migration 3;
+9. return recovery-required while P4 terminal authority is disabled; and
+10. let the future P4 owner commit one financial terminal/outbox/audit decision
+   and deliver or durably replay the client artifact.
+
+That success ordering is forced by the frozen 0048 result identity and 0052
+receipt foreign key. Typed error, non-200 HTTP error, and invalid body stop
+after client D1/DO attachment and never fabricate result or receipt authority.
+
+Every post-provider boundary is reentrant. Pre-dispatch recovery reads D1 and
+classifies `none`, `raw_only`, or `complete`; complete state reconstructs the
+canonical attachment without a provider call, raw-only state is recovery or
+inventory work, and a client-only or attestation-divergent row fails closed.
+An existing DO dispatch with no D1 row covers the R2-only/transport-uncertain
+window and also returns recovery without a send. No crash, timeout, unavailable
+store, response loss, replay conflict, or rollback state changes that rule.
+
+### Operational memory boundary
+
+The frozen v3/storage shape still accepts raw and client artifacts up to 4 MiB,
+but the active non-streaming P3 candidate intentionally does not exercise that
+maximum. Rust egress caps the provider body at 1 MiB for protocol 3, emits an
+exact `content-length`, and Controller caps the transport envelope at 3.2 MB.
+Controller preallocates only the validated declared length, compares canonical
+JSON text without a duplicate byte array, and discards base64 strings after
+decoded body verification.
+
+This margin is required because Cloudflare's
+[128 MB Worker memory limit is per isolate](https://developers.cloudflare.com/workers/platform/limits/),
+including JavaScript and WebAssembly allocations, and multiple concurrent
+requests can share the isolate. Promotion must collect P50/P90/P99/P999 memory,
+`exceededMemory`, concurrency, CPU, and artifact-size distributions. A future
+need above the canary cap requires streaming or direct-to-R2/container-owned
+persistence and a new fault/load review; merely increasing constants or gates
+is prohibited.
+
+### Rollout interlock and next packets
+
+All four P3 gates are tracked as exact `false`. Writer dependencies are ordered
+parse -> raw -> client -> terminal, and terminal `true` is rejected before
+provider I/O because P4 has not landed. Reader-first promotion must prove every
+N/N-1 artifact or use an isolated blue/green namespace; a late v2 writer cannot
+create a v3 operation after the 0052 operation-contract fence.
+
+P4 is the next implementation packet and must define one transactionally exact
+financial disposition for exact-success and interpreted-reject evidence. It
+must connect terminal event, outbox, reservation/accounting mutation, immutable
+audit, scheduled terminalization, DO ACK, and client replay without reopening
+provider retry authority. P5 then performs authenticated staging apply/readback,
+real R2/DO/Container faults and lifecycle, mixed-version rollout, load/cost/SLO,
+alerts, retention, security/privacy review, rollback rehearsal, and signed
+approval. Go/VPS remains the traffic and financial authority; production
+remains **NO-GO**.

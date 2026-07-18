@@ -408,8 +408,9 @@ The exact scoped wire contract is frozen in
 `docs/container-provider-response-protocol-v3.md`: exact protocol 3, outer HTTP
 200 only for a completed provider HTTP response envelope, strict canonical JSON
 and base64url validation, separate provider/client statuses and digests, and the
-ordered raw-R2 -> raw-D1 -> client-R2 -> client-D1 -> receipt -> DO -> financial
-terminal chain. This document is a P3 input, not evidence that the egress v3
+ordered raw-R2 -> raw-D1 -> client-R2 -> success result/receipt -> client-D1 ->
+DO usage binding -> DO artifact binding -> financial terminal chain. This
+document is a P3 input, not evidence that the egress v3
 envelope, Controller verifier, DO-local migration 3, runtime rejected outcome,
 or financial terminal path exists.
 
@@ -424,3 +425,42 @@ Local SQLite migration/order/fingerprint/negative verification and Controller
 storage-gateway tests pass. No remote D1 migration, R2 object, Durable Object,
 Container, deployment, secret, provider call, financial mutation, alarm, or
 traffic state changed. P3-P5 remain open and production remains **NO-GO**.
+
+## 2026-07-18 Local P3 Evidence
+
+P3 is now implemented locally. Rust egress owns the source-pinned interpretation
+and canonical protocol-v3 envelope; TypeScript verifies transport, identity,
+canonical encoding, receipt, and attestations without rebuilding semantics.
+The Controller preflights 0052 and immutable admission authority before any
+provider path, persists raw and client evidence in separate phases, and attaches
+the complete record to DO schema migration 3. The Linux runtime represents an
+interpreted rejection separately from recovery and from exact success.
+
+The final 0048/0052-compatible order supersedes the earlier P2 shorthand:
+
+1. raw provider R2 and raw D1;
+2. client artifact R2;
+3. exact-success-only byte-identical legacy result with exact
+   `application/json` metadata and 0048 receipt;
+4. client D1 with its optional receipt foreign key; and
+5. exact-success DO result/receipt attachment followed by the generation-fenced
+   DO response-artifact attachment.
+
+Typed, HTTP, and invalid-body errors never create a legacy result or receipt.
+Receipt-less success is rejected before raw R2, even though the frozen protocol
+and schema retain nullability for future compatibility.
+The pre-dispatch reader reconstructs `complete` state from D1 only, identifies
+`raw_only`, rejects client-only/divergent evidence, and treats an existing DO
+dispatch with no row as recovery. None of those states can resend the provider.
+
+The active non-streaming P3 profile also narrows the frozen 4 MiB storage bound
+to a 1 MiB provider-body limit and a 3.2 MB Controller envelope limit. The
+reader preallocates only an exact declared length and drops canonical/base64
+copies before storage. Any future increase requires streaming/direct
+persistence plus concurrent-isolate memory and fault evidence.
+
+R5 is locally implemented but not promoted. The four response gates remain
+false in every tracked environment and the terminal gate additionally hard
+fails before provider I/O until R6/P4 supplies one financial CAS/outbox/audit
+owner. Remote R3/R4 evidence, real lifecycle/fault proof, R6-R9, and all named
+approvals remain open. Production remains **NO-GO**.

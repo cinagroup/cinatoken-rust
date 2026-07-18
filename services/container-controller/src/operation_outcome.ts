@@ -1,5 +1,6 @@
 import {
   operationStorageResult,
+  type ClientResponseArtifactManifest,
   type OperationRow,
   type OperationStatusSnapshot,
   type ProviderAttemptRow,
@@ -11,7 +12,13 @@ export interface ContainerOperationOutcome {
   status: "completed" | "rejected" | "recovery_required";
   code: string | null;
   result: StorageResultRecord | null;
+  classification: ProviderResponseClassification | null;
+  provider_status: number | null;
+  client_status: number | null;
+  client_artifact: ClientResponseArtifactManifest | null;
 }
+
+export type ProviderResponseClassification = "typed_error" | "http_error" | "invalid_body";
 
 export interface OperationOutcomePayload {
   protocol_version: 1;
@@ -65,7 +72,7 @@ export function parseContainerOperationResponse(
   body: Uint8Array,
   envelope: Pick<
     OperationEnvelope,
-    "protocol_version" | "operation_id" | "operation_kind" | "trace_id"
+    "protocol_version" | "operation_id" | "operation_kind" | "owner_generation" | "trace_id"
   >,
 ): ContainerOperationOutcome {
   const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
@@ -84,7 +91,18 @@ export function parseContainerOperationResponse(
   }
 
   const record = value as Record<string, unknown>;
-  const allowed = ["protocol_version", "operation_id", "status", "code", "result", "trace_id"];
+  const allowed = [
+    "protocol_version",
+    "operation_id",
+    "status",
+    "code",
+    "result",
+    "classification",
+    "provider_status",
+    "client_status",
+    "client_artifact",
+    "trace_id",
+  ];
   if (
     Object.keys(record).some((key) => !allowed.includes(key)) ||
     !["protocol_version", "operation_id", "status", "trace_id"].every((key) => key in record) ||
@@ -98,12 +116,24 @@ export function parseContainerOperationResponse(
 
   const status = record.status as ContainerOperationOutcome["status"];
   const code = record.code === undefined ? null : record.code;
+  const hasProviderRejection =
+    record.classification !== undefined ||
+    record.provider_status !== undefined ||
+    record.client_status !== undefined ||
+    record.client_artifact !== undefined;
   if (
-    (status === "completed" && (!response.ok || response.status === 202 || code !== null)) ||
+    (status === "completed" &&
+      (!response.ok || response.status === 202 || code !== null || hasProviderRejection)) ||
     (status === "rejected" &&
-      (response.ok || !validResponseCode(code) || record.result !== undefined)) ||
+      (response.ok ||
+        !validResponseCode(code) ||
+        record.result !== undefined ||
+        (hasProviderRejection && response.status !== 422))) ||
     (status === "recovery_required" &&
-      (response.status !== 202 || !validResponseCode(code) || record.result !== undefined))
+      (response.status !== 202 ||
+        !validResponseCode(code) ||
+        record.result !== undefined ||
+        hasProviderRejection))
   ) {
     throw invalidContainerResponse();
   }
@@ -116,7 +146,32 @@ export function parseContainerOperationResponse(
   ) {
     throw invalidContainerResponse();
   }
-  return { status, code: typeof code === "string" ? code : null, result };
+  let classification: ProviderResponseClassification | null = null;
+  let providerStatus: number | null = null;
+  let clientStatus: number | null = null;
+  let clientArtifact: ClientResponseArtifactManifest | null = null;
+  if (hasProviderRejection) {
+    classification = parseProviderResponseClassification(record.classification);
+    providerStatus = parseProviderResponseStatus(record.provider_status);
+    clientStatus = parseProviderResponseStatus(record.client_status);
+    clientArtifact = parseClientResponseArtifactManifest(
+      record.client_artifact,
+      envelope.operation_id,
+      envelope.owner_generation,
+    );
+    if (!providerRejectionStatusesMatch(classification, providerStatus, clientStatus)) {
+      throw invalidContainerResponse();
+    }
+  }
+  return {
+    status,
+    code: typeof code === "string" ? code : null,
+    result,
+    classification,
+    provider_status: providerStatus,
+    client_status: clientStatus,
+    client_artifact: clientArtifact,
+  };
 }
 
 export function serializeOperationOutcome(row: OperationRow): SerializedOperationOutcome {
@@ -363,6 +418,84 @@ function validateOperationIdentity(row: OperationRow): void {
 
 function validResponseCode(value: unknown): value is string {
   return typeof value === "string" && value.length >= 1 && value.length <= 64 && RESPONSE_CODE.test(value);
+}
+
+function parseProviderResponseClassification(value: unknown): ProviderResponseClassification {
+  if (value === "typed_error" || value === "http_error" || value === "invalid_body") {
+    return value;
+  }
+  throw invalidContainerResponse();
+}
+
+function parseProviderResponseStatus(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 100 || (value as number) > 599) {
+    throw invalidContainerResponse();
+  }
+  return value as number;
+}
+
+function providerRejectionStatusesMatch(
+  classification: ProviderResponseClassification,
+  providerStatus: number,
+  clientStatus: number,
+): boolean {
+  switch (classification) {
+    case "typed_error":
+      return providerStatus === 200 && clientStatus === 200;
+    case "http_error":
+      return providerStatus !== 200 && clientStatus === providerStatus;
+    case "invalid_body":
+      return providerStatus === 200 && clientStatus === 500;
+  }
+}
+
+function parseClientResponseArtifactManifest(
+  value: unknown,
+  operationId: string,
+  ownerGeneration: number,
+): ClientResponseArtifactManifest {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw invalidContainerResponse();
+  }
+  const record = value as Record<string, unknown>;
+  const expected = [
+    "object_key",
+    "object_version",
+    "client_response_artifact_sha256",
+    "sha256",
+    "size",
+    "content_type",
+  ];
+  if (
+    Object.keys(record).length !== expected.length ||
+    expected.some((key) => !(key in record)) ||
+    typeof record.object_key !== "string" ||
+    typeof record.object_version !== "string" ||
+    typeof record.client_response_artifact_sha256 !== "string" ||
+    typeof record.sha256 !== "string" ||
+    typeof record.size !== "number" ||
+    record.content_type !== "application/json" ||
+    !/^[0-9a-f]{64}$/.test(record.client_response_artifact_sha256) ||
+    !/^[0-9a-f]{64}$/.test(record.sha256) ||
+    !Number.isSafeInteger(record.size) ||
+    record.size < 2 ||
+    record.size > 4 * 1024 * 1024 ||
+    record.object_version.length < 1 ||
+    record.object_version.length > 128 ||
+    !IDENTIFIER.test(record.object_version) ||
+    record.object_key !==
+      `container-client-artifacts/v1/${operationId}/${ownerGeneration}/${record.client_response_artifact_sha256}`
+  ) {
+    throw invalidContainerResponse();
+  }
+  return {
+    object_key: record.object_key,
+    object_version: record.object_version,
+    client_response_artifact_sha256: record.client_response_artifact_sha256,
+    sha256: record.sha256,
+    size: record.size,
+    content_type: record.content_type,
+  };
 }
 
 function parseContainerResult(value: unknown): StorageResultRecord {

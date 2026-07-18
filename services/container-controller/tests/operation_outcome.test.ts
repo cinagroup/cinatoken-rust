@@ -16,6 +16,7 @@ function containerEnvelope(operationKind = "relay") {
     protocol_version: 1,
     operation_id: "relayreserve-v2-operation",
     operation_kind: operationKind,
+    owner_generation: 2,
     trace_id: "trace-operation",
   };
 }
@@ -110,7 +111,15 @@ describe("durable container operation outcomes", () => {
         result,
         trace_id: "trace-operation",
       }),
-    ).toEqual({ status: "completed", code: null, result });
+    ).toEqual({
+      status: "completed",
+      code: null,
+      result,
+      classification: null,
+      provider_status: null,
+      client_status: null,
+      client_artifact: null,
+    });
   });
 
   it("accepts strict rejected and recovery-required runtime envelopes", () => {
@@ -122,7 +131,15 @@ describe("durable container operation outcomes", () => {
         code: "execution_not_enabled",
         trace_id: "trace-operation",
       }),
-    ).toEqual({ status: "rejected", code: "execution_not_enabled", result: null });
+    ).toEqual({
+      status: "rejected",
+      code: "execution_not_enabled",
+      result: null,
+      classification: null,
+      provider_status: null,
+      client_status: null,
+      client_artifact: null,
+    });
     expect(
       parseContainer(202, {
         protocol_version: 1,
@@ -131,7 +148,15 @@ describe("durable container operation outcomes", () => {
         code: "ambiguous_execution",
         trace_id: "trace-operation",
       }),
-    ).toEqual({ status: "recovery_required", code: "ambiguous_execution", result: null });
+    ).toEqual({
+      status: "recovery_required",
+      code: "ambiguous_execution",
+      result: null,
+      classification: null,
+      provider_status: null,
+      client_status: null,
+      client_artifact: null,
+    });
   });
 
   it("allows a result-free completed health probe only", () => {
@@ -146,7 +171,80 @@ describe("durable container operation outcomes", () => {
         },
         "health_probe",
       ),
-    ).toEqual({ status: "completed", code: null, result: null });
+    ).toEqual({
+      status: "completed",
+      code: null,
+      result: null,
+      classification: null,
+      provider_status: null,
+      client_status: null,
+      client_artifact: null,
+    });
+  });
+
+  it("accepts a complete interpreted provider rejection and rejects provider 202 as success", () => {
+    const artifactDigest = "c".repeat(64);
+    const artifact = {
+      object_key:
+        `container-client-artifacts/v1/relayreserve-v2-operation/2/${artifactDigest}`,
+      object_version: "client-artifact-version-1",
+      client_response_artifact_sha256: artifactDigest,
+      sha256: "d".repeat(64),
+      size: 128,
+      content_type: "application/json",
+    };
+    expect(
+      parseContainer(422, {
+        protocol_version: 1,
+        operation_id: "relayreserve-v2-operation",
+        status: "rejected",
+        code: "provider_http_error",
+        classification: "http_error",
+        provider_status: 202,
+        client_status: 202,
+        client_artifact: artifact,
+        trace_id: "trace-operation",
+      }),
+    ).toEqual({
+      status: "rejected",
+      code: "provider_http_error",
+      result: null,
+      classification: "http_error",
+      provider_status: 202,
+      client_status: 202,
+      client_artifact: artifact,
+    });
+
+    expect(() =>
+      parseContainer(200, {
+        protocol_version: 1,
+        operation_id: "relayreserve-v2-operation",
+        status: "completed",
+        result: {
+          object_key: storedResult.result_object_key,
+          object_version: storedResult.result_object_version,
+          sha256: storedResult.result_sha256,
+          size: storedResult.result_size,
+          content_type: storedResult.result_content_type,
+        },
+        provider_status: 202,
+        trace_id: "trace-operation",
+      }),
+    ).toThrowError("invalid_container_response");
+
+    expect(() =>
+      parseContainer(422, {
+        protocol_version: 1,
+        operation_id: "relayreserve-v2-operation",
+        status: "rejected",
+        code: "provider_http_error",
+        classification: "http_error",
+        provider_status: 202,
+        client_status: 202,
+        client_artifact: { ...artifact, object_version: "v".repeat(129) },
+        trace_id: "trace-operation",
+      }),
+    ).toThrowError("invalid_container_response");
   });
 
   it("rejects legacy, unknown, null, and contradictory runtime fields", () => {

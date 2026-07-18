@@ -14,6 +14,8 @@ export default defineConfig({
       "services/container-controller/tests/storage_gateway.test.ts",
       "services/container-controller/tests/provider_attempt_gateway.test.ts",
       "services/container-controller/tests/provider_egress_gateway.test.ts",
+      "services/container-controller/tests/provider_response_artifact_store.test.ts",
+      "services/container-controller/tests/provider_response_v3.test.ts",
     ],
   },
 });

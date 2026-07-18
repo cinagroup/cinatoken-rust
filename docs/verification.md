@@ -5862,6 +5862,78 @@ old-writer drain, 0046 enforcement, rollback, and C1-C5 approval. No remote
 migration, deploy, object write, provider call, or traffic switch occurred;
 Go/VPS remains authoritative and production remains **NO-GO**.
 
+## 2026-07-18 Provider Response Protocol P3 Verification
+
+This packet is local source, native Rust, TypeScript, and Workerd evidence only.
+It did not apply D1 migration 0052 remotely, create an R2 object, invoke a real
+provider, mutate financial state, deploy a Worker or Container, change a
+secret, or switch traffic.
+
+Confirmed focused commands for this candidate include:
+
+```powershell
+cargo test -p cinatoken-relay
+cargo test -p cinatoken-container-egress
+cargo test -p cinatoken-container-runtime
+cargo fmt --all --check
+cargo clippy -p cinatoken-relay --lib --no-deps -- -D warnings -A clippy::match-like-matches-macro -A clippy::needless-borrow
+cargo clippy -p cinatoken-container-egress -p cinatoken-container-runtime --all-targets --no-deps -- -D warnings
+cargo check -p cinatoken-container-egress --target wasm32-unknown-unknown
+bun run build:container-egress
+bun run test:container-egress:runtime
+bunx tsc -p services/container-controller/tsconfig.json --noEmit
+bun run test:container-controller
+bun run test:container-controller:protocol-portable
+bun run test:container-controller:runtime
+git diff --check
+```
+
+The Controller checkpoint passes 178 Bun tests, 165 portable protocol tests,
+and 38 Workerd/SQLite tests. The focused artifact-store packet contributes 32
+tests, including every named raw/client/compatibility/receipt crash boundary. The
+gateway packet proves 0052 preflight before provider I/O, protocol/profile and
+Worker-version fencing, default-off terminal interlock, complete/raw-only
+recovery without another send, success receipt/result attachment before the DO
+artifact attachment, and invalid-envelope quarantine. Rust and
+cross-language counts are recorded again in the final repository verification
+checkpoint after the complete aggregate finishes.
+
+The touched Rust packages pass package-scoped strict Clippy and the v3 code was
+corrected to retain workspace MSRV 1.78 compatibility. A broader strict Clippy
+attempt still reports pre-existing warnings in `crates/core/src/audio_duration.rs`,
+`crates/relay/src/retry.rs`, and `crates/relay/src/usage_receipt.rs`; those files
+were not changed in this packet and remain separate cleanup debt.
+
+Required P3 evidence covered locally:
+
+- shared Rust/TypeScript canonical success bytes and digest plus four response
+  classes, including provider 202 as HTTP error;
+- strict UTF-8, base64url, key order, duplicate/unknown/missing field, integer,
+  header, body, receipt, attestation, and 4 MiB boundary rejection;
+- create/replay/conflict for provider evidence, client artifact, success
+  compatibility result, usage receipt, D1 raw/client rows, and DO attachment;
+- no compatibility result or receipt for typed, HTTP, or invalid-body errors;
+- receipt-less success rejection before any raw R2/D1 write;
+- exact 0048/0052 foreign-key order, exact `application/json` compatibility
+  metadata, and byte-identical exact-success alias;
+- DO migration 3 schema fingerprint, immutable identity ledger, generation and
+  egress fences, eviction readback, duplicate replay, and conflict rejection;
+- runtime success/rejected/recovery outer statuses and complete client artifact
+  manifest validation; and
+- pre-dispatch `none/raw_only/complete` recovery in which every non-`none`
+  state, existing dispatch, or unavailable/conflicting readback performs zero
+  provider sends.
+- protocol/storage 4 MiB compatibility bounds remain tested while the active P3
+  path enforces 1 MiB provider and 3.2 MB envelope rollout limits, exact-length
+  allocation, canonical-copy removal, and post-parse base64 release.
+
+Release acceptance remains blocked. Before any gate changes, the signed packet
+must add authenticated target-bound 0052 readback, real R2 conditional-write and
+response-loss evidence, real DO/Container lifecycle and version-skew tests,
+provider call counters, P4 financial atomicity, independent amount/invoice
+convergence, load/cost/SLO/alerts, retention/privacy/security review,
+disable-first rollback, and C1-C5/G1-G8 approval. Production remains **NO-GO**.
+
 ## Bounded Container Reconciliation Observer Verification (2026-07-16)
 
 This overlay supersedes only the preceding claim that fair pagination and a

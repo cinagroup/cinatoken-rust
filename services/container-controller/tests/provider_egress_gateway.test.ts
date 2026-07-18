@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import type {
+  AttachProviderResponseArtifactsOutcome,
   DispatchProviderAttemptOutcome,
   ProviderEgressIdentity,
   ProviderAttemptStatus,
   ProviderAttemptTerminal,
+  ProviderResponseArtifactAttachment,
+  ProviderResponseArtifactAttachmentRow,
   RecordProviderAttemptOutcome,
   StorageAccessGrant,
   StorageResultRecord,
@@ -19,18 +22,22 @@ import {
   PROVIDER_EGRESS_PROFILE_HEADER,
   PROVIDER_EGRESS_PROTOCOL_HEADER,
   PROVIDER_EGRESS_READINESS_SERVICE_PATH,
+  PROVIDER_EGRESS_V3_SERVICE_PATH,
   PROVIDER_USAGE_RECEIPT_HEADER,
   PROVIDER_USAGE_RECEIPT_SHA256_HEADER,
   PROVIDER_EGRESS_WORKER_VERSION_HEADER,
   handleProviderEgressGatewayRequest,
+  replayProviderResponseV3WithoutProviderSend,
   type ProviderEgressGatewayEnvironment,
   type ProviderEgressGatewayPort,
 } from "../src/provider_egress_gateway";
+import { PROVIDER_RESPONSE_V3_CONTENT_TYPE } from "../src/provider_response_v3";
 import {
   CONTENT_SHA256_HEADER,
   OPERATION_ID_HEADER,
   OWNER_GENERATION_HEADER,
   PROVIDER_ATTEMPT_GENERATION_HEADER,
+  requireD1ProviderUsageReceipt,
   type D1AdmissionSnapshot,
   type ProviderUsageReceipt,
 } from "../src/storage_gateway";
@@ -57,6 +64,9 @@ class FakePort implements ProviderEgressGatewayPort {
   corruptDispatchIdentity = false;
   loseTerminalResponseOnce = false;
   readonly events: string[];
+  responseArtifactAttachment: ProviderResponseArtifactAttachmentRow | null = null;
+  responseArtifactAttachEnabled = false;
+  responseArtifactAttaches = 0;
 
   constructor(status: ProviderAttemptStatus = "prepared", events: string[] = []) {
     this.events = events;
@@ -198,6 +208,50 @@ class FakePort implements ProviderEgressGatewayPort {
         row: attemptRow(terminal.status, this.grant, terminal),
       },
     };
+  }
+
+  async attachProviderResponseArtifacts(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    attachment: ProviderResponseArtifactAttachment,
+  ): Promise<
+    | { ok: true; result: AttachProviderResponseArtifactsOutcome }
+    | { ok: false; error: { code: string; status: number } }
+  > {
+    if (this.responseArtifactAttachEnabled) {
+      this.events.push("do-response-artifact-attach");
+      this.responseArtifactAttaches += 1;
+      const row = {
+        operation_id: operationId,
+        owner_generation: ownerGeneration,
+        attempt_generation: attemptGeneration,
+        provider_operation_id: this.grant.provider_operation_id,
+        admission_sha256: this.grant.admission_sha256,
+        request_sha256: this.grant.input.sha256,
+        egress_profile: this.grant.provider_attempt?.egress_profile ?? "",
+        egress_worker_version_id:
+          this.grant.provider_attempt?.egress_worker_version_id ?? "",
+        attached_at: Math.floor(Date.now() / 1000),
+        ...attachment,
+      } as ProviderResponseArtifactAttachmentRow;
+      this.responseArtifactAttachment = row;
+      return {
+        ok: true,
+        result: { kind: "attached", row },
+      };
+    }
+    return {
+      ok: false,
+      error: { code: "provider_response_artifact_attachment_disabled", status: 503 },
+    };
+  }
+
+  async readProviderResponseArtifacts(): Promise<
+    | { ok: true; row: ProviderResponseArtifactAttachmentRow | null }
+    | { ok: false; error: { code: string; status: number } }
+  > {
+    return { ok: true, row: this.responseArtifactAttachment };
   }
 }
 
@@ -1023,6 +1077,21 @@ describe("provider egress gateway", () => {
     );
     expect(disabled.status).toBe(503);
 
+    const invalidV3Gates = await handleProviderEgressGatewayRequest(
+      await providerRequest(requestSha256),
+      {
+        CONTAINER_PROVIDER_EGRESS_ENABLED: "true",
+        CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED: "true",
+      },
+      port,
+      identity,
+    );
+    expect(invalidV3Gates.status).toBe(503);
+    await expect(invalidV3Gates.json()).resolves.toEqual({
+      error: "provider_response_v3_gate_configuration_invalid",
+    });
+    expect(port.dispatches).toBe(0);
+
     const oversized = await providerRequest(requestSha256, {
       "content-length": String(MAX_PROVIDER_EGRESS_BODY_BYTES + 1),
     });
@@ -1073,6 +1142,252 @@ describe("provider egress gateway", () => {
     });
     expect(missingBindingPort.dispatches).toBe(0);
   });
+
+  test("hard-blocks the unavailable v3 terminal contract before provider I/O", async () => {
+    const requestSha256 = await sha256(requestBody);
+    const port = new FakePort();
+    applyRequestSha(port.grant, requestSha256);
+    const response = await handleProviderEgressGatewayRequest(
+      await providerRequest(requestSha256),
+      {
+        CONTAINER_PROVIDER_EGRESS_ENABLED: "true",
+        CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED: "true",
+        CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED: "true",
+        CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED: "true",
+        CONTAINER_PROVIDER_RESPONSE_TERMINAL_ENABLED: "true",
+      },
+      port,
+      identity,
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "provider_response_v3_terminal_contract_unavailable",
+    });
+    expect(port.dispatches).toBe(0);
+  });
+
+  test("preflights 0052, dispatches protocol v3, and quarantines an invalid envelope", async () => {
+    const requestSha256 = await sha256(requestBody);
+    const port = new FakePort();
+    applyRequestSha(port.grant, requestSha256);
+    let providerCalls = 0;
+    let observedPath = "";
+    let observedProtocol = "";
+    const env = gatewayEnv(port.grant, {
+      broker: async (request) => {
+        providerCalls += 1;
+        observedPath = new URL(request.url).pathname;
+        observedProtocol = request.headers.get(PROVIDER_EGRESS_PROTOCOL_HEADER) ?? "";
+        const bytes = new TextEncoder().encode("{}");
+        return new Response(bytes, {
+          status: 200,
+          headers: {
+            "content-length": String(bytes.byteLength),
+            "content-type": PROVIDER_RESPONSE_V3_CONTENT_TYPE,
+            [PROVIDER_EGRESS_PROTOCOL_HEADER]: "3",
+            [PROVIDER_EGRESS_PROFILE_HEADER]: PROVIDER_EGRESS_PROFILE,
+            [PROVIDER_EGRESS_WORKER_VERSION_HEADER]: workerVersionId,
+          },
+        });
+      },
+    });
+    env.CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED = "true";
+
+    const response = await handleProviderEgressGatewayRequest(
+      await providerRequest(requestSha256),
+      env,
+      port,
+      identity,
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "ambiguous",
+      code: "provider_response_v3_invalid",
+    });
+    expect(providerCalls).toBe(1);
+    expect(observedPath).toBe(PROVIDER_EGRESS_V3_SERVICE_PATH);
+    expect(observedProtocol).toBe("3");
+    expect(port.dispatches).toBe(1);
+    expect(port.terminal).toMatchObject({
+      status: "ambiguous",
+      response_code: "provider_response_v3_invalid",
+    });
+  });
+
+  test("replays complete or raw-only v3 evidence without another provider send", async () => {
+    const requestSha256 = await sha256(requestBody);
+    const rawManifest = {
+      object_key:
+        `container-provider-evidence/v1/${identity.operationId}/2/1/${"4".repeat(64)}`,
+      object_version: "raw-version-1",
+      provider_response_evidence_sha256: "5".repeat(64),
+      sha256: "4".repeat(64),
+      size: 17,
+      content_type: "application/json",
+    };
+    const clientManifest = {
+      object_key:
+        `container-client-artifacts/v1/${identity.operationId}/2/${"6".repeat(64)}`,
+      object_version: "client-version-1",
+      client_response_artifact_sha256: "6".repeat(64),
+      sha256: "7".repeat(64),
+      size: 29,
+      content_type: "application/json" as const,
+    };
+    const attachment: ProviderResponseArtifactAttachment = {
+      status: "interpreted_reject",
+      provider_status: 202,
+      client_status: 202,
+      response_class: "http_error",
+      response_code: "provider_http_error",
+      raw_manifest: rawManifest,
+      client_manifest: clientManifest,
+      provider_usage_receipt_sha256: null,
+    };
+    const completePort = new FakePort("dispatched");
+    applyRequestSha(completePort.grant, requestSha256);
+    completePort.grant.provider_attempt!.egress_profile = PROVIDER_EGRESS_PROFILE;
+    completePort.grant.provider_attempt!.egress_worker_version_id = workerVersionId;
+    completePort.responseArtifactAttachEnabled = true;
+    const complete = await replayProviderResponseV3WithoutProviderSend(
+      { CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED: "true" },
+      completePort,
+      completePort.grant,
+      admissionRow(completePort.grant, "dispatched"),
+      {
+        kind: "complete",
+        raw_manifest: rawManifest,
+        client_manifest: clientManifest,
+        classification: "http_error",
+        provider_status: 202,
+        client_status: 202,
+        status: "interpreted_reject",
+        provider_usage_receipt_sha256: null,
+        attachment,
+      },
+      1,
+    );
+    expect(complete?.status).toBe(202);
+    await expect(complete?.json()).resolves.toMatchObject({
+      code: "provider_response_v3_terminal_pending",
+    });
+    expect(completePort.responseArtifactAttaches).toBe(1);
+
+    const rawOnlyPort = new FakePort("dispatched");
+    applyRequestSha(rawOnlyPort.grant, requestSha256);
+    const rawOnly = await replayProviderResponseV3WithoutProviderSend(
+      { CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED: "true" },
+      rawOnlyPort,
+      rawOnlyPort.grant,
+      admissionRow(rawOnlyPort.grant, "dispatched"),
+      {
+        kind: "raw_only",
+        raw_manifest: rawManifest,
+        provider_status: 202,
+        provider_response_evidence_sha256: rawManifest.provider_response_evidence_sha256,
+        recorded_at: Date.now(),
+      },
+      1,
+    );
+    expect(rawOnly?.status).toBe(202);
+    await expect(rawOnly?.json()).resolves.toMatchObject({
+      code: "provider_response_v3_raw_only_recovery",
+    });
+    expect(rawOnlyPort.responseArtifactAttaches).toBe(0);
+    expect(rawOnlyPort.dispatches).toBe(0);
+  });
+
+  test("reattaches a persisted v3 success receipt before its response artifacts", async () => {
+    const requestSha256 = await sha256(requestBody);
+    const providerSha256 = await sha256(providerBody);
+    const events: string[] = [];
+    const port = new FakePort("dispatched", events);
+    applyRequestSha(port.grant, requestSha256);
+    port.grant.provider_attempt!.egress_profile = PROVIDER_EGRESS_PROFILE;
+    port.grant.provider_attempt!.egress_worker_version_id = workerVersionId;
+    port.responseArtifactAttachEnabled = true;
+    const admission = admissionRow(port.grant, "dispatched");
+    const env = gatewayEnv(port.grant);
+    env.CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED = "true";
+    const result: StorageResultRecord = {
+      object_key:
+        `container-results/v1/${identity.operationId}/${identity.ownerGeneration}/${providerSha256}`,
+      object_version: "result-version-v3-replay",
+      sha256: providerSha256,
+      size: providerBody.byteLength,
+      content_type: "application/json",
+    };
+    const receipt = await providerUsageReceipt(providerBody, 200);
+    const receiptJson = JSON.stringify(receipt);
+    const receiptSha256 = await sha256(new TextEncoder().encode(receiptJson));
+    await requireD1ProviderUsageReceipt(
+      env,
+      admission,
+      { receipt, json: receiptJson, sha256: receiptSha256 },
+      result,
+      receipt.provider_completed_at,
+    );
+    const rawManifest = {
+      object_key:
+        `container-provider-evidence/v1/${identity.operationId}/2/1/${providerSha256}`,
+      object_version: "raw-version-v3-replay",
+      provider_response_evidence_sha256: "4".repeat(64),
+      sha256: providerSha256,
+      size: providerBody.byteLength,
+      content_type: "application/json",
+    };
+    const clientManifest = {
+      object_key:
+        `container-client-artifacts/v1/${identity.operationId}/2/${providerSha256}`,
+      object_version: result.object_version,
+      client_response_artifact_sha256: "5".repeat(64),
+      sha256: providerSha256,
+      size: providerBody.byteLength,
+      content_type: "application/json" as const,
+    };
+    const attachment: ProviderResponseArtifactAttachment = {
+      status: "succeeded",
+      provider_status: 200,
+      client_status: 200,
+      response_class: "success",
+      response_code: null,
+      raw_manifest: rawManifest,
+      client_manifest: clientManifest,
+      provider_usage_receipt_sha256: receiptSha256,
+    };
+
+    const response = await replayProviderResponseV3WithoutProviderSend(
+      env,
+      port,
+      port.grant,
+      admission,
+      {
+        kind: "complete",
+        raw_manifest: rawManifest,
+        client_manifest: clientManifest,
+        classification: "success",
+        provider_status: 200,
+        client_status: 200,
+        status: "succeeded",
+        provider_usage_receipt_sha256: receiptSha256,
+        attachment,
+      },
+      1,
+    );
+
+    expect(response?.status).toBe(202);
+    await expect(response?.json()).resolves.toMatchObject({
+      code: "provider_response_v3_terminal_pending",
+    });
+    expect(events).toEqual([
+      "do-provider-usage-attach",
+      "do-response-artifact-attach",
+    ]);
+    expect(port.grant.result).toEqual(result);
+    expect(port.dispatches).toBe(0);
+  });
 });
 
 type D1GrantMode =
@@ -1109,6 +1424,7 @@ function gatewayEnv(
     d1OperationStatus?: string;
     d1GrantMode?: D1GrantMode;
     d1SchemaMode?: D1SchemaMode;
+    d1ArtifactSchemaMode?: "ready" | "missing";
     d1ReceiptMode?: D1ReceiptMode;
     onReceiptWrite?: (values: unknown[]) => void;
     events?: string[];
@@ -1164,6 +1480,14 @@ function gatewayEnv(
         return { success: true, meta: { changes: 0 }, results: [] };
       },
       async first<T>() {
+        if (sql.includes("AS raw_table_count")) {
+          options.events?.push("d1-artifact-schema-read");
+          return responseArtifactSchemaReadiness(
+            options.d1ArtifactSchemaMode === "missing"
+              ? { required_trigger_count: 19 }
+              : {},
+          ) as T;
+        }
         if (sql.includes("FROM sqlite_master")) {
           options.events?.push("d1-schema-read");
           if (schemaMode === "read_error") throw new Error("schema read failed");
@@ -1180,6 +1504,25 @@ function gatewayEnv(
             return { ...storedReceipt, persisted_at: "invalid" } as T;
           }
           return { ...storedReceipt } as T;
+        }
+        if (sql.includes("FROM relay_container_atomic_admissions AS atomic")) {
+          options.events?.push("d1-artifact-authority-read");
+          return {
+            reservation_key: admission.reservation_key,
+            operation_id: admission.operation_id,
+            owner_generation: admission.owner_generation,
+            provider_attempt_generation: 1,
+            atomic_admission_sha256: "d".repeat(64),
+            operation_admission_sha256: admission.admission_sha256,
+            response_artifact_contract: "container-response-artifacts-v1",
+          } as T;
+        }
+        if (
+          sql.includes("FROM relay_container_provider_response_evidence") ||
+          sql.includes("FROM relay_container_client_response_artifacts")
+        ) {
+          options.events?.push("d1-artifact-recovery-read");
+          return null;
         }
         if (!sql.includes("FROM relay_container_provider_egress_grants")) {
           options.events?.push("d1-admission");
@@ -1358,6 +1701,39 @@ function providerUsageSchemaReadiness(
   };
 }
 
+function responseArtifactSchemaReadiness(
+  overrides: Record<string, number> = {},
+): Record<string, number> {
+  return {
+    raw_table_count: 1,
+    raw_column_count: 28,
+    raw_required_column_count: 28,
+    raw_identity_table_count: 1,
+    raw_identity_column_count: 7,
+    raw_identity_required_column_count: 7,
+    client_table_count: 1,
+    client_column_count: 17,
+    client_required_column_count: 17,
+    client_identity_table_count: 1,
+    client_identity_column_count: 7,
+    client_identity_required_column_count: 7,
+    operation_contract_column_count: 1,
+    terminal_artifact_column_count: 1,
+    atomic_identity_column_count: 6,
+    receipt_identity_column_count: 4,
+    required_index_count: 5,
+    atomic_identity_index_column_count: 6,
+    receipt_identity_index_column_count: 4,
+    raw_recorded_index_column_count: 3,
+    client_created_index_column_count: 3,
+    terminal_artifact_index_column_count: 1,
+    required_trigger_count: 20,
+    raw_foreign_key_column_count: 9,
+    client_foreign_key_column_count: 8,
+    ...overrides,
+  };
+}
+
 function providerUsageReceiptRow(values: unknown[]): Record<string, unknown> {
   const names = [
     "operation_id",
@@ -1470,6 +1846,27 @@ async function providerResponse(
 ): Promise<Response> {
   const status = options.status ?? 200;
   const receipt: ProviderUsageReceipt = {
+    ...(await providerUsageReceipt(body, status)),
+    ...options.receiptOverrides,
+  };
+  const receiptJson = options.receiptJson?.(receipt) ?? JSON.stringify(receipt);
+  const receiptBytes = new TextEncoder().encode(receiptJson);
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": "application/json",
+      [PROVIDER_EGRESS_WORKER_VERSION_HEADER]: version,
+      [PROVIDER_USAGE_RECEIPT_HEADER]: base64UrlNoPad(receiptBytes),
+      [PROVIDER_USAGE_RECEIPT_SHA256_HEADER]: await sha256(receiptBytes),
+    },
+  });
+}
+
+async function providerUsageReceipt(
+  body: Uint8Array,
+  status: number,
+): Promise<ProviderUsageReceipt> {
+  return {
     schema_version: 1,
     parser_contract: "openai-chat-completions-usage-v1",
     normalization_contract: "billing-token-normalization-v1",
@@ -1508,19 +1905,7 @@ async function providerResponse(
     claude_web_search_calls: 0,
     image_generation_quality: null,
     image_generation_size: null,
-    ...options.receiptOverrides,
   };
-  const receiptJson = options.receiptJson?.(receipt) ?? JSON.stringify(receipt);
-  const receiptBytes = new TextEncoder().encode(receiptJson);
-  return new Response(body, {
-    status,
-    headers: {
-      "content-type": "application/json",
-      [PROVIDER_EGRESS_WORKER_VERSION_HEADER]: version,
-      [PROVIDER_USAGE_RECEIPT_HEADER]: base64UrlNoPad(receiptBytes),
-      [PROVIDER_USAGE_RECEIPT_SHA256_HEADER]: await sha256(receiptBytes),
-    },
-  });
 }
 
 function base64UrlNoPad(bytes: Uint8Array): string {

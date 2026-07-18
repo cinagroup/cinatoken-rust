@@ -1,6 +1,7 @@
 const routes = {
   "/ready": ["BROKER_READY", "/internal/v1/provider-egress/readiness"],
   "/execute": ["BROKER_READY", "/internal/v1/provider-attempts/execute"],
+  "/execute-v3": ["BROKER_READY", "/internal/v3/provider-attempts/execute"],
   "/disabled": ["BROKER_DISABLED", "/internal/v1/provider-egress/readiness"],
   "/missing-model": ["BROKER_MISSING_MODEL", "/internal/v1/provider-egress/readiness"],
   "/missing-secret": ["BROKER_MISSING_SECRET", "/internal/v1/provider-egress/readiness"],

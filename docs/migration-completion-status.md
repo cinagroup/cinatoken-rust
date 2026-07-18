@@ -1399,3 +1399,56 @@ financial terminal decision; P5 must prove reader-first mixed-version rollout,
 provider ambiguity, lifecycle/fault/load/cost/SLO/alerts, retention, rollback,
 security and signed approvals. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-18 Response Protocol P3 Status
+
+This section supersedes the preceding statement that the protocol-v3 encoder,
+Controller verifier, DO migration 3, runtime rejected outcome, and exact replay
+are absent. P3 is complete only as a local disabled candidate.
+
+### Implemented locally
+
+- Rust egress emits one canonical v3 envelope for success, typed HTTP-200 error,
+  HTTP error, or invalid body, with exact Worker affinity and bounded bodies.
+- TypeScript verifies exact transport and canonical bytes without
+  reinterpreting provider semantics, then releases envelope base64 text before
+  storage work.
+- Controller preflight proves 0052/0048 schema and immutable admission authority
+  before readiness, dispatch, or provider I/O.
+- Raw/client R2 and D1 persistence is create-only/append-only, phase-separated,
+  readback-verified, and crash-reentrant. Exact success writes its byte-identical
+  compatibility result with exact `application/json` metadata and receipt before
+  the client D1 foreign key; receipt-less success fails before raw R2 and every
+  error class writes neither.
+- DO schema migration 3 attaches the independent manifests and classification
+  under operation/owner/attempt/egress fences. Success first binds the same
+  compatibility result and receipt digest to the DO operation/attempt; replay
+  validates D1 readback and preserves that order without provider resend.
+- Runtime protocol 1 adds a strict `Rejected` outcome with outer 422 and a full
+  client artifact manifest. Provider 202 is not success.
+- Recovery classifies `none`, `raw_only`, or `complete`; all persisted,
+  dispatched, unavailable, or conflicting post-provider states perform zero
+  additional provider requests.
+- The non-streaming P3 rollout limit is 1 MiB provider body and 3.2 MB envelope,
+  while the frozen protocol/storage schema retains its 4 MiB compatibility
+  ceiling. Exact-length allocation and base64/canonical-copy release preserve
+  shared Worker-isolate memory headroom.
+
+### Verified locally
+
+The Controller passes 178 Bun, 165 portable protocol, and 38 Workerd/SQLite
+tests. The artifact writer has 32 focused create/replay/conflict/classification,
+4 MiB, receiptless-success, metadata-normalization, and crash-boundary tests.
+Native Rust, Wasm egress build, and the
+cross-language Rust-envelope/TypeScript-reader runtime packet are part of the
+same candidate verification sequence. All tracked v3 gates remain false.
+
+### Still blocked
+
+P4 financial terminal ownership is absent, so complete P3 artifacts remain
+recovery-required and terminal gate `true` hard-fails before provider I/O.
+There is no authenticated remote 0052 readback, real R2 artifact, provider
+call, DO/Container lifecycle campaign, deployment, secret change, accounting
+mutation, or traffic switch. P5 remote mixed-version, fault/load/cost/SLO,
+retention, rollback, security, and signed approvals remain open. Go/VPS remains
+authoritative and production remains **NO-GO**.

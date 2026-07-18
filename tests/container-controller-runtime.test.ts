@@ -12,7 +12,10 @@ import {
 import {
   RelayShardLedger,
   operationRecoveryIntentPayload,
+  type ClientResponseArtifactManifest,
   type OperationStatus,
+  type ProviderResponseArtifactAttachment,
+  type ProviderResponseEvidenceManifest,
   type RelayShardLedgerPolicy,
   type StorageResultRecord,
 } from "../services/container-controller/src/ledger";
@@ -43,6 +46,10 @@ interface LifecycleSqlRow {
 }
 
 const BASE_NOW = 1_800_000_000;
+const PROVIDER_EGRESS_IDENTITY = {
+  profile: "openai-chat-completions-canary-v1",
+  worker_version_id: "worker-version-v3",
+};
 
 function sha256(character: string): string {
   return character.repeat(64);
@@ -140,6 +147,161 @@ function operationResult(operation: OperationEnvelope): StorageResultRecord {
     size: 2,
     content_type: "application/json",
   };
+}
+
+function providerEvidenceManifest(
+  operation: OperationEnvelope,
+  digestCharacter = "d",
+  bodySha256 = sha256("c"),
+  attemptGeneration = 1,
+  overrides: Partial<ProviderResponseEvidenceManifest> = {},
+): ProviderResponseEvidenceManifest {
+  const sha = overrides.sha256 ?? bodySha256;
+  return {
+    object_key:
+      `container-provider-evidence/v1/${operation.operation_id}/` +
+      `${operation.owner_generation}/${attemptGeneration}/${sha}`,
+    object_version: `provider-evidence-version-${digestCharacter}`,
+    provider_response_evidence_sha256: sha256(digestCharacter),
+    sha256: sha,
+    size: 2,
+    content_type: "application/json",
+    ...overrides,
+  };
+}
+
+function clientArtifactManifest(
+  operation: OperationEnvelope,
+  digestCharacter = "e",
+  bodySha256 = sha256("c"),
+  overrides: Partial<ClientResponseArtifactManifest> = {},
+): ClientResponseArtifactManifest {
+  const artifactSha256 =
+    overrides.client_response_artifact_sha256 ?? sha256(digestCharacter);
+  return {
+    object_key:
+      `container-client-artifacts/v1/${operation.operation_id}/` +
+      `${operation.owner_generation}/${artifactSha256}`,
+    object_version: `client-artifact-version-${digestCharacter}`,
+    client_response_artifact_sha256: artifactSha256,
+    sha256: bodySha256,
+    size: 2,
+    content_type: "application/json",
+    ...overrides,
+  };
+}
+
+function successAttachment(
+  operation: OperationEnvelope,
+  digestCharacters = "de",
+  overrides: Partial<ProviderResponseArtifactAttachment> = {},
+): ProviderResponseArtifactAttachment {
+  return {
+    status: "succeeded",
+    provider_status: 200,
+    client_status: 200,
+    response_class: "success",
+    response_code: null,
+    raw_manifest: providerEvidenceManifest(operation, digestCharacters[0]!),
+    client_manifest: clientArtifactManifest(operation, digestCharacters[1]!),
+    provider_usage_receipt_sha256: null,
+    ...overrides,
+  } as ProviderResponseArtifactAttachment;
+}
+
+function interpretedRejectAttachment(
+  operation: OperationEnvelope,
+  responseClass: "typed_error" | "http_error" | "invalid_body",
+  providerStatus: number,
+  clientStatus: number,
+  digestCharacters = "ab",
+): ProviderResponseArtifactAttachment {
+  return {
+    status: "interpreted_reject",
+    provider_status: providerStatus,
+    client_status: clientStatus,
+    response_class: responseClass,
+    response_code: `provider_${responseClass}`,
+    raw_manifest: providerEvidenceManifest(operation, digestCharacters[0]!),
+    client_manifest: clientArtifactManifest(
+      operation,
+      digestCharacters[1]!,
+      sha256(digestCharacters[1]!),
+    ),
+    provider_usage_receipt_sha256: null,
+  };
+}
+
+function ambiguousAttachment(): ProviderResponseArtifactAttachment {
+  return {
+    status: "ambiguous",
+    provider_status: null,
+    client_status: null,
+    response_class: null,
+    response_code: "provider_response_ambiguous",
+    raw_manifest: null,
+    client_manifest: null,
+    provider_usage_receipt_sha256: null,
+  };
+}
+
+async function dispatchVersionedProviderAttempt(
+  stub: DurableObjectStub<ContainerControllerLedgerTestObject>,
+  operation: OperationEnvelope,
+  now = BASE_NOW,
+): Promise<void> {
+  await stub.claim(
+    operation,
+    sha256("9"),
+    `dispatch-${operation.operation_id}`,
+    ledgerPolicy(),
+    now,
+  );
+  await stub.startOperationWithProviderAttemptOutcome(
+    operation.operation_id,
+    operation.owner_generation,
+    { maxAttempts: 1, retryEnabled: false },
+    now + 1,
+  );
+  await stub.dispatchProviderAttemptV2Outcome(
+    operation.operation_id,
+    operation.owner_generation,
+    1,
+    PROVIDER_EGRESS_IDENTITY,
+    now + 2,
+  );
+}
+
+async function attachProviderResponse(
+  stub: DurableObjectStub<ContainerControllerLedgerTestObject>,
+  operation: OperationEnvelope,
+  attachment: ProviderResponseArtifactAttachment,
+  now: number,
+  ownerGeneration = operation.owner_generation,
+  attemptGeneration = 1,
+) {
+  return runInDurableObject(stub, (_instance, state) => {
+    try {
+      return {
+        ok: true as const,
+        result: new RelayShardLedger(state.storage).attachProviderResponseArtifacts(
+          operation.operation_id,
+          ownerGeneration,
+          attemptGeneration,
+          attachment,
+          now,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return {
+          ok: false as const,
+          error: { code: error.code, status: error.status },
+        };
+      }
+      throw error;
+    }
+  });
 }
 
 function terminalAck(
@@ -470,6 +632,478 @@ describe("RelayShardLedger in Workerd", () => {
       attempt: {
         egress_profile: egressIdentity.profile,
         egress_worker_version_id: egressIdentity.worker_version_id,
+      },
+    });
+  });
+
+  it("attaches immutable provider/client artifacts with exact replay across eviction", async () => {
+    const stub = ledgerStub("provider-response-artifact-replay");
+    const operation = operationEnvelope("provider-response-artifact-replay", {
+      operation_kind: "chat_completion",
+    });
+    await dispatchVersionedProviderAttempt(stub, operation);
+    const attachment = successAttachment(operation);
+
+    await expect(
+      attachProviderResponse(stub, operation, attachment, BASE_NOW + 3),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        kind: "attached",
+        row: {
+          operation_id: operation.operation_id,
+          owner_generation: 1,
+          attempt_generation: 1,
+          provider_operation_id: operation.provider_operation_id,
+          admission_sha256: operation.admission_sha256,
+          request_sha256: operation.input.sha256,
+          egress_profile: PROVIDER_EGRESS_IDENTITY.profile,
+          egress_worker_version_id: PROVIDER_EGRESS_IDENTITY.worker_version_id,
+          status: "succeeded",
+          provider_status: 200,
+          client_status: 200,
+          response_class: "success",
+          attached_at: BASE_NOW + 3,
+          raw_manifest: attachment.raw_manifest,
+          client_manifest: attachment.client_manifest,
+        },
+      },
+    });
+
+    await evictDurableObject(stub);
+    const persisted = await runInDurableObject(stub, (_instance, state) =>
+      new RelayShardLedger(state.storage).readProviderResponseArtifactAttachment(
+        operation.operation_id,
+        1,
+        1,
+      ),
+    );
+    expect(persisted).toMatchObject({
+      status: "succeeded",
+      attached_at: BASE_NOW + 3,
+      raw_manifest: attachment.raw_manifest,
+      client_manifest: attachment.client_manifest,
+    });
+    await expect(
+      attachProviderResponse(stub, operation, attachment, BASE_NOW + 301),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { kind: "duplicate", row: { attached_at: BASE_NOW + 3 } },
+    });
+
+    const conflictingAttachment = {
+      ...attachment,
+      client_manifest: {
+        ...attachment.client_manifest!,
+        object_version: "client-artifact-version-conflict",
+      },
+    } as ProviderResponseArtifactAttachment;
+    await expect(
+      attachProviderResponse(
+        stub,
+        operation,
+        conflictingAttachment,
+        BASE_NOW + 4,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_response_attachment_conflict", status: 409 },
+    });
+
+    const staleOwnerOperation = { ...operation, owner_generation: 2 };
+    await expect(
+      attachProviderResponse(
+        stub,
+        operation,
+        successAttachment(staleOwnerOperation, "12"),
+        BASE_NOW + 4,
+        2,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_response_attachment_conflict", status: 409 },
+    });
+    const staleAttemptAttachment = successAttachment(operation, "34", {
+      raw_manifest: providerEvidenceManifest(operation, "3", sha256("c"), 2),
+    });
+    await expect(
+      attachProviderResponse(
+        stub,
+        operation,
+        staleAttemptAttachment,
+        BASE_NOW + 4,
+        1,
+        2,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_response_attachment_conflict", status: 409 },
+    });
+
+    const guards = await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("PRAGMA recursive_triggers = OFF");
+      let updateRejected = false;
+      let deleteRejected = false;
+      let replaceRejected = false;
+      let identityReplaceRejected = false;
+      let identityUpdateRejected = false;
+      let identityDeleteRejected = false;
+      try {
+        state.storage.sql.exec(
+          `UPDATE cinatoken_shard_provider_response_attachments
+              SET client_status = client_status
+            WHERE operation_id = ?1`,
+          operation.operation_id,
+        );
+      } catch {
+        updateRejected = true;
+      }
+      try {
+        state.storage.sql.exec(
+          `DELETE FROM cinatoken_shard_provider_response_attachments
+            WHERE operation_id = ?1`,
+          operation.operation_id,
+        );
+      } catch {
+        deleteRejected = true;
+      }
+      try {
+        state.storage.sql.exec(
+          `INSERT OR REPLACE INTO cinatoken_shard_provider_response_attachments
+           SELECT * FROM cinatoken_shard_provider_response_attachments
+            WHERE operation_id = ?1`,
+          operation.operation_id,
+        );
+      } catch {
+        replaceRejected = true;
+      }
+      try {
+        state.storage.sql.exec(
+          `INSERT OR REPLACE INTO
+             cinatoken_shard_provider_response_attachment_identities
+           SELECT *
+             FROM cinatoken_shard_provider_response_attachment_identities
+            WHERE operation_id = ?1`,
+          operation.operation_id,
+        );
+      } catch {
+        identityReplaceRejected = true;
+      }
+      try {
+        state.storage.sql.exec(
+          `UPDATE cinatoken_shard_provider_response_attachment_identities
+              SET owner_generation = owner_generation
+            WHERE operation_id = ?1`,
+          operation.operation_id,
+        );
+      } catch {
+        identityUpdateRejected = true;
+      }
+      try {
+        state.storage.sql.exec(
+          `DELETE FROM cinatoken_shard_provider_response_attachment_identities
+            WHERE operation_id = ?1`,
+          operation.operation_id,
+        );
+      } catch {
+        identityDeleteRejected = true;
+      }
+      const attachmentCount = state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cinatoken_shard_provider_response_attachments",
+        )
+        .one().count;
+      const identityCount = state.storage.sql
+        .exec<{ count: number }>(
+          `SELECT COUNT(*) AS count
+             FROM cinatoken_shard_provider_response_attachment_identities`,
+        )
+        .one().count;
+      state.storage.sql.exec("PRAGMA recursive_triggers = ON");
+      return {
+        updateRejected,
+        deleteRejected,
+        replaceRejected,
+        identityReplaceRejected,
+        identityUpdateRejected,
+        identityDeleteRejected,
+        attachmentCount,
+        identityCount,
+      };
+    });
+    expect(guards).toEqual({
+      updateRejected: true,
+      deleteRejected: true,
+      replaceRejected: true,
+      identityReplaceRejected: true,
+      identityUpdateRejected: true,
+      identityDeleteRejected: true,
+      attachmentCount: 1,
+      identityCount: 1,
+    });
+
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "DELETE FROM cinatoken_shard_operations WHERE operation_id = ?1",
+        operation.operation_id,
+      );
+    });
+    await evictDurableObject(stub);
+    await expect(
+      attachProviderResponse(stub, operation, attachment, BASE_NOW + 302),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { kind: "duplicate", row: { attached_at: BASE_NOW + 3 } },
+    });
+    const compacted = await runInDurableObject(stub, (_instance, state) => ({
+      operations: state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cinatoken_shard_operations",
+        )
+        .one().count,
+      attempts: state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cinatoken_shard_provider_attempts",
+        )
+        .one().count,
+      attachments: state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cinatoken_shard_provider_response_attachments",
+        )
+        .one().count,
+    }));
+    expect(compacted).toEqual({ operations: 0, attempts: 0, attachments: 1 });
+  });
+
+  it("keeps provider/client status and response class distinct for v3 terminal shapes", async () => {
+    const stub = ledgerStub("provider-response-terminal-shapes");
+    const typed = operationEnvelope("provider-response-typed-reject", {
+      operation_kind: "chat_completion",
+    });
+    const http202 = operationEnvelope("provider-response-http-202", {
+      operation_kind: "chat_completion",
+    });
+    const invalidBody = operationEnvelope("provider-response-invalid-body", {
+      operation_kind: "chat_completion",
+    });
+    const ambiguous = operationEnvelope("provider-response-ambiguous-v3", {
+      operation_kind: "chat_completion",
+    });
+    for (const operation of [typed, http202, invalidBody, ambiguous]) {
+      await dispatchVersionedProviderAttempt(stub, operation);
+    }
+
+    const invalidSuccess = successAttachment(typed, "01", {
+      provider_status: 202,
+    } as Partial<ProviderResponseArtifactAttachment>);
+    await expect(
+      attachProviderResponse(stub, typed, invalidSuccess, BASE_NOW + 3),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "invalid_provider_response_attachment", status: 400 },
+    });
+    const typedAttachment = interpretedRejectAttachment(
+      typed,
+      "typed_error",
+      200,
+      200,
+      "12",
+    );
+    await expect(
+      attachProviderResponse(stub, typed, typedAttachment, BASE_NOW + 3),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        kind: "attached",
+        row: {
+          status: "interpreted_reject",
+          provider_status: 200,
+          client_status: 200,
+          response_class: "typed_error",
+        },
+      },
+    });
+
+    const http202Attachment = interpretedRejectAttachment(
+      http202,
+      "http_error",
+      202,
+      202,
+      "34",
+    );
+    await expect(
+      attachProviderResponse(stub, http202, http202Attachment, BASE_NOW + 3),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        row: {
+          status: "interpreted_reject",
+          provider_status: 202,
+          client_status: 202,
+          response_class: "http_error",
+        },
+      },
+    });
+    await expect(
+      attachProviderResponse(
+        stub,
+        invalidBody,
+        interpretedRejectAttachment(
+          invalidBody,
+          "invalid_body",
+          200,
+          500,
+          "56",
+        ),
+        BASE_NOW + 3,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        row: {
+          status: "interpreted_reject",
+          provider_status: 200,
+          client_status: 500,
+          response_class: "invalid_body",
+        },
+      },
+    });
+    await expect(
+      attachProviderResponse(
+        stub,
+        ambiguous,
+        {
+          ...ambiguousAttachment(),
+          status: "definite_reject",
+        } as unknown as ProviderResponseArtifactAttachment,
+        BASE_NOW + 3,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "invalid_provider_response_attachment", status: 400 },
+    });
+    await expect(
+      attachProviderResponse(
+        stub,
+        ambiguous,
+        ambiguousAttachment(),
+        BASE_NOW * 1_000,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "invalid_provider_response_attachment", status: 400 },
+    });
+    await expect(
+      attachProviderResponse(
+        stub,
+        ambiguous,
+        ambiguousAttachment(),
+        BASE_NOW + 3,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        row: {
+          status: "ambiguous",
+          provider_status: null,
+          client_status: null,
+          response_class: null,
+          raw_manifest: null,
+          client_manifest: null,
+        },
+      },
+    });
+
+    const rows = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql
+        .exec<{
+          operation_id: string;
+          status: string;
+          provider_status: number | null;
+          client_status: number | null;
+          response_class: string | null;
+        }>(
+          `SELECT operation_id, status, provider_status, client_status, response_class
+             FROM cinatoken_shard_provider_response_attachments
+            ORDER BY operation_id`,
+        )
+        .toArray(),
+    );
+    expect(rows).toEqual([
+      {
+        operation_id: ambiguous.operation_id,
+        status: "ambiguous",
+        provider_status: null,
+        client_status: null,
+        response_class: null,
+      },
+      {
+        operation_id: http202.operation_id,
+        status: "interpreted_reject",
+        provider_status: 202,
+        client_status: 202,
+        response_class: "http_error",
+      },
+      {
+        operation_id: invalidBody.operation_id,
+        status: "interpreted_reject",
+        provider_status: 200,
+        client_status: 500,
+        response_class: "invalid_body",
+      },
+      {
+        operation_id: typed.operation_id,
+        status: "interpreted_reject",
+        provider_status: 200,
+        client_status: 200,
+        response_class: "typed_error",
+      },
+    ]);
+  });
+
+  it("binds an optional success receipt to the exact completed result body", async () => {
+    const stub = ledgerStub("provider-response-success-receipt");
+    const operation = operationEnvelope("provider-response-success-receipt", {
+      operation_kind: "chat_completion",
+    });
+    await dispatchVersionedProviderAttempt(stub, operation);
+    const result = operationResult(operation);
+    const receiptSha256 = sha256("b");
+    await expect(
+      stub.recordProviderUsageResultOutcome(
+        operation.operation_id,
+        1,
+        result,
+        1,
+        receiptSha256,
+        BASE_NOW + 3,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: "recorded" });
+    const attachment = successAttachment(operation, "cd", {
+      raw_manifest: providerEvidenceManifest(operation, "c", result.sha256),
+      client_manifest: clientArtifactManifest(operation, "d", result.sha256, {
+        size: result.size,
+      }),
+      provider_usage_receipt_sha256: receiptSha256,
+    });
+    await expect(
+      attachProviderResponse(
+        stub,
+        operation,
+        { ...attachment, provider_usage_receipt_sha256: sha256("a") },
+        BASE_NOW + 4,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_response_attachment_conflict", status: 409 },
+    });
+    await expect(
+      attachProviderResponse(stub, operation, attachment, BASE_NOW + 4),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        kind: "attached",
+        row: { provider_usage_receipt_sha256: receiptSha256 },
       },
     });
   });
@@ -2060,6 +2694,66 @@ describe("RelayShardLedger in Workerd", () => {
     });
   });
 
+  it("upgrades a schema-2 Durable Object to immutable response attachments", async () => {
+    const stub = ledgerStub("provider-response-schema-upgrade");
+    await stub.listUnarmedOperationRecoveryIntents();
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "DROP TRIGGER cinatoken_shard_schema_migration_update_guard",
+      );
+      state.storage.sql.exec(
+        "DROP TRIGGER cinatoken_shard_schema_migration_delete_guard",
+      );
+      state.storage.sql.exec(
+        "DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version = 3",
+      );
+      state.storage.sql.exec(
+        "DROP TABLE cinatoken_shard_provider_response_attachment_identities",
+      );
+      state.storage.sql.exec(
+        "DROP TABLE cinatoken_shard_provider_response_attachments",
+      );
+    });
+
+    await evictDurableObject(stub);
+    await expect(stub.listUnarmedOperationRecoveryIntents()).resolves.toEqual([]);
+    const upgraded = await runInDurableObject(stub, (_instance, state) => {
+      const migrations = state.storage.sql
+        .exec<{ schema_version: number; migration_name: string }>(
+          `SELECT schema_version, migration_name
+             FROM cinatoken_shard_schema_migrations
+            ORDER BY schema_version`,
+        )
+        .toArray();
+      const tables = state.storage.sql
+        .exec<{ name: string }>(
+          `SELECT name FROM sqlite_master
+            WHERE type = 'table'
+              AND name LIKE 'cinatoken_shard_provider_response_attachment%'
+            ORDER BY name`,
+        )
+        .toArray();
+      return { migrations, tables };
+    });
+    expect(upgraded).toEqual({
+      migrations: [
+        { schema_version: 1, migration_name: "0001_legacy_schema_observed" },
+        {
+          schema_version: 2,
+          migration_name: "0002_operation_deadline_alarm_intent_v1",
+        },
+        {
+          schema_version: 3,
+          migration_name: "0003_provider_response_artifact_attachment_v1",
+        },
+      ],
+      tables: [
+        { name: "cinatoken_shard_provider_response_attachment_identities" },
+        { name: "cinatoken_shard_provider_response_attachments" },
+      ],
+    });
+  });
+
   it("records an immutable local schema migration ledger", async () => {
     const stub = ledgerStub("operation-recovery-schema-ledger");
     await stub.listUnarmedOperationRecoveryIntents();
@@ -2085,7 +2779,7 @@ describe("RelayShardLedger in Workerd", () => {
       }
       try {
         state.storage.sql.exec(
-          "DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version = 2",
+          "DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version = 3",
         );
       } catch {
         deleteRejected = true;
@@ -2093,7 +2787,7 @@ describe("RelayShardLedger in Workerd", () => {
       state.storage.sql.exec(
         `INSERT INTO cinatoken_shard_schema_migrations
            (schema_version, migration_name, applied_at)
-         VALUES (3, '0003_future_schema', ?1)`,
+         VALUES (4, '0004_future_schema', ?1)`,
         BASE_NOW,
       );
       try {
@@ -2112,6 +2806,10 @@ describe("RelayShardLedger in Workerd", () => {
         {
           schema_version: 2,
           migration_name: "0002_operation_deadline_alarm_intent_v1",
+        },
+        {
+          schema_version: 3,
+          migration_name: "0003_provider_response_artifact_attachment_v1",
         },
       ],
       updateRejected: true,

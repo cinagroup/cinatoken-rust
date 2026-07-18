@@ -29,6 +29,7 @@ pub const CONTAINER_PROTOCOL_HEADER: &str = "x-cinatoken-container-protocol";
 pub const EXECUTION_NOT_ENABLED_CODE: &str = "execution_not_enabled";
 pub const AMBIGUOUS_EXECUTION_CODE: &str = "ambiguous_execution";
 pub const PROVIDER_INPUT_UNAVAILABLE_CODE: &str = "provider_input_unavailable";
+pub const INTERPRETED_PROVIDER_REJECTION_STATUS: StatusCode = StatusCode::UNPROCESSABLE_ENTITY;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const SHARD_CONTRACT_VERSION: u32 = 1;
@@ -40,7 +41,9 @@ const MAX_TRACE_ID_BYTES: usize = 128;
 const MAX_CONTENT_TYPE_BYTES: usize = 255;
 const MAX_OBJECT_KEY_BYTES: usize = 1_024;
 const MAX_OBJECT_VERSION_BYTES: usize = 256;
+const MAX_RESPONSE_ARTIFACT_OBJECT_VERSION_BYTES: usize = 128;
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CLIENT_RESPONSE_ARTIFACT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CONTAINER_SHARDS: u16 = 1_024;
 
 pub fn app() -> Router {
@@ -209,6 +212,15 @@ async fn operations(
             )),
         )
             .into_response(),
+        Ok(ExecutionOutcome::Rejected(rejected)) => (
+            INTERPRETED_PROVIDER_REJECTION_STATUS,
+            Json(OperationResponse::rejected_provider_response(
+                envelope.operation_id,
+                envelope.trace_id,
+                rejected,
+            )),
+        )
+            .into_response(),
         Ok(ExecutionOutcome::RecoveryRequired) | Err(ExecutionError::Ambiguous) => (
             StatusCode::ACCEPTED,
             Json(
@@ -275,6 +287,47 @@ pub enum OperationOutcomeStatus {
     Completed,
     Rejected,
     RecoveryRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderResponseClassification {
+    TypedError,
+    HttpError,
+    InvalidBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRejectedOutcome {
+    pub classification: ProviderResponseClassification,
+    pub provider_status: u16,
+    pub client_status: u16,
+    pub code: String,
+    pub client_artifact: ClientResponseArtifactManifest,
+}
+
+impl ProviderRejectedOutcome {
+    fn statuses_match(&self) -> bool {
+        match self.classification {
+            ProviderResponseClassification::TypedError => {
+                self.provider_status == 200 && self.client_status == 200
+            }
+            ProviderResponseClassification::HttpError => {
+                self.provider_status != 200 && self.client_status == self.provider_status
+            }
+            ProviderResponseClassification::InvalidBody => {
+                self.provider_status == 200 && self.client_status == 500
+            }
+        }
+    }
+
+    fn valid(&self, operation_id: &str, owner_generation: u64) -> bool {
+        self.statuses_match()
+            && valid_outcome_code(&self.code)
+            && self
+                .client_artifact
+                .matches_operation(operation_id, owner_generation)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -392,6 +445,110 @@ impl fmt::Display for ResultManifestError {
 impl Error for ResultManifestError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClientResponseArtifactManifest {
+    object_key: String,
+    object_version: String,
+    client_response_artifact_sha256: String,
+    sha256: String,
+    size: u64,
+    content_type: String,
+}
+
+impl ClientResponseArtifactManifest {
+    pub fn try_new(
+        object_key: String,
+        object_version: String,
+        client_response_artifact_sha256: String,
+        sha256: String,
+        size: u64,
+        content_type: String,
+    ) -> Result<Self, ResultManifestError> {
+        validate_client_artifact_object_key(&object_key).map_err(ResultManifestError::from)?;
+        validate_identifier(
+            &object_version,
+            MAX_RESPONSE_ARTIFACT_OBJECT_VERSION_BYTES,
+            "invalid_client_artifact_object_version",
+            "client artifact object_version must be a bounded ASCII identifier",
+        )
+        .map_err(ResultManifestError::from)?;
+        validate_sha256(
+            &client_response_artifact_sha256,
+            "invalid_client_response_artifact_sha256",
+        )
+        .map_err(ResultManifestError::from)?;
+        validate_sha256(&sha256, "invalid_client_artifact_sha256")
+            .map_err(ResultManifestError::from)?;
+        if !(2..=MAX_CLIENT_RESPONSE_ARTIFACT_BYTES).contains(&size) {
+            return Err(ResultManifestError::new(
+                "invalid_client_artifact_size",
+                "client artifact size must be between 2 bytes and 4 MiB",
+            ));
+        }
+        if content_type != "application/json" {
+            return Err(ResultManifestError::new(
+                "invalid_client_artifact_content_type",
+                "client artifact content_type must be application/json",
+            ));
+        }
+        Ok(Self {
+            object_key,
+            object_version,
+            client_response_artifact_sha256,
+            sha256,
+            size,
+            content_type,
+        })
+    }
+
+    fn matches_operation(&self, operation_id: &str, owner_generation: u64) -> bool {
+        self.object_key
+            == format!(
+                "container-client-artifacts/v1/{operation_id}/{owner_generation}/{}",
+                self.client_response_artifact_sha256
+            )
+    }
+
+    fn matches_operation_prefix(&self, operation_id: &str) -> bool {
+        self.object_key
+            .strip_prefix(&format!("container-client-artifacts/v1/{operation_id}/"))
+            .and_then(|remainder| remainder.split_once('/'))
+            .is_some_and(|(owner_generation, digest)| {
+                owner_generation.parse::<u64>().is_ok()
+                    && digest == self.client_response_artifact_sha256
+            })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClientResponseArtifactManifestWire {
+    object_key: String,
+    object_version: String,
+    client_response_artifact_sha256: String,
+    sha256: String,
+    size: u64,
+    content_type: String,
+}
+
+impl<'de> Deserialize<'de> for ClientResponseArtifactManifest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ClientResponseArtifactManifestWire::deserialize(deserializer)?;
+        Self::try_new(
+            wire.object_key,
+            wire.object_version,
+            wire.client_response_artifact_sha256,
+            wire.sha256,
+            wire.size,
+            wire.content_type,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OperationResponse {
     protocol_version: u32,
     operation_id: String,
@@ -400,6 +557,14 @@ pub struct OperationResponse {
     code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<OperationResultManifest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    classification: Option<ProviderResponseClassification>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_artifact: Option<ClientResponseArtifactManifest>,
     trace_id: String,
 }
 
@@ -442,6 +607,25 @@ impl OperationResponse {
         )
     }
 
+    pub fn rejected_provider_response(
+        operation_id: String,
+        trace_id: String,
+        rejected: ProviderRejectedOutcome,
+    ) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            operation_id,
+            status: OperationOutcomeStatus::Rejected,
+            code: Some(rejected.code),
+            result: None,
+            classification: Some(rejected.classification),
+            provider_status: Some(rejected.provider_status),
+            client_status: Some(rejected.client_status),
+            client_artifact: Some(rejected.client_artifact),
+            trace_id,
+        }
+    }
+
     pub fn recovery_required_for_ambiguous_execution(
         operation_id: String,
         trace_id: String,
@@ -468,6 +652,10 @@ impl OperationResponse {
             status,
             code,
             result,
+            classification: None,
+            provider_status: None,
+            client_status: None,
+            client_artifact: None,
             trace_id,
         }
     }
@@ -483,19 +671,22 @@ struct OperationResponseWire {
     code: WireField<String>,
     #[serde(default)]
     result: WireField<OperationResultManifest>,
+    #[serde(default)]
+    classification: WireField<ProviderResponseClassification>,
+    #[serde(default)]
+    provider_status: WireField<u16>,
+    #[serde(default)]
+    client_status: WireField<u16>,
+    #[serde(default)]
+    client_artifact: WireField<ClientResponseArtifactManifest>,
     trace_id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum WireField<T> {
+    #[default]
     Missing,
     Present(T),
-}
-
-impl<T> Default for WireField<T> {
-    fn default() -> Self {
-        Self::Missing
-    }
 }
 
 impl<'de, T> Deserialize<'de> for WireField<T>
@@ -534,13 +725,53 @@ impl<'de> Deserialize<'de> for OperationResponse {
         )
         .map_err(|error| serde::de::Error::custom(error.message))?;
 
-        let valid_presence = match (&wire.status, &wire.code, &wire.result) {
-            (OperationOutcomeStatus::Completed, WireField::Missing, _) => true,
+        let valid_presence = match (
+            &wire.status,
+            &wire.code,
+            &wire.result,
+            &wire.classification,
+            &wire.provider_status,
+            &wire.client_status,
+            &wire.client_artifact,
+        ) {
+            (
+                OperationOutcomeStatus::Completed,
+                WireField::Missing,
+                _,
+                WireField::Missing,
+                WireField::Missing,
+                WireField::Missing,
+                WireField::Missing,
+            ) => true,
             (
                 OperationOutcomeStatus::Rejected | OperationOutcomeStatus::RecoveryRequired,
                 WireField::Present(code),
                 WireField::Missing,
+                WireField::Missing,
+                WireField::Missing,
+                WireField::Missing,
+                WireField::Missing,
             ) => valid_outcome_code(code),
+            (
+                OperationOutcomeStatus::Rejected,
+                WireField::Present(code),
+                WireField::Missing,
+                WireField::Present(classification),
+                WireField::Present(provider_status),
+                WireField::Present(client_status),
+                WireField::Present(client_artifact),
+            ) => {
+                ProviderRejectedOutcome {
+                    classification: *classification,
+                    provider_status: *provider_status,
+                    client_status: *client_status,
+                    code: code.clone(),
+                    client_artifact: client_artifact.clone(),
+                }
+                .statuses_match()
+                    && valid_outcome_code(code)
+                    && client_artifact.matches_operation_prefix(&wire.operation_id)
+            }
             _ => false,
         };
         if !valid_presence {
@@ -560,6 +791,22 @@ impl<'de> Deserialize<'de> for OperationResponse {
             result: match wire.result {
                 WireField::Missing => None,
                 WireField::Present(result) => Some(result),
+            },
+            classification: match wire.classification {
+                WireField::Missing => None,
+                WireField::Present(classification) => Some(classification),
+            },
+            provider_status: match wire.provider_status {
+                WireField::Missing => None,
+                WireField::Present(status) => Some(status),
+            },
+            client_status: match wire.client_status {
+                WireField::Missing => None,
+                WireField::Present(status) => Some(status),
+            },
+            client_artifact: match wire.client_artifact {
+                WireField::Missing => None,
+                WireField::Present(artifact) => Some(artifact),
             },
             trace_id: wire.trace_id,
         })
@@ -823,6 +1070,17 @@ fn validate_result_object_key(value: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+fn validate_client_artifact_object_key(value: &str) -> Result<(), ValidationError> {
+    validate_result_object_key(value)?;
+    if !value.starts_with("container-client-artifacts/v1/") {
+        return Err(ValidationError::new(
+            "invalid_client_artifact_object_key",
+            "client artifact object_key must use the v1 client artifact namespace",
+        ));
+    }
+    Ok(())
+}
+
 fn valid_outcome_code(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_OPERATION_KIND_BYTES
@@ -904,6 +1162,9 @@ mod tests {
             match &self.outcome {
                 Ok(ExecutionOutcome::Completed(result)) => {
                     Ok(ExecutionOutcome::Completed(result.clone()))
+                }
+                Ok(ExecutionOutcome::Rejected(rejected)) => {
+                    Ok(ExecutionOutcome::Rejected(rejected.clone()))
                 }
                 Ok(ExecutionOutcome::RecoveryRequired) => Ok(ExecutionOutcome::RecoveryRequired),
                 Err(ExecutionError::InputUnavailable) => Err(ExecutionError::InputUnavailable),
@@ -1079,8 +1340,31 @@ mod tests {
         .unwrap()
     }
 
+    fn client_artifact_manifest() -> ClientResponseArtifactManifest {
+        let artifact_sha256 = "d".repeat(64);
+        ClientResponseArtifactManifest::try_new(
+            format!("container-client-artifacts/v1/operation-123/2/{artifact_sha256}"),
+            "client-artifact-version-123".to_string(),
+            artifact_sha256,
+            "e".repeat(64),
+            128,
+            "application/json".to_string(),
+        )
+        .unwrap()
+    }
+
+    fn provider_rejected_outcome() -> ProviderRejectedOutcome {
+        ProviderRejectedOutcome {
+            classification: ProviderResponseClassification::HttpError,
+            provider_status: 202,
+            client_status: 202,
+            code: "provider_http_error".to_string(),
+            client_artifact: client_artifact_manifest(),
+        }
+    }
+
     #[test]
-    fn serializes_exact_completed_and_recovery_required_outcomes() {
+    fn serializes_exact_completed_rejected_and_recovery_required_outcomes() {
         let completed = OperationResponse::completed_with_result(
             "operation-123".to_string(),
             "trace-123".to_string(),
@@ -1114,6 +1398,36 @@ mod tests {
                 "operation_id": "operation-123",
                 "status": "recovery_required",
                 "code": "ambiguous_execution",
+                "trace_id": "trace-123"
+            })
+        );
+
+        let rejected = OperationResponse::rejected_provider_response(
+            "operation-123".to_string(),
+            "trace-123".to_string(),
+            provider_rejected_outcome(),
+        );
+        assert_eq!(
+            serde_json::to_value(rejected).unwrap(),
+            serde_json::json!({
+                "protocol_version": 1,
+                "operation_id": "operation-123",
+                "status": "rejected",
+                "code": "provider_http_error",
+                "classification": "http_error",
+                "provider_status": 202,
+                "client_status": 202,
+                "client_artifact": {
+                    "object_key": format!(
+                        "container-client-artifacts/v1/operation-123/2/{}",
+                        "d".repeat(64)
+                    ),
+                    "object_version": "client-artifact-version-123",
+                    "client_response_artifact_sha256": "d".repeat(64),
+                    "sha256": "e".repeat(64),
+                    "size": 128,
+                    "content_type": "application/json"
+                },
                 "trace_id": "trace-123"
             })
         );
@@ -1158,6 +1472,28 @@ mod tests {
             "trace_id": "trace-123"
         });
         assert!(serde_json::from_value::<OperationResponse>(rejected_with_result).is_err());
+
+        let rejected = serde_json::to_value(OperationResponse::rejected_provider_response(
+            "operation-123".to_string(),
+            "trace-123".to_string(),
+            provider_rejected_outcome(),
+        ))
+        .unwrap();
+        assert!(serde_json::from_value::<OperationResponse>(rejected.clone()).is_ok());
+        for field in [
+            "classification",
+            "provider_status",
+            "client_status",
+            "client_artifact",
+        ] {
+            let mut incomplete = rejected.clone();
+            incomplete.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<OperationResponse>(incomplete).is_err());
+        }
+        let mut accepted_as_success = rejected;
+        accepted_as_success["status"] = serde_json::json!("completed");
+        accepted_as_success.as_object_mut().unwrap().remove("code");
+        assert!(serde_json::from_value::<OperationResponse>(accepted_as_success).is_err());
     }
 
     #[test]
@@ -1175,6 +1511,21 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "invalid_result_sha256");
+
+        let artifact_digest = "d".repeat(64);
+        let artifact_error = ClientResponseArtifactManifest::try_new(
+            format!("container-client-artifacts/v1/operation-123/2/{artifact_digest}"),
+            "v".repeat(129),
+            artifact_digest,
+            "e".repeat(64),
+            2,
+            "application/json".to_string(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            artifact_error.code(),
+            "invalid_client_artifact_object_version"
+        );
     }
 
     #[tokio::test]
@@ -1233,6 +1584,66 @@ mod tests {
         assert_eq!(value["status"], "completed");
         assert_eq!(value["result"]["object_version"], "version-123");
         assert!(value.get("code").is_none());
+    }
+
+    #[tokio::test]
+    async fn enabled_canary_returns_a_structured_interpreted_rejection() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let operation = serde_json::json!({
+            "protocol_version": 1,
+            "operation_id": "operation-123",
+            "operation_kind": client::PROVIDER_CANARY_OPERATION_KIND,
+            "owner_generation": 2,
+            "owner_lease_expires_at": now + 120,
+            "execution_deadline_at": now + 60,
+            "provider_operation_id": "provider-operation-123",
+            "admission_sha256": "a".repeat(64),
+            "input": {
+                "mode": "r2",
+                "sha256": "b".repeat(64),
+                "size": 42,
+                "content_type": "application/json",
+                "request_object_key": "container-inputs/v1/operation-123/input.json",
+                "object_version": "input-version-1"
+            },
+            "shard": {
+                "contract_version": 1,
+                "ring_generation": 1,
+                "shard_count": 8,
+                "shard_index": 3,
+                "instance_name": "cinatoken-relay-shard-v1-0003"
+            },
+            "trace_id": "trace-123"
+        });
+        let router = app_with_state(AppState {
+            executor: Arc::new(FakeExecutor {
+                outcome: Ok(ExecutionOutcome::Rejected(provider_rejected_outcome())),
+            }),
+            execution_enabled: true,
+        });
+        let response = router
+            .oneshot(
+                Request::post("/v1/operations")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(CONTAINER_PROTOCOL_HEADER, "1")
+                    .body(Body::from(operation.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), INTERPRETED_PROVIDER_REJECTION_STATUS);
+        let body = to_bytes(response.into_body(), MAX_REQUEST_BODY_BYTES)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["status"], "rejected");
+        assert_eq!(value["classification"], "http_error");
+        assert_eq!(value["provider_status"], 202);
+        assert_eq!(value["client_status"], 202);
+        assert!(value.get("result").is_none());
     }
 
     #[tokio::test]

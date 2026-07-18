@@ -1,13 +1,29 @@
 import {
+  type AttachProviderResponseArtifactsOutcome,
   type DispatchProviderAttemptOutcome,
   type ProviderEgressIdentity,
   type ProviderAttemptTerminal,
+  type ProviderResponseArtifactAttachment,
+  type ProviderResponseArtifactAttachmentRow,
   type RecordProviderAttemptOutcome,
   type RecordStorageResultOutcome,
   type StorageAccessGrant,
   type StorageResultRecord,
 } from "./ledger";
 import { ProtocolError } from "./protocol";
+import {
+  persistClientResponseArtifact,
+  persistRawProviderEvidence,
+  preflightProviderResponseArtifactStore,
+  type PersistedRawProviderEvidence,
+  type ProviderResponseArtifactAuthority,
+  type ProviderResponseArtifactRecoveryState,
+} from "./provider_response_artifact_store";
+import {
+  MAX_PROVIDER_RESPONSE_V3_OPERATIONAL_ENVELOPE_BYTES,
+  readProviderResponseV3,
+  type VerifiedProviderResponseV3,
+} from "./provider_response_v3";
 import {
   CONTENT_SHA256_HEADER,
   MAX_PROVIDER_USAGE_RECEIPT_ENCODED_BYTES,
@@ -37,6 +53,7 @@ import {
 export const PROVIDER_EGRESS_HOST = "provider-egress.cinatoken.internal";
 export const PROVIDER_EGRESS_PATH = "/v1/provider-attempts/execute";
 export const PROVIDER_EGRESS_SERVICE_PATH = "/internal/v1/provider-attempts/execute";
+export const PROVIDER_EGRESS_V3_SERVICE_PATH = "/internal/v3/provider-attempts/execute";
 export const PROVIDER_EGRESS_READINESS_SERVICE_PATH =
   "/internal/v1/provider-egress/readiness";
 export const PROVIDER_EGRESS_PROFILE = "openai-chat-completions-canary-v1";
@@ -88,10 +105,25 @@ export interface ProviderEgressGatewayPort {
     attemptGeneration: number,
     terminal: ProviderAttemptTerminal,
   ): Promise<RpcResult<RecordProviderAttemptOutcome>>;
+  attachProviderResponseArtifacts(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+    attachment: ProviderResponseArtifactAttachment,
+  ): Promise<RpcResult<AttachProviderResponseArtifactsOutcome>>;
+  readProviderResponseArtifacts(
+    operationId: string,
+    ownerGeneration: number,
+    attemptGeneration: number,
+  ): Promise<{ ok: true; row: ProviderResponseArtifactAttachmentRow | null } | { ok: false; error: RpcError }>;
 }
 
 export interface ProviderEgressGatewayEnvironment extends StorageGatewayEnvironment {
   CONTAINER_PROVIDER_EGRESS_ENABLED?: string;
+  CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED?: string;
+  CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED?: string;
+  CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED?: string;
+  CONTAINER_PROVIDER_RESPONSE_TERMINAL_ENABLED?: string;
   PROVIDER_EGRESS?: Pick<Fetcher, "fetch">;
 }
 
@@ -104,6 +136,14 @@ export async function handleProviderEgressGatewayRequest(
   if (env.CONTAINER_PROVIDER_EGRESS_ENABLED !== "true") {
     await cancelBody(request);
     return jsonError("provider_egress_disabled", 503);
+  }
+  if (!providerResponseV3GatesAreCoherent(env)) {
+    await cancelBody(request);
+    return jsonError("provider_response_v3_gate_configuration_invalid", 503);
+  }
+  if (env.CONTAINER_PROVIDER_RESPONSE_TERMINAL_ENABLED === "true") {
+    await cancelBody(request);
+    return jsonError("provider_response_v3_terminal_contract_unavailable", 503);
   }
   const url = new URL(request.url);
   if (!matchesContainerRoute(url)) {
@@ -158,14 +198,37 @@ export async function handleProviderEgressGatewayRequest(
       : jsonError("provider_usage_receipt_schema_unavailable", 503);
   }
 
-  const replay = await replayWithoutProviderSend(
-    env,
-    port,
-    grant,
-    admission,
-    attemptGeneration,
-  );
-  if (replay !== null) return replay;
+  const useProviderResponseV3 =
+    env.CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED === "true";
+  let responseArtifactAuthority: ProviderResponseArtifactAuthority | null = null;
+  if (useProviderResponseV3) {
+    try {
+      responseArtifactAuthority = await preflightProviderResponseArtifactStore(
+        env,
+        admission,
+      );
+    } catch (error) {
+      return gatewayError(error, "provider_response_artifact_preflight_unavailable", 503);
+    }
+    const replay = await replayProviderResponseV3WithoutProviderSend(
+      env,
+      port,
+      grant,
+      admission,
+      responseArtifactAuthority.recovery_state,
+      attemptGeneration,
+    );
+    if (replay !== null) return replay;
+  } else {
+    const replay = await replayWithoutProviderSend(
+      env,
+      port,
+      grant,
+      admission,
+      attemptGeneration,
+    );
+    if (replay !== null) return replay;
+  }
 
   const broker = env.PROVIDER_EGRESS;
   if (broker === undefined) {
@@ -217,7 +280,12 @@ export async function handleProviderEgressGatewayRequest(
   let upstream: Response;
   try {
     upstream = await broker.fetch(
-      new Request(`https://${PROVIDER_EGRESS_HOST}${PROVIDER_EGRESS_SERVICE_PATH}`, {
+      new Request(
+        `https://${PROVIDER_EGRESS_HOST}${
+          useProviderResponseV3
+            ? PROVIDER_EGRESS_V3_SERVICE_PATH
+            : PROVIDER_EGRESS_SERVICE_PATH
+        }`, {
         method: "POST",
         headers: brokerHeaders(
           grant,
@@ -225,6 +293,7 @@ export async function handleProviderEgressGatewayRequest(
           expectedSha256,
           body.byteLength,
           egressIdentity.worker_version_id,
+          useProviderResponseV3 ? "3" : "2",
         ),
         body,
         signal: AbortSignal.timeout(remainingMilliseconds(grant.deadline_at)),
@@ -241,6 +310,39 @@ export async function handleProviderEgressGatewayRequest(
   if (upstreamWorkerVersion !== egressIdentity.worker_version_id) {
     await cancelResponse(upstream);
     return ambiguousResponse(port, grant, attemptGeneration, "provider_egress_version_ambiguous");
+  }
+  if (env.CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED === "true") {
+    if (
+      upstream.headers.get(PROVIDER_EGRESS_PROTOCOL_HEADER) !== "3" ||
+      upstream.headers.get(PROVIDER_EGRESS_PROFILE_HEADER) !== PROVIDER_EGRESS_PROFILE
+    ) {
+      await cancelResponse(upstream);
+      return ambiguousResponse(
+        port,
+        grant,
+        attemptGeneration,
+        "provider_response_v3_transport_ambiguous",
+      );
+    }
+    if (responseArtifactAuthority === null) {
+      await cancelResponse(upstream);
+      return ambiguousResponse(
+        port,
+        grant,
+        attemptGeneration,
+        "provider_response_artifact_authority_ambiguous",
+      );
+    }
+    return handleVerifiedProviderResponseV3(
+      upstream,
+      env,
+      port,
+      grant,
+      responseArtifactAuthority,
+      attemptGeneration,
+      expectedSha256,
+      egressIdentity,
+    );
   }
   if (upstreamStatus < 200 || upstreamStatus > 299) {
     await cancelResponse(upstream);
@@ -352,6 +454,365 @@ export async function handleProviderEgressGatewayRequest(
     return recovered ?? jsonResponse(ambiguousPayload(grant, "provider_terminal_ambiguous"), 202);
   }
   return successResponse(grant, attemptGeneration, upstreamStatus, result);
+}
+
+async function handleVerifiedProviderResponseV3(
+  response: Response,
+  env: ProviderEgressGatewayEnvironment,
+  port: ProviderEgressGatewayPort,
+  grant: StorageAccessGrant,
+  authority: ProviderResponseArtifactAuthority,
+  attemptGeneration: number,
+  requestSha256: string,
+  egressIdentity: ProviderEgressIdentity,
+): Promise<Response> {
+  let verified: VerifiedProviderResponseV3;
+  try {
+    verified = await readProviderResponseV3(
+      response,
+      MAX_PROVIDER_RESPONSE_V3_OPERATIONAL_ENVELOPE_BYTES,
+    );
+  } catch {
+    return ambiguousResponse(
+      port,
+      grant,
+      attemptGeneration,
+      "provider_response_v3_invalid",
+    );
+  }
+  if (
+    !providerResponseV3IdentityMatches(
+      verified,
+      grant,
+      attemptGeneration,
+      requestSha256,
+      egressIdentity,
+    )
+  ) {
+    return ambiguousResponse(
+      port,
+      grant,
+      attemptGeneration,
+      "provider_response_v3_identity_ambiguous",
+    );
+  }
+  if (env.CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED !== "true") {
+    return ambiguousResponse(
+      port,
+      grant,
+      attemptGeneration,
+      "provider_response_v3_parse_only",
+    );
+  }
+  let persistedRaw: PersistedRawProviderEvidence;
+  try {
+    persistedRaw = await persistRawProviderEvidence(env, authority, verified);
+  } catch (error) {
+    return providerResponseArtifactPersistenceFailure(
+      error,
+      port,
+      grant,
+      attemptGeneration,
+      "provider_response_v3_raw_persistence_ambiguous",
+    );
+  }
+  if (env.CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED !== "true") {
+    return ambiguousResponse(
+      port,
+      grant,
+      attemptGeneration,
+      "provider_response_v3_raw_only",
+    );
+  }
+
+  let persisted;
+  try {
+    persisted = await persistClientResponseArtifact(
+      env,
+      authority,
+      verified,
+      persistedRaw,
+    );
+  } catch (error) {
+    return providerResponseArtifactPersistenceFailure(
+      error,
+      port,
+      grant,
+      attemptGeneration,
+      "provider_response_v3_client_persistence_ambiguous",
+    );
+  }
+
+  if (persisted.status === "succeeded") {
+    if (
+      persisted.compatibility_result === null ||
+      persisted.provider_usage_receipt_sha256 === null
+    ) {
+      return recoveryResponse(grant, "provider_response_v3_usage_attachment_pending");
+    }
+    if (
+      !(await attachProviderResponseV3Usage(
+        port,
+        grant.operation_id,
+        grant.owner_generation,
+        persisted.compatibility_result,
+        attemptGeneration,
+        persisted.provider_usage_receipt_sha256,
+      ))
+    ) {
+      return recoveryResponse(grant, "provider_response_v3_usage_attachment_pending");
+    }
+  }
+
+  let attached: RpcResult<AttachProviderResponseArtifactsOutcome>;
+  try {
+    attached = await port.attachProviderResponseArtifacts(
+      grant.operation_id,
+      grant.owner_generation,
+      attemptGeneration,
+      persisted.attachment,
+    );
+  } catch {
+    return recoveryResponse(grant, "provider_response_v3_attachment_pending");
+  }
+  if (
+    !attached.ok ||
+    !providerResponseArtifactAttachmentRowMatches(
+      attached.result.row,
+      grant,
+      attemptGeneration,
+      persisted.attachment,
+    )
+  ) {
+    return recoveryResponse(grant, "provider_response_v3_attachment_pending");
+  }
+  return recoveryResponse(grant, "provider_response_v3_terminal_pending");
+}
+
+export async function replayProviderResponseV3WithoutProviderSend(
+  env: ProviderEgressGatewayEnvironment,
+  port: ProviderEgressGatewayPort,
+  grant: StorageAccessGrant,
+  admission: D1AdmissionSnapshot,
+  recoveryState: ProviderResponseArtifactRecoveryState,
+  attemptGeneration: number,
+): Promise<Response | null> {
+  let attached: ProviderResponseArtifactAttachmentRow | null;
+  try {
+    const read = await port.readProviderResponseArtifacts(
+      grant.operation_id,
+      grant.owner_generation,
+      attemptGeneration,
+    );
+    if (!read.ok) {
+      return recoveryResponse(grant, "provider_response_v3_attachment_read_pending");
+    }
+    attached = read.row;
+  } catch {
+    return recoveryResponse(grant, "provider_response_v3_attachment_read_pending");
+  }
+
+  if (attached !== null) {
+    if (
+      recoveryState.kind !== "complete" ||
+      !providerResponseArtifactAttachmentRowMatches(
+        attached,
+        grant,
+        attemptGeneration,
+        recoveryState.attachment,
+      )
+    ) {
+      return recoveryResponse(grant, "provider_response_v3_replay_conflict");
+    }
+    return recoveryResponse(grant, "provider_response_v3_terminal_pending");
+  }
+
+  if (recoveryState.kind === "complete") {
+    if (env.CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED !== "true") {
+      return recoveryResponse(grant, "provider_response_v3_attachment_pending");
+    }
+    if (recoveryState.status === "succeeded") {
+      let receipt: ProviderUsageReceiptReadback;
+      try {
+        receipt = await requireD1ProviderUsageReceiptReadback(
+          env,
+          admission,
+          attemptGeneration,
+        );
+      } catch {
+        return recoveryResponse(grant, "provider_response_v3_usage_attachment_pending");
+      }
+      if (
+        !providerUsageReceiptReadbackMatchesGrant(receipt, grant, attemptGeneration) ||
+        receipt.usage_receipt_sha256 !==
+          recoveryState.attachment.provider_usage_receipt_sha256
+      ) {
+        return ambiguousResponse(
+          port,
+          grant,
+          attemptGeneration,
+          "provider_response_v3_usage_replay_conflict",
+        );
+      }
+      if (
+        !(await attachProviderResponseV3Usage(
+          port,
+          grant.operation_id,
+          grant.owner_generation,
+          receipt.result,
+          attemptGeneration,
+          receipt.usage_receipt_sha256,
+        ))
+      ) {
+        return recoveryResponse(grant, "provider_response_v3_usage_attachment_pending");
+      }
+    }
+    let outcome: RpcResult<AttachProviderResponseArtifactsOutcome>;
+    try {
+      outcome = await port.attachProviderResponseArtifacts(
+        grant.operation_id,
+        grant.owner_generation,
+        attemptGeneration,
+        recoveryState.attachment,
+      );
+    } catch {
+      return recoveryResponse(grant, "provider_response_v3_attachment_pending");
+    }
+    if (
+      !outcome.ok ||
+      !providerResponseArtifactAttachmentRowMatches(
+        outcome.result.row,
+        grant,
+        attemptGeneration,
+        recoveryState.attachment,
+      )
+    ) {
+      return recoveryResponse(grant, "provider_response_v3_attachment_pending");
+    }
+    return recoveryResponse(grant, "provider_response_v3_terminal_pending");
+  }
+
+  if (recoveryState.kind === "raw_only") {
+    return recoveryResponse(grant, "provider_response_v3_raw_only_recovery");
+  }
+
+  const attempt = grant.provider_attempt;
+  if (attempt === null || attempt.status === "prepared") return null;
+  return recoveryResponse(grant, "provider_response_v3_replay_pending");
+}
+
+async function attachProviderResponseV3Usage(
+  port: ProviderEgressGatewayPort,
+  operationId: string,
+  ownerGeneration: number,
+  result: StorageResultRecord,
+  attemptGeneration: number,
+  usageReceiptSha256: string,
+): Promise<boolean> {
+  try {
+    const attached = await port.recordProviderUsageResult(
+      operationId,
+      ownerGeneration,
+      result,
+      attemptGeneration,
+      usageReceiptSha256,
+    );
+    return attached.ok;
+  } catch {
+    return false;
+  }
+}
+
+function providerResponseArtifactPersistenceFailure(
+  error: unknown,
+  port: ProviderEgressGatewayPort,
+  grant: StorageAccessGrant,
+  attemptGeneration: number,
+  code: string,
+): Promise<Response> | Response {
+  if (error instanceof ProtocolError && (error.status === 409 || error.status === 502)) {
+    return ambiguousResponse(port, grant, attemptGeneration, code);
+  }
+  return recoveryResponse(grant, code);
+}
+
+function providerResponseArtifactAttachmentRowMatches(
+  row: ProviderResponseArtifactAttachmentRow,
+  grant: StorageAccessGrant,
+  attemptGeneration: number,
+  expected: ProviderResponseArtifactAttachment,
+): boolean {
+  return (
+    row.operation_id === grant.operation_id &&
+    row.owner_generation === grant.owner_generation &&
+    row.attempt_generation === attemptGeneration &&
+    row.provider_operation_id === grant.provider_operation_id &&
+    row.admission_sha256 === grant.admission_sha256 &&
+    row.request_sha256 === grant.input.sha256 &&
+    row.egress_profile === grant.provider_attempt?.egress_profile &&
+    row.egress_worker_version_id === grant.provider_attempt?.egress_worker_version_id &&
+    Number.isSafeInteger(row.attached_at) &&
+    row.attached_at > 0 &&
+    row.status === expected.status &&
+    row.provider_status === expected.provider_status &&
+    row.client_status === expected.client_status &&
+    row.response_class === expected.response_class &&
+    row.response_code === expected.response_code &&
+    row.provider_usage_receipt_sha256 === expected.provider_usage_receipt_sha256 &&
+    providerResponseEvidenceManifestMatches(row.raw_manifest, expected.raw_manifest) &&
+    clientResponseArtifactManifestMatches(row.client_manifest, expected.client_manifest)
+  );
+}
+
+function providerResponseEvidenceManifestMatches(
+  observed: ProviderResponseArtifactAttachment["raw_manifest"],
+  expected: ProviderResponseArtifactAttachment["raw_manifest"],
+): boolean {
+  if (observed === null || expected === null) return observed === expected;
+  return (
+    observed.object_key === expected.object_key &&
+    observed.object_version === expected.object_version &&
+    observed.provider_response_evidence_sha256 ===
+      expected.provider_response_evidence_sha256 &&
+    observed.sha256 === expected.sha256 &&
+    observed.size === expected.size &&
+    observed.content_type === expected.content_type
+  );
+}
+
+function clientResponseArtifactManifestMatches(
+  observed: ProviderResponseArtifactAttachment["client_manifest"],
+  expected: ProviderResponseArtifactAttachment["client_manifest"],
+): boolean {
+  if (observed === null || expected === null) return observed === expected;
+  return (
+    observed.object_key === expected.object_key &&
+    observed.object_version === expected.object_version &&
+    observed.client_response_artifact_sha256 ===
+      expected.client_response_artifact_sha256 &&
+    observed.sha256 === expected.sha256 &&
+    observed.size === expected.size &&
+    observed.content_type === expected.content_type
+  );
+}
+
+function providerResponseV3IdentityMatches(
+  verified: VerifiedProviderResponseV3,
+  grant: StorageAccessGrant,
+  attemptGeneration: number,
+  requestSha256: string,
+  egressIdentity: ProviderEgressIdentity,
+): boolean {
+  const identity = verified.envelope.identity;
+  return (
+    identity.operation_id === grant.operation_id &&
+    identity.owner_generation === grant.owner_generation &&
+    identity.attempt_generation === attemptGeneration &&
+    identity.provider_operation_id === grant.provider_operation_id &&
+    identity.request_sha256 === requestSha256 &&
+    identity.egress_profile === egressIdentity.profile &&
+    identity.egress_worker_version_id === egressIdentity.worker_version_id
+  );
 }
 
 async function requireProviderEgressReadiness(
@@ -819,12 +1280,13 @@ function brokerHeaders(
   bodySha256: string,
   bodySize: number,
   expectedWorkerVersionId: string,
+  protocolVersion: "2" | "3",
 ): Headers {
   return new Headers({
     "accept": "application/json",
     "content-length": String(bodySize),
     "content-type": "application/json",
-    [PROVIDER_EGRESS_PROTOCOL_HEADER]: "2",
+    [PROVIDER_EGRESS_PROTOCOL_HEADER]: protocolVersion,
     [PROVIDER_EGRESS_PROFILE_HEADER]: PROVIDER_EGRESS_PROFILE,
     [PROVIDER_EGRESS_EXPECTED_WORKER_VERSION_HEADER]: expectedWorkerVersionId,
     [CLOUDFLARE_WORKERS_VERSION_KEY_HEADER]: grant.provider_operation_id,
@@ -1003,6 +1465,14 @@ function normalizedJsonContentType(value: string | null): string | null {
 
 function validSha256(value: string): boolean {
   return /^[0-9a-f]{64}$/.test(value);
+}
+
+function providerResponseV3GatesAreCoherent(env: ProviderEgressGatewayEnvironment): boolean {
+  const parse = env.CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED === "true";
+  const rawWrite = env.CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED === "true";
+  const clientWrite = env.CONTAINER_PROVIDER_RESPONSE_CLIENT_WRITE_ENABLED === "true";
+  const terminal = env.CONTAINER_PROVIDER_RESPONSE_TERMINAL_ENABLED === "true";
+  return (!rawWrite || parse) && (!clientWrite || rawWrite) && (!terminal || clientWrite);
 }
 
 async function cancelBody(request: Request): Promise<void> {

@@ -58,6 +58,10 @@ broker bytes as provider evidence.
 - Each canonical header JSON string: `2..=8_192` UTF-8 bytes.
 - Canonical usage receipt JSON: `0..=8_192` decoded bytes.
 - Complete envelope: at most `12_582_912` bytes.
+- The active non-streaming P3 candidate is deliberately narrower: egress reads
+  at most `1_048_576` provider-body bytes and Controller reads at most
+  `3_200_000` envelope bytes. These are rollout limits, not a wire-format or
+  storage-schema expansion.
 - Binary fields use RFC 4648 base64url without padding. A decoder must reject
   padding, non-url alphabet, non-minimal encoding, and noncanonical replay.
 - Body SHA-256 values cover decoded body bytes, not base64 text.
@@ -77,8 +81,11 @@ trailing bytes. Object keys appear exactly in the order below. Header JSON keys
 are lowercase and ascending by ASCII byte order. Duplicate, missing, unknown,
 or reordered keys are rejected.
 
-TypeScript must parse with fatal UTF-8 decoding, validate exact keys and types,
-regenerate the canonical object, and require byte equality with the input.
+TypeScript must reject a UTF-8 BOM, parse with fatal UTF-8 decoding, validate
+exact keys and types, regenerate the canonical object, and require exact input
+text equality. Valid non-BOM UTF-8 has one canonical byte encoding, so this
+retains byte-level strictness without allocating another envelope-sized byte
+array.
 This byte comparison rejects duplicate keys and order drift that `JSON.parse`
 alone cannot detect.
 
@@ -167,7 +174,12 @@ unapproved `x-cinatoken-*` fields never enter either artifact.
 SHA-256 and requires `client.body_base64=null`. Otherwise the client body is
 mandatory, canonical base64url, and independently verified. Deduplication is a
 wire optimization only: D1 always receives two records and R2 always receives
-two create-only objects in separate namespaces.
+two create-only objects in separate namespaces. Exact success additionally
+keeps the frozen receipt-v1 compatibility object under `container-results/v1`;
+that third object is a byte-identical compatibility alias, not a third response
+interpretation or authority. Its R2 HTTP/custom metadata and 0048 result row use
+exact `application/json`, while raw evidence independently preserves the
+observed provider content type.
 
 ## Attestation Digests
 
@@ -200,11 +212,27 @@ For one completed provider response, the Controller performs:
 3. append-only D1 raw evidence insert or exact replay;
 4. create-only client body write and exact R2 readback under
    `container-client-artifacts/v1/<operation>/<owner>/<artifact-sha256>`;
-5. append-only D1 client artifact insert or exact replay;
-6. optional exact-200 usage receipt binding;
-7. DO-local artifact attachment with operation/owner/attempt generation fence;
-8. one financial terminal decision, outbox event, and audit record; and
-9. exact client delivery or durable replay.
+5. for exact success only, create/replay the byte-identical receipt-v1
+   compatibility result under `container-results/v1`, then insert/replay the
+   exact usage receipt;
+6. append-only D1 client artifact insert or exact replay, including its optional
+   receipt foreign key;
+7. for exact success, atomically attach the compatibility result and receipt
+   digest to the DO operation/attempt;
+8. DO-local artifact attachment with operation/owner/attempt generation fence;
+9. one financial terminal decision, outbox event, and audit record; and
+10. exact client delivery or durable replay.
+
+This ordering is required by the already-frozen 0048/0052 foreign keys: a
+success client artifact may reference receipt v1 only after that receipt and
+its legacy result identity exist. Error classes never create either receipt or
+legacy result. A later receipt protocol may remove this compatibility alias,
+but P3 does not rewrite either historical schema.
+
+Although the frozen envelope and DO schema retain a nullable success receipt for
+future protocol compatibility, this P3 operational profile requires the exact
+success receipt. Receipt-less success is rejected before raw R2 I/O and cannot
+create a partial recovery state.
 
 No crash boundary authorizes a provider resend. A raw-only or R2-only state is
 inventory/reconciliation work, not financial or retry authority.
@@ -224,6 +252,18 @@ classification, raw manifest, and client manifest.
 The Linux runtime gains `Rejected`, carrying classification, provider/client
 status, response code, and client artifact manifest. Provider `202` is never
 success. Retry policy consumes raw classification, not rebuilt client status.
+
+The Controller-to-Linux and Linux-to-DO operation boundary keeps runtime
+protocol `1` but freezes outer status semantics for this additive outcome:
+exact success is outer `200`, an interpreted provider rejection is outer
+`422`, and incomplete/unknown execution is outer `202` with
+`recovery_required`. The rejected payload adds exactly `classification`,
+`provider_status`, `client_status`, and `client_artifact`; all four are present
+or all four are absent for a legacy infrastructure rejection. The client
+artifact manifest contains `object_key`, `object_version`,
+`client_response_artifact_sha256`, body `sha256`, decoded `size`, and canonical
+`application/json` content type. The object key must equal
+`container-client-artifacts/v1/<operation>/<owner>/<artifact-sha256>`.
 
 Migration 0052 is evidence storage, not this terminal implementation. The
 pre-P3/P4 global operation and financial schemas deliberately reject typed
@@ -261,3 +301,24 @@ terminal decision or resends an ambiguous provider attempt.
 - runtime rejected-outcome tests, including typed 200 and provider 202; and
 - remote schema/readback, lifecycle, load/cost/SLO, alert, rollback, and signed
   approval evidence before customer traffic.
+
+## Local Implementation Status
+
+The P3 code path is implemented locally as of 2026-07-18: Rust envelope writer,
+TypeScript strict reader, phased D1/R2 artifact store, pre-dispatch recovery,
+DO-local migration 3 attachment, and runtime interpreted rejection. Exact
+success, typed HTTP-200 error, provider 202 and other HTTP errors, and invalid
+body are covered without sharing financial authority.
+
+All four rollout gates remain exact `false` in default, staging, and production
+configuration. The terminal gate is additionally rejected before provider I/O
+because P4 financial terminal ownership is not implemented. No remote schema,
+object, deployment, provider, financial, secret, or traffic state was changed;
+this remains a local candidate and production remains **NO-GO**.
+
+The reader preallocates only an exact validated `content-length`, does not keep
+a second canonical byte copy, and drops raw/client base64 text after decoding.
+The narrower rollout bounds preserve headroom under Cloudflare's shared
+[128 MB per-isolate memory limit](https://developers.cloudflare.com/workers/platform/limits/).
+Raising them requires a streaming/direct-to-R2 design plus concurrent-isolate
+load evidence; changing a flag is not an accepted promotion path.

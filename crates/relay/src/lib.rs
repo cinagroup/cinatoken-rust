@@ -5,6 +5,7 @@ pub mod cache;
 pub mod multipart;
 pub mod openai_compatible;
 pub mod provider_response;
+pub mod provider_response_v3;
 pub mod retry;
 pub mod usage_receipt;
 
@@ -44,6 +45,26 @@ pub use provider_response::{
     OpenAiCompatibleError, OpenAiCompatibleErrorEnvelope, ProviderResponseClass,
     ProviderResponseProfile, MAX_PROVIDER_REQUEST_ID_BYTES, PROVIDER_RESPONSE_INTERPRETER_CONTRACT,
     PUBLIC_SUCCESS_RESPONSE_HEADERS,
+};
+pub use provider_response_v3::{
+    build_provider_response_v3, canonicalize_provider_response_headers_v3,
+    parse_provider_response_v3, provider_response_v3_corpus_expected_digests,
+    provider_response_v3_corpus_fixture, provider_response_v3_corpus_fixtures,
+    CanonicalProviderResponseHeadersV3, ProviderResponseClientV3, ProviderResponseEnvelopeV3,
+    ProviderResponseEnvelopeV3Input, ProviderResponseHeaderV3, ProviderResponseIdentityV3,
+    ProviderResponseInterpretationV3, ProviderResponseRawV3, ProviderResponseV3CorpusDigests,
+    ProviderResponseV3CorpusFixture, ProviderResponseV3Error, ProviderResponseWireClassV3,
+    CLIENT_RESPONSE_ATTESTATION_CONTRACT_V1, MAX_PROVIDER_RESPONSE_BODY_BYTES_V3,
+    MAX_PROVIDER_RESPONSE_ENVELOPE_BYTES_V3, MAX_PROVIDER_RESPONSE_HEADER_JSON_BYTES_V3,
+    MAX_PROVIDER_USAGE_RECEIPT_BYTES_V3, PROVIDER_EVIDENCE_ATTESTATION_CONTRACT_V1,
+    PROVIDER_RESPONSE_CLIENT_CONTENT_TYPE_V3, PROVIDER_RESPONSE_INTERPRETER_SOURCE_COMMIT,
+    PROVIDER_RESPONSE_PROTOCOL_V3, PROVIDER_RESPONSE_V3_CONTENT_TYPE,
+    PROVIDER_RESPONSE_V3_CORPUS_EXACT_200, PROVIDER_RESPONSE_V3_CORPUS_EXACT_200_DIGESTS,
+    PROVIDER_RESPONSE_V3_CORPUS_FIXTURE_NAMES, PROVIDER_RESPONSE_V3_CORPUS_HTTP_202,
+    PROVIDER_RESPONSE_V3_CORPUS_HTTP_202_DIGESTS, PROVIDER_RESPONSE_V3_CORPUS_INVALID_BODY,
+    PROVIDER_RESPONSE_V3_CORPUS_INVALID_BODY_DIGESTS, PROVIDER_RESPONSE_V3_CORPUS_TYPED_200,
+    PROVIDER_RESPONSE_V3_CORPUS_TYPED_200_DIGESTS, PROVIDER_RESPONSE_V3_MAX_JS_SAFE_INTEGER,
+    PROVIDER_RESPONSE_V3_SAFE_RAW_HEADERS,
 };
 pub use retry::{
     is_auto_disable_status, is_retryable_status, parse_retry_times_env, RetryConfig,

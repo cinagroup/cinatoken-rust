@@ -1277,11 +1277,11 @@ describe("Rust Durable Object lifecycle contracts", () => {
       success: true,
       data: {
         d1_migration_status_available: true,
-        d1_migration_applied_count: 51,
+        d1_migration_applied_count: 52,
         d1_migration_latest:
-          "0051_relay_container_scheduled_terminalization.sql",
+          "0052_relay_container_provider_response_artifacts.sql",
         d1_expected_migration:
-          "0051_relay_container_scheduled_terminalization.sql",
+          "0052_relay_container_provider_response_artifacts.sql",
         d1_expected_migration_applied: true,
         d1_migration_set_matches: true,
         d1_migration_ready: true,
@@ -1295,6 +1295,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
         container_scheduled_terminalizer_staging_verified: false,
         container_scheduled_terminalizer_enabled: false,
         container_scheduled_terminalizer_schema_ready: true,
+        container_provider_response_artifact_schema_ready: true,
         container_scheduled_terminalizer_runtime_ready: false,
         container_chat_canary_replay_history_probe_known: true,
         container_chat_canary_replay_history_present: false,

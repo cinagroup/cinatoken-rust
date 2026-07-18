@@ -15999,3 +15999,58 @@ Implementation is split into five conjunctive packets:
 The full schema, protocol, corpus, promotion, and rollback contract is in
 `docs/response-interpreter-production-plan.md`. Finishing packet 1 does not
 close packets 2-5 and does not permit canary activation.
+
+## 2026-07-18 Response Evidence P2 Candidate
+
+This section supersedes earlier statements that global D1 still ends at 0051
+or that response-evidence packet P2 is wholly unimplemented. The repository
+head is now local migration 0052; no Cloudflare database has been changed.
+
+P2 establishes three separate authorities:
+
+1. raw provider-response evidence in an append-only D1 record plus create-only
+   R2 namespace `container-provider-evidence/v1/`;
+2. the independently interpreted client artifact in a second append-only D1
+   record plus create-only R2 namespace `container-client-artifacts/v1/`; and
+3. a default-inert, observe-only inventory with separate provider/client
+   cursors and findings and no apply or delete authority.
+
+Migration 0052 is an old-writer fence, not a rolling compatibility claim. Its
+temporary drain guard refuses to apply while any protocol-v1 chat canary is
+prepared, dispatched, or recovery-required. Persistent unique indexes and
+identity ledgers prevent replacement attacks even when recursive triggers are
+disabled. Terminal, operation, scheduled-terminalization, and reconciliation
+guards require the exact response artifact before successful convergence.
+
+The persistent operation fence has no compatibility default: new canary rows
+must carry immutable `response_artifact_contract=container-response-artifacts-v1`.
+The current Worker writes it, while a late N-1 writer is rejected before a
+prepared row or provider call. Identity-ledger insert guards separately reject
+direct `INSERT OR REPLACE` under `recursive_triggers=OFF`.
+
+The Controller storage boundary derives keys server-side, hashes bounded bodies,
+uses R2 `If-None-Match: *`, and turns only metadata-equivalent collisions into
+idempotent replay. Raw evidence permits 0 through 4 MiB; canonical JSON client
+artifacts permit 2 bytes through 4 MiB. The inventory is not activated and
+cannot repair or delete anything.
+
+The source audits now also record that cinaVibeSDK has two planes rather than
+one direct edge-to-DO-to-same-Container chain. cinatoken-rust deliberately keeps
+the stronger target invariant: one deterministic logical shard owner combines
+DO coordination with its bound Container lifecycle, while shared durable data
+stays in KV/D1/R2.
+
+P3 is next: implement the exact response protocol documented in
+`docs/container-provider-response-protocol-v3.md`, including strict egress
+envelope generation, Controller verification, DO-local schema migration 3,
+the runtime rejected outcome, and exact replay. P4 must then bind interpreted
+reject or exact-200 success to one financial terminal CAS/outbox/audit decision.
+P5 remains the reader-first remote migration, real lifecycle/fault/load/cost
+campaign, rollback drill, and signed approvals. Go/VPS remains authoritative;
+production remains **NO-GO**.
+
+P3/P4 must also close a deliberately tested schema interlock: 0052 may store a
+typed HTTP-200, non-200 2xx/3xx, or receipt-less success artifact, but the old
+operation/financial terminal shapes cannot safely finalize all of them. No
+canary may write response artifacts until the versioned rejected outcome and
+financial disposition exist.

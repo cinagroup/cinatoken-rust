@@ -7,6 +7,198 @@ import time
 from pathlib import Path
 
 
+MIGRATION_0052_NORMALIZED_SHA256 = (
+    "462f6d16e7f1c2d159e49c61ce0135eb2053775003d512956926825ae1a58fea"
+)
+
+MIGRATION_0052_OBJECT_SHA256 = {
+    ("index", "idx_relay_container_atomic_admissions_response_artifact_identity"): (
+        "97f6f39871070d0907da0d5e55c52862e93c6370b686d2ddef489221b8da06d0"
+    ),
+    ("index", "idx_relay_container_client_response_artifacts_created"): (
+        "4d634002422e939c5343b19a38d16b6f00b7577c46eae41c254824e22129d766"
+    ),
+    ("index", "idx_relay_container_provider_response_evidence_recorded"): (
+        "5536729268c14e2470f90424c339c6a2183b6df62d1ad31ffd5e136440bc1419"
+    ),
+    (
+        "index",
+        "idx_relay_container_response_artifact_inventory_cursors_created",
+    ): "81dbb4abe2bb0d23330865773b4a898280a698270eb5bc157277818c549999e4",
+    (
+        "index",
+        "idx_relay_container_response_artifact_inventory_findings_observed",
+    ): "a7a8fc1a106261a6e07ef4e4960bfbad380fa0ee3c8baa121e1daa93605272c2",
+    (
+        "index",
+        "idx_relay_container_provider_usage_receipts_response_artifact_identity",
+    ): "0af8d53a95d450ad20e143e256a3b1e045f63225688fa6dc9f93e1917ed2d9d1",
+    ("index", "idx_relay_container_terminal_events_response_artifact"): (
+        "078b9492f36818d0c6b08e63ce1635833521e70054587392150f17d586317ea5"
+    ),
+    ("table", "relay_container_client_response_artifact_identities"): (
+        "ebb08179b5a89cf598512739d202841987d058041d534dcc7e457b5b49340a1d"
+    ),
+    ("table", "relay_container_client_response_artifacts"): (
+        "9643d2b5dfb575580533bc06be8aba247d830eed4abb14fe7a43d11e7d4c85dc"
+    ),
+    ("table", "relay_container_provider_response_evidence"): (
+        "3011e39d59886db4f0c6392d8660fd2dc87266ccc137788afb56b6330827bac4"
+    ),
+    ("table", "relay_container_provider_response_evidence_identities"): (
+        "4efe136de6398c35ce8413d538046fe4a881e36fe1bf7d21dff191f6f49252e2"
+    ),
+    (
+        "table",
+        "relay_container_response_artifact_inventory_cursor_identities",
+    ): "130d77435286f793ea70c04dcc11fe0146515d26c51ee448e69dd2cc0204274b",
+    ("table", "relay_container_response_artifact_inventory_cursors"): (
+        "23b130f36260b3ed03985aaa8c062a75ebb3d1241e528abcfd77afde8cd06ade"
+    ),
+    (
+        "table",
+        "relay_container_response_artifact_inventory_finding_identities",
+    ): "e84da3307555bf73b30c3d1b78d8f98ede1cd0b30ff0567bd82fa8c53b0053d7",
+    ("table", "relay_container_response_artifact_inventory_findings"): (
+        "99b18e1e8d89c4ded50aa7b9ef4b92104d2dc5febd8c5e8b62d17cb01503199d"
+    ),
+    ("table", "relay_container_terminal_events"): (
+        "2b523e5d809e3340164b45d98f139db087bc7576ff21aa44ad1c34bccd6d7b49"
+    ),
+    ("table", "relay_container_operations"): (
+        "c172297dbfcb7f3e22dd58fd20dda1b64424b7f9b4e887b0c2df631d0748c6c6"
+    ),
+    (
+        "trigger",
+        "relay_container_response_artifact_operation_insert_guard",
+    ): "e0eca2ebf24865fc420ed75da000a6a313b8370ba34a13b9def35b74829dc071",
+    (
+        "trigger",
+        "relay_container_response_artifact_operation_contract_guard",
+    ): "86da5937669517c7a1842a8fbf92b54d0b5f6ff7a4d4ef1d7a337447605494c9",
+    ("trigger", "relay_container_client_response_artifact_delete_guard"): (
+        "aa61be17d8893f8e01fce77042edcdbf813486d11162ebaf4efba08df6818fe8"
+    ),
+    (
+        "trigger",
+        "relay_container_client_response_artifact_identity_delete_guard",
+    ): "11ccc5630742040fa447a037bab773992a3fa3a5abefdb9cc4f03bfeceecdec8",
+    ("trigger", "relay_container_client_response_artifact_identity_guard"): (
+        "102a8192e58389115a268b99d87e62aeb66c258765e5b1a37422f49a11adbc6c"
+    ),
+    (
+        "trigger",
+        "relay_container_client_response_artifact_identity_insert_guard",
+    ): "1370cdb83b09db410b7664d945db613a4e71e12949df518fde014bf2b0bf8bfb",
+    (
+        "trigger",
+        "relay_container_client_response_artifact_identity_update_guard",
+    ): "59da3a78d051acf1bcdfaf9edf76f3306a04044fb03c5353a0ca0d9e6c591a25",
+    (
+        "trigger",
+        "relay_container_client_response_artifact_insert_authority_guard",
+    ): "fd0ff475d4e5a3f9737271c5044a70f833379d064e8d32363e9ecc2d110f38aa",
+    ("trigger", "relay_container_client_response_artifact_update_guard"): (
+        "2f17b8f7e7e44991e2db108ff41a7125bf4361f4c649df720e9e1bae608d0be0"
+    ),
+    ("trigger", "relay_container_operation_response_artifact_terminal_guard"): (
+        "9e4d22371c3816c404f941123dbb2672722ec1b5c8fe9d51c6497b15f980fe11"
+    ),
+    ("trigger", "relay_container_provider_response_evidence_delete_guard"): (
+        "092d517e730059dbd7f49f2b3855b07810cf2c74181d57b8aafced632d65da90"
+    ),
+    (
+        "trigger",
+        "relay_container_provider_response_evidence_identity_delete_guard",
+    ): "4b7dad2d5ffceac3e3cbe1f3529ecacef0f10f335342709eec552d8f17bcdd1c",
+    ("trigger", "relay_container_provider_response_evidence_identity_guard"): (
+        "d8a1ba4cb22abf300004ae8068e1f76e012275f3e4b304211409a233d76d1c5d"
+    ),
+    (
+        "trigger",
+        "relay_container_provider_response_evidence_identity_insert_guard",
+    ): "71fb640f44ad3ba90d2eff7e19bf1f8a8298418049d3ebc510fee678a73cbcbc",
+    (
+        "trigger",
+        "relay_container_provider_response_evidence_identity_update_guard",
+    ): "3dbf8c0cbc9f177675ff59e2b439718551dda6e066bb5f9985e352904ad8f361",
+    (
+        "trigger",
+        "relay_container_provider_response_evidence_insert_authority_guard",
+    ): "3c02055d6ea7396d3370f189b392e97443404e63729370ccccc23b69303aa748",
+    ("trigger", "relay_container_provider_response_evidence_update_guard"): (
+        "0a6cb754e1cce6244d4b72671a3519c084fd7fd6eeec6d50f9b4c2a7024834bd"
+    ),
+    (
+        "trigger",
+        "relay_container_reconciliation_response_artifact_convergence_guard",
+    ): "93cb1ab6f5a2b2e0b3f2940a561030a22e8382a6e8bb2832502cfe3f1fdad982",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_cursor_delete_guard",
+    ): "41c7657fdf83d59fe796cf2345d8b5ef4201fc6f4b05f30db41636625efbcf12",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_cursor_identity_delete_guard",
+    ): "11df62903c86a24c11772849cca4ac6d8f217067193e5edfd759ad861fd6d5ba",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_cursor_identity_guard",
+    ): "b162a65e89aea6c89de1198802eaa707d802d1ec3dcd8a68680537723e32f413",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_cursor_identity_insert_guard",
+    ): "a3dfbef5aca4ebd9c4c818c4519edd9f334677ce924dafb4373604861d18e351",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_cursor_identity_update_guard",
+    ): "110831375eba0351d9d158b99e8fd3c87a05a4d2713d81713daa6bf621f3f373",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_cursor_insert_guard",
+    ): "b13ca0abe4499778395c4bb9635cc5dfba1482e1188b55a977e2001e799fd8e8",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_cursor_update_guard",
+    ): "edec1be5464845ea7c9cbc56316aeacae09264f1684d947d3ab5aecafdd34ca3",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_finding_delete_guard",
+    ): "15a7fa383647671d4e6e97561c79b8e1b2d61b09867885560fde74b07329420d",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_finding_identity_delete_guard",
+    ): "1aa515daccf6a18907877dd3f82416baa2a3a89e72c3f475c9e36324dd2a8990",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_finding_identity_guard",
+    ): "a1a1cc045d244e1f197a060cc0a055a24072624decb580c2cdbd711c2184646c",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_finding_identity_insert_guard",
+    ): "1b14de3c9d0631321ffc9f67602c7ca191dd56f2f5b30f765cbaebd40eab4608",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_finding_identity_update_guard",
+    ): "bb76b39ac816cf7a782538a370077dd1188f3027d4efef04b14faf332aa4a35b",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_finding_insert_guard",
+    ): "01763b2e02b134222ac33c829f95d9d37f582a250931a6872a0e5d63bc615bf2",
+    (
+        "trigger",
+        "relay_container_response_artifact_inventory_finding_update_guard",
+    ): "8131fe03f279c323a1788c34f0754d0e1803977b35001bd6c9314da2f84df2d1",
+    (
+        "trigger",
+        "relay_container_scheduled_terminalization_response_artifact_guard",
+    ): "dd073ec2222ef54f0f8de3a93dffdad88cd0b9b93f95f38fdafce265b542a44c",
+    ("trigger", "relay_container_terminal_event_response_artifact_guard"): (
+        "fbf6d94b8c5034ed9dda34e5b10999ed160691e4eb65fe86f11ddd4d4d8cc1c2"
+    ),
+}
+
+
 REQUIRED_TABLES = [
     "users",
     "tokens",
@@ -45,6 +237,14 @@ REQUIRED_TABLES = [
     "relay_container_provider_egress_grants",
     "relay_container_provider_usage_receipts",
     "relay_container_provider_usage_receipt_identities",
+    "relay_container_provider_response_evidence",
+    "relay_container_provider_response_evidence_identities",
+    "relay_container_client_response_artifacts",
+    "relay_container_client_response_artifact_identities",
+    "relay_container_response_artifact_inventory_cursors",
+    "relay_container_response_artifact_inventory_cursor_identities",
+    "relay_container_response_artifact_inventory_findings",
+    "relay_container_response_artifact_inventory_finding_identities",
     "relay_container_terminal_events",
     "relay_container_terminal_outbox_state",
     "relay_container_reconciliation_observations",
@@ -283,6 +483,7 @@ REQUIRED_COLUMNS = {
         "client_idempotency_hmac_sha256",
         "client_request_sha256",
         "reconciliation_id",
+        "response_artifact_contract",
         "status",
         "response_status",
         "response_code",
@@ -419,6 +620,130 @@ REQUIRED_COLUMNS = {
         "result_object_key",
         "result_object_version",
     },
+    "relay_container_provider_response_evidence": {
+        "operation_id",
+        "reservation_key",
+        "owner_generation",
+        "attempt_generation",
+        "provider_operation_id",
+        "atomic_admission_sha256",
+        "admission_sha256",
+        "request_sha256",
+        "channel_id",
+        "selected_group",
+        "model_name",
+        "endpoint_path",
+        "egress_profile",
+        "egress_worker_version_id",
+        "raw_response_status",
+        "raw_response_content_type",
+        "raw_response_headers_json",
+        "raw_response_headers_sha256",
+        "raw_response_object_key",
+        "raw_response_object_version",
+        "raw_response_sha256",
+        "raw_response_size",
+        "provider_request_id",
+        "provider_completed_at",
+        "interpreter_source_commit",
+        "response_contract",
+        "provider_response_evidence_sha256",
+        "recorded_at",
+    },
+    "relay_container_provider_response_evidence_identities": {
+        "operation_id",
+        "owner_generation",
+        "attempt_generation",
+        "provider_operation_id",
+        "provider_response_evidence_sha256",
+        "raw_response_object_key",
+        "raw_response_object_version",
+    },
+    "relay_container_client_response_artifacts": {
+        "operation_id",
+        "owner_generation",
+        "attempt_generation",
+        "provider_response_evidence_sha256",
+        "response_contract",
+        "response_class",
+        "client_response_status",
+        "client_response_content_type",
+        "client_response_headers_json",
+        "client_response_headers_sha256",
+        "client_response_object_key",
+        "client_response_object_version",
+        "client_response_sha256",
+        "client_response_size",
+        "provider_usage_receipt_sha256",
+        "client_response_artifact_sha256",
+        "created_at",
+    },
+    "relay_container_client_response_artifact_identities": {
+        "operation_id",
+        "owner_generation",
+        "attempt_generation",
+        "provider_response_evidence_sha256",
+        "client_response_artifact_sha256",
+        "client_response_object_key",
+        "client_response_object_version",
+    },
+    "relay_container_response_artifact_inventory_cursors": {
+        "artifact_namespace",
+        "scan_generation",
+        "page_sequence",
+        "object_prefix",
+        "cursor_before",
+        "cursor_after",
+        "checkpoint_status",
+        "page_object_count",
+        "observer_enabled",
+        "observer_mode",
+        "apply_authority",
+        "delete_authority",
+        "inventory_cursor_sha256",
+        "created_at",
+    },
+    "relay_container_response_artifact_inventory_cursor_identities": {
+        "artifact_namespace",
+        "scan_generation",
+        "page_sequence",
+        "cursor_before",
+        "cursor_after",
+        "checkpoint_status",
+        "inventory_cursor_sha256",
+    },
+    "relay_container_response_artifact_inventory_findings": {
+        "finding_id",
+        "artifact_namespace",
+        "scan_generation",
+        "page_sequence",
+        "inventory_cursor_sha256",
+        "object_key",
+        "object_version",
+        "operation_id",
+        "owner_generation",
+        "attempt_generation",
+        "key_artifact_sha256",
+        "object_sha256",
+        "object_size",
+        "object_uploaded_at",
+        "provider_response_evidence_sha256",
+        "client_response_artifact_sha256",
+        "classification",
+        "observation_sha256",
+        "observer_mode",
+        "apply_authority",
+        "delete_authority",
+        "observed_at",
+    },
+    "relay_container_response_artifact_inventory_finding_identities": {
+        "finding_id",
+        "artifact_namespace",
+        "scan_generation",
+        "object_key",
+        "object_version",
+        "observation_sha256",
+    },
     "relay_container_terminal_events": {
         "billing_event_id",
         "reservation_key",
@@ -456,6 +781,7 @@ REQUIRED_COLUMNS = {
         "provider_usage_receipt_sha256",
         "provider_result_sha256",
         "provider_attempt_generation",
+        "client_response_artifact_sha256",
     },
     "relay_container_terminal_outbox_state": {
         "billing_event_id",
@@ -735,6 +1061,7 @@ REQUIRED_INDEXES = {
     },
     "relay_container_atomic_admissions": {
         "idx_relay_container_atomic_admissions_created": False,
+        "idx_relay_container_atomic_admissions_response_artifact_identity": True,
     },
     "relay_container_idempotency_aliases": {
         "idx_relay_container_idempotency_aliases_reservation": False,
@@ -750,11 +1077,25 @@ REQUIRED_INDEXES = {
         "idx_relay_container_provider_usage_receipts_provider_operation": True,
         "idx_relay_container_provider_usage_receipts_reconciliation": False,
         "idx_relay_container_provider_usage_receipts_result_object_identity": True,
+        "idx_relay_container_provider_usage_receipts_response_artifact_identity": True,
+    },
+    "relay_container_provider_response_evidence": {
+        "idx_relay_container_provider_response_evidence_recorded": False,
+    },
+    "relay_container_client_response_artifacts": {
+        "idx_relay_container_client_response_artifacts_created": False,
+    },
+    "relay_container_response_artifact_inventory_cursors": {
+        "idx_relay_container_response_artifact_inventory_cursors_created": False,
+    },
+    "relay_container_response_artifact_inventory_findings": {
+        "idx_relay_container_response_artifact_inventory_findings_observed": False,
     },
     "relay_container_terminal_events": {
         "idx_relay_container_terminal_events_operation_identity": True,
         "idx_relay_container_terminal_events_reconciliation_identity": True,
         "idx_relay_container_terminal_events_client_response_object_identity": False,
+        "idx_relay_container_terminal_events_response_artifact": True,
     },
     "relay_container_terminal_outbox_state": {
         "idx_relay_container_terminal_outbox_pending": False,
@@ -845,6 +1186,8 @@ def main() -> int:
     relay_container_atomic_admission_rollout_verified = False
     relay_container_scheduled_terminalization_verified = False
     relay_container_scheduled_terminalization_rollout_verified = False
+    relay_container_response_artifacts_verified = False
+    relay_container_response_artifacts_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -886,6 +1229,8 @@ def main() -> int:
         relay_container_atomic_admission_rollout_verified = True
         verify_relay_container_scheduled_terminalization_rollout(schema_paths)
         relay_container_scheduled_terminalization_rollout_verified = True
+        verify_relay_container_response_artifacts_rollout(schema_paths)
+        relay_container_response_artifacts_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -933,10 +1278,20 @@ def main() -> int:
         verify_relay_container_provider_usage_binding(relay_container_conn)
         relay_container_provider_usage_binding_verified = True
         relay_container_conn.close()
+        scheduled_container_conn = sqlite3.connect(":memory:")
+        for schema_path in schema_paths:
+            if schema_path.name == "0052_relay_container_provider_response_artifacts.sql":
+                break
+            scheduled_container_conn.executescript(
+                schema_path.read_text(encoding="utf-8")
+            )
         verify_relay_container_atomic_admission(conn)
         relay_container_atomic_admission_verified = True
-        verify_relay_container_scheduled_terminalization(conn)
+        verify_relay_container_scheduled_terminalization(scheduled_container_conn)
         relay_container_scheduled_terminalization_verified = True
+        scheduled_container_conn.close()
+        verify_relay_container_response_artifacts(conn)
+        relay_container_response_artifacts_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
@@ -1036,6 +1391,10 @@ def main() -> int:
         message += " + 0051 owner-fenced scheduled terminalization"
     if relay_container_scheduled_terminalization_rollout_verified:
         message += " + 0051 append-only scheduled terminalization rollout"
+    if relay_container_response_artifacts_verified:
+        message += " + 0052 immutable provider/client response artifacts"
+    if relay_container_response_artifacts_rollout_verified:
+        message += " + 0052 drained response-artifact rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -4677,6 +5036,8 @@ def verify_relay_container_scheduled_terminalization(
 
     fixture = sqlite3.connect(":memory:")
     for schema_path in sorted(Path("migrations/d1").glob("*.sql")):
+        if schema_path.name == "0052_relay_container_provider_response_artifacts.sql":
+            break
         fixture.executescript(schema_path.read_text(encoding="utf-8"))
     fixture.execute("PRAGMA foreign_keys = ON")
     for table in (
@@ -4981,6 +5342,1961 @@ def verify_relay_container_scheduled_terminalization(
         "relay container scheduled terminalization cannot be deleted",
     )
     fixture.close()
+
+
+def verify_relay_container_response_artifacts(conn: sqlite3.Connection) -> None:
+    required_triggers = (
+        "relay_container_response_artifact_operation_insert_guard",
+        "relay_container_response_artifact_operation_contract_guard",
+        "relay_container_provider_response_evidence_insert_authority_guard",
+        "relay_container_provider_response_evidence_identity_insert_guard",
+        "relay_container_provider_response_evidence_identity_guard",
+        "relay_container_provider_response_evidence_identity_update_guard",
+        "relay_container_provider_response_evidence_identity_delete_guard",
+        "relay_container_provider_response_evidence_update_guard",
+        "relay_container_provider_response_evidence_delete_guard",
+        "relay_container_client_response_artifact_insert_authority_guard",
+        "relay_container_client_response_artifact_identity_insert_guard",
+        "relay_container_client_response_artifact_identity_guard",
+        "relay_container_client_response_artifact_identity_update_guard",
+        "relay_container_client_response_artifact_identity_delete_guard",
+        "relay_container_client_response_artifact_update_guard",
+        "relay_container_client_response_artifact_delete_guard",
+        "relay_container_response_artifact_inventory_cursor_insert_guard",
+        "relay_container_response_artifact_inventory_cursor_identity_insert_guard",
+        "relay_container_response_artifact_inventory_cursor_identity_guard",
+        "relay_container_response_artifact_inventory_cursor_identity_update_guard",
+        "relay_container_response_artifact_inventory_cursor_identity_delete_guard",
+        "relay_container_response_artifact_inventory_cursor_update_guard",
+        "relay_container_response_artifact_inventory_cursor_delete_guard",
+        "relay_container_response_artifact_inventory_finding_insert_guard",
+        "relay_container_response_artifact_inventory_finding_identity_insert_guard",
+        "relay_container_response_artifact_inventory_finding_identity_guard",
+        "relay_container_response_artifact_inventory_finding_identity_update_guard",
+        "relay_container_response_artifact_inventory_finding_identity_delete_guard",
+        "relay_container_response_artifact_inventory_finding_update_guard",
+        "relay_container_response_artifact_inventory_finding_delete_guard",
+        "relay_container_terminal_event_response_artifact_guard",
+        "relay_container_operation_response_artifact_terminal_guard",
+        "relay_container_scheduled_terminalization_response_artifact_guard",
+        "relay_container_reconciliation_response_artifact_convergence_guard",
+    )
+    for trigger in required_triggers:
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0052 response-artifact trigger missing: {trigger}")
+
+    operation_table_sql = sqlite_object_sql(conn, "table", "relay_container_operations")
+    evidence_table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_provider_response_evidence"
+    )
+    client_table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_client_response_artifacts"
+    )
+    evidence_identity_sql = sqlite_object_sql(
+        conn, "table", "relay_container_provider_response_evidence_identities"
+    )
+    client_identity_sql = sqlite_object_sql(
+        conn, "table", "relay_container_client_response_artifact_identities"
+    )
+    inventory_cursor_sql = sqlite_object_sql(
+        conn, "table", "relay_container_response_artifact_inventory_cursors"
+    )
+    inventory_cursor_identity_sql = sqlite_object_sql(
+        conn,
+        "table",
+        "relay_container_response_artifact_inventory_cursor_identities",
+    )
+    inventory_finding_sql = sqlite_object_sql(
+        conn, "table", "relay_container_response_artifact_inventory_findings"
+    )
+    inventory_finding_identity_sql = sqlite_object_sql(
+        conn,
+        "table",
+        "relay_container_response_artifact_inventory_finding_identities",
+    )
+    terminal_table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_terminal_events"
+    )
+    schema_fragments = (
+        (
+            evidence_table_sql,
+            "PRIMARY KEY (operation_id, owner_generation, attempt_generation)",
+        ),
+        (evidence_table_sql, "raw_response_status BETWEEN 100 AND 599"),
+        (evidence_table_sql, "raw_response_content_type IS NULL"),
+        (
+            evidence_table_sql,
+            "container-provider-evidence/v1/",
+        ),
+        (
+            evidence_table_sql,
+            "interpreter_source_commit = '73652508abc5cb09214dde02d51d69d1d1ccc703'",
+        ),
+        (evidence_table_sql, "response_contract = 'go-openai-response-v1'"),
+        (
+            evidence_table_sql,
+            "REFERENCES relay_container_atomic_admissions(",
+        ),
+        (
+            evidence_table_sql,
+            "REFERENCES relay_container_provider_egress_grants(",
+        ),
+        (
+            client_table_sql,
+            "response_class IN ('success', 'typed_error', 'http_error', 'invalid_body')",
+        ),
+        (client_table_sql, "client_response_status BETWEEN 100 AND 599"),
+        (client_table_sql, "container-client-artifacts/v1/"),
+        (
+            client_table_sql,
+            "owner_generation || '/' || client_response_artifact_sha256",
+        ),
+        (
+            client_table_sql,
+            "REFERENCES relay_container_provider_response_evidence(",
+        ),
+        (
+            client_table_sql,
+            "REFERENCES relay_container_provider_usage_receipts(",
+        ),
+        (evidence_identity_sql, "WITHOUT ROWID"),
+        (client_identity_sql, "WITHOUT ROWID"),
+        (
+            inventory_cursor_sql,
+            "artifact_namespace IN ('provider_evidence', 'client_artifact')",
+        ),
+        (inventory_cursor_sql, "observer_enabled INTEGER NOT NULL DEFAULT 0"),
+        (inventory_cursor_sql, "observer_mode = 'observe_only'"),
+        (inventory_cursor_sql, "apply_authority = 0"),
+        (inventory_cursor_sql, "delete_authority = 0"),
+        (inventory_cursor_identity_sql, "WITHOUT ROWID"),
+        (
+            inventory_finding_sql,
+            "classification IN ('referenced', 'orphan', 'divergent', 'malformed_key')",
+        ),
+        (inventory_finding_sql, "container-provider-evidence/v1/"),
+        (inventory_finding_sql, "container-client-artifacts/v1/"),
+        (inventory_finding_sql, "observer_mode = 'observe_only'"),
+        (inventory_finding_sql, "apply_authority = 0"),
+        (inventory_finding_sql, "delete_authority = 0"),
+        (inventory_finding_identity_sql, "WITHOUT ROWID"),
+        (terminal_table_sql, "client_response_artifact_sha256 TEXT"),
+        (
+            terminal_table_sql,
+            "REFERENCES relay_container_client_response_artifacts(client_response_artifact_sha256)",
+        ),
+    )
+    for sql, fragment in schema_fragments:
+        if sql is None or fragment not in sql:
+            raise SystemExit(f"0052 response-artifact schema missing: {fragment}")
+    if evidence_table_sql is None or "raw_response_content_type TEXT NOT NULL" in evidence_table_sql:
+        raise SystemExit("0052 raw response content type must preserve absence as NULL")
+
+    for table in (
+        "relay_container_provider_response_evidence",
+        "relay_container_provider_response_evidence_identities",
+        "relay_container_client_response_artifacts",
+        "relay_container_client_response_artifact_identities",
+        "relay_container_response_artifact_inventory_cursors",
+        "relay_container_response_artifact_inventory_cursor_identities",
+        "relay_container_response_artifact_inventory_findings",
+        "relay_container_response_artifact_inventory_finding_identities",
+    ):
+        expected = REQUIRED_COLUMNS[table]
+        actual = table_columns(conn, table)
+        if actual != expected:
+            raise SystemExit(
+                f"0052 response-artifact columns differ for {table}: "
+                f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+            )
+
+    def foreign_keys(table: str) -> set[tuple[str, tuple[str, ...], tuple[str, ...]]]:
+        grouped: dict[int, list[tuple[object, ...]]] = {}
+        for row in conn.execute(f'PRAGMA foreign_key_list("{table}")').fetchall():
+            grouped.setdefault(int(row[0]), []).append(row)
+        result = set()
+        for rows in grouped.values():
+            ordered = sorted(rows, key=lambda row: int(row[1]))
+            result.add(
+                (
+                    str(ordered[0][2]),
+                    tuple(str(row[3]) for row in ordered),
+                    tuple(str(row[4]) for row in ordered),
+                )
+            )
+        return result
+
+    evidence_foreign_keys = foreign_keys(
+        "relay_container_provider_response_evidence"
+    )
+    expected_evidence_foreign_keys = {
+        (
+            "relay_container_atomic_admissions",
+            (
+                "reservation_key",
+                "operation_id",
+                "owner_generation",
+                "attempt_generation",
+                "atomic_admission_sha256",
+                "admission_sha256",
+            ),
+            (
+                "reservation_key",
+                "operation_id",
+                "owner_generation",
+                "provider_attempt_generation",
+                "atomic_admission_sha256",
+                "operation_admission_sha256",
+            ),
+        ),
+        (
+            "relay_container_provider_egress_grants",
+            ("operation_id", "owner_generation", "attempt_generation"),
+            ("operation_id", "owner_generation", "attempt_generation"),
+        ),
+    }
+    if evidence_foreign_keys != expected_evidence_foreign_keys:
+        raise SystemExit(
+            f"0052 provider evidence foreign keys are not exact: {evidence_foreign_keys}"
+        )
+
+    client_foreign_keys = foreign_keys("relay_container_client_response_artifacts")
+    expected_client_foreign_keys = {
+        (
+            "relay_container_provider_response_evidence",
+            (
+                "operation_id",
+                "owner_generation",
+                "attempt_generation",
+                "provider_response_evidence_sha256",
+            ),
+            (
+                "operation_id",
+                "owner_generation",
+                "attempt_generation",
+                "provider_response_evidence_sha256",
+            ),
+        ),
+        (
+            "relay_container_provider_usage_receipts",
+            (
+                "operation_id",
+                "owner_generation",
+                "attempt_generation",
+                "provider_usage_receipt_sha256",
+            ),
+            (
+                "operation_id",
+                "owner_generation",
+                "attempt_generation",
+                "usage_receipt_sha256",
+            ),
+        ),
+    }
+    if client_foreign_keys != expected_client_foreign_keys:
+        raise SystemExit(
+            f"0052 client artifact foreign keys are not exact: {client_foreign_keys}"
+        )
+
+    cursor_identity_foreign_keys = foreign_keys(
+        "relay_container_response_artifact_inventory_cursor_identities"
+    )
+    expected_cursor_identity_foreign_keys = {
+        (
+            "relay_container_response_artifact_inventory_cursors",
+            (
+                "artifact_namespace",
+                "scan_generation",
+                "page_sequence",
+                "inventory_cursor_sha256",
+            ),
+            (
+                "artifact_namespace",
+                "scan_generation",
+                "page_sequence",
+                "inventory_cursor_sha256",
+            ),
+        )
+    }
+    if cursor_identity_foreign_keys != expected_cursor_identity_foreign_keys:
+        raise SystemExit(
+            "0052 inventory cursor identity foreign keys are not exact: "
+            f"{cursor_identity_foreign_keys}"
+        )
+
+    finding_foreign_keys = foreign_keys(
+        "relay_container_response_artifact_inventory_findings"
+    )
+    expected_finding_foreign_keys = {
+        (
+            "relay_container_response_artifact_inventory_cursors",
+            (
+                "artifact_namespace",
+                "scan_generation",
+                "page_sequence",
+                "inventory_cursor_sha256",
+            ),
+            (
+                "artifact_namespace",
+                "scan_generation",
+                "page_sequence",
+                "inventory_cursor_sha256",
+            ),
+        ),
+        (
+            "relay_container_provider_response_evidence",
+            ("provider_response_evidence_sha256",),
+            ("provider_response_evidence_sha256",),
+        ),
+        (
+            "relay_container_client_response_artifacts",
+            ("client_response_artifact_sha256",),
+            ("client_response_artifact_sha256",),
+        ),
+    }
+    if finding_foreign_keys != expected_finding_foreign_keys:
+        raise SystemExit(
+            f"0052 inventory finding foreign keys are not exact: {finding_foreign_keys}"
+        )
+
+    finding_identity_foreign_keys = foreign_keys(
+        "relay_container_response_artifact_inventory_finding_identities"
+    )
+    expected_finding_identity_foreign_keys = {
+        (
+            "relay_container_response_artifact_inventory_findings",
+            ("finding_id",),
+            ("finding_id",),
+        )
+    }
+    if finding_identity_foreign_keys != expected_finding_identity_foreign_keys:
+        raise SystemExit(
+            "0052 inventory finding identity foreign keys are not exact: "
+            f"{finding_identity_foreign_keys}"
+        )
+
+    index_fragments = {
+        "idx_relay_container_atomic_admissions_response_artifact_identity": (
+            "reservation_key, operation_id, owner_generation, "
+            "provider_attempt_generation, atomic_admission_sha256, "
+            "operation_admission_sha256"
+        ),
+        "idx_relay_container_provider_usage_receipts_response_artifact_identity": (
+            "operation_id, owner_generation, attempt_generation, usage_receipt_sha256"
+        ),
+        "idx_relay_container_provider_response_evidence_recorded": (
+            "provider_completed_at, recorded_at, operation_id"
+        ),
+        "idx_relay_container_client_response_artifacts_created": (
+            "response_class, created_at, operation_id"
+        ),
+        "idx_relay_container_response_artifact_inventory_cursors_created": (
+            "artifact_namespace, created_at, scan_generation, page_sequence"
+        ),
+        "idx_relay_container_response_artifact_inventory_findings_observed": (
+            "classification, observed_at, artifact_namespace, finding_id"
+        ),
+        "idx_relay_container_terminal_events_response_artifact": (
+            "WHERE client_response_artifact_sha256 IS NOT NULL"
+        ),
+    }
+    for index_name, fragment in index_fragments.items():
+        index_sql = sqlite_object_sql(conn, "index", index_name)
+        if index_sql is None or fragment not in " ".join(index_sql.split()):
+            raise SystemExit(f"0052 response-artifact index is not exact: {index_name}")
+
+    evidence_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_provider_response_evidence_insert_authority_guard",
+    )
+    client_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_client_response_artifact_insert_authority_guard",
+    )
+    terminal_guard_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_terminal_event_response_artifact_guard"
+    )
+    inventory_cursor_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_response_artifact_inventory_cursor_insert_guard",
+    )
+    inventory_finding_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_response_artifact_inventory_finding_insert_guard",
+    )
+    for sql, fragment in (
+        (
+            operation_table_sql,
+            "response_artifact_contract TEXT",
+        ),
+        (
+            operation_table_sql,
+            "response_artifact_contract = 'container-response-artifacts-v1'",
+        ),
+        (evidence_guard_sql, "operation.status = 'dispatched'"),
+        (evidence_guard_sql, "reservation.status = 'reserved'"),
+        (evidence_guard_sql, "COUNT(DISTINCT header.key)"),
+        (evidence_guard_sql, "BETWEEN 0 AND 6"),
+        (evidence_guard_sql, "left_header.key > right_header.key"),
+        (evidence_guard_sql, "'content-language'"),
+        (evidence_guard_sql, "NEW.raw_response_content_type IS NULL"),
+        (evidence_guard_sql, "NEW.provider_request_id IS CASE"),
+        (client_guard_sql, "evidence.raw_response_status = 200"),
+        (client_guard_sql, "evidence.raw_response_status <> 200"),
+        (client_guard_sql, "NEW.client_response_content_type = 'application/json'"),
+        (client_guard_sql, "raw_header.key <> 'content-type'"),
+        (client_guard_sql, "NEW.provider_usage_receipt_sha256 IS NULL"),
+        (client_guard_sql, "receipt.provider_response_status = evidence.raw_response_status"),
+        (client_guard_sql, "left_header.key > right_header.key"),
+        (
+            client_guard_sql,
+            "{\"cache-control\":\"no-store\",\"content-type\":\"application/json\"}",
+        ),
+        (inventory_cursor_guard_sql, "NEW.observer_enabled <> 1"),
+        (inventory_cursor_guard_sql, "previous.cursor_after = NEW.cursor_before"),
+        (inventory_cursor_guard_sql, "previous.checkpoint_status = 'complete'"),
+        (inventory_finding_guard_sql, "WHEN 'referenced' THEN"),
+        (inventory_finding_guard_sql, "WHEN 'orphan' THEN"),
+        (inventory_finding_guard_sql, "WHEN 'divergent' THEN"),
+        (inventory_finding_guard_sql, "WHEN 'malformed_key' THEN"),
+        (
+            inventory_finding_guard_sql,
+            "artifact.client_response_object_version = NEW.object_version",
+        ),
+        (inventory_finding_guard_sql, "cursor_row.observer_enabled = 1"),
+        (inventory_finding_guard_sql, "artifact.client_response_artifact_sha256 ="),
+        (terminal_guard_sql, "NEW.client_response_artifact_sha256 IS NULL"),
+        (terminal_guard_sql, "artifact.response_class = 'success'"),
+        (terminal_guard_sql, "NEW.billing_action = 'refund'"),
+        (terminal_guard_sql, "NEW.billing_action = 'recovery_required'"),
+    ):
+        if sql is None or fragment not in sql:
+            raise SystemExit(f"0052 response-artifact authority missing: {fragment}")
+    if (
+        client_guard_sql is None
+        or "NEW.client_response_content_type = evidence.raw_response_content_type"
+        in client_guard_sql
+    ):
+        raise SystemExit("0052 client content type must not depend on raw content type")
+
+    cursor_defaults = {
+        str(row[1]): row[4]
+        for row in conn.execute(
+            "PRAGMA table_info(relay_container_response_artifact_inventory_cursors)"
+        ).fetchall()
+    }
+    if cursor_defaults.get("observer_enabled") != "0":
+        raise SystemExit("0052 inventory observer must default off")
+    for column in ("apply_authority", "delete_authority"):
+        if cursor_defaults.get(column) != "0":
+            raise SystemExit(f"0052 inventory cursor {column} must default to zero")
+    if cursor_defaults.get("observer_mode") != "'observe_only'":
+        raise SystemExit("0052 inventory cursor mode must default to observe_only")
+
+    for table in (
+        "relay_container_response_artifact_inventory_cursors",
+        "relay_container_response_artifact_inventory_cursor_identities",
+        "relay_container_response_artifact_inventory_findings",
+        "relay_container_response_artifact_inventory_finding_identities",
+    ):
+        if conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone() != (0,):
+            raise SystemExit(f"0052 inventory expand must leave {table} empty")
+
+    def digest(label: str) -> str:
+        return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+    user_id = 520052
+    token_id = 520053
+    channel_id = 520054
+    model_name = "gpt-0052-artifact"
+    conn.execute(
+        "INSERT INTO users (id, username, password, status, quota, used_quota, "
+        "request_count, aff_code, created_at) VALUES (?, 'sqlite-0052-user', "
+        "'disabled', 1, 1000, 0, 0, 'sqlite-0052-user', 1)",
+        (user_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO tokens (
+          id, user_id, "key", status, name, created_time, accessed_time,
+          expired_time, remain_quota, unlimited_quota, used_quota, "group"
+        ) VALUES (?, ?, ?, 1, 'sqlite 0052 token', 1, 0, -1, 1000, 0, 0, 'default')
+        """,
+        (token_id, user_id, digest("0052-token-key")),
+    )
+    conn.execute(
+        """
+        INSERT INTO channels (
+          id, type, "key", name, status, "group", models, used_quota
+        ) VALUES (?, 1, ?, 'sqlite 0052 channel', 1, 'default', ?, 0)
+        """,
+        (channel_id, digest("0052-channel-key"), model_name),
+    )
+
+    operation_insert_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_atomic_admission_operation_insert_guard",
+    )
+    if operation_insert_guard_sql is None:
+        raise SystemExit("0052 fixture requires the 0050 operation insert guard")
+    conn.execute("DROP TRIGGER relay_container_atomic_admission_operation_insert_guard")
+
+    grant_insert_sql = """
+        INSERT INTO relay_container_provider_egress_grants (
+          operation_id, reservation_key, owner_generation, attempt_generation,
+          provider_operation_id, admission_sha256, request_sha256,
+          egress_profile, egress_worker_version_id,
+          channel_id, selected_group, model_name, endpoint_path,
+          input_mode, input_object_key, input_object_version,
+          input_sha256, input_size, input_content_type,
+          billing_kind, billing_contract_hash, billing_snapshot_sha256,
+          stream_policy, operation_created_at, operation_dispatched_at,
+          authorized_at, execution_deadline_at, owner_lease_expires_at,
+          reservation_owner_deadline_at, reservation_lease_expires_at
+        ) VALUES (
+          :operation_id, :operation_id, 2, 1,
+          :provider_operation_id, :admission_sha256, :request_sha256,
+          'openai-chat-completions-canary-v1', :egress_worker_version_id,
+          :channel_id, 'default', :model_name, 'chat/completions',
+          'r2', :input_object_key, :input_object_version,
+          :request_sha256, :input_size, 'application/json',
+          'flat', :billing_contract_hash, :billing_snapshot_sha256,
+          'non_streaming', :created_at, :dispatched_at,
+          :authorized_at, :execution_deadline_at, :owner_lease_expires_at,
+          :owner_lease_expires_at, :owner_lease_expires_at
+        )
+    """
+
+    def insert_authority(
+        label: str,
+        response_artifact_contract: str | None = "container-response-artifacts-v1",
+    ) -> dict[str, object]:
+        operation_id = f"0052-{label}"
+        created_at = 2_100_000_000
+        dispatched_at = created_at + 10
+        authorized_at = dispatched_at + 1
+        execution_deadline_at = created_at + 300
+        owner_lease_expires_at = created_at + 600
+        request_sha256 = digest(f"0052-request:{label}")
+        admission_sha256 = digest(f"0052-admission:{label}")
+        atomic_admission_sha256 = digest(f"0052-atomic:{label}")
+        client_hmac = digest(f"0052-client:{label}")
+        input_object_key = (
+            f"container-inputs/v1/{operation_id}/2/{request_sha256}"
+        )
+        billing_snapshot_json = json.dumps(
+            {"default": {"1": {"schema_version": 4}}},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        billing_snapshot_sha256 = hashlib.sha256(
+            billing_snapshot_json.encode("utf-8")
+        ).hexdigest()
+        billing_contract_hash = f"flat-v4:{billing_snapshot_sha256}"
+        provider_operation_id = f"provider:{operation_id}"
+        reconciliation_id = digest(f"0052-reconciliation:{label}")
+        conn.execute(
+            """
+            INSERT INTO relay_billing_reservations (
+              reservation_key, user_id, token_id, model_name, endpoint_path,
+              request_id_hash, expr_hash, billing_kind, billing_snapshot_json,
+              candidate_group_count, reservation_strategy, pre_consumed_quota,
+              status, channel_id, selected_group, selected_at,
+              lease_expires_at, owner_generation, owner_deadline_at,
+              owner_lease_renewed_at, created_at, updated_at
+            ) VALUES (
+              ?, ?, ?, ?, 'chat/completions', ?, ?, 'flat', ?,
+              1, 'selected_group', 1, 'reserved', ?, 'default', ?,
+              ?, 2, ?, 0, ?, ?
+            )
+            """,
+            (
+                operation_id,
+                user_id,
+                token_id,
+                model_name,
+                digest(f"0052-request-id:{label}"),
+                billing_contract_hash,
+                billing_snapshot_json,
+                channel_id,
+                created_at,
+                owner_lease_expires_at,
+                owner_lease_expires_at,
+                created_at,
+                created_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO relay_container_operations (
+              reservation_key, operation_id, owner_generation,
+              owner_lease_expires_at, channel_id, selected_group,
+              operation_kind, provider_operation_id, admission_sha256,
+              protocol_version, shard_contract_version,
+              ring_generation, shard_count, shard_index, instance_name,
+              execution_deadline_at, input_mode, input_object_key,
+              input_object_version, input_sha256, input_size,
+              input_content_type, trace_id,
+              client_idempotency_hmac_sha256, client_request_sha256,
+              reconciliation_id, response_artifact_contract,
+              status, created_at, updated_at
+            ) VALUES (
+              ?, ?, 2, ?, ?, 'default',
+              'chat_completions_canary', ?, ?, 1, 1,
+              1, 8, 2, 'cinatoken-relay-shard-v1-0002',
+              ?, 'r2', ?, ?, ?, 64,
+              'application/json', ?, ?, ?, ?, ?, 'prepared', ?, ?
+            )
+            """,
+            (
+                operation_id,
+                operation_id,
+                owner_lease_expires_at,
+                channel_id,
+                provider_operation_id,
+                admission_sha256,
+                execution_deadline_at,
+                input_object_key,
+                f"0052-input-version-{label}",
+                request_sha256,
+                f"trace:0052:{label}",
+                client_hmac,
+                digest(f"0052-client-request:{label}"),
+                reconciliation_id,
+                response_artifact_contract,
+                created_at,
+                created_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO relay_container_atomic_admissions (
+              reservation_key, operation_id, contract_version,
+              atomic_admission_sha256, operation_admission_sha256,
+              client_idempotency_hmac_sha256, client_request_sha256,
+              idempotency_alias_count, idempotency_aliases_sha256,
+              billing_snapshot_sha256, user_id, token_id, pre_consumed_quota,
+              owner_generation, owner_lease_expires_at, channel_id,
+              selected_channel_type, selected_group, selected_snapshot_key,
+              owner_deadline_at, selected_at, created_at,
+              attempt_count, provider_attempt_generation
+            ) VALUES (
+              ?, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1,
+              2, ?, ?, 1, 'default', '1', ?, ?, ?, 1, 1
+            )
+            """,
+            (
+                operation_id,
+                operation_id,
+                atomic_admission_sha256,
+                admission_sha256,
+                client_hmac,
+                digest(f"0052-client-request:{label}"),
+                digest(f"0052-aliases:{label}"),
+                billing_snapshot_sha256,
+                user_id,
+                token_id,
+                owner_lease_expires_at,
+                channel_id,
+                owner_lease_expires_at,
+                created_at,
+                created_at,
+            ),
+        )
+        conn.execute(
+            "UPDATE relay_container_operations SET status = 'dispatched', updated_at = ? "
+            "WHERE operation_id = ?",
+            (dispatched_at, operation_id),
+        )
+        values: dict[str, object] = {
+            "operation_id": operation_id,
+            "provider_operation_id": provider_operation_id,
+            "atomic_admission_sha256": atomic_admission_sha256,
+            "admission_sha256": admission_sha256,
+            "request_sha256": request_sha256,
+            "channel_id": channel_id,
+            "model_name": model_name,
+            "egress_worker_version_id": f"worker-version-0052-{label}",
+            "input_object_key": input_object_key,
+            "input_object_version": f"0052-input-version-{label}",
+            "input_size": 64,
+            "billing_contract_hash": billing_contract_hash,
+            "billing_snapshot_sha256": billing_snapshot_sha256,
+            "created_at": created_at,
+            "dispatched_at": dispatched_at,
+            "authorized_at": authorized_at,
+            "execution_deadline_at": execution_deadline_at,
+            "owner_lease_expires_at": owner_lease_expires_at,
+            "reconciliation_id": reconciliation_id,
+        }
+        conn.execute(grant_insert_sql, values)
+        return values
+
+    expect_integrity_error(
+        lambda: insert_authority("late-n1-writer", None),
+        "0052 accepted a late pre-0052 operation writer",
+        "relay container response artifact writer contract is required",
+    )
+
+    labels = (
+        "raw-negative",
+        "success",
+        "typed",
+        "http",
+        "invalid",
+        "replace-raw",
+        "replace-client",
+        "old-writer",
+    )
+    authorities = {label: insert_authority(label) for label in labels}
+    conn.execute(operation_insert_guard_sql)
+
+    evidence_insert_sql = """
+        INSERT INTO relay_container_provider_response_evidence (
+          operation_id, reservation_key, owner_generation, attempt_generation,
+          provider_operation_id, atomic_admission_sha256, admission_sha256,
+          request_sha256, channel_id, selected_group, model_name, endpoint_path,
+          egress_profile, egress_worker_version_id,
+          raw_response_status, raw_response_content_type,
+          raw_response_headers_json, raw_response_headers_sha256,
+          raw_response_object_key, raw_response_object_version,
+          raw_response_sha256, raw_response_size, provider_request_id,
+          provider_completed_at, interpreter_source_commit, response_contract,
+          provider_response_evidence_sha256, recorded_at
+        ) VALUES (
+          :operation_id, :operation_id, 2, 1,
+          :provider_operation_id, :atomic_admission_sha256, :admission_sha256,
+          :request_sha256, :channel_id, 'default', :model_name, 'chat/completions',
+          'openai-chat-completions-canary-v1', :egress_worker_version_id,
+          :raw_response_status, :raw_response_content_type,
+          :raw_response_headers_json, :raw_response_headers_sha256,
+          :raw_response_object_key, :raw_response_object_version,
+          :raw_response_sha256, :raw_response_size, :provider_request_id,
+          :provider_completed_at, '73652508abc5cb09214dde02d51d69d1d1ccc703',
+          'go-openai-response-v1', :provider_response_evidence_sha256, :recorded_at
+        )
+    """
+
+    def evidence_values(
+        label: str,
+        status: int,
+        body: bytes | None = None,
+        raw_response_content_type: str | None = "application/json",
+        include_provider_request_id: bool = True,
+    ) -> dict[str, object]:
+        authority = authorities[label]
+        body = body if body is not None else f'{{"id":"{label}"}}'.encode("utf-8")
+        body_sha256 = hashlib.sha256(body).hexdigest()
+        provider_request_id = (
+            f"request-{label}" if include_provider_request_id else None
+        )
+        headers = {}
+        if raw_response_content_type is not None:
+            headers["content-type"] = raw_response_content_type
+        if provider_request_id is not None:
+            headers["x-request-id"] = provider_request_id
+        headers_json = json.dumps(headers, separators=(",", ":"), sort_keys=True)
+        provider_completed_at = (int(authority["authorized_at"]) + 1) * 1000
+        return {
+            **authority,
+            "raw_response_status": status,
+            "raw_response_content_type": raw_response_content_type,
+            "raw_response_headers_json": headers_json,
+            "raw_response_headers_sha256": hashlib.sha256(
+                headers_json.encode("utf-8")
+            ).hexdigest(),
+            "raw_response_object_key": (
+                f"container-provider-evidence/v1/{authority['operation_id']}/2/1/"
+                f"{body_sha256}"
+            ),
+            "raw_response_object_version": f"0052-raw-version-{label}",
+            "raw_response_sha256": body_sha256,
+            "raw_response_size": len(body),
+            "provider_request_id": provider_request_id,
+            "provider_completed_at": provider_completed_at,
+            "provider_response_evidence_sha256": digest(f"0052-evidence:{label}"),
+            "recorded_at": provider_completed_at + 1,
+            "raw_body": body,
+        }
+
+    malformed_evidence = evidence_values("raw-negative", 200)
+    evidence_negative_cases = {
+        "status bound": {"raw_response_status": 600},
+        "atomic admission": {"atomic_admission_sha256": "f" * 64},
+        "R2 key": {"raw_response_object_key": "container-provider-evidence/v1/forged"},
+        "missing content-type presence": {
+            "raw_response_headers_json": (
+                '{"x-request-id":"request-raw-negative"}'
+            ),
+        },
+        "unexpected content-type presence": {
+            "raw_response_content_type": None,
+        },
+        "content-type mismatch": {
+            "raw_response_content_type": "text/plain",
+        },
+        "header digest shape": {"raw_response_headers_sha256": "A" * 64},
+        "header whitespace": {
+            "raw_response_headers_json": '{ "content-type":"application/json" }',
+            "provider_request_id": None,
+        },
+        "header order": {
+            "raw_response_headers_json": (
+                '{"x-request-id":"request-raw-negative",'
+                '"content-type":"application/json"}'
+            )
+        },
+        "duplicate header": {
+            "raw_response_headers_json": (
+                '{"content-type":"application/json",'
+                '"content-type":"application/json"}'
+            ),
+            "provider_request_id": None,
+        },
+        "unknown header": {
+            "raw_response_headers_json": (
+                '{"content-type":"application/json","set-cookie":"secret"}'
+            ),
+            "provider_request_id": None,
+        },
+        "provider request identity": {"provider_request_id": "forged-request"},
+    }
+    for context, changes in evidence_negative_cases.items():
+        candidate = {**malformed_evidence, **changes}
+        expect_integrity_error(
+            lambda candidate=candidate: conn.execute(evidence_insert_sql, candidate),
+            f"0052 accepted provider evidence with invalid {context}",
+        )
+    conn.execute(evidence_insert_sql, malformed_evidence)
+
+    raw_by_label = {
+        "success": evidence_values(
+            "success",
+            200,
+            raw_response_content_type=None,
+            include_provider_request_id=False,
+        ),
+        "typed": evidence_values(
+            "typed",
+            200,
+            b'{"error":{"message":"limited","type":"rate_limit_error"}}',
+            raw_response_content_type=None,
+        ),
+        "http": evidence_values("http", 429, b'{"error":"limited"}'),
+        "invalid": evidence_values("invalid", 200, b"not-json"),
+        "replace-raw": evidence_values("replace-raw", 503, b'{"error":"busy"}'),
+        "replace-client": evidence_values(
+            "replace-client",
+            200,
+            raw_response_content_type="text/plain; charset=utf-8",
+        ),
+    }
+    for values in raw_by_label.values():
+        conn.execute(evidence_insert_sql, values)
+
+    if conn.execute(
+        "SELECT operation_id, raw_response_content_type, "
+        "raw_response_headers_json, provider_request_id "
+        "FROM relay_container_provider_response_evidence "
+        "WHERE operation_id IN (?, ?, ?) ORDER BY operation_id",
+        (
+            authorities["replace-client"]["operation_id"],
+            authorities["success"]["operation_id"],
+            authorities["typed"]["operation_id"],
+        ),
+    ).fetchall() != [
+        (
+            authorities["replace-client"]["operation_id"],
+            "text/plain; charset=utf-8",
+            (
+                '{"content-type":"text/plain; charset=utf-8",'
+                '"x-request-id":"request-replace-client"}'
+            ),
+            "request-replace-client",
+        ),
+        (authorities["success"]["operation_id"], None, "{}", None),
+        (
+            authorities["typed"]["operation_id"],
+            None,
+            '{"x-request-id":"request-typed"}',
+            "request-typed",
+        ),
+    ]:
+        raise SystemExit("0052 raw header absence/presence evidence was not exact")
+
+    receipt_insert_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_provider_usage_receipt_insert_authority_guard",
+    )
+    if receipt_insert_guard_sql is None:
+        raise SystemExit("0052 fixture requires the 0048 receipt insert guard")
+    conn.execute("DROP TRIGGER relay_container_provider_usage_receipt_insert_authority_guard")
+
+    def insert_usage_receipt(
+        label: str, raw: dict[str, object]
+    ) -> dict[str, object]:
+        authority = authorities[label]
+        receipt_sha256 = digest(f"0052-usage-receipt:{label}")
+        result_sha256 = str(raw["raw_response_sha256"])
+        values = {
+            **authority,
+            **raw,
+            "usage_receipt_sha256": receipt_sha256,
+            "result_object_key": (
+                f"container-results/v1/{authority['operation_id']}/2/{result_sha256}"
+            ),
+            "result_object_version": f"0052-result-version-{label}",
+            "persisted_at": int(raw["recorded_at"]) + 1,
+        }
+        conn.execute(
+            """
+            INSERT INTO relay_container_provider_usage_receipts (
+              operation_id, reservation_key, owner_generation, attempt_generation,
+              provider_operation_id, admission_sha256, request_sha256,
+              egress_profile, egress_worker_version_id,
+              billing_kind, billing_contract_hash, billing_snapshot_sha256,
+              provider_response_status, provider_response_sha256,
+              provider_request_id, provider_completed_at,
+              result_object_key, result_object_version, result_sha256,
+              result_size, result_content_type,
+              usage_schema_version, usage_parser_contract,
+              usage_normalization_contract, usage_present,
+              reported_usage_fields, usage_estimated,
+              usage_receipt_json, usage_receipt_sha256, persisted_at
+            ) VALUES (
+              :operation_id, :operation_id, 2, 1,
+              :provider_operation_id, :admission_sha256, :request_sha256,
+              'openai-chat-completions-canary-v1', :egress_worker_version_id,
+              'flat', :billing_contract_hash, :billing_snapshot_sha256,
+              200, :raw_response_sha256, :provider_request_id,
+              :provider_completed_at, :result_object_key, :result_object_version,
+              :raw_response_sha256, :raw_response_size, 'application/json',
+              1, 'openai-chat-completions-usage-v1',
+              'billing-token-normalization-v1', 1, 3, 0,
+              '{}', :usage_receipt_sha256, :persisted_at
+            )
+            """,
+            values,
+        )
+        return values
+
+    success_receipt = insert_usage_receipt("success", raw_by_label["success"])
+    old_writer_raw = evidence_values("old-writer", 200)
+    old_writer_receipt = insert_usage_receipt("old-writer", old_writer_raw)
+    conn.execute(receipt_insert_guard_sql)
+
+    client_insert_sql = """
+        INSERT INTO relay_container_client_response_artifacts (
+          operation_id, owner_generation, attempt_generation,
+          provider_response_evidence_sha256, response_contract, response_class,
+          client_response_status, client_response_content_type,
+          client_response_headers_json, client_response_headers_sha256,
+          client_response_object_key, client_response_object_version,
+          client_response_sha256, client_response_size,
+          provider_usage_receipt_sha256,
+          client_response_artifact_sha256, created_at
+        ) VALUES (
+          :operation_id, 2, 1,
+          :provider_response_evidence_sha256, 'go-openai-response-v1', :response_class,
+          :client_response_status, 'application/json',
+          :client_response_headers_json, :client_response_headers_sha256,
+          :client_response_object_key, :client_response_object_version,
+          :client_response_sha256, :client_response_size,
+          :provider_usage_receipt_sha256,
+          :client_response_artifact_sha256, :client_created_at
+        )
+    """
+
+    def client_values(
+        label: str,
+        raw: dict[str, object],
+        response_class: str,
+        client_status: int,
+        usage_receipt_sha256: str | None = None,
+    ) -> dict[str, object]:
+        if response_class == "success":
+            headers = json.loads(str(raw["raw_response_headers_json"]))
+            headers.pop("content-type", None)
+            headers["cache-control"] = "no-store"
+            headers["content-type"] = "application/json"
+            body = bytes(raw["raw_body"])
+        else:
+            headers = {
+                "cache-control": "no-store",
+                "content-type": "application/json",
+            }
+            body = json.dumps(
+                {"error": {"message": f"normalized {label}", "type": "upstream_error"}},
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        headers_json = json.dumps(headers, separators=(",", ":"), sort_keys=True)
+        body_sha256 = hashlib.sha256(body).hexdigest()
+        artifact_sha256 = digest(f"0052-client-artifact:{label}")
+        return {
+            **raw,
+            "response_class": response_class,
+            "client_response_status": client_status,
+            "client_response_headers_json": headers_json,
+            "client_response_headers_sha256": hashlib.sha256(
+                headers_json.encode("utf-8")
+            ).hexdigest(),
+            "client_response_object_key": (
+                f"container-client-artifacts/v1/{raw['operation_id']}/2/"
+                f"{artifact_sha256}"
+            ),
+            "client_response_object_version": f"0052-client-version-{label}",
+            "client_response_sha256": body_sha256,
+            "client_response_size": len(body),
+            "provider_usage_receipt_sha256": usage_receipt_sha256,
+            "client_response_artifact_sha256": artifact_sha256,
+            "client_created_at": int(raw["recorded_at"]) + 5,
+        }
+
+    malformed_client = client_values(
+        "raw-negative", malformed_evidence, "success", 200
+    )
+    client_negative_cases = {
+        "raw evidence digest": {"provider_response_evidence_sha256": "e" * 64},
+        "success status": {"client_response_status": 201},
+        "raw class": {"response_class": "typed_error"},
+        "creation order": {"client_created_at": int(malformed_evidence["recorded_at"]) - 1},
+        "R2 key": {"client_response_object_key": "container-client-artifacts/v1/forged"},
+        "body digest R2 key terminus": {
+            "client_response_object_key": (
+                f"container-client-artifacts/v1/{malformed_client['operation_id']}/2/"
+                f"{malformed_client['client_response_sha256']}"
+            )
+        },
+        "header digest shape": {"client_response_headers_sha256": "A" * 64},
+        "header order": {
+            "client_response_headers_json": (
+                '{"x-request-id":"request-raw-negative",'
+                '"content-type":"application/json","cache-control":"no-store"}'
+            )
+        },
+        "provider header value": {
+            "client_response_headers_json": (
+                '{"cache-control":"no-store","content-type":"application/json",'
+                '"x-request-id":"forged"}'
+            )
+        },
+    }
+    for context, changes in client_negative_cases.items():
+        candidate = {**malformed_client, **changes}
+        expect_integrity_error(
+            lambda candidate=candidate: conn.execute(client_insert_sql, candidate),
+            f"0052 accepted client artifact with invalid {context}",
+        )
+    conn.execute(client_insert_sql, malformed_client)
+
+    clients = {
+        "success": client_values(
+            "success",
+            raw_by_label["success"],
+            "success",
+            200,
+            str(success_receipt["usage_receipt_sha256"]),
+        ),
+        "typed": client_values("typed", raw_by_label["typed"], "typed_error", 200),
+        "http": client_values("http", raw_by_label["http"], "http_error", 429),
+        "invalid": client_values(
+            "invalid", raw_by_label["invalid"], "invalid_body", 500
+        ),
+        "replace-client": client_values(
+            "replace-client", raw_by_label["replace-client"], "success", 200
+        ),
+    }
+    typed_with_receipt = {
+        **clients["typed"],
+        "provider_usage_receipt_sha256": success_receipt["usage_receipt_sha256"],
+    }
+    expect_integrity_error(
+        lambda: conn.execute(client_insert_sql, typed_with_receipt),
+        "0052 allowed a typed-error artifact to reference a usage receipt",
+    )
+    raw_content_type_headers = json.loads(
+        str(clients["replace-client"]["client_response_headers_json"])
+    )
+    raw_content_type_headers["content-type"] = "text/plain; charset=utf-8"
+    raw_content_type_headers_json = json.dumps(
+        raw_content_type_headers, separators=(",", ":"), sort_keys=True
+    )
+    raw_content_type_passthrough = {
+        **clients["replace-client"],
+        "client_response_headers_json": raw_content_type_headers_json,
+        "client_response_headers_sha256": hashlib.sha256(
+            raw_content_type_headers_json.encode("utf-8")
+        ).hexdigest(),
+    }
+    expect_integrity_error(
+        lambda: conn.execute(client_insert_sql, raw_content_type_passthrough),
+        "0052 allowed a raw provider content type to replace canonical client JSON",
+        "relay container client response artifact authority mismatch",
+    )
+    for values in clients.values():
+        conn.execute(client_insert_sql, values)
+
+    if conn.execute(
+        "SELECT operation_id, client_response_content_type, "
+        "client_response_headers_json "
+        "FROM relay_container_client_response_artifacts "
+        "WHERE operation_id IN (?, ?) ORDER BY operation_id",
+        (
+            authorities["replace-client"]["operation_id"],
+            authorities["success"]["operation_id"],
+        ),
+    ).fetchall() != [
+        (
+            authorities["replace-client"]["operation_id"],
+            "application/json",
+            (
+                '{"cache-control":"no-store","content-type":"application/json",'
+                '"x-request-id":"request-replace-client"}'
+            ),
+        ),
+        (
+            authorities["success"]["operation_id"],
+            "application/json",
+            '{"cache-control":"no-store","content-type":"application/json"}',
+        ),
+    ]:
+        raise SystemExit("0052 client content type was not canonical application/json")
+
+    if conn.execute(
+        "SELECT response_class, client_response_status, provider_usage_receipt_sha256 "
+        "FROM relay_container_client_response_artifacts "
+        "WHERE operation_id IN (?, ?, ?, ?) ORDER BY operation_id",
+        (
+            authorities["http"]["operation_id"],
+            authorities["invalid"]["operation_id"],
+            authorities["success"]["operation_id"],
+            authorities["typed"]["operation_id"],
+        ),
+    ).fetchall() != [
+        ("http_error", 429, None),
+        ("invalid_body", 500, None),
+        ("success", 200, success_receipt["usage_receipt_sha256"]),
+        ("typed_error", 200, None),
+    ]:
+        raise SystemExit("0052 response classes were not frozen exactly")
+
+    replace_evidence = raw_by_label["replace-raw"]
+    evidence_before = conn.execute(
+        "SELECT provider_response_evidence_sha256, raw_response_object_version "
+        "FROM relay_container_provider_response_evidence WHERE operation_id = ?",
+        (replace_evidence["operation_id"],),
+    ).fetchone()
+    expect_integrity_error(
+        lambda: conn.execute(
+            evidence_insert_sql.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1),
+            replace_evidence,
+        ),
+        "0052 REPLACE rewrote provider response evidence",
+    )
+    if conn.execute(
+        "SELECT provider_response_evidence_sha256, raw_response_object_version "
+        "FROM relay_container_provider_response_evidence WHERE operation_id = ?",
+        (replace_evidence["operation_id"],),
+    ).fetchone() != evidence_before:
+        raise SystemExit("0052 failed provider evidence REPLACE changed the winner")
+
+    replace_client = clients["replace-client"]
+    client_before = conn.execute(
+        "SELECT client_response_artifact_sha256, client_response_object_version "
+        "FROM relay_container_client_response_artifacts WHERE operation_id = ?",
+        (replace_client["operation_id"],),
+    ).fetchone()
+    expect_integrity_error(
+        lambda: conn.execute(
+            client_insert_sql.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1),
+            replace_client,
+        ),
+        "0052 REPLACE rewrote a client response artifact",
+    )
+    if conn.execute(
+        "SELECT client_response_artifact_sha256, client_response_object_version "
+        "FROM relay_container_client_response_artifacts WHERE operation_id = ?",
+        (replace_client["operation_id"],),
+    ).fetchone() != client_before:
+        raise SystemExit("0052 failed client artifact REPLACE changed the winner")
+
+    immutable_mutations = (
+        (
+            "UPDATE relay_container_operations "
+            "SET response_artifact_contract = NULL WHERE operation_id = ?",
+            malformed_evidence["operation_id"],
+            "relay container response artifact writer contract is immutable",
+        ),
+        (
+            "UPDATE relay_container_provider_response_evidence "
+            "SET recorded_at = recorded_at WHERE operation_id = ?",
+            malformed_evidence["operation_id"],
+            "relay container provider response evidence is immutable",
+        ),
+        (
+            "DELETE FROM relay_container_provider_response_evidence WHERE operation_id = ?",
+            malformed_evidence["operation_id"],
+            "relay container provider response evidence cannot be deleted",
+        ),
+        (
+            "UPDATE relay_container_client_response_artifacts "
+            "SET created_at = created_at WHERE operation_id = ?",
+            malformed_client["operation_id"],
+            "relay container client response artifact is immutable",
+        ),
+        (
+            "DELETE FROM relay_container_client_response_artifacts WHERE operation_id = ?",
+            malformed_client["operation_id"],
+            "relay container client response artifact cannot be deleted",
+        ),
+        (
+            "UPDATE relay_container_provider_response_evidence_identities "
+            "SET owner_generation = owner_generation WHERE operation_id = ?",
+            malformed_evidence["operation_id"],
+            "relay container provider response evidence identity is immutable",
+        ),
+        (
+            "DELETE FROM relay_container_client_response_artifact_identities "
+            "WHERE operation_id = ?",
+            malformed_client["operation_id"],
+            "relay container client response artifact identity cannot be deleted",
+        ),
+    )
+    for statement, operation_id, expected_error in immutable_mutations:
+        expect_integrity_error(
+            lambda statement=statement, operation_id=operation_id: conn.execute(
+                statement, (operation_id,)
+            ),
+            f"0052 append-only mutation succeeded: {statement}",
+            expected_error,
+        )
+
+    conn.execute("PRAGMA recursive_triggers = OFF")
+    identity_replace_cases = (
+        (
+            "relay_container_provider_response_evidence_identities",
+            """
+            INSERT OR REPLACE INTO relay_container_provider_response_evidence_identities (
+              operation_id, owner_generation, attempt_generation,
+              provider_operation_id, provider_response_evidence_sha256,
+              raw_response_object_key, raw_response_object_version
+            )
+            SELECT operation_id, owner_generation, attempt_generation,
+              provider_operation_id, provider_response_evidence_sha256,
+              raw_response_object_key, raw_response_object_version || '-forged'
+            FROM relay_container_provider_response_evidence_identities
+            WHERE operation_id = ?
+            """,
+            malformed_evidence["operation_id"],
+            "relay container provider response evidence identity is immutable",
+        ),
+        (
+            "relay_container_client_response_artifact_identities",
+            """
+            INSERT OR REPLACE INTO relay_container_client_response_artifact_identities (
+              operation_id, owner_generation, attempt_generation,
+              provider_response_evidence_sha256, client_response_artifact_sha256,
+              client_response_object_key, client_response_object_version
+            )
+            SELECT operation_id, owner_generation, attempt_generation,
+              provider_response_evidence_sha256, client_response_artifact_sha256,
+              client_response_object_key, client_response_object_version || '-forged'
+            FROM relay_container_client_response_artifact_identities
+            WHERE operation_id = ?
+            """,
+            malformed_client["operation_id"],
+            "relay container client response artifact identity is immutable",
+        ),
+    )
+    for table, statement, operation_id, expected_error in identity_replace_cases:
+        before = conn.execute(f'SELECT * FROM "{table}" ORDER BY 1, 2, 3').fetchall()
+        expect_integrity_error(
+            lambda statement=statement, operation_id=operation_id: conn.execute(
+                statement, (operation_id,)
+            ),
+            f"0052 REPLACE rewrote append-only identity table {table}",
+            expected_error,
+        )
+        after = conn.execute(f'SELECT * FROM "{table}" ORDER BY 1, 2, 3').fetchall()
+        if after != before:
+            raise SystemExit(f"0052 identity REPLACE changed {table}")
+
+    def terminal_values(
+        label: str,
+        receipt: dict[str, object],
+        client: dict[str, object] | None,
+    ) -> dict[str, object]:
+        authority = authorities[label]
+        event_created_at = int(authority["created_at"]) + 20
+        client_sha256 = (
+            str(client["client_response_sha256"])
+            if client is not None
+            else str(receipt["raw_response_sha256"])
+        )
+        headers_json = (
+            str(client["client_response_headers_json"])
+            if client is not None
+            else json.dumps(
+                {
+                    "cache-control": "no-store",
+                    "content-type": "application/json",
+                    "x-request-id": receipt["provider_request_id"],
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        return {
+            **authority,
+            **receipt,
+            "billing_event_id": digest(f"0052-terminal:{label}"),
+            "terminal_contract_sha256": digest(f"0052-terminal-contract:{label}"),
+            "client_response_headers_json": headers_json,
+            "client_response_headers_sha256": hashlib.sha256(
+                headers_json.encode("utf-8")
+            ).hexdigest(),
+            "client_response_object_key": (
+                f"container-client-responses/v1/{authority['operation_id']}/2/"
+                f"{client_sha256}"
+            ),
+            "client_response_object_version": f"0052-terminal-client-{label}",
+            "client_response_sha256": client_sha256,
+            "client_response_size": (
+                int(client["client_response_size"])
+                if client is not None
+                else int(receipt["raw_response_size"])
+            ),
+            "client_response_artifact_sha256": (
+                client["client_response_artifact_sha256"]
+                if client is not None
+                else None
+            ),
+            "outbox_payload_sha256": digest(f"0052-outbox:{label}"),
+            "event_created_at": event_created_at,
+        }
+
+    terminal_insert_sql = """
+        INSERT INTO relay_container_terminal_events (
+          billing_event_id, reservation_key, operation_id,
+          owner_generation, operation_from_status, operation_status,
+          terminal_contract_sha256,
+          billing_action, billing_owner_generation, billing_from_status,
+          billing_final_quota, billing_request_accounted, billing_reason,
+          pre_consumed_quota, user_quota_delta, token_quota_delta,
+          user_used_quota_delta, channel_used_quota_delta,
+          request_count_delta, reconciliation_id, reconciliation_revision,
+          client_response_status, client_response_headers_json,
+          client_response_headers_sha256, client_response_object_key,
+          client_response_object_version, client_response_sha256,
+          client_response_size, client_response_content_type,
+          outbox_schema_version, outbox_payload_json,
+          outbox_payload_sha256, created_at,
+          provider_usage_receipt_sha256, provider_result_sha256,
+          provider_attempt_generation, client_response_artifact_sha256
+        ) VALUES (
+          :billing_event_id, :operation_id, :operation_id,
+          2, 'dispatched', 'completed', :terminal_contract_sha256,
+          'settle', 2, 'reserved', 1, 1, '0052_response_artifact',
+          1, 0, 0, 1, 1, 1, :reconciliation_id, 1,
+          200, :client_response_headers_json, :client_response_headers_sha256,
+          :client_response_object_key, :client_response_object_version,
+          :client_response_sha256, :client_response_size, 'application/json',
+          1, '{}', :outbox_payload_sha256, :event_created_at,
+          :usage_receipt_sha256, :raw_response_sha256,
+          1, :client_response_artifact_sha256
+        )
+    """
+
+    old_terminal = terminal_values("old-writer", old_writer_receipt, None)
+    expect_integrity_error(
+        lambda: conn.execute(terminal_insert_sql, old_terminal),
+        "0052 accepted an old terminal writer without a client artifact",
+        "relay container terminal event response artifact mismatch",
+    )
+
+    typed_operation_before = conn.execute(
+        "SELECT status, response_status, response_code FROM relay_container_operations "
+        "WHERE operation_id = ?",
+        (authorities["typed"]["operation_id"],),
+    ).fetchone()
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_operations "
+            "SET status = 'failed', response_status = 200, "
+            "response_code = 'typed_error', updated_at = updated_at + 1 "
+            "WHERE operation_id = ?",
+            (authorities["typed"]["operation_id"],),
+        ),
+        "0052 allowed typed HTTP-200 evidence to use the pre-P3 failed shape",
+    )
+    if conn.execute(
+        "SELECT status, response_status, response_code FROM relay_container_operations "
+        "WHERE operation_id = ?",
+        (authorities["typed"]["operation_id"],),
+    ).fetchone() != typed_operation_before:
+        raise SystemExit("0052 typed HTTP-200 terminal negative changed operation state")
+
+    receiptless_terminal = terminal_values(
+        "replace-client",
+        raw_by_label["replace-client"],
+        clients["replace-client"],
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            terminal_insert_sql.replace(":usage_receipt_sha256", "NULL"),
+            receiptless_terminal,
+        ),
+        "0052 allowed receipt-less success to settle before P4 authority exists",
+        "relay container terminal event response artifact mismatch",
+    )
+
+    success_terminal = terminal_values("success", success_receipt, clients["success"])
+    conn.execute(terminal_insert_sql, success_terminal)
+    conn.execute(
+        "INSERT INTO relay_container_terminal_outbox_state ("
+        "billing_event_id, status, delivery_generation, delivery_attempt_count, "
+        "lease_expires_at, available_at, delivered_at, last_error, "
+        "created_at, updated_at) VALUES (?, 'pending', 0, 0, 0, ?, 0, '', ?, ?)",
+        (
+            success_terminal["billing_event_id"],
+            success_terminal["event_created_at"],
+            success_terminal["event_created_at"],
+            success_terminal["event_created_at"],
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE relay_container_operations
+        SET status = 'completed', response_status = 200, response_code = NULL,
+            result_object_key = ?, result_object_version = ?, result_sha256 = ?,
+            result_size = ?, result_content_type = 'application/json', updated_at = ?
+        WHERE operation_id = ?
+        """,
+        (
+            success_receipt["result_object_key"],
+            success_receipt["result_object_version"],
+            success_receipt["raw_response_sha256"],
+            success_receipt["raw_response_size"],
+            success_terminal["event_created_at"],
+            success_terminal["operation_id"],
+        ),
+    )
+    if conn.execute(
+        "SELECT status, response_status FROM relay_container_operations "
+        "WHERE operation_id = ?",
+        (success_terminal["operation_id"],),
+    ).fetchone() != ("completed", 200):
+        raise SystemExit("0052 artifact-backed success did not complete exactly")
+
+    cursor_insert_sql = """
+        INSERT INTO relay_container_response_artifact_inventory_cursors (
+          artifact_namespace, scan_generation, page_sequence, object_prefix,
+          cursor_before, cursor_after, checkpoint_status, page_object_count,
+          observer_enabled, observer_mode, apply_authority, delete_authority,
+          inventory_cursor_sha256, created_at
+        ) VALUES (
+          :artifact_namespace, :scan_generation, :page_sequence, :object_prefix,
+          :cursor_before, :cursor_after, :checkpoint_status, :page_object_count,
+          :observer_enabled, 'observe_only', :apply_authority, :delete_authority,
+          :inventory_cursor_sha256, :cursor_created_at
+        )
+    """
+    cursor_default_off_insert_sql = """
+        INSERT INTO relay_container_response_artifact_inventory_cursors (
+          artifact_namespace, scan_generation, page_sequence, object_prefix,
+          cursor_before, cursor_after, checkpoint_status, page_object_count,
+          inventory_cursor_sha256, created_at
+        ) VALUES (
+          :artifact_namespace, :scan_generation, :page_sequence, :object_prefix,
+          :cursor_before, :cursor_after, :checkpoint_status, :page_object_count,
+          :inventory_cursor_sha256, :cursor_created_at
+        )
+    """
+
+    def cursor_values(
+        artifact_namespace: str,
+        page_sequence: int,
+        cursor_before: str,
+        cursor_after: str,
+        checkpoint_status: str,
+    ) -> dict[str, object]:
+        prefix = (
+            "container-provider-evidence/v1/"
+            if artifact_namespace == "provider_evidence"
+            else "container-client-artifacts/v1/"
+        )
+        return {
+            "artifact_namespace": artifact_namespace,
+            "scan_generation": 1,
+            "page_sequence": page_sequence,
+            "object_prefix": prefix,
+            "cursor_before": cursor_before,
+            "cursor_after": cursor_after,
+            "checkpoint_status": checkpoint_status,
+            "page_object_count": 2,
+            "observer_enabled": 1,
+            "apply_authority": 0,
+            "delete_authority": 0,
+            "inventory_cursor_sha256": digest(
+                f"0052-inventory-cursor:{artifact_namespace}:{page_sequence}"
+            ),
+            "cursor_created_at": 2_100_000_020_000 + page_sequence,
+        }
+
+    provider_page_1 = cursor_values(
+        "provider_evidence", 1, "", "provider-page-1", "page"
+    )
+    expect_integrity_error(
+        lambda: conn.execute(cursor_default_off_insert_sql, provider_page_1),
+        "0052 inventory cursor wrote while observer defaulted off",
+        "relay container response artifact inventory cursor authority mismatch",
+    )
+    for context, changes in {
+        "namespace": {"artifact_namespace": "legacy_response"},
+        "prefix": {"object_prefix": "container-client-artifacts/v1/"},
+        "apply authority": {"apply_authority": 1},
+        "delete authority": {"delete_authority": 1},
+        "page gap": {"page_sequence": 2, "cursor_before": "missing-page"},
+    }.items():
+        candidate = {**provider_page_1, **changes}
+        expect_integrity_error(
+            lambda candidate=candidate: conn.execute(cursor_insert_sql, candidate),
+            f"0052 inventory cursor accepted invalid {context}",
+        )
+    conn.execute(cursor_insert_sql, provider_page_1)
+
+    provider_page_2 = cursor_values(
+        "provider_evidence", 2, "provider-page-1", "", "complete"
+    )
+    wrong_cursor_chain = {**provider_page_2, "cursor_before": "wrong-page"}
+    expect_integrity_error(
+        lambda: conn.execute(cursor_insert_sql, wrong_cursor_chain),
+        "0052 inventory cursor accepted a discontinuous page token",
+        "relay container response artifact inventory cursor authority mismatch",
+    )
+    conn.execute(cursor_insert_sql, provider_page_2)
+    provider_page_3 = cursor_values(
+        "provider_evidence", 3, "provider-page-2", "", "complete"
+    )
+    expect_integrity_error(
+        lambda: conn.execute(cursor_insert_sql, provider_page_3),
+        "0052 inventory cursor continued after a completed scan",
+        "relay container response artifact inventory cursor authority mismatch",
+    )
+
+    client_page_1 = cursor_values("client_artifact", 1, "", "", "complete")
+    conn.execute(cursor_insert_sql, client_page_1)
+
+    cursor_before_replace = conn.execute(
+        "SELECT cursor_before, cursor_after, inventory_cursor_sha256 "
+        "FROM relay_container_response_artifact_inventory_cursors "
+        "WHERE artifact_namespace = 'provider_evidence' "
+        "AND scan_generation = 1 AND page_sequence = 2"
+    ).fetchone()
+    expect_integrity_error(
+        lambda: conn.execute(
+            cursor_insert_sql.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1),
+            provider_page_2,
+        ),
+        "0052 REPLACE rewrote an inventory cursor",
+    )
+    if conn.execute(
+        "SELECT cursor_before, cursor_after, inventory_cursor_sha256 "
+        "FROM relay_container_response_artifact_inventory_cursors "
+        "WHERE artifact_namespace = 'provider_evidence' "
+        "AND scan_generation = 1 AND page_sequence = 2"
+    ).fetchone() != cursor_before_replace:
+        raise SystemExit("0052 failed inventory cursor REPLACE changed the winner")
+
+    finding_insert_sql = """
+        INSERT INTO relay_container_response_artifact_inventory_findings (
+          finding_id, artifact_namespace, scan_generation, page_sequence,
+          inventory_cursor_sha256, object_key, object_version, operation_id,
+          owner_generation, attempt_generation, key_artifact_sha256,
+          object_sha256, object_size, object_uploaded_at,
+          provider_response_evidence_sha256,
+          client_response_artifact_sha256, classification,
+          observation_sha256, observer_mode, apply_authority,
+          delete_authority, observed_at
+        ) VALUES (
+          :finding_id, :artifact_namespace, 1, :page_sequence,
+          :inventory_cursor_sha256, :object_key, :object_version, :operation_id,
+          :owner_generation, :attempt_generation, :key_artifact_sha256,
+          :object_sha256, :object_size, :object_uploaded_at,
+          :provider_response_evidence_sha256,
+          :client_response_artifact_sha256, :classification,
+          :observation_sha256, 'observe_only', :apply_authority,
+          :delete_authority, :observed_at
+        )
+    """
+
+    def provider_finding(
+        label: str,
+        evidence: dict[str, object],
+        classification: str = "referenced",
+        page_sequence: int = 1,
+    ) -> dict[str, object]:
+        return {
+            "finding_id": digest(f"0052-inventory-finding:{label}"),
+            "artifact_namespace": "provider_evidence",
+            "page_sequence": page_sequence,
+            "inventory_cursor_sha256": (
+                provider_page_1["inventory_cursor_sha256"]
+                if page_sequence == 1
+                else provider_page_2["inventory_cursor_sha256"]
+            ),
+            "object_key": evidence["raw_response_object_key"],
+            "object_version": evidence["raw_response_object_version"],
+            "operation_id": evidence["operation_id"],
+            "owner_generation": 2,
+            "attempt_generation": 1,
+            "key_artifact_sha256": evidence["raw_response_sha256"],
+            "object_sha256": evidence["raw_response_sha256"],
+            "object_size": evidence["raw_response_size"],
+            "object_uploaded_at": evidence["recorded_at"],
+            "provider_response_evidence_sha256": evidence[
+                "provider_response_evidence_sha256"
+            ],
+            "client_response_artifact_sha256": None,
+            "classification": classification,
+            "observation_sha256": digest(f"0052-inventory-observation:{label}"),
+            "apply_authority": 0,
+            "delete_authority": 0,
+            "observed_at": 2_100_000_020_100,
+        }
+
+    provider_referenced = provider_finding(
+        "provider-referenced", malformed_evidence
+    )
+    conn.execute(finding_insert_sql, provider_referenced)
+
+    success_client = clients["success"]
+    client_referenced = {
+        "finding_id": digest("0052-inventory-finding:client-referenced"),
+        "artifact_namespace": "client_artifact",
+        "page_sequence": 1,
+        "inventory_cursor_sha256": client_page_1["inventory_cursor_sha256"],
+        "object_key": success_client["client_response_object_key"],
+        "object_version": success_client["client_response_object_version"],
+        "operation_id": success_client["operation_id"],
+        "owner_generation": 2,
+        "attempt_generation": 1,
+        "key_artifact_sha256": success_client[
+            "client_response_artifact_sha256"
+        ],
+        "object_sha256": success_client["client_response_sha256"],
+        "object_size": success_client["client_response_size"],
+        "object_uploaded_at": success_client["client_created_at"],
+        "provider_response_evidence_sha256": None,
+        "client_response_artifact_sha256": success_client[
+            "client_response_artifact_sha256"
+        ],
+        "classification": "referenced",
+        "observation_sha256": digest(
+            "0052-inventory-observation:client-referenced"
+        ),
+        "apply_authority": 0,
+        "delete_authority": 0,
+        "observed_at": 2_100_000_020_101,
+    }
+    conn.execute(finding_insert_sql, client_referenced)
+
+    orphan_key_sha256 = digest("0052-inventory-orphan-key")
+    provider_orphan = {
+        "finding_id": digest("0052-inventory-finding:provider-orphan"),
+        "artifact_namespace": "provider_evidence",
+        "page_sequence": 2,
+        "inventory_cursor_sha256": provider_page_2["inventory_cursor_sha256"],
+        "object_key": (
+            "container-provider-evidence/v1/0052-provider-orphan/2/1/"
+            f"{orphan_key_sha256}"
+        ),
+        "object_version": "0052-provider-orphan-v1",
+        "operation_id": "0052-provider-orphan",
+        "owner_generation": 2,
+        "attempt_generation": 1,
+        "key_artifact_sha256": orphan_key_sha256,
+        "object_sha256": orphan_key_sha256,
+        "object_size": 12,
+        "object_uploaded_at": 2_100_000_019_000,
+        "provider_response_evidence_sha256": None,
+        "client_response_artifact_sha256": None,
+        "classification": "orphan",
+        "observation_sha256": digest(
+            "0052-inventory-observation:provider-orphan"
+        ),
+        "apply_authority": 0,
+        "delete_authority": 0,
+        "observed_at": 2_100_000_020_102,
+    }
+    conn.execute(finding_insert_sql, provider_orphan)
+
+    divergent_evidence = raw_by_label["typed"]
+    provider_divergent = provider_finding(
+        "provider-divergent", divergent_evidence, "divergent", 2
+    )
+    provider_divergent["object_sha256"] = digest(
+        "0052-inventory-divergent-object"
+    )
+    conn.execute(finding_insert_sql, provider_divergent)
+
+    client_malformed = {
+        "finding_id": digest("0052-inventory-finding:client-malformed"),
+        "artifact_namespace": "client_artifact",
+        "page_sequence": 1,
+        "inventory_cursor_sha256": client_page_1["inventory_cursor_sha256"],
+        "object_key": "container-client-artifacts/v1/not-a-contract-key",
+        "object_version": "0052-client-malformed-v1",
+        "operation_id": None,
+        "owner_generation": None,
+        "attempt_generation": None,
+        "key_artifact_sha256": None,
+        "object_sha256": digest("0052-inventory-malformed-object"),
+        "object_size": 7,
+        "object_uploaded_at": 2_100_000_019_000,
+        "provider_response_evidence_sha256": None,
+        "client_response_artifact_sha256": None,
+        "classification": "malformed_key",
+        "observation_sha256": digest(
+            "0052-inventory-observation:client-malformed"
+        ),
+        "apply_authority": 0,
+        "delete_authority": 0,
+        "observed_at": 2_100_000_020_103,
+    }
+    conn.execute(finding_insert_sql, client_malformed)
+
+    false_orphan = {
+        **provider_finding("false-orphan", raw_by_label["http"], "orphan", 2),
+        "provider_response_evidence_sha256": None,
+    }
+    exact_divergence = provider_finding(
+        "false-divergence", raw_by_label["invalid"], "divergent", 2
+    )
+    client_body_digest_key = {
+        **client_referenced,
+        "finding_id": digest("0052-inventory-finding:client-body-digest-key"),
+        "object_key": (
+            f"container-client-artifacts/v1/{client_referenced['operation_id']}/2/"
+            f"{client_referenced['object_sha256']}"
+        ),
+        "observation_sha256": digest(
+            "0052-inventory-observation:client-body-digest-key"
+        ),
+    }
+    known_client = clients["typed"]
+    known_client_as_malformed = {
+        "finding_id": digest("0052-inventory-finding:known-client-malformed"),
+        "artifact_namespace": "client_artifact",
+        "page_sequence": 1,
+        "inventory_cursor_sha256": client_page_1["inventory_cursor_sha256"],
+        "object_key": known_client["client_response_object_key"],
+        "object_version": known_client["client_response_object_version"],
+        "operation_id": None,
+        "owner_generation": None,
+        "attempt_generation": None,
+        "key_artifact_sha256": None,
+        "object_sha256": known_client["client_response_sha256"],
+        "object_size": known_client["client_response_size"],
+        "object_uploaded_at": known_client["client_created_at"],
+        "provider_response_evidence_sha256": None,
+        "client_response_artifact_sha256": None,
+        "classification": "malformed_key",
+        "observation_sha256": digest(
+            "0052-inventory-observation:known-client-malformed"
+        ),
+        "apply_authority": 0,
+        "delete_authority": 0,
+        "observed_at": 2_100_000_020_104,
+    }
+    finding_negative_cases = {
+        "cursor identity": {
+            **provider_finding("wrong-cursor", raw_by_label["replace-raw"]),
+            "inventory_cursor_sha256": digest("0052-inventory-wrong-cursor"),
+        },
+        "apply authority": {
+            **provider_finding("apply-authority", raw_by_label["replace-raw"]),
+            "apply_authority": 1,
+        },
+        "delete authority": {
+            **provider_finding("delete-authority", raw_by_label["replace-raw"]),
+            "delete_authority": 1,
+        },
+        "cross-namespace reference": {
+            **client_referenced,
+            "finding_id": digest("0052-inventory-finding:cross-namespace"),
+            "provider_response_evidence_sha256": malformed_evidence[
+                "provider_response_evidence_sha256"
+            ],
+            "client_response_artifact_sha256": None,
+            "observation_sha256": digest(
+                "0052-inventory-observation:cross-namespace"
+            ),
+        },
+        "referenced object digest": {
+            **provider_finding(
+                "referenced-digest", raw_by_label["replace-raw"]
+            ),
+            "object_sha256": digest("0052-inventory-forged-object"),
+        },
+        "existing object orphan": false_orphan,
+        "exact object divergent": exact_divergence,
+        "client body digest key terminus": client_body_digest_key,
+        "known client artifact malformed": known_client_as_malformed,
+    }
+    for context, candidate in finding_negative_cases.items():
+        expect_integrity_error(
+            lambda candidate=candidate: conn.execute(finding_insert_sql, candidate),
+            f"0052 inventory finding accepted invalid {context}",
+        )
+
+    finding_before_replace = conn.execute(
+        "SELECT classification, observation_sha256 "
+        "FROM relay_container_response_artifact_inventory_findings "
+        "WHERE finding_id = ?",
+        (provider_referenced["finding_id"],),
+    ).fetchone()
+    expect_integrity_error(
+        lambda: conn.execute(
+            finding_insert_sql.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1),
+            provider_referenced,
+        ),
+        "0052 REPLACE rewrote an inventory finding",
+    )
+    if conn.execute(
+        "SELECT classification, observation_sha256 "
+        "FROM relay_container_response_artifact_inventory_findings "
+        "WHERE finding_id = ?",
+        (provider_referenced["finding_id"],),
+    ).fetchone() != finding_before_replace:
+        raise SystemExit("0052 failed inventory finding REPLACE changed the winner")
+
+    inventory_immutable_mutations = (
+        (
+            "UPDATE relay_container_response_artifact_inventory_cursors "
+            "SET page_object_count = page_object_count "
+            "WHERE artifact_namespace = 'provider_evidence' "
+            "AND scan_generation = 1 AND page_sequence = 1",
+            "relay container response artifact inventory cursor is immutable",
+        ),
+        (
+            "DELETE FROM relay_container_response_artifact_inventory_cursors "
+            "WHERE artifact_namespace = 'provider_evidence' "
+            "AND scan_generation = 1 AND page_sequence = 1",
+            "relay container response artifact inventory cursor cannot be deleted",
+        ),
+        (
+            "UPDATE relay_container_response_artifact_inventory_cursor_identities "
+            "SET cursor_before = cursor_before "
+            "WHERE artifact_namespace = 'provider_evidence' "
+            "AND scan_generation = 1 AND page_sequence = 1",
+            "relay container response artifact inventory cursor identity is immutable",
+        ),
+        (
+            "DELETE FROM relay_container_response_artifact_inventory_cursor_identities "
+            "WHERE artifact_namespace = 'provider_evidence' "
+            "AND scan_generation = 1 AND page_sequence = 1",
+            "relay container response artifact inventory cursor identity cannot be deleted",
+        ),
+        (
+            "UPDATE relay_container_response_artifact_inventory_findings "
+            "SET classification = classification WHERE finding_id = '"
+            + str(provider_referenced["finding_id"])
+            + "'",
+            "relay container response artifact inventory finding is immutable",
+        ),
+        (
+            "DELETE FROM relay_container_response_artifact_inventory_findings "
+            "WHERE finding_id = '"
+            + str(provider_referenced["finding_id"])
+            + "'",
+            "relay container response artifact inventory finding cannot be deleted",
+        ),
+        (
+            "UPDATE relay_container_response_artifact_inventory_finding_identities "
+            "SET object_key = object_key WHERE finding_id = '"
+            + str(provider_referenced["finding_id"])
+            + "'",
+            "relay container response artifact inventory finding identity is immutable",
+        ),
+        (
+            "DELETE FROM relay_container_response_artifact_inventory_finding_identities "
+            "WHERE finding_id = '"
+            + str(provider_referenced["finding_id"])
+            + "'",
+            "relay container response artifact inventory finding identity cannot be deleted",
+        ),
+    )
+    for statement, expected_error in inventory_immutable_mutations:
+        expect_integrity_error(
+            lambda statement=statement: conn.execute(statement),
+            f"0052 inventory append-only mutation succeeded: {statement}",
+            expected_error,
+        )
+
+    inventory_identity_replace_cases = (
+        (
+            "relay_container_response_artifact_inventory_cursor_identities",
+            """
+            INSERT OR REPLACE INTO relay_container_response_artifact_inventory_cursor_identities (
+              artifact_namespace, scan_generation, page_sequence,
+              cursor_before, cursor_after, checkpoint_status,
+              inventory_cursor_sha256
+            )
+            SELECT artifact_namespace, scan_generation, page_sequence,
+              cursor_before, cursor_after || '-forged', checkpoint_status,
+              inventory_cursor_sha256
+            FROM relay_container_response_artifact_inventory_cursor_identities
+            WHERE artifact_namespace = 'provider_evidence'
+              AND scan_generation = 1 AND page_sequence = 1
+            """,
+            "relay container response artifact inventory cursor identity is immutable",
+        ),
+        (
+            "relay_container_response_artifact_inventory_finding_identities",
+            """
+            INSERT OR REPLACE INTO relay_container_response_artifact_inventory_finding_identities (
+              finding_id, artifact_namespace, scan_generation,
+              object_key, object_version, observation_sha256
+            )
+            SELECT finding_id, artifact_namespace, scan_generation,
+              object_key, object_version || '-forged', observation_sha256
+            FROM relay_container_response_artifact_inventory_finding_identities
+            WHERE finding_id = '"""
+            + str(provider_referenced["finding_id"])
+            + "'",
+            "relay container response artifact inventory finding identity is immutable",
+        ),
+    )
+    for table, statement, expected_error in inventory_identity_replace_cases:
+        before = conn.execute(f'SELECT * FROM "{table}" ORDER BY 1, 2, 3').fetchall()
+        expect_integrity_error(
+            lambda statement=statement: conn.execute(statement),
+            f"0052 REPLACE rewrote append-only inventory identity table {table}",
+            expected_error,
+        )
+        after = conn.execute(f'SELECT * FROM "{table}" ORDER BY 1, 2, 3').fetchall()
+        if after != before:
+            raise SystemExit(f"0052 inventory identity REPLACE changed {table}")
+
+    inventory_counts = conn.execute(
+        "SELECT "
+        "(SELECT COUNT(*) FROM relay_container_response_artifact_inventory_cursors), "
+        "(SELECT COUNT(*) FROM relay_container_response_artifact_inventory_cursor_identities), "
+        "(SELECT COUNT(*) FROM relay_container_response_artifact_inventory_findings), "
+        "(SELECT COUNT(*) FROM relay_container_response_artifact_inventory_finding_identities)"
+    ).fetchone()
+    if inventory_counts != (3, 3, 5, 5):
+        raise SystemExit(
+            f"0052 inventory identity ledgers did not converge exactly: {inventory_counts}"
+        )
 
 
 def verify_relay_container_reconciliation_observer(
@@ -9731,7 +12047,7 @@ def verify_relay_container_provider_usage_binding_rollout(
     binding_index = schema_paths.index(binding_path)
     if binding_index == 0 or schema_paths[binding_index - 1] != receipt_path:
         raise SystemExit("0049 provider usage binding must immediately follow 0048")
-    if binding_index != len(schema_paths) - 3 or schema_paths[binding_index + 1].name != (
+    if binding_index != len(schema_paths) - 4 or schema_paths[binding_index + 1].name != (
         "0050_relay_container_atomic_admission.sql"
     ):
         raise SystemExit("0049 provider usage binding must immediately precede 0050")
@@ -10085,15 +12401,27 @@ def verify_relay_container_scheduled_terminalization_rollout(
     )
     if scheduled_path is None or atomic_path is None:
         raise SystemExit("0050/0051 relay Container terminalization migrations not found")
-    if len(schema_paths) != 51:
+    response_artifact_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0052_relay_container_provider_response_artifacts.sql"
+        ),
+        None,
+    )
+    if response_artifact_path is None:
+        raise SystemExit("0051/0052 relay Container response migrations not found")
+    if len(schema_paths) != 52:
         raise SystemExit(
-            f"0051 scheduled terminalization requires exactly 51 D1 migrations, got {len(schema_paths)}"
+            f"0051 scheduled terminalization compatibility requires exactly 52 D1 migrations, got {len(schema_paths)}"
         )
     scheduled_index = schema_paths.index(scheduled_path)
-    if scheduled_index != len(schema_paths) - 1:
-        raise SystemExit("0051 scheduled terminalization must be the current D1 migration head")
+    if scheduled_index != len(schema_paths) - 2:
+        raise SystemExit("0051 scheduled terminalization must immediately precede the 0052 head")
     if scheduled_index == 0 or schema_paths[scheduled_index - 1] != atomic_path:
         raise SystemExit("0051 scheduled terminalization must immediately follow 0050")
+    if schema_paths[scheduled_index + 1] != response_artifact_path:
+        raise SystemExit("0051 scheduled terminalization must immediately precede 0052")
 
     scheduled_sql = scheduled_path.read_text(encoding="utf-8")
     if "if not exists" in scheduled_sql.lower():
@@ -10134,6 +12462,299 @@ def verify_relay_container_scheduled_terminalization_rollout(
             )
 
 
+def verify_relay_container_response_artifacts_rollout(
+    schema_paths: list[Path],
+) -> None:
+    response_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0052_relay_container_provider_response_artifacts.sql"
+        ),
+        None,
+    )
+    scheduled_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0051_relay_container_scheduled_terminalization.sql"
+        ),
+        None,
+    )
+    if response_path is None or scheduled_path is None:
+        raise SystemExit("0051/0052 relay Container response-artifact migrations not found")
+    if len(schema_paths) != 52:
+        raise SystemExit(
+            f"0052 response artifacts require exactly 52 D1 migrations, got {len(schema_paths)}"
+        )
+    response_index = schema_paths.index(response_path)
+    if response_index != len(schema_paths) - 1:
+        raise SystemExit("0052 response artifacts must be the current D1 migration head")
+    if response_index == 0 or schema_paths[response_index - 1] != scheduled_path:
+        raise SystemExit("0052 response artifacts must immediately follow 0051")
+
+    response_sql = response_path.read_text(encoding="utf-8")
+    if "if not exists" in response_sql.lower():
+        raise SystemExit("0052 critical response-artifact objects must fail duplicate DDL")
+
+    required_fragments = (
+        "CREATE TABLE migration_0052_relay_container_response_artifact_drain_guard",
+        "CHECK (active_count = 0)",
+        "status IN ('prepared', 'dispatched', 'recovery_required')",
+        "ADD COLUMN response_artifact_contract TEXT",
+        "response_artifact_contract = 'container-response-artifacts-v1'",
+        "CREATE TRIGGER relay_container_response_artifact_operation_insert_guard",
+        "CREATE TRIGGER relay_container_response_artifact_operation_contract_guard",
+        "CREATE UNIQUE INDEX idx_relay_container_atomic_admissions_response_artifact_identity",
+        "CREATE UNIQUE INDEX idx_relay_container_provider_usage_receipts_response_artifact_identity",
+        "CREATE TABLE relay_container_provider_response_evidence",
+        "CREATE TABLE relay_container_provider_response_evidence_identities",
+        "CREATE TRIGGER relay_container_provider_response_evidence_identity_insert_guard",
+        "CREATE INDEX idx_relay_container_provider_response_evidence_recorded",
+        "CREATE TABLE relay_container_client_response_artifacts",
+        "CREATE TABLE relay_container_client_response_artifact_identities",
+        "CREATE TRIGGER relay_container_client_response_artifact_identity_insert_guard",
+        "CREATE INDEX idx_relay_container_client_response_artifacts_created",
+        "CREATE TABLE relay_container_response_artifact_inventory_cursors",
+        "CREATE TABLE relay_container_response_artifact_inventory_cursor_identities",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_cursor_identity_insert_guard",
+        "CREATE INDEX idx_relay_container_response_artifact_inventory_cursors_created",
+        "CREATE TABLE relay_container_response_artifact_inventory_findings",
+        "CREATE TABLE relay_container_response_artifact_inventory_finding_identities",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_finding_identity_insert_guard",
+        "CREATE INDEX idx_relay_container_response_artifact_inventory_findings_observed",
+        "container-provider-evidence/v1/",
+        "container-client-artifacts/v1/",
+        "owner_generation || '/' || client_response_artifact_sha256",
+        "raw_response_content_type IS NULL",
+        "BETWEEN 0 AND 6",
+        "NEW.client_response_content_type = 'application/json'",
+        "raw_header.key <> 'content-type'",
+        "artifact_namespace IN ('provider_evidence', 'client_artifact')",
+        "observer_enabled INTEGER NOT NULL DEFAULT 0",
+        "observer_mode TEXT NOT NULL DEFAULT 'observe_only'",
+        "apply_authority INTEGER NOT NULL DEFAULT 0",
+        "delete_authority INTEGER NOT NULL DEFAULT 0",
+        "classification IN ('referenced', 'orphan', 'divergent', 'malformed_key')",
+        "REFERENCES relay_container_atomic_admissions(",
+        "REFERENCES relay_container_provider_egress_grants(",
+        "REFERENCES relay_container_provider_response_evidence(",
+        "REFERENCES relay_container_provider_usage_receipts(",
+        "CREATE TRIGGER relay_container_provider_response_evidence_insert_authority_guard",
+        "CREATE TRIGGER relay_container_provider_response_evidence_identity_guard",
+        "CREATE TRIGGER relay_container_provider_response_evidence_identity_update_guard",
+        "CREATE TRIGGER relay_container_provider_response_evidence_identity_delete_guard",
+        "CREATE TRIGGER relay_container_provider_response_evidence_update_guard",
+        "CREATE TRIGGER relay_container_provider_response_evidence_delete_guard",
+        "CREATE TRIGGER relay_container_client_response_artifact_insert_authority_guard",
+        "CREATE TRIGGER relay_container_client_response_artifact_identity_guard",
+        "CREATE TRIGGER relay_container_client_response_artifact_identity_update_guard",
+        "CREATE TRIGGER relay_container_client_response_artifact_identity_delete_guard",
+        "CREATE TRIGGER relay_container_client_response_artifact_update_guard",
+        "CREATE TRIGGER relay_container_client_response_artifact_delete_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_cursor_insert_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_cursor_identity_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_cursor_identity_update_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_cursor_identity_delete_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_cursor_update_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_cursor_delete_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_finding_insert_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_finding_identity_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_finding_identity_update_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_finding_identity_delete_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_finding_update_guard",
+        "CREATE TRIGGER relay_container_response_artifact_inventory_finding_delete_guard",
+        "ADD COLUMN client_response_artifact_sha256 TEXT",
+        "CREATE UNIQUE INDEX idx_relay_container_terminal_events_response_artifact",
+        "CREATE TRIGGER relay_container_terminal_event_response_artifact_guard",
+        "CREATE TRIGGER relay_container_operation_response_artifact_terminal_guard",
+        "CREATE TRIGGER relay_container_scheduled_terminalization_response_artifact_guard",
+        "CREATE TRIGGER relay_container_reconciliation_response_artifact_convergence_guard",
+    )
+    for fragment in required_fragments:
+        if fragment not in response_sql:
+            raise SystemExit(f"0052 response-artifact rollout missing: {fragment}")
+    if "NEW.client_response_content_type = evidence.raw_response_content_type" in response_sql:
+        raise SystemExit("0052 rollout couples client content type to raw evidence")
+
+    upper_response_sql = response_sql.upper()
+    for frozen_table in (
+        "RELAY_CONTAINER_R2_INVENTORY_CURSORS",
+        "RELAY_CONTAINER_R2_INVENTORY_FINDINGS",
+    ):
+        for forbidden_prefix in (
+            "CREATE TABLE ",
+            "ALTER TABLE ",
+            "DROP TABLE ",
+            "UPDATE ",
+            "DELETE FROM ",
+            "INSERT INTO ",
+        ):
+            if f"{forbidden_prefix}{frozen_table}" in upper_response_sql:
+                raise SystemExit(
+                    "0052 must not mutate or rebuild frozen 0044 inventory table: "
+                    f"{frozen_table}"
+                )
+
+    def normalized_migration_sql(sql: str) -> str:
+        uncommented = []
+        for line in sql.splitlines():
+            content = line.split("--", 1)[0].strip()
+            if content:
+                uncommented.append(content)
+        return " ".join(" ".join(uncommented).split())
+
+    migration_fingerprint = hashlib.sha256(
+        normalized_migration_sql(response_sql).encode("utf-8")
+    ).hexdigest()
+    if migration_fingerprint != MIGRATION_0052_NORMALIZED_SHA256:
+        raise SystemExit(
+            "0052 normalized migration SQL fingerprint mismatch: "
+            f"{migration_fingerprint}"
+        )
+
+    statements = []
+    pending = ""
+    for line in response_sql.splitlines(keepends=True):
+        pending += line
+        if sqlite3.complete_statement(pending):
+            statements.append(pending.strip())
+            pending = ""
+    if pending.strip():
+        raise SystemExit("0052 migration has an incomplete SQL statement")
+    for statement in statements:
+        without_comments = normalized_migration_sql(statement).upper()
+        if without_comments.startswith(("UPDATE ", "DELETE ")):
+            raise SystemExit(
+                f"0052 migration contains a top-level business mutation: {without_comments[:80]}"
+            )
+        if without_comments.startswith("INSERT ") and (
+            "MIGRATION_0052_RELAY_CONTAINER_RESPONSE_ARTIFACT_DRAIN_GUARD"
+            not in without_comments
+        ):
+            raise SystemExit("0052 migration contains a top-level non-sentinel insert")
+        if without_comments.startswith("DROP ") and without_comments != (
+            "DROP TABLE MIGRATION_0052_RELAY_CONTAINER_RESPONSE_ARTIFACT_DRAIN_GUARD;"
+        ):
+            raise SystemExit("0052 migration drops a persistent object")
+        if without_comments.startswith("ALTER ") and not without_comments.startswith(
+            (
+                "ALTER TABLE RELAY_CONTAINER_OPERATIONS ADD COLUMN ",
+                "ALTER TABLE RELAY_CONTAINER_TERMINAL_EVENTS ADD COLUMN ",
+            )
+        ):
+            raise SystemExit("0052 migration alters an unexpected table")
+
+    drain_conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == response_path:
+            break
+        drain_conn.executescript(schema_path.read_text(encoding="utf-8"))
+    operation_insert_guard_sql = sqlite_object_sql(
+        drain_conn,
+        "trigger",
+        "relay_container_atomic_admission_operation_insert_guard",
+    )
+    if operation_insert_guard_sql is None:
+        raise SystemExit("0052 drain fixture requires the 0050 operation insert guard")
+    drain_conn.execute("DROP TRIGGER relay_container_atomic_admission_operation_insert_guard")
+    operation_id = "0052-draining-canary"
+    input_sha256 = hashlib.sha256(b"0052-draining-input").hexdigest()
+    drain_conn.execute(
+        """
+        INSERT INTO relay_container_operations (
+          reservation_key, operation_id, owner_generation,
+          owner_lease_expires_at, channel_id, selected_group, operation_kind,
+          provider_operation_id, admission_sha256, protocol_version,
+          shard_contract_version, ring_generation, shard_count, shard_index,
+          instance_name, execution_deadline_at, input_mode, input_object_key,
+          input_object_version, input_sha256, input_size, input_content_type,
+          trace_id, client_idempotency_hmac_sha256, client_request_sha256,
+          reconciliation_id, status, created_at, updated_at
+        ) VALUES (
+          ?, ?, 2, 2100000600, 1, 'default', 'chat_completions_canary',
+          'provider:0052-draining-canary', ?, 1, 1, 1, 8, 2,
+          'cinatoken-relay-shard-v1-0002', 2100000300, 'r2', ?,
+          '0052-draining-input-v1', ?, 0, 'application/json',
+          'trace:0052-draining', ?, ?, ?, 'prepared', 2100000000, 2100000000
+        )
+        """,
+        (
+            operation_id,
+            operation_id,
+            hashlib.sha256(b"0052-draining-admission").hexdigest(),
+            f"container-inputs/v1/{operation_id}/2/{input_sha256}",
+            input_sha256,
+            hashlib.sha256(b"0052-draining-client").hexdigest(),
+            hashlib.sha256(b"0052-draining-request").hexdigest(),
+            hashlib.sha256(b"0052-draining-reconciliation").hexdigest(),
+        ),
+    )
+    drain_conn.commit()
+    expect_integrity_error(
+        lambda: drain_conn.executescript(response_sql),
+        "0052 drain guard accepted an active protocol-v1 canary operation",
+        "CHECK constraint failed: active_count = 0",
+    )
+    for table in (
+        "relay_container_provider_response_evidence",
+        "relay_container_provider_response_evidence_identities",
+        "relay_container_client_response_artifacts",
+        "relay_container_client_response_artifact_identities",
+        "relay_container_response_artifact_inventory_cursors",
+        "relay_container_response_artifact_inventory_cursor_identities",
+        "relay_container_response_artifact_inventory_findings",
+        "relay_container_response_artifact_inventory_finding_identities",
+    ):
+        if table_exists(drain_conn, table):
+            raise SystemExit(f"0052 failed drain partially installed {table}")
+    drain_conn.close()
+
+    fingerprint_conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        fingerprint_conn.executescript(schema_path.read_text(encoding="utf-8"))
+    for table in (
+        "relay_container_provider_response_evidence",
+        "relay_container_provider_response_evidence_identities",
+        "relay_container_client_response_artifacts",
+        "relay_container_client_response_artifact_identities",
+    ):
+        if fingerprint_conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone() != (
+            0,
+        ):
+            raise SystemExit(f"0052 response-artifact rollout backfilled {table}")
+
+    actual_object_fingerprints = {}
+    for object_type, object_name in MIGRATION_0052_OBJECT_SHA256:
+        object_sql = sqlite_object_sql(fingerprint_conn, object_type, object_name)
+        if object_sql is None:
+            raise SystemExit(f"0052 fingerprint object is missing: {object_type} {object_name}")
+        actual_object_fingerprints[(object_type, object_name)] = hashlib.sha256(
+            " ".join(object_sql.split()).encode("utf-8")
+        ).hexdigest()
+    if actual_object_fingerprints != MIGRATION_0052_OBJECT_SHA256:
+        mismatches = sorted(
+            key
+            for key, expected in MIGRATION_0052_OBJECT_SHA256.items()
+            if actual_object_fingerprints.get(key) != expected
+        )
+        raise SystemExit(f"0052 normalized SQLite object fingerprints differ: {mismatches}")
+
+    try:
+        fingerprint_conn.executescript(response_sql)
+    except sqlite3.Error as error:
+        if not any(
+            expected in str(error)
+            for expected in ("already exists", "duplicate column name: response_artifact_contract")
+        ):
+            raise SystemExit(
+                f"0052 duplicate DDL failed for an unexpected reason: {error}"
+            ) from error
+    else:
+        raise SystemExit("0052 critical response-artifact objects accepted duplicate DDL")
+    fingerprint_conn.close()
+
+
 def verify_relay_container_atomic_admission_rollout(
     schema_paths: list[Path],
 ) -> None:
@@ -10155,13 +12776,13 @@ def verify_relay_container_atomic_admission_rollout(
     )
     if atomic_path is None or binding_path is None:
         raise SystemExit("0049/0050 relay Container admission migrations not found")
-    if len(schema_paths) != 51:
+    if len(schema_paths) != 52:
         raise SystemExit(
-            f"0050 atomic admission compatibility requires exactly 51 D1 migrations, got {len(schema_paths)}"
+            f"0050 atomic admission compatibility requires exactly 52 D1 migrations, got {len(schema_paths)}"
         )
     atomic_index = schema_paths.index(atomic_path)
-    if atomic_index != len(schema_paths) - 2:
-        raise SystemExit("0050 atomic admission must remain immediately before the 0051 head")
+    if atomic_index != len(schema_paths) - 3:
+        raise SystemExit("0050 atomic admission must remain immediately before 0051 and 0052")
     if atomic_index == 0 or schema_paths[atomic_index - 1] != binding_path:
         raise SystemExit("0050 atomic admission must immediately follow 0049")
 
@@ -10532,7 +13153,8 @@ def verify_relay_container_atomic_admission_rollout(
           instance_name, execution_deadline_at, input_mode, input_object_key,
           input_object_version, input_sha256, input_size, input_content_type,
           trace_id, client_idempotency_hmac_sha256, client_request_sha256,
-          reconciliation_id, status, created_at, updated_at
+          reconciliation_id, response_artifact_contract,
+          status, created_at, updated_at
         ) VALUES (
           :reservation_key, :operation_id, :owner_generation,
           :owner_lease_expires_at, :channel_id, :selected_group,
@@ -10541,7 +13163,8 @@ def verify_relay_container_atomic_admission_rollout(
           'cinatoken-relay-shard-v1-0003', :execution_deadline_at, 'r2',
           :input_object_key, :input_object_version, :input_sha256, 0,
           'application/json', :trace_id, :client_idempotency_hmac_sha256,
-          :client_request_sha256, :reconciliation_id, 'prepared',
+          :client_request_sha256, :reconciliation_id,
+          'container-response-artifacts-v1', 'prepared',
           :created_at, :created_at
         )
     """

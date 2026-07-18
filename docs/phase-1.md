@@ -2481,3 +2481,22 @@ The response packet does not change either Durable Alarm Intent v1 gate. The
 alarm bridge remains DO-local and still needs no D1 schema of its own; the new
 0052 reservation applies only to future response evidence. All execution,
 provider-egress, and canary gates stay false. Production remains **NO-GO**.
+
+## 2026-07-18 Response Evidence P2 Phase Update
+
+This update supersedes the preceding statements that separate response
+artifacts remain future work or that global D1 head is 0051. P1 shared
+interpretation and P2 evidence storage now exist locally. The alarm bridge
+itself still needs no global D1 schema, and no action gate is activated.
+
+| Boundary | Local evidence | Remaining production gate | Status |
+| --- | --- | --- | --- |
+| D1 0052 | Drained old-writer apply fence; separate immutable raw/client records and identity ledgers; terminal/convergence guards; exact schema fingerprints and negative fixtures | Authenticated account/name/UUID-bound staging apply/readback after every pre-0052 writer and operation is drained | Local candidate |
+| R2 evidence | Distinct provider/client namespaces, server-derived keys, 4 MiB bounds, create-only conditional writes, exact replay/conflict checks | Real R2 response-loss/concurrency/orphan/divergence campaign with retention and cost evidence | Local candidate |
+| Inventory | Separate immutable cursor/finding ledgers, provider/client classification, observe-only and hard-zero apply/delete authority | Reviewed scanner, default-false activation, alerts, retention disposition, and proof it cannot mutate authoritative rows or objects | Schema only; inert |
+| Protocol v3 | Exact envelope, canonicalization, digest, status, write-order, compatibility, and failure contract is frozen | Implement egress encoder, Controller verifier, DO schema migration 3, runtime rejected outcome, edge replay, and N/N-1 or blue/green proof | **Blocked (P3)** |
+| Financial terminal | 0052 can bind an artifact to existing successful terminal evidence | Add typed-200/non-200 interpreted reject and exact-200 success ownership with one immutable financial CAS/outbox/audit decision | **Blocked (P4)** |
+| Remote proof | No Cloudflare state changed | Reader-first apply/deploy, real Container/DO lifecycle and faults, provider-call counter, load/cost/SLO/alerts, rollback, security and approvals | **NO-GO (P5)** |
+
+The current development order is P3 protocol, P4 terminal ownership, then P5
+staging proof. Go/VPS remains the traffic and financial authority.

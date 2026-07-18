@@ -385,11 +385,12 @@ describe("migration 0050 atomic relay Container admission", () => {
     await seedAuthorityState();
     const intent = await atomicAdmissionIntent("old-writer");
     await expect(
-      env.DB.batch([
-        selectedReservationStatement(intent),
-        preparedOperationStatement(intent),
-      ]),
-    ).rejects.toThrow(/relay container atomic admission authority mismatch/);
+      runAtomicAdmissionBatch(intent, {
+        includeResponseArtifactContract: false,
+      }),
+    ).rejects.toThrow(
+      /relay container response artifact writer contract is required/,
+    );
 
     expect(await atomicAdmissionState(intent)).toMatchObject({
       counts: { reservations: 0, operations: 0, admissions: 0, aliases: 0 },
@@ -546,12 +547,21 @@ async function prepareScheduledTerminalization(intent) {
     .bind(intent.operationId, claimOwner, claimAt, claimLeaseExpiresAt)
     .run();
 
-  // This suite exercises the 0051 financial batch fence. Provider receipt
-  // authority has its own Workerd coverage and would require the full egress
-  // grant/receipt fixture before the terminal event can be staged here.
-  await env.DB.prepare(
-    "DROP TRIGGER relay_container_terminal_event_provider_usage_guard",
-  ).run();
+  // This suite isolates the 0051 financial batch fence. The 0048 receipt and
+  // 0052 response-artifact guards have their own full-schema coverage and
+  // require the complete egress/evidence fixture before this legacy terminal
+  // batch can be staged.
+  await env.DB.batch([
+    env.DB.prepare(
+      "DROP TRIGGER relay_container_terminal_event_provider_usage_guard",
+    ),
+    env.DB.prepare(
+      "DROP TRIGGER relay_container_terminal_event_response_artifact_guard",
+    ),
+    env.DB.prepare(
+      "DROP TRIGGER relay_container_scheduled_terminalization_response_artifact_guard",
+    ),
+  ]);
 
   return {
     billingEventId: hex("5"),
@@ -853,7 +863,10 @@ async function atomicAdmissionIntent(suffix, overrides = {}) {
 
 async function runAtomicAdmissionBatch(
   intent,
-  { markerOperationAdmissionSha256 = intent.operationAdmissionSha256 } = {},
+  {
+    markerOperationAdmissionSha256 = intent.operationAdmissionSha256,
+    includeResponseArtifactContract = true,
+  } = {},
 ) {
   return env.DB.batch([
     env.DB.prepare("PRAGMA defer_foreign_keys = ON"),
@@ -871,7 +884,7 @@ async function runAtomicAdmissionBatch(
     previousChangeAssertion(intent),
     channelAuthorityStatement(intent),
     previousChangeAssertion(intent),
-    preparedOperationStatement(intent),
+    preparedOperationStatement(intent, { includeResponseArtifactContract }),
     previousChangeAssertion(intent),
   ]);
 }
@@ -985,7 +998,16 @@ function previousChangeAssertion(intent) {
   ).bind(intent.reservationKey);
 }
 
-function preparedOperationStatement(intent) {
+function preparedOperationStatement(
+  intent,
+  { includeResponseArtifactContract = true } = {},
+) {
+  const responseArtifactContractColumn = includeResponseArtifactContract
+    ? ", response_artifact_contract"
+    : "";
+  const responseArtifactContractValue = includeResponseArtifactContract
+    ? ", 'container-response-artifacts-v1'"
+    : "";
   return env.DB.prepare(
     `INSERT INTO relay_container_operations (
        reservation_key, operation_id, owner_generation,
@@ -995,11 +1017,12 @@ function preparedOperationStatement(intent) {
        instance_name, execution_deadline_at, input_mode, input_object_key,
        input_object_version, input_sha256, input_size, input_content_type,
        trace_id, client_idempotency_hmac_sha256, client_request_sha256,
-       reconciliation_id, status, created_at, updated_at
+       reconciliation_id${responseArtifactContractColumn},
+       status, created_at, updated_at
      ) VALUES (
        ?1, ?1, ?2, ?3, ?4, ?5, 'chat_completions_canary', ?6, ?7, 1,
        1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003', ?8, 'r2', ?9,
-       ?10, ?11, 0, 'application/json', ?12, ?13, ?14, ?15,
+       ?10, ?11, 0, 'application/json', ?12, ?13, ?14, ?15${responseArtifactContractValue},
        'prepared', ?16, ?16
      )`,
   ).bind(

@@ -1352,3 +1352,50 @@ manifest, shared interpreter, Worker adapter, fail-closed Container egress
 adapter, exact-200 receipt gate, header boundary, affinity guard, missing-usage
 fallback preservation, wasm checks, and full `bun run check` all pass. This
 changes no remote or production readiness verdict; packets P2-P5 remain open.
+
+## 2026-07-18 Response Evidence P2 Status
+
+This section supersedes the immediately preceding statement that P2 and D1
+0052 are absent. P2 is complete only as a local candidate.
+
+### Implemented locally
+
+- Migration 0052 drains active pre-0052 canary work before adding independent
+  immutable raw-provider and interpreted-client evidence, replacement-resistant
+  identity ledgers, exact parent keys, and successful-terminal convergence
+  guards.
+- A no-default immutable operation writer contract rejects a late N-1 writer
+  before prepared-operation creation/provider I/O; all four identity ledgers
+  reject direct `INSERT OR REPLACE` even with recursive triggers disabled.
+- The D1 readiness probe requires the migration marker, all eight persistent P2
+  tables, the required raw/client/inventory columns, seven indexes, all 34
+  authority/immutability/convergence triggers, and the terminal artifact column.
+- The Controller exposes separate internal provider-evidence and client-artifact
+  grants/routes. It derives exact keys, accepts empty raw evidence and a minimum
+  `{}` client artifact, caps both at 4 MiB, and performs create-only R2 writes
+  with exact replay or fail-closed conflict.
+- Response inventory is isolated from 0044, immutable, observer-only, and has
+  no apply/delete authority. No producer or activation gate is shipped.
+- Protocol v3 is specified byte-for-byte, but no P3 encoder/verifier/DO/runtime
+  implementation is claimed.
+
+### Verified locally
+
+The SQLite verifier passes 52 contiguous migrations, 57 tables, 667 required
+incremental columns, 80 key indexes, exact 0052 object fingerprints, and its
+positive/negative drain, identity, replacement, terminal, inventory, and
+rollback cases. Controller compilation and its 103 Bun plus 90 protocol and 34
+Workerd storage tests pass. Worker D1-head/readiness tests pass.
+
+Negative fixtures also keep typed HTTP-200 out of the inherited failed shape
+and prevent receipt-less success settlement. Those are P3/P4 design inputs, not
+completed terminal paths.
+
+### Still blocked
+
+No authenticated remote migration/readback or R2/DO/Container evidence exists.
+P3 must implement protocol v3 and the rejected terminal shape; P4 must own the
+financial terminal decision; P5 must prove reader-first mixed-version rollout,
+provider ambiguity, lifecycle/fault/load/cost/SLO/alerts, retention, rollback,
+security and signed approvals. Go/VPS remains authoritative and production
+remains **NO-GO**.

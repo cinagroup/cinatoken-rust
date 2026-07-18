@@ -7,11 +7,15 @@ import {
 
 export const R2_INPUT_HOST = "r2-input.cinatoken.internal";
 export const R2_RESULT_HOST = "r2-result.cinatoken.internal";
+export const R2_PROVIDER_EVIDENCE_HOST = "r2-provider-evidence.cinatoken.internal";
+export const R2_CLIENT_ARTIFACT_HOST = "r2-client-artifact.cinatoken.internal";
 export const KV_CONFIG_HOST = "kv-config.cinatoken.internal";
 export const D1_ADMISSION_HOST = "d1-admission.cinatoken.internal";
 
 export const R2_INPUT_PATH = "/v1/input";
 export const R2_RESULT_PATH = "/v1/result";
+export const R2_PROVIDER_EVIDENCE_PATH = "/v1/provider-evidence";
+export const R2_CLIENT_ARTIFACT_PATH = "/v1/client-artifact";
 export const KV_CONFIG_PATH = "/v1/config";
 export const D1_ADMISSION_PATH = "/v1/admission";
 
@@ -22,11 +26,14 @@ export const PROVIDER_ATTEMPT_GENERATION_HEADER =
 export const OPERATION_ID_HEADER = "x-cinatoken-operation-id";
 export const OWNER_GENERATION_HEADER = "x-cinatoken-owner-generation";
 export const MAX_R2_OBJECT_BYTES = 64 * 1024 * 1024;
+export const MAX_RESPONSE_ARTIFACT_BYTES = 4 * 1024 * 1024;
 export const MAX_KV_CONFIG_BYTES = 32 * 1024;
 export const MAX_PROVIDER_USAGE_RECEIPT_JSON_BYTES = 8_192;
 export const MAX_PROVIDER_USAGE_RECEIPT_ENCODED_BYTES = 12_288;
 export const KV_OPERATION_CONFIG_PREFIX = "container-operation-config/v1/";
 export const R2_RESULT_KEY_PREFIX = "container-results/v1";
+export const R2_PROVIDER_EVIDENCE_KEY_PREFIX = "container-provider-evidence/v1";
+export const R2_CLIENT_ARTIFACT_KEY_PREFIX = "container-client-artifacts/v1";
 export const PROVIDER_USAGE_RECEIPT_SCHEMA_VERSION = 1;
 export const PROVIDER_USAGE_RECEIPT_PARSER_CONTRACT =
   "openai-chat-completions-usage-v1";
@@ -40,12 +47,26 @@ export const REPORTED_USAGE_FIELDS_V1_ALL = 2_047;
 export const STORAGE_GATEWAY_ACTIONS = {
   R2_INPUT_GET: "r2_input_get",
   R2_RESULT_PUT: "r2_result_put",
+  R2_PROVIDER_EVIDENCE_PUT: "r2_provider_evidence_put",
+  R2_CLIENT_ARTIFACT_PUT: "r2_client_artifact_put",
   KV_CONFIG_GET: "kv_config_get",
   D1_ADMISSION_GET: "d1_admission_get",
 } as const;
 
+// Response-artifact writers stay capability-only until index.ts explicitly enables them.
 export type StorageGatewayAction =
-  (typeof STORAGE_GATEWAY_ACTIONS)[keyof typeof STORAGE_GATEWAY_ACTIONS];
+  | typeof STORAGE_GATEWAY_ACTIONS.R2_INPUT_GET
+  | typeof STORAGE_GATEWAY_ACTIONS.R2_RESULT_PUT
+  | typeof STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET
+  | typeof STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET;
+
+export type ResponseArtifactStorageAction =
+  | typeof STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT
+  | typeof STORAGE_GATEWAY_ACTIONS.R2_CLIENT_ARTIFACT_PUT;
+
+export type StorageGatewayCapabilityAction =
+  | StorageGatewayAction
+  | ResponseArtifactStorageAction;
 
 export interface R2InputGetGrant {
   action: typeof STORAGE_GATEWAY_ACTIONS.R2_INPUT_GET;
@@ -71,6 +92,31 @@ export interface R2ResultPutGrant {
   content_type: string;
 }
 
+interface R2ResponseArtifactPutGrant {
+  operation_id: string;
+  owner_generation: number;
+  attempt_generation: number;
+  provider_operation_id: string;
+  admission_sha256: string;
+  egress_profile: string;
+  egress_worker_version_id: string;
+  sha256: string;
+  size: number;
+  content_type: string;
+}
+
+export interface R2ProviderEvidencePutGrant extends R2ResponseArtifactPutGrant {
+  action: typeof STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT;
+  provider_response_evidence_sha256: string;
+}
+
+export interface R2ClientArtifactPutGrant extends R2ResponseArtifactPutGrant {
+  action: typeof STORAGE_GATEWAY_ACTIONS.R2_CLIENT_ARTIFACT_PUT;
+  client_response_artifact_sha256: string;
+}
+
+type R2ResponseArtifactGrant = R2ProviderEvidencePutGrant | R2ClientArtifactPutGrant;
+
 export interface KvConfigGetGrant {
   action: typeof STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET;
   operation_kind: string;
@@ -94,6 +140,8 @@ export interface D1AdmissionGetGrant {
 export type StorageAccessGrant =
   | R2InputGetGrant
   | R2ResultPutGrant
+  | R2ProviderEvidencePutGrant
+  | R2ClientArtifactPutGrant
   | KvConfigGetGrant
   | D1AdmissionGetGrant;
 
@@ -331,7 +379,7 @@ interface ProviderUsageReceiptRow {
   persisted_at: number;
 }
 
-const ROUTES: Record<StorageGatewayAction, StorageRoute> = {
+const ROUTES: Record<StorageGatewayCapabilityAction, StorageRoute> = {
   [STORAGE_GATEWAY_ACTIONS.R2_INPUT_GET]: {
     host: R2_INPUT_HOST,
     method: "GET",
@@ -341,6 +389,16 @@ const ROUTES: Record<StorageGatewayAction, StorageRoute> = {
     host: R2_RESULT_HOST,
     method: "PUT",
     path: R2_RESULT_PATH,
+  },
+  [STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT]: {
+    host: R2_PROVIDER_EVIDENCE_HOST,
+    method: "PUT",
+    path: R2_PROVIDER_EVIDENCE_PATH,
+  },
+  [STORAGE_GATEWAY_ACTIONS.R2_CLIENT_ARTIFACT_PUT]: {
+    host: R2_CLIENT_ARTIFACT_HOST,
+    method: "PUT",
+    path: R2_CLIENT_ARTIFACT_PATH,
   },
   [STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET]: {
     host: KV_CONFIG_HOST,
@@ -832,6 +890,10 @@ export async function handleStorageGatewayRequest(
         return await getR2Input(env, grant);
       case STORAGE_GATEWAY_ACTIONS.R2_RESULT_PUT:
         return await putR2Result(env, request, grant);
+      case STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT:
+        return await putR2ProviderEvidence(env, request, grant);
+      case STORAGE_GATEWAY_ACTIONS.R2_CLIENT_ARTIFACT_PUT:
+        return await putR2ClientArtifact(env, request, grant);
       case STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET:
         return await getKvConfig(env, grant);
       case STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET:
@@ -846,6 +908,20 @@ export async function handleStorageGatewayRequest(
 
 export function deriveR2ResultKey(grant: R2ResultPutGrant): string {
   return `${R2_RESULT_KEY_PREFIX}/${grant.operation_id}/${grant.owner_generation}/${grant.sha256}`;
+}
+
+export function deriveR2ProviderEvidenceKey(grant: R2ProviderEvidencePutGrant): string {
+  return (
+    `${R2_PROVIDER_EVIDENCE_KEY_PREFIX}/${grant.operation_id}/` +
+    `${grant.owner_generation}/${grant.attempt_generation}/${grant.sha256}`
+  );
+}
+
+export function deriveR2ClientArtifactKey(grant: R2ClientArtifactPutGrant): string {
+  return (
+    `${R2_CLIENT_ARTIFACT_KEY_PREFIX}/${grant.operation_id}/` +
+    `${grant.owner_generation}/${grant.client_response_artifact_sha256}`
+  );
 }
 
 export function deriveKvConfigKey(operationKind: string): string {
@@ -915,6 +991,62 @@ async function putR2Result(
     return resultWriteResponse(key, existing.version, grant, true, 200);
   }
   throw new GatewayError("r2_result_conflict", 409);
+}
+
+async function putR2ProviderEvidence(
+  env: StorageGatewayEnvironment,
+  request: Request,
+  grant: R2ProviderEvidencePutGrant,
+): Promise<Response> {
+  return putR2ResponseArtifact(env, request, grant, deriveR2ProviderEvidenceKey(grant));
+}
+
+async function putR2ClientArtifact(
+  env: StorageGatewayEnvironment,
+  request: Request,
+  grant: R2ClientArtifactPutGrant,
+): Promise<Response> {
+  return putR2ResponseArtifact(env, request, grant, deriveR2ClientArtifactKey(grant));
+}
+
+async function putR2ResponseArtifact(
+  env: StorageGatewayEnvironment,
+  request: Request,
+  grant: R2ResponseArtifactGrant,
+  key: string,
+): Promise<Response> {
+  enforceResponseArtifactLimit(grant);
+  requireResponseArtifactHeaders(request, grant);
+  const bucket = env.CONTAINER_STORAGE_RESULT_R2;
+  if (bucket === undefined) throw new GatewayError("storage_binding_unavailable", 503);
+
+  const customMetadata = responseArtifactMetadata(grant);
+  const body = await readResponseArtifactBody(request, grant);
+  let created: R2Object | null;
+  try {
+    created = await bucket.put(key, body.byteLength === 0 ? null : body, {
+      onlyIf: new Headers({ "if-none-match": "*" }),
+      httpMetadata: { contentType: grant.content_type },
+      customMetadata,
+      sha256: grant.sha256,
+    });
+  } finally {
+    await cancelRequestBody(request);
+  }
+
+  const errorPrefix = responseArtifactErrorPrefix(grant);
+  if (created !== null) {
+    if (!r2ResponseArtifactMatches(created, key, grant, customMetadata)) {
+      throw new GatewayError(`${errorPrefix}_integrity_mismatch`, 502);
+    }
+    return responseArtifactWriteResponse(key, created.version, grant, false, 201);
+  }
+
+  const existing = await bucket.head(key);
+  if (existing !== null && r2ResponseArtifactMatches(existing, key, grant, customMetadata)) {
+    return responseArtifactWriteResponse(key, existing.version, grant, true, 200);
+  }
+  throw new GatewayError(`${errorPrefix}_conflict`, 409);
 }
 
 async function getKvConfig(
@@ -2076,6 +2208,44 @@ function isStorageAccessGrant(value: unknown): value is StorageAccessGrant {
         isNonNegativeInteger(value.size) &&
         validContentType(value.content_type)
       );
+    case STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT:
+      return (
+        hasExactKeys(value, [
+          "action",
+          "operation_id",
+          "owner_generation",
+          "attempt_generation",
+          "provider_operation_id",
+          "admission_sha256",
+          "egress_profile",
+          "egress_worker_version_id",
+          "provider_response_evidence_sha256",
+          "sha256",
+          "size",
+          "content_type",
+        ]) &&
+        validResponseArtifactGrant(value, 0) &&
+        validSha256(value.provider_response_evidence_sha256)
+      );
+    case STORAGE_GATEWAY_ACTIONS.R2_CLIENT_ARTIFACT_PUT:
+      return (
+        hasExactKeys(value, [
+          "action",
+          "operation_id",
+          "owner_generation",
+          "attempt_generation",
+          "provider_operation_id",
+          "admission_sha256",
+          "egress_profile",
+          "egress_worker_version_id",
+          "client_response_artifact_sha256",
+          "sha256",
+          "size",
+          "content_type",
+        ]) &&
+        validResponseArtifactGrant(value, 2) &&
+        validSha256(value.client_response_artifact_sha256)
+      );
     case STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET:
       return (
         hasExactKeys(value, ["action", "operation_kind"]) &&
@@ -2119,6 +2289,27 @@ function isStorageAccessGrant(value: unknown): value is StorageAccessGrant {
     default:
       return false;
   }
+}
+
+function validResponseArtifactGrant(
+  value: Record<string, unknown>,
+  minimumSize: number,
+): boolean {
+  return (
+    validIdentifier(value.operation_id, 128) &&
+    value.owner_generation === 2 &&
+    value.attempt_generation === 1 &&
+    validIdentifier(value.provider_operation_id, 128) &&
+    validSha256(value.admission_sha256) &&
+    value.egress_profile === PROVIDER_USAGE_RECEIPT_EGRESS_PROFILE &&
+    validEgressIdentity(value.egress_worker_version_id, 128) &&
+    validSha256(value.sha256) &&
+    isNonNegativeInteger(value.size) &&
+    value.size >= minimumSize &&
+    validContentType(value.content_type) &&
+    (value.action !== STORAGE_GATEWAY_ACTIONS.R2_CLIENT_ARTIFACT_PUT ||
+      value.content_type === "application/json")
+  );
 }
 
 function validAdmissionInput(value: unknown): value is OperationInput {
@@ -2214,8 +2405,41 @@ function requireResultHeaders(request: Request, grant: R2ResultPutGrant): void {
   }
 }
 
+function requireResponseArtifactHeaders(
+  request: Request,
+  grant: R2ResponseArtifactGrant,
+): void {
+  const errorPrefix = responseArtifactErrorPrefix(grant);
+  const contentLength = request.headers.get("content-length");
+  if (
+    contentLength === null ||
+    !/^\d+$/.test(contentLength) ||
+    Number(contentLength) !== grant.size
+  ) {
+    throw new GatewayError(`${errorPrefix}_length_mismatch`, 400);
+  }
+  if (request.headers.get("content-type") !== grant.content_type) {
+    throw new GatewayError(`${errorPrefix}_content_type_mismatch`, 400);
+  }
+  if (request.headers.get(CONTENT_SHA256_HEADER) !== grant.sha256) {
+    throw new GatewayError(`${errorPrefix}_sha256_mismatch`, 400);
+  }
+  if (request.headers.has("content-encoding") || request.headers.has("content-range")) {
+    throw new GatewayError(`${errorPrefix}_encoding_not_allowed`, 400);
+  }
+  if ((grant.size === 0) !== (request.body === null)) {
+    throw new GatewayError(`${errorPrefix}_body_mismatch`, 400);
+  }
+}
+
 function enforceR2Limit(size: number): void {
   if (size > MAX_R2_OBJECT_BYTES) throw new GatewayError("r2_object_too_large", 413);
+}
+
+function enforceResponseArtifactLimit(grant: R2ResponseArtifactGrant): void {
+  if (grant.size > MAX_RESPONSE_ARTIFACT_BYTES) {
+    throw new GatewayError(`${responseArtifactErrorPrefix(grant)}_too_large`, 413);
+  }
 }
 
 function r2ObjectMatches(
@@ -2239,6 +2463,24 @@ function r2ResultMatches(
   object: R2Object,
   key: string,
   grant: R2ResultPutGrant,
+  expectedMetadata: Record<string, string>,
+): boolean {
+  const metadata = object.customMetadata;
+  return (
+    object.key === key &&
+    object.size === grant.size &&
+    object.httpMetadata?.contentType === grant.content_type &&
+    checksumHex(object.checksums.sha256) === grant.sha256 &&
+    metadata !== undefined &&
+    Object.keys(metadata).length === Object.keys(expectedMetadata).length &&
+    Object.entries(expectedMetadata).every(([name, value]) => metadata[name] === value)
+  );
+}
+
+function r2ResponseArtifactMatches(
+  object: R2Object,
+  key: string,
+  grant: R2ResponseArtifactGrant,
   expectedMetadata: Record<string, string>,
 ): boolean {
   const metadata = object.customMetadata;
@@ -2287,6 +2529,35 @@ function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
   };
 }
 
+function responseArtifactMetadata(grant: R2ResponseArtifactGrant): Record<string, string> {
+  const metadata: Record<string, string> = {
+    operation_id: grant.operation_id,
+    owner_generation: String(grant.owner_generation),
+    attempt_generation: String(grant.attempt_generation),
+    provider_operation_id: grant.provider_operation_id,
+    admission_sha256: grant.admission_sha256,
+    egress_profile: grant.egress_profile,
+    egress_worker_version_id: grant.egress_worker_version_id,
+    sha256: grant.sha256,
+    size: String(grant.size),
+    content_type: grant.content_type,
+  };
+  if (grant.action === STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT) {
+    metadata.object_namespace = R2_PROVIDER_EVIDENCE_KEY_PREFIX;
+    metadata.provider_response_evidence_sha256 = grant.provider_response_evidence_sha256;
+  } else {
+    metadata.object_namespace = R2_CLIENT_ARTIFACT_KEY_PREFIX;
+    metadata.client_response_artifact_sha256 = grant.client_response_artifact_sha256;
+  }
+  return metadata;
+}
+
+function responseArtifactErrorPrefix(grant: R2ResponseArtifactGrant): string {
+  return grant.action === STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT
+    ? "r2_provider_evidence"
+    : "r2_client_artifact";
+}
+
 function resultWriteResponse(
   key: string,
   version: string,
@@ -2300,6 +2571,83 @@ function resultWriteResponse(
   );
   response.headers.set(R2_OBJECT_VERSION_HEADER, version);
   return response;
+}
+
+function responseArtifactWriteResponse(
+  key: string,
+  version: string,
+  grant: R2ResponseArtifactGrant,
+  replayed: boolean,
+  status: number,
+): Response {
+  const response = jsonResponse(
+    { key, sha256: grant.sha256, size: grant.size, replayed },
+    status,
+  );
+  response.headers.set(R2_OBJECT_VERSION_HEADER, version);
+  return response;
+}
+
+async function readResponseArtifactBody(
+  request: Request,
+  grant: R2ResponseArtifactGrant,
+): Promise<Uint8Array> {
+  const errorPrefix = responseArtifactErrorPrefix(grant);
+  if (request.body === null) {
+    const empty = new Uint8Array(0);
+    if ((await sha256Bytes(empty)) !== grant.sha256) {
+      throw new GatewayError(`${errorPrefix}_sha256_mismatch`, 400);
+    }
+    return empty;
+  }
+
+  const reader = request.body.getReader();
+  const bytes = new Uint8Array(grant.size);
+  let offset = 0;
+  let cancelled = false;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (!(next.value instanceof Uint8Array)) {
+        await reader.cancel();
+        cancelled = true;
+        throw new GatewayError(`${errorPrefix}_body_mismatch`, 400);
+      }
+      const nextSize = offset + next.value.byteLength;
+      if (nextSize > MAX_RESPONSE_ARTIFACT_BYTES) {
+        await reader.cancel();
+        cancelled = true;
+        throw new GatewayError(`${errorPrefix}_too_large`, 413);
+      }
+      if (nextSize > grant.size) {
+        await reader.cancel();
+        cancelled = true;
+        throw new GatewayError(`${errorPrefix}_length_mismatch`, 400);
+      }
+      bytes.set(next.value, offset);
+      offset = nextSize;
+    }
+  } catch (error) {
+    if (!cancelled) {
+      try {
+        await reader.cancel();
+      } catch {
+        // The request stream may already have failed or closed.
+      }
+    }
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (offset !== grant.size) {
+    throw new GatewayError(`${errorPrefix}_length_mismatch`, 400);
+  }
+  if ((await sha256Bytes(bytes)) !== grant.sha256) {
+    throw new GatewayError(`${errorPrefix}_sha256_mismatch`, 400);
+  }
+  return bytes;
 }
 
 async function readBoundedStream(stream: ReadableStream, limit: number): Promise<Uint8Array> {
@@ -2336,6 +2684,11 @@ async function readBoundedStream(stream: ReadableStream, limit: number): Promise
 
 async function sha256Utf8(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256Bytes(value: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 

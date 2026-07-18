@@ -8,13 +8,22 @@ import {
   KV_OPERATION_CONFIG_PREFIX,
   MAX_KV_CONFIG_BYTES,
   MAX_R2_OBJECT_BYTES,
+  MAX_RESPONSE_ARTIFACT_BYTES,
+  R2_CLIENT_ARTIFACT_HOST,
+  R2_CLIENT_ARTIFACT_KEY_PREFIX,
+  R2_CLIENT_ARTIFACT_PATH,
   R2_INPUT_HOST,
   R2_INPUT_PATH,
   R2_OBJECT_VERSION_HEADER,
+  R2_PROVIDER_EVIDENCE_HOST,
+  R2_PROVIDER_EVIDENCE_KEY_PREFIX,
+  R2_PROVIDER_EVIDENCE_PATH,
   R2_RESULT_HOST,
   R2_RESULT_KEY_PREFIX,
   R2_RESULT_PATH,
   STORAGE_GATEWAY_ACTIONS,
+  deriveR2ClientArtifactKey,
+  deriveR2ProviderEvidenceKey,
   deriveR2ResultKey,
   handleStorageGatewayRequest,
   isProviderUsageReceipt,
@@ -29,14 +38,19 @@ import {
   type ProviderEgressGrantIdentity,
   type ProviderUsageReceipt,
   type ProviderUsageReceiptResult,
+  type R2ClientArtifactPutGrant,
   type R2InputGetGrant,
+  type R2ProviderEvidencePutGrant,
   type R2ResultPutGrant,
   type StorageGatewayEnvironment,
 } from "../src/storage_gateway";
 
 const inputBytes = new TextEncoder().encode("hello");
 const inputSha256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+const emptySha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const resultSha256 = "a".repeat(64);
+const providerEvidenceDigest = "c".repeat(64);
+const clientArtifactDigest = "d".repeat(64);
 const tieredBillingSnapshotJson = '{"canary":"tiered"}';
 const tieredBillingSnapshotSha256 =
   "df3029b0f9ad33604ca660838f1e38aae61983e81f4b3ad0a8ac19c1bb92f867";
@@ -76,6 +90,48 @@ function resultGrant(overrides: Partial<R2ResultPutGrant> = {}): R2ResultPutGran
     ...overrides,
   };
 }
+
+function providerEvidenceGrant(
+  overrides: Partial<R2ProviderEvidencePutGrant> = {},
+): R2ProviderEvidencePutGrant {
+  return {
+    action: STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT,
+    operation_id: "op-123",
+    owner_generation: 2,
+    attempt_generation: 1,
+    provider_operation_id: "provider-op-123",
+    admission_sha256: "b".repeat(64),
+    egress_profile: "openai-chat-completions-canary-v1",
+    egress_worker_version_id: "worker-version-1",
+    provider_response_evidence_sha256: providerEvidenceDigest,
+    sha256: inputSha256,
+    size: inputBytes.byteLength,
+    content_type: "application/json",
+    ...overrides,
+  };
+}
+
+function clientArtifactGrant(
+  overrides: Partial<R2ClientArtifactPutGrant> = {},
+): R2ClientArtifactPutGrant {
+  return {
+    action: STORAGE_GATEWAY_ACTIONS.R2_CLIENT_ARTIFACT_PUT,
+    operation_id: "op-123",
+    owner_generation: 2,
+    attempt_generation: 1,
+    provider_operation_id: "provider-op-123",
+    admission_sha256: "b".repeat(64),
+    egress_profile: "openai-chat-completions-canary-v1",
+    egress_worker_version_id: "worker-version-1",
+    client_response_artifact_sha256: clientArtifactDigest,
+    sha256: inputSha256,
+    size: inputBytes.byteLength,
+    content_type: "application/json",
+    ...overrides,
+  };
+}
+
+type ResponseArtifactGrant = R2ProviderEvidencePutGrant | R2ClientArtifactPutGrant;
 
 function admissionGrant(overrides: Partial<D1AdmissionGetGrant> = {}): D1AdmissionGetGrant {
   const now = Math.floor(Date.now() / 1000);
@@ -336,6 +392,44 @@ function resultRequest(
   });
 }
 
+function responseArtifactRequest(
+  grant: ResponseArtifactGrant,
+  headerOverrides: Record<string, string | null> = {},
+  body: Uint8Array | null = grant.size === 0 ? null : inputBytes,
+  route?: { host: string; path: string },
+): Request {
+  const headers = new Headers({
+    "content-length": String(grant.size),
+    "content-type": grant.content_type,
+    [CONTENT_SHA256_HEADER]: grant.sha256,
+  });
+  for (const [name, value] of Object.entries(headerOverrides)) {
+    if (value === null) headers.delete(name);
+    else headers.set(name, value);
+  }
+  const target = route ??
+    (grant.action === STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT
+      ? { host: R2_PROVIDER_EVIDENCE_HOST, path: R2_PROVIDER_EVIDENCE_PATH }
+      : { host: R2_CLIENT_ARTIFACT_HOST, path: R2_CLIENT_ARTIFACT_PATH });
+  return new Request(`https://${target.host}${target.path}`, {
+    method: "PUT",
+    headers,
+    body: body ?? undefined,
+  });
+}
+
+function responseArtifactKey(grant: ResponseArtifactGrant): string {
+  return grant.action === STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT
+    ? deriveR2ProviderEvidenceKey(grant)
+    : deriveR2ClientArtifactKey(grant);
+}
+
+function responseArtifactErrorPrefix(grant: ResponseArtifactGrant): string {
+  return grant.action === STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT
+    ? "r2_provider_evidence"
+    : "r2_client_artifact";
+}
+
 function hexBuffer(hex: string): ArrayBuffer {
   const bytes = new Uint8Array(hex.length / 2);
   for (let index = 0; index < bytes.length; index += 1) {
@@ -425,6 +519,29 @@ function resultMetadata(grant: R2ResultPutGrant): Record<string, string> {
     size: String(grant.size),
     content_type: grant.content_type,
   };
+}
+
+function responseArtifactMetadata(grant: ResponseArtifactGrant): Record<string, string> {
+  const metadata: Record<string, string> = {
+    operation_id: grant.operation_id,
+    owner_generation: String(grant.owner_generation),
+    attempt_generation: String(grant.attempt_generation),
+    provider_operation_id: grant.provider_operation_id,
+    admission_sha256: grant.admission_sha256,
+    egress_profile: grant.egress_profile,
+    egress_worker_version_id: grant.egress_worker_version_id,
+    sha256: grant.sha256,
+    size: String(grant.size),
+    content_type: grant.content_type,
+  };
+  if (grant.action === STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT) {
+    metadata.object_namespace = R2_PROVIDER_EVIDENCE_KEY_PREFIX;
+    metadata.provider_response_evidence_sha256 = grant.provider_response_evidence_sha256;
+  } else {
+    metadata.object_namespace = R2_CLIENT_ARTIFACT_KEY_PREFIX;
+    metadata.client_response_artifact_sha256 = grant.client_response_artifact_sha256;
+  }
+  return metadata;
 }
 
 async function errorCode(response: Response): Promise<string> {
@@ -840,6 +957,457 @@ describe("container storage gateway", () => {
     );
     expect(response.status).toBe(409);
     expect(await errorCode(response)).toBe("r2_result_conflict");
+  });
+
+  test("keeps provider evidence and client artifact routes and grants distinct", async () => {
+    const providerGrant = providerEvidenceGrant();
+    const clientGrant = clientArtifactGrant();
+
+    const providerOnClientRoute = await handleStorageGatewayRequest(
+      enabledEnv(),
+      responseArtifactRequest(providerGrant, {}, inputBytes, {
+        host: R2_CLIENT_ARTIFACT_HOST,
+        path: R2_CLIENT_ARTIFACT_PATH,
+      }),
+      providerGrant,
+    );
+    expect(providerOnClientRoute.status).toBe(404);
+    expect(await errorCode(providerOnClientRoute)).toBe("storage_route_not_found");
+
+    const clientOnProviderRoute = await handleStorageGatewayRequest(
+      enabledEnv(),
+      responseArtifactRequest(clientGrant, {}, inputBytes, {
+        host: R2_PROVIDER_EVIDENCE_HOST,
+        path: R2_PROVIDER_EVIDENCE_PATH,
+      }),
+      clientGrant,
+    );
+    expect(clientOnProviderRoute.status).toBe(404);
+
+    const wrongMethod = await handleStorageGatewayRequest(
+      enabledEnv(),
+      new Request(`https://${R2_PROVIDER_EVIDENCE_HOST}${R2_PROVIDER_EVIDENCE_PATH}`, {
+        method: "POST",
+      }),
+      providerGrant,
+    );
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get("allow")).toBe("PUT");
+
+    const conflatedGrant = {
+      ...providerGrant,
+      action: STORAGE_GATEWAY_ACTIONS.R2_CLIENT_ARTIFACT_PUT,
+    } as unknown as R2ClientArtifactPutGrant;
+    const wrongAction = await handleStorageGatewayRequest(
+      enabledEnv(),
+      responseArtifactRequest(conflatedGrant),
+      conflatedGrant,
+    );
+    expect(wrongAction.status).toBe(403);
+    expect(await errorCode(wrongAction)).toBe("storage_access_denied");
+  });
+
+  test("validates complete immutable response-artifact grant identity", async () => {
+    const invalidGrants: ResponseArtifactGrant[] = [
+      {
+        ...providerEvidenceGrant(),
+        attempt_generation: 2,
+      },
+      {
+        ...clientArtifactGrant(),
+        attempt_generation: 2,
+      },
+      {
+        ...providerEvidenceGrant(),
+        owner_generation: 3,
+      },
+      {
+        ...providerEvidenceGrant(),
+        egress_profile: "openai-chat-completions-canary-v2",
+      },
+      {
+        ...clientArtifactGrant(),
+        content_type: "text/plain",
+      },
+      {
+        ...providerEvidenceGrant(),
+        egress_worker_version_id: null,
+      } as unknown as R2ProviderEvidencePutGrant,
+      {
+        ...providerEvidenceGrant(),
+        provider_response_evidence_sha256: "not-a-digest",
+      },
+      {
+        ...clientArtifactGrant(),
+        client_response_artifact_sha256: "not-a-digest",
+      },
+      {
+        ...clientArtifactGrant(),
+        size: 1,
+      },
+      {
+        ...clientArtifactGrant(),
+        provider_response_evidence_sha256: providerEvidenceDigest,
+      } as R2ClientArtifactPutGrant,
+    ];
+    let bindingCalled = false;
+    const env = enabledEnv({
+      CONTAINER_STORAGE_RESULT_R2: {
+        async put() {
+          bindingCalled = true;
+          return null;
+        },
+        async head() {
+          bindingCalled = true;
+          return null;
+        },
+      } as unknown as Pick<R2Bucket, "head" | "put">,
+    });
+
+    for (const grant of invalidGrants) {
+      const response = await handleStorageGatewayRequest(env, responseArtifactRequest(grant), grant);
+      expect(response.status).toBe(403);
+      expect(await errorCode(response)).toBe("storage_access_denied");
+    }
+    expect(bindingCalled).toBe(false);
+  });
+
+  test("allows empty raw evidence and enforces the two-byte client minimum", async () => {
+    const rawGrant = providerEvidenceGrant({ size: 0, sha256: emptySha256 });
+    const metadata = responseArtifactMetadata(rawGrant);
+    let puts = 0;
+    const bucket = {
+      async put(key: string, value: unknown) {
+        puts += 1;
+        expect(value).toBeNull();
+        return r2Object({
+          key,
+          version: "empty-raw-version",
+          size: 0,
+          contentType: rawGrant.content_type,
+          sha256: emptySha256,
+          customMetadata: metadata,
+        });
+      },
+      async head() {
+        throw new Error("head must not run after an empty raw create");
+      },
+    } as unknown as Pick<R2Bucket, "head" | "put">;
+    const env = enabledEnv({ CONTAINER_STORAGE_RESULT_R2: bucket });
+
+    const rawResponse = await handleStorageGatewayRequest(
+      env,
+      responseArtifactRequest(rawGrant),
+      rawGrant,
+    );
+    expect(rawResponse.status).toBe(201);
+    expect(await rawResponse.json()).toMatchObject({
+      key: `${R2_PROVIDER_EVIDENCE_KEY_PREFIX}/${rawGrant.operation_id}/${rawGrant.owner_generation}/${rawGrant.attempt_generation}/${emptySha256}`,
+      size: 0,
+    });
+
+    const clientGrant = clientArtifactGrant({ size: 1 });
+    const clientResponse = await handleStorageGatewayRequest(
+      env,
+      responseArtifactRequest(clientGrant, {}, new Uint8Array(1)),
+      clientGrant,
+    );
+    expect(clientResponse.status).toBe(403);
+    expect(await errorCode(clientResponse)).toBe("storage_access_denied");
+    expect(puts).toBe(1);
+
+    const minimumClientBody = new TextEncoder().encode("{}");
+    const minimumClientSha256 = await sha256Bytes(minimumClientBody);
+    const minimumClientGrant = clientArtifactGrant({
+      size: minimumClientBody.byteLength,
+      sha256: minimumClientSha256,
+    });
+    const minimumClientMetadata = responseArtifactMetadata(minimumClientGrant);
+    const minimumClientBucket = {
+      async put(key: string) {
+        return r2Object({
+          key,
+          version: "minimum-client-version",
+          size: minimumClientGrant.size,
+          contentType: minimumClientGrant.content_type,
+          sha256: minimumClientGrant.sha256,
+          customMetadata: minimumClientMetadata,
+        });
+      },
+      async head() {
+        throw new Error("head must not run after a minimum client create");
+      },
+    } as unknown as Pick<R2Bucket, "head" | "put">;
+    const minimumClientResponse = await handleStorageGatewayRequest(
+      enabledEnv({ CONTAINER_STORAGE_RESULT_R2: minimumClientBucket }),
+      responseArtifactRequest(minimumClientGrant, {}, minimumClientBody),
+      minimumClientGrant,
+    );
+    expect(minimumClientResponse.status).toBe(201);
+  });
+
+  test("requires exact response-artifact length, hash, type, encoding, and body", async () => {
+    let puts = 0;
+    const bucket = {
+      async put() {
+        puts += 1;
+        return null;
+      },
+      async head() {
+        return null;
+      },
+    } as unknown as Pick<R2Bucket, "head" | "put">;
+    const env = enabledEnv({ CONTAINER_STORAGE_RESULT_R2: bucket });
+
+    for (const grant of [providerEvidenceGrant(), clientArtifactGrant()]) {
+      const prefix = responseArtifactErrorPrefix(grant);
+      const invalidRequests: Array<[Request, string]> = [
+        [
+          responseArtifactRequest(grant, { "content-length": String(grant.size + 1) }),
+          `${prefix}_length_mismatch`,
+        ],
+        [
+          responseArtifactRequest(grant, { "content-type": "text/plain" }),
+          `${prefix}_content_type_mismatch`,
+        ],
+        [
+          responseArtifactRequest(grant, { [CONTENT_SHA256_HEADER]: "e".repeat(64) }),
+          `${prefix}_sha256_mismatch`,
+        ],
+        [
+          responseArtifactRequest(grant, { "content-encoding": "gzip" }),
+          `${prefix}_encoding_not_allowed`,
+        ],
+        [
+          responseArtifactRequest(grant, {}, inputBytes.slice(0, inputBytes.byteLength - 1)),
+          `${prefix}_length_mismatch`,
+        ],
+        [
+          responseArtifactRequest(grant, {}, new Uint8Array(inputBytes.byteLength)),
+          `${prefix}_sha256_mismatch`,
+        ],
+      ];
+
+      for (const [request, expectedError] of invalidRequests) {
+        const response = await handleStorageGatewayRequest(env, request, grant);
+        expect(response.status).toBe(400);
+        expect(await errorCode(response)).toBe(expectedError);
+      }
+    }
+    expect(puts).toBe(0);
+  });
+
+  test("creates provider evidence and client artifacts with exact keys and metadata", async () => {
+    for (const grant of [providerEvidenceGrant(), clientArtifactGrant()]) {
+      const key = responseArtifactKey(grant);
+      const metadata = responseArtifactMetadata(grant);
+      const calls: Array<{ key: string; value: unknown; options: R2PutOptions }> = [];
+      const bucket = {
+        async put(requestedKey: string, value: unknown, options: R2PutOptions) {
+          calls.push({ key: requestedKey, value, options });
+          return r2Object({
+            key: requestedKey,
+            version: "artifact-version-1",
+            size: grant.size,
+            contentType: grant.content_type,
+            sha256: grant.sha256,
+            customMetadata: metadata,
+          });
+        },
+        async head() {
+          throw new Error("head must not run after a successful artifact create");
+        },
+      } as unknown as Pick<R2Bucket, "head" | "put">;
+
+      const response = await handleStorageGatewayRequest(
+        enabledEnv({ CONTAINER_STORAGE_RESULT_R2: bucket }),
+        responseArtifactRequest(grant),
+        grant,
+      );
+
+      expect(response.status).toBe(201);
+      expect(response.headers.get(R2_OBJECT_VERSION_HEADER)).toBe("artifact-version-1");
+      expect(await response.json()).toEqual({
+        key,
+        sha256: grant.sha256,
+        size: grant.size,
+        replayed: false,
+      });
+      expect(key).toBe(
+        grant.action === STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT
+          ? `${R2_PROVIDER_EVIDENCE_KEY_PREFIX}/${grant.operation_id}/${grant.owner_generation}/${grant.attempt_generation}/${grant.sha256}`
+          : `${R2_CLIENT_ARTIFACT_KEY_PREFIX}/${grant.operation_id}/${grant.owner_generation}/${grant.client_response_artifact_sha256}`,
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.key).toBe(key);
+      expect(calls[0]?.value).toEqual(inputBytes);
+      expect(calls[0]?.options.sha256).toBe(grant.sha256);
+      expect((calls[0]?.options.onlyIf as Headers).get("if-none-match")).toBe("*");
+      expect(calls[0]?.options.httpMetadata).toEqual({ contentType: grant.content_type });
+      expect(calls[0]?.options.customMetadata).toEqual(metadata);
+      expect(metadata.object_namespace).toBe(
+        grant.action === STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT
+          ? R2_PROVIDER_EVIDENCE_KEY_PREFIX
+          : R2_CLIENT_ARTIFACT_KEY_PREFIX,
+      );
+      expect(metadata.provider_response_evidence_sha256).toBe(
+        grant.action === STORAGE_GATEWAY_ACTIONS.R2_PROVIDER_EVIDENCE_PUT
+          ? providerEvidenceDigest
+          : undefined,
+      );
+      expect(metadata.client_response_artifact_sha256).toBe(
+        grant.action === STORAGE_GATEWAY_ACTIONS.R2_CLIENT_ARTIFACT_PUT
+          ? clientArtifactDigest
+          : undefined,
+      );
+    }
+  });
+
+  test("exactly replays provider evidence and client artifacts", async () => {
+    for (const grant of [providerEvidenceGrant(), clientArtifactGrant()]) {
+      const key = responseArtifactKey(grant);
+      const metadata = responseArtifactMetadata(grant);
+      const bucket = {
+        async put() {
+          return null;
+        },
+        async head(requestedKey: string) {
+          expect(requestedKey).toBe(key);
+          return r2Object({
+            key,
+            version: "artifact-replay-version-2",
+            size: grant.size,
+            contentType: grant.content_type,
+            sha256: grant.sha256,
+            customMetadata: metadata,
+          });
+        },
+      } as unknown as Pick<R2Bucket, "head" | "put">;
+
+      const response = await handleStorageGatewayRequest(
+        enabledEnv({ CONTAINER_STORAGE_RESULT_R2: bucket }),
+        responseArtifactRequest(grant),
+        grant,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get(R2_OBJECT_VERSION_HEADER)).toBe("artifact-replay-version-2");
+      expect(await response.json()).toEqual({
+        key,
+        sha256: grant.sha256,
+        size: grant.size,
+        replayed: true,
+      });
+    }
+  });
+
+  test("conflicts on every divergent response-artifact replay field", async () => {
+    for (const grant of [providerEvidenceGrant(), clientArtifactGrant()]) {
+      const key = responseArtifactKey(grant);
+      const metadata = responseArtifactMetadata(grant);
+      const mismatches: Array<R2Object | null> = [
+        r2Object({
+          key: `${key}-other`,
+          size: grant.size,
+          contentType: grant.content_type,
+          sha256: grant.sha256,
+          customMetadata: metadata,
+        }),
+        r2Object({
+          key,
+          size: grant.size + 1,
+          contentType: grant.content_type,
+          sha256: grant.sha256,
+          customMetadata: metadata,
+        }),
+        r2Object({
+          key,
+          size: grant.size,
+          contentType: "text/plain",
+          sha256: grant.sha256,
+          customMetadata: metadata,
+        }),
+        r2Object({
+          key,
+          size: grant.size,
+          contentType: grant.content_type,
+          sha256: "e".repeat(64),
+          customMetadata: metadata,
+        }),
+        r2Object({
+          key,
+          size: grant.size,
+          contentType: grant.content_type,
+          sha256: grant.sha256,
+          customMetadata: { ...metadata, owner_generation: "8" },
+        }),
+        null,
+      ];
+
+      for (const existing of mismatches) {
+        const bucket = {
+          async put() {
+            return null;
+          },
+          async head() {
+            return existing;
+          },
+        } as unknown as Pick<R2Bucket, "head" | "put">;
+        const response = await handleStorageGatewayRequest(
+          enabledEnv({ CONTAINER_STORAGE_RESULT_R2: bucket }),
+          responseArtifactRequest(grant),
+          grant,
+        );
+        expect(response.status).toBe(409);
+        expect(await errorCode(response)).toBe(`${responseArtifactErrorPrefix(grant)}_conflict`);
+      }
+    }
+  });
+
+  test("accepts exactly 4 MiB and rejects a larger decoded artifact body", async () => {
+    const maximumBody = new Uint8Array(MAX_RESPONSE_ARTIFACT_BYTES);
+    const maximumSha256 = await sha256Bytes(maximumBody);
+
+    for (const grant of [
+      providerEvidenceGrant({ size: maximumBody.byteLength, sha256: maximumSha256 }),
+      clientArtifactGrant({ size: maximumBody.byteLength, sha256: maximumSha256 }),
+    ]) {
+      let puts = 0;
+      const metadata = responseArtifactMetadata(grant);
+      const bucket = {
+        async put(key: string) {
+          puts += 1;
+          return r2Object({
+            key,
+            version: "artifact-maximum-version",
+            size: grant.size,
+            contentType: grant.content_type,
+            sha256: grant.sha256,
+            customMetadata: metadata,
+          });
+        },
+        async head() {
+          throw new Error("head must not run after a successful maximum write");
+        },
+      } as unknown as Pick<R2Bucket, "head" | "put">;
+      const env = enabledEnv({ CONTAINER_STORAGE_RESULT_R2: bucket });
+
+      const maximum = await handleStorageGatewayRequest(
+        env,
+        responseArtifactRequest(grant, {}, maximumBody),
+        grant,
+      );
+      expect(maximum.status).toBe(201);
+
+      const oversizedBody = new Uint8Array(MAX_RESPONSE_ARTIFACT_BYTES + 1);
+      const oversized = await handleStorageGatewayRequest(
+        env,
+        responseArtifactRequest(grant, {}, oversizedBody),
+        grant,
+      );
+      expect(oversized.status).toBe(413);
+      expect(await errorCode(oversized)).toBe(`${responseArtifactErrorPrefix(grant)}_too_large`);
+      expect(puts).toBe(1);
+    }
   });
 
   test("derives the KV key only from operation_kind and returns a bounded no-store value", async () => {

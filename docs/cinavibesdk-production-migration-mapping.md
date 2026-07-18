@@ -1205,3 +1205,45 @@ retry is hard disabled; global D1 terminal acknowledgement is absent. This is
 local architecture evidence, not cinaVibeSDK production proof and not a
 cinatoken traffic migration authorization. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-18 Exact cinaVibeSDK Container Topology Correction
+
+The reference was reread at clean commit `918e9748`. Its two execution planes
+must not be collapsed into a single one-DO-per-Container claim:
+
+```text
+Edge -> CodeGeneratorAgent DO(agentId)
+     -> SandboxSdkClient(sessionId)
+     -> Sandbox DO/UserAppSandboxService
+     -> Linux Container
+
+Edge -> SpaceDO(spaceName) -> App Facet(branch)
+```
+
+The checked-in configuration does not define `ALLOCATION_STRATEGY`.
+Per-session Sandbox identity is therefore the relevant isolation pattern;
+optional `many_to_one` modulo allocation would share a failure domain and
+remap ownership when the pool size changes. `max_instances` remains an
+infrastructure ceiling, not admission or backpressure authority.
+
+cinatoken-rust keeps the useful ideas but not the extra ownership hop. Stable
+Jump-Hash shard identity selects `RelayShardContainer`, whose Durable Object
+SQLite owns claims, generations, capacity, recovery, and lifecycle while its
+Container remains disposable execution. D1 owns business and financial truth;
+R2 owns immutable large bytes; KV owns non-authoritative configuration/cache.
+Warm promises, timers, process monitors, and Container disk are hints only.
+
+For provider response protocol v3, this mapping requires:
+
+1. a strict canonical Rust-produced and TypeScript-verified envelope;
+2. separate provider/client statuses and interpretation class;
+3. separate create-only raw and client R2 namespaces plus append-only D1 rows;
+4. operation, owner, attempt, provider-operation, shard/ring, and exact Worker
+   version fences before terminalization;
+5. no provider resend after any completed-response evidence exists; and
+6. lifecycle/capacity/artifact telemetry with credentials and bodies excluded.
+
+The exact wire and digest contract is frozen in
+`docs/container-provider-response-protocol-v3.md`. This is local design and
+implementation evidence only. Go/VPS remains authoritative, all response-v3
+writers remain disabled, and production remains **NO-GO**.

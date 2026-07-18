@@ -10,7 +10,7 @@ Cloudflare production is **NO-GO**.
 This document maps two independent source architectures into the native
 cinatoken-rust execution plane:
 
-- `C:\cinagroup\cinaVibeSDK` at `918e974`: Cloudflare Worker, deterministic
+- `C:\cinagroup\cinaVibeSDK` at `918e9748`: Cloudflare Worker, deterministic
   Durable Object/Container identity, lifecycle hooks, health probes, capacity,
   and rollout configuration;
 - `C:\cinagroup\cinatoken`: Go relay admission, token authentication, model
@@ -268,3 +268,36 @@ at runtime, global D1 terminal ack is not wired, and no remote lifecycle or
 provider invoice evidence exists. Therefore the audit finding moves from
 "journal absent" to "journal foundation local only"; production remains
 **NO-GO**.
+
+## Response Evidence Source Delta (2026-07-18)
+
+The cinaVibeSDK source topology was reread at clean commit `918e9748`. It does
+not implement one direct `edge -> shard DO -> same DO Container` chain. Its
+Container path is `CodeGeneratorAgent(agentId) -> SandboxSdkClient(sessionId)
+-> Sandbox DO/UserAppSandboxService -> Container`; `SpaceDO(spaceName) -> App
+Facet(branch)` is a separate execution plane with no Linux Container. The
+checked-in configuration does not select `many_to_one`, so modulo allocation is
+an optional sharing mode rather than the deployed source default.
+
+The target deliberately keeps a stronger and simpler ownership boundary:
+`RelayShardContainer` is the named shard Durable Object, durable admission and
+lifecycle owner, and Container supervisor. It adopts deterministic identity,
+separate startup/runtime health, rolling lifecycle hooks, and shared binding
+layers. It does not copy random inner instance IDs, modulo remapping,
+process-local deployment promises, `setInterval` recovery, workspace metadata
+as authority, or best-effort credential scrubbing.
+
+The provider response path now has a source-pinned interpreter candidate and a
+frozen byte-level v3 design in
+`docs/container-provider-response-protocol-v3.md`. Raw provider evidence and
+interpreted client behavior are separate append-only D1/R2 artifacts. Every
+transition is bound to operation, owner generation, attempt, provider
+operation, egress version, and artifact digest. Container disk, warm memory,
+KV, and a successful R2 put are never retry, terminal, or billing authority.
+
+This delta supersedes the historical statement above that the provider broker
+and Container client were absent: both now exist locally, but execution v2 can
+terminalize only exact ordinary HTTP 200 and treats interpreted errors as
+recovery. Migration 0052 and response protocol v3 remain local implementation
+work. No remote schema, Container, provider, financial, or traffic evidence is
+claimed; production remains **NO-GO**.

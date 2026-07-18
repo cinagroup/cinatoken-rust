@@ -7385,3 +7385,80 @@ Relay ran 102 unit plus 2 manifest tests, Container egress ran 13 tests, Worker
 ran 833 tests, both wasm checks passed, and `bun run check` completed
 successfully. The source replay left its explicit Go roots clean and removed
 the injected test. These are local results only; remote evidence remains open.
+
+## 2026-07-18 Response Artifact Evidence P2 Verification
+
+This entry supersedes the point-in-time statements above that global D1 ends at
+0051 or that migration 0052 is absent. The local candidate now has 52
+contiguous D1 migrations with exact head
+`0052_relay_container_provider_response_artifacts.sql`. This packet changes no
+Cloudflare resource, secret, deployment, provider request, financial record, or
+traffic. Production remains **NO-GO**.
+
+The migration and runtime contract prove all of the following:
+
+- a persistent `response_artifact_contract` marker fences every new protocol-v1
+  chat canary operation after migration, so an N-1 writer cannot arrive after
+  the one-time drain and create an unmarked operation;
+- provider raw evidence and client response artifacts use separate immutable
+  D1 tables, identity ledgers, R2 namespaces, keys, content rules, and
+  create-only replay checks;
+- provider, client, inventory-cursor, and inventory-finding identity ledgers
+  reject direct `INSERT OR REPLACE` conflict attempts even with
+  `PRAGMA recursive_triggers = OFF`, while the original row and identity remain
+  byte-for-byte unchanged;
+- readiness checks the nullable provider content-type column, the operation
+  writer-contract column, every required table/index/trigger, and exact foreign
+  key targets and update/delete actions;
+- the Controller accepts response-artifact grants only for owner generation 2,
+  attempt generation 1, egress profile
+  `openai-chat-completions-canary-v1`, and canonical client
+  `application/json`; both artifact bodies are bounded at 4 MiB and R2 writes
+  use create-only conditions with exact replay/conflict classification; and
+- inventory cursors and findings are append-only, observe-only, and retain
+  hard-zero apply/delete authority.
+
+Independent review also confirmed two intentional next-phase interlocks. The
+pre-P3/P4 operation and terminal shapes cannot terminalize an HTTP-200 typed
+error, and a success without an immutable provider usage receipt cannot settle.
+Non-200 2xx/3xx responses likewise have no approved terminal shape. The SQLite
+verifier asserts these attempts fail with unchanged financial and operation
+state; protocol-v3 parsing and the new terminal contract must land before any
+writer gate can be enabled.
+
+Confirmed local commands and results after implementation edits stopped:
+
+```powershell
+python tools/verify_sqlite.py
+# PASS: 52 migrations, 57 tables, 667 incremental columns, 80 key indexes.
+
+bun run check:d1:migration-config
+# PASS: 52 contiguous migrations; exact head 0052.
+
+bun run check:container-controller
+# PASS: 103 Bun tests / 877 expectations, 90 protocol tests,
+# and 34 Workerd storage tests.
+
+bun run check:do-lifecycle-runtime
+# PASS: 48/48, including fresh 0052 readiness.
+
+bun run test:relay-container-atomic-admission:runtime
+# PASS: 15/15. Current writers carry the marker; the N-1 writer is rejected.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 833/833.
+
+bun run check
+# PASS: the complete repository aggregate, including both wasm checks,
+# workspace tests, frontend, migration/config audits, Workerd suites,
+# bundle budgets, and tracked Wrangler local dry-runs.
+
+cargo fmt --all -- --check
+git diff --check
+```
+
+Only the existing default-off/dead-code warning class is emitted. No remote
+Cloudflare command was run. P3 must now implement the exact response-artifact
+protocol-v3 envelope, parser, Durable Object schema migration 3, durable
+provider/client artifact state, and fail-closed runtime rejection matrix; P4
+then owns the new financial terminal shapes and replay proof.

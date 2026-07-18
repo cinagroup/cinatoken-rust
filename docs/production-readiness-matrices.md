@@ -1091,3 +1091,23 @@ blocking. Production remains **NO-GO**.
 | D1 migration | Intent schema is per-DO SQLite; no 0052 is created | Remote class/schema inventory distinguishes local DO schema from global D1 head 0051 | Design complete; remote blocked |
 | Response parity | Go source is the required authority; the shared Worker/Container audit, differential corpus and interpreter remain the next milestone | Exact HTTP-200 typed-error, non-200 envelope/header, usage and interrupted-stream differential corpus | **Blocked** |
 | Production decision | No remote object, deploy, provider, financial, alarm, or traffic action occurred | A0-A5 lifecycle campaign plus jurisdiction/provenance/load/security/rollback approvals | **NO-GO** |
+
+## 2026-07-18 Migration 0052 Response Artifact Matrix
+
+This matrix supersedes only local rows that say response P2 or D1 0052 is
+absent. It does not close any remote, provider, financial, lifecycle, security,
+or approval requirement.
+
+| Gate | Current local evidence | Production acceptance | Status |
+| --- | --- | --- | --- |
+| Old-writer drain | Apply fails while protocol-v1 chat canary work is prepared, dispatched, or recovery-required; afterward a no-default immutable operation contract rejects late N-1 inserts before prepared state | Signed inventory proves all pre-0052 Worker/Controller/Queue/Cron/alarm owners are drained; deployed N-1 negative leaves operation/provider counts unchanged | Local only |
+| Raw evidence | Immutable D1 record and identity ledger bind exact provider status, headers digest, nullable observed content type, R2 key/version/body digest, operation, owner and attempt | Remote create/readback/lost-response/concurrency/tamper campaign with source-authorized retention | Local only |
+| Client artifact | Separate immutable D1 record binds response class, client status, safe headers, canonical JSON R2 identity, evidence digest and optional success receipt | Remote typed-200/non-200/success replay across DO eviction and deployment versions | Local only |
+| Create-only R2 | Server-derived provider/client keys, conditional create, bounded body hashing, exact replay and divergent collision rejection | Real R2 faults prove no overwrite, ambiguous replay, unbounded buffering or semantic conflation | Local only |
+| Inventory | Independent provider/client immutable cursor/finding ledgers; observer-only; apply/delete authority fixed at zero; no runtime producer | Default-false scanner packet, complete pagination/restart proof, alerts, approved disposition and no mutation capability | Inert schema |
+| D1 convergence | Admission/receipt parent keys and terminal/operation/scheduler/reconciler guards prevent successful convergence without exact artifact linkage; identity insert guards survive direct REPLACE with recursive triggers off | Authenticated staging schema fingerprints and direct insert/update/delete/replace probes with unchanged counts/hashes/high-watermarks | Local only |
+| Protocol v3 | Exact wire/canonicalization/attestation/write-order contract is documented | Egress, Controller, DO migration 3, runtime rejected outcome, edge parser and N/N-1/blue-green test matrix | **Blocked (P3)** |
+| Financial owner | Exact-200 success boundary is frozen; typed-200 and non-200 cannot use receipt-v1 success semantics | One immutable settle/refund/reject CAS, outbox and audit decision under duplicate/lost-response faults | **Blocked (P4)** |
+| Remote state | No remote migration, object, deploy, secret, provider, financial or traffic mutation occurred | Reader-first staging, real lifecycle/fault/load/cost/SLO/alerts, rollback, security and C1-C5/G1-G8 approval | **NO-GO (P5)** |
+
+Production remains **NO-GO** and Go/VPS remains authoritative.

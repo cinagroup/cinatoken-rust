@@ -333,7 +333,8 @@ resends an ambiguous provider attempt.
 5. **P5 staging proof:** reader-first deployment, N/N-1 or blue/green campaign,
    faults, load/cost/SLO/alerts, rollback drill, and signed approvals.
 
-P1 completion does not close P2-P5 and does not change the production verdict.
+Local P1/P2 completion does not close P3-P5 and does not change the production
+verdict.
 
 ## 2026-07-18 Local P1 Evidence
 
@@ -359,3 +360,67 @@ checks, and the complete `bun run check` repository gate. This evidence permits
 continued local development only. No Cloudflare remote state, schema, secret,
 provider, financial record, or traffic was changed; P2-P5 remain open and
 production remains **NO-GO**.
+
+## 2026-07-18 Local P2 Evidence
+
+P2 is implemented as a local candidate. Migration
+`0052_relay_container_provider_response_artifacts.sql` first aborts unless all
+pre-0052 protocol-v1 chat canary operations in `prepared`, `dispatched`, or
+`recovery_required` are drained. The sentinel is migration-local and is dropped
+after that check. The persistent schema then adds separate append-only raw
+provider evidence and interpreted client artifacts, replacement-resistant
+identity ledgers, and independent inventory cursor/finding ledgers. It also
+binds the artifact digest into terminal events and fences atomic admission,
+usage receipt, operation terminalization, scheduled terminalization, and
+reconciliation convergence against incomplete or divergent evidence.
+
+The drain is backed by a persistent writer fence. Migration 0052 adds nullable
+operation field `response_artifact_contract` with no default; every new canary
+operation must carry exact `container-response-artifacts-v1`, and the value is
+immutable. The current Worker writes it explicitly, while an N-1 writer that
+omits the column fails before prepared-operation creation and provider I/O.
+Each identity ledger also has a `BEFORE INSERT` conflict guard, so direct
+`INSERT OR REPLACE` cannot move the sentinel even with
+`PRAGMA recursive_triggers=OFF`.
+
+The two R2 authorities remain distinct:
+
+- `container-provider-evidence/v1/<operation>/<owner>/<attempt>/<raw-sha256>`
+  stores zero-to-4 MiB provider bytes; and
+- `container-client-artifacts/v1/<operation>/<owner>/<artifact-sha256>` stores
+  canonical client JSON from 2 bytes through 4 MiB.
+
+The Controller derives both keys, validates the complete grant/body identity,
+uses conditional create-only writes, and accepts replay only when key, version,
+size, content type, checksum, and custom metadata match exactly. A collision or
+missing readback is a conflict, never overwrite authority. Provider evidence
+may preserve a null observed content type while R2 uses
+`application/octet-stream` only as storage metadata; that fallback is not
+promoted into the evidence facts.
+
+The response-artifact inventory is deliberately separate from the historical
+0044 result inventory. It has independent provider/client namespaces, immutable
+cursor and finding identities, `observe_only` mode, and hard-zero apply/delete
+authority. No runtime scanner or activation configuration is included in P2,
+so it remains inert until a later reviewed observer packet.
+
+The exact scoped wire contract is frozen in
+`docs/container-provider-response-protocol-v3.md`: exact protocol 3, outer HTTP
+200 only for a completed provider HTTP response envelope, strict canonical JSON
+and base64url validation, separate provider/client statuses and digests, and the
+ordered raw-R2 -> raw-D1 -> client-R2 -> client-D1 -> receipt -> DO -> financial
+terminal chain. This document is a P3 input, not evidence that the egress v3
+envelope, Controller verifier, DO-local migration 3, runtime rejected outcome,
+or financial terminal path exists.
+
+P2 can retain typed HTTP-200, non-200 2xx/3xx, and receipt-less exact-200
+artifacts, but the inherited operation and financial terminal schemas cannot
+yet represent all of those outcomes. Local negatives prove typed HTTP-200
+cannot use the old failed shape and receipt-less success cannot settle. P3/P4
+must add the versioned rejected/terminal authority before any such artifact may
+leave a non-terminal state; 0052 storage alone is not a runtime acceptance path.
+
+Local SQLite migration/order/fingerprint/negative verification and Controller
+storage-gateway tests pass. No remote D1 migration, R2 object, Durable Object,
+Container, deployment, secret, provider call, financial mutation, alarm, or
+traffic state changed. P3-P5 remain open and production remains **NO-GO**.

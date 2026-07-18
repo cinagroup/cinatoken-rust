@@ -2015,3 +2015,34 @@ pins Go commit `73652508abc5cb09214dde02d51d69d1d1ccc703` plus Rust contract
 R0-R1 are local semantic work only. R2-R5 remain required before any canary.
 All response-artifact, execution, provider-egress, scheduler, and traffic gates
 stay false until their named step exits.
+
+### Local P2 execution checkpoint
+
+The repository now contains the local 0052 schema and create-only R2 storage
+boundary. This advances the implementation packet, but not the remote execution
+step named R2 above: no migration has been applied and no v3 reader has been
+deployed.
+
+Before remote R2 can begin, freeze the exact 0052 SQL/object fingerprints and
+every artifact that can write a protocol-v1 operation. Prove the migration's
+temporary drain query returns zero against the target D1 database, archive the
+account/name/UUID and bookmark, and keep all action gates false. Apply once,
+then read back eight persistent tables, seven indexes, 34 triggers, the terminal
+artifact column, the nullable operation writer-contract column, and zero
+evidence/inventory rows. Prove an N-1 insert without the contract fails before
+prepared state and provider count remains unchanged. Any old writer, active old
+operation, object mismatch, or unexpected row aborts deployment.
+
+P3 implementation must precede any dual writer: exact egress protocol-3
+envelope, strict Controller verifier, DO-local migration 3, rejected runtime
+outcome, and exact edge replay. Raw R2 creation then precedes raw D1, client R2,
+client D1, optional exact-200 receipt, DO terminalization, financial terminal,
+and client delivery. A failed later step leaves evidence or bounded orphan
+inventory; it never authorizes overwrite, provider resend, settlement, refund,
+or delete.
+
+Rollback disables admission, response-artifact writing, terminal consumption,
+provider egress, scheduler ownership, and traffic before changing artifacts.
+It retains 0052, both R2 namespaces, identity/inventory rows, and P3-capable
+readers until every operation is completed or quarantined. Go/VPS remains the
+fallback and production remains **NO-GO**.

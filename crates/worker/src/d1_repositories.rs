@@ -59,6 +59,8 @@ pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_MIGRATION: &str =
     "0050_relay_container_atomic_admission.sql";
 pub(crate) const RELAY_CONTAINER_SCHEDULED_TERMINALIZATION_MIGRATION: &str =
     "0051_relay_container_scheduled_terminalization.sql";
+pub(crate) const RELAY_CONTAINER_PROVIDER_RESPONSE_ARTIFACT_MIGRATION: &str =
+    "0052_relay_container_provider_response_artifacts.sql";
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
@@ -2562,12 +2564,14 @@ fn relay_container_operation_insert_statement(
               trace_id,
               client_idempotency_hmac_sha256, client_request_sha256,
               reconciliation_id,
+              response_artifact_contract,
               status, created_at, updated_at
             )
             SELECT
               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
               ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
-              ?24, ?25, ?26, 'prepared', ?27, ?27
+              ?24, ?25, ?26, 'container-response-artifacts-v1',
+              'prepared', ?27, ?27
             FROM relay_billing_reservations AS reservation
             WHERE reservation.reservation_key = ?1
               AND reservation.status = 'reserved'
@@ -6951,6 +6955,13 @@ pub async fn relay_container_terminal_outbox_schema_ready(db: &D1Database) -> wo
                     'relay_container_terminal_outbox_delete_guard'
                   )
               ) = 7
+              AND EXISTS (
+                SELECT 1
+                FROM pragma_table_info('relay_container_provider_response_evidence')
+                WHERE name = 'raw_response_content_type'
+                  AND type = 'TEXT'
+                  AND "notnull" = 0
+              )
             THEN 1 ELSE 0 END AS count
             "#,
         )
@@ -7898,6 +7909,13 @@ pub async fn relay_container_atomic_admission_schema_ready(
                 )
               ) = 6
               AND EXISTS (
+                SELECT 1
+                FROM pragma_table_info('relay_container_operations')
+                WHERE name = 'response_artifact_contract'
+                  AND type = 'TEXT'
+                  AND "notnull" = 0
+              )
+              AND EXISTS (
                 SELECT 1 FROM sqlite_master
                 WHERE type = 'index'
                   AND name = 'idx_relay_container_idempotency_aliases_reservation'
@@ -7961,6 +7979,241 @@ pub async fn relay_container_scheduled_terminalization_schema_ready(
                     'relay_container_scheduled_terminalization_delete_guard'
                   )
               ) = 3
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 1).unwrap_or(false))
+}
+
+pub async fn relay_container_provider_response_artifact_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    let args = [D1Type::Text(
+        RELAY_CONTAINER_PROVIDER_RESPONSE_ARTIFACT_MIGRATION,
+    )];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(DISTINCT name) AS count
+            FROM d1_migrations
+            WHERE name = ?1
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'table'
+                  AND name IN (
+                    'relay_container_provider_response_evidence',
+                    'relay_container_provider_response_evidence_identities',
+                    'relay_container_client_response_artifacts',
+                    'relay_container_client_response_artifact_identities',
+                    'relay_container_response_artifact_inventory_cursors',
+                    'relay_container_response_artifact_inventory_cursor_identities',
+                    'relay_container_response_artifact_inventory_findings',
+                    'relay_container_response_artifact_inventory_finding_identities'
+                  )
+              ) = 8
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_table_info('relay_container_provider_response_evidence')
+                WHERE name IN (
+                  'raw_response_status',
+                  'raw_response_headers_sha256',
+                  'raw_response_object_key',
+                  'raw_response_object_version',
+                  'raw_response_sha256',
+                  'provider_response_evidence_sha256',
+                  'response_contract'
+                )
+                  AND "notnull" = 1
+              ) = 7
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_table_info('relay_container_client_response_artifacts')
+                WHERE name IN (
+                  'provider_response_evidence_sha256',
+                  'response_class',
+                  'client_response_status',
+                  'client_response_headers_sha256',
+                  'client_response_object_key',
+                  'client_response_object_version',
+                  'client_response_sha256',
+                  'client_response_artifact_sha256'
+                )
+                  AND "notnull" = 1
+              ) = 8
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_table_info('relay_container_response_artifact_inventory_cursors')
+                WHERE name IN (
+                  'artifact_namespace',
+                  'observer_enabled',
+                  'observer_mode',
+                  'apply_authority',
+                  'delete_authority',
+                  'inventory_cursor_sha256'
+                )
+                  AND "notnull" = 1
+              ) = 6
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_table_info('relay_container_response_artifact_inventory_findings')
+                WHERE name IN (
+                  'artifact_namespace',
+                  'classification',
+                  'observer_mode',
+                  'apply_authority',
+                  'delete_authority',
+                  'observation_sha256'
+                )
+                  AND "notnull" = 1
+              ) = 6
+              AND EXISTS (
+                SELECT 1 FROM pragma_table_info('relay_container_terminal_events')
+                WHERE name = 'client_response_artifact_sha256'
+                  AND type = 'TEXT'
+              )
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_foreign_key_list('relay_container_provider_response_evidence')
+                WHERE "table" IN (
+                  'relay_container_atomic_admissions',
+                  'relay_container_provider_egress_grants'
+                )
+                  AND on_update = 'RESTRICT'
+                  AND on_delete = 'RESTRICT'
+              ) = 9
+              AND EXISTS (
+                SELECT 1
+                FROM pragma_foreign_key_list('relay_container_provider_response_evidence')
+                WHERE "table" = 'relay_container_atomic_admissions'
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM pragma_foreign_key_list('relay_container_provider_response_evidence')
+                WHERE "table" = 'relay_container_provider_egress_grants'
+              )
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_foreign_key_list('relay_container_provider_response_evidence_identities')
+                WHERE "table" = 'relay_container_provider_response_evidence'
+                  AND on_update = 'RESTRICT'
+                  AND on_delete = 'RESTRICT'
+              ) = 3
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_foreign_key_list('relay_container_client_response_artifacts')
+                WHERE "table" IN (
+                  'relay_container_provider_response_evidence',
+                  'relay_container_provider_usage_receipts'
+                )
+                  AND on_update = 'RESTRICT'
+                  AND on_delete = 'RESTRICT'
+              ) = 8
+              AND EXISTS (
+                SELECT 1
+                FROM pragma_foreign_key_list('relay_container_client_response_artifacts')
+                WHERE "table" = 'relay_container_provider_response_evidence'
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM pragma_foreign_key_list('relay_container_client_response_artifacts')
+                WHERE "table" = 'relay_container_provider_usage_receipts'
+              )
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_foreign_key_list('relay_container_client_response_artifact_identities')
+                WHERE "table" = 'relay_container_client_response_artifacts'
+                  AND on_update = 'RESTRICT'
+                  AND on_delete = 'RESTRICT'
+              ) = 3
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_foreign_key_list('relay_container_response_artifact_inventory_cursor_identities')
+                WHERE "table" = 'relay_container_response_artifact_inventory_cursors'
+                  AND on_update = 'RESTRICT'
+                  AND on_delete = 'RESTRICT'
+              ) = 4
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_foreign_key_list('relay_container_response_artifact_inventory_findings')
+                WHERE "table" IN (
+                  'relay_container_response_artifact_inventory_cursors',
+                  'relay_container_provider_response_evidence',
+                  'relay_container_client_response_artifacts'
+                )
+                  AND on_update = 'RESTRICT'
+                  AND on_delete = 'RESTRICT'
+              ) = 6
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_foreign_key_list('relay_container_response_artifact_inventory_finding_identities')
+                WHERE "table" = 'relay_container_response_artifact_inventory_findings'
+                  AND on_update = 'RESTRICT'
+                  AND on_delete = 'RESTRICT'
+              ) = 1
+              AND EXISTS (
+                SELECT 1
+                FROM pragma_foreign_key_list('relay_container_terminal_events')
+                WHERE "table" = 'relay_container_client_response_artifacts'
+                  AND "from" = 'client_response_artifact_sha256'
+                  AND "to" = 'client_response_artifact_sha256'
+                  AND on_update = 'RESTRICT'
+                  AND on_delete = 'RESTRICT'
+              )
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'index'
+                  AND name IN (
+                    'idx_relay_container_atomic_admissions_response_artifact_identity',
+                    'idx_relay_container_provider_usage_receipts_response_artifact_identity',
+                    'idx_relay_container_provider_response_evidence_recorded',
+                    'idx_relay_container_client_response_artifacts_created',
+                    'idx_relay_container_response_artifact_inventory_cursors_created',
+                    'idx_relay_container_response_artifact_inventory_findings_observed',
+                    'idx_relay_container_terminal_events_response_artifact'
+                  )
+              ) = 7
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name IN (
+                    'relay_container_response_artifact_operation_insert_guard',
+                    'relay_container_response_artifact_operation_contract_guard',
+                    'relay_container_provider_response_evidence_insert_authority_guard',
+                    'relay_container_provider_response_evidence_identity_insert_guard',
+                    'relay_container_provider_response_evidence_identity_guard',
+                    'relay_container_provider_response_evidence_identity_update_guard',
+                    'relay_container_provider_response_evidence_identity_delete_guard',
+                    'relay_container_provider_response_evidence_update_guard',
+                    'relay_container_provider_response_evidence_delete_guard',
+                    'relay_container_client_response_artifact_insert_authority_guard',
+                    'relay_container_client_response_artifact_identity_insert_guard',
+                    'relay_container_client_response_artifact_identity_guard',
+                    'relay_container_client_response_artifact_identity_update_guard',
+                    'relay_container_client_response_artifact_identity_delete_guard',
+                    'relay_container_client_response_artifact_update_guard',
+                    'relay_container_client_response_artifact_delete_guard',
+                    'relay_container_response_artifact_inventory_cursor_insert_guard',
+                    'relay_container_response_artifact_inventory_cursor_identity_insert_guard',
+                    'relay_container_response_artifact_inventory_cursor_identity_guard',
+                    'relay_container_response_artifact_inventory_cursor_identity_update_guard',
+                    'relay_container_response_artifact_inventory_cursor_identity_delete_guard',
+                    'relay_container_response_artifact_inventory_cursor_update_guard',
+                    'relay_container_response_artifact_inventory_cursor_delete_guard',
+                    'relay_container_response_artifact_inventory_finding_insert_guard',
+                    'relay_container_response_artifact_inventory_finding_identity_insert_guard',
+                    'relay_container_response_artifact_inventory_finding_identity_guard',
+                    'relay_container_response_artifact_inventory_finding_identity_update_guard',
+                    'relay_container_response_artifact_inventory_finding_identity_delete_guard',
+                    'relay_container_response_artifact_inventory_finding_update_guard',
+                    'relay_container_response_artifact_inventory_finding_delete_guard',
+                    'relay_container_terminal_event_response_artifact_guard',
+                    'relay_container_operation_response_artifact_terminal_guard',
+                    'relay_container_scheduled_terminalization_response_artifact_guard',
+                    'relay_container_reconciliation_response_artifact_convergence_guard'
+                  )
+              ) = 34
             "#,
         )
         .bind_refs(&args)?

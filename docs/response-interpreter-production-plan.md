@@ -464,3 +464,40 @@ false in every tracked environment and the terminal gate additionally hard
 fails before provider I/O until R6/P4 supplies one financial CAS/outbox/audit
 owner. Remote R3/R4 evidence, real lifecycle/fault proof, R6-R9, and all named
 approvals remain open. Production remains **NO-GO**.
+
+## 2026-07-18 Local P4 Evidence
+
+R6/P4 is now locally implemented but not promoted. Controller status v4 reads
+the operation, attempt, response artifacts, and receipt as one immutable
+snapshot. Migration 0053 adds financial-terminal contract v2 and permits one of
+three decisions only:
+
+- exact provider-200/client-200 success settles with the existing immutable
+  usage receipt and request accounting;
+- typed, HTTP, or invalid-body interpreted rejection writes global failed 422,
+  refunds the full reservation, and performs no request accounting; or
+- incomplete or ambiguous evidence remains recovery-required without a P3
+  terminal binding.
+
+The first two outcomes produce ACK v3, whose request and response bind the
+exact provider status/class/evidence and client status/artifact, plus the
+receipt only for success. Recovery has no complete response binding and
+therefore uses ACK v2. This split prevents an unbound recovery record from
+masquerading as a response-backed final acknowledgement.
+
+The Worker also verifies the raw R2 object before convergence: key, version,
+checksum, size, content type, 12 custom metadata fields, and the body digest
+must match the D1 manifest within the 4 MiB bound. Outbox delivery, scheduler,
+reconciliation, client replay, and canary audit consume the same immutable
+terminal identity. None of those readers can reinterpret the response or send
+the provider request again.
+
+Local negative coverage rejects old-writer downgrade, response-bound recovery,
+receipt-free settlement, request accounting on refunds, mismatched R2 evidence,
+ACK drift, duplicate identities, and terminal replay conflicts. The complete
+repository gate passes with 53 contiguous migrations and 837 Worker unit tests.
+
+R3/R4 remote storage and lifecycle proof and R7-R9 rollout, operations, and
+approval work remain open as P5. Every response gate is still false, no
+Cloudflare state changed, Go/VPS remains authoritative, and production remains
+**NO-GO**.

@@ -10,20 +10,25 @@ use worker::{Env, Headers, Object as R2Object, Response, ResponseBody};
 pub const CONTAINER_ARTIFACT_BUCKET: &str = "FILE_BUCKET";
 pub const MAX_CONTAINER_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CONTAINER_CLIENT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_CONTAINER_PROVIDER_RESPONSE_EVIDENCE_BYTES: usize = 4 * 1024 * 1024;
 
 const INPUT_KEY_PREFIX: &str = "container-inputs/v1";
 const RESULT_KEY_PREFIX: &str = "container-results/v1";
 const CLIENT_RESPONSE_KEY_PREFIX: &str = "container-client-responses/v1";
+const PROVIDER_EVIDENCE_KEY_PREFIX: &str = "container-provider-evidence/v1";
+const CLIENT_ARTIFACT_KEY_PREFIX: &str = "container-client-artifacts/v1";
 const CLIENT_RESPONSE_HEADERS_MAX_BYTES: usize = 4 * 1024;
 const METADATA_VERSION: &str = "1";
 const RESULT_ATTEMPT_METADATA_VERSION: &str = "2";
 const RESULT_EGRESS_METADATA_VERSION: &str = "3";
 const RESULT_USAGE_RECEIPT_METADATA_VERSION: &str = "4";
-const CLIENT_RESPONSE_ALLOWED_HEADERS: [&str; 6] = [
+const CLIENT_RESPONSE_ALLOWED_HEADERS: [&str; 8] = [
     "anthropic-request-id",
     "cache-control",
+    "content-language",
     "content-type",
     "openai-request-id",
+    "request-id",
     "retry-after",
     "x-request-id",
 ];
@@ -47,6 +52,30 @@ pub struct ContainerResultArtifactIdentity {
     pub egress_profile: String,
     pub egress_worker_version_id: String,
     pub usage_receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerResponseArtifactIdentity {
+    pub operation_id: String,
+    pub owner_generation: i64,
+    pub attempt_generation: i64,
+    pub provider_operation_id: String,
+    pub admission_sha256: String,
+    pub egress_profile: String,
+    pub egress_worker_version_id: String,
+    pub client_response_artifact_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerProviderResponseEvidenceIdentity {
+    pub operation_id: String,
+    pub owner_generation: i64,
+    pub attempt_generation: i64,
+    pub provider_operation_id: String,
+    pub admission_sha256: String,
+    pub egress_profile: String,
+    pub egress_worker_version_id: String,
+    pub provider_response_evidence_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -580,6 +609,213 @@ pub async fn read_verified_container_result(
         .await?;
     if bytes.len() as u64 != manifest.size || sha256_hex(&bytes) != manifest.sha256 {
         return Err(artifact_error("container result artifact body is corrupt"));
+    }
+    Ok(bytes)
+}
+
+pub async fn read_verified_container_provider_response_evidence(
+    env: &Env,
+    identity: &ContainerProviderResponseEvidenceIdentity,
+    manifest: &ContainerArtifactManifest,
+) -> worker::Result<Vec<u8>> {
+    let expected_metadata = provider_response_evidence_metadata(identity, manifest)?;
+    let bucket = env.bucket(CONTAINER_ARTIFACT_BUCKET)?;
+    let object = bucket
+        .get(manifest.object_key.clone())
+        .execute()
+        .await?
+        .ok_or_else(|| artifact_error("container provider response evidence is missing"))?;
+    verify_object(
+        &object,
+        &manifest.object_key,
+        Some(&manifest.object_version),
+        &manifest.sha256,
+        manifest.size,
+        &manifest.content_type,
+        None,
+        Some(&expected_metadata),
+    )?;
+    let bytes = object
+        .body()
+        .ok_or_else(|| artifact_error("container provider response evidence body is unavailable"))?
+        .bytes()
+        .await?;
+    if bytes.len() as u64 != manifest.size || sha256_hex(&bytes) != manifest.sha256 {
+        return Err(artifact_error(
+            "container provider response evidence body is corrupt",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn provider_response_evidence_metadata(
+    identity: &ContainerProviderResponseEvidenceIdentity,
+    manifest: &ContainerArtifactManifest,
+) -> worker::Result<HashMap<String, String>> {
+    validate_identifier(&identity.operation_id, "operation id")?;
+    validate_identifier(&identity.provider_operation_id, "provider operation id")?;
+    validate_sha256(&identity.admission_sha256)?;
+    validate_sha256(&identity.provider_response_evidence_sha256)?;
+    if identity.owner_generation <= 0
+        || identity.owner_generation > i64::from(i32::MAX)
+        || identity.attempt_generation != 1
+        || !metadata_identifier_valid(&identity.egress_profile, 64)
+        || !metadata_identifier_valid(&identity.egress_worker_version_id, 128)
+    {
+        return Err(artifact_error(
+            "container provider response evidence identity is invalid",
+        ));
+    }
+    validate_container_artifact_manifest(manifest)?;
+    let expected_key = format!(
+        "{PROVIDER_EVIDENCE_KEY_PREFIX}/{}/{}/{}/{}",
+        identity.operation_id,
+        identity.owner_generation,
+        identity.attempt_generation,
+        manifest.sha256
+    );
+    if manifest.object_key != expected_key
+        || manifest.size > MAX_CONTAINER_PROVIDER_RESPONSE_EVIDENCE_BYTES as u64
+    {
+        return Err(artifact_error(
+            "container provider response evidence manifest is invalid",
+        ));
+    }
+    Ok(HashMap::from([
+        ("operation_id".to_string(), identity.operation_id.clone()),
+        (
+            "owner_generation".to_string(),
+            identity.owner_generation.to_string(),
+        ),
+        (
+            "attempt_generation".to_string(),
+            identity.attempt_generation.to_string(),
+        ),
+        (
+            "provider_operation_id".to_string(),
+            identity.provider_operation_id.clone(),
+        ),
+        (
+            "admission_sha256".to_string(),
+            identity.admission_sha256.clone(),
+        ),
+        (
+            "egress_profile".to_string(),
+            identity.egress_profile.clone(),
+        ),
+        (
+            "egress_worker_version_id".to_string(),
+            identity.egress_worker_version_id.clone(),
+        ),
+        ("sha256".to_string(), manifest.sha256.clone()),
+        ("size".to_string(), manifest.size.to_string()),
+        ("content_type".to_string(), manifest.content_type.clone()),
+        (
+            "object_namespace".to_string(),
+            PROVIDER_EVIDENCE_KEY_PREFIX.to_string(),
+        ),
+        (
+            "provider_response_evidence_sha256".to_string(),
+            identity.provider_response_evidence_sha256.clone(),
+        ),
+    ]))
+}
+
+pub async fn read_verified_container_response_artifact(
+    env: &Env,
+    identity: &ContainerResponseArtifactIdentity,
+    manifest: &ContainerArtifactManifest,
+) -> worker::Result<Vec<u8>> {
+    validate_identifier(&identity.operation_id, "operation id")?;
+    validate_identifier(&identity.provider_operation_id, "provider operation id")?;
+    validate_sha256(&identity.admission_sha256)?;
+    validate_sha256(&identity.client_response_artifact_sha256)?;
+    if identity.owner_generation <= 0
+        || identity.owner_generation > i64::from(i32::MAX)
+        || identity.attempt_generation != 1
+        || !metadata_identifier_valid(&identity.egress_profile, 64)
+        || !metadata_identifier_valid(&identity.egress_worker_version_id, 128)
+    {
+        return Err(artifact_error(
+            "container response artifact identity is invalid",
+        ));
+    }
+    validate_container_artifact_manifest(manifest)?;
+    let expected_key = format!(
+        "{CLIENT_ARTIFACT_KEY_PREFIX}/{}/{}/{}",
+        identity.operation_id, identity.owner_generation, identity.client_response_artifact_sha256
+    );
+    if manifest.object_key != expected_key
+        || manifest.content_type != "application/json"
+        || !(2..=MAX_CONTAINER_CLIENT_RESPONSE_BYTES as u64).contains(&manifest.size)
+    {
+        return Err(artifact_error(
+            "container response artifact manifest is invalid",
+        ));
+    }
+    let expected_metadata = HashMap::from([
+        ("operation_id".to_string(), identity.operation_id.clone()),
+        (
+            "owner_generation".to_string(),
+            identity.owner_generation.to_string(),
+        ),
+        (
+            "attempt_generation".to_string(),
+            identity.attempt_generation.to_string(),
+        ),
+        (
+            "provider_operation_id".to_string(),
+            identity.provider_operation_id.clone(),
+        ),
+        (
+            "admission_sha256".to_string(),
+            identity.admission_sha256.clone(),
+        ),
+        (
+            "egress_profile".to_string(),
+            identity.egress_profile.clone(),
+        ),
+        (
+            "egress_worker_version_id".to_string(),
+            identity.egress_worker_version_id.clone(),
+        ),
+        ("sha256".to_string(), manifest.sha256.clone()),
+        ("size".to_string(), manifest.size.to_string()),
+        ("content_type".to_string(), manifest.content_type.clone()),
+        (
+            "object_namespace".to_string(),
+            CLIENT_ARTIFACT_KEY_PREFIX.to_string(),
+        ),
+        (
+            "client_response_artifact_sha256".to_string(),
+            identity.client_response_artifact_sha256.clone(),
+        ),
+    ]);
+    let bucket = env.bucket(CONTAINER_ARTIFACT_BUCKET)?;
+    let object = bucket
+        .get(manifest.object_key.clone())
+        .execute()
+        .await?
+        .ok_or_else(|| artifact_error("container response artifact is missing"))?;
+    verify_object(
+        &object,
+        &manifest.object_key,
+        Some(&manifest.object_version),
+        &manifest.sha256,
+        manifest.size,
+        &manifest.content_type,
+        None,
+        Some(&expected_metadata),
+    )?;
+    let bytes = object
+        .body()
+        .ok_or_else(|| artifact_error("container response artifact body is unavailable"))?
+        .bytes()
+        .await?;
+    if bytes.len() as u64 != manifest.size || sha256_hex(&bytes) != manifest.sha256 {
+        return Err(artifact_error(
+            "container response artifact body is corrupt",
+        ));
     }
     Ok(bytes)
 }
@@ -1198,6 +1434,49 @@ mod tests {
         invalid = valid;
         invalid.size = MAX_CONTAINER_ARTIFACT_BYTES as u64 + 1;
         assert!(validate_container_artifact_manifest(&invalid).is_err());
+    }
+
+    #[test]
+    fn provider_response_evidence_manifest_binds_exact_r2_identity_metadata() {
+        let body_sha256 = "a".repeat(64);
+        let identity = ContainerProviderResponseEvidenceIdentity {
+            operation_id: "relayreserve-test".to_string(),
+            owner_generation: 2,
+            attempt_generation: 1,
+            provider_operation_id: "provider:relayreserve-test".to_string(),
+            admission_sha256: "b".repeat(64),
+            egress_profile: "openai-chat-completions-canary-v1".to_string(),
+            egress_worker_version_id: "worker-version-test".to_string(),
+            provider_response_evidence_sha256: "c".repeat(64),
+        };
+        let manifest = ContainerArtifactManifest {
+            object_key: format!(
+                "container-provider-evidence/v1/relayreserve-test/2/1/{body_sha256}"
+            ),
+            object_version: "provider-evidence-version-test".to_string(),
+            sha256: body_sha256,
+            size: 128,
+            content_type: "application/json".to_string(),
+        };
+        let metadata = provider_response_evidence_metadata(&identity, &manifest).unwrap();
+        assert_eq!(metadata.len(), 12);
+        assert_eq!(
+            metadata.get("object_namespace").map(String::as_str),
+            Some("container-provider-evidence/v1")
+        );
+        assert_eq!(
+            metadata
+                .get("provider_response_evidence_sha256")
+                .map(String::as_str),
+            Some(identity.provider_response_evidence_sha256.as_str())
+        );
+
+        let mut invalid = manifest.clone();
+        invalid.object_key = invalid.object_key.replace("/2/1/", "/2/2/");
+        assert!(provider_response_evidence_metadata(&identity, &invalid).is_err());
+        invalid = manifest;
+        invalid.size = MAX_CONTAINER_PROVIDER_RESPONSE_EVIDENCE_BYTES as u64 + 1;
+        assert!(provider_response_evidence_metadata(&identity, &invalid).is_err());
     }
 
     #[test]

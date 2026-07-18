@@ -1,17 +1,24 @@
 const AUTHORITY_DOMAIN = "cinatoken-container-authority:v1\0";
 export const OPERATION_STATUS_V3_AUTHORITY_DOMAIN =
   "cinatoken-container-operation-status:v3\0";
+export const OPERATION_STATUS_V4_AUTHORITY_DOMAIN =
+  "cinatoken-container-operation-status:v4\0";
 export const TERMINAL_ACK_V2_AUTHORITY_DOMAIN =
   "cinatoken-container-terminal-ack:v2\0";
+export const TERMINAL_ACK_V3_AUTHORITY_DOMAIN =
+  "cinatoken-container-terminal-ack:v3\0";
 export const AUTHORITY_HEADER = "x-cinatoken-container-authority";
 export const INTERNAL_OPERATION_PATH = "/internal/v1/operations";
 export const INTERNAL_OPERATION_TERMINAL_ACK_PATH =
   "/internal/v1/operations/terminal-ack";
 export const INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH =
   "/internal/v2/operations/terminal-ack";
+export const INTERNAL_OPERATION_TERMINAL_ACK_V3_PATH =
+  "/internal/v3/operations/terminal-ack";
 export const INTERNAL_OPERATION_STATUS_PATH = "/internal/v1/operations/status";
 export const INTERNAL_OPERATION_STATUS_V2_PATH = "/internal/v2/operations/status";
 export const INTERNAL_OPERATION_STATUS_V3_PATH = "/internal/v3/operations/status";
+export const INTERNAL_OPERATION_STATUS_V4_PATH = "/internal/v4/operations/status";
 export const INTERNAL_READINESS_PATH = "/internal/v1/shards/readiness";
 export const INTERNAL_STATUS_PATH = "/internal/v1/status";
 export const MAX_OPERATION_BODY_BYTES = 64 * 1024;
@@ -151,12 +158,30 @@ export interface TerminalAckProviderUsageBinding {
   result_sha256: string;
 }
 
+export interface TerminalAckProviderResponseBinding {
+  attempt_generation: number;
+  status: "succeeded" | "interpreted_reject";
+  response_class: "success" | "typed_error" | "http_error" | "invalid_body";
+  provider_status: number;
+  client_status: number;
+  response_code: string | null;
+  provider_response_evidence_sha256: string;
+  client_response_artifact_sha256: string;
+}
+
 export interface TerminalAckRequestV1 extends TerminalAckRequestBase {
   provider_usage_binding?: never;
 }
 
 export interface TerminalAckRequestV2 extends TerminalAckRequestBase {
   provider_usage_binding: TerminalAckProviderUsageBinding | null;
+}
+
+export interface TerminalAckRequestV3 extends TerminalAckRequestBase {
+  terminal_ack_contract_version: 3;
+  financial_terminal_contract_version: 2;
+  provider_usage_binding: TerminalAckProviderUsageBinding | null;
+  provider_response_binding: TerminalAckProviderResponseBinding;
 }
 
 export type TerminalAckRequest = TerminalAckRequestV1 | TerminalAckRequestV2;
@@ -169,6 +194,12 @@ export interface VerifiedTerminalAckRequest {
 
 export interface VerifiedTerminalAckV2Request {
   ack: TerminalAckRequestV2;
+  claims: AuthorityClaims;
+  body: Uint8Array;
+}
+
+export interface VerifiedTerminalAckV3Request {
+  ack: TerminalAckRequestV3;
   claims: AuthorityClaims;
   body: Uint8Array;
 }
@@ -258,6 +289,20 @@ export async function verifyOperationStatusV3Request(
   );
 }
 
+export async function verifyOperationStatusV4Request(
+  request: Request,
+  env: AuthorityEnvironment,
+  now = Math.floor(Date.now() / 1000),
+): Promise<VerifiedOperationStatusQuery> {
+  return verifyOperationStatusRequestForPath(
+    request,
+    env,
+    INTERNAL_OPERATION_STATUS_V4_PATH,
+    now,
+    OPERATION_STATUS_V4_AUTHORITY_DOMAIN,
+  );
+}
+
 export async function verifyTerminalAckRequest(
   request: Request,
   env: AuthorityEnvironment,
@@ -319,6 +364,40 @@ export async function verifyTerminalAckV2Request(
     TERMINAL_ACK_V2_AUTHORITY_DOMAIN,
   );
   const ack = parseTerminalAckV2Request(body);
+  if (ack.protocol_version !== claims.protocol_version) {
+    throw new ProtocolError("protocol_mismatch", 426);
+  }
+  return { ack, claims, body };
+}
+
+export async function verifyTerminalAckV3Request(
+  request: Request,
+  env: AuthorityEnvironment,
+  now = Math.floor(Date.now() / 1000),
+): Promise<VerifiedTerminalAckV3Request> {
+  if (
+    request.method !== "POST" ||
+    new URL(request.url).pathname !== INTERNAL_OPERATION_TERMINAL_ACK_V3_PATH
+  ) {
+    throw new ProtocolError("route_not_found", 404);
+  }
+  const body = await readBoundedBody(
+    request,
+    true,
+    MAX_TERMINAL_ACK_BODY_BYTES,
+    "terminal_ack_too_large",
+    "invalid_terminal_ack",
+  );
+  const claims = await verifyAuthority(
+    requiredAuthority(request),
+    request.method,
+    INTERNAL_OPERATION_TERMINAL_ACK_V3_PATH,
+    body,
+    env,
+    now,
+    TERMINAL_ACK_V3_AUTHORITY_DOMAIN,
+  );
+  const ack = parseTerminalAckV3Request(body);
   if (ack.protocol_version !== claims.protocol_version) {
     throw new ProtocolError("protocol_mismatch", 426);
   }
@@ -638,12 +717,188 @@ export function parseTerminalAckV2Request(body: Uint8Array): TerminalAckRequestV
   return validateTerminalAckV2Request(parseJsonObject(body, "invalid_terminal_ack"));
 }
 
+export function parseTerminalAckV3Request(body: Uint8Array): TerminalAckRequestV3 {
+  return validateTerminalAckV3Request(parseJsonObject(body, "invalid_terminal_ack"));
+}
+
 export function validateTerminalAckV1Request(value: unknown): TerminalAckRequestV1 {
   return validateTerminalAckRequestForContract(value, 1) as TerminalAckRequestV1;
 }
 
 export function validateTerminalAckV2Request(value: unknown): TerminalAckRequestV2 {
   return validateTerminalAckRequestForContract(value, 2) as TerminalAckRequestV2;
+}
+
+export function validateTerminalAckV3Request(value: unknown): TerminalAckRequestV3 {
+  const code = "invalid_terminal_ack";
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProtocolError(code, 400);
+  }
+  const record = value as Record<string, unknown>;
+  assertExactKeys(
+    record,
+    [
+      "protocol_version",
+      "terminal_ack_contract_version",
+      "financial_terminal_contract_version",
+      "billing_event_id",
+      "terminal_contract_sha256",
+      "reconciliation_id",
+      "reconciliation_revision",
+      "predecessor_billing_event_id",
+      "operation_id",
+      "owner_generation",
+      "operation_from_status",
+      "operation_status",
+      "response_status",
+      "response_code",
+      "result",
+      "provider_usage_binding",
+      "provider_response_binding",
+      "shard",
+      "trace_id",
+    ],
+    code,
+  );
+
+  if (
+    readInteger(record, "terminal_ack_contract_version", 3, 3, code) !== 3 ||
+    readInteger(record, "financial_terminal_contract_version", 2, 2, code) !== 2
+  ) {
+    throw new ProtocolError(code, 400);
+  }
+
+  const compatibleV2 = { ...record };
+  delete compatibleV2.terminal_ack_contract_version;
+  delete compatibleV2.financial_terminal_contract_version;
+  delete compatibleV2.provider_response_binding;
+  const ack = validateTerminalAckV2Request(compatibleV2);
+
+  const bindingValue = readObject(record, "provider_response_binding", code);
+  assertExactKeys(
+    bindingValue,
+    [
+      "attempt_generation",
+      "status",
+      "response_class",
+      "provider_status",
+      "client_status",
+      "response_code",
+      "provider_response_evidence_sha256",
+      "client_response_artifact_sha256",
+    ],
+    code,
+  );
+  const binding: TerminalAckProviderResponseBinding = {
+    attempt_generation: readInteger(
+      bindingValue,
+      "attempt_generation",
+      1,
+      MAX_SAFE_INTEGER,
+      code,
+    ),
+    status: readString(
+      bindingValue,
+      "status",
+      9,
+      18,
+      /^(succeeded|interpreted_reject)$/,
+      code,
+    ) as TerminalAckProviderResponseBinding["status"],
+    response_class: readString(
+      bindingValue,
+      "response_class",
+      7,
+      13,
+      /^(success|typed_error|http_error|invalid_body)$/,
+      code,
+    ) as TerminalAckProviderResponseBinding["response_class"],
+    provider_status: readInteger(bindingValue, "provider_status", 100, 599, code),
+    client_status: readInteger(bindingValue, "client_status", 100, 599, code),
+    response_code:
+      bindingValue.response_code === null
+        ? null
+        : readString(
+            bindingValue,
+            "response_code",
+            1,
+            64,
+            /^[a-z0-9_:-]+$/,
+            code,
+          ),
+    provider_response_evidence_sha256: readString(
+      bindingValue,
+      "provider_response_evidence_sha256",
+      64,
+      64,
+      LOWER_HEX_64,
+      code,
+    ),
+    client_response_artifact_sha256: readString(
+      bindingValue,
+      "client_response_artifact_sha256",
+      64,
+      64,
+      LOWER_HEX_64,
+      code,
+    ),
+  };
+
+  const usageBinding = ack.provider_usage_binding;
+  const successValid =
+    binding.status === "succeeded" &&
+    binding.response_class === "success" &&
+    binding.provider_status === 200 &&
+    binding.client_status === 200 &&
+    binding.response_code === null &&
+    ack.operation_status === "completed" &&
+    ack.response_status === 200 &&
+    ack.response_code === null &&
+    ack.result !== null &&
+    usageBinding !== null &&
+    usageBinding.attempt_generation === binding.attempt_generation &&
+    usageBinding.result_sha256 === ack.result.sha256;
+  const rejectionMatrixValid =
+    (binding.response_class === "typed_error" &&
+      binding.provider_status === 200 &&
+      binding.client_status === 200 &&
+      binding.response_code === "provider_typed_error") ||
+    (binding.response_class === "http_error" &&
+      binding.provider_status !== 200 &&
+      binding.client_status === binding.provider_status &&
+      binding.response_code === "provider_http_error") ||
+    (binding.response_class === "invalid_body" &&
+      binding.provider_status === 200 &&
+      binding.client_status === 500 &&
+      binding.response_code === "provider_invalid_body");
+  const rejectionValid =
+    binding.status === "interpreted_reject" &&
+    binding.response_class !== "success" &&
+    rejectionMatrixValid &&
+    ack.operation_status === "failed" &&
+    ack.response_status === 422 &&
+    ack.response_code === binding.response_code &&
+    ack.result === null &&
+    usageBinding === null;
+  const sourceStatusValid =
+    (ack.reconciliation_revision === 1 && ack.operation_from_status === "dispatched") ||
+    (ack.reconciliation_revision === 2 &&
+      ack.operation_from_status === "recovery_required");
+  if (
+    ack.owner_generation !== 2 ||
+    binding.attempt_generation !== 1 ||
+    !sourceStatusValid ||
+    (!successValid && !rejectionValid)
+  ) {
+    throw new ProtocolError(code, 400);
+  }
+
+  return {
+    ...ack,
+    terminal_ack_contract_version: 3,
+    financial_terminal_contract_version: 2,
+    provider_response_binding: binding,
+  };
 }
 
 export function validateTerminalAckRequest(value: unknown): TerminalAckRequest {

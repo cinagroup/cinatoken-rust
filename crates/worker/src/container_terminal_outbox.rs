@@ -6,7 +6,8 @@ use worker::{D1Database, Env};
 
 use crate::container_controller::{
     acknowledge_terminal_event, ContainerTerminalAckEnvelope, ContainerTerminalAckOutcome,
-    ContainerTerminalAckProviderUsageBinding, ContainerTerminalAckResult,
+    ContainerTerminalAckProviderResponseBinding, ContainerTerminalAckProviderUsageBinding,
+    ContainerTerminalAckResult,
 };
 use crate::d1_repositories::{
     claim_relay_container_terminal_outbox, dead_letter_relay_container_terminal_outbox,
@@ -231,9 +232,16 @@ fn terminal_ack_envelope(
         receipt.provider_result_sha256.as_deref(),
         receipt.provider_attempt_generation,
     )?;
+    let (
+        terminal_ack_contract_version,
+        financial_terminal_contract_version,
+        provider_response_binding,
+    ) = terminal_provider_response_binding(receipt)?;
     Ok(ContainerTerminalAckEnvelope {
         protocol_version: u32::try_from(operation.protocol_version)
             .map_err(|_| "invalid_protocol_version")?,
+        terminal_ack_contract_version,
+        financial_terminal_contract_version,
         billing_event_id: lease.billing_event_id.clone(),
         terminal_contract_sha256: receipt.terminal_contract_sha256.clone(),
         reconciliation_id: receipt.reconciliation_id.clone(),
@@ -247,6 +255,7 @@ fn terminal_ack_envelope(
         response_code: lease.terminal_ack.response_code.clone(),
         result,
         provider_usage_binding,
+        provider_response_binding,
         shard: ShardPlan {
             contract_version: u32::try_from(operation.shard_contract_version)
                 .map_err(|_| "invalid_shard_contract_version")?,
@@ -258,6 +267,98 @@ fn terminal_ack_envelope(
         },
         trace_id: operation.trace_id.clone(),
     })
+}
+
+fn terminal_provider_response_binding(
+    receipt: &crate::d1_repositories::RelayContainerFinancialTerminalReceipt,
+) -> Result<
+    (
+        Option<u32>,
+        Option<u32>,
+        Option<ContainerTerminalAckProviderResponseBinding>,
+    ),
+    &'static str,
+> {
+    match receipt.financial_terminal_contract_version {
+        1 => {
+            if receipt.client_replay_status.is_some()
+                || receipt.provider_response_attempt_generation.is_some()
+                || receipt.provider_response_status.is_some()
+                || receipt.provider_response_class.is_some()
+                || receipt.provider_response_code.is_some()
+                || receipt.provider_response_evidence_sha256.is_some()
+            {
+                return Err("invalid_legacy_provider_response_binding");
+            }
+            Ok((None, None, None))
+        }
+        2 if receipt.billing_action == "recovery_required"
+            && receipt.operation_status == "recovery_required" =>
+        {
+            if receipt.client_response_status.is_some()
+                || receipt.client_replay_status.is_some()
+                || receipt.client_response_headers_json.is_some()
+                || receipt.client_response_headers_sha256.is_some()
+                || receipt.client_response_object_key.is_some()
+                || receipt.client_response_object_version.is_some()
+                || receipt.client_response_sha256.is_some()
+                || receipt.client_response_size.is_some()
+                || receipt.client_response_content_type.is_some()
+                || receipt.client_response_artifact_sha256.is_some()
+                || receipt.provider_usage_receipt_sha256.is_some()
+                || receipt.provider_result_sha256.is_some()
+                || receipt.provider_attempt_generation.is_some()
+                || receipt.provider_response_attempt_generation.is_some()
+                || receipt.provider_response_status.is_some()
+                || receipt.provider_response_class.is_some()
+                || receipt.provider_response_code.is_some()
+                || receipt.provider_response_evidence_sha256.is_some()
+            {
+                return Err("invalid_recovery_provider_response_binding");
+            }
+            Ok((None, None, None))
+        }
+        2 => {
+            let attempt_generation = receipt
+                .provider_response_attempt_generation
+                .ok_or("missing_provider_response_attempt")?;
+            let provider_status = receipt
+                .provider_response_status
+                .ok_or("missing_provider_response_status")?;
+            let response_class = receipt
+                .provider_response_class
+                .as_deref()
+                .ok_or("missing_provider_response_class")?;
+            let client_status = receipt
+                .client_replay_status
+                .ok_or("missing_client_replay_status")?;
+            let evidence_sha256 = receipt
+                .provider_response_evidence_sha256
+                .as_deref()
+                .ok_or("missing_provider_response_evidence")?;
+            let artifact_sha256 = receipt
+                .client_response_artifact_sha256
+                .as_deref()
+                .ok_or("missing_client_response_artifact")?;
+            let status = match receipt.operation_status.as_str() {
+                "completed" if receipt.billing_action == "settle" => "succeeded",
+                "failed" if receipt.billing_action == "refund" => "interpreted_reject",
+                _ => return Err("invalid_provider_response_terminal"),
+            };
+            let binding = ContainerTerminalAckProviderResponseBinding {
+                attempt_generation,
+                status: status.to_string(),
+                response_class: response_class.to_string(),
+                provider_status,
+                client_status,
+                response_code: receipt.provider_response_code.clone(),
+                provider_response_evidence_sha256: evidence_sha256.to_string(),
+                client_response_artifact_sha256: artifact_sha256.to_string(),
+            };
+            Ok((Some(3), Some(2), Some(binding)))
+        }
+        _ => Err("invalid_financial_terminal_contract_version"),
+    }
 }
 
 fn terminal_provider_usage_binding(

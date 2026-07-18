@@ -7534,3 +7534,53 @@ Cloudflare command was run. P3 must now implement the exact response-artifact
 protocol-v3 envelope, parser, Durable Object schema migration 3, durable
 provider/client artifact state, and fail-closed runtime rejection matrix; P4
 then owns the new financial terminal shapes and replay proof.
+
+## 2026-07-18 Financial Terminal P4 Verification
+
+This packet supersedes the statement above that P4 remains unimplemented. P4
+is a local, disabled candidate; it changes no remote Cloudflare, provider,
+financial, secret, deployment, or traffic state.
+
+The verification matrix proves:
+
+- D1 migration 0053 drains incompatible work, requires the v2 terminal
+  contract for response-bound generation-2 operations, and rejects downgrade,
+  contradictory evidence, receipt-free settlement, response-bound recovery,
+  request accounting on refund, and conflicting replay;
+- exact success settles once, while typed, HTTP, and invalid-body rejection
+  refunds once and preserves its exact client replay status;
+- status v4 is an atomic operation/attempt/provider/client snapshot;
+- ACK v3 is exact and response-bound for final success/reject, while unbound
+  recovery remains ACK v2;
+- raw R2 readback checks exact object identity, metadata, and bounded body hash
+  before convergence; and
+- scheduled terminalization, reconciliation, outbox delivery, replay, and
+  readiness remain generation-fenced and fail closed.
+
+Confirmed final local commands and results:
+
+```powershell
+python tools/verify_sqlite.py
+# PASS: 53 migrations, 57 tables, 674 incremental columns, 81 key indexes.
+
+cargo test -p cinatoken-worker --lib
+# PASS: 837/837.
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS.
+
+bun run check
+# PASS: full repository aggregate, including Controller 189 Bun tests,
+# 176 portable protocol tests, 45 runtime tests, DO lifecycle 48/48,
+# atomic admission 15/15, frontend 71 tests, both wasm checks,
+# migration/config audits, bundle gates, Wrangler dry-runs, and workspace tests.
+
+cargo fmt --all -- --check
+git diff --check
+```
+
+Every tracked response rollout gate remains exact `false`. P5 must provide the
+authenticated remote 0053/R2/DO/Container proof, mixed-version rollout,
+response-loss and crash campaign, load/cost/SLO/alert evidence, retention and
+privacy review, rollback rehearsal, and signed approvals. Go/VPS remains
+authoritative and production remains **NO-GO**.

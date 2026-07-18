@@ -16148,3 +16148,69 @@ real R2/DO/Container faults and lifecycle, mixed-version rollout, load/cost/SLO,
 alerts, retention, security/privacy review, rollback rehearsal, and signed
 approval. Go/VPS remains the traffic and financial authority; production
 remains **NO-GO**.
+
+## 22.248 Financial Terminal P4 Local Candidate (2026-07-18)
+
+P4 now exists as a locally verified, default-disabled candidate. It closes the
+single-owner financial decision left open by P3, but it does not authorize a
+Cloudflare migration or production traffic.
+
+### Terminal authority and outcome matrix
+
+The Controller status-v4 snapshot binds one operation, owner generation,
+attempt generation, provider interpretation, raw evidence, client artifact,
+and optional usage receipt before D1 terminalization. Migration 0053 then owns
+the only global financial decision:
+
+| P3 evidence | Global terminal | Financial disposition | Durable replay |
+| --- | --- | --- | --- |
+| exact provider 200 and client 200 | completed 200 | settle the reservation and apply the immutable usage receipt | exact client artifact with ACK v3 |
+| typed error carried by provider 200 | failed 422 | full refund; no request accounting or usage receipt | exact client artifact with client 200 and ACK v3 |
+| provider non-200 HTTP error | failed 422 | full refund; no request accounting or usage receipt | exact client artifact with the provider status and ACK v3 |
+| invalid provider-200 body | failed 422 | full refund; no request accounting or usage receipt | exact client artifact with client 500 and ACK v3 |
+| no complete, convergent P3 evidence | recovery required | no new P3 financial binding | legacy ACK v2 recovery projection |
+
+The terminal transaction writes one immutable event, reservation/accounting
+mutation, outbox row, and audit identity under generation and evidence fences.
+A replay must match every terminal and evidence fact. A conflicting terminal,
+late writer, duplicate evidence identity, missing receipt, or partial response
+state fails closed. Recovery does not manufacture a protocol-v3 binding, and
+no terminal or replay path can reopen provider-send authority.
+
+### Cross-plane convergence
+
+Controller status v4 is an atomic operation/attempt/artifact snapshot. ACK v3
+is reserved for response-bound final success or interpreted rejection and
+contains the exact provider status, response class, evidence digest, client
+status/artifact digest, optional receipt digest, terminal event, and final
+acknowledgement identity. Financial-terminal-v2 recovery deliberately remains
+on ACK v2 because it has no complete P3 response binding.
+
+The Worker verifies raw R2 evidence before accepting convergence: exact
+server-derived key, version, checksum, size, stored content type, all 12 custom
+metadata fields, and a bounded body SHA-256 read capped at 4 MiB. Client replay
+uses the independently bound client artifact. Scheduled terminalization,
+reconciliation, outbox delivery, status replay, and canary audit all consume
+the same immutable terminal identity rather than reconstructing semantics.
+
+Migration 0053 adds the financial-terminal-v2 columns, indexes, drain guard,
+anti-downgrade trigger, and exact success/reject transition guards. New owner
+generation 2 response-bound terminals require contract v2. Legacy rows retain
+contract v1 compatibility, and a P3-bound row cannot fall back to an unbound
+recovery write.
+
+### Promotion boundary
+
+All parse, raw-write, client-write, and terminal rollout gates remain exact
+`false` in tracked environments. Local verification passed 53 contiguous D1
+migrations, 837 Worker unit tests, the Worker wasm check, Controller/DO/runtime
+packets, and the complete `bun run check` aggregate. No remote D1, R2, Durable
+Object, Container, secret, deployment, provider, accounting, or traffic state
+was changed.
+
+P5 is now the sole promotion packet: reader-first authenticated staging apply
+and readback, N/N-1 or isolated blue/green proof, real R2/DO/Container response
+loss and crash boundaries, provider-call counters, lifecycle/load/cost/SLO and
+alert evidence, retention/privacy review, disable-first rollback rehearsal,
+and named approvals. Go/VPS remains authoritative; production remains
+**NO-GO**.

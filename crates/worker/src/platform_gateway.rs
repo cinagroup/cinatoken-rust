@@ -190,7 +190,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0052_relay_container_provider_response_artifacts.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0053_relay_container_financial_terminal_v2.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -280,6 +280,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0050_relay_container_atomic_admission.sql",
     "0051_relay_container_scheduled_terminalization.sql",
     "0052_relay_container_provider_response_artifacts.sql",
+    "0053_relay_container_financial_terminal_v2.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -426,6 +427,7 @@ struct PlatformCapabilities {
     container_scheduler_deny_by_default_egress_compiled: bool,
     container_scheduler_shared_storage_contract_compiled: bool,
     container_financial_terminal_compiled: bool,
+    container_financial_terminal_v2_schema_ready: bool,
     container_exact_response_replay_compiled: bool,
     container_divergence_reconciliation_compiled: bool,
     container_operation_write_enabled: bool,
@@ -1037,6 +1039,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_chat_canary_atomic_admission_schema_ready,
         container_scheduled_terminalizer_schema_ready,
         container_provider_response_artifact_schema_ready,
+        container_financial_terminal_v2_schema_ready,
         container_chat_canary_replay_history_probe_known,
         container_chat_canary_replay_history_present,
     ) = match env.d1("DB") {
@@ -1057,6 +1060,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
                 )
                 .await
                 .unwrap_or(false);
+            let container_financial_terminal_v2_schema_ready =
+                crate::d1_repositories::relay_container_financial_terminal_v2_schema_ready(&db)
+                    .await
+                    .unwrap_or(false);
             let container_chat_canary_replay_history_probe_known =
                 container_chat_canary_replay_history.is_ok();
             let container_chat_canary_replay_history_present =
@@ -1085,6 +1092,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
                 container_chat_canary_atomic_admission_schema_ready,
                 container_scheduled_terminalizer_schema_ready,
                 container_provider_response_artifact_schema_ready,
+                container_financial_terminal_v2_schema_ready,
                 container_chat_canary_replay_history_probe_known,
                 container_chat_canary_replay_history_present,
             )
@@ -1102,6 +1110,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             TaskPollRecoveryRuntimeStatus {
                 schema_ready: false,
             },
+            false,
             false,
             false,
             false,
@@ -1193,13 +1202,16 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         );
     let container_scheduled_terminalizer = container_scheduled_terminalizer_runtime_status(&env);
     let container_scheduled_terminalizer_compiled = container_scheduled_terminalizer_compiled();
-    let container_operation_runtime_ready = container_operation_runtime.cutover_ready()
-        && container_financial_terminal_compiled
-        && container_exact_response_replay_compiled
-        && container_divergence_reconciliation_compiled
-        && container_chat_canary_atomic_admission_compiled
-        && container_chat_canary_atomic_admission_schema_ready
-        && container_chat_canary_admission_compiled;
+    let container_operation_runtime_ready = is_container_operation_runtime_ready(
+        container_operation_runtime.cutover_ready(),
+        container_financial_terminal_compiled,
+        container_financial_terminal_v2_schema_ready,
+        container_exact_response_replay_compiled,
+        container_divergence_reconciliation_compiled,
+        container_chat_canary_atomic_admission_compiled,
+        container_chat_canary_atomic_admission_schema_ready,
+        container_chat_canary_admission_compiled,
+    );
     let container_scheduler_contract_version = CONTAINER_SHARD_CONTRACT_VERSION;
     let container_scheduler_foundation_compiled = container_scheduler_foundation_compiled();
     let container_scheduler_enabled = env_flag(&env, CONTAINER_SCHEDULER_ENABLED_ENV);
@@ -1899,6 +1911,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduler_deny_by_default_egress_compiled,
         container_scheduler_shared_storage_contract_compiled,
         container_financial_terminal_compiled,
+        container_financial_terminal_v2_schema_ready,
         container_exact_response_replay_compiled,
         container_divergence_reconciliation_compiled,
         container_operation_write_enabled: container_operation_runtime.operation_write_enabled,
@@ -3938,6 +3951,27 @@ fn quota_coordinator_cutover_guards() -> Vec<&'static str> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
+fn is_container_operation_runtime_ready(
+    operation_cutover_ready: bool,
+    financial_terminal_compiled: bool,
+    financial_terminal_v2_schema_ready: bool,
+    exact_response_replay_compiled: bool,
+    divergence_reconciliation_compiled: bool,
+    atomic_admission_compiled: bool,
+    atomic_admission_schema_ready: bool,
+    admission_compiled: bool,
+) -> bool {
+    operation_cutover_ready
+        && financial_terminal_compiled
+        && financial_terminal_v2_schema_ready
+        && exact_response_replay_compiled
+        && divergence_reconciliation_compiled
+        && atomic_admission_compiled
+        && atomic_admission_schema_ready
+        && admission_compiled
+}
+
 fn is_container_chat_canary_terminal_replay_runtime_ready(
     atomic_admission_schema_ready: bool,
     replay_history_probe_known: bool,
@@ -4667,6 +4701,38 @@ mod tests {
     }
 
     #[test]
+    fn container_operation_runtime_readiness_requires_financial_terminal_v2_schema() {
+        assert!(is_container_operation_runtime_ready(
+            true, true, true, true, true, true, true, true
+        ));
+        for false_gate in 0..8 {
+            let mut gates = [true; 8];
+            gates[false_gate] = false;
+            assert!(
+                !is_container_operation_runtime_ready(
+                    gates[0], gates[1], gates[2], gates[3], gates[4], gates[5], gates[6], gates[7]
+                ),
+                "expected container operation runtime to wait on gate index {false_gate}"
+            );
+        }
+    }
+
+    #[test]
+    fn container_financial_terminal_v2_capability_source_wires_the_d1_probe() {
+        let source = include_str!("platform_gateway.rs");
+        let capabilities_source = source
+            .split_once("pub async fn capabilities")
+            .and_then(|(_, source)| source.split_once("pub async fn task_runner_status"))
+            .map(|(source, _)| source)
+            .expect("capabilities source boundaries");
+        let probe_name = ["relay_container_financial_terminal_v2", "_schema_ready"].concat();
+        let capability_name = ["container_financial_terminal_v2", "_schema_ready"].concat();
+
+        assert!(capabilities_source.contains(&probe_name));
+        assert_eq!(capabilities_source.matches(&capability_name).count(), 6);
+    }
+
+    #[test]
     fn container_chat_canary_recovery_readiness_matches_each_state_path() {
         assert!(is_container_chat_canary_terminal_replay_runtime_ready(
             true, true, true, true, true, true
@@ -5015,15 +5081,16 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0052_relay_container_provider_response_artifacts.sql"
+            "0053_relay_container_financial_terminal_v2.sql"
         );
         assert_eq!(
-            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 4..],
+            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 5..],
             &[
                 "0049_relay_container_provider_usage_binding.sql",
                 "0050_relay_container_atomic_admission.sql",
                 "0051_relay_container_scheduled_terminalization.sql",
                 "0052_relay_container_provider_response_artifacts.sql",
+                "0053_relay_container_financial_terminal_v2.sql",
             ]
         );
         assert!(
@@ -5264,6 +5331,12 @@ mod tests {
             .contains("CREATE TABLE relay_container_response_artifact_inventory_cursors"));
         assert!(relay_container_provider_response_artifacts
             .contains("CREATE TABLE relay_container_response_artifact_inventory_findings"));
+        let relay_container_financial_terminal_v2 =
+            include_str!("../../../migrations/d1/0053_relay_container_financial_terminal_v2.sql");
+        assert!(relay_container_financial_terminal_v2
+            .contains("ADD COLUMN financial_terminal_contract_version"));
+        assert!(relay_container_financial_terminal_v2
+            .contains("relay_container_financial_terminal_v2_guard"));
         assert!(relay_container_provider_response_artifacts
             .contains("relay_container_response_artifact_inventory_cursor_insert_guard"));
         assert!(relay_container_provider_response_artifacts

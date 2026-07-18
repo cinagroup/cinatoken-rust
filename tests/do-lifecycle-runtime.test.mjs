@@ -1277,11 +1277,11 @@ describe("Rust Durable Object lifecycle contracts", () => {
       success: true,
       data: {
         d1_migration_status_available: true,
-        d1_migration_applied_count: 52,
+        d1_migration_applied_count: 53,
         d1_migration_latest:
-          "0052_relay_container_provider_response_artifacts.sql",
+          "0053_relay_container_financial_terminal_v2.sql",
         d1_expected_migration:
-          "0052_relay_container_provider_response_artifacts.sql",
+          "0053_relay_container_financial_terminal_v2.sql",
         d1_expected_migration_applied: true,
         d1_migration_set_matches: true,
         d1_migration_ready: true,
@@ -1296,6 +1296,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
         container_scheduled_terminalizer_enabled: false,
         container_scheduled_terminalizer_schema_ready: true,
         container_provider_response_artifact_schema_ready: true,
+        container_financial_terminal_v2_schema_ready: true,
         container_scheduled_terminalizer_runtime_ready: false,
         container_chat_canary_replay_history_probe_known: true,
         container_chat_canary_replay_history_present: false,
@@ -1401,6 +1402,23 @@ describe("Rust Durable Object lifecycle contracts", () => {
       "queue_v2_generation",
       "staging_race_replay",
     ]);
+
+    await env.DB.prepare(
+      "DROP TRIGGER relay_container_financial_terminal_v2_guard",
+    ).run();
+    const degradedResponse = await SELF.fetch(
+      "https://cinatoken.test/api/platform/capabilities",
+      { headers: { cookie } },
+    );
+    const degradedPayload = await degradedResponse.json();
+    expect(degradedResponse.status).toBe(200);
+    expect(degradedPayload).toMatchObject({
+      success: true,
+      data: {
+        container_financial_terminal_v2_schema_ready: false,
+        container_operation_runtime_ready: false,
+      },
+    });
   }, 30_000);
 
   it("returns task submission state only to the creating API token", async () => {
@@ -5173,6 +5191,7 @@ async function seedContainerTerminalRecoveryEvent(suffix) {
     client_idempotency_hmac_sha256: clientIdempotencySha256,
     client_request_sha256: clientRequestSha256,
     client_response: null,
+    financial_terminal_contract_version: 2,
     operation: {
       from_status: "dispatched",
       id: operationId,
@@ -5182,6 +5201,8 @@ async function seedContainerTerminalRecoveryEvent(suffix) {
       result: null,
       to_status: "recovery_required",
     },
+    provider_response_binding: null,
+    provider_usage_receipt: null,
     reconciliation_id: reconciliationId,
     reconciliation_revision: 1,
     schema_version: 1,
@@ -5191,7 +5212,8 @@ async function seedContainerTerminalRecoveryEvent(suffix) {
     encoder.encode(terminalContractJson),
   );
   const eventIdentity = {
-    domain: "cinatoken:relay-container-financial-terminal:v1",
+    domain: "cinatoken:relay-container-financial-terminal:v2",
+    financial_terminal_contract_version: 2,
     operation_from_status: "dispatched",
     operation_id: operationId,
     owner_generation: 2,
@@ -5265,6 +5287,7 @@ async function seedContainerTerminalRecoveryEvent(suffix) {
       `INSERT INTO relay_container_terminal_events (
          billing_event_id, reservation_key, operation_id, owner_generation,
          operation_from_status, operation_status, terminal_contract_sha256,
+         financial_terminal_contract_version,
          billing_action, billing_owner_generation, billing_from_status,
          billing_final_quota, billing_request_accounted, billing_reason,
          pre_consumed_quota, user_quota_delta, token_quota_delta,
@@ -5275,7 +5298,7 @@ async function seedContainerTerminalRecoveryEvent(suffix) {
          client_response_sha256, client_response_size,
          client_response_content_type, outbox_schema_version,
          outbox_payload_json, outbox_payload_sha256, created_at
-       ) VALUES (?1, ?2, ?2, 2, 'dispatched', 'recovery_required', ?3,
+       ) VALUES (?1, ?2, ?2, 2, 'dispatched', 'recovery_required', ?3, 2,
          'recovery_required', 2, 'reserved', NULL, 0, ?4, 100,
          0, 0, 0, 0, 0, ?5, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
          NULL, 1, ?6, ?7, ?8)`,

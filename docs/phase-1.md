@@ -2569,3 +2569,24 @@ financial statement, DO ACK, and delivery boundary. P5 remains the isolated
 reader-first Cloudflare migration, real lifecycle/fault/load/cost campaign,
 disable-first rollback drill, security review, and signed approvals. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-18 Financial Terminal P4 Local Candidate
+
+P4 is now implemented and verified locally as a disabled candidate. This
+supersedes the preceding `Blocked (P4)` financial-terminal row, but no remote or
+production gate has changed.
+
+| Boundary | Local P4 evidence | Remaining production gate | Status |
+| --- | --- | --- | --- |
+| Status ownership | Controller status v4 atomically binds operation, attempt, provider interpretation, raw evidence, client artifact, and optional usage receipt | Authenticated staging readback and mixed-version evidence | Local candidate |
+| D1 terminal | Migration 0053 adds a drained, immutable financial-terminal-v2 contract and exact success/reject/refund guards | Remote apply after every old writer and active operation is drained | Local candidate |
+| Financial result | Exact 200 success settles; typed, HTTP, and invalid-body rejects refund fully without request accounting; ambiguity remains recovery | Real accounting reconciliation and fault-injection evidence | Local candidate |
+| ACK and replay | ACK v3 binds response-backed final outcomes; unbound recovery stays on ACK v2; client bytes replay from the immutable artifact | Real DO/Worker response-loss, alarm, retry, and rollback campaign | Local candidate |
+| Artifact proof | Worker verifies exact R2 key/version/checksum/size/content type, 12 metadata fields, bounded body hash, and client artifact identity | Real R2 concurrency, loss, retention, and cost proof | Local candidate |
+| Remote promotion | No Cloudflare state changed; every rollout flag remains false | Reader-first P5, lifecycle/load/cost/SLO, security/privacy, rollback, and approvals | **NO-GO (P5)** |
+
+The terminal transaction has one owner and one immutable event/outbox/audit
+identity. Replays must match exactly; partial or contradictory evidence cannot
+settle, refund, deliver, or authorize another provider request. The complete
+local aggregate passes with D1 head 0053 and 837 Worker tests. Go/VPS remains
+the traffic and financial authority until P5 is completed and approved.

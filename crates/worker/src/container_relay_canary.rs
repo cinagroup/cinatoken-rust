@@ -10,15 +10,17 @@ use sha2::{Digest, Sha256};
 use worker::{Context, D1Database, Env, Headers, Response};
 
 use crate::container_artifacts::{
-    canonical_container_client_response_headers, inspect_container_result,
-    put_container_client_response, put_container_input, read_verified_container_result,
-    ContainerArtifactManifest, ContainerResultArtifactIdentity, ContainerResultObjectState,
-    MAX_CONTAINER_CLIENT_RESPONSE_BYTES,
+    inspect_container_result, put_container_client_response, put_container_input,
+    read_verified_container_provider_response_evidence, read_verified_container_response_artifact,
+    read_verified_container_result, ContainerArtifactManifest,
+    ContainerProviderResponseEvidenceIdentity, ContainerResponseArtifactIdentity,
+    ContainerResultArtifactIdentity, ContainerResultObjectState,
 };
 use crate::container_controller::{
     dispatch_operation, probe as probe_container_controller, query_operation_status,
     ContainerControllerProbe, ContainerOperationEnvelope, ContainerOperationInput,
     ContainerOperationOutcome, ContainerOperationStatus, ContainerProviderAttemptStatus,
+    ContainerProviderResponseArtifactStatus, ContainerProviderResponseArtifactsOutcome,
 };
 use crate::container_reconciliation::{
     inspect_receipt_client_response, replay_receipt_client_response, ContainerResponseObservation,
@@ -33,16 +35,20 @@ use crate::d1_repositories::{
     lookup_relay_container_client_request, mark_relay_container_operation_dispatched,
     quote_relay_container_provider_usage_settlement, relay_billing_reservation,
     relay_container_atomic_admission_schema_ready, relay_container_atomic_admission_sha256,
-    relay_container_atomic_reconciliation_id,
-    relay_container_financial_terminal_receipt_for_operation, relay_container_operation,
-    relay_container_provider_usage_receipt_readback, RelayBillingReservation,
-    RelayBillingReservationRecord, RelayContainerAtomicAdmissionOutcome,
+    relay_container_atomic_reconciliation_id, relay_container_client_response_artifact,
+    relay_container_client_response_artifact_integrity_valid,
+    relay_container_financial_terminal_receipt_for_operation,
+    relay_container_financial_terminal_v2_schema_ready, relay_container_operation,
+    relay_container_provider_response_evidence_exists,
+    relay_container_provider_usage_receipt_readback, RelayBillingRequestAccounting,
+    RelayBillingReservation, RelayBillingReservationRecord, RelayContainerAtomicAdmissionOutcome,
     RelayContainerAtomicAdmissionRecord, RelayContainerClientRequestLookup,
-    RelayContainerClientResponseRecord, RelayContainerFinancialTerminalAction,
-    RelayContainerFinancialTerminalCommand, RelayContainerFinancialTerminalOutcome,
-    RelayContainerOperation, RelayContainerOperationDispatchOutcome,
-    RelayContainerOperationExpectedStatus, RelayContainerOperationRecord,
-    RelayContainerOperationResultRecord, RelayContainerOperationTerminalRecord,
+    RelayContainerClientResponseArtifactRecord, RelayContainerClientResponseRecord,
+    RelayContainerFinancialTerminalAction, RelayContainerFinancialTerminalCommand,
+    RelayContainerFinancialTerminalOutcome, RelayContainerOperation,
+    RelayContainerOperationDispatchOutcome, RelayContainerOperationExpectedStatus,
+    RelayContainerOperationRecord, RelayContainerOperationResultRecord,
+    RelayContainerOperationTerminalRecord, RelayContainerProviderResponseBindingRecord,
     RelayContainerProviderUsageReceiptReadback, RelayContainerReconciliationLease,
     RelayContainerScheduledTerminalizationFence, RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION,
 };
@@ -387,7 +393,9 @@ pub async fn replay_or_resume_container_chat_canary(
     identity: &ContainerChatCanaryReplayIdentity,
     audit: ContainerChatCanaryAudit<'_>,
 ) -> worker::Result<Option<Response>> {
-    if !relay_container_atomic_admission_schema_ready(db).await? {
+    if !relay_container_atomic_admission_schema_ready(db).await?
+        || !relay_container_financial_terminal_v2_schema_ready(db).await?
+    {
         return Err(canary_error(
             "container chat canary replay schema is unavailable",
         ));
@@ -442,6 +450,7 @@ pub async fn execute_container_chat_canary(
         || !container_scheduler_enabled(env)
         || !container_operation_runtime_status(env).cutover_ready()
         || !relay_container_atomic_admission_schema_ready(db).await?
+        || !relay_container_financial_terminal_v2_schema_ready(db).await?
     {
         return Err(canary_error(
             "container chat canary atomic admission is unavailable",
@@ -826,17 +835,53 @@ async fn finish_controller_outcome(
     outcome: ContainerOperationOutcome,
     audit: ContainerChatCanaryAudit<'_>,
 ) -> worker::Result<Response> {
-    let code = match outcome.status {
-        ContainerOperationStatus::Completed => {
-            return settle_completed_operation(env, db, context, operation, outcome, audit).await
+    if outcome.status_contract_version == 4 {
+        if let Some(artifacts) = outcome.provider_response_artifacts.as_ref() {
+            match artifacts.status {
+                ContainerProviderResponseArtifactStatus::Succeeded => {
+                    return settle_completed_operation(env, db, context, operation, outcome, audit)
+                        .await
+                }
+                ContainerProviderResponseArtifactStatus::InterpretedReject => {
+                    return refund_interpreted_rejection(
+                        env, db, context, operation, outcome, audit,
+                    )
+                    .await
+                }
+                ContainerProviderResponseArtifactStatus::Ambiguous => {}
+            }
         }
+    }
+    let code = match outcome.status {
+        ContainerOperationStatus::Completed => "provider_response_evidence_pending",
         ContainerOperationStatus::Claimed | ContainerOperationStatus::Running => {
             "container_operation_pending"
         }
         ContainerOperationStatus::Failed => "container_failure_unresolved",
         ContainerOperationStatus::RecoveryRequired => "provider_ambiguous",
     };
-    commit_recovery_required(env, db, context, operation, audit, code, outcome.result).await
+    defer_or_commit_recovery(env, db, context, operation, audit, code, outcome.result).await
+}
+
+async fn defer_or_commit_recovery(
+    env: &Env,
+    db: &D1Database,
+    context: Option<&Context>,
+    operation: RelayContainerOperation,
+    audit: ContainerChatCanaryAudit<'_>,
+    response_code: &'static str,
+    result: Option<ContainerArtifactManifest>,
+) -> worker::Result<Response> {
+    if relay_container_provider_response_evidence_exists(
+        db,
+        &operation.operation_id,
+        operation.owner_generation,
+    )
+    .await?
+    {
+        return recovery_pending_response(&operation.operation_id, response_code);
+    }
+    commit_recovery_required(env, db, context, operation, audit, response_code, result).await
 }
 
 async fn settle_completed_operation(
@@ -863,6 +908,104 @@ pub(crate) enum ContainerScheduledTerminalizationFailureClass {
     TerminalResponseMissing,
     TerminalResponseDivergent,
     ContractViolation,
+}
+
+struct VerifiedContainerProviderClientResponse {
+    artifact: RelayContainerClientResponseArtifactRecord,
+    body: Vec<u8>,
+}
+
+async fn verified_container_provider_client_response(
+    env: &Env,
+    db: &D1Database,
+    operation: &RelayContainerOperation,
+    artifacts: &ContainerProviderResponseArtifactsOutcome,
+) -> worker::Result<VerifiedContainerProviderClientResponse> {
+    let raw_manifest = artifacts
+        .raw_manifest
+        .as_ref()
+        .ok_or_else(|| canary_error("provider response evidence manifest is missing"))?;
+    let client_manifest = artifacts
+        .client_manifest
+        .as_ref()
+        .ok_or_else(|| canary_error("provider client response manifest is missing"))?;
+    let artifact = relay_container_client_response_artifact(
+        db,
+        &operation.operation_id,
+        operation.owner_generation,
+        i64::from(artifacts.attempt_generation),
+    )
+    .await?
+    .ok_or_else(|| canary_error("provider client response D1 evidence is missing"))?;
+    if !relay_container_client_response_artifact_integrity_valid(&artifact)
+        || artifact.operation_id != operation.operation_id
+        || artifact.owner_generation != operation.owner_generation
+        || artifact.attempt_generation != i64::from(artifacts.attempt_generation)
+        || artifact.provider_response_evidence_sha256
+            != raw_manifest.provider_response_evidence_sha256
+        || artifact.response_class != artifacts.response_class.as_deref().unwrap_or_default()
+        || Some(artifact.client_response_status as u16) != artifacts.client_status
+        || artifact.client_response_object_key != client_manifest.object_key
+        || artifact.client_response_object_version != client_manifest.object_version
+        || artifact.client_response_sha256 != client_manifest.sha256
+        || u64::try_from(artifact.client_response_size).ok() != Some(client_manifest.size)
+        || artifact.client_response_content_type != client_manifest.content_type
+        || artifact.client_response_artifact_sha256
+            != client_manifest.client_response_artifact_sha256
+        || artifact.provider_usage_receipt_sha256 != artifacts.provider_usage_receipt_sha256
+    {
+        return Err(canary_error(
+            "provider client response evidence did not converge",
+        ));
+    }
+    let raw_body = read_verified_container_provider_response_evidence(
+        env,
+        &ContainerProviderResponseEvidenceIdentity {
+            operation_id: operation.operation_id.clone(),
+            owner_generation: operation.owner_generation,
+            attempt_generation: i64::from(artifacts.attempt_generation),
+            provider_operation_id: artifacts.provider_operation_id.clone(),
+            admission_sha256: artifacts.admission_sha256.clone(),
+            egress_profile: artifacts.egress_profile.clone(),
+            egress_worker_version_id: artifacts.egress_worker_version_id.clone(),
+            provider_response_evidence_sha256: raw_manifest
+                .provider_response_evidence_sha256
+                .clone(),
+        },
+        &ContainerArtifactManifest {
+            object_key: raw_manifest.object_key.clone(),
+            object_version: raw_manifest.object_version.clone(),
+            sha256: raw_manifest.sha256.clone(),
+            size: raw_manifest.size,
+            content_type: raw_manifest.content_type.clone(),
+        },
+    )
+    .await?;
+    drop(raw_body);
+    let identity = ContainerResponseArtifactIdentity {
+        operation_id: operation.operation_id.clone(),
+        owner_generation: operation.owner_generation,
+        attempt_generation: i64::from(artifacts.attempt_generation),
+        provider_operation_id: artifacts.provider_operation_id.clone(),
+        admission_sha256: artifacts.admission_sha256.clone(),
+        egress_profile: artifacts.egress_profile.clone(),
+        egress_worker_version_id: artifacts.egress_worker_version_id.clone(),
+        client_response_artifact_sha256: artifact.client_response_artifact_sha256.clone(),
+    };
+    let body = read_verified_container_response_artifact(
+        env,
+        &identity,
+        &ContainerArtifactManifest {
+            object_key: artifact.client_response_object_key.clone(),
+            object_version: artifact.client_response_object_version.clone(),
+            sha256: artifact.client_response_sha256.clone(),
+            size: u64::try_from(artifact.client_response_size)
+                .map_err(|_| canary_error("provider client response size is invalid"))?,
+            content_type: artifact.client_response_content_type.clone(),
+        },
+    )
+    .await?;
+    Ok(VerifiedContainerProviderClientResponse { artifact, body })
 }
 
 #[derive(Debug)]
@@ -931,7 +1074,13 @@ pub(crate) async fn autonomously_terminalize_completed_operation(
     outcome: ContainerOperationOutcome,
     lease: &RelayContainerReconciliationLease,
 ) -> Result<ContainerScheduledTerminalizationOutcome, ContainerScheduledTerminalizationError> {
-    if outcome.status != ContainerOperationStatus::Completed
+    if outcome.status_contract_version != 4
+        || !outcome
+            .provider_response_artifacts
+            .as_ref()
+            .is_some_and(|artifacts| {
+                artifacts.status == ContainerProviderResponseArtifactStatus::Succeeded
+            })
         || lease.operation_id != operation.operation_id
         || lease.reservation_key != operation.reservation_key
     {
@@ -1002,6 +1151,24 @@ async fn settle_completed_operation_inner(
             )
         })?;
     validate_terminal_audit_identity(&reservation, audit)?;
+    let artifacts = outcome
+        .provider_response_artifacts
+        .as_ref()
+        .filter(|artifacts| {
+            outcome.status_contract_version == 4
+                && artifacts.status == ContainerProviderResponseArtifactStatus::Succeeded
+                && artifacts.attempt_generation == 1
+                && artifacts.provider_status == Some(200)
+                && artifacts.client_status == Some(200)
+                && artifacts.response_class.as_deref() == Some("success")
+                && artifacts.response_code.is_none()
+        })
+        .ok_or_else(|| {
+            ContainerScheduledTerminalizationError::contract_violation(
+                "provider_response_artifacts_invalid",
+                "completed provider response artifacts are unavailable",
+            )
+        })?;
     let result = outcome.result.as_ref().ok_or_else(|| {
         ContainerScheduledTerminalizationError::contract_violation(
             "completed_result_missing",
@@ -1013,9 +1180,16 @@ async fn settle_completed_operation_inner(
         .as_ref()
         .filter(|attempt| {
             attempt.attempt_generation == 1
-                && attempt.status == ContainerProviderAttemptStatus::Succeeded
-                && attempt.response_status == Some(outcome.http_status)
-                && attempt.result.as_ref() == Some(result)
+                && matches!(
+                    attempt.status,
+                    ContainerProviderAttemptStatus::Dispatched
+                        | ContainerProviderAttemptStatus::Succeeded
+                        | ContainerProviderAttemptStatus::Ambiguous
+                )
+                && attempt
+                    .result
+                    .as_ref()
+                    .is_none_or(|attempt_result| attempt_result == result)
                 && attempt.provider_usage_receipt_attached_at.is_some()
         })
         .ok_or_else(|| {
@@ -1028,7 +1202,7 @@ async fn settle_completed_operation_inner(
         .provider_usage_receipt_sha256
         .as_deref()
         .filter(|value| {
-            outcome.status_contract_version == 3
+            artifacts.provider_usage_receipt_sha256.as_deref() == Some(*value)
                 && attempt.provider_usage_receipt_sha256.as_deref() == Some(*value)
         })
         .ok_or_else(|| {
@@ -1050,7 +1224,7 @@ async fn settle_completed_operation_inner(
         content_type: &result.content_type,
     };
     let terminal = RelayContainerOperationTerminalRecord::Completed {
-        response_status: i64::from(outcome.http_status),
+        response_status: 200,
         result: terminal_result,
     };
     let quote = quote_relay_container_provider_usage_settlement(
@@ -1111,36 +1285,15 @@ async fn settle_completed_operation_inner(
                 }
             });
         }
-        let audit = audit.ok_or_else(|| {
-            ContainerScheduledTerminalizationError::contract_violation(
-                "client_audit_identity_missing",
-                "client terminalization audit identity is missing",
-            )
-        })?;
-        return commit_recovery_required(
-            env,
-            db,
-            context,
-            operation,
-            audit,
-            "provider_result_divergent",
-            Some(result.clone()),
-        )
-        .await
-        .map_err(|err| {
-            ContainerScheduledTerminalizationError::store_unavailable(
-                "recovery_commit_unavailable",
-                err,
-            )
-        });
+        return recovery_pending_response(&operation.operation_id, "provider_result_divergent")
+            .map_err(|err| {
+                ContainerScheduledTerminalizationError::store_unavailable(
+                    "recovery_response_unavailable",
+                    err,
+                )
+            });
     }
-    if result.size > MAX_CONTAINER_CLIENT_RESPONSE_BYTES as u64 {
-        return Err(ContainerScheduledTerminalizationError::contract_violation(
-            "provider_result_exceeds_replay_limit",
-            "container result exceeds the exact client response replay limit",
-        ));
-    }
-    let body = read_verified_container_result(env, result)
+    let _verified_result = read_verified_container_result(env, result)
         .await
         .map_err(|err| {
             ContainerScheduledTerminalizationError::store_unavailable(
@@ -1148,25 +1301,31 @@ async fn settle_completed_operation_inner(
                 err,
             )
         })?;
-    let (headers_json, headers_sha256) = canonical_container_client_response_headers(
-        [("content-type", result.content_type.as_str())],
-        &result.content_type,
-    )
-    .map_err(|err| {
-        ContainerScheduledTerminalizationError::contract_violation(
-            "client_response_headers_invalid",
-            &err.to_string(),
-        )
-    })?;
+    let verified_response =
+        verified_container_provider_client_response(env, db, &operation, artifacts)
+            .await
+            .map_err(|err| {
+                ContainerScheduledTerminalizationError::store_unavailable(
+                    "provider_client_response_read_unavailable",
+                    err,
+                )
+            })?;
+    let replay_status =
+        u16::try_from(verified_response.artifact.client_response_status).map_err(|_| {
+            ContainerScheduledTerminalizationError::contract_violation(
+                "provider_client_response_status_invalid",
+                "provider client response status is out of range",
+            )
+        })?;
     let response = put_container_client_response(
         env,
         &operation.operation_id,
         operation.owner_generation,
-        outcome.http_status,
-        &headers_json,
-        &headers_sha256,
-        &result.content_type,
-        &body,
+        replay_status,
+        &verified_response.artifact.client_response_headers_json,
+        &verified_response.artifact.client_response_headers_sha256,
+        &verified_response.artifact.client_response_content_type,
+        &verified_response.body,
     )
     .await
     .map_err(|err| {
@@ -1175,13 +1334,30 @@ async fn settle_completed_operation_inner(
             err,
         )
     })?;
-    let audit_payload = terminal_audit_payload(
+    if response.manifest.status != replay_status
+        || response.manifest.headers_json != verified_response.artifact.client_response_headers_json
+        || response.manifest.headers_sha256
+            != verified_response.artifact.client_response_headers_sha256
+        || response.manifest.body.sha256 != verified_response.artifact.client_response_sha256
+        || i64::try_from(response.manifest.body.size).ok()
+            != Some(verified_response.artifact.client_response_size)
+        || response.manifest.body.content_type
+            != verified_response.artifact.client_response_content_type
+    {
+        return Err(ContainerScheduledTerminalizationError::contract_violation(
+            "client_response_r2_write_divergent",
+            "legacy exact response did not match provider response evidence",
+        ));
+    }
+    let audit_payload = terminal_provider_response_audit_payload(
         &operation,
         &reservation,
         "settle",
         Some(quote.final_quota),
         quote.prompt_tokens,
         quote.completion_tokens,
+        artifacts,
+        &verified_response.artifact,
     )
     .map_err(|err| {
         ContainerScheduledTerminalizationError::contract_violation(
@@ -1192,6 +1368,7 @@ async fn settle_completed_operation_inner(
     let audit_payload_sha256 = sha256_hex(audit_payload.as_bytes());
     let client_response = RelayContainerClientResponseRecord {
         status: i64::from(response.manifest.status),
+        artifact_sha256: &verified_response.artifact.client_response_artifact_sha256,
         headers_json: &response.manifest.headers_json,
         headers_sha256: &response.manifest.headers_sha256,
         object_key: &response.manifest.body.object_key,
@@ -1238,6 +1415,20 @@ async fn settle_completed_operation_inner(
                     provider_attempt_generation: 1,
                 },
                 client_response: Some(client_response),
+                provider_response: Some(RelayContainerProviderResponseBindingRecord {
+                    attempt_generation: 1,
+                    status: "succeeded",
+                    response_class: "success",
+                    provider_status: 200,
+                    client_status: i64::from(replay_status),
+                    response_code: None,
+                    provider_response_evidence_sha256: &verified_response
+                        .artifact
+                        .provider_response_evidence_sha256,
+                    client_response_artifact_sha256: &verified_response
+                        .artifact
+                        .client_response_artifact_sha256,
+                }),
                 audit_payload_json: &audit_payload,
                 audit_payload_sha256: &audit_payload_sha256,
                 scheduled_terminalization,
@@ -1333,6 +1524,170 @@ async fn settle_completed_operation_inner(
     Ok(response)
 }
 
+async fn refund_interpreted_rejection(
+    env: &Env,
+    db: &D1Database,
+    context: Option<&Context>,
+    operation: RelayContainerOperation,
+    outcome: ContainerOperationOutcome,
+    audit: ContainerChatCanaryAudit<'_>,
+) -> worker::Result<Response> {
+    let reservation = relay_billing_reservation(db, &operation.reservation_key)
+        .await?
+        .ok_or_else(|| canary_error("container billing reservation is missing"))?;
+    validate_terminal_audit_identity(&reservation, Some(audit))
+        .map_err(ContainerScheduledTerminalizationError::into_worker_error)?;
+    let artifacts = outcome
+        .provider_response_artifacts
+        .as_ref()
+        .filter(|artifacts| {
+            outcome.status_contract_version == 4
+                && artifacts.status == ContainerProviderResponseArtifactStatus::InterpretedReject
+                && artifacts.attempt_generation == 1
+                && artifacts.provider_status.is_some()
+                && artifacts.client_status.is_some()
+                && artifacts.response_class.is_some()
+                && artifacts.response_code.is_some()
+                && artifacts.provider_usage_receipt_sha256.is_none()
+        })
+        .ok_or_else(|| canary_error("interpreted provider rejection evidence is unavailable"))?;
+    let verified_response =
+        verified_container_provider_client_response(env, db, &operation, artifacts).await?;
+    let response_code = artifacts
+        .response_code
+        .as_deref()
+        .ok_or_else(|| canary_error("interpreted provider rejection code is unavailable"))?;
+    let response_class = artifacts
+        .response_class
+        .as_deref()
+        .ok_or_else(|| canary_error("interpreted provider rejection class is unavailable"))?;
+    let provider_status = i64::from(
+        artifacts
+            .provider_status
+            .ok_or_else(|| canary_error("provider response status is unavailable"))?,
+    );
+    let replay_status = artifacts
+        .client_status
+        .ok_or_else(|| canary_error("client response status is unavailable"))?;
+    if i64::from(replay_status) != verified_response.artifact.client_response_status {
+        return Err(canary_error(
+            "interpreted provider rejection status did not converge",
+        ));
+    }
+    let response = put_container_client_response(
+        env,
+        &operation.operation_id,
+        operation.owner_generation,
+        replay_status,
+        &verified_response.artifact.client_response_headers_json,
+        &verified_response.artifact.client_response_headers_sha256,
+        &verified_response.artifact.client_response_content_type,
+        &verified_response.body,
+    )
+    .await?;
+    if response.manifest.status != replay_status
+        || response.manifest.headers_json != verified_response.artifact.client_response_headers_json
+        || response.manifest.headers_sha256
+            != verified_response.artifact.client_response_headers_sha256
+        || response.manifest.body.sha256 != verified_response.artifact.client_response_sha256
+        || i64::try_from(response.manifest.body.size).ok()
+            != Some(verified_response.artifact.client_response_size)
+        || response.manifest.body.content_type
+            != verified_response.artifact.client_response_content_type
+    {
+        return Err(canary_error(
+            "interpreted provider rejection replay object diverged",
+        ));
+    }
+
+    let audit_payload = terminal_provider_response_audit_payload(
+        &operation,
+        &reservation,
+        "refund",
+        None,
+        0,
+        0,
+        artifacts,
+        &verified_response.artifact,
+    )?;
+    let audit_payload_sha256 = sha256_hex(audit_payload.as_bytes());
+    let terminal = RelayContainerOperationTerminalRecord::Failed {
+        response_status: 422,
+        response_code,
+    };
+    let client_response = RelayContainerClientResponseRecord {
+        status: i64::from(response.manifest.status),
+        artifact_sha256: &verified_response.artifact.client_response_artifact_sha256,
+        headers_json: &response.manifest.headers_json,
+        headers_sha256: &response.manifest.headers_sha256,
+        object_key: &response.manifest.body.object_key,
+        object_version: &response.manifest.body.object_version,
+        sha256: &response.manifest.body.sha256,
+        size: i64::try_from(response.manifest.body.size)
+            .map_err(|_| canary_error("client response size is invalid"))?,
+        content_type: &response.manifest.body.content_type,
+    };
+    let receipt = require_financial_terminal(
+        commit_relay_container_financial_terminal(
+            db,
+            RelayContainerFinancialTerminalCommand {
+                reservation_key: &operation.reservation_key,
+                operation_id: &operation.operation_id,
+                operation_owner_generation: operation.owner_generation,
+                expected_operation_status: operation_expected_status(&operation)?,
+                admission_sha256: &operation.admission_sha256,
+                billing_owner_generation: financial_owner_generation(&operation)?,
+                terminal,
+                action: RelayContainerFinancialTerminalAction::Refund {
+                    finalization_reason: response_code,
+                    request_accounting: RelayBillingRequestAccounting::Skip,
+                },
+                client_response: Some(client_response),
+                provider_response: Some(RelayContainerProviderResponseBindingRecord {
+                    attempt_generation: 1,
+                    status: "interpreted_reject",
+                    response_class,
+                    provider_status,
+                    client_status: i64::from(replay_status),
+                    response_code: Some(response_code),
+                    provider_response_evidence_sha256: &verified_response
+                        .artifact
+                        .provider_response_evidence_sha256,
+                    client_response_artifact_sha256: &verified_response
+                        .artifact
+                        .client_response_artifact_sha256,
+                }),
+                audit_payload_json: &audit_payload,
+                audit_payload_sha256: &audit_payload_sha256,
+                scheduled_terminalization: None,
+                committed_at: current_unix_seconds(),
+            },
+        )
+        .await?,
+    )
+    .map_err(ContainerScheduledTerminalizationError::into_worker_error)?;
+    crate::quota_coordinator::observe_or_defer_committed_relay_billing_reservation(
+        context,
+        env,
+        db,
+        &operation.reservation_key,
+    )
+    .await;
+    match inspect_receipt_client_response(env, &receipt).await? {
+        ContainerResponseObservation::Matching => {}
+        _ => {
+            return Err(canary_error(
+                "interpreted provider rejection replay did not converge",
+            ))
+        }
+    }
+    let mut response = replay_receipt_client_response(env, &receipt)
+        .await?
+        .ok_or_else(|| canary_error("interpreted provider rejection replay is unavailable"))?;
+    crate::set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
 async fn commit_recovery_required(
     env: &Env,
     db: &D1Database,
@@ -1383,6 +1738,7 @@ async fn commit_recovery_required(
                     finalization_reason: response_code,
                 },
                 client_response: None,
+                provider_response: None,
                 audit_payload_json: &audit_payload,
                 audit_payload_sha256: &audit_payload_sha256,
                 scheduled_terminalization: None,
@@ -1555,6 +1911,50 @@ fn terminal_audit_payload(
         "prompt_tokens": prompt_tokens,
         "request_id_hash": reservation.request_id_hash,
         "schema_version": 2,
+        "selected_group": operation.selected_group,
+        "token_id": reservation.token_id,
+        "transport": "container_chat_canary",
+        "user_id": reservation.user_id,
+    }))
+    .map_err(|err| canary_error(&format!("container audit serialization failed: {err}")))
+}
+
+fn terminal_provider_response_audit_payload(
+    operation: &RelayContainerOperation,
+    reservation: &RelayBillingReservation,
+    decision: &str,
+    final_quota: Option<i64>,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    artifacts: &ContainerProviderResponseArtifactsOutcome,
+    response: &RelayContainerClientResponseArtifactRecord,
+) -> worker::Result<String> {
+    serde_json::to_string(&json!({
+        "channel_id": operation.channel_id,
+        "completion_tokens": completion_tokens,
+        "decision": decision,
+        "endpoint_path": reservation.endpoint_path,
+        "final_quota": final_quota,
+        "model": reservation.model_name,
+        "operation_id": operation.operation_id,
+        "prompt_tokens": prompt_tokens,
+        "provider_response": {
+            "attempt_generation": artifacts.attempt_generation,
+            "client_response_artifact_sha256": response.client_response_artifact_sha256,
+            "client_response_sha256": response.client_response_sha256,
+            "client_status": artifacts.client_status,
+            "provider_response_evidence_sha256": response.provider_response_evidence_sha256,
+            "provider_status": artifacts.provider_status,
+            "response_class": artifacts.response_class,
+            "response_code": artifacts.response_code,
+            "status": match artifacts.status {
+                ContainerProviderResponseArtifactStatus::Succeeded => "succeeded",
+                ContainerProviderResponseArtifactStatus::InterpretedReject => "interpreted_reject",
+                ContainerProviderResponseArtifactStatus::Ambiguous => "ambiguous",
+            },
+        },
+        "request_id_hash": reservation.request_id_hash,
+        "schema_version": 3,
         "selected_group": operation.selected_group,
         "token_id": reservation.token_id,
         "transport": "container_chat_canary",
@@ -2191,8 +2591,11 @@ mod tests {
         let scheduled_guard = settlement
             .find("if scheduled_terminalization.is_some()")
             .unwrap();
-        let recovery_write = settlement.find("return commit_recovery_required(").unwrap();
-        assert!(scheduled_guard < recovery_write);
+        let recovery_response = settlement
+            .find("return recovery_pending_response(")
+            .unwrap();
+        assert!(scheduled_guard < recovery_response);
+        assert!(!settlement.contains("commit_recovery_required("));
         assert!(settlement.contains("scheduled terminalization provider result did not converge"));
         assert!(settlement.contains("scheduled_terminalization,"));
         let audit_start = source.find("fn terminal_audit_payload(").unwrap();
@@ -2200,14 +2603,23 @@ mod tests {
         let audit_payload = &source[audit_start..audit_end];
         assert!(audit_payload.contains("request_id_hash"));
         assert!(audit_payload.contains("\"schema_version\": 2"));
+        assert!(audit_payload.contains("\"schema_version\": 3"));
+        assert!(audit_payload.contains("provider_response_evidence_sha256"));
+        assert!(audit_payload.contains("client_response_artifact_sha256"));
         assert!(!audit_payload.contains("audit.request_id"));
         assert!(!audit_payload.contains("audit.client_ip"));
-        assert!(
-            settlement
-                .find("provider_result_exceeds_replay_limit")
-                .unwrap()
-                < settlement.find("read_verified_container_result").unwrap()
-        );
+        let result_read = settlement.find("read_verified_container_result").unwrap();
+        let response_read = settlement
+            .find("verified_container_provider_client_response")
+            .unwrap();
+        let response_write = settlement.find("put_container_client_response").unwrap();
+        let terminal_commit = settlement
+            .find("commit_relay_container_financial_terminal")
+            .unwrap();
+        assert!(result_read < response_read);
+        assert!(response_read < response_write);
+        assert!(response_write < terminal_commit);
+        assert!(settlement.contains("outcome.status_contract_version == 4"));
     }
 
     #[test]

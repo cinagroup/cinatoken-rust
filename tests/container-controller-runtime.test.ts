@@ -8,6 +8,7 @@ import {
   type OperationStatusQuery,
   type TerminalAckRequest,
   type TerminalAckRequestV2,
+  type TerminalAckRequestV3,
 } from "../services/container-controller/src/protocol";
 import {
   RelayShardLedger,
@@ -19,6 +20,7 @@ import {
   type RelayShardLedgerPolicy,
   type StorageResultRecord,
 } from "../services/container-controller/src/ledger";
+import { operationStatusResponseV4 } from "../services/container-controller/src/operation_outcome";
 import type { ContainerControllerLedgerTestObject } from "./fixtures/container-controller-ledger-worker";
 
 declare global {
@@ -328,6 +330,65 @@ function terminalAck(
   };
 }
 
+function terminalAckV3(
+  operation: OperationEnvelope,
+  attachment: ProviderResponseArtifactAttachment,
+  overrides: Partial<TerminalAckRequestV3> = {},
+): TerminalAckRequestV3 {
+  if (
+    attachment.status === "ambiguous" ||
+    attachment.raw_manifest === null ||
+    attachment.client_manifest === null
+  ) {
+    throw new Error("terminal ACK v3 requires complete provider response evidence");
+  }
+  const succeeded = attachment.status === "succeeded";
+  const result = succeeded ? operationResult(operation) : null;
+  const receiptSha256 = attachment.provider_usage_receipt_sha256;
+  if (succeeded && receiptSha256 === null) {
+    throw new Error("terminal ACK v3 success requires a provider usage receipt");
+  }
+  return {
+    protocol_version: 1,
+    terminal_ack_contract_version: 3,
+    financial_terminal_contract_version: 2,
+    billing_event_id: sha256("1"),
+    terminal_contract_sha256: sha256("2"),
+    reconciliation_id: sha256("3"),
+    reconciliation_revision: 1,
+    predecessor_billing_event_id: null,
+    operation_id: operation.operation_id,
+    owner_generation: operation.owner_generation,
+    operation_from_status: "dispatched",
+    operation_status: succeeded ? "completed" : "failed",
+    response_status: succeeded ? 200 : 422,
+    response_code: attachment.response_code,
+    result,
+    provider_usage_binding: succeeded
+      ? {
+          attempt_generation: 1,
+          receipt_sha256: receiptSha256!,
+          result_sha256: result!.sha256,
+        }
+      : null,
+    provider_response_binding: {
+      attempt_generation: 1,
+      status: attachment.status,
+      response_class: attachment.response_class,
+      provider_status: attachment.provider_status,
+      client_status: attachment.client_status,
+      response_code: attachment.response_code,
+      provider_response_evidence_sha256:
+        attachment.raw_manifest.provider_response_evidence_sha256,
+      client_response_artifact_sha256:
+        attachment.client_manifest.client_response_artifact_sha256,
+    },
+    shard: operation.shard,
+    trace_id: operation.trace_id,
+    ...overrides,
+  };
+}
+
 async function acknowledgeTerminal(
   stub: DurableObjectStub<ContainerControllerLedgerTestObject>,
   ack: TerminalAckRequest,
@@ -338,6 +399,29 @@ async function acknowledgeTerminal(
       return {
         ok: true as const,
         result: new RelayShardLedger(state.storage).acknowledgeGlobalTerminal(ack, now),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false as const, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
+  });
+}
+
+async function acknowledgeTerminalV3(
+  stub: DurableObjectStub<ContainerControllerLedgerTestObject>,
+  ack: TerminalAckRequestV3,
+  now: number,
+) {
+  return runInDurableObject(stub, (_instance, state) => {
+    try {
+      return {
+        ok: true as const,
+        result: new RelayShardLedger(state.storage).acknowledgeGlobalTerminalV3(
+          ack,
+          now,
+        ),
       };
     } catch (error) {
       if (error instanceof ProtocolError) {
@@ -1105,6 +1189,149 @@ describe("RelayShardLedger in Workerd", () => {
         kind: "attached",
         row: { provider_usage_receipt_sha256: receiptSha256 },
       },
+    });
+  });
+
+  it("reads one exact v4 evidence snapshot across eviction and deadline recovery", async () => {
+    const stub = ledgerStub("operation-status-v4-success-readback");
+    const operation = operationEnvelope("operation-status-v4-success-readback", {
+      operation_kind: "chat_completion",
+      execution_deadline_at: BASE_NOW + 10,
+    });
+    await dispatchVersionedProviderAttempt(stub, operation);
+    const result = operationResult(operation);
+    const receiptSha256 = sha256("f");
+    await expect(
+      stub.recordProviderUsageResultOutcome(
+        operation.operation_id,
+        operation.owner_generation,
+        result,
+        1,
+        receiptSha256,
+        BASE_NOW + 3,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: "recorded" });
+    const attachment = successAttachment(operation, "de", {
+      raw_manifest: providerEvidenceManifest(operation, "d", result.sha256),
+      client_manifest: clientArtifactManifest(operation, "e", result.sha256, {
+        size: result.size,
+      }),
+      provider_usage_receipt_sha256: receiptSha256,
+    });
+    await expect(
+      attachProviderResponse(stub, operation, attachment, BASE_NOW + 4),
+    ).resolves.toMatchObject({ ok: true, result: { kind: "attached" } });
+
+    const beforeEviction = await runInDurableObject(stub, (_instance, state) => {
+      const totalChanges = () =>
+        state.storage.sql.exec<{ count: number }>("SELECT total_changes() AS count").one()
+          .count;
+      const before = totalChanges();
+      const ledger = new RelayShardLedger(state.storage);
+      const first = ledger.readOperationStatusV4Snapshot(operationStatusQuery(operation));
+      const replay = ledger.readOperationStatusV4Snapshot(operationStatusQuery(operation));
+      return { before, after: totalChanges(), first, replay };
+    });
+    expect(beforeEviction.after).toBe(beforeEviction.before);
+    expect(beforeEviction.replay).toEqual(beforeEviction.first);
+    expect(beforeEviction.first).toMatchObject({
+      operation: {
+        status: "running",
+        provider_usage_receipt_sha256: receiptSha256,
+      },
+      provider_attempt: {
+        status: "dispatched",
+        provider_usage_receipt_sha256: receiptSha256,
+      },
+      provider_response_artifacts: {
+        status: "succeeded",
+        provider_usage_receipt_sha256: receiptSha256,
+        raw_manifest: attachment.raw_manifest,
+        client_manifest: attachment.client_manifest,
+      },
+    });
+    const firstBody = await operationStatusResponseV4(beforeEviction.first).text();
+    expect(await operationStatusResponseV4(beforeEviction.replay).text()).toBe(firstBody);
+
+    await evictDurableObject(stub);
+    const persisted = await runInDurableObject(stub, (_instance, state) =>
+      new RelayShardLedger(state.storage).readOperationStatusV4Snapshot(
+        operationStatusQuery(operation),
+      ),
+    );
+    expect(persisted).toEqual(beforeEviction.first);
+
+    await expect(
+      stub.expireOperation(
+        operation.operation_id,
+        operation.owner_generation,
+        BASE_NOW + 11,
+      ),
+    ).resolves.toBe(true);
+    const recovered = await runInDurableObject(stub, (_instance, state) =>
+      new RelayShardLedger(state.storage).readOperationStatusV4Snapshot(
+        operationStatusQuery(operation),
+      ),
+    );
+    expect(recovered).toMatchObject({
+      operation: { status: "recovery_required" },
+      provider_attempt: { status: "ambiguous" },
+      provider_response_artifacts: {
+        status: "succeeded",
+        response_class: "success",
+        provider_usage_receipt_sha256: receiptSha256,
+      },
+    });
+    expect(await operationStatusResponseV4(recovered).json()).toMatchObject({
+      status_contract_version: 4,
+      status: "recovery_required",
+      provider_attempt: { status: "ambiguous" },
+      provider_response_artifacts: { status: "succeeded" },
+    });
+  });
+
+  it("fails the v4 DO snapshot closed on attachment identity corruption", async () => {
+    const stub = ledgerStub("operation-status-v4-corruption");
+    const operation = operationEnvelope("operation-status-v4-corruption", {
+      operation_kind: "chat_completion",
+    });
+    await dispatchVersionedProviderAttempt(stub, operation);
+    await expect(
+      attachProviderResponse(
+        stub,
+        operation,
+        interpretedRejectAttachment(operation, "typed_error", 200, 200),
+        BASE_NOW + 3,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: { kind: "attached" } });
+
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "DROP TRIGGER cinatoken_shard_provider_response_attachment_update_guard",
+      );
+      state.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_response_attachments
+            SET provider_operation_id = 'provider-operation-corrupt'
+          WHERE operation_id = ?1`,
+        operation.operation_id,
+      );
+    });
+    await evictDurableObject(stub);
+    const readback = await runInDurableObject(stub, (_instance, state) => {
+      try {
+        new RelayShardLedger(state.storage).readOperationStatusV4Snapshot(
+          operationStatusQuery(operation),
+        );
+        return { code: "unexpected_success", status: 200 };
+      } catch (error) {
+        return error instanceof ProtocolError
+          ? { code: error.code, status: error.status }
+          : { code: "unexpected_error", status: 500 };
+      }
+    });
+    expect(readback).toEqual({
+      code: "provider_response_attachment_corrupt",
+      status: 503,
     });
   });
 
@@ -2024,11 +2251,404 @@ describe("RelayShardLedger in Workerd", () => {
     });
   });
 
+  it("converges an exact terminal ACK v3 success and rejects v1/v2 downgrade", async () => {
+    const stub = ledgerStub("terminal-ack-v3-success");
+    const operation = operationEnvelope("terminal-ack-v3-success", {
+      owner_generation: 2,
+      operation_kind: "chat_completion",
+    });
+    await dispatchVersionedProviderAttempt(stub, operation);
+    const result = operationResult(operation);
+    const receiptSha256 = sha256("9");
+    await expect(
+      stub.recordProviderUsageResultOutcome(
+        operation.operation_id,
+        operation.owner_generation,
+        result,
+        1,
+        receiptSha256,
+        BASE_NOW + 3,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: "recorded" });
+    const attachment = successAttachment(operation, "45", {
+      raw_manifest: providerEvidenceManifest(operation, "4", result.sha256),
+      client_manifest: clientArtifactManifest(operation, "5", result.sha256, {
+        size: result.size,
+      }),
+      provider_usage_receipt_sha256: receiptSha256,
+    });
+    await expect(
+      attachProviderResponse(stub, operation, attachment, BASE_NOW + 4),
+    ).resolves.toMatchObject({ ok: true, result: { kind: "attached" } });
+
+    const legacy = terminalAck(operation, { result });
+    await expect(
+      acknowledgeTerminal(stub, legacy, BASE_NOW + 5),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "terminal_ack_contract_downgrade", status: 409 },
+    });
+    const legacyV2: TerminalAckRequestV2 = {
+      ...legacy,
+      provider_usage_binding: {
+        attempt_generation: 1,
+        receipt_sha256: receiptSha256,
+        result_sha256: result.sha256,
+      },
+    };
+    await expect(
+      acknowledgeTerminal(stub, legacyV2, BASE_NOW + 5),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "terminal_ack_contract_downgrade", status: 409 },
+    });
+
+    const ack = terminalAckV3(operation, attachment);
+    await expect(acknowledgeTerminalV3(stub, ack, BASE_NOW + 5)).resolves.toEqual({
+      ok: true,
+      result: { kind: "acknowledged", finalAck: true, acknowledgedAt: BASE_NOW + 5 },
+    });
+    await expect(acknowledgeTerminalV3(stub, ack, BASE_NOW + 6)).resolves.toEqual({
+      ok: true,
+      result: { kind: "duplicate", finalAck: true, acknowledgedAt: BASE_NOW + 5 },
+    });
+
+    const converged = await runInDurableObject(stub, (_instance, state) => {
+      const operationRow = state.storage.sql
+        .exec<{
+          status: string;
+          response_status: number;
+          response_code: string | null;
+        }>(
+          `SELECT status, response_status, response_code
+             FROM cinatoken_shard_operations WHERE operation_id = ?1`,
+          operation.operation_id,
+        )
+        .one();
+      const attemptRow = state.storage.sql
+        .exec<{
+          status: string;
+          response_status: number;
+          response_code: string | null;
+          result_sha256: string;
+          provider_usage_receipt_sha256: string;
+        }>(
+          `SELECT status, response_status, response_code, result_sha256,
+                  provider_usage_receipt_sha256
+             FROM cinatoken_shard_provider_attempts WHERE operation_id = ?1`,
+          operation.operation_id,
+        )
+        .one();
+      const retryRow = state.storage.sql
+        .exec<{
+          state: string;
+          active_attempt_generation: number | null;
+          next_attempt_at: number | null;
+          global_terminal_event_id: string;
+          global_terminal_acked_at: number;
+        }>(
+          `SELECT state, active_attempt_generation, next_attempt_at,
+                  global_terminal_event_id, global_terminal_acked_at
+             FROM cinatoken_shard_provider_retry_state WHERE operation_id = ?1`,
+          operation.operation_id,
+        )
+        .one();
+      const ackRow = state.storage.sql
+        .exec<{
+          terminal_ack_contract_version: number;
+          financial_terminal_contract_version: number;
+          provider_response_binding_json: string;
+          client_response_artifact_sha256: string;
+          final_acked_at: number;
+        }>(
+          `SELECT terminal_ack_contract_version, financial_terminal_contract_version,
+                  provider_response_binding_json, client_response_artifact_sha256,
+                  final_acked_at
+             FROM cinatoken_shard_terminal_acks WHERE operation_id = ?1`,
+          operation.operation_id,
+        )
+        .one();
+      return { operationRow, attemptRow, retryRow, ackRow };
+    });
+    expect(converged).toEqual({
+      operationRow: { status: "completed", response_status: 200, response_code: null },
+      attemptRow: {
+        status: "succeeded",
+        response_status: 200,
+        response_code: null,
+        result_sha256: result.sha256,
+        provider_usage_receipt_sha256: receiptSha256,
+      },
+      retryRow: {
+        state: "terminal",
+        active_attempt_generation: null,
+        next_attempt_at: null,
+        global_terminal_event_id: ack.billing_event_id,
+        global_terminal_acked_at: BASE_NOW + 5,
+      },
+      ackRow: {
+        terminal_ack_contract_version: 3,
+        financial_terminal_contract_version: 2,
+        provider_response_binding_json: JSON.stringify(ack.provider_response_binding),
+        client_response_artifact_sha256:
+          ack.provider_response_binding.client_response_artifact_sha256,
+        final_acked_at: BASE_NOW + 5,
+      },
+    });
+
+    await evictDurableObject(stub);
+    await expect(acknowledgeTerminalV3(stub, ack, BASE_NOW + 7)).resolves.toEqual({
+      ok: true,
+      result: { kind: "duplicate", finalAck: true, acknowledgedAt: BASE_NOW + 5 },
+    });
+  });
+
+  it("converges typed, HTTP-202, and invalid-body terminal ACK v3 rejections", async () => {
+    const cases = [
+      { id: "typed", attachment: ["typed_error", 200, 200, "12"] as const },
+      { id: "http-202", attachment: ["http_error", 202, 202, "34"] as const },
+      { id: "invalid", attachment: ["invalid_body", 200, 500, "56"] as const },
+    ];
+    for (const current of cases) {
+      const stub = ledgerStub(`terminal-ack-v3-reject-${current.id}`);
+      const operation = operationEnvelope(`terminal-ack-v3-reject-${current.id}`, {
+        owner_generation: 2,
+        operation_kind: "chat_completion",
+      });
+      await dispatchVersionedProviderAttempt(stub, operation);
+      const attachment = interpretedRejectAttachment(operation, ...current.attachment);
+      await expect(
+        attachProviderResponse(stub, operation, attachment, BASE_NOW + 3),
+      ).resolves.toMatchObject({ ok: true, result: { kind: "attached" } });
+      const ack = terminalAckV3(operation, attachment, {
+        billing_event_id: sha256(current.id === "typed" ? "6" : current.id === "http-202" ? "7" : "8"),
+      });
+      await expect(acknowledgeTerminalV3(stub, ack, BASE_NOW + 4)).resolves.toEqual({
+        ok: true,
+        result: { kind: "acknowledged", finalAck: true, acknowledgedAt: BASE_NOW + 4 },
+      });
+      const row = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql
+          .exec<{
+            operation_status: string;
+            operation_response_status: number;
+            operation_response_code: string;
+            attempt_status: string;
+            attempt_response_status: number;
+            attempt_response_code: string;
+            global_terminal_event_id: string;
+          }>(
+            `SELECT operation.status AS operation_status,
+                    operation.response_status AS operation_response_status,
+                    operation.response_code AS operation_response_code,
+                    attempt.status AS attempt_status,
+                    attempt.response_status AS attempt_response_status,
+                    attempt.response_code AS attempt_response_code,
+                    retry.global_terminal_event_id AS global_terminal_event_id
+               FROM cinatoken_shard_operations AS operation
+               JOIN cinatoken_shard_provider_attempts AS attempt
+                 ON attempt.operation_id = operation.operation_id
+                AND attempt.owner_generation = operation.owner_generation
+               JOIN cinatoken_shard_provider_retry_state AS retry
+                 ON retry.operation_id = operation.operation_id
+                AND retry.owner_generation = operation.owner_generation
+              WHERE operation.operation_id = ?1`,
+            operation.operation_id,
+          )
+          .one(),
+      );
+      expect(row).toEqual({
+        operation_status: "failed",
+        operation_response_status: 422,
+        operation_response_code: attachment.response_code,
+        attempt_status: "definite_reject",
+        attempt_response_status: 422,
+        attempt_response_code: attachment.response_code,
+        global_terminal_event_id: ack.billing_event_id,
+      });
+    }
+  });
+
+  it("directly converges revision 2 from deadline recovery with complete evidence", async () => {
+    const stub = ledgerStub("terminal-ack-v3-revision-2");
+    const operation = operationEnvelope("terminal-ack-v3-revision-2", {
+      owner_generation: 2,
+      operation_kind: "chat_completion",
+      execution_deadline_at: BASE_NOW + 10,
+    });
+    await dispatchVersionedProviderAttempt(stub, operation);
+    const result = operationResult(operation);
+    const receiptSha256 = sha256("9");
+    await stub.recordProviderUsageResultOutcome(
+      operation.operation_id,
+      operation.owner_generation,
+      result,
+      1,
+      receiptSha256,
+      BASE_NOW + 3,
+    );
+    const attachment = successAttachment(operation, "ab", {
+      raw_manifest: providerEvidenceManifest(operation, "a", result.sha256),
+      client_manifest: clientArtifactManifest(operation, "b", result.sha256, {
+        size: result.size,
+      }),
+      provider_usage_receipt_sha256: receiptSha256,
+    });
+    await attachProviderResponse(stub, operation, attachment, BASE_NOW + 4);
+    await expect(
+      stub.expireOperation(
+        operation.operation_id,
+        operation.owner_generation,
+        BASE_NOW + 11,
+      ),
+    ).resolves.toBe(true);
+
+    const recoveryV2: TerminalAckRequestV2 = {
+      ...terminalAck(operation, {
+        billing_event_id: sha256("4"),
+        terminal_contract_sha256: sha256("5"),
+        operation_status: "recovery_required",
+        response_status: 202,
+        response_code: "container_execution_ambiguous",
+        result,
+      }),
+      provider_usage_binding: {
+        attempt_generation: 1,
+        receipt_sha256: receiptSha256,
+        result_sha256: result.sha256,
+      },
+    };
+    await expect(
+      acknowledgeTerminal(stub, recoveryV2, BASE_NOW + 12),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "terminal_ack_contract_downgrade", status: 409 },
+    });
+
+    const ack = terminalAckV3(operation, attachment, {
+      billing_event_id: sha256("6"),
+      terminal_contract_sha256: sha256("7"),
+      reconciliation_revision: 2,
+      predecessor_billing_event_id: recoveryV2.billing_event_id,
+      operation_from_status: "recovery_required",
+    });
+    await expect(acknowledgeTerminalV3(stub, ack, BASE_NOW + 12)).resolves.toEqual({
+      ok: true,
+      result: { kind: "acknowledged", finalAck: true, acknowledgedAt: BASE_NOW + 12 },
+    });
+    const row = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql
+        .exec<{
+          operation_status: string;
+          attempt_status: string;
+          reconciliation_revision: number;
+          predecessor_billing_event_id: string;
+          recovery_payload_json: string | null;
+        }>(
+          `SELECT operation.status AS operation_status,
+                  attempt.status AS attempt_status,
+                  ack.reconciliation_revision,
+                  ack.predecessor_billing_event_id,
+                  ack.recovery_payload_json
+             FROM cinatoken_shard_operations AS operation
+             JOIN cinatoken_shard_provider_attempts AS attempt
+               ON attempt.operation_id = operation.operation_id
+              AND attempt.owner_generation = operation.owner_generation
+             JOIN cinatoken_shard_terminal_acks AS ack
+               ON ack.operation_id = operation.operation_id
+              AND ack.owner_generation = operation.owner_generation
+            WHERE operation.operation_id = ?1`,
+          operation.operation_id,
+        )
+        .one(),
+    );
+    expect(row).toEqual({
+      operation_status: "completed",
+      attempt_status: "succeeded",
+      reconciliation_revision: 2,
+      predecessor_billing_event_id: recoveryV2.billing_event_id,
+      recovery_payload_json: null,
+    });
+  });
+
+  it("fails terminal ACK v3 closed on binding or attachment corruption", async () => {
+    const stub = ledgerStub("terminal-ack-v3-corruption");
+    const operation = operationEnvelope("terminal-ack-v3-corruption", {
+      owner_generation: 2,
+      operation_kind: "chat_completion",
+    });
+    await dispatchVersionedProviderAttempt(stub, operation);
+    const attachment = interpretedRejectAttachment(
+      operation,
+      "typed_error",
+      200,
+      200,
+      "cd",
+    );
+    await attachProviderResponse(stub, operation, attachment, BASE_NOW + 3);
+    const ack = terminalAckV3(operation, attachment);
+    await expect(
+      acknowledgeTerminalV3(
+        stub,
+        {
+          ...ack,
+          provider_response_binding: {
+            ...ack.provider_response_binding,
+            client_response_artifact_sha256: sha256("f"),
+          },
+        },
+        BASE_NOW + 4,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "terminal_ack_conflict", status: 409 },
+    });
+
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "DROP TRIGGER cinatoken_shard_provider_response_attachment_update_guard",
+      );
+      state.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_response_attachments
+            SET provider_operation_id = 'provider-operation-corrupt'
+          WHERE operation_id = ?1`,
+        operation.operation_id,
+      );
+    });
+    await expect(acknowledgeTerminalV3(stub, ack, BASE_NOW + 4)).resolves.toEqual({
+      ok: false,
+      error: { code: "provider_response_attachment_corrupt", status: 503 },
+    });
+    const unchanged = await runInDurableObject(stub, (_instance, state) => ({
+      operation: state.storage.sql
+        .exec<{ status: string }>(
+          "SELECT status FROM cinatoken_shard_operations WHERE operation_id = ?1",
+          operation.operation_id,
+        )
+        .one().status,
+      attempt: state.storage.sql
+        .exec<{ status: string }>(
+          "SELECT status FROM cinatoken_shard_provider_attempts WHERE operation_id = ?1",
+          operation.operation_id,
+        )
+        .one().status,
+      ackCount: state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cinatoken_shard_terminal_acks WHERE operation_id = ?1",
+          operation.operation_id,
+        )
+        .one().count,
+    }));
+    expect(unchanged).toEqual({ operation: "running", attempt: "dispatched", ackCount: 0 });
+  });
+
   it("adds the terminal-ack table to an old schema and preserves it across eviction", async () => {
     const stub = ledgerStub("terminal-ack-schema-upgrade");
     const expectedColumns = [
       "operation_id",
       "owner_generation",
+      "terminal_ack_contract_version",
+      "financial_terminal_contract_version",
       "billing_event_id",
       "terminal_contract_sha256",
       "reconciliation_id",
@@ -2036,6 +2656,8 @@ describe("RelayShardLedger in Workerd", () => {
       "predecessor_billing_event_id",
       "ack_payload_json",
       "recovery_payload_json",
+      "provider_response_binding_json",
+      "client_response_artifact_sha256",
       "final_acked_at",
       "compaction_authorized_at",
     ];
@@ -2055,6 +2677,158 @@ describe("RelayShardLedger in Workerd", () => {
         .toArray()
         .map(({ name }) => name);
       expect(expectedColumns.every((name) => columns.includes(name))).toBe(true);
+    });
+  });
+
+  it("migrates a schema-3 terminal ACK row losslessly and idempotently", async () => {
+    const stub = ledgerStub("terminal-ack-schema-4-history");
+    const operation = operationEnvelope("terminal-ack-schema-4-history", {
+      operation_kind: "health_probe",
+    });
+    await stub.claim(
+      operation,
+      sha256("1"),
+      "dispatch-terminal-ack-schema-4-history",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await stub.transition(
+      operation.operation_id,
+      operation.owner_generation,
+      "claimed",
+      "completed",
+      200,
+      BASE_NOW + 1,
+    );
+    const ack = terminalAck(operation, { result: null });
+    await expect(acknowledgeTerminal(stub, ack, BASE_NOW + 2)).resolves.toMatchObject({
+      ok: true,
+      result: { kind: "acknowledged" },
+    });
+    const payloadBefore = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql
+        .exec<{ ack_payload_json: string }>(
+          `SELECT ack_payload_json FROM cinatoken_shard_terminal_acks
+            WHERE operation_id = ?1`,
+          operation.operation_id,
+        )
+        .one().ack_payload_json,
+    );
+
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(`
+        DROP TRIGGER cinatoken_shard_schema_migration_update_guard;
+        DROP TRIGGER cinatoken_shard_schema_migration_delete_guard;
+        DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version = 4;
+        DROP TRIGGER cinatoken_shard_terminal_ack_contract_insert_guard;
+        DROP TRIGGER cinatoken_shard_terminal_ack_contract_update_guard;
+        DROP TRIGGER cinatoken_shard_operation_terminal_ack_cleanup;
+        ALTER TABLE cinatoken_shard_terminal_acks
+          RENAME TO cinatoken_shard_terminal_acks_schema4_seed;
+        CREATE TABLE cinatoken_shard_terminal_acks (
+          operation_id TEXT NOT NULL,
+          owner_generation INTEGER NOT NULL,
+          billing_event_id TEXT NOT NULL,
+          terminal_contract_sha256 TEXT NOT NULL,
+          reconciliation_id TEXT NOT NULL,
+          reconciliation_revision INTEGER NOT NULL,
+          predecessor_billing_event_id TEXT,
+          ack_payload_json TEXT NOT NULL,
+          recovery_payload_json TEXT,
+          final_acked_at INTEGER,
+          compaction_authorized_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (operation_id, owner_generation),
+          CHECK (length(operation_id) BETWEEN 1 AND 128),
+          CHECK (owner_generation > 0),
+          CHECK (length(billing_event_id) = 64),
+          CHECK (length(terminal_contract_sha256) = 64),
+          CHECK (length(reconciliation_id) = 64),
+          CHECK (reconciliation_revision IN (1, 2)),
+          CHECK (created_at > 0 AND updated_at >= created_at),
+          CHECK (
+            (reconciliation_revision = 1
+              AND predecessor_billing_event_id IS NULL
+              AND (
+                (recovery_payload_json IS NULL AND final_acked_at IS NOT NULL) OR
+                (recovery_payload_json = ack_payload_json AND final_acked_at IS NULL)
+              ))
+            OR
+            (reconciliation_revision = 2
+              AND predecessor_billing_event_id IS NOT NULL
+              AND recovery_payload_json IS NOT NULL
+              AND final_acked_at IS NOT NULL)
+          ),
+          CHECK (compaction_authorized_at IS NULL OR final_acked_at IS NOT NULL)
+        );
+        INSERT INTO cinatoken_shard_terminal_acks
+          (operation_id, owner_generation, billing_event_id,
+           terminal_contract_sha256, reconciliation_id, reconciliation_revision,
+           predecessor_billing_event_id, ack_payload_json, recovery_payload_json,
+           final_acked_at, compaction_authorized_at, created_at, updated_at)
+        SELECT operation_id, owner_generation, billing_event_id,
+               terminal_contract_sha256, reconciliation_id, reconciliation_revision,
+               predecessor_billing_event_id, ack_payload_json, recovery_payload_json,
+               final_acked_at, compaction_authorized_at, created_at, updated_at
+          FROM cinatoken_shard_terminal_acks_schema4_seed;
+        DROP TABLE cinatoken_shard_terminal_acks_schema4_seed;
+        CREATE INDEX cinatoken_shard_terminal_acks_compaction
+          ON cinatoken_shard_terminal_acks(final_acked_at, compaction_authorized_at);
+        CREATE TRIGGER cinatoken_shard_operation_terminal_ack_cleanup
+        AFTER DELETE ON cinatoken_shard_operations
+        FOR EACH ROW
+        BEGIN
+          DELETE FROM cinatoken_shard_terminal_acks
+           WHERE operation_id = OLD.operation_id
+             AND owner_generation = OLD.owner_generation;
+        END;
+      `);
+    });
+
+    await evictDurableObject(stub);
+    await expect(acknowledgeTerminal(stub, ack, BASE_NOW + 3)).resolves.toEqual({
+      ok: true,
+      result: { kind: "duplicate", finalAck: true, acknowledgedAt: BASE_NOW + 2 },
+    });
+    const migrated = await runInDurableObject(stub, (_instance, state) => {
+      new RelayShardLedger(state.storage).ensureSchema();
+      new RelayShardLedger(state.storage).ensureSchema();
+      return {
+        row: state.storage.sql
+          .exec<{
+            terminal_ack_contract_version: number;
+            financial_terminal_contract_version: number | null;
+            provider_response_binding_json: string | null;
+            client_response_artifact_sha256: string | null;
+            ack_payload_json: string;
+          }>(
+            `SELECT terminal_ack_contract_version,
+                    financial_terminal_contract_version,
+                    provider_response_binding_json,
+                    client_response_artifact_sha256,
+                    ack_payload_json
+               FROM cinatoken_shard_terminal_acks WHERE operation_id = ?1`,
+            operation.operation_id,
+          )
+          .one(),
+        migration: state.storage.sql
+          .exec<{ migration_name: string }>(
+            `SELECT migration_name FROM cinatoken_shard_schema_migrations
+              WHERE schema_version = 4`,
+          )
+          .one(),
+      };
+    });
+    expect(migrated).toEqual({
+      row: {
+        terminal_ack_contract_version: 1,
+        financial_terminal_contract_version: null,
+        provider_response_binding_json: null,
+        client_response_artifact_sha256: null,
+        ack_payload_json: payloadBefore,
+      },
+      migration: { migration_name: "0004_terminal_ack_v3_convergence" },
     });
   });
 
@@ -2708,6 +3482,9 @@ describe("RelayShardLedger in Workerd", () => {
         "DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version = 3",
       );
       state.storage.sql.exec(
+        "DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version = 4",
+      );
+      state.storage.sql.exec(
         "DROP TABLE cinatoken_shard_provider_response_attachment_identities",
       );
       state.storage.sql.exec(
@@ -2745,6 +3522,10 @@ describe("RelayShardLedger in Workerd", () => {
         {
           schema_version: 3,
           migration_name: "0003_provider_response_artifact_attachment_v1",
+        },
+        {
+          schema_version: 4,
+          migration_name: "0004_terminal_ack_v3_convergence",
         },
       ],
       tables: [
@@ -2787,7 +3568,7 @@ describe("RelayShardLedger in Workerd", () => {
       state.storage.sql.exec(
         `INSERT INTO cinatoken_shard_schema_migrations
            (schema_version, migration_name, applied_at)
-         VALUES (4, '0004_future_schema', ?1)`,
+         VALUES (5, '0005_future_schema', ?1)`,
         BASE_NOW,
       );
       try {
@@ -2810,6 +3591,10 @@ describe("RelayShardLedger in Workerd", () => {
         {
           schema_version: 3,
           migration_name: "0003_provider_response_artifact_attachment_v1",
+        },
+        {
+          schema_version: 4,
+          migration_name: "0004_terminal_ack_v3_convergence",
         },
       ],
       updateRejected: true,

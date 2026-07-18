@@ -2,11 +2,13 @@ import {
   MAX_STORAGE_OBJECT_VERSION_BYTES,
   ProtocolError,
   validateTerminalAckRequest,
+  validateTerminalAckV3Request,
   validateOperationStatusQuery,
   type OperationEnvelope,
   type OperationShard,
   type OperationStatusQuery,
   type TerminalAckRequest,
+  type TerminalAckRequestV3,
 } from "./protocol";
 import {
   RELAY_SHARD_ALARM_INTENT_KIND,
@@ -248,6 +250,8 @@ interface TerminalAckStateRow {
   [key: string]: SqlStorageValue;
   operation_id: string;
   owner_generation: number;
+  terminal_ack_contract_version: number;
+  financial_terminal_contract_version: number | null;
   billing_event_id: string;
   terminal_contract_sha256: string;
   reconciliation_id: string;
@@ -255,6 +259,8 @@ interface TerminalAckStateRow {
   predecessor_billing_event_id: string | null;
   ack_payload_json: string;
   recovery_payload_json: string | null;
+  provider_response_binding_json: string | null;
+  client_response_artifact_sha256: string | null;
   final_acked_at: number | null;
   compaction_authorized_at: number | null;
   created_at: number;
@@ -270,6 +276,10 @@ export interface TerminalAckLedgerOutcome {
 export interface OperationStatusSnapshot {
   operation: OperationRow;
   provider_attempt: ProviderAttemptRow | null;
+}
+
+export interface OperationStatusV4Snapshot extends OperationStatusSnapshot {
+  provider_response_artifacts: ProviderResponseArtifactAttachmentRow | null;
 }
 
 export type ClaimResult =
@@ -689,6 +699,8 @@ export class RelayShardLedger {
       CREATE TABLE IF NOT EXISTS cinatoken_shard_terminal_acks (
         operation_id TEXT NOT NULL,
         owner_generation INTEGER NOT NULL,
+        terminal_ack_contract_version INTEGER NOT NULL DEFAULT 1,
+        financial_terminal_contract_version INTEGER,
         billing_event_id TEXT NOT NULL,
         terminal_contract_sha256 TEXT NOT NULL,
         reconciliation_id TEXT NOT NULL,
@@ -696,6 +708,8 @@ export class RelayShardLedger {
         predecessor_billing_event_id TEXT,
         ack_payload_json TEXT NOT NULL,
         recovery_payload_json TEXT,
+        provider_response_binding_json TEXT,
+        client_response_artifact_sha256 TEXT,
         final_acked_at INTEGER,
         compaction_authorized_at INTEGER,
         created_at INTEGER NOT NULL,
@@ -718,7 +732,11 @@ export class RelayShardLedger {
           OR
           (reconciliation_revision = 2
             AND predecessor_billing_event_id IS NOT NULL
-            AND recovery_payload_json IS NOT NULL
+            AND (
+              recovery_payload_json IS NOT NULL OR
+              (terminal_ack_contract_version = 3
+                AND recovery_payload_json IS NULL)
+            )
             AND final_acked_at IS NOT NULL)
         ),
         CHECK (compaction_authorized_at IS NULL OR final_acked_at IS NOT NULL)
@@ -1403,13 +1421,22 @@ export class RelayShardLedger {
         (schema_version, migration_name, applied_at)
       VALUES (3, '0003_provider_response_artifact_attachment_v1', unixepoch());
     `);
-    this.validateShardSchemaMigrations();
+    this.validateShardSchemaMigrations(true);
     this.ensureOperationColumns();
     this.ensureProviderAttemptEgressColumns();
     this.ensureProviderUsageReceiptColumns();
+    this.ensureTerminalAckV3Columns();
+    this.ensureTerminalAckV3TableShape();
     this.installProviderAttemptEgressGuards();
     this.installProviderUsageReceiptGuards();
+    this.installTerminalAckV3Guards();
     this.validateProviderResponseAttachmentSchema();
+    this.storage.sql.exec(
+      `INSERT OR IGNORE INTO cinatoken_shard_schema_migrations
+         (schema_version, migration_name, applied_at)
+       VALUES (4, '0004_terminal_ack_v3_convergence', unixepoch())`,
+    );
+    this.validateShardSchemaMigrations();
     this.storage.sql.exec(
       `UPDATE cinatoken_shard_operations
           SET status = 'failed', response_status = COALESCE(response_status, 503)
@@ -1867,6 +1894,46 @@ export class RelayShardLedger {
     };
   }
 
+  readOperationStatusV4Snapshot(queryValue: unknown): OperationStatusV4Snapshot {
+    return this.storage.transactionSync(() => {
+      const operation = this.readOperationStatus(queryValue);
+      const providerAttempt = this.readLatestProviderAttempt(
+        operation.operation_id,
+        operation.owner_generation,
+      );
+      const providerResponseArtifacts =
+        providerAttempt === null
+          ? null
+          : this.readProviderResponseArtifactAttachmentRow(
+              operation.operation_id,
+              operation.owner_generation,
+              providerAttempt.attempt_generation,
+            );
+      if (providerResponseArtifacts !== null) {
+        if (
+          providerAttempt === null ||
+          providerResponseArtifacts.provider_operation_id !==
+            providerAttempt.provider_operation_id ||
+          providerResponseArtifacts.admission_sha256 !==
+            providerAttempt.admission_sha256 ||
+          providerResponseArtifacts.request_sha256 !==
+            providerAttempt.request_sha256 ||
+          providerResponseArtifacts.egress_profile !==
+            providerAttempt.egress_profile ||
+          providerResponseArtifacts.egress_worker_version_id !==
+            providerAttempt.egress_worker_version_id
+        ) {
+          throw new ProtocolError("provider_response_attachment_corrupt", 503);
+        }
+      }
+      return {
+        operation,
+        provider_attempt: providerAttempt,
+        provider_response_artifacts: providerResponseArtifacts,
+      };
+    });
+  }
+
   acknowledgeGlobalTerminal(
     ackValue: unknown,
     now: number,
@@ -1878,6 +1945,24 @@ export class RelayShardLedger {
     }
     const payloadJson = terminalAckPayloadJson(ack);
     return this.storage.transactionSync(() => {
+      const providerAttempt = this.readLatestProviderAttempt(
+        ack.operation_id,
+        ack.owner_generation,
+      );
+      const completeProviderResponseArtifacts = firstRow<{ present: number }>(
+        this.storage.sql.exec<{ present: number }>(
+          `SELECT 1 AS present
+             FROM cinatoken_shard_provider_response_attachments
+            WHERE operation_id = ?1 AND owner_generation = ?2
+              AND status IN ('succeeded', 'interpreted_reject')
+            LIMIT 1`,
+          ack.operation_id,
+          ack.owner_generation,
+        ),
+      );
+      if (completeProviderResponseArtifacts !== null) {
+        throw new ProtocolError("terminal_ack_contract_downgrade", 409);
+      }
       const state = this.readTerminalAckState(ack.operation_id, ack.owner_generation);
       if (state !== null && currentTerminalAckMatches(state, ack, payloadJson)) {
         const finalAck = ack.operation_status !== "recovery_required";
@@ -1905,10 +1990,6 @@ export class RelayShardLedger {
 
       const operation = this.readStorageOperation(ack.operation_id);
       if (operation === null) throw new ProtocolError("terminal_ack_not_found", 404);
-      const providerAttempt = this.readLatestProviderAttempt(
-        ack.operation_id,
-        ack.owner_generation,
-      );
       const localAck = progressingRecovery
         ? storedTerminalAck(state?.recovery_payload_json ?? null)
         : ack;
@@ -1923,24 +2004,29 @@ export class RelayShardLedger {
       if (progressingRecovery) {
         this.storage.sql.exec(
           `UPDATE cinatoken_shard_terminal_acks
-              SET billing_event_id = ?1,
-                  terminal_contract_sha256 = ?2,
-                  reconciliation_id = ?3,
+              SET terminal_ack_contract_version = ?1,
+                  financial_terminal_contract_version = NULL,
+                  provider_response_binding_json = NULL,
+                  client_response_artifact_sha256 = NULL,
+                  billing_event_id = ?2,
+                  terminal_contract_sha256 = ?3,
+                  reconciliation_id = ?4,
                   reconciliation_revision = 2,
-                  predecessor_billing_event_id = ?4,
-                  ack_payload_json = ?5,
-                  final_acked_at = ?6,
-                  updated_at = ?6
-            WHERE operation_id = ?7 AND owner_generation = ?8
-              AND billing_event_id = ?4
-              AND terminal_contract_sha256 = ?9
-              AND reconciliation_id = ?3
+                  predecessor_billing_event_id = ?5,
+                  ack_payload_json = ?6,
+                  final_acked_at = ?7,
+                  updated_at = ?7
+            WHERE operation_id = ?8 AND owner_generation = ?9
+              AND billing_event_id = ?5
+              AND terminal_contract_sha256 = ?10
+              AND reconciliation_id = ?4
               AND reconciliation_revision = 1
               AND predecessor_billing_event_id IS NULL
-              AND ack_payload_json = ?10
-              AND recovery_payload_json = ?10
+              AND ack_payload_json = ?11
+              AND recovery_payload_json = ?11
               AND final_acked_at IS NULL
               AND compaction_authorized_at IS NULL`,
+          terminalAckContractVersion(ack),
           ack.billing_event_id,
           ack.terminal_contract_sha256,
           ack.reconciliation_id,
@@ -1956,13 +2042,17 @@ export class RelayShardLedger {
         const finalAck = ack.operation_status !== "recovery_required";
         this.storage.sql.exec(
           `INSERT INTO cinatoken_shard_terminal_acks
-             (operation_id, owner_generation, billing_event_id,
+             (operation_id, owner_generation, terminal_ack_contract_version,
+              financial_terminal_contract_version, billing_event_id,
               terminal_contract_sha256, reconciliation_id, reconciliation_revision,
               predecessor_billing_event_id, ack_payload_json, recovery_payload_json,
+              provider_response_binding_json, client_response_artifact_sha256,
               final_acked_at, compaction_authorized_at, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, 1, NULL, ?6, ?7, ?8, NULL, ?9, ?9)`,
+           VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, 1, NULL, ?7, ?8,
+                   NULL, NULL, ?9, NULL, ?10, ?10)`,
           ack.operation_id,
           ack.owner_generation,
+          terminalAckContractVersion(ack),
           ack.billing_event_id,
           ack.terminal_contract_sha256,
           ack.reconciliation_id,
@@ -1980,6 +2070,312 @@ export class RelayShardLedger {
         kind: "acknowledged",
         finalAck,
         acknowledgedAt: finalAck ? now : null,
+      };
+    });
+  }
+
+  acknowledgeGlobalTerminalV3(
+    ackValue: unknown,
+    now: number,
+  ): TerminalAckLedgerOutcome {
+    this.ensureSchema();
+    const ack = validateTerminalAckV3Request(ackValue);
+    if (!Number.isSafeInteger(now) || now < 1) {
+      throw new ProtocolError("invalid_terminal_ack_time", 500);
+    }
+    const payloadJson = terminalAckV3PayloadJson(ack);
+    const bindingJson = terminalAckV3ProviderResponseBindingJson(ack);
+    return this.storage.transactionSync(() => {
+      const state = this.readTerminalAckState(ack.operation_id, ack.owner_generation);
+      if (state !== null && currentTerminalAckV3Matches(state, ack, payloadJson, bindingJson)) {
+        const operation = this.readStorageOperation(ack.operation_id);
+        const attempt = this.readProviderAttempt(
+          ack.operation_id,
+          ack.owner_generation,
+          ack.provider_response_binding.attempt_generation,
+        );
+        const attachment = this.readProviderResponseArtifactAttachmentRow(
+          ack.operation_id,
+          ack.owner_generation,
+          ack.provider_response_binding.attempt_generation,
+        );
+        const retryState = this.readProviderRetryState(
+          ack.operation_id,
+          ack.owner_generation,
+        );
+        if (
+          operation === null ||
+          attempt === null ||
+          attachment === null ||
+          retryState === null ||
+          !terminalAckV3EvidenceIdentityMatches(operation, attempt, attachment, ack) ||
+          !terminalAckV3RequestEvidenceMatches(operation, attempt, attachment, ack) ||
+          !terminalAckV3ConvergedStateMatches(
+            operation,
+            attempt,
+            retryState,
+            state,
+            ack,
+          )
+        ) {
+          throw new ProtocolError("terminal_ack_state_corrupt", 503);
+        }
+        return {
+          kind: "duplicate",
+          finalAck: true,
+          acknowledgedAt: state.final_acked_at,
+        };
+      }
+
+      const progressingRecovery =
+        state !== null && canProgressRecoveryTerminalAckV3(state, ack);
+      if (state !== null && !progressingRecovery) {
+        throw new ProtocolError("terminal_ack_conflict", 409);
+      }
+
+      const operation = this.readStorageOperation(ack.operation_id);
+      if (operation === null) throw new ProtocolError("terminal_ack_not_found", 404);
+      const attempt = this.readProviderAttempt(
+        ack.operation_id,
+        ack.owner_generation,
+        ack.provider_response_binding.attempt_generation,
+      );
+      const latestAttempt = this.readLatestProviderAttempt(
+        ack.operation_id,
+        ack.owner_generation,
+      );
+      const attachment = this.readProviderResponseArtifactAttachmentRow(
+        ack.operation_id,
+        ack.owner_generation,
+        ack.provider_response_binding.attempt_generation,
+      );
+      const retryState = this.readProviderRetryState(
+        ack.operation_id,
+        ack.owner_generation,
+      );
+      if (
+        attempt === null ||
+        latestAttempt === null ||
+        latestAttempt.attempt_generation !== attempt.attempt_generation ||
+        retryState === null
+      ) {
+        throw new ProtocolError("terminal_ack_conflict", 409);
+      }
+      if (attachment === null || attachment.status === "ambiguous") {
+        throw new ProtocolError("terminal_ack_evidence_required", 409);
+      }
+      if (!terminalAckV3EvidenceIdentityMatches(operation, attempt, attachment, ack)) {
+        throw new ProtocolError("provider_response_attachment_corrupt", 503);
+      }
+      if (!terminalAckV3RequestEvidenceMatches(operation, attempt, attachment, ack)) {
+        throw new ProtocolError("terminal_ack_conflict", 409);
+      }
+      if (
+        !terminalAckV3SourceStateMatches(operation, attempt, ack) ||
+        attachment.attached_at > now
+      ) {
+        throw new ProtocolError("terminal_ack_conflict", 409);
+      }
+
+      const targetAttemptStatus =
+        ack.provider_response_binding.status === "succeeded"
+          ? "succeeded"
+          : "definite_reject";
+      if (attempt.status !== targetAttemptStatus) {
+        if (targetAttemptStatus === "succeeded") {
+          this.storage.sql.exec(
+            `UPDATE cinatoken_shard_provider_attempts
+                SET status = 'succeeded', response_status = 200, response_code = NULL,
+                    result_object_key = ?1, result_object_version = ?2,
+                    result_sha256 = ?3, result_size = ?4, result_content_type = ?5,
+                    terminal_at = ?6, updated_at = ?6
+              WHERE operation_id = ?7 AND owner_generation = ?8
+                AND attempt_generation = ?9 AND status = ?10`,
+            operation.result_object_key,
+            operation.result_object_version,
+            operation.result_sha256,
+            operation.result_size,
+            operation.result_content_type,
+            now,
+            ack.operation_id,
+            ack.owner_generation,
+            ack.provider_response_binding.attempt_generation,
+            attempt.status,
+          );
+        } else {
+          this.storage.sql.exec(
+            `UPDATE cinatoken_shard_provider_attempts
+                SET status = 'definite_reject', response_status = 422,
+                    response_code = ?1,
+                    result_object_key = NULL, result_object_version = NULL,
+                    result_sha256 = NULL, result_size = NULL,
+                    result_content_type = NULL,
+                    terminal_at = ?2, updated_at = ?2
+              WHERE operation_id = ?3 AND owner_generation = ?4
+                AND attempt_generation = ?5 AND status = ?6`,
+            ack.response_code,
+            now,
+            ack.operation_id,
+            ack.owner_generation,
+            ack.provider_response_binding.attempt_generation,
+            attempt.status,
+          );
+        }
+        if (changedRowCount(this.storage) !== 1) {
+          throw new ProtocolError("terminal_ack_conflict", 409);
+        }
+      }
+
+      if (operation.status !== ack.operation_status) {
+        this.storage.sql.exec(
+          `UPDATE cinatoken_shard_operations
+              SET status = ?1, response_status = ?2, response_code = ?3, updated_at = ?4
+            WHERE operation_id = ?5 AND owner_generation = ?6 AND status = ?7`,
+          ack.operation_status,
+          ack.response_status,
+          ack.response_code,
+          now,
+          ack.operation_id,
+          ack.owner_generation,
+          operation.status,
+        );
+        if (changedRowCount(this.storage) !== 1) {
+          throw new ProtocolError("terminal_ack_conflict", 409);
+        }
+      }
+
+      if (
+        retryState.global_terminal_event_id !== null ||
+        retryState.global_terminal_acked_at !== null
+      ) {
+        throw new ProtocolError("terminal_ack_conflict", 409);
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_provider_retry_state
+            SET state = 'terminal', active_attempt_generation = NULL,
+                next_attempt_at = NULL, global_terminal_event_id = ?1,
+                global_terminal_acked_at = ?2, updated_at = MAX(updated_at, ?2)
+          WHERE operation_id = ?3 AND owner_generation = ?4
+            AND last_attempt_generation = ?5
+            AND global_terminal_event_id IS NULL
+            AND global_terminal_acked_at IS NULL`,
+        ack.billing_event_id,
+        now,
+        ack.operation_id,
+        ack.owner_generation,
+        ack.provider_response_binding.attempt_generation,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("terminal_ack_conflict", 409);
+      }
+
+      if (progressingRecovery) {
+        this.storage.sql.exec(
+          `UPDATE cinatoken_shard_terminal_acks
+              SET terminal_ack_contract_version = 3,
+                  financial_terminal_contract_version = 2,
+                  billing_event_id = ?1,
+                  terminal_contract_sha256 = ?2,
+                  reconciliation_id = ?3,
+                  reconciliation_revision = 2,
+                  predecessor_billing_event_id = ?4,
+                  ack_payload_json = ?5,
+                  provider_response_binding_json = ?6,
+                  client_response_artifact_sha256 = ?7,
+                  final_acked_at = ?8,
+                  updated_at = ?8
+            WHERE operation_id = ?9 AND owner_generation = ?10
+              AND billing_event_id = ?4
+              AND reconciliation_id = ?3
+              AND reconciliation_revision = 1
+              AND predecessor_billing_event_id IS NULL
+              AND recovery_payload_json = ack_payload_json
+              AND final_acked_at IS NULL
+              AND compaction_authorized_at IS NULL`,
+          ack.billing_event_id,
+          ack.terminal_contract_sha256,
+          ack.reconciliation_id,
+          ack.predecessor_billing_event_id,
+          payloadJson,
+          bindingJson,
+          ack.provider_response_binding.client_response_artifact_sha256,
+          now,
+          ack.operation_id,
+          ack.owner_generation,
+        );
+      } else {
+        this.storage.sql.exec(
+          `INSERT INTO cinatoken_shard_terminal_acks
+             (operation_id, owner_generation, terminal_ack_contract_version,
+              financial_terminal_contract_version, billing_event_id,
+              terminal_contract_sha256, reconciliation_id, reconciliation_revision,
+              predecessor_billing_event_id, ack_payload_json, recovery_payload_json,
+              provider_response_binding_json, client_response_artifact_sha256,
+              final_acked_at, compaction_authorized_at, created_at, updated_at)
+           VALUES (?1, ?2, 3, 2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10,
+                   ?11, NULL, ?11, ?11)`,
+          ack.operation_id,
+          ack.owner_generation,
+          ack.billing_event_id,
+          ack.terminal_contract_sha256,
+          ack.reconciliation_id,
+          ack.reconciliation_revision,
+          ack.predecessor_billing_event_id,
+          payloadJson,
+          bindingJson,
+          ack.provider_response_binding.client_response_artifact_sha256,
+          now,
+        );
+      }
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("terminal_ack_conflict", 409);
+      }
+
+      const convergedOperation = this.readStorageOperation(ack.operation_id);
+      const convergedAttempt = this.readProviderAttempt(
+        ack.operation_id,
+        ack.owner_generation,
+        ack.provider_response_binding.attempt_generation,
+      );
+      const convergedRetry = this.readProviderRetryState(
+        ack.operation_id,
+        ack.owner_generation,
+      );
+      const convergedAck = this.readTerminalAckState(
+        ack.operation_id,
+        ack.owner_generation,
+      );
+      if (
+        convergedOperation === null ||
+        convergedAttempt === null ||
+        convergedRetry === null ||
+        convergedAck === null ||
+        !terminalAckV3EvidenceIdentityMatches(
+          convergedOperation,
+          convergedAttempt,
+          attachment,
+          ack,
+        ) ||
+        !terminalAckV3RequestEvidenceMatches(
+          convergedOperation,
+          convergedAttempt,
+          attachment,
+          ack,
+        ) ||
+        !terminalAckV3ConvergedStateMatches(
+          convergedOperation,
+          convergedAttempt,
+          convergedRetry,
+          convergedAck,
+          ack,
+        )
+      ) {
+        throw new ProtocolError("terminal_ack_state_corrupt", 503);
+      }
+      return {
+        kind: "acknowledged",
+        finalAck: true,
+        acknowledgedAt: now,
       };
     });
   }
@@ -3449,7 +3845,7 @@ export class RelayShardLedger {
     );
   }
 
-  private validateShardSchemaMigrations(): void {
+  private validateShardSchemaMigrations(allowPendingV4 = false): void {
     const rows = this.storage.sql
       .exec<{ schema_version: number; migration_name: string }>(
         `SELECT schema_version, migration_name
@@ -3467,9 +3863,17 @@ export class RelayShardLedger {
         schema_version: 3,
         migration_name: "0003_provider_response_artifact_attachment_v1",
       },
+      {
+        schema_version: 4,
+        migration_name: "0004_terminal_ack_v3_convergence",
+      },
     ];
+    const expectedLength =
+      allowPendingV4 && rows.length === expected.length - 1
+        ? expected.length - 1
+        : expected.length;
     if (
-      rows.length !== expected.length ||
+      rows.length !== expectedLength ||
       rows.some(
         (row, index) =>
           row.schema_version !== expected[index]?.schema_version ||
@@ -3669,6 +4073,212 @@ export class RelayShardLedger {
     }
   }
 
+  private ensureTerminalAckV3Columns(): void {
+    const existing = new Set(
+      this.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(cinatoken_shard_terminal_acks)")
+        .toArray()
+        .map(({ name }) => name),
+    );
+    const additions: ReadonlyArray<readonly [string, string]> = [
+      ["terminal_ack_contract_version", "INTEGER NOT NULL DEFAULT 1"],
+      ["financial_terminal_contract_version", "INTEGER"],
+      ["provider_response_binding_json", "TEXT"],
+      ["client_response_artifact_sha256", "TEXT"],
+    ];
+    for (const [name, definition] of additions) {
+      if (!existing.has(name)) {
+        this.storage.sql.exec(
+          `ALTER TABLE cinatoken_shard_terminal_acks ADD COLUMN ${name} ${definition}`,
+        );
+      }
+    }
+    this.storage.sql.exec(
+      `UPDATE cinatoken_shard_terminal_acks
+          SET terminal_ack_contract_version = 2
+        WHERE terminal_ack_contract_version = 1
+          AND json_type(ack_payload_json, '$.provider_usage_binding') IS NOT NULL`,
+    );
+  }
+
+  private ensureTerminalAckV3TableShape(): void {
+    const table = firstRow<{ sql: string }>(
+      this.storage.sql.exec<{ sql: string }>(
+        `SELECT sql FROM sqlite_master
+          WHERE type = 'table' AND name = 'cinatoken_shard_terminal_acks'`,
+      ),
+    );
+    if (table?.sql.includes("terminal_ack_contract_version = 3") === true) return;
+
+    this.storage.transactionSync(() => {
+      this.storage.sql.exec(`
+        DROP TRIGGER IF EXISTS cinatoken_shard_terminal_ack_contract_insert_guard;
+        DROP TRIGGER IF EXISTS cinatoken_shard_terminal_ack_contract_update_guard;
+        DROP TRIGGER IF EXISTS cinatoken_shard_operation_terminal_ack_cleanup;
+        ALTER TABLE cinatoken_shard_terminal_acks
+          RENAME TO cinatoken_shard_terminal_acks_schema3;
+        CREATE TABLE cinatoken_shard_terminal_acks (
+          operation_id TEXT NOT NULL,
+          owner_generation INTEGER NOT NULL,
+          terminal_ack_contract_version INTEGER NOT NULL DEFAULT 1,
+          financial_terminal_contract_version INTEGER,
+          billing_event_id TEXT NOT NULL,
+          terminal_contract_sha256 TEXT NOT NULL,
+          reconciliation_id TEXT NOT NULL,
+          reconciliation_revision INTEGER NOT NULL,
+          predecessor_billing_event_id TEXT,
+          ack_payload_json TEXT NOT NULL,
+          recovery_payload_json TEXT,
+          provider_response_binding_json TEXT,
+          client_response_artifact_sha256 TEXT,
+          final_acked_at INTEGER,
+          compaction_authorized_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (operation_id, owner_generation),
+          CHECK (length(operation_id) BETWEEN 1 AND 128),
+          CHECK (owner_generation > 0),
+          CHECK (terminal_ack_contract_version IN (1, 2, 3)),
+          CHECK (length(billing_event_id) = 64),
+          CHECK (length(terminal_contract_sha256) = 64),
+          CHECK (length(reconciliation_id) = 64),
+          CHECK (reconciliation_revision IN (1, 2)),
+          CHECK (created_at > 0 AND updated_at >= created_at),
+          CHECK (
+            (reconciliation_revision = 1
+              AND predecessor_billing_event_id IS NULL
+              AND (
+                (recovery_payload_json IS NULL AND final_acked_at IS NOT NULL) OR
+                (recovery_payload_json = ack_payload_json AND final_acked_at IS NULL)
+              ))
+            OR
+            (reconciliation_revision = 2
+              AND predecessor_billing_event_id IS NOT NULL
+              AND (
+                recovery_payload_json IS NOT NULL OR
+                (terminal_ack_contract_version = 3
+                  AND recovery_payload_json IS NULL)
+              )
+              AND final_acked_at IS NOT NULL)
+          ),
+          CHECK (compaction_authorized_at IS NULL OR final_acked_at IS NOT NULL)
+        );
+        INSERT INTO cinatoken_shard_terminal_acks
+          (operation_id, owner_generation, terminal_ack_contract_version,
+           financial_terminal_contract_version, billing_event_id,
+           terminal_contract_sha256, reconciliation_id, reconciliation_revision,
+           predecessor_billing_event_id, ack_payload_json, recovery_payload_json,
+           provider_response_binding_json, client_response_artifact_sha256,
+           final_acked_at, compaction_authorized_at, created_at, updated_at)
+        SELECT operation_id, owner_generation, terminal_ack_contract_version,
+               financial_terminal_contract_version, billing_event_id,
+               terminal_contract_sha256, reconciliation_id, reconciliation_revision,
+               predecessor_billing_event_id, ack_payload_json, recovery_payload_json,
+               provider_response_binding_json, client_response_artifact_sha256,
+               final_acked_at, compaction_authorized_at, created_at, updated_at
+          FROM cinatoken_shard_terminal_acks_schema3;
+        DROP TABLE cinatoken_shard_terminal_acks_schema3;
+        CREATE INDEX cinatoken_shard_terminal_acks_compaction
+          ON cinatoken_shard_terminal_acks(final_acked_at, compaction_authorized_at);
+        CREATE TRIGGER cinatoken_shard_operation_terminal_ack_cleanup
+        AFTER DELETE ON cinatoken_shard_operations
+        FOR EACH ROW
+        BEGIN
+          DELETE FROM cinatoken_shard_terminal_acks
+           WHERE operation_id = OLD.operation_id
+             AND owner_generation = OLD.owner_generation;
+        END;
+      `);
+    });
+  }
+
+  private installTerminalAckV3Guards(): void {
+    this.storage.sql.exec(`
+      DROP TRIGGER IF EXISTS cinatoken_shard_terminal_ack_contract_insert_guard;
+      CREATE TRIGGER cinatoken_shard_terminal_ack_contract_insert_guard
+      BEFORE INSERT ON cinatoken_shard_terminal_acks
+      FOR EACH ROW
+      WHEN NOT (
+        (NEW.terminal_ack_contract_version IN (1, 2)
+          AND NEW.financial_terminal_contract_version IS NULL
+          AND NEW.provider_response_binding_json IS NULL
+          AND NEW.client_response_artifact_sha256 IS NULL
+          AND (
+            (NEW.terminal_ack_contract_version = 1
+              AND json_type(NEW.ack_payload_json, '$.provider_usage_binding') IS NULL)
+            OR
+            (NEW.terminal_ack_contract_version = 2
+              AND json_type(NEW.ack_payload_json, '$.provider_usage_binding') IS NOT NULL)
+          ))
+        OR
+        (NEW.terminal_ack_contract_version = 3
+          AND NEW.financial_terminal_contract_version = 2
+          AND json_valid(NEW.provider_response_binding_json) = 1
+          AND json_type(NEW.provider_response_binding_json) = 'object'
+          AND NEW.provider_response_binding_json =
+                json_extract(NEW.ack_payload_json, '$.provider_response_binding')
+          AND length(NEW.client_response_artifact_sha256) = 64
+          AND NEW.client_response_artifact_sha256 NOT GLOB '*[^0-9a-f]*'
+          AND json_extract(
+                NEW.ack_payload_json,
+                '$.terminal_ack_contract_version'
+              ) = 3
+          AND json_extract(
+                NEW.ack_payload_json,
+                '$.financial_terminal_contract_version'
+              ) = 2
+          AND json_extract(
+                NEW.ack_payload_json,
+                '$.provider_response_binding.client_response_artifact_sha256'
+              ) = NEW.client_response_artifact_sha256)
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'terminal ack contract metadata mismatch');
+      END;
+      DROP TRIGGER IF EXISTS cinatoken_shard_terminal_ack_contract_update_guard;
+      CREATE TRIGGER cinatoken_shard_terminal_ack_contract_update_guard
+      BEFORE UPDATE ON cinatoken_shard_terminal_acks
+      FOR EACH ROW
+      WHEN NOT (
+        (NEW.terminal_ack_contract_version IN (1, 2)
+          AND NEW.financial_terminal_contract_version IS NULL
+          AND NEW.provider_response_binding_json IS NULL
+          AND NEW.client_response_artifact_sha256 IS NULL
+          AND (
+            (NEW.terminal_ack_contract_version = 1
+              AND json_type(NEW.ack_payload_json, '$.provider_usage_binding') IS NULL)
+            OR
+            (NEW.terminal_ack_contract_version = 2
+              AND json_type(NEW.ack_payload_json, '$.provider_usage_binding') IS NOT NULL)
+          ))
+        OR
+        (NEW.terminal_ack_contract_version = 3
+          AND NEW.financial_terminal_contract_version = 2
+          AND json_valid(NEW.provider_response_binding_json) = 1
+          AND json_type(NEW.provider_response_binding_json) = 'object'
+          AND NEW.provider_response_binding_json =
+                json_extract(NEW.ack_payload_json, '$.provider_response_binding')
+          AND length(NEW.client_response_artifact_sha256) = 64
+          AND NEW.client_response_artifact_sha256 NOT GLOB '*[^0-9a-f]*'
+          AND json_extract(
+                NEW.ack_payload_json,
+                '$.terminal_ack_contract_version'
+              ) = 3
+          AND json_extract(
+                NEW.ack_payload_json,
+                '$.financial_terminal_contract_version'
+              ) = 2
+          AND json_extract(
+                NEW.ack_payload_json,
+                '$.provider_response_binding.client_response_artifact_sha256'
+              ) = NEW.client_response_artifact_sha256)
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'terminal ack contract metadata mismatch');
+      END;
+    `);
+  }
+
   private installProviderAttemptEgressGuards(): void {
     this.storage.sql.exec(`
       DROP TRIGGER IF EXISTS cinatoken_shard_provider_attempt_egress_insert_guard;
@@ -3839,6 +4449,36 @@ export class RelayShardLedger {
           AND OLD.provider_usage_receipt_attached_at IS NULL
           AND NEW.provider_usage_receipt_sha256 IS NOT NULL
           AND NEW.provider_usage_receipt_attached_at IS NOT NULL)
+        OR
+        (OLD.status = 'ambiguous'
+          AND (
+            (NEW.status = 'succeeded'
+              AND NEW.response_status = 200
+              AND NEW.response_code IS NULL
+              AND EXISTS (
+                SELECT 1
+                  FROM cinatoken_shard_provider_response_attachments AS attachment
+                 WHERE attachment.operation_id = OLD.operation_id
+                   AND attachment.owner_generation = OLD.owner_generation
+                   AND attachment.attempt_generation = OLD.attempt_generation
+                   AND attachment.status = 'succeeded'
+                   AND attachment.provider_usage_receipt_sha256 =
+                         NEW.provider_usage_receipt_sha256
+              ))
+            OR
+            (NEW.status = 'definite_reject'
+              AND NEW.response_status = 422
+              AND NEW.response_code IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                  FROM cinatoken_shard_provider_response_attachments AS attachment
+                 WHERE attachment.operation_id = OLD.operation_id
+                   AND attachment.owner_generation = OLD.owner_generation
+                   AND attachment.attempt_generation = OLD.attempt_generation
+                   AND attachment.status = 'interpreted_reject'
+                   AND attachment.response_code = NEW.response_code
+              ))
+          ))
       )
       BEGIN
         SELECT RAISE(ABORT, 'provider attempt lifecycle transition is invalid');
@@ -3847,7 +4487,7 @@ export class RelayShardLedger {
       CREATE TRIGGER cinatoken_shard_provider_attempt_event_append
       AFTER UPDATE ON cinatoken_shard_provider_attempts
       FOR EACH ROW
-      WHEN OLD.status IS NOT NEW.status
+      WHEN OLD.status IS NOT NEW.status AND OLD.status <> 'ambiguous'
       BEGIN
         INSERT INTO cinatoken_shard_provider_attempt_events
           (event_id, operation_id, owner_generation, attempt_generation, event_sequence,
@@ -3992,9 +4632,11 @@ export class RelayShardLedger {
   ): TerminalAckStateRow | null {
     return firstRow<TerminalAckStateRow>(
       this.storage.sql.exec<TerminalAckStateRow>(
-        `SELECT operation_id, owner_generation, billing_event_id,
+        `SELECT operation_id, owner_generation, terminal_ack_contract_version,
+                financial_terminal_contract_version, billing_event_id,
                 terminal_contract_sha256, reconciliation_id, reconciliation_revision,
                 predecessor_billing_event_id, ack_payload_json, recovery_payload_json,
+                provider_response_binding_json, client_response_artifact_sha256,
                 final_acked_at, compaction_authorized_at, created_at, updated_at
            FROM cinatoken_shard_terminal_acks
           WHERE operation_id = ?1 AND owner_generation = ?2`,
@@ -4529,6 +5171,10 @@ function isTerminalOperationStatus(status: OperationStatus): boolean {
   return status === "completed" || status === "failed" || status === "recovery_required";
 }
 
+function terminalAckContractVersion(ack: TerminalAckRequest): 1 | 2 {
+  return "provider_usage_binding" in ack ? 2 : 1;
+}
+
 function terminalAckPayloadJson(ack: TerminalAckRequest): string {
   return JSON.stringify({
     protocol_version: ack.protocol_version,
@@ -4550,6 +5196,287 @@ function terminalAckPayloadJson(ack: TerminalAckRequest): string {
       ? { provider_usage_binding: ack.provider_usage_binding }
       : {}),
   });
+}
+
+function terminalAckV3PayloadJson(ack: TerminalAckRequestV3): string {
+  return JSON.stringify({
+    protocol_version: ack.protocol_version,
+    terminal_ack_contract_version: ack.terminal_ack_contract_version,
+    financial_terminal_contract_version: ack.financial_terminal_contract_version,
+    billing_event_id: ack.billing_event_id,
+    terminal_contract_sha256: ack.terminal_contract_sha256,
+    reconciliation_id: ack.reconciliation_id,
+    reconciliation_revision: ack.reconciliation_revision,
+    predecessor_billing_event_id: ack.predecessor_billing_event_id,
+    operation_id: ack.operation_id,
+    owner_generation: ack.owner_generation,
+    operation_from_status: ack.operation_from_status,
+    operation_status: ack.operation_status,
+    response_status: ack.response_status,
+    response_code: ack.response_code,
+    result: ack.result,
+    provider_usage_binding: ack.provider_usage_binding,
+    provider_response_binding: ack.provider_response_binding,
+    shard: ack.shard,
+    trace_id: ack.trace_id,
+  });
+}
+
+function terminalAckV3ProviderResponseBindingJson(ack: TerminalAckRequestV3): string {
+  return JSON.stringify({
+    attempt_generation: ack.provider_response_binding.attempt_generation,
+    status: ack.provider_response_binding.status,
+    response_class: ack.provider_response_binding.response_class,
+    provider_status: ack.provider_response_binding.provider_status,
+    client_status: ack.provider_response_binding.client_status,
+    response_code: ack.provider_response_binding.response_code,
+    provider_response_evidence_sha256:
+      ack.provider_response_binding.provider_response_evidence_sha256,
+    client_response_artifact_sha256:
+      ack.provider_response_binding.client_response_artifact_sha256,
+  });
+}
+
+function currentTerminalAckV3Matches(
+  row: TerminalAckStateRow,
+  ack: TerminalAckRequestV3,
+  payloadJson: string,
+  bindingJson: string,
+): boolean {
+  return (
+    row.terminal_ack_contract_version === 3 &&
+    row.financial_terminal_contract_version === 2 &&
+    row.billing_event_id === ack.billing_event_id &&
+    row.terminal_contract_sha256 === ack.terminal_contract_sha256 &&
+    row.reconciliation_id === ack.reconciliation_id &&
+    row.reconciliation_revision === ack.reconciliation_revision &&
+    row.predecessor_billing_event_id === ack.predecessor_billing_event_id &&
+    row.ack_payload_json === payloadJson &&
+    row.provider_response_binding_json === bindingJson &&
+    row.client_response_artifact_sha256 ===
+      ack.provider_response_binding.client_response_artifact_sha256 &&
+    row.final_acked_at !== null
+  );
+}
+
+function canProgressRecoveryTerminalAckV3(
+  row: TerminalAckStateRow,
+  ack: TerminalAckRequestV3,
+): boolean {
+  if (
+    ack.reconciliation_revision !== 2 ||
+    ack.predecessor_billing_event_id === null ||
+    row.billing_event_id !== ack.predecessor_billing_event_id ||
+    row.reconciliation_id !== ack.reconciliation_id ||
+    row.reconciliation_revision !== 1 ||
+    row.predecessor_billing_event_id !== null ||
+    row.recovery_payload_json !== row.ack_payload_json ||
+    row.final_acked_at !== null ||
+    row.compaction_authorized_at !== null ||
+    ![1, 2].includes(row.terminal_ack_contract_version) ||
+    row.financial_terminal_contract_version !== null ||
+    row.provider_response_binding_json !== null ||
+    row.client_response_artifact_sha256 !== null
+  ) {
+    return false;
+  }
+  const recovery = storedTerminalAck(row.recovery_payload_json);
+  return (
+    recovery !== null &&
+    recovery.reconciliation_revision === 1 &&
+    recovery.predecessor_billing_event_id === null &&
+    recovery.operation_status === "recovery_required" &&
+    recovery.billing_event_id === row.billing_event_id &&
+    recovery.terminal_contract_sha256 === row.terminal_contract_sha256 &&
+    recovery.reconciliation_id === ack.reconciliation_id &&
+    terminalAckBaseIdentityMatches(recovery, ack)
+  );
+}
+
+function terminalAckBaseIdentityMatches(
+  left: TerminalAckRequest,
+  right: TerminalAckRequestV3,
+): boolean {
+  return (
+    left.protocol_version === right.protocol_version &&
+    left.operation_id === right.operation_id &&
+    left.owner_generation === right.owner_generation &&
+    left.trace_id === right.trace_id &&
+    left.shard.contract_version === right.shard.contract_version &&
+    left.shard.ring_generation === right.shard.ring_generation &&
+    left.shard.shard_count === right.shard.shard_count &&
+    left.shard.shard_index === right.shard.shard_index &&
+    left.shard.instance_name === right.shard.instance_name
+  );
+}
+
+function terminalAckV3EvidenceIdentityMatches(
+  operation: StorageOperationRow,
+  attempt: ProviderAttemptRow,
+  attachment: ProviderResponseArtifactAttachmentRow,
+  ack: TerminalAckRequestV3,
+): boolean {
+  return (
+    operation.protocol_version === ack.protocol_version &&
+    operation.operation_id === ack.operation_id &&
+    operation.owner_generation === ack.owner_generation &&
+    operation.provider_operation_id === attempt.provider_operation_id &&
+    operation.admission_sha256 === attempt.admission_sha256 &&
+    operation.input_sha256 === attempt.request_sha256 &&
+    operation.shard_contract_version === ack.shard.contract_version &&
+    operation.ring_generation === ack.shard.ring_generation &&
+    operation.shard_count === ack.shard.shard_count &&
+    operation.shard_index === ack.shard.shard_index &&
+    operation.instance_name === ack.shard.instance_name &&
+    operation.trace_id === ack.trace_id &&
+    attempt.operation_id === ack.operation_id &&
+    attempt.owner_generation === ack.owner_generation &&
+    attempt.attempt_generation === ack.provider_response_binding.attempt_generation &&
+    attempt.egress_profile !== null &&
+    attempt.egress_worker_version_id !== null &&
+    attempt.dispatched_at !== null &&
+    attachment.operation_id === attempt.operation_id &&
+    attachment.owner_generation === attempt.owner_generation &&
+    attachment.attempt_generation === attempt.attempt_generation &&
+    attachment.provider_operation_id === attempt.provider_operation_id &&
+    attachment.admission_sha256 === attempt.admission_sha256 &&
+    attachment.request_sha256 === attempt.request_sha256 &&
+    attachment.egress_profile === attempt.egress_profile &&
+    attachment.egress_worker_version_id === attempt.egress_worker_version_id &&
+    attachment.attached_at >= attempt.dispatched_at &&
+    (attempt.status === "dispatched"
+      ? attempt.terminal_at === null
+      : attempt.terminal_at !== null && attempt.terminal_at >= attachment.attached_at)
+  );
+}
+
+function terminalAckV3RequestEvidenceMatches(
+  operation: StorageOperationRow,
+  attempt: ProviderAttemptRow,
+  attachment: ProviderResponseArtifactAttachmentRow,
+  ack: TerminalAckRequestV3,
+): boolean {
+  const binding = ack.provider_response_binding;
+  if (
+    attachment.status !== binding.status ||
+    attachment.provider_status !== binding.provider_status ||
+    attachment.client_status !== binding.client_status ||
+    attachment.response_class !== binding.response_class ||
+    attachment.response_code !== binding.response_code ||
+    attachment.raw_manifest === null ||
+    attachment.client_manifest === null ||
+    attachment.raw_manifest.provider_response_evidence_sha256 !==
+      binding.provider_response_evidence_sha256 ||
+    attachment.client_manifest.client_response_artifact_sha256 !==
+      binding.client_response_artifact_sha256
+  ) {
+    return false;
+  }
+
+  const operationResult = operationStorageResult(operation);
+  const attemptResult = operationStorageResult(attempt);
+  if (binding.status === "succeeded") {
+    const usage = ack.provider_usage_binding;
+    return (
+      usage !== null &&
+      ack.result !== null &&
+      operationResult !== null &&
+      terminalAckResultMatches(operationResult, ack.result) &&
+      usage.attempt_generation === attempt.attempt_generation &&
+      usage.result_sha256 === operationResult.sha256 &&
+      operation.provider_usage_receipt_sha256 === usage.receipt_sha256 &&
+      attempt.provider_usage_receipt_sha256 === usage.receipt_sha256 &&
+      attempt.provider_usage_receipt_attached_at !== null &&
+      attempt.provider_usage_receipt_attached_at <= attachment.attached_at &&
+      attachment.provider_usage_receipt_sha256 === usage.receipt_sha256 &&
+      attachment.client_manifest.sha256 === operationResult.sha256 &&
+      attachment.client_manifest.size === operationResult.size &&
+      attachment.client_manifest.content_type === operationResult.content_type &&
+      (attempt.status === "dispatched"
+        ? attemptResult === null
+        : attemptResult !== null && terminalAckResultMatches(attemptResult, operationResult))
+    );
+  }
+
+  return (
+    ack.provider_usage_binding === null &&
+    ack.result === null &&
+    operationResult === null &&
+    attemptResult === null &&
+    operation.provider_usage_receipt_sha256 === null &&
+    attempt.provider_usage_receipt_sha256 === null &&
+    attempt.provider_usage_receipt_attached_at === null &&
+    attachment.provider_usage_receipt_sha256 === null
+  );
+}
+
+function terminalAckV3SourceStateMatches(
+  operation: StorageOperationRow,
+  attempt: ProviderAttemptRow,
+  ack: TerminalAckRequestV3,
+): boolean {
+  const targetAttemptStatus =
+    ack.provider_response_binding.status === "succeeded"
+      ? "succeeded"
+      : "definite_reject";
+  if (operation.status === ack.operation_status) {
+    return attempt.status === targetAttemptStatus;
+  }
+  if (ack.reconciliation_revision === 1) {
+    return (
+      operation.status === "running" &&
+      (attempt.status === "dispatched" || attempt.status === targetAttemptStatus)
+    );
+  }
+  return (
+    operation.status === "recovery_required" &&
+    (attempt.status === "ambiguous" || attempt.status === targetAttemptStatus)
+  );
+}
+
+function terminalAckV3ConvergedStateMatches(
+  operation: StorageOperationRow,
+  attempt: ProviderAttemptRow,
+  retryState: ProviderRetryStateRow,
+  state: TerminalAckStateRow,
+  ack: TerminalAckRequestV3,
+): boolean {
+  const targetAttemptStatus =
+    ack.provider_response_binding.status === "succeeded"
+      ? "succeeded"
+      : "definite_reject";
+  const resultMatches = terminalAckResultMatches(
+    operationStorageResult(operation),
+    ack.result,
+  );
+  const attemptResultMatches = terminalAckResultMatches(
+    operationStorageResult(attempt),
+    ack.result,
+  );
+  return (
+    currentTerminalAckV3Matches(
+      state,
+      ack,
+      terminalAckV3PayloadJson(ack),
+      terminalAckV3ProviderResponseBindingJson(ack),
+    ) &&
+    operation.status === ack.operation_status &&
+    operation.response_status === ack.response_status &&
+    operation.response_code === ack.response_code &&
+    resultMatches &&
+    attempt.status === targetAttemptStatus &&
+    attempt.response_status === ack.response_status &&
+    attempt.response_code === ack.response_code &&
+    attemptResultMatches &&
+    attempt.terminal_at !== null &&
+    retryState.state === "terminal" &&
+    retryState.active_attempt_generation === null &&
+    retryState.next_attempt_at === null &&
+    retryState.last_attempt_generation ===
+      ack.provider_response_binding.attempt_generation &&
+    retryState.global_terminal_event_id === ack.billing_event_id &&
+    retryState.global_terminal_acked_at === state.final_acked_at
+  );
 }
 
 function currentTerminalAckMatches(

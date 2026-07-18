@@ -61,8 +61,11 @@ pub(crate) const RELAY_CONTAINER_SCHEDULED_TERMINALIZATION_MIGRATION: &str =
     "0051_relay_container_scheduled_terminalization.sql";
 pub(crate) const RELAY_CONTAINER_PROVIDER_RESPONSE_ARTIFACT_MIGRATION: &str =
     "0052_relay_container_provider_response_artifacts.sql";
+pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_V2_MIGRATION: &str =
+    "0053_relay_container_financial_terminal_v2.sql";
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
+pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION: i64 = 2;
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
     &["pending", "leased", "retry", "converged", "dead_letter"];
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
@@ -768,6 +771,7 @@ pub enum RelayContainerOperationTerminalOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelayContainerClientResponseRecord<'a> {
     pub status: i64,
+    pub artifact_sha256: &'a str,
     pub headers_json: &'a str,
     pub headers_sha256: &'a str,
     pub object_key: &'a str,
@@ -775,6 +779,39 @@ pub struct RelayContainerClientResponseRecord<'a> {
     pub sha256: &'a str,
     pub size: i64,
     pub content_type: &'a str,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerClientResponseArtifactRecord {
+    pub operation_id: String,
+    pub owner_generation: i64,
+    pub attempt_generation: i64,
+    pub provider_response_evidence_sha256: String,
+    pub response_contract: String,
+    pub response_class: String,
+    pub client_response_status: i64,
+    pub client_response_content_type: String,
+    pub client_response_headers_json: String,
+    pub client_response_headers_sha256: String,
+    pub client_response_object_key: String,
+    pub client_response_object_version: String,
+    pub client_response_sha256: String,
+    pub client_response_size: i64,
+    pub provider_usage_receipt_sha256: Option<String>,
+    pub client_response_artifact_sha256: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayContainerProviderResponseBindingRecord<'a> {
+    pub attempt_generation: i64,
+    pub status: &'a str,
+    pub response_class: &'a str,
+    pub provider_status: i64,
+    pub client_status: i64,
+    pub response_code: Option<&'a str>,
+    pub provider_response_evidence_sha256: &'a str,
+    pub client_response_artifact_sha256: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -806,6 +843,7 @@ pub struct RelayContainerFinancialTerminalCommand<'a> {
     pub terminal: RelayContainerOperationTerminalRecord<'a>,
     pub action: RelayContainerFinancialTerminalAction<'a>,
     pub client_response: Option<RelayContainerClientResponseRecord<'a>>,
+    pub provider_response: Option<RelayContainerProviderResponseBindingRecord<'a>>,
     pub audit_payload_json: &'a str,
     pub audit_payload_sha256: &'a str,
     pub scheduled_terminalization: Option<RelayContainerScheduledTerminalizationFence<'a>>,
@@ -828,6 +866,7 @@ pub struct RelayContainerFinancialTerminalReceipt {
     pub operation_from_status: String,
     pub operation_status: String,
     pub terminal_contract_sha256: String,
+    pub financial_terminal_contract_version: i64,
     pub billing_action: String,
     pub billing_owner_generation: i64,
     pub billing_from_status: String,
@@ -843,6 +882,7 @@ pub struct RelayContainerFinancialTerminalReceipt {
     pub reconciliation_id: String,
     pub reconciliation_revision: i64,
     pub client_response_status: Option<i64>,
+    pub client_replay_status: Option<i64>,
     pub client_response_headers_json: Option<String>,
     pub client_response_headers_sha256: Option<String>,
     pub client_response_object_key: Option<String>,
@@ -850,9 +890,15 @@ pub struct RelayContainerFinancialTerminalReceipt {
     pub client_response_sha256: Option<String>,
     pub client_response_size: Option<i64>,
     pub client_response_content_type: Option<String>,
+    pub client_response_artifact_sha256: Option<String>,
     pub provider_usage_receipt_sha256: Option<String>,
     pub provider_result_sha256: Option<String>,
     pub provider_attempt_generation: Option<i64>,
+    pub provider_response_attempt_generation: Option<i64>,
+    pub provider_response_status: Option<i64>,
+    pub provider_response_class: Option<String>,
+    pub provider_response_code: Option<String>,
+    pub provider_response_evidence_sha256: Option<String>,
     pub outbox_payload_json: String,
     pub outbox_payload_sha256: String,
     pub outbox_status: String,
@@ -3249,6 +3295,7 @@ pub async fn record_relay_container_operation_terminal_evidence(
 struct PreparedRelayContainerFinancialTerminal {
     billing_event_id: String,
     terminal_contract_sha256: String,
+    financial_terminal_contract_version: i64,
     client_idempotency_hmac_sha256: String,
     client_request_sha256: String,
     reconciliation_id: String,
@@ -3264,9 +3311,16 @@ struct PreparedRelayContainerFinancialTerminal {
     channel_used_quota_delta: i64,
     request_count_delta: i64,
     reconciliation_revision: i64,
+    event_client_response_status: Option<i64>,
+    client_replay_status: Option<i64>,
     provider_usage_receipt_sha256: Option<String>,
     provider_result_sha256: Option<String>,
     provider_attempt_generation: Option<i64>,
+    provider_response_attempt_generation: Option<i64>,
+    provider_response_status: Option<i64>,
+    provider_response_class: Option<String>,
+    provider_response_code: Option<String>,
+    provider_response_evidence_sha256: Option<String>,
     outbox_payload_json: String,
     outbox_payload_sha256: String,
 }
@@ -4427,6 +4481,19 @@ fn prepare_relay_container_financial_terminal(
         ));
     }
 
+    let financial_terminal_contract_version = if command.operation_owner_generation
+        == RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+    {
+        RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+    } else {
+        1
+    };
+    if financial_terminal_contract_version == 1 && command.provider_response.is_some() {
+        return Err(worker::Error::RustError(
+            "legacy relay container terminal cannot bind provider response evidence".to_string(),
+        ));
+    }
+
     let billing_from_status = match command.expected_operation_status {
         RelayContainerOperationExpectedStatus::Prepared
         | RelayContainerOperationExpectedStatus::Dispatched => "reserved",
@@ -4491,6 +4558,15 @@ fn prepare_relay_container_financial_terminal(
             }
             let final_quota = i64::from(quota_i32(final_quota)?);
             validate_relay_container_client_response(command, response)?;
+            if financial_terminal_contract_version
+                == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+            {
+                validate_relay_container_provider_response_binding(
+                    command,
+                    response,
+                    command.provider_response,
+                )?;
+            }
             let remain_delta = pre_consumed_quota.saturating_sub(final_quota);
             (
                 "settle",
@@ -4515,8 +4591,27 @@ fn prepare_relay_container_financial_terminal(
                 response_status, ..
             },
             Some(response),
-        ) if response.status == response_status => {
+        ) if financial_terminal_contract_version == 1 && response.status == response_status
+            || financial_terminal_contract_version
+                == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+                && response_status == 422 =>
+        {
             validate_relay_container_client_response(command, response)?;
+            if financial_terminal_contract_version
+                == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+            {
+                validate_relay_container_provider_response_binding(
+                    command,
+                    response,
+                    command.provider_response,
+                )?;
+                if request_accounting != RelayBillingRequestAccounting::Skip {
+                    return Err(worker::Error::RustError(
+                        "interpreted provider rejection must not count as a successful request"
+                            .to_string(),
+                    ));
+                }
+            }
             let request_count_delta = i64::from(request_accounting.value());
             (
                 "refund",
@@ -4537,7 +4632,9 @@ fn prepare_relay_container_financial_terminal(
             RelayContainerFinancialTerminalAction::RecoveryRequired { .. },
             RelayContainerOperationTerminalRecord::RecoveryRequired { .. },
             None,
-        ) if billing_from_status == "reserved" => ("recovery_required", None, 0, 0, 0, 0, 0, 0),
+        ) if billing_from_status == "reserved" && command.provider_response.is_none() => {
+            ("recovery_required", None, 0, 0, 0, 0, 0, 0)
+        }
         _ => {
             return Err(worker::Error::RustError(
                 "relay container financial terminal action is inconsistent".to_string(),
@@ -4561,18 +4658,46 @@ fn prepare_relay_container_financial_terminal(
         | RelayContainerFinancialTerminalAction::RecoveryRequired { .. } => None,
     };
     let client_response = command.client_response.map(|response| {
+        if financial_terminal_contract_version
+            == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+        {
+            serde_json::json!({
+                "artifact_sha256": response.artifact_sha256,
+                "content_type": response.content_type,
+                "headers_json": response.headers_json,
+                "headers_sha256": response.headers_sha256,
+                "object_key": response.object_key,
+                "object_version": response.object_version,
+                "sha256": response.sha256,
+                "size": response.size,
+                "status": response.status,
+            })
+        } else {
+            serde_json::json!({
+                "content_type": response.content_type,
+                "headers_json": response.headers_json,
+                "headers_sha256": response.headers_sha256,
+                "object_key": response.object_key,
+                "object_version": response.object_version,
+                "sha256": response.sha256,
+                "size": response.size,
+                "status": response.status,
+            })
+        }
+    });
+    let provider_response_binding = command.provider_response.map(|binding| {
         serde_json::json!({
-            "content_type": response.content_type,
-            "headers_json": response.headers_json,
-            "headers_sha256": response.headers_sha256,
-            "object_key": response.object_key,
-            "object_version": response.object_version,
-            "sha256": response.sha256,
-            "size": response.size,
-            "status": response.status,
+            "attempt_generation": binding.attempt_generation,
+            "client_response_artifact_sha256": binding.client_response_artifact_sha256,
+            "client_status": binding.client_status,
+            "provider_response_evidence_sha256": binding.provider_response_evidence_sha256,
+            "provider_status": binding.provider_status,
+            "response_class": binding.response_class,
+            "response_code": binding.response_code,
+            "status": binding.status,
         })
     });
-    let terminal_contract = serde_json::json!({
+    let mut terminal_contract = serde_json::json!({
         "admission_sha256": command.admission_sha256,
         "audit_payload_sha256": command.audit_payload_sha256,
         "billing": {
@@ -4612,20 +4737,49 @@ fn prepare_relay_container_financial_terminal(
         "reconciliation_revision": reconciliation_revision,
         "schema_version": RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION,
     });
+    if financial_terminal_contract_version == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION {
+        let terminal_contract_object = terminal_contract.as_object_mut().ok_or_else(|| {
+            worker::Error::RustError(
+                "relay container terminal contract object is unavailable".to_string(),
+            )
+        })?;
+        terminal_contract_object.insert(
+            "financial_terminal_contract_version".to_string(),
+            Value::from(financial_terminal_contract_version),
+        );
+        terminal_contract_object.insert(
+            "provider_response_binding".to_string(),
+            provider_response_binding.unwrap_or(Value::Null),
+        );
+    }
     let terminal_contract_json = serde_json::to_string(&terminal_contract).map_err(|err| {
         worker::Error::RustError(format!(
             "relay container terminal contract serialization failed: {err}"
         ))
     })?;
     let terminal_contract_sha256 = relay_container_sha256_hex(terminal_contract_json.as_bytes());
-    let event_identity = serde_json::json!({
-        "domain": "cinatoken:relay-container-financial-terminal:v1",
-        "operation_id": command.operation_id,
-        "owner_generation": command.operation_owner_generation,
-        "operation_from_status": command.expected_operation_status.as_str(),
-        "reconciliation_id": operation.reconciliation_id,
-        "reconciliation_revision": reconciliation_revision,
-    });
+    let event_identity = if financial_terminal_contract_version
+        == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+    {
+        serde_json::json!({
+            "domain": "cinatoken:relay-container-financial-terminal:v2",
+            "financial_terminal_contract_version": financial_terminal_contract_version,
+            "operation_id": command.operation_id,
+            "owner_generation": command.operation_owner_generation,
+            "operation_from_status": command.expected_operation_status.as_str(),
+            "reconciliation_id": operation.reconciliation_id,
+            "reconciliation_revision": reconciliation_revision,
+        })
+    } else {
+        serde_json::json!({
+            "domain": "cinatoken:relay-container-financial-terminal:v1",
+            "operation_id": command.operation_id,
+            "owner_generation": command.operation_owner_generation,
+            "operation_from_status": command.expected_operation_status.as_str(),
+            "reconciliation_id": operation.reconciliation_id,
+            "reconciliation_revision": reconciliation_revision,
+        })
+    };
     let billing_event_id = relay_container_sha256_hex(
         serde_json::to_string(&event_identity)
             .map_err(|err| {
@@ -4658,6 +4812,7 @@ fn prepare_relay_container_financial_terminal(
     Ok(PreparedRelayContainerFinancialTerminal {
         billing_event_id,
         terminal_contract_sha256,
+        financial_terminal_contract_version,
         client_idempotency_hmac_sha256: operation.client_idempotency_hmac_sha256.clone(),
         client_request_sha256: operation.client_request_sha256.clone(),
         reconciliation_id: operation.reconciliation_id.clone(),
@@ -4673,6 +4828,22 @@ fn prepare_relay_container_financial_terminal(
         channel_used_quota_delta,
         request_count_delta,
         reconciliation_revision,
+        event_client_response_status: command.client_response.map(|response| {
+            if financial_terminal_contract_version
+                == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+            {
+                command.terminal.response_status()
+            } else {
+                response.status
+            }
+        }),
+        client_replay_status: if financial_terminal_contract_version
+            == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+        {
+            command.client_response.map(|response| response.status)
+        } else {
+            None
+        },
         provider_usage_receipt_sha256: match command.action {
             RelayContainerFinancialTerminalAction::Settle {
                 provider_usage_receipt_sha256,
@@ -4694,6 +4865,21 @@ fn prepare_relay_container_financial_terminal(
             } => Some(provider_attempt_generation),
             _ => None,
         },
+        provider_response_attempt_generation: command
+            .provider_response
+            .map(|binding| binding.attempt_generation),
+        provider_response_status: command
+            .provider_response
+            .map(|binding| binding.provider_status),
+        provider_response_class: command
+            .provider_response
+            .map(|binding| binding.response_class.to_string()),
+        provider_response_code: command
+            .provider_response
+            .and_then(|binding| binding.response_code.map(str::to_string)),
+        provider_response_evidence_sha256: command
+            .provider_response
+            .map(|binding| binding.provider_response_evidence_sha256.to_string()),
         outbox_payload_json,
         outbox_payload_sha256,
     })
@@ -4703,11 +4889,12 @@ fn validate_relay_container_client_response(
     command: &RelayContainerFinancialTerminalCommand<'_>,
     response: RelayContainerClientResponseRecord<'_>,
 ) -> worker::Result<()> {
-    if response.status != command.terminal.response_status() {
+    if !(100..=599).contains(&response.status) {
         return Err(worker::Error::RustError(
-            "relay container client response status is inconsistent".to_string(),
+            "relay container client response status is invalid".to_string(),
         ));
     }
+    validate_relay_container_sha256(response.artifact_sha256, "client response artifact sha256")?;
     validate_relay_container_sha256(response.headers_sha256, "response headers sha256")?;
     validate_relay_container_object_key(response.object_key, "client response object key")?;
     validate_relay_container_id(
@@ -4733,6 +4920,92 @@ fn validate_relay_container_client_response(
     {
         return Err(worker::Error::RustError(
             "relay container client response manifest is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_provider_response_binding(
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    response: RelayContainerClientResponseRecord<'_>,
+    binding: Option<RelayContainerProviderResponseBindingRecord<'_>>,
+) -> worker::Result<()> {
+    let Some(binding) = binding else {
+        return Err(worker::Error::RustError(
+            "relay container provider response binding is required".to_string(),
+        ));
+    };
+    validate_relay_container_sha256(
+        binding.provider_response_evidence_sha256,
+        "provider response evidence sha256",
+    )?;
+    validate_relay_container_sha256(
+        binding.client_response_artifact_sha256,
+        "client response artifact sha256",
+    )?;
+    if binding.attempt_generation != 1
+        || binding.client_status != response.status
+        || binding.client_response_artifact_sha256 != response.artifact_sha256
+        || !(100..=599).contains(&binding.provider_status)
+        || !(100..=599).contains(&binding.client_status)
+    {
+        return Err(worker::Error::RustError(
+            "relay container provider response identity is invalid".to_string(),
+        ));
+    }
+
+    let valid = match (command.action, command.terminal) {
+        (
+            RelayContainerFinancialTerminalAction::Settle {
+                provider_attempt_generation,
+                ..
+            },
+            RelayContainerOperationTerminalRecord::Completed {
+                response_status, ..
+            },
+        ) => {
+            provider_attempt_generation == binding.attempt_generation
+                && response_status == 200
+                && binding.status == "succeeded"
+                && binding.response_class == "success"
+                && binding.provider_status == 200
+                && binding.client_status == 200
+                && binding.response_code.is_none()
+        }
+        (
+            RelayContainerFinancialTerminalAction::Refund { .. },
+            RelayContainerOperationTerminalRecord::Failed {
+                response_status,
+                response_code,
+            },
+        ) => {
+            response_status == 422
+                && binding.status == "interpreted_reject"
+                && binding.response_code == Some(response_code)
+                && match binding.response_class {
+                    "typed_error" => {
+                        binding.provider_status == 200
+                            && binding.client_status == 200
+                            && response_code == "provider_typed_error"
+                    }
+                    "http_error" => {
+                        binding.provider_status != 200
+                            && binding.client_status == binding.provider_status
+                            && response_code == "provider_http_error"
+                    }
+                    "invalid_body" => {
+                        binding.provider_status == 200
+                            && binding.client_status == 500
+                            && response_code == "provider_invalid_body"
+                    }
+                    _ => false,
+                }
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(worker::Error::RustError(
+            "relay container provider response binding is inconsistent".to_string(),
         ));
     }
     Ok(())
@@ -4809,8 +5082,9 @@ fn relay_container_terminal_event_statement(
         relay_container_d1_integer(prepared.request_count_delta, "request count delta")?,
         D1Type::Text(&operation.reconciliation_id),
         relay_container_d1_integer(prepared.reconciliation_revision, "reconciliation revision")?,
-        response
-            .map(|value| D1Type::Integer(d1_i32(value.status)))
+        prepared
+            .event_client_response_status
+            .map(|value| D1Type::Integer(d1_i32(value)))
             .unwrap_or(D1Type::Null),
         response
             .map(|value| D1Type::Text(value.headers_json))
@@ -4858,6 +5132,42 @@ fn relay_container_terminal_event_statement(
             Some(value) => relay_container_d1_integer(value, "provider attempt generation")?,
             None => D1Type::Null,
         },
+        response
+            .map(|value| D1Type::Text(value.artifact_sha256))
+            .unwrap_or(D1Type::Null),
+        relay_container_d1_integer(
+            prepared.financial_terminal_contract_version,
+            "financial terminal contract version",
+        )?,
+        prepared
+            .client_replay_status
+            .map(|value| D1Type::Integer(d1_i32(value)))
+            .unwrap_or(D1Type::Null),
+        match prepared.provider_response_attempt_generation {
+            Some(value) => {
+                relay_container_d1_integer(value, "provider response attempt generation")?
+            }
+            None => D1Type::Null,
+        },
+        prepared
+            .provider_response_status
+            .map(|value| D1Type::Integer(d1_i32(value)))
+            .unwrap_or(D1Type::Null),
+        prepared
+            .provider_response_class
+            .as_deref()
+            .map(D1Type::Text)
+            .unwrap_or(D1Type::Null),
+        prepared
+            .provider_response_code
+            .as_deref()
+            .map(D1Type::Text)
+            .unwrap_or(D1Type::Null),
+        prepared
+            .provider_response_evidence_sha256
+            .as_deref()
+            .map(D1Type::Text)
+            .unwrap_or(D1Type::Null),
     ];
     db.prepare(
         r#"
@@ -4878,12 +5188,17 @@ fn relay_container_terminal_event_statement(
           outbox_schema_version, outbox_payload_json, outbox_payload_sha256,
           created_at,
           provider_usage_receipt_sha256, provider_result_sha256,
-          provider_attempt_generation
+          provider_attempt_generation, client_response_artifact_sha256,
+          financial_terminal_contract_version, client_replay_status,
+          provider_response_attempt_generation, provider_response_status,
+          provider_response_class, provider_response_code,
+          provider_response_evidence_sha256
         )
         SELECT
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
           ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-          ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?37, ?38, ?39
+          ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?37, ?38, ?39, ?40,
+          ?41, ?42, ?43, ?44, ?45, ?46, ?47
         FROM relay_container_operations AS operation
         JOIN relay_billing_reservations AS reservation
           ON reservation.reservation_key = operation.reservation_key
@@ -5338,6 +5653,7 @@ async fn relay_container_financial_terminal_receipt(
           event.billing_event_id, event.reservation_key, event.operation_id,
           event.owner_generation, event.operation_from_status,
           event.operation_status, event.terminal_contract_sha256,
+          event.financial_terminal_contract_version,
           event.billing_action, event.billing_owner_generation,
           event.billing_from_status, event.billing_final_quota,
           event.billing_request_accounted, event.billing_reason,
@@ -5345,13 +5661,19 @@ async fn relay_container_financial_terminal_receipt(
           event.token_quota_delta, event.user_used_quota_delta,
           event.channel_used_quota_delta, event.request_count_delta,
           event.reconciliation_id, event.reconciliation_revision,
-          event.client_response_status, event.client_response_headers_json,
+          event.client_response_status, event.client_replay_status,
+          event.client_response_headers_json,
           event.client_response_headers_sha256, event.client_response_object_key,
           event.client_response_object_version, event.client_response_sha256,
           event.client_response_size, event.client_response_content_type,
+          event.client_response_artifact_sha256,
           event.provider_usage_receipt_sha256,
           event.provider_result_sha256,
           event.provider_attempt_generation,
+          event.provider_response_attempt_generation,
+          event.provider_response_status, event.provider_response_class,
+          event.provider_response_code,
+          event.provider_response_evidence_sha256,
           event.outbox_payload_json, event.outbox_payload_sha256,
           outbox.status AS outbox_status,
           operation.status AS operation_current_status,
@@ -5526,6 +5848,8 @@ fn relay_container_financial_receipt_matches(
         && receipt.operation_from_status == command.expected_operation_status.as_str()
         && receipt.operation_status == command.terminal.status()
         && receipt.terminal_contract_sha256 == prepared.terminal_contract_sha256
+        && receipt.financial_terminal_contract_version
+            == prepared.financial_terminal_contract_version
         && receipt.billing_action == prepared.billing_action
         && receipt.billing_owner_generation == command.billing_owner_generation
         && receipt.billing_from_status == prepared.billing_from_status
@@ -5544,7 +5868,8 @@ fn relay_container_financial_receipt_matches(
         && receipt.operation_client_idempotency_hmac_sha256
             == prepared.client_idempotency_hmac_sha256
         && receipt.operation_client_request_sha256 == prepared.client_request_sha256
-        && receipt.client_response_status == response.map(|value| value.status)
+        && receipt.client_response_status == prepared.event_client_response_status
+        && receipt.client_replay_status == prepared.client_replay_status
         && receipt.client_response_headers_json.as_deref()
             == response.map(|value| value.headers_json)
         && receipt.client_response_headers_sha256.as_deref()
@@ -5556,9 +5881,17 @@ fn relay_container_financial_receipt_matches(
         && receipt.client_response_size == response.map(|value| value.size)
         && receipt.client_response_content_type.as_deref()
             == response.map(|value| value.content_type)
+        && receipt.client_response_artifact_sha256.as_deref()
+            == response.map(|value| value.artifact_sha256)
         && receipt.provider_usage_receipt_sha256 == prepared.provider_usage_receipt_sha256
         && receipt.provider_result_sha256 == prepared.provider_result_sha256
         && receipt.provider_attempt_generation == prepared.provider_attempt_generation
+        && receipt.provider_response_attempt_generation
+            == prepared.provider_response_attempt_generation
+        && receipt.provider_response_status == prepared.provider_response_status
+        && receipt.provider_response_class == prepared.provider_response_class
+        && receipt.provider_response_code == prepared.provider_response_code
+        && receipt.provider_response_evidence_sha256 == prepared.provider_response_evidence_sha256
         && receipt.outbox_payload_json == prepared.outbox_payload_json
         && receipt.outbox_payload_sha256 == prepared.outbox_payload_sha256
         && matches!(
@@ -5934,6 +6267,196 @@ pub async fn relay_container_financial_terminal_receipt_for_operation(
     }
 }
 
+pub async fn relay_container_client_response_artifact(
+    db: &D1Database,
+    operation_id: &str,
+    owner_generation: i64,
+    attempt_generation: i64,
+) -> worker::Result<Option<RelayContainerClientResponseArtifactRecord>> {
+    validate_relay_container_id(operation_id, "operation id", 1, 128)?;
+    if owner_generation != RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+        || attempt_generation != 1
+    {
+        return Err(worker::Error::RustError(
+            "relay container client response artifact identity is invalid".to_string(),
+        ));
+    }
+    let args = [
+        D1Type::Text(operation_id),
+        relay_container_d1_integer(owner_generation, "owner generation")?,
+        relay_container_d1_integer(attempt_generation, "attempt generation")?,
+    ];
+    db.prepare(
+        r#"
+        SELECT operation_id, owner_generation, attempt_generation,
+               provider_response_evidence_sha256, response_contract,
+               response_class, client_response_status,
+               client_response_content_type, client_response_headers_json,
+               client_response_headers_sha256, client_response_object_key,
+               client_response_object_version, client_response_sha256,
+               client_response_size, provider_usage_receipt_sha256,
+               client_response_artifact_sha256, created_at
+        FROM relay_container_client_response_artifacts
+        WHERE operation_id = ?1
+          AND owner_generation = ?2
+          AND attempt_generation = ?3
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerClientResponseArtifactRecord>(None)
+    .await
+}
+
+pub async fn relay_container_provider_response_evidence_exists(
+    db: &D1Database,
+    operation_id: &str,
+    owner_generation: i64,
+) -> worker::Result<bool> {
+    validate_relay_container_id(operation_id, "operation id", 1, 128)?;
+    if owner_generation != RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION {
+        return Err(worker::Error::RustError(
+            "relay container provider response evidence owner generation is invalid".to_string(),
+        ));
+    }
+    let args = vec![
+        D1Type::Text(operation_id),
+        relay_container_d1_integer(owner_generation, "owner generation")?,
+    ];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS count
+            FROM relay_container_provider_response_evidence
+            WHERE operation_id = ?1
+              AND owner_generation = ?2
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count > 0))
+}
+
+pub(crate) fn relay_container_client_response_artifact_integrity_valid(
+    artifact: &RelayContainerClientResponseArtifactRecord,
+) -> bool {
+    if artifact.owner_generation != RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+        || artifact.attempt_generation != 1
+        || artifact.response_contract != "go-openai-response-v1"
+        || artifact.client_response_content_type != "application/json"
+        || artifact.client_response_size < 2
+        || artifact.client_response_size > MAX_CONTAINER_CLIENT_RESPONSE_BYTES as i64
+        || artifact.created_at < 1
+        || artifact.created_at > 253_402_300_799_999
+        || validate_relay_container_id(&artifact.operation_id, "operation id", 1, 128).is_err()
+        || validate_relay_container_sha256(
+            &artifact.provider_response_evidence_sha256,
+            "provider response evidence sha256",
+        )
+        .is_err()
+        || validate_relay_container_sha256(
+            &artifact.client_response_artifact_sha256,
+            "client response artifact sha256",
+        )
+        .is_err()
+        || validate_relay_container_sha256(
+            &artifact.client_response_headers_sha256,
+            "client response headers sha256",
+        )
+        .is_err()
+        || validate_relay_container_sha256(
+            &artifact.client_response_sha256,
+            "client response sha256",
+        )
+        .is_err()
+        || validate_relay_container_id(
+            &artifact.client_response_object_version,
+            "client response object version",
+            1,
+            128,
+        )
+        .is_err()
+        || relay_container_sha256_hex(artifact.client_response_headers_json.as_bytes())
+            != artifact.client_response_headers_sha256
+        || artifact.client_response_object_key
+            != format!(
+                "container-client-artifacts/v1/{}/{}/{}",
+                artifact.operation_id,
+                artifact.owner_generation,
+                artifact.client_response_artifact_sha256
+            )
+    {
+        return false;
+    }
+    let class_valid = match artifact.response_class.as_str() {
+        "success" => {
+            artifact.client_response_status == 200
+                && artifact
+                    .provider_usage_receipt_sha256
+                    .as_deref()
+                    .is_some_and(|value| {
+                        validate_relay_container_sha256(value, "provider usage receipt sha256")
+                            .is_ok()
+                    })
+        }
+        "typed_error" => {
+            artifact.client_response_status == 200
+                && artifact.provider_usage_receipt_sha256.is_none()
+        }
+        "http_error" => {
+            (100..=599).contains(&artifact.client_response_status)
+                && artifact.client_response_status != 200
+                && artifact.provider_usage_receipt_sha256.is_none()
+        }
+        "invalid_body" => {
+            artifact.client_response_status == 500
+                && artifact.provider_usage_receipt_sha256.is_none()
+        }
+        _ => false,
+    };
+    if !class_valid {
+        return false;
+    }
+    let Ok(headers) = relay_container_canonical_json(
+        &artifact.client_response_headers_json,
+        "client response artifact headers",
+        8_192,
+        true,
+    ) else {
+        return false;
+    };
+    let Some(headers) = headers.as_object() else {
+        return false;
+    };
+    const ALLOWED_HEADERS: [&str; 7] = [
+        "cache-control",
+        "content-language",
+        "content-type",
+        "openai-request-id",
+        "request-id",
+        "retry-after",
+        "x-request-id",
+    ];
+    if !(2..=ALLOWED_HEADERS.len()).contains(&headers.len())
+        || headers.get("cache-control").and_then(Value::as_str) != Some("no-store")
+        || headers.get("content-type").and_then(Value::as_str) != Some("application/json")
+        || headers.iter().any(|(name, value)| {
+            !ALLOWED_HEADERS.contains(&name.as_str())
+                || value.as_str().is_none_or(|value| {
+                    value.is_empty()
+                        || value.len() > 1_024
+                        || !value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+                })
+        })
+    {
+        return false;
+    }
+    artifact.response_class == "success"
+        || artifact.client_response_headers_json
+            == "{\"cache-control\":\"no-store\",\"content-type\":\"application/json\"}"
+}
+
 fn relay_container_provider_usage_binding_valid(
     billing_action: &str,
     provider_usage_receipt_sha256: Option<&str>,
@@ -5981,12 +6504,128 @@ fn relay_container_provider_usage_binding_valid(
     }
 }
 
+fn relay_container_effective_client_replay_status(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+) -> Option<i64> {
+    match receipt.financial_terminal_contract_version {
+        1 => receipt.client_response_status,
+        RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION => receipt.client_replay_status,
+        _ => None,
+    }
+}
+
+fn relay_container_provider_response_binding_integrity_valid(
+    receipt: &RelayContainerFinancialTerminalReceipt,
+    contract_binding: Option<&Value>,
+) -> bool {
+    if receipt.financial_terminal_contract_version == 1 {
+        return contract_binding.is_none()
+            && receipt.client_replay_status.is_none()
+            && receipt.provider_response_attempt_generation.is_none()
+            && receipt.provider_response_status.is_none()
+            && receipt.provider_response_class.is_none()
+            && receipt.provider_response_code.is_none()
+            && receipt.provider_response_evidence_sha256.is_none();
+    }
+    if receipt.financial_terminal_contract_version
+        != RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+        || receipt.owner_generation != RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+    {
+        return false;
+    }
+    if receipt.billing_action == "recovery_required" {
+        return contract_binding.is_some_and(Value::is_null)
+            && receipt.client_replay_status.is_none()
+            && receipt.provider_response_attempt_generation.is_none()
+            && receipt.provider_response_status.is_none()
+            && receipt.provider_response_class.is_none()
+            && receipt.provider_response_code.is_none()
+            && receipt.provider_response_evidence_sha256.is_none();
+    }
+
+    let Some(binding) = contract_binding.and_then(Value::as_object) else {
+        return false;
+    };
+    let attempt_generation = binding.get("attempt_generation").and_then(Value::as_i64);
+    let status = binding.get("status").and_then(Value::as_str);
+    let response_class = binding.get("response_class").and_then(Value::as_str);
+    let provider_status = binding.get("provider_status").and_then(Value::as_i64);
+    let client_status = binding.get("client_status").and_then(Value::as_i64);
+    let response_code = binding.get("response_code").and_then(Value::as_str);
+    let evidence_sha256 = binding
+        .get("provider_response_evidence_sha256")
+        .and_then(Value::as_str);
+    let artifact_sha256 = binding
+        .get("client_response_artifact_sha256")
+        .and_then(Value::as_str);
+    if binding.len() != 8
+        || attempt_generation != receipt.provider_response_attempt_generation
+        || provider_status != receipt.provider_response_status
+        || response_class != receipt.provider_response_class.as_deref()
+        || response_code != receipt.provider_response_code.as_deref()
+        || evidence_sha256 != receipt.provider_response_evidence_sha256.as_deref()
+        || artifact_sha256 != receipt.client_response_artifact_sha256.as_deref()
+        || client_status != receipt.client_replay_status
+        || attempt_generation != Some(1)
+        || evidence_sha256.is_none_or(|value| {
+            validate_relay_container_sha256(value, "provider response evidence sha256").is_err()
+        })
+        || artifact_sha256.is_none_or(|value| {
+            validate_relay_container_sha256(value, "client response artifact sha256").is_err()
+        })
+    {
+        return false;
+    }
+
+    match receipt.billing_action.as_str() {
+        "settle" => {
+            receipt.operation_status == "completed"
+                && receipt.client_response_status == Some(200)
+                && receipt.client_replay_status == Some(200)
+                && status == Some("succeeded")
+                && response_class == Some("success")
+                && provider_status == Some(200)
+                && response_code.is_none()
+        }
+        "refund" => {
+            receipt.operation_status == "failed"
+                && receipt.client_response_status == Some(422)
+                && receipt.billing_request_accounted == 0
+                && status == Some("interpreted_reject")
+                && match response_class {
+                    Some("typed_error") => {
+                        provider_status == Some(200)
+                            && client_status == Some(200)
+                            && response_code == Some("provider_typed_error")
+                    }
+                    Some("http_error") => {
+                        provider_status.is_some_and(|value| value != 200)
+                            && client_status == provider_status
+                            && response_code == Some("provider_http_error")
+                    }
+                    Some("invalid_body") => {
+                        provider_status == Some(200)
+                            && client_status == Some(500)
+                            && response_code == Some("provider_invalid_body")
+                    }
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn relay_container_financial_receipt_integrity_valid(
     receipt: &RelayContainerFinancialTerminalReceipt,
 ) -> bool {
     if relay_container_sha256_hex(receipt.outbox_payload_json.as_bytes())
         != receipt.outbox_payload_sha256
         || receipt.operation_current_status != receipt.operation_status
+        || (receipt.owner_generation == RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+            && receipt.financial_terminal_contract_version
+                != RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION)
+        || (receipt.owner_generation != RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+            && receipt.financial_terminal_contract_version != 1)
         || receipt.billing_current_owner_generation
             != receipt.billing_owner_generation.saturating_add(1)
         || receipt.billing_current_reason != receipt.billing_reason
@@ -6027,6 +6666,16 @@ pub(crate) fn relay_container_financial_receipt_integrity_valid(
     }
     if contract.get("schema_version").and_then(Value::as_i64)
         != Some(RELAY_CONTAINER_TERMINAL_OUTBOX_SCHEMA_VERSION)
+        || (receipt.financial_terminal_contract_version
+            == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+            && contract
+                .get("financial_terminal_contract_version")
+                .and_then(Value::as_i64)
+                != Some(RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION))
+        || (receipt.financial_terminal_contract_version == 1
+            && contract
+                .get("financial_terminal_contract_version")
+                .is_some())
         || contract
             .get("client_idempotency_hmac_sha256")
             .and_then(Value::as_str)
@@ -6135,10 +6784,15 @@ pub(crate) fn relay_container_financial_receipt_integrity_valid(
         return false;
     }
     let response = contract.get("client_response");
+    let replay_status = relay_container_effective_client_replay_status(receipt);
     if response
-        .and_then(|value| value.get("status"))
-        .and_then(Value::as_i64)
-        != receipt.client_response_status
+        .and_then(|value| value.get("artifact_sha256"))
+        .and_then(Value::as_str)
+        != receipt.client_response_artifact_sha256.as_deref()
+        || response
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_i64)
+            != replay_status
         || response
             .and_then(|value| value.get("headers_json"))
             .and_then(Value::as_str)
@@ -6178,7 +6832,12 @@ pub(crate) fn relay_container_financial_receipt_integrity_valid(
         contract.get("provider_usage_receipt"),
         receipt.operation_result_sha256.as_deref(),
     );
-    if !provider_usage_binding_valid {
+    if !provider_usage_binding_valid
+        || !relay_container_provider_response_binding_integrity_valid(
+            receipt,
+            contract.get("provider_response_binding"),
+        )
+    {
         return false;
     }
     let expected_billing_status = match receipt.billing_action.as_str() {
@@ -6208,12 +6867,19 @@ pub(crate) fn relay_container_financial_receipt_integrity_valid(
     if !response_fields.iter().all(|present| *present) {
         return false;
     }
-    let Some(status) = receipt.client_response_status else {
+    let Some(status) = replay_status else {
         return false;
     };
-    let status_matches_action = match receipt.billing_action.as_str() {
-        "settle" => (200..=299).contains(&status) && status != 202,
-        "refund" => (400..=599).contains(&status),
+    let status_matches_action = match (
+        receipt.financial_terminal_contract_version,
+        receipt.billing_action.as_str(),
+    ) {
+        (RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION, "settle") => status == 200,
+        (RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION, "refund") => {
+            (100..=599).contains(&status)
+        }
+        (1, "settle") => (200..=299).contains(&status) && status != 202,
+        (1, "refund") => (400..=599).contains(&status),
         _ => false,
     };
     let (
@@ -6236,8 +6902,22 @@ pub(crate) fn relay_container_financial_receipt_integrity_valid(
     };
     let expected_key =
         container_client_response_key(&receipt.operation_id, receipt.owner_generation, sha256);
+    let artifact_binding_valid = if receipt.financial_terminal_contract_version
+        == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+    {
+        receipt
+            .client_response_artifact_sha256
+            .as_deref()
+            .is_some_and(|artifact_sha256| {
+                validate_relay_container_sha256(artifact_sha256, "client response artifact sha256")
+                    .is_ok()
+            })
+    } else {
+        receipt.client_response_artifact_sha256.is_none()
+    };
     status_matches_action
-        && receipt.operation_response_status == Some(status)
+        && receipt.operation_response_status == receipt.client_response_status
+        && artifact_binding_valid
         && validate_container_client_response_headers_json(
             headers_json,
             headers_sha256,
@@ -6277,6 +6957,11 @@ fn relay_container_terminal_outbox_event_shape_valid(
     if receipt.reservation_key != receipt.operation_id
         || receipt.owner_generation <= 0
         || receipt.billing_owner_generation <= 0
+        || (receipt.owner_generation == RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+            && receipt.financial_terminal_contract_version
+                != RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION)
+        || (receipt.owner_generation != RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+            && receipt.financial_terminal_contract_version != 1)
         || receipt.pre_consumed_quota < 0
         || receipt.billing_reason.is_empty()
         || receipt.billing_reason.len() > 256
@@ -6324,6 +7009,8 @@ fn relay_container_terminal_outbox_event_shape_valid(
         "refund" => {
             receipt.operation_status == "failed"
                 && receipt.billing_final_quota.is_none()
+                && (receipt.financial_terminal_contract_version == 1
+                    || receipt.billing_request_accounted == 0)
                 && receipt.user_quota_delta == receipt.pre_consumed_quota
                 && receipt.user_used_quota_delta == 0
                 && receipt.channel_used_quota_delta == 0
@@ -6382,14 +7069,28 @@ fn relay_container_terminal_outbox_event_immutable_integrity_valid(
     {
         return false;
     }
-    let expected_event_identity = serde_json::json!({
-        "domain": "cinatoken:relay-container-financial-terminal:v1",
-        "operation_id": receipt.operation_id,
-        "owner_generation": receipt.owner_generation,
-        "operation_from_status": receipt.operation_from_status,
-        "reconciliation_id": receipt.reconciliation_id,
-        "reconciliation_revision": receipt.reconciliation_revision,
-    });
+    let expected_event_identity = if receipt.financial_terminal_contract_version
+        == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+    {
+        serde_json::json!({
+            "domain": "cinatoken:relay-container-financial-terminal:v2",
+            "financial_terminal_contract_version": receipt.financial_terminal_contract_version,
+            "operation_id": receipt.operation_id,
+            "owner_generation": receipt.owner_generation,
+            "operation_from_status": receipt.operation_from_status,
+            "reconciliation_id": receipt.reconciliation_id,
+            "reconciliation_revision": receipt.reconciliation_revision,
+        })
+    } else {
+        serde_json::json!({
+            "domain": "cinatoken:relay-container-financial-terminal:v1",
+            "operation_id": receipt.operation_id,
+            "owner_generation": receipt.owner_generation,
+            "operation_from_status": receipt.operation_from_status,
+            "reconciliation_id": receipt.reconciliation_id,
+            "reconciliation_revision": receipt.reconciliation_revision,
+        })
+    };
     let Ok(expected_event_identity_json) = serde_json::to_string(&expected_event_identity) else {
         return false;
     };
@@ -6468,9 +7169,25 @@ fn relay_container_terminal_outbox_contract_integrity_valid(
         return false;
     };
     let provider_usage_receipt = contract.get("provider_usage_receipt");
-    let contract_shape_valid = match provider_usage_receipt {
-        Some(_) => contract_object.len() == 11,
-        None => contract_object.len() == 10,
+    let contract_shape_valid = match receipt.financial_terminal_contract_version {
+        RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION => {
+            provider_usage_receipt.is_some()
+                && contract_object.len() == 13
+                && contract
+                    .get("financial_terminal_contract_version")
+                    .and_then(Value::as_i64)
+                    == Some(RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION)
+                && contract.get("provider_response_binding").is_some()
+        }
+        1 => {
+            provider_usage_receipt.is_some()
+                && contract_object.len() == 11
+                && contract
+                    .get("financial_terminal_contract_version")
+                    .is_none()
+                && contract.get("provider_response_binding").is_none()
+        }
+        _ => false,
     };
     if !contract_shape_valid
         || contract_operation.as_object().map(|value| value.len()) != Some(7)
@@ -6568,8 +7285,33 @@ fn relay_container_terminal_outbox_contract_integrity_valid(
             .and_then(|value| value.get("sha256"))
             .and_then(Value::as_str),
     );
-    let operation_terminal_valid = match receipt.operation_status.as_str() {
-        "completed" => {
+    let operation_terminal_valid = match (
+        receipt.financial_terminal_contract_version,
+        receipt.operation_status.as_str(),
+    ) {
+        (RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION, "completed") => {
+            receipt.billing_action == "settle"
+                && response_status == Some(200)
+                && receipt.client_response_status == Some(200)
+                && receipt.client_replay_status == Some(200)
+                && response_code.is_none()
+                && result.is_some_and(|result| {
+                    relay_container_terminal_outbox_result_integrity_valid(
+                        result,
+                        &receipt.operation_id,
+                        receipt.owner_generation,
+                    )
+                })
+        }
+        (RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION, "failed") => {
+            receipt.billing_action == "refund"
+                && response_status == Some(422)
+                && receipt.client_response_status == Some(422)
+                && response_code == receipt.provider_response_code.as_deref()
+                && response_code.is_some()
+                && result.is_some_and(Value::is_null)
+        }
+        (1, "completed") => {
             receipt.billing_action == "settle"
                 && response_status
                     .is_some_and(|status| (200..=299).contains(&status) && status != 202)
@@ -6583,7 +7325,7 @@ fn relay_container_terminal_outbox_contract_integrity_valid(
                     )
                 })
         }
-        "failed" => {
+        (1, "failed") => {
             receipt.billing_action == "refund"
                 && response_status.is_some_and(|status| (400..=599).contains(&status))
                 && response_status == receipt.client_response_status
@@ -6592,7 +7334,7 @@ fn relay_container_terminal_outbox_contract_integrity_valid(
                 })
                 && result.is_some_and(Value::is_null)
         }
-        "recovery_required" => {
+        (_, "recovery_required") => {
             receipt.billing_action == "recovery_required"
                 && response_status == Some(202)
                 && response_code.is_some_and(|code| {
@@ -6611,6 +7353,10 @@ fn relay_container_terminal_outbox_contract_integrity_valid(
     };
     operation_terminal_valid
         && provider_usage_binding_valid
+        && relay_container_provider_response_binding_integrity_valid(
+            receipt,
+            contract.get("provider_response_binding"),
+        )
         && contract.get("client_response").is_some_and(|response| {
             relay_container_terminal_outbox_client_response_integrity_valid(receipt, response)
         })
@@ -6789,7 +7535,9 @@ fn relay_container_terminal_outbox_client_response_integrity_valid(
         receipt.client_response_content_type.is_some(),
     ];
     if receipt.billing_action == "recovery_required" {
-        return response.is_null() && response_fields.iter().all(|present| !present);
+        return response.is_null()
+            && receipt.client_response_artifact_sha256.is_none()
+            && response_fields.iter().all(|present| !present);
     }
     let Some(response_object) = response.as_object() else {
         return false;
@@ -6816,16 +7564,43 @@ fn relay_container_terminal_outbox_client_response_integrity_valid(
     else {
         return false;
     };
-    let status_valid = match receipt.billing_action.as_str() {
-        "settle" => (200..=299).contains(&status) && status != 202,
-        "refund" => (400..=599).contains(&status),
+    let status_valid = match (
+        receipt.financial_terminal_contract_version,
+        receipt.billing_action.as_str(),
+    ) {
+        (RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION, "settle") => status == 200,
+        (RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION, "refund") => {
+            (100..=599).contains(&status)
+        }
+        (1, "settle") => (200..=299).contains(&status) && status != 202,
+        (1, "refund") => (400..=599).contains(&status),
         _ => false,
     };
     let expected_key =
         container_client_response_key(&receipt.operation_id, receipt.owner_generation, sha256);
-    response_object.len() == 8
+    let artifact_binding_valid = if receipt.financial_terminal_contract_version
+        == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+    {
+        response
+            .get("artifact_sha256")
+            .and_then(Value::as_str)
+            .is_some_and(|artifact_sha256| {
+                receipt.client_response_artifact_sha256.as_deref() == Some(artifact_sha256)
+                    && validate_relay_container_sha256(
+                        artifact_sha256,
+                        "client response artifact sha256",
+                    )
+                    .is_ok()
+            })
+            && response_object.len() == 9
+    } else {
+        receipt.client_response_artifact_sha256.is_none()
+            && response.get("artifact_sha256").is_none()
+            && response_object.len() == 8
+    };
+    artifact_binding_valid
         && response_fields.iter().all(|present| *present)
-        && receipt.client_response_status == Some(status)
+        && relay_container_effective_client_replay_status(receipt) == Some(status)
         && receipt.client_response_headers_json.as_deref() == Some(headers_json)
         && receipt.client_response_headers_sha256.as_deref() == Some(headers_sha256)
         && receipt.client_response_object_key.as_deref() == Some(object_key)
@@ -6916,13 +7691,19 @@ fn relay_container_terminal_outbox_claimed_integrity_valid(
 }
 
 pub async fn relay_container_terminal_outbox_schema_ready(db: &D1Database) -> worker::Result<bool> {
-    let args = [D1Type::Text(RELAY_CONTAINER_FINANCIAL_TERMINAL_MIGRATION)];
+    let args = [
+        D1Type::Text(RELAY_CONTAINER_FINANCIAL_TERMINAL_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_FINANCIAL_TERMINAL_V2_MIGRATION),
+    ];
     let row = db
         .prepare(
             r#"
             SELECT CASE WHEN
               EXISTS (
                 SELECT 1 FROM d1_migrations WHERE name = ?1
+              )
+              AND EXISTS (
+                SELECT 1 FROM d1_migrations WHERE name = ?2
               )
               AND (
                 SELECT COUNT(1) FROM sqlite_master
@@ -6961,6 +7742,24 @@ pub async fn relay_container_terminal_outbox_schema_ready(db: &D1Database) -> wo
                 WHERE name = 'raw_response_content_type'
                   AND type = 'TEXT'
                   AND "notnull" = 0
+              )
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_table_info('relay_container_terminal_events')
+                WHERE name IN (
+                  'financial_terminal_contract_version',
+                  'client_replay_status',
+                  'provider_response_attempt_generation',
+                  'provider_response_status',
+                  'provider_response_class',
+                  'provider_response_code',
+                  'provider_response_evidence_sha256'
+                )
+              ) = 7
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'relay_container_financial_terminal_v2_guard'
               )
             THEN 1 ELSE 0 END AS count
             "#,
@@ -8220,6 +9019,49 @@ pub async fn relay_container_provider_response_artifact_schema_ready(
         .first::<CountRow>(None)
         .await?;
     Ok(row.map(|row| row.count == 1).unwrap_or(false))
+}
+
+pub async fn relay_container_financial_terminal_v2_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    let args = [D1Type::Text(
+        RELAY_CONTAINER_FINANCIAL_TERMINAL_V2_MIGRATION,
+    )];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(DISTINCT name) AS count
+            FROM d1_migrations
+            WHERE name = ?1
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_table_info('relay_container_terminal_events')
+                WHERE name IN (
+                  'financial_terminal_contract_version',
+                  'client_replay_status',
+                  'provider_response_attempt_generation',
+                  'provider_response_status',
+                  'provider_response_class',
+                  'provider_response_code',
+                  'provider_response_evidence_sha256'
+                )
+              ) = 7
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index'
+                  AND name = 'idx_relay_container_terminal_events_provider_response'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'relay_container_financial_terminal_v2_guard'
+              )
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
 }
 
 pub async fn relay_container_atomic_admission_history_exists(
@@ -23492,6 +24334,8 @@ mod tests {
     ) -> RelayContainerClientResponseRecord<'a> {
         RelayContainerClientResponseRecord {
             status,
+            artifact_sha256:
+                "8888888888888888888888888888888888888888888888888888888888888888",
             headers_json:
                 "{\"cache-control\":\"no-store\",\"content-type\":\"application/json\",\"x-request-id\":\"request-001\"}",
             headers_sha256,
@@ -23500,6 +24344,27 @@ mod tests {
             sha256: "9999999999999999999999999999999999999999999999999999999999999999",
             size: 384,
             content_type: "application/json",
+        }
+    }
+
+    fn relay_container_test_provider_response<'a>(
+        status: &'a str,
+        response_class: &'a str,
+        provider_status: i64,
+        client_status: i64,
+        response_code: Option<&'a str>,
+        response: RelayContainerClientResponseRecord<'a>,
+    ) -> RelayContainerProviderResponseBindingRecord<'a> {
+        RelayContainerProviderResponseBindingRecord {
+            attempt_generation: 1,
+            status,
+            response_class,
+            provider_status,
+            client_status,
+            response_code,
+            provider_response_evidence_sha256:
+                "7777777777777777777777777777777777777777777777777777777777777777",
+            client_response_artifact_sha256: response.artifact_sha256,
         }
     }
 
@@ -23518,6 +24383,7 @@ mod tests {
             operation_from_status: command.expected_operation_status.as_str().to_string(),
             operation_status: command.terminal.status().to_string(),
             terminal_contract_sha256: prepared.terminal_contract_sha256.clone(),
+            financial_terminal_contract_version: prepared.financial_terminal_contract_version,
             billing_action: prepared.billing_action.to_string(),
             billing_owner_generation: command.billing_owner_generation,
             billing_from_status: prepared.billing_from_status.to_string(),
@@ -23532,7 +24398,8 @@ mod tests {
             request_count_delta: prepared.request_count_delta,
             reconciliation_id: operation.reconciliation_id.clone(),
             reconciliation_revision: prepared.reconciliation_revision,
-            client_response_status: response.map(|value| value.status),
+            client_response_status: prepared.event_client_response_status,
+            client_replay_status: prepared.client_replay_status,
             client_response_headers_json: response.map(|value| value.headers_json.to_string()),
             client_response_headers_sha256: response.map(|value| value.headers_sha256.to_string()),
             client_response_object_key: response.map(|value| value.object_key.to_string()),
@@ -23540,9 +24407,16 @@ mod tests {
             client_response_sha256: response.map(|value| value.sha256.to_string()),
             client_response_size: response.map(|value| value.size),
             client_response_content_type: response.map(|value| value.content_type.to_string()),
+            client_response_artifact_sha256: response
+                .map(|value| value.artifact_sha256.to_string()),
             provider_usage_receipt_sha256: prepared.provider_usage_receipt_sha256.clone(),
             provider_result_sha256: prepared.provider_result_sha256.clone(),
             provider_attempt_generation: prepared.provider_attempt_generation,
+            provider_response_attempt_generation: prepared.provider_response_attempt_generation,
+            provider_response_status: prepared.provider_response_status,
+            provider_response_class: prepared.provider_response_class.clone(),
+            provider_response_code: prepared.provider_response_code.clone(),
+            provider_response_evidence_sha256: prepared.provider_response_evidence_sha256.clone(),
             outbox_payload_json: prepared.outbox_payload_json.clone(),
             outbox_payload_sha256: prepared.outbox_payload_sha256.clone(),
             outbox_status: "pending".to_string(),
@@ -24008,6 +24882,14 @@ mod tests {
                     provider_attempt_generation: 1,
                 },
                 client_response: Some(response),
+                provider_response: Some(relay_container_test_provider_response(
+                    "succeeded",
+                    "success",
+                    200,
+                    200,
+                    None,
+                    response,
+                )),
                 audit_payload_json: audit_payload,
                 audit_payload_sha256: &audit_sha256,
                 scheduled_terminalization: None,
@@ -24025,6 +24907,10 @@ mod tests {
             assert_eq!(prepared.request_count_delta, 1);
             let receipt = relay_container_test_financial_receipt(&command, &operation, &prepared);
             assert!(relay_container_financial_receipt_integrity_valid(&receipt));
+            assert_eq!(
+                receipt.client_response_artifact_sha256.as_deref(),
+                Some(response.artifact_sha256)
+            );
             let replay_manifest =
                 crate::container_reconciliation::client_response_manifest_from_receipt(&receipt)
                     .unwrap()
@@ -24033,6 +24919,11 @@ mod tests {
             assert_eq!(replay_manifest.body.object_key, response_key);
             assert_eq!(replay_manifest.body.size, 384);
             let mut tampered = receipt;
+            tampered.client_response_artifact_sha256 = None;
+            assert!(!relay_container_financial_receipt_integrity_valid(
+                &tampered
+            ));
+            tampered.client_response_artifact_sha256 = Some(response.artifact_sha256.to_string());
             tampered.billing_current_reason = "tampered".to_string();
             assert!(!relay_container_financial_receipt_integrity_valid(
                 &tampered
@@ -24312,9 +25203,9 @@ mod tests {
         reservation.request_accounted = 0;
         reservation.lease_expires_at = operation.owner_lease_expires_at;
 
-        for (request_accounting, expected_request_delta) in [
-            (RelayBillingRequestAccounting::Skip, 0),
-            (RelayBillingRequestAccounting::Account, 1),
+        for request_accounting in [
+            RelayBillingRequestAccounting::Skip,
+            RelayBillingRequestAccounting::Account,
         ] {
             let command = RelayContainerFinancialTerminalCommand {
                 reservation_key: &operation.reservation_key,
@@ -24324,28 +25215,42 @@ mod tests {
                 admission_sha256: &operation.admission_sha256,
                 billing_owner_generation: reservation.owner_generation,
                 terminal: RelayContainerOperationTerminalRecord::Failed {
-                    response_status: 503,
-                    response_code: "container_definite_rejection",
+                    response_status: 422,
+                    response_code: "provider_http_error",
                 },
                 action: RelayContainerFinancialTerminalAction::Refund {
-                    finalization_reason: "container_definite_rejection",
+                    finalization_reason: "provider_http_error",
                     request_accounting,
                 },
                 client_response: Some(response),
+                provider_response: Some(relay_container_test_provider_response(
+                    "interpreted_reject",
+                    "http_error",
+                    503,
+                    503,
+                    Some("provider_http_error"),
+                    response,
+                )),
                 audit_payload_json: audit_payload,
                 audit_payload_sha256: &audit_sha256,
                 scheduled_terminalization: None,
                 committed_at: 150,
             };
             let prepared =
-                prepare_relay_container_financial_terminal(&command, &operation, &reservation)
-                    .unwrap();
+                prepare_relay_container_financial_terminal(&command, &operation, &reservation);
+            if request_accounting == RelayBillingRequestAccounting::Account {
+                assert!(prepared.is_err());
+                continue;
+            }
+            let prepared = prepared.unwrap();
             assert_eq!(prepared.billing_action, "refund");
             assert_eq!(prepared.billing_final_quota, None);
             assert_eq!(prepared.user_quota_delta, 75);
             assert_eq!(prepared.token_quota_delta, 0);
-            assert_eq!(prepared.request_count_delta, expected_request_delta);
-            assert_eq!(prepared.billing_request_accounted, expected_request_delta);
+            assert_eq!(prepared.request_count_delta, 0);
+            assert_eq!(prepared.billing_request_accounted, 0);
+            assert_eq!(prepared.event_client_response_status, Some(422));
+            assert_eq!(prepared.client_replay_status, Some(503));
         }
     }
 
@@ -24375,6 +25280,7 @@ mod tests {
                 finalization_reason: "container_execution_ambiguous",
             },
             client_response: None,
+            provider_response: None,
             audit_payload_json: audit_payload,
             audit_payload_sha256: &audit_sha256,
             scheduled_terminalization: None,
@@ -24420,6 +25326,14 @@ mod tests {
                 provider_attempt_generation: 1,
             },
             client_response: Some(response),
+            provider_response: Some(relay_container_test_provider_response(
+                "succeeded",
+                "success",
+                200,
+                200,
+                None,
+                response,
+            )),
             audit_payload_json: audit_payload,
             audit_payload_sha256: &audit_sha256,
             scheduled_terminalization: None,
@@ -24455,6 +25369,8 @@ mod tests {
         assert!(event_insert.contains("predecessor.reconciliation_revision = 1"));
         assert!(event_insert.contains("predecessor.billing_owner_generation + 1 = ?9"));
         assert!(event_insert.contains("predecessor.created_at <= ?33"));
+        assert!(event_insert.contains("client_response_artifact_sha256"));
+        assert!(event_insert.contains("?39, ?40"));
 
         let candidate_start = source
             .find("pub async fn relay_container_terminal_outbox_due_candidates")
@@ -24603,6 +25519,7 @@ mod tests {
                 finalization_reason: "container_execution_ambiguous",
             },
             client_response: None,
+            provider_response: None,
             audit_payload_json: audit_payload,
             audit_payload_sha256: &audit_sha256,
             scheduled_terminalization: None,
@@ -24647,6 +25564,14 @@ mod tests {
                 provider_attempt_generation: 1,
             },
             client_response: Some(response),
+            provider_response: Some(relay_container_test_provider_response(
+                "succeeded",
+                "success",
+                200,
+                200,
+                None,
+                response,
+            )),
             audit_payload_json: audit_payload,
             audit_payload_sha256: &audit_sha256,
             scheduled_terminalization: None,
@@ -24798,6 +25723,7 @@ mod tests {
         );
         let response = RelayContainerClientResponseRecord {
             status: 200,
+            artifact_sha256: "8888888888888888888888888888888888888888888888888888888888888888",
             headers_json: headers,
             headers_sha256: &headers_sha256,
             object_key: response_key,
@@ -24828,6 +25754,7 @@ mod tests {
                 provider_attempt_generation: 1,
             },
             client_response: Some(response),
+            provider_response: None,
             audit_payload_json: "{\"action\":\"container_terminal\"}",
             audit_payload_sha256:
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

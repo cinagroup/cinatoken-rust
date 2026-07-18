@@ -782,6 +782,13 @@ REQUIRED_COLUMNS = {
         "provider_result_sha256",
         "provider_attempt_generation",
         "client_response_artifact_sha256",
+        "financial_terminal_contract_version",
+        "client_replay_status",
+        "provider_response_attempt_generation",
+        "provider_response_status",
+        "provider_response_class",
+        "provider_response_code",
+        "provider_response_evidence_sha256",
     },
     "relay_container_terminal_outbox_state": {
         "billing_event_id",
@@ -1096,6 +1103,7 @@ REQUIRED_INDEXES = {
         "idx_relay_container_terminal_events_reconciliation_identity": True,
         "idx_relay_container_terminal_events_client_response_object_identity": False,
         "idx_relay_container_terminal_events_response_artifact": True,
+        "idx_relay_container_terminal_events_provider_response": True,
     },
     "relay_container_terminal_outbox_state": {
         "idx_relay_container_terminal_outbox_pending": False,
@@ -1188,6 +1196,8 @@ def main() -> int:
     relay_container_scheduled_terminalization_rollout_verified = False
     relay_container_response_artifacts_verified = False
     relay_container_response_artifacts_rollout_verified = False
+    relay_container_financial_terminal_v2_verified = False
+    relay_container_financial_terminal_v2_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -1231,6 +1241,8 @@ def main() -> int:
         relay_container_scheduled_terminalization_rollout_verified = True
         verify_relay_container_response_artifacts_rollout(schema_paths)
         relay_container_response_artifacts_rollout_verified = True
+        verify_relay_container_financial_terminal_v2_rollout(schema_paths)
+        relay_container_financial_terminal_v2_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -1290,8 +1302,38 @@ def main() -> int:
         verify_relay_container_scheduled_terminalization(scheduled_container_conn)
         relay_container_scheduled_terminalization_verified = True
         scheduled_container_conn.close()
-        verify_relay_container_response_artifacts(conn)
+        response_artifact_conn = sqlite3.connect(":memory:")
+        for schema_path in schema_paths:
+            if schema_path.name == "0053_relay_container_financial_terminal_v2.sql":
+                break
+            response_artifact_conn.executescript(
+                schema_path.read_text(encoding="utf-8")
+            )
+        verify_relay_container_response_artifacts(response_artifact_conn)
+        response_artifact_conn.close()
         relay_container_response_artifacts_verified = True
+        financial_terminal_v2_conn = sqlite3.connect(":memory:")
+        financial_terminal_v2_path = next(
+            path
+            for path in schema_paths
+            if path.name == "0053_relay_container_financial_terminal_v2.sql"
+        )
+        for schema_path in schema_paths:
+            if schema_path == financial_terminal_v2_path:
+                break
+            financial_terminal_v2_conn.executescript(
+                schema_path.read_text(encoding="utf-8")
+            )
+        financial_terminal_v2_fixtures = verify_relay_container_response_artifacts(
+            financial_terminal_v2_conn, terminalize_success=False
+        )
+        verify_relay_container_financial_terminal_v2(
+            financial_terminal_v2_conn,
+            financial_terminal_v2_path,
+            financial_terminal_v2_fixtures,
+        )
+        financial_terminal_v2_conn.close()
+        relay_container_financial_terminal_v2_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
@@ -1395,6 +1437,10 @@ def main() -> int:
         message += " + 0052 immutable provider/client response artifacts"
     if relay_container_response_artifacts_rollout_verified:
         message += " + 0052 drained response-artifact rollout"
+    if relay_container_financial_terminal_v2_verified:
+        message += " + 0053 P3-bound financial terminal v2 authority"
+    if relay_container_financial_terminal_v2_rollout_verified:
+        message += " + 0053 drained financial-terminal v2 rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -5344,7 +5390,9 @@ def verify_relay_container_scheduled_terminalization(
     fixture.close()
 
 
-def verify_relay_container_response_artifacts(conn: sqlite3.Connection) -> None:
+def verify_relay_container_response_artifacts(
+    conn: sqlite3.Connection, *, terminalize_success: bool = True
+) -> dict[str, object]:
     required_triggers = (
         "relay_container_response_artifact_operation_insert_guard",
         "relay_container_response_artifact_operation_contract_guard",
@@ -6757,43 +6805,44 @@ def verify_relay_container_response_artifacts(conn: sqlite3.Connection) -> None:
         "relay container terminal event response artifact mismatch",
     )
 
-    success_terminal = terminal_values("success", success_receipt, clients["success"])
-    conn.execute(terminal_insert_sql, success_terminal)
-    conn.execute(
-        "INSERT INTO relay_container_terminal_outbox_state ("
-        "billing_event_id, status, delivery_generation, delivery_attempt_count, "
-        "lease_expires_at, available_at, delivered_at, last_error, "
-        "created_at, updated_at) VALUES (?, 'pending', 0, 0, 0, ?, 0, '', ?, ?)",
-        (
-            success_terminal["billing_event_id"],
-            success_terminal["event_created_at"],
-            success_terminal["event_created_at"],
-            success_terminal["event_created_at"],
-        ),
-    )
-    conn.execute(
-        """
-        UPDATE relay_container_operations
-        SET status = 'completed', response_status = 200, response_code = NULL,
-            result_object_key = ?, result_object_version = ?, result_sha256 = ?,
-            result_size = ?, result_content_type = 'application/json', updated_at = ?
-        WHERE operation_id = ?
-        """,
-        (
-            success_receipt["result_object_key"],
-            success_receipt["result_object_version"],
-            success_receipt["raw_response_sha256"],
-            success_receipt["raw_response_size"],
-            success_terminal["event_created_at"],
-            success_terminal["operation_id"],
-        ),
-    )
-    if conn.execute(
-        "SELECT status, response_status FROM relay_container_operations "
-        "WHERE operation_id = ?",
-        (success_terminal["operation_id"],),
-    ).fetchone() != ("completed", 200):
-        raise SystemExit("0052 artifact-backed success did not complete exactly")
+    if terminalize_success:
+        success_terminal = terminal_values("success", success_receipt, clients["success"])
+        conn.execute(terminal_insert_sql, success_terminal)
+        conn.execute(
+            "INSERT INTO relay_container_terminal_outbox_state ("
+            "billing_event_id, status, delivery_generation, delivery_attempt_count, "
+            "lease_expires_at, available_at, delivered_at, last_error, "
+            "created_at, updated_at) VALUES (?, 'pending', 0, 0, 0, ?, 0, '', ?, ?)",
+            (
+                success_terminal["billing_event_id"],
+                success_terminal["event_created_at"],
+                success_terminal["event_created_at"],
+                success_terminal["event_created_at"],
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE relay_container_operations
+            SET status = 'completed', response_status = 200, response_code = NULL,
+                result_object_key = ?, result_object_version = ?, result_sha256 = ?,
+                result_size = ?, result_content_type = 'application/json', updated_at = ?
+            WHERE operation_id = ?
+            """,
+            (
+                success_receipt["result_object_key"],
+                success_receipt["result_object_version"],
+                success_receipt["raw_response_sha256"],
+                success_receipt["raw_response_size"],
+                success_terminal["event_created_at"],
+                success_terminal["operation_id"],
+            ),
+        )
+        if conn.execute(
+            "SELECT status, response_status FROM relay_container_operations "
+            "WHERE operation_id = ?",
+            (success_terminal["operation_id"],),
+        ).fetchone() != ("completed", 200):
+            raise SystemExit("0052 artifact-backed success did not complete exactly")
 
     cursor_insert_sql = """
         INSERT INTO relay_container_response_artifact_inventory_cursors (
@@ -7297,6 +7346,611 @@ def verify_relay_container_response_artifacts(conn: sqlite3.Connection) -> None:
         raise SystemExit(
             f"0052 inventory identity ledgers did not converge exactly: {inventory_counts}"
         )
+    return {
+        "authorities": authorities,
+        "raw_by_label": raw_by_label,
+        "clients": clients,
+        "success_receipt": success_receipt,
+    }
+
+
+def verify_relay_container_financial_terminal_v2(
+    conn: sqlite3.Connection,
+    migration_path: Path,
+    fixtures: dict[str, object],
+) -> None:
+    fixture_maps = ("authorities", "raw_by_label", "clients")
+    for fixture_name in fixture_maps:
+        if not isinstance(fixtures.get(fixture_name), dict):
+            raise SystemExit(f"0053 fixture map is missing: {fixture_name}")
+    if not isinstance(fixtures.get("success_receipt"), dict):
+        raise SystemExit("0053 success receipt fixture is missing")
+
+    authorities = fixtures["authorities"]
+    raw_by_label = fixtures["raw_by_label"]
+    clients = fixtures["clients"]
+    success_receipt = fixtures["success_receipt"]
+    required_labels = {"success", "typed", "http", "invalid"}
+    for fixture_name, fixture in (
+        ("authorities", authorities),
+        ("raw evidence", raw_by_label),
+        ("client artifacts", clients),
+    ):
+        missing = required_labels - set(fixture)
+        if missing:
+            raise SystemExit(
+                f"0053 {fixture_name} fixtures are incomplete: {sorted(missing)}"
+            )
+
+    def digest(label: str) -> str:
+        return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+    source_operation_id = str(authorities["success"]["operation_id"])
+    source_reservation = conn.execute(
+        "SELECT user_id, token_id, model_name, endpoint_path, expr_hash, "
+        "billing_kind, billing_snapshot_json, candidate_group_count, "
+        "reservation_strategy, pre_consumed_quota, channel_id, selected_group "
+        "FROM relay_billing_reservations WHERE reservation_key = ?",
+        (source_operation_id,),
+    ).fetchone()
+    if source_reservation is None:
+        raise SystemExit("0053 non-owner compatibility source reservation is missing")
+
+    def insert_non_owner_operation(label: str, created_at: int) -> dict[str, object]:
+        operation_id = f"0053-{label}"
+        owner_generation = 3
+        execution_deadline_at = created_at + 300
+        owner_lease_expires_at = created_at + 600
+        input_sha256 = digest(f"0053-input:{label}")
+        reconciliation_id = digest(f"0053-reconciliation:{label}")
+        conn.execute(
+            """
+            INSERT INTO relay_billing_reservations (
+              reservation_key, user_id, token_id, model_name, endpoint_path,
+              request_id_hash, expr_hash, billing_kind, billing_snapshot_json,
+              candidate_group_count, reservation_strategy, pre_consumed_quota,
+              status, channel_id, selected_group, selected_at,
+              lease_expires_at, owner_generation, owner_deadline_at,
+              owner_lease_renewed_at, created_at, updated_at
+            ) VALUES (
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?,
+              ?, ?, ?, 0, ?, ?
+            )
+            """,
+            (
+                operation_id,
+                source_reservation[0],
+                source_reservation[1],
+                source_reservation[2],
+                source_reservation[3],
+                digest(f"0053-request-id:{label}"),
+                source_reservation[4],
+                source_reservation[5],
+                source_reservation[6],
+                source_reservation[7],
+                source_reservation[8],
+                source_reservation[9],
+                source_reservation[10],
+                source_reservation[11],
+                created_at,
+                owner_lease_expires_at,
+                owner_generation,
+                owner_lease_expires_at,
+                created_at,
+                created_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO relay_container_operations (
+              reservation_key, operation_id, owner_generation,
+              owner_lease_expires_at, channel_id, selected_group,
+              operation_kind, provider_operation_id, admission_sha256,
+              protocol_version, shard_contract_version,
+              ring_generation, shard_count, shard_index, instance_name,
+              execution_deadline_at, input_mode, input_object_key,
+              input_object_version, input_sha256, input_size,
+              input_content_type, trace_id,
+              client_idempotency_hmac_sha256, client_request_sha256,
+              reconciliation_id, response_artifact_contract,
+              status, created_at, updated_at
+            ) VALUES (
+              ?, ?, 3, ?, ?, ?, 'compatibility_probe', ?, ?, 1, 1,
+              1, 8, 2, 'cinatoken-relay-shard-v1-0002',
+              ?, 'r2', ?, ?, ?, 0, 'application/json', ?, ?, ?, ?,
+              NULL, 'prepared', ?, ?
+            )
+            """,
+            (
+                operation_id,
+                operation_id,
+                owner_lease_expires_at,
+                source_reservation[10],
+                source_reservation[11],
+                f"provider:{operation_id}",
+                digest(f"0053-admission:{label}"),
+                execution_deadline_at,
+                (
+                    f"container-inputs/v1/{operation_id}/"
+                    f"{owner_generation}/{input_sha256}"
+                ),
+                f"0053-input-version-{label}",
+                input_sha256,
+                f"trace:0053:{label}",
+                digest(f"0053-client:{label}"),
+                digest(f"0053-client-request:{label}"),
+                reconciliation_id,
+                created_at,
+                created_at,
+            ),
+        )
+        return {
+            "operation_id": operation_id,
+            "owner_generation": owner_generation,
+            "reconciliation_id": reconciliation_id,
+            "created_at": created_at,
+        }
+
+    history = insert_non_owner_operation("v1-history", 2_100_100_000)
+    non_owner = insert_non_owner_operation("non-owner-boundary", 2_100_101_000)
+
+    historical_event_id = digest("0053-v1-history-event")
+    historical_created_at = int(history["created_at"]) + 20
+    conn.execute(
+        """
+        INSERT INTO relay_container_terminal_events (
+          billing_event_id, reservation_key, operation_id,
+          owner_generation, operation_from_status, operation_status,
+          terminal_contract_sha256,
+          billing_action, billing_owner_generation, billing_from_status,
+          billing_final_quota, billing_request_accounted, billing_reason,
+          pre_consumed_quota, user_quota_delta, token_quota_delta,
+          user_used_quota_delta, channel_used_quota_delta,
+          request_count_delta, reconciliation_id, reconciliation_revision,
+          client_response_status, client_response_headers_json,
+          client_response_headers_sha256, client_response_object_key,
+          client_response_object_version, client_response_sha256,
+          client_response_size, client_response_content_type,
+          outbox_schema_version, outbox_payload_json,
+          outbox_payload_sha256, created_at
+        ) VALUES (
+          ?, ?, ?, 3, 'prepared', 'recovery_required', ?,
+          'recovery_required', 3, 'reserved', NULL, 0,
+          '0053_v1_history', 1, 0, 0, 0, 0, 0, ?, 1,
+          NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+          1, '{}', ?, ?
+        )
+        """,
+        (
+            historical_event_id,
+            history["operation_id"],
+            history["operation_id"],
+            digest("0053-v1-history-contract"),
+            history["reconciliation_id"],
+            digest("0053-v1-history-outbox"),
+            historical_created_at,
+        ),
+    )
+
+    def insert_outbox(billing_event_id: str, created_at: int) -> None:
+        conn.execute(
+            "INSERT INTO relay_container_terminal_outbox_state ("
+            "billing_event_id, status, delivery_generation, delivery_attempt_count, "
+            "lease_expires_at, available_at, delivered_at, last_error, "
+            "created_at, updated_at) VALUES (?, 'pending', 0, 0, 0, ?, 0, '', ?, ?)",
+            (billing_event_id, created_at, created_at, created_at),
+        )
+
+    insert_outbox(historical_event_id, historical_created_at)
+    conn.execute(
+        "UPDATE relay_container_operations SET status = 'recovery_required', "
+        "response_status = 202, response_code = 'compatibility_recovery', "
+        "updated_at = ? WHERE operation_id = ?",
+        (historical_created_at, history["operation_id"]),
+    )
+    history_before = conn.execute(
+        "SELECT operation_id, owner_generation, operation_status, billing_action, "
+        "terminal_contract_sha256, outbox_payload_sha256, created_at "
+        "FROM relay_container_terminal_events WHERE billing_event_id = ?",
+        (historical_event_id,),
+    ).fetchone()
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_terminal_events "
+        "WHERE owner_generation = 2"
+    ).fetchone() != (0,):
+        raise SystemExit("0053 behavior fixture was not drained before migration")
+
+    conn.executescript(migration_path.read_text(encoding="utf-8"))
+
+    history_after = conn.execute(
+        "SELECT operation_id, owner_generation, operation_status, billing_action, "
+        "terminal_contract_sha256, outbox_payload_sha256, created_at "
+        "FROM relay_container_terminal_events WHERE billing_event_id = ?",
+        (historical_event_id,),
+    ).fetchone()
+    if history_after != history_before:
+        raise SystemExit("0053 migration rewrote v1 terminal history")
+    history_v2_columns = conn.execute(
+        "SELECT financial_terminal_contract_version, client_replay_status, "
+        "provider_response_attempt_generation, provider_response_status, "
+        "provider_response_class, provider_response_code, "
+        "provider_response_evidence_sha256 "
+        "FROM relay_container_terminal_events WHERE billing_event_id = ?",
+        (historical_event_id,),
+    ).fetchone()
+    if history_v2_columns != (1, None, None, None, None, None, None):
+        raise SystemExit(
+            f"0053 v1 terminal history defaults changed: {history_v2_columns}"
+        )
+
+    recovery_insert_sql = """
+        INSERT INTO relay_container_terminal_events (
+          billing_event_id, reservation_key, operation_id,
+          owner_generation, operation_from_status, operation_status,
+          terminal_contract_sha256,
+          billing_action, billing_owner_generation, billing_from_status,
+          billing_final_quota, billing_request_accounted, billing_reason,
+          pre_consumed_quota, user_quota_delta, token_quota_delta,
+          user_used_quota_delta, channel_used_quota_delta,
+          request_count_delta, reconciliation_id, reconciliation_revision,
+          client_response_status, client_response_headers_json,
+          client_response_headers_sha256, client_response_object_key,
+          client_response_object_version, client_response_sha256,
+          client_response_size, client_response_content_type,
+          outbox_schema_version, outbox_payload_json,
+          outbox_payload_sha256, created_at,
+          financial_terminal_contract_version, client_replay_status,
+          provider_response_attempt_generation, provider_response_status,
+          provider_response_class, provider_response_code,
+          provider_response_evidence_sha256, client_response_artifact_sha256
+        ) VALUES (
+          :billing_event_id, :operation_id, :operation_id,
+          :owner_generation, :operation_from_status, 'recovery_required',
+          :terminal_contract_sha256,
+          'recovery_required', :owner_generation, 'reserved',
+          NULL, 0, :billing_reason, 1, 0, 0, 0, 0, 0,
+          :reconciliation_id, 1,
+          NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+          1, '{}', :outbox_payload_sha256, :event_created_at,
+          :financial_terminal_contract_version, NULL, NULL,
+          :provider_response_status, NULL, NULL, NULL, NULL
+        )
+    """
+
+    non_owner_recovery = {
+        **non_owner,
+        "billing_event_id": digest("0053-non-owner-boundary-event"),
+        "operation_from_status": "prepared",
+        "terminal_contract_sha256": digest("0053-non-owner-boundary-contract"),
+        "billing_reason": "0053_non_owner_boundary",
+        "outbox_payload_sha256": digest("0053-non-owner-boundary-outbox"),
+        "event_created_at": int(non_owner["created_at"]) + 20,
+        "financial_terminal_contract_version": 1,
+        "provider_response_status": None,
+    }
+    expect_integrity_error(
+        lambda: conn.execute(
+            recovery_insert_sql,
+            {**non_owner_recovery, "financial_terminal_contract_version": 2},
+        ),
+        "0053 allowed a non-owner2 terminal to claim contract v2",
+        "relay container financial terminal v2 binding mismatch",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            recovery_insert_sql,
+            {**non_owner_recovery, "provider_response_status": 200},
+        ),
+        "0053 allowed non-owner2 terminal response evidence",
+        "relay container financial terminal v2 binding mismatch",
+    )
+    conn.execute(recovery_insert_sql, non_owner_recovery)
+    insert_outbox(
+        str(non_owner_recovery["billing_event_id"]),
+        int(non_owner_recovery["event_created_at"]),
+    )
+    conn.execute(
+        "UPDATE relay_container_operations SET status = 'recovery_required', "
+        "response_status = 202, response_code = 'compatibility_recovery', "
+        "updated_at = ? WHERE operation_id = ?",
+        (non_owner_recovery["event_created_at"], non_owner["operation_id"]),
+    )
+    if conn.execute(
+        "SELECT status, response_status, response_code "
+        "FROM relay_container_operations WHERE operation_id = ?",
+        (non_owner["operation_id"],),
+    ).fetchone() != ("recovery_required", 202, "compatibility_recovery"):
+        raise SystemExit("0053 non-owner2 v1 terminal did not converge")
+
+    p3_recovery = {
+        **authorities["replace-raw"],
+        "billing_event_id": digest("0053-p3-evidence-recovery-event"),
+        "owner_generation": 2,
+        "operation_from_status": "dispatched",
+        "terminal_contract_sha256": digest("0053-p3-evidence-recovery-contract"),
+        "billing_reason": "0053_p3_evidence_recovery",
+        "outbox_payload_sha256": digest("0053-p3-evidence-recovery-outbox"),
+        "event_created_at": int(authorities["replace-raw"]["created_at"]) + 20,
+        "financial_terminal_contract_version": 2,
+        "provider_response_status": None,
+    }
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_provider_response_evidence "
+        "WHERE operation_id = ? AND owner_generation = 2",
+        (p3_recovery["operation_id"],),
+    ).fetchone() != (1,):
+        raise SystemExit("0053 P3 recovery negative lacks provider evidence")
+    expect_integrity_error(
+        lambda: conn.execute(recovery_insert_sql, p3_recovery),
+        "0053 allowed recovery_required after P3 provider evidence",
+        "relay container terminal event response artifact mismatch",
+    )
+
+    terminal_insert_sql = """
+        INSERT INTO relay_container_terminal_events (
+          billing_event_id, reservation_key, operation_id,
+          owner_generation, operation_from_status, operation_status,
+          terminal_contract_sha256,
+          billing_action, billing_owner_generation, billing_from_status,
+          billing_final_quota, billing_request_accounted, billing_reason,
+          pre_consumed_quota, user_quota_delta, token_quota_delta,
+          user_used_quota_delta, channel_used_quota_delta,
+          request_count_delta, reconciliation_id, reconciliation_revision,
+          client_response_status, client_response_headers_json,
+          client_response_headers_sha256, client_response_object_key,
+          client_response_object_version, client_response_sha256,
+          client_response_size, client_response_content_type,
+          outbox_schema_version, outbox_payload_json,
+          outbox_payload_sha256, created_at,
+          provider_usage_receipt_sha256, provider_result_sha256,
+          provider_attempt_generation, client_response_artifact_sha256,
+          financial_terminal_contract_version, client_replay_status,
+          provider_response_attempt_generation, provider_response_status,
+          provider_response_class, provider_response_code,
+          provider_response_evidence_sha256
+        ) VALUES (
+          :billing_event_id, :operation_id, :operation_id,
+          2, 'dispatched', :operation_status, :terminal_contract_sha256,
+          :billing_action, 2, 'reserved',
+          :billing_final_quota, :billing_request_accounted, :billing_reason,
+          1, :user_quota_delta, :token_quota_delta,
+          :user_used_quota_delta, :channel_used_quota_delta, :request_count_delta,
+          :reconciliation_id, 1,
+          :client_response_status, :client_response_headers_json,
+          :client_response_headers_sha256, :client_response_object_key,
+          :client_response_object_version, :client_response_sha256,
+          :client_response_size, :client_response_content_type,
+          1, '{}', :outbox_payload_sha256, :event_created_at,
+          :provider_usage_receipt_sha256, :provider_result_sha256,
+          :provider_attempt_generation, :client_response_artifact_sha256,
+          :financial_terminal_contract_version, :client_replay_status,
+          :provider_response_attempt_generation, :provider_response_status,
+          :provider_response_class, :provider_response_code,
+          :provider_response_evidence_sha256
+        )
+    """
+
+    response_codes = {
+        "success": None,
+        "typed": "provider_typed_error",
+        "http": "provider_http_error",
+        "invalid": "provider_invalid_body",
+    }
+
+    def terminal_values(label: str) -> dict[str, object]:
+        authority = authorities[label]
+        raw = raw_by_label[label]
+        client = clients[label]
+        is_success = label == "success"
+        client_sha256 = str(client["client_response_sha256"])
+        return {
+            **authority,
+            "billing_event_id": digest(f"0053-terminal:{label}"),
+            "operation_status": "completed" if is_success else "failed",
+            "terminal_contract_sha256": digest(f"0053-terminal-contract:{label}"),
+            "billing_action": "settle" if is_success else "refund",
+            "billing_final_quota": 1 if is_success else None,
+            "billing_request_accounted": 1 if is_success else 0,
+            "billing_reason": "0053_financial_terminal_v2",
+            "user_quota_delta": 0 if is_success else 1,
+            "token_quota_delta": 0 if is_success else 1,
+            "user_used_quota_delta": 1 if is_success else 0,
+            "channel_used_quota_delta": 1 if is_success else 0,
+            "request_count_delta": 1 if is_success else 0,
+            "client_response_status": 200 if is_success else 422,
+            "client_response_headers_json": client[
+                "client_response_headers_json"
+            ],
+            "client_response_headers_sha256": client[
+                "client_response_headers_sha256"
+            ],
+            "client_response_object_key": (
+                f"container-client-responses/v1/{authority['operation_id']}/"
+                f"2/{client_sha256}"
+            ),
+            "client_response_object_version": f"0053-terminal-{label}-v1",
+            "client_response_sha256": client_sha256,
+            "client_response_size": client["client_response_size"],
+            "client_response_content_type": "application/json",
+            "outbox_payload_sha256": digest(f"0053-outbox:{label}"),
+            "event_created_at": int(authority["created_at"]) + 20,
+            "provider_usage_receipt_sha256": (
+                success_receipt["usage_receipt_sha256"] if is_success else None
+            ),
+            "provider_result_sha256": (
+                success_receipt["raw_response_sha256"] if is_success else None
+            ),
+            "provider_attempt_generation": 1 if is_success else None,
+            "client_response_artifact_sha256": client[
+                "client_response_artifact_sha256"
+            ],
+            "financial_terminal_contract_version": 2,
+            "client_replay_status": client["client_response_status"],
+            "provider_response_attempt_generation": 1,
+            "provider_response_status": raw["raw_response_status"],
+            "provider_response_class": client["response_class"],
+            "provider_response_code": response_codes[label],
+            "provider_response_evidence_sha256": raw[
+                "provider_response_evidence_sha256"
+            ],
+        }
+
+    positive_values = {label: terminal_values(label) for label in required_labels}
+    negative_cases = (
+        (
+            "contract version",
+            {**positive_values["success"], "financial_terminal_contract_version": 1},
+        ),
+        (
+            "replay status",
+            {**positive_values["success"], "client_replay_status": 201},
+        ),
+        (
+            "response class",
+            {**positive_values["success"], "provider_response_class": "typed_error"},
+        ),
+        (
+            "response code",
+            {
+                **positive_values["typed"],
+                "provider_response_code": "provider_http_error",
+            },
+        ),
+        (
+            "provider evidence",
+            {
+                **positive_values["success"],
+                "provider_response_evidence_sha256": raw_by_label["typed"][
+                    "provider_response_evidence_sha256"
+                ],
+            },
+        ),
+        (
+            "client artifact",
+            {
+                **positive_values["success"],
+                "client_response_artifact_sha256": clients["typed"][
+                    "client_response_artifact_sha256"
+                ],
+            },
+        ),
+        (
+            "interpreted rejection request accounting",
+            {
+                **positive_values["typed"],
+                "billing_request_accounted": 1,
+                "request_count_delta": 1,
+            },
+        ),
+    )
+    for context, candidate in negative_cases:
+        expect_integrity_error(
+            lambda candidate=candidate: conn.execute(terminal_insert_sql, candidate),
+            f"0053 accepted terminal v2 with incorrect {context}",
+        )
+        if conn.execute(
+            "SELECT COUNT(*) FROM relay_container_terminal_events "
+            "WHERE billing_event_id = ?",
+            (candidate["billing_event_id"],),
+        ).fetchone() != (0,):
+            raise SystemExit(f"0053 failed {context} insert left a terminal row")
+
+    expected_operations = []
+    for label in ("success", "typed", "http", "invalid"):
+        values = positive_values[label]
+        conn.execute(terminal_insert_sql, values)
+        insert_outbox(
+            str(values["billing_event_id"]), int(values["event_created_at"])
+        )
+        if label == "success":
+            conn.execute(
+                """
+                UPDATE relay_container_operations
+                SET status = 'completed', response_status = 200, response_code = NULL,
+                    result_object_key = ?, result_object_version = ?, result_sha256 = ?,
+                    result_size = ?, result_content_type = 'application/json',
+                    updated_at = ?
+                WHERE operation_id = ?
+                """,
+                (
+                    success_receipt["result_object_key"],
+                    success_receipt["result_object_version"],
+                    success_receipt["raw_response_sha256"],
+                    success_receipt["raw_response_size"],
+                    values["event_created_at"],
+                    values["operation_id"],
+                ),
+            )
+            expected_operation = (str(values["operation_id"]), "completed", 200, None)
+        else:
+            conn.execute(
+                "UPDATE relay_container_operations SET status = 'failed', "
+                "response_status = 422, response_code = ?, updated_at = ? "
+                "WHERE operation_id = ?",
+                (
+                    values["provider_response_code"],
+                    values["event_created_at"],
+                    values["operation_id"],
+                ),
+            )
+            expected_operation = (
+                str(values["operation_id"]),
+                "failed",
+                422,
+                str(values["provider_response_code"]),
+            )
+        expected_operations.append(expected_operation)
+
+        terminal = conn.execute(
+            "SELECT operation_status, billing_action, "
+            "financial_terminal_contract_version, billing_request_accounted, "
+            "request_count_delta, client_response_status, "
+            "client_replay_status, provider_response_attempt_generation, "
+            "provider_response_status, provider_response_class, "
+            "provider_response_code, provider_response_evidence_sha256, "
+            "client_response_artifact_sha256, provider_usage_receipt_sha256, "
+            "provider_result_sha256, provider_attempt_generation "
+            "FROM relay_container_terminal_events WHERE billing_event_id = ?",
+            (values["billing_event_id"],),
+        ).fetchone()
+        expected_terminal = (
+            values["operation_status"],
+            values["billing_action"],
+            2,
+            values["billing_request_accounted"],
+            values["request_count_delta"],
+            values["client_response_status"],
+            values["client_replay_status"],
+            1,
+            values["provider_response_status"],
+            values["provider_response_class"],
+            values["provider_response_code"],
+            values["provider_response_evidence_sha256"],
+            values["client_response_artifact_sha256"],
+            values["provider_usage_receipt_sha256"],
+            values["provider_result_sha256"],
+            values["provider_attempt_generation"],
+        )
+        if terminal != expected_terminal:
+            raise SystemExit(f"0053 {label} terminal tuple differs: {terminal}")
+
+    operation_ids = [row[0] for row in expected_operations]
+    placeholders = ", ".join("?" for _ in operation_ids)
+    actual_operations = conn.execute(
+        "SELECT operation_id, status, response_status, response_code "
+        f"FROM relay_container_operations WHERE operation_id IN ({placeholders}) "
+        "ORDER BY operation_id",
+        operation_ids,
+    ).fetchall()
+    if actual_operations != sorted(expected_operations):
+        raise SystemExit(
+            f"0053 terminal operations did not converge exactly: {actual_operations}"
+        )
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_terminal_events "
+        "WHERE owner_generation = 2 AND financial_terminal_contract_version = 2"
+    ).fetchone() != (4,):
+        raise SystemExit("0053 terminal v2 positive cases did not converge exactly")
 
 
 def verify_relay_container_reconciliation_observer(
@@ -12047,7 +12701,7 @@ def verify_relay_container_provider_usage_binding_rollout(
     binding_index = schema_paths.index(binding_path)
     if binding_index == 0 or schema_paths[binding_index - 1] != receipt_path:
         raise SystemExit("0049 provider usage binding must immediately follow 0048")
-    if binding_index != len(schema_paths) - 4 or schema_paths[binding_index + 1].name != (
+    if binding_index != len(schema_paths) - 5 or schema_paths[binding_index + 1].name != (
         "0050_relay_container_atomic_admission.sql"
     ):
         raise SystemExit("0049 provider usage binding must immediately precede 0050")
@@ -12411,13 +13065,13 @@ def verify_relay_container_scheduled_terminalization_rollout(
     )
     if response_artifact_path is None:
         raise SystemExit("0051/0052 relay Container response migrations not found")
-    if len(schema_paths) != 52:
+    if len(schema_paths) != 53:
         raise SystemExit(
-            f"0051 scheduled terminalization compatibility requires exactly 52 D1 migrations, got {len(schema_paths)}"
+            f"0051 scheduled terminalization compatibility requires exactly 53 D1 migrations, got {len(schema_paths)}"
         )
     scheduled_index = schema_paths.index(scheduled_path)
-    if scheduled_index != len(schema_paths) - 2:
-        raise SystemExit("0051 scheduled terminalization must immediately precede the 0052 head")
+    if scheduled_index != len(schema_paths) - 3:
+        raise SystemExit("0051 scheduled terminalization must immediately precede 0052")
     if scheduled_index == 0 or schema_paths[scheduled_index - 1] != atomic_path:
         raise SystemExit("0051 scheduled terminalization must immediately follow 0050")
     if schema_paths[scheduled_index + 1] != response_artifact_path:
@@ -12483,13 +13137,13 @@ def verify_relay_container_response_artifacts_rollout(
     )
     if response_path is None or scheduled_path is None:
         raise SystemExit("0051/0052 relay Container response-artifact migrations not found")
-    if len(schema_paths) != 52:
+    if len(schema_paths) != 53:
         raise SystemExit(
-            f"0052 response artifacts require exactly 52 D1 migrations, got {len(schema_paths)}"
+            f"0052 response artifacts require exactly 53 D1 migrations, got {len(schema_paths)}"
         )
     response_index = schema_paths.index(response_path)
-    if response_index != len(schema_paths) - 1:
-        raise SystemExit("0052 response artifacts must be the current D1 migration head")
+    if response_index != len(schema_paths) - 2:
+        raise SystemExit("0052 response artifacts must immediately precede 0053")
     if response_index == 0 or schema_paths[response_index - 1] != scheduled_path:
         raise SystemExit("0052 response artifacts must immediately follow 0051")
 
@@ -12713,6 +13367,8 @@ def verify_relay_container_response_artifacts_rollout(
     fingerprint_conn = sqlite3.connect(":memory:")
     for schema_path in schema_paths:
         fingerprint_conn.executescript(schema_path.read_text(encoding="utf-8"))
+        if schema_path == response_path:
+            break
     for table in (
         "relay_container_provider_response_evidence",
         "relay_container_provider_response_evidence_identities",
@@ -12755,6 +13411,422 @@ def verify_relay_container_response_artifacts_rollout(
     fingerprint_conn.close()
 
 
+def verify_relay_container_financial_terminal_v2_rollout(
+    schema_paths: list[Path],
+) -> None:
+    v2_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0053_relay_container_financial_terminal_v2.sql"
+        ),
+        None,
+    )
+    response_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0052_relay_container_provider_response_artifacts.sql"
+        ),
+        None,
+    )
+    if v2_path is None or response_path is None:
+        raise SystemExit("0052/0053 relay Container terminal v2 migrations not found")
+    if len(schema_paths) != 53:
+        raise SystemExit(
+            "0053 financial terminal v2 requires exactly 53 D1 migrations, "
+            f"got {len(schema_paths)}"
+        )
+    v2_index = schema_paths.index(v2_path)
+    if v2_index != len(schema_paths) - 1:
+        raise SystemExit("0053 financial terminal v2 must be the D1 migration head")
+    if v2_index == 0 or schema_paths[v2_index - 1] != response_path:
+        raise SystemExit("0053 financial terminal v2 must immediately follow 0052")
+
+    v2_sql = v2_path.read_text(encoding="utf-8")
+    if "if not exists" in v2_sql.lower():
+        raise SystemExit("0053 critical terminal v2 objects must fail duplicate DDL")
+
+    def normalized_migration_sql(sql: str) -> str:
+        uncommented = []
+        for line in sql.splitlines():
+            content = line.split("--", 1)[0].strip()
+            if content:
+                uncommented.append(content)
+        return " ".join(" ".join(uncommented).split())
+
+    normalized_v2_sql = normalized_migration_sql(v2_sql)
+    required_fragments = (
+        "CREATE TABLE migration_0053_relay_container_terminal_v2_drain_guard",
+        "CHECK (active_count = 0)",
+        "FROM relay_container_terminal_events WHERE owner_generation = 2",
+        "ADD COLUMN financial_terminal_contract_version INTEGER NOT NULL DEFAULT 1",
+        "financial_terminal_contract_version IN (1, 2)",
+        "ADD COLUMN client_replay_status INTEGER",
+        "client_replay_status BETWEEN 100 AND 599",
+        "ADD COLUMN provider_response_attempt_generation INTEGER",
+        "provider_response_attempt_generation = 1",
+        "ADD COLUMN provider_response_status INTEGER",
+        "provider_response_status BETWEEN 100 AND 599",
+        "ADD COLUMN provider_response_class TEXT",
+        "'success', 'typed_error', 'http_error', 'invalid_body'",
+        "ADD COLUMN provider_response_code TEXT",
+        "provider_response_code NOT GLOB '*[^a-z0-9_:-]*'",
+        "ADD COLUMN provider_response_evidence_sha256 TEXT",
+        "REFERENCES relay_container_provider_response_evidence( provider_response_evidence_sha256 ) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        "CREATE UNIQUE INDEX idx_relay_container_terminal_events_provider_response",
+        "WHERE provider_response_evidence_sha256 IS NOT NULL",
+        "DROP TRIGGER relay_container_terminal_event_insert_guard",
+        "CREATE TRIGGER relay_container_terminal_event_insert_guard",
+        "'request-id'",
+        "CREATE TRIGGER relay_container_financial_terminal_v2_guard",
+        "NEW.owner_generation = 2",
+        "NEW.financial_terminal_contract_version <> 2",
+        "NEW.billing_action IN ('settle', 'refund')",
+        "artifact.provider_response_evidence_sha256 = NEW.provider_response_evidence_sha256",
+        "evidence.raw_response_status = NEW.provider_response_status",
+        "artifact.client_response_status = NEW.client_replay_status",
+        "NEW.billing_action = 'settle' AND NEW.operation_status = 'completed'",
+        "NEW.provider_response_class = 'success'",
+        "NEW.provider_response_code IS NULL",
+        "NEW.billing_action = 'refund' AND NEW.operation_status = 'failed'",
+        "NEW.client_response_status = 422",
+        "NEW.provider_usage_receipt_sha256 IS NULL",
+        "NEW.provider_result_sha256 IS NULL",
+        "NEW.provider_attempt_generation IS NULL",
+        "NEW.provider_response_class = 'typed_error'",
+        "NEW.provider_response_code = 'provider_typed_error'",
+        "NEW.provider_response_class = 'http_error'",
+        "NEW.provider_response_code = 'provider_http_error'",
+        "NEW.provider_response_class = 'invalid_body'",
+        "NEW.provider_response_code = 'provider_invalid_body'",
+        "NEW.billing_action = 'recovery_required'",
+        "NEW.owner_generation <> 2",
+        "NEW.financial_terminal_contract_version <> 1",
+        "DROP TRIGGER relay_container_terminal_event_response_artifact_guard",
+        "CREATE TRIGGER relay_container_terminal_event_response_artifact_guard",
+        "WHEN NEW.financial_terminal_contract_version = 2 THEN NEW.provider_response_attempt_generation",
+        "WHEN NEW.financial_terminal_contract_version = 2 THEN NEW.client_replay_status",
+        "DROP TRIGGER relay_container_operation_response_artifact_terminal_guard",
+        "CREATE TRIGGER relay_container_operation_response_artifact_terminal_guard",
+        "NEW.status IN ('completed', 'failed')",
+        "event.provider_response_code = NEW.response_code",
+        "DROP TRIGGER relay_container_reconciliation_response_artifact_convergence_guard",
+        "CREATE TRIGGER relay_container_reconciliation_response_artifact_convergence_guard",
+        "event.financial_terminal_contract_version = 2",
+        "artifact.client_response_status = event.client_replay_status",
+    )
+    for fragment in required_fragments:
+        if fragment not in normalized_v2_sql:
+            raise SystemExit(f"0053 financial terminal v2 rollout missing: {fragment}")
+
+    statements = []
+    pending = ""
+    for line in v2_sql.splitlines(keepends=True):
+        pending += line
+        if sqlite3.complete_statement(pending):
+            statements.append(pending.strip())
+            pending = ""
+    if pending.strip():
+        raise SystemExit("0053 migration has an incomplete SQL statement")
+    if len(statements) != 20:
+        raise SystemExit(
+            f"0053 migration must contain exactly 20 statements, got {len(statements)}"
+        )
+
+    sentinel_table = "MIGRATION_0053_RELAY_CONTAINER_TERMINAL_V2_DRAIN_GUARD"
+    expected_alter_columns = {
+        "FINANCIAL_TERMINAL_CONTRACT_VERSION",
+        "CLIENT_REPLAY_STATUS",
+        "PROVIDER_RESPONSE_ATTEMPT_GENERATION",
+        "PROVIDER_RESPONSE_STATUS",
+        "PROVIDER_RESPONSE_CLASS",
+        "PROVIDER_RESPONSE_CODE",
+        "PROVIDER_RESPONSE_EVIDENCE_SHA256",
+    }
+    expected_created_triggers = {
+        "RELAY_CONTAINER_TERMINAL_EVENT_INSERT_GUARD",
+        "RELAY_CONTAINER_FINANCIAL_TERMINAL_V2_GUARD",
+        "RELAY_CONTAINER_TERMINAL_EVENT_RESPONSE_ARTIFACT_GUARD",
+        "RELAY_CONTAINER_OPERATION_RESPONSE_ARTIFACT_TERMINAL_GUARD",
+        "RELAY_CONTAINER_RECONCILIATION_RESPONSE_ARTIFACT_CONVERGENCE_GUARD",
+    }
+    expected_dropped_triggers = expected_created_triggers - {
+        "RELAY_CONTAINER_FINANCIAL_TERMINAL_V2_GUARD"
+    }
+    observed_alter_columns = set()
+    observed_created_triggers = set()
+    observed_dropped_triggers = set()
+    observed_create_table = set()
+    observed_create_index = set()
+    observed_drop_table = set()
+    observed_insert_table = set()
+    for statement in statements:
+        normalized = normalized_migration_sql(statement).upper()
+        tokens = normalized.split()
+        if normalized.startswith(("UPDATE ", "DELETE ")):
+            raise SystemExit(
+                "0053 migration contains a top-level business mutation: "
+                f"{normalized[:80]}"
+            )
+        if normalized.startswith("INSERT INTO "):
+            observed_insert_table.add(tokens[2].rstrip(";"))
+        elif normalized.startswith("ALTER TABLE "):
+            if len(tokens) < 6 or tokens[2] != "RELAY_CONTAINER_TERMINAL_EVENTS":
+                raise SystemExit("0053 migration alters an unexpected table")
+            if tokens[3:5] != ["ADD", "COLUMN"]:
+                raise SystemExit("0053 migration contains an unexpected ALTER")
+            observed_alter_columns.add(tokens[5].rstrip(";"))
+        elif normalized.startswith("CREATE TABLE "):
+            observed_create_table.add(tokens[2].rstrip(";"))
+        elif normalized.startswith("CREATE UNIQUE INDEX "):
+            observed_create_index.add(tokens[3].rstrip(";"))
+        elif normalized.startswith("CREATE TRIGGER "):
+            observed_created_triggers.add(tokens[2].rstrip(";"))
+        elif normalized.startswith("DROP TABLE "):
+            observed_drop_table.add(tokens[2].rstrip(";"))
+        elif normalized.startswith("DROP TRIGGER "):
+            observed_dropped_triggers.add(tokens[2].rstrip(";"))
+        else:
+            raise SystemExit(
+                f"0053 migration contains an unexpected statement: {normalized[:80]}"
+            )
+
+    expected_statement_objects = (
+        ("ALTER columns", observed_alter_columns, expected_alter_columns),
+        ("created tables", observed_create_table, {sentinel_table}),
+        (
+            "created indexes",
+            observed_create_index,
+            {"IDX_RELAY_CONTAINER_TERMINAL_EVENTS_PROVIDER_RESPONSE"},
+        ),
+        ("created triggers", observed_created_triggers, expected_created_triggers),
+        ("dropped tables", observed_drop_table, {sentinel_table}),
+        ("dropped triggers", observed_dropped_triggers, expected_dropped_triggers),
+        ("insert targets", observed_insert_table, {sentinel_table}),
+    )
+    for context, actual, expected in expected_statement_objects:
+        if actual != expected:
+            raise SystemExit(
+                f"0053 migration {context} differ: actual={sorted(actual)}, "
+                f"expected={sorted(expected)}"
+            )
+
+    drain_conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == v2_path:
+            break
+        drain_conn.executescript(schema_path.read_text(encoding="utf-8"))
+    verify_relay_container_response_artifacts(drain_conn)
+    if drain_conn.execute(
+        "SELECT COUNT(*) FROM relay_container_terminal_events "
+        "WHERE owner_generation = 2"
+    ).fetchone() != (1,):
+        raise SystemExit("0053 drain fixture requires one owner2 terminal history row")
+    drain_conn.commit()
+    schema_before = drain_conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "ORDER BY type, name"
+    ).fetchall()
+    try:
+        drain_conn.executescript(f"BEGIN IMMEDIATE;\n{v2_sql}\nCOMMIT;")
+    except sqlite3.IntegrityError as error:
+        if "CHECK constraint failed: active_count = 0" not in str(error):
+            raise SystemExit(
+                f"0053 drain guard failed for an unexpected reason: {error}"
+            ) from error
+        drain_conn.rollback()
+    else:
+        raise SystemExit("0053 drain guard accepted owner2 terminal history")
+    schema_after = drain_conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "ORDER BY type, name"
+    ).fetchall()
+    if schema_after != schema_before:
+        changed_objects = sorted(
+            {row[1] for row in schema_before} ^ {row[1] for row in schema_after}
+        )
+        raise SystemExit(
+            f"0053 failed drain left partial schema: {changed_objects}"
+        )
+    if table_exists(
+        drain_conn, "migration_0053_relay_container_terminal_v2_drain_guard"
+    ):
+        raise SystemExit("0053 failed drain left its sentinel table installed")
+    if "financial_terminal_contract_version" in table_columns(
+        drain_conn, "relay_container_terminal_events"
+    ):
+        raise SystemExit("0053 failed drain partially altered terminal events")
+    drain_conn.close()
+
+    schema_conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        schema_conn.executescript(schema_path.read_text(encoding="utf-8"))
+    column_rows = {
+        row[1]: row
+        for row in schema_conn.execute(
+            'PRAGMA table_info("relay_container_terminal_events")'
+        ).fetchall()
+    }
+    expected_columns = {
+        "financial_terminal_contract_version": ("INTEGER", 1, "1"),
+        "client_replay_status": ("INTEGER", 0, None),
+        "provider_response_attempt_generation": ("INTEGER", 0, None),
+        "provider_response_status": ("INTEGER", 0, None),
+        "provider_response_class": ("TEXT", 0, None),
+        "provider_response_code": ("TEXT", 0, None),
+        "provider_response_evidence_sha256": ("TEXT", 0, None),
+    }
+    for column, expected in expected_columns.items():
+        row = column_rows.get(column)
+        actual = None if row is None else (row[2], row[3], row[4])
+        if actual != expected:
+            raise SystemExit(
+                f"0053 terminal column differs for {column}: "
+                f"actual={actual}, expected={expected}"
+            )
+
+    terminal_table_sql = sqlite_object_sql(
+        schema_conn, "table", "relay_container_terminal_events"
+    )
+    normalized_terminal_table_sql = normalized_migration_sql(terminal_table_sql or "")
+    for fragment in (
+        "financial_terminal_contract_version INTEGER NOT NULL DEFAULT 1",
+        "financial_terminal_contract_version IN (1, 2)",
+        "client_replay_status BETWEEN 100 AND 599",
+        "provider_response_attempt_generation = 1",
+        "provider_response_status BETWEEN 100 AND 599",
+        "provider_response_class IN ( 'success', 'typed_error', 'http_error', 'invalid_body' )",
+        "length(provider_response_code) BETWEEN 1 AND 64",
+        "length(provider_response_evidence_sha256) = 64",
+    ):
+        if fragment not in normalized_terminal_table_sql:
+            raise SystemExit(f"0053 terminal table schema missing: {fragment}")
+
+    evidence_foreign_keys = [
+        row
+        for row in schema_conn.execute(
+            'PRAGMA foreign_key_list("relay_container_terminal_events")'
+        ).fetchall()
+        if row[3] == "provider_response_evidence_sha256"
+    ]
+    if len(evidence_foreign_keys) != 1:
+        raise SystemExit(
+            "0053 provider response evidence foreign key is not singular: "
+            f"{evidence_foreign_keys}"
+        )
+    evidence_foreign_key = evidence_foreign_keys[0]
+    if (
+        evidence_foreign_key[2],
+        evidence_foreign_key[4],
+        evidence_foreign_key[5],
+        evidence_foreign_key[6],
+    ) != (
+        "relay_container_provider_response_evidence",
+        "provider_response_evidence_sha256",
+        "RESTRICT",
+        "RESTRICT",
+    ):
+        raise SystemExit(
+            "0053 provider response evidence foreign key differs: "
+            f"{evidence_foreign_key}"
+        )
+
+    index_name = "idx_relay_container_terminal_events_provider_response"
+    index_rows = {
+        row[1]: row
+        for row in schema_conn.execute(
+            'PRAGMA index_list("relay_container_terminal_events")'
+        ).fetchall()
+    }
+    index_row = index_rows.get(index_name)
+    if index_row is None or (index_row[2], index_row[4]) != (1, 1):
+        raise SystemExit(f"0053 terminal provider response index differs: {index_row}")
+    if schema_conn.execute(
+        f'PRAGMA index_info("{index_name}")'
+    ).fetchall() != [(0, column_rows["provider_response_evidence_sha256"][0], "provider_response_evidence_sha256")]:
+        raise SystemExit("0053 terminal provider response index column differs")
+    index_sql = sqlite_object_sql(schema_conn, "index", index_name)
+    if normalized_migration_sql(index_sql or "") != (
+        "CREATE UNIQUE INDEX idx_relay_container_terminal_events_provider_response "
+        "ON relay_container_terminal_events(provider_response_evidence_sha256) "
+        "WHERE provider_response_evidence_sha256 IS NOT NULL"
+    ):
+        raise SystemExit("0053 terminal provider response partial index SQL differs")
+
+    trigger_fragments = {
+        "relay_container_terminal_event_insert_guard": (
+            "NEW.billing_action = 'settle'",
+            "NEW.billing_action = 'refund'",
+            "NEW.billing_action = 'recovery_required'",
+            "'request-id'",
+        ),
+        "relay_container_financial_terminal_v2_guard": (
+            "NEW.financial_terminal_contract_version <> 2",
+            "artifact.provider_response_evidence_sha256 = NEW.provider_response_evidence_sha256",
+            "evidence.raw_response_status = NEW.provider_response_status",
+            "artifact.client_response_status = NEW.client_replay_status",
+            "NEW.client_response_status = 422",
+            "NEW.billing_request_accounted = 0",
+            "NEW.request_count_delta = 0",
+            "NEW.provider_response_code = 'provider_typed_error'",
+            "NEW.provider_response_code = 'provider_http_error'",
+            "NEW.provider_response_code = 'provider_invalid_body'",
+            "NEW.financial_terminal_contract_version <> 1",
+        ),
+        "relay_container_terminal_event_response_artifact_guard": (
+            "WHEN NEW.financial_terminal_contract_version = 2 THEN NEW.provider_response_attempt_generation",
+            "WHEN NEW.financial_terminal_contract_version = 2 THEN NEW.client_replay_status",
+            "artifact.response_class IN ('typed_error', 'http_error', 'invalid_body')",
+        ),
+        "relay_container_operation_response_artifact_terminal_guard": (
+            "NEW.status IN ('completed', 'failed')",
+            "event.financial_terminal_contract_version = 2",
+            "event.provider_response_code = NEW.response_code",
+            "artifact.client_response_status = event.client_replay_status",
+        ),
+        "relay_container_reconciliation_response_artifact_convergence_guard": (
+            "event.operation_status = 'completed'",
+            "event.operation_status = 'failed'",
+            "event.financial_terminal_contract_version = 2",
+            "artifact.client_response_status = event.client_replay_status",
+        ),
+    }
+    for trigger, fragments in trigger_fragments.items():
+        trigger_sql = sqlite_object_sql(schema_conn, "trigger", trigger)
+        if trigger_sql is None:
+            raise SystemExit(f"0053 terminal v2 trigger missing: {trigger}")
+        normalized_trigger_sql = normalized_migration_sql(trigger_sql)
+        for fragment in fragments:
+            if fragment not in normalized_trigger_sql:
+                raise SystemExit(f"0053 trigger {trigger} missing: {fragment}")
+
+    if table_exists(
+        schema_conn, "migration_0053_relay_container_terminal_v2_drain_guard"
+    ):
+        raise SystemExit("0053 successful rollout left its sentinel table installed")
+    schema_before_duplicate = schema_conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "ORDER BY type, name"
+    ).fetchall()
+    try:
+        schema_conn.executescript(v2_sql)
+    except sqlite3.Error as error:
+        if "duplicate column name: financial_terminal_contract_version" not in str(error):
+            raise SystemExit(
+                f"0053 duplicate DDL failed for an unexpected reason: {error}"
+            ) from error
+    else:
+        raise SystemExit("0053 critical terminal v2 objects accepted duplicate DDL")
+    schema_after_duplicate = schema_conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0053 duplicate DDL attempt changed persistent schema")
+    schema_conn.close()
+
+
 def verify_relay_container_atomic_admission_rollout(
     schema_paths: list[Path],
 ) -> None:
@@ -12776,13 +13848,13 @@ def verify_relay_container_atomic_admission_rollout(
     )
     if atomic_path is None or binding_path is None:
         raise SystemExit("0049/0050 relay Container admission migrations not found")
-    if len(schema_paths) != 52:
+    if len(schema_paths) != 53:
         raise SystemExit(
-            f"0050 atomic admission compatibility requires exactly 52 D1 migrations, got {len(schema_paths)}"
+            f"0050 atomic admission compatibility requires exactly 53 D1 migrations, got {len(schema_paths)}"
         )
     atomic_index = schema_paths.index(atomic_path)
-    if atomic_index != len(schema_paths) - 3:
-        raise SystemExit("0050 atomic admission must remain immediately before 0051 and 0052")
+    if atomic_index != len(schema_paths) - 4:
+        raise SystemExit("0050 atomic admission must remain immediately before 0051, 0052, and 0053")
     if atomic_index == 0 or schema_paths[atomic_index - 1] != binding_path:
         raise SystemExit("0050 atomic admission must immediately follow 0049")
 

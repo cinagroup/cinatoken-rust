@@ -547,10 +547,10 @@ async function prepareScheduledTerminalization(intent) {
     .bind(intent.operationId, claimOwner, claimAt, claimLeaseExpiresAt)
     .run();
 
-  // This suite isolates the 0051 financial batch fence. The 0048 receipt and
-  // 0052 response-artifact guards have their own full-schema coverage and
-  // require the complete egress/evidence fixture before this legacy terminal
-  // batch can be staged.
+  // This suite isolates the 0051 financial batch fence. The 0048 receipt,
+  // 0052 response-artifact, and 0053 financial-terminal-v2 guards have their
+  // own full-schema coverage and require the complete egress/evidence fixture
+  // before this legacy terminal batch can be staged.
   await env.DB.batch([
     env.DB.prepare(
       "DROP TRIGGER relay_container_terminal_event_provider_usage_guard",
@@ -561,6 +561,7 @@ async function prepareScheduledTerminalization(intent) {
     env.DB.prepare(
       "DROP TRIGGER relay_container_scheduled_terminalization_response_artifact_guard",
     ),
+    env.DB.prepare("DROP TRIGGER relay_container_financial_terminal_v2_guard"),
   ]);
 
   return {

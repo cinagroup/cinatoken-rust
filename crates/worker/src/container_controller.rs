@@ -50,10 +50,18 @@ const OPERATION_STATUS_V3_PATH: &str = "/internal/v3/operations/status";
 const OPERATION_STATUS_V3_URL: &str =
     "https://cinatoken-container-controller.internal/internal/v3/operations/status";
 const OPERATION_STATUS_V3_AUTHORITY_DOMAIN: &[u8] = b"cinatoken-container-operation-status:v3\0";
+const OPERATION_STATUS_V4_PATH: &str = "/internal/v4/operations/status";
+const OPERATION_STATUS_V4_URL: &str =
+    "https://cinatoken-container-controller.internal/internal/v4/operations/status";
+const OPERATION_STATUS_V4_AUTHORITY_DOMAIN: &[u8] = b"cinatoken-container-operation-status:v4\0";
 const TERMINAL_ACK_PATH: &str = "/internal/v2/operations/terminal-ack";
 const TERMINAL_ACK_URL: &str =
     "https://cinatoken-container-controller.internal/internal/v2/operations/terminal-ack";
 const TERMINAL_ACK_V2_AUTHORITY_DOMAIN: &[u8] = b"cinatoken-container-terminal-ack:v2\0";
+const TERMINAL_ACK_V3_PATH: &str = "/internal/v3/operations/terminal-ack";
+const TERMINAL_ACK_V3_URL: &str =
+    "https://cinatoken-container-controller.internal/internal/v3/operations/terminal-ack";
+const TERMINAL_ACK_V3_AUTHORITY_DOMAIN: &[u8] = b"cinatoken-container-terminal-ack:v3\0";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(12);
 const STATUS_MAX_BYTES: usize = 4 * 1024;
@@ -126,8 +134,25 @@ pub struct ContainerTerminalAckProviderUsageBinding {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct ContainerTerminalAckProviderResponseBinding {
+    pub attempt_generation: i64,
+    pub status: String,
+    pub response_class: String,
+    pub provider_status: i64,
+    pub client_status: i64,
+    pub response_code: Option<String>,
+    pub provider_response_evidence_sha256: String,
+    pub client_response_artifact_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ContainerTerminalAckEnvelope {
     pub protocol_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_ack_contract_version: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub financial_terminal_contract_version: Option<u32>,
     pub billing_event_id: String,
     pub terminal_contract_sha256: String,
     pub reconciliation_id: String,
@@ -141,13 +166,15 @@ pub struct ContainerTerminalAckEnvelope {
     pub response_code: Option<String>,
     pub result: Option<ContainerTerminalAckResult>,
     pub provider_usage_binding: Option<ContainerTerminalAckProviderUsageBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_response_binding: Option<ContainerTerminalAckProviderResponseBinding>,
     pub shard: ShardPlan,
     pub trace_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct ControllerTerminalAckPayload {
+struct ControllerTerminalAckV2Payload {
     protocol_version: u32,
     billing_event_id: String,
     operation_id: String,
@@ -155,6 +182,22 @@ struct ControllerTerminalAckPayload {
     status: String,
     final_ack: bool,
     acknowledged_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerTerminalAckV3Payload {
+    protocol_version: u32,
+    terminal_ack_contract_version: u32,
+    financial_terminal_contract_version: u32,
+    billing_event_id: String,
+    operation_id: String,
+    reconciliation_revision: i64,
+    terminal_contract_sha256: String,
+    client_response_artifact_sha256: String,
+    status: String,
+    final_ack: bool,
+    acknowledged_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,6 +282,75 @@ struct ControllerOperationStatusV3Payload {
     provider_usage_receipt_sha256: Option<String>,
     #[serde(deserialize_with = "deserialize_required_nullable")]
     provider_attempt: Option<ControllerProviderAttemptV3>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerOperationStatusV4Payload {
+    protocol_version: u32,
+    status_contract_version: u32,
+    operation_id: String,
+    status: String,
+    code: Option<String>,
+    trace_id: String,
+    result: Option<ControllerOperationResult>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    provider_usage_receipt_sha256: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    provider_attempt: Option<ControllerProviderAttemptV3>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    provider_response_artifacts: Option<ControllerProviderResponseArtifacts>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerProviderResponseEvidenceManifest {
+    object_key: String,
+    object_version: String,
+    provider_response_evidence_sha256: String,
+    sha256: String,
+    size: u64,
+    content_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerClientResponseArtifactManifest {
+    object_key: String,
+    object_version: String,
+    client_response_artifact_sha256: String,
+    sha256: String,
+    size: u64,
+    content_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ControllerProviderResponseArtifacts {
+    operation_id: String,
+    owner_generation: i64,
+    attempt_generation: u32,
+    provider_operation_id: String,
+    admission_sha256: String,
+    request_sha256: String,
+    egress_profile: String,
+    egress_worker_version_id: String,
+    status: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    provider_status: Option<u16>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    client_status: Option<u16>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    response_class: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    response_code: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    raw_manifest: Option<ControllerProviderResponseEvidenceManifest>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    client_manifest: Option<ControllerClientResponseArtifactManifest>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    provider_usage_receipt_sha256: Option<String>,
+    attached_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -328,6 +440,52 @@ pub struct ContainerProviderAttemptOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerProviderResponseEvidenceManifest {
+    pub object_key: String,
+    pub object_version: String,
+    pub provider_response_evidence_sha256: String,
+    pub sha256: String,
+    pub size: u64,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerClientResponseArtifactManifest {
+    pub object_key: String,
+    pub object_version: String,
+    pub client_response_artifact_sha256: String,
+    pub sha256: String,
+    pub size: u64,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerProviderResponseArtifactStatus {
+    Succeeded,
+    InterpretedReject,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerProviderResponseArtifactsOutcome {
+    pub attempt_generation: u32,
+    pub provider_operation_id: String,
+    pub admission_sha256: String,
+    pub request_sha256: String,
+    pub egress_profile: String,
+    pub egress_worker_version_id: String,
+    pub status: ContainerProviderResponseArtifactStatus,
+    pub provider_status: Option<u16>,
+    pub client_status: Option<u16>,
+    pub response_class: Option<String>,
+    pub response_code: Option<String>,
+    pub raw_manifest: Option<ContainerProviderResponseEvidenceManifest>,
+    pub client_manifest: Option<ContainerClientResponseArtifactManifest>,
+    pub provider_usage_receipt_sha256: Option<String>,
+    pub attached_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerOperationOutcome {
     pub status_contract_version: u32,
     pub status: ContainerOperationStatus,
@@ -336,6 +494,7 @@ pub struct ContainerOperationOutcome {
     pub result: Option<ContainerArtifactManifest>,
     pub provider_usage_receipt_sha256: Option<String>,
     pub provider_attempt: Option<ContainerProviderAttemptOutcome>,
+    pub provider_response_artifacts: Option<ContainerProviderResponseArtifactsOutcome>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -608,9 +767,9 @@ pub async fn query_operation_status(
         &authority,
         envelope,
         &body,
-        OPERATION_STATUS_V3_PATH,
-        OPERATION_STATUS_V3_URL,
-        3,
+        OPERATION_STATUS_V4_PATH,
+        OPERATION_STATUS_V4_URL,
+        4,
     )
     .await
     {
@@ -620,23 +779,38 @@ pub async fn query_operation_status(
                 &authority,
                 envelope,
                 &body,
-                OPERATION_STATUS_V2_PATH,
-                OPERATION_STATUS_V2_URL,
-                2,
+                OPERATION_STATUS_V3_PATH,
+                OPERATION_STATUS_V3_URL,
+                3,
             )
             .await
             {
                 Err("route_not_found") => {
-                    query_operation_status_path(
+                    match query_operation_status_path(
                         &fetcher,
                         &authority,
                         envelope,
                         &body,
-                        OPERATION_STATUS_PATH,
-                        OPERATION_STATUS_URL,
-                        1,
+                        OPERATION_STATUS_V2_PATH,
+                        OPERATION_STATUS_V2_URL,
+                        2,
                     )
                     .await
+                    {
+                        Err("route_not_found") => {
+                            query_operation_status_path(
+                                &fetcher,
+                                &authority,
+                                envelope,
+                                &body,
+                                OPERATION_STATUS_PATH,
+                                OPERATION_STATUS_URL,
+                                1,
+                            )
+                            .await
+                        }
+                        result => result,
+                    }
                 }
                 result => result,
             }
@@ -663,20 +837,33 @@ pub async fn acknowledge_terminal_event(
         .ok_or(ContainerTerminalAckError::Retryable("entropy_unavailable"))?;
     let body = serde_json::to_vec(envelope)
         .map_err(|_| ContainerTerminalAckError::Permanent("request_encode_failed"))?;
+    let (path, url, authority_domain) = if envelope.terminal_ack_contract_version == Some(3) {
+        (
+            TERMINAL_ACK_V3_PATH,
+            TERMINAL_ACK_V3_URL,
+            TERMINAL_ACK_V3_AUTHORITY_DOMAIN,
+        )
+    } else {
+        (
+            TERMINAL_ACK_PATH,
+            TERMINAL_ACK_URL,
+            TERMINAL_ACK_V2_AUTHORITY_DOMAIN,
+        )
+    };
     let now = (worker::Date::now().as_millis() / 1000) as i64;
     let token = sign_bound_authority_with_domain(
         &authority,
         &dispatch_id,
         "POST",
-        TERMINAL_ACK_PATH,
+        path,
         &body,
         now,
-        TERMINAL_ACK_V2_AUTHORITY_DOMAIN,
+        authority_domain,
     )
     .ok_or(ContainerTerminalAckError::Retryable(
         "authority_sign_failed",
     ))?;
-    let request = terminal_ack_request(&token, &body).map_err(|err| {
+    let request = terminal_ack_request(&token, &body, url).map_err(|err| {
         worker::console_error!("container terminal ack request construction failed: {err}");
         ContainerTerminalAckError::Retryable("request_build_failed")
     })?;
@@ -701,16 +888,13 @@ async fn query_operation_status_path(
 ) -> Result<ContainerOperationOutcome, &'static str> {
     let dispatch_id = random_dispatch_id("operation-status").ok_or("entropy_unavailable")?;
     let now = (worker::Date::now().as_millis() / 1000) as i64;
-    let token = if status_contract_version == 3 {
-        sign_bound_authority_with_domain(
-            authority,
-            &dispatch_id,
-            "POST",
-            path,
-            body,
-            now,
-            OPERATION_STATUS_V3_AUTHORITY_DOMAIN,
-        )
+    let status_authority_domain = match status_contract_version {
+        3 => Some(OPERATION_STATUS_V3_AUTHORITY_DOMAIN),
+        4 => Some(OPERATION_STATUS_V4_AUTHORITY_DOMAIN),
+        _ => None,
+    };
+    let token = if let Some(domain) = status_authority_domain {
+        sign_bound_authority_with_domain(authority, &dispatch_id, "POST", path, body, now, domain)
     } else {
         sign_bound_authority(authority, &dispatch_id, "POST", path, body, now)
     }
@@ -898,6 +1082,12 @@ async fn execute_operation_status(
                 return operation_status_v3_outcome(status, payload, envelope);
             }
         }
+        4 => {
+            if let Ok(payload) = serde_json::from_slice::<ControllerOperationStatusV4Payload>(&body)
+            {
+                return operation_status_v4_outcome(status, payload, envelope);
+            }
+        }
         _ => return Err("contract_mismatch"),
     }
     let error = serde_json::from_slice::<ControllerOperationErrorPayload>(&body)
@@ -1039,6 +1229,258 @@ fn operation_status_v3_outcome(
     Ok(outcome)
 }
 
+fn operation_status_v4_outcome(
+    http_status: u16,
+    payload: ControllerOperationStatusV4Payload,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerOperationOutcome, &'static str> {
+    if payload.status_contract_version != 4 {
+        return Err("contract_mismatch");
+    }
+    let artifacts = payload.provider_response_artifacts;
+    let mut outcome = operation_status_v3_outcome(
+        http_status,
+        ControllerOperationStatusV3Payload {
+            protocol_version: payload.protocol_version,
+            status_contract_version: 3,
+            operation_id: payload.operation_id,
+            status: payload.status,
+            code: payload.code,
+            trace_id: payload.trace_id,
+            result: payload.result,
+            provider_usage_receipt_sha256: payload.provider_usage_receipt_sha256,
+            provider_attempt: payload.provider_attempt,
+        },
+        envelope,
+    )?;
+    outcome.provider_response_artifacts = artifacts
+        .map(|artifacts| provider_response_artifacts_outcome(artifacts, &outcome, envelope))
+        .transpose()?;
+    outcome.status_contract_version = 4;
+    Ok(outcome)
+}
+
+fn provider_response_artifacts_outcome(
+    artifacts: ControllerProviderResponseArtifacts,
+    outcome: &ContainerOperationOutcome,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerProviderResponseArtifactsOutcome, &'static str> {
+    let attempt = outcome
+        .provider_attempt
+        .as_ref()
+        .ok_or("contract_mismatch")?;
+    if artifacts.operation_id != envelope.operation_id
+        || artifacts.owner_generation != envelope.owner_generation
+        || artifacts.attempt_generation != 1
+        || artifacts.attempt_generation != attempt.attempt_generation
+        || artifacts.provider_operation_id != envelope.provider_operation_id
+        || artifacts.admission_sha256 != envelope.admission_sha256
+        || artifacts.request_sha256 != envelope.input.sha256
+        || artifacts.egress_profile != "openai-chat-completions-canary-v1"
+        || !valid_egress_worker_version(&artifacts.egress_worker_version_id)
+        || artifacts.attached_at < 1
+        || attempt
+            .dispatched_at
+            .is_none_or(|dispatched_at| artifacts.attached_at < dispatched_at)
+        || attempt
+            .terminal_at
+            .is_some_and(|terminal_at| artifacts.attached_at > terminal_at)
+    {
+        return Err("contract_mismatch");
+    }
+
+    let raw_manifest = artifacts
+        .raw_manifest
+        .map(|manifest| provider_response_evidence_manifest(manifest, envelope, 1))
+        .transpose()?;
+    let client_manifest = artifacts
+        .client_manifest
+        .map(|manifest| client_response_artifact_manifest(manifest, envelope))
+        .transpose()?;
+    let no_financial_evidence = outcome.result.is_none()
+        && outcome.provider_usage_receipt_sha256.is_none()
+        && attempt.result.is_none()
+        && attempt.provider_usage_receipt_sha256.is_none()
+        && attempt.provider_usage_receipt_attached_at.is_none()
+        && artifacts.provider_usage_receipt_sha256.is_none();
+
+    let status = match artifacts.status.as_str() {
+        "succeeded"
+            if matches!(
+                attempt.status,
+                ContainerProviderAttemptStatus::Dispatched
+                    | ContainerProviderAttemptStatus::Succeeded
+                    | ContainerProviderAttemptStatus::Ambiguous
+            ) && artifacts.provider_status == Some(200)
+                && artifacts.client_status == Some(200)
+                && artifacts.response_class.as_deref() == Some("success")
+                && artifacts.response_code.is_none()
+                && raw_manifest.is_some()
+                && client_manifest.is_some()
+                && artifacts
+                    .provider_usage_receipt_sha256
+                    .as_deref()
+                    .is_some_and(valid_sha256)
+                && artifacts.provider_usage_receipt_sha256
+                    == outcome.provider_usage_receipt_sha256
+                && artifacts.provider_usage_receipt_sha256
+                    == attempt.provider_usage_receipt_sha256
+                && attempt
+                    .provider_usage_receipt_attached_at
+                    .is_some_and(|attached_at| attached_at <= artifacts.attached_at)
+                && outcome.result.as_ref().is_some_and(|result| {
+                    client_manifest.as_ref().is_some_and(|manifest| {
+                        manifest.sha256 == result.sha256
+                            && manifest.size == result.size
+                            && manifest.content_type == result.content_type
+                    })
+                }) =>
+        {
+            ContainerProviderResponseArtifactStatus::Succeeded
+        }
+        "interpreted_reject"
+            if matches!(
+                attempt.status,
+                ContainerProviderAttemptStatus::Dispatched
+                    | ContainerProviderAttemptStatus::DefiniteReject
+                    | ContainerProviderAttemptStatus::Ambiguous
+            ) && no_financial_evidence
+                && raw_manifest.is_some()
+                && client_manifest.is_some()
+                && artifacts
+                    .response_code
+                    .as_deref()
+                    .is_some_and(valid_response_code)
+                && provider_rejection_binding_valid(
+                    artifacts.response_class.as_deref(),
+                    artifacts.provider_status,
+                    artifacts.client_status,
+                    artifacts.response_code.as_deref(),
+                ) =>
+        {
+            ContainerProviderResponseArtifactStatus::InterpretedReject
+        }
+        "ambiguous"
+            if matches!(
+                attempt.status,
+                ContainerProviderAttemptStatus::Dispatched
+                    | ContainerProviderAttemptStatus::Ambiguous
+            ) && no_financial_evidence
+                && artifacts.provider_status.is_none()
+                && artifacts.client_status.is_none()
+                && artifacts.response_class.is_none()
+                && artifacts
+                    .response_code
+                    .as_deref()
+                    .is_some_and(valid_response_code)
+                && raw_manifest.is_none()
+                && client_manifest.is_none() =>
+        {
+            ContainerProviderResponseArtifactStatus::Ambiguous
+        }
+        _ => return Err("contract_mismatch"),
+    };
+
+    Ok(ContainerProviderResponseArtifactsOutcome {
+        attempt_generation: artifacts.attempt_generation,
+        provider_operation_id: artifacts.provider_operation_id,
+        admission_sha256: artifacts.admission_sha256,
+        request_sha256: artifacts.request_sha256,
+        egress_profile: artifacts.egress_profile,
+        egress_worker_version_id: artifacts.egress_worker_version_id,
+        status,
+        provider_status: artifacts.provider_status,
+        client_status: artifacts.client_status,
+        response_class: artifacts.response_class,
+        response_code: artifacts.response_code,
+        raw_manifest,
+        client_manifest,
+        provider_usage_receipt_sha256: artifacts.provider_usage_receipt_sha256,
+        attached_at: artifacts.attached_at,
+    })
+}
+
+fn provider_response_evidence_manifest(
+    manifest: ControllerProviderResponseEvidenceManifest,
+    envelope: &ContainerOperationEnvelope,
+    attempt_generation: u32,
+) -> Result<ContainerProviderResponseEvidenceManifest, &'static str> {
+    let expected_key = format!(
+        "container-provider-evidence/v1/{}/{}/{}/{}",
+        envelope.operation_id, envelope.owner_generation, attempt_generation, manifest.sha256
+    );
+    if manifest.object_key != expected_key
+        || !valid_identifier(&manifest.object_version, 128)
+        || !valid_sha256(&manifest.provider_response_evidence_sha256)
+        || !valid_sha256(&manifest.sha256)
+        || manifest.size > 4 * 1024 * 1024
+        || !valid_artifact_content_type(&manifest.content_type)
+    {
+        return Err("contract_mismatch");
+    }
+    Ok(ContainerProviderResponseEvidenceManifest {
+        object_key: manifest.object_key,
+        object_version: manifest.object_version,
+        provider_response_evidence_sha256: manifest.provider_response_evidence_sha256,
+        sha256: manifest.sha256,
+        size: manifest.size,
+        content_type: manifest.content_type,
+    })
+}
+
+fn client_response_artifact_manifest(
+    manifest: ControllerClientResponseArtifactManifest,
+    envelope: &ContainerOperationEnvelope,
+) -> Result<ContainerClientResponseArtifactManifest, &'static str> {
+    let expected_key = format!(
+        "container-client-artifacts/v1/{}/{}/{}",
+        envelope.operation_id, envelope.owner_generation, manifest.client_response_artifact_sha256
+    );
+    if manifest.object_key != expected_key
+        || !valid_identifier(&manifest.object_version, 128)
+        || !valid_sha256(&manifest.client_response_artifact_sha256)
+        || !valid_sha256(&manifest.sha256)
+        || !(2..=4 * 1024 * 1024).contains(&manifest.size)
+        || manifest.content_type != "application/json"
+    {
+        return Err("contract_mismatch");
+    }
+    Ok(ContainerClientResponseArtifactManifest {
+        object_key: manifest.object_key,
+        object_version: manifest.object_version,
+        client_response_artifact_sha256: manifest.client_response_artifact_sha256,
+        sha256: manifest.sha256,
+        size: manifest.size,
+        content_type: manifest.content_type,
+    })
+}
+
+fn provider_rejection_binding_valid(
+    response_class: Option<&str>,
+    provider_status: Option<u16>,
+    client_status: Option<u16>,
+    response_code: Option<&str>,
+) -> bool {
+    match response_class {
+        Some("typed_error") => {
+            provider_status == Some(200)
+                && client_status == Some(200)
+                && response_code == Some("provider_typed_error")
+        }
+        Some("http_error") => {
+            provider_status.is_some_and(|status| status != 200)
+                && client_status == provider_status
+                && response_code == Some("provider_http_error")
+        }
+        Some("invalid_body") => {
+            provider_status == Some(200)
+                && client_status == Some(500)
+                && response_code == Some("provider_invalid_body")
+        }
+        _ => false,
+    }
+}
+
 async fn execute_terminal_ack(
     fetcher: &Fetcher,
     request: Request,
@@ -1073,17 +1515,22 @@ async fn execute_terminal_ack(
             .await
             .map_err(|_| ContainerTerminalAckError::Retryable("invalid_response_size"))?;
     if status == 200 {
-        let payload = serde_json::from_slice::<ControllerTerminalAckPayload>(&body)
+        if envelope.terminal_ack_contract_version == Some(3) {
+            let payload = serde_json::from_slice::<ControllerTerminalAckV3Payload>(&body)
+                .map_err(|_| ContainerTerminalAckError::Retryable("invalid_response_body"))?;
+            return terminal_ack_v3_outcome(payload, envelope);
+        }
+        let payload = serde_json::from_slice::<ControllerTerminalAckV2Payload>(&body)
             .map_err(|_| ContainerTerminalAckError::Retryable("invalid_response_body"))?;
-        return terminal_ack_outcome(payload, envelope);
+        return terminal_ack_v2_outcome(payload, envelope);
     }
     let error = serde_json::from_slice::<ControllerOperationErrorPayload>(&body)
         .map_err(|_| ContainerTerminalAckError::Retryable("invalid_response_body"))?;
     Err(classify_terminal_ack_error(status, &error))
 }
 
-fn terminal_ack_outcome(
-    payload: ControllerTerminalAckPayload,
+fn terminal_ack_v2_outcome(
+    payload: ControllerTerminalAckV2Payload,
     envelope: &ContainerTerminalAckEnvelope,
 ) -> Result<ContainerTerminalAckOutcome, ContainerTerminalAckError> {
     let expected_final = envelope.operation_status != "recovery_required";
@@ -1110,6 +1557,41 @@ fn terminal_ack_outcome(
         "duplicate" => Ok(ContainerTerminalAckOutcome::Duplicate {
             final_ack: payload.final_ack,
         }),
+        _ => Err(ContainerTerminalAckError::Permanent(
+            "terminal_ack_contract_mismatch",
+        )),
+    }
+}
+
+fn terminal_ack_v3_outcome(
+    payload: ControllerTerminalAckV3Payload,
+    envelope: &ContainerTerminalAckEnvelope,
+) -> Result<ContainerTerminalAckOutcome, ContainerTerminalAckError> {
+    let binding =
+        envelope
+            .provider_response_binding
+            .as_ref()
+            .ok_or(ContainerTerminalAckError::Permanent(
+                "terminal_ack_contract_mismatch",
+            ))?;
+    if payload.protocol_version != envelope.protocol_version
+        || payload.terminal_ack_contract_version != 3
+        || payload.financial_terminal_contract_version != 2
+        || payload.billing_event_id != envelope.billing_event_id
+        || payload.operation_id != envelope.operation_id
+        || payload.reconciliation_revision != envelope.reconciliation_revision
+        || payload.terminal_contract_sha256 != envelope.terminal_contract_sha256
+        || payload.client_response_artifact_sha256 != binding.client_response_artifact_sha256
+        || !payload.final_ack
+        || payload.acknowledged_at <= 0
+    {
+        return Err(ContainerTerminalAckError::Permanent(
+            "terminal_ack_contract_mismatch",
+        ));
+    }
+    match payload.status.as_str() {
+        "acknowledged" => Ok(ContainerTerminalAckOutcome::Acknowledged { final_ack: true }),
+        "duplicate" => Ok(ContainerTerminalAckOutcome::Duplicate { final_ack: true }),
         _ => Err(ContainerTerminalAckError::Permanent(
             "terminal_ack_contract_mismatch",
         )),
@@ -1232,6 +1714,7 @@ fn operation_outcome(
         result,
         provider_usage_receipt_sha256: None,
         provider_attempt,
+        provider_response_artifacts: None,
     })
 }
 
@@ -1494,6 +1977,15 @@ fn validate_terminal_ack_envelope(
                         .as_ref()
                         .is_some_and(|result| result.sha256 == binding.result_sha256)
             });
+    let contract_valid = match (
+        envelope.terminal_ack_contract_version,
+        envelope.financial_terminal_contract_version,
+        envelope.provider_response_binding.as_ref(),
+    ) {
+        (None, None, None) => true,
+        (Some(3), Some(2), Some(binding)) => validate_terminal_ack_v3_binding(envelope, binding),
+        _ => false,
+    };
     let transition_valid = match envelope.operation_from_status.as_str() {
         "prepared" => envelope.operation_status != "completed",
         "dispatched" => true,
@@ -1505,10 +1997,81 @@ fn validate_terminal_ack_envelope(
         || !outcome_valid
         || !result_valid
         || !provider_usage_binding_valid
+        || !contract_valid
     {
         return Err("invalid_terminal_ack");
     }
     Ok(())
+}
+
+fn validate_terminal_ack_v3_binding(
+    envelope: &ContainerTerminalAckEnvelope,
+    binding: &ContainerTerminalAckProviderResponseBinding,
+) -> bool {
+    if envelope.owner_generation != 2
+        || binding.attempt_generation != 1
+        || !valid_sha256(&binding.provider_response_evidence_sha256)
+        || !valid_sha256(&binding.client_response_artifact_sha256)
+        || !matches!(
+            (
+                envelope.reconciliation_revision,
+                envelope.operation_from_status.as_str()
+            ),
+            (1, "dispatched") | (2, "recovery_required")
+        )
+    {
+        return false;
+    }
+    match binding.status.as_str() {
+        "succeeded" => {
+            binding.response_class == "success"
+                && binding.provider_status == 200
+                && binding.client_status == 200
+                && binding.response_code.is_none()
+                && envelope.operation_status == "completed"
+                && envelope.response_status == 200
+                && envelope.response_code.is_none()
+                && envelope.result.is_some()
+                && envelope
+                    .provider_usage_binding
+                    .as_ref()
+                    .is_some_and(|usage| {
+                        usage.attempt_generation == binding.attempt_generation
+                            && envelope
+                                .result
+                                .as_ref()
+                                .is_some_and(|result| usage.result_sha256 == result.sha256)
+                    })
+        }
+        "interpreted_reject" => {
+            let matrix_valid = match binding.response_class.as_str() {
+                "typed_error" => {
+                    binding.provider_status == 200
+                        && binding.client_status == 200
+                        && binding.response_code.as_deref() == Some("provider_typed_error")
+                }
+                "http_error" => {
+                    (100..=599).contains(&binding.provider_status)
+                        && binding.provider_status != 200
+                        && binding.client_status == binding.provider_status
+                        && binding.response_code.as_deref() == Some("provider_http_error")
+                }
+                "invalid_body" => {
+                    binding.provider_status == 200
+                        && binding.client_status == 500
+                        && binding.response_code.as_deref() == Some("provider_invalid_body")
+                }
+                _ => false,
+            };
+            matrix_valid
+                && envelope.operation_status == "failed"
+                && envelope.response_status == 422
+                && envelope.response_code == binding.response_code
+                && envelope.result.is_none()
+                && envelope.provider_usage_binding.is_none()
+        }
+        _ => false,
+    }
 }
 
 fn validate_operation_envelope_at(
@@ -1573,6 +2136,42 @@ fn valid_identifier(value: &str, max_len: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn valid_egress_worker_version(value: &str) -> bool {
+    value == value.trim()
+        && !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'/' | b'@' | b'-')
+        })
+}
+
+fn valid_artifact_content_type(value: &str) -> bool {
+    if value.len() < 3
+        || value.len() > 128
+        || value != value.trim()
+        || !value.bytes().all(|byte| (b' '..=b'~').contains(&byte))
+    {
+        return false;
+    }
+    let media_type = value
+        .split_once(';')
+        .map_or(value, |(media_type, _)| media_type);
+    let Some((kind, subtype)) = media_type.split_once('/') else {
+        return false;
+    };
+    let valid_token = |token: &str| {
+        !token.is_empty()
+            && token.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(
+                        byte,
+                        b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+                    )
+            })
+    };
+    valid_token(kind) && valid_token(subtype) && !subtype.contains('/')
 }
 
 fn valid_operation_kind(value: &str) -> bool {
@@ -1848,7 +2447,7 @@ fn operation_status_request(url: &str, token: &str, body: &[u8]) -> worker::Resu
     Request::new_with_init(url, &init)
 }
 
-fn terminal_ack_request(token: &str, body: &[u8]) -> worker::Result<Request> {
+fn terminal_ack_request(token: &str, body: &[u8], url: &str) -> worker::Result<Request> {
     let mut headers = Headers::new();
     headers.set("accept", "application/json")?;
     headers.set("content-type", "application/json")?;
@@ -1862,7 +2461,7 @@ fn terminal_ack_request(token: &str, body: &[u8]) -> worker::Result<Request> {
     init.set_headers(headers.as_ref());
     init.set_body(&wasm_bindgen::JsValue::from_str(body));
     init.set_redirect(web_sys::RequestRedirect::Manual);
-    web_sys::Request::new_with_str_and_init(TERMINAL_ACK_URL, &init)
+    web_sys::Request::new_with_str_and_init(url, &init)
         .map(Request::from)
         .map_err(|error| {
             worker::Error::JsError(
@@ -2043,6 +2642,8 @@ mod tests {
     fn test_terminal_ack() -> ContainerTerminalAckEnvelope {
         ContainerTerminalAckEnvelope {
             protocol_version: 1,
+            terminal_ack_contract_version: None,
+            financial_terminal_contract_version: None,
             billing_event_id: "d".repeat(64),
             terminal_contract_sha256: "e".repeat(64),
             reconciliation_id: "f".repeat(64),
@@ -2065,9 +2666,32 @@ mod tests {
                 content_type: "application/json".to_string(),
             }),
             provider_usage_binding: None,
+            provider_response_binding: None,
             shard: test_shard(),
             trace_id: "trace-op-1".to_string(),
         }
+    }
+
+    fn test_terminal_ack_v3() -> ContainerTerminalAckEnvelope {
+        let mut envelope = test_terminal_ack();
+        envelope.terminal_ack_contract_version = Some(3);
+        envelope.financial_terminal_contract_version = Some(2);
+        envelope.provider_usage_binding = Some(ContainerTerminalAckProviderUsageBinding {
+            attempt_generation: 1,
+            receipt_sha256: "a".repeat(64),
+            result_sha256: "c".repeat(64),
+        });
+        envelope.provider_response_binding = Some(ContainerTerminalAckProviderResponseBinding {
+            attempt_generation: 1,
+            status: "succeeded".to_string(),
+            response_class: "success".to_string(),
+            provider_status: 200,
+            client_status: 200,
+            response_code: None,
+            provider_response_evidence_sha256: "b".repeat(64),
+            client_response_artifact_sha256: "9".repeat(64),
+        });
+        envelope
     }
 
     fn idle_readiness() -> PersistedReadinessSnapshot {
@@ -2208,7 +2832,7 @@ mod tests {
     }
 
     #[test]
-    fn operation_status_v3_uses_its_domain_separated_authority() {
+    fn operation_status_v3_and_v4_use_domain_separated_authority() {
         let envelope = test_operation();
         let body = serde_json::to_vec(&ContainerOperationStatusQuery {
             protocol_version: envelope.protocol_version,
@@ -2237,6 +2861,25 @@ mod tests {
         assert_eq!(claims.dispatch_id, "operation-status-v3-test-1");
         assert_eq!(claims.path, OPERATION_STATUS_V3_PATH);
         assert_eq!(claims.body_sha256, body_sha256(&body));
+
+        let v4_token = sign_bound_authority_with_domain(
+            &authority,
+            "operation-status-v4-test-1",
+            "POST",
+            OPERATION_STATUS_V4_PATH,
+            &body,
+            1_800_000_000,
+            OPERATION_STATUS_V4_AUTHORITY_DOMAIN,
+        )
+        .unwrap();
+        let v4_claims = authority_claims_for_domain(
+            &v4_token,
+            authority.secret.as_bytes(),
+            OPERATION_STATUS_V4_AUTHORITY_DOMAIN,
+        );
+        assert_eq!(v4_claims.dispatch_id, "operation-status-v4-test-1");
+        assert_eq!(v4_claims.path, OPERATION_STATUS_V4_PATH);
+        assert_eq!(v4_claims.body_sha256, body_sha256(&body));
     }
 
     #[test]
@@ -2357,12 +3000,171 @@ mod tests {
         assert!(
             serde_json::from_value::<ControllerOperationStatusV3Payload>(missing_root).is_err()
         );
-        let mut divergent = v3_json;
+        let mut divergent = v3_json.clone();
         divergent["provider_usage_receipt_sha256"] = serde_json::json!("e".repeat(64));
         assert_eq!(
             operation_status_v3_outcome(200, serde_json::from_value(divergent).unwrap(), &envelope,),
             Err("contract_mismatch")
         );
+
+        let raw_sha256 = "1".repeat(64);
+        let evidence_sha256 = "2".repeat(64);
+        let artifact_sha256 = "3".repeat(64);
+        let mut v4_json = v3_json.clone();
+        v4_json["status_contract_version"] = serde_json::json!(4);
+        v4_json["provider_response_artifacts"] = serde_json::json!({
+            "operation_id": envelope.operation_id,
+            "owner_generation": envelope.owner_generation,
+            "attempt_generation": 1,
+            "provider_operation_id": envelope.provider_operation_id,
+            "admission_sha256": envelope.admission_sha256,
+            "request_sha256": envelope.input.sha256,
+            "egress_profile": "openai-chat-completions-canary-v1",
+            "egress_worker_version_id": "worker-version-v4-test",
+            "status": "succeeded",
+            "provider_status": 200,
+            "client_status": 200,
+            "response_class": "success",
+            "response_code": null,
+            "raw_manifest": {
+                "object_key": format!(
+                    "container-provider-evidence/v1/relayreserve-test/2/1/{raw_sha256}"
+                ),
+                "object_version": "raw-version-v4-test",
+                "provider_response_evidence_sha256": evidence_sha256,
+                "sha256": raw_sha256,
+                "size": 256,
+                "content_type": "application/json"
+            },
+            "client_manifest": {
+                "object_key": format!(
+                    "container-client-artifacts/v1/relayreserve-test/2/{artifact_sha256}"
+                ),
+                "object_version": "client-version-v4-test",
+                "client_response_artifact_sha256": artifact_sha256,
+                "sha256": "c".repeat(64),
+                "size": 256,
+                "content_type": "application/json"
+            },
+            "provider_usage_receipt_sha256": receipt_sha256,
+            "attached_at": 1_800_000_102
+        });
+        let v4 =
+            serde_json::from_value::<ControllerOperationStatusV4Payload>(v4_json.clone()).unwrap();
+        let v4_outcome = operation_status_v4_outcome(200, v4, &envelope).unwrap();
+        assert_eq!(v4_outcome.status_contract_version, 4);
+        assert!(matches!(
+            v4_outcome
+                .provider_response_artifacts
+                .as_ref()
+                .map(|artifacts| artifacts.status),
+            Some(ContainerProviderResponseArtifactStatus::Succeeded)
+        ));
+
+        let mut missing_artifacts = v4_json.clone();
+        missing_artifacts
+            .as_object_mut()
+            .unwrap()
+            .remove("provider_response_artifacts");
+        assert!(
+            serde_json::from_value::<ControllerOperationStatusV4Payload>(missing_artifacts)
+                .is_err()
+        );
+        let mut tampered_artifact = v4_json;
+        tampered_artifact["provider_response_artifacts"]["client_manifest"]
+            ["client_response_artifact_sha256"] = serde_json::json!("4".repeat(64));
+        assert_eq!(
+            operation_status_v4_outcome(
+                200,
+                serde_json::from_value(tampered_artifact).unwrap(),
+                &envelope,
+            ),
+            Err("contract_mismatch")
+        );
+
+        for (response_class, provider_status, client_status, response_code) in [
+            ("typed_error", 200, 200, "provider_typed_error"),
+            ("http_error", 429, 429, "provider_http_error"),
+            ("invalid_body", 200, 500, "provider_invalid_body"),
+        ] {
+            let reject_artifact_sha256 = "5".repeat(64);
+            let reject_raw_sha256 = "6".repeat(64);
+            let reject = serde_json::json!({
+                "protocol_version": 1,
+                "status_contract_version": 4,
+                "operation_id": envelope.operation_id,
+                "status": "failed",
+                "code": response_code,
+                "trace_id": envelope.trace_id,
+                "result": null,
+                "provider_usage_receipt_sha256": null,
+                "provider_attempt": {
+                    "attempt_generation": 1,
+                    "provider_operation_id": envelope.provider_operation_id,
+                    "admission_sha256": envelope.admission_sha256,
+                    "request_sha256": envelope.input.sha256,
+                    "status": "definite_reject",
+                    "response_status": 422,
+                    "response_code": response_code,
+                    "result": null,
+                    "provider_usage_receipt_sha256": null,
+                    "provider_usage_receipt_attached_at": null,
+                    "prepared_at": 1_800_000_100,
+                    "dispatched_at": 1_800_000_101,
+                    "terminal_at": 1_800_000_102
+                },
+                "provider_response_artifacts": {
+                    "operation_id": envelope.operation_id,
+                    "owner_generation": envelope.owner_generation,
+                    "attempt_generation": 1,
+                    "provider_operation_id": envelope.provider_operation_id,
+                    "admission_sha256": envelope.admission_sha256,
+                    "request_sha256": envelope.input.sha256,
+                    "egress_profile": "openai-chat-completions-canary-v1",
+                    "egress_worker_version_id": "worker-version-v4-reject",
+                    "status": "interpreted_reject",
+                    "provider_status": provider_status,
+                    "client_status": client_status,
+                    "response_class": response_class,
+                    "response_code": response_code,
+                    "raw_manifest": {
+                        "object_key": format!(
+                            "container-provider-evidence/v1/relayreserve-test/2/1/{reject_raw_sha256}"
+                        ),
+                        "object_version": "raw-version-v4-reject",
+                        "provider_response_evidence_sha256": "7".repeat(64),
+                        "sha256": reject_raw_sha256,
+                        "size": 128,
+                        "content_type": "application/json"
+                    },
+                    "client_manifest": {
+                        "object_key": format!(
+                            "container-client-artifacts/v1/relayreserve-test/2/{reject_artifact_sha256}"
+                        ),
+                        "object_version": "client-version-v4-reject",
+                        "client_response_artifact_sha256": reject_artifact_sha256,
+                        "sha256": "8".repeat(64),
+                        "size": 128,
+                        "content_type": "application/json"
+                    },
+                    "provider_usage_receipt_sha256": null,
+                    "attached_at": 1_800_000_102
+                }
+            });
+            let reject_outcome = operation_status_v4_outcome(
+                422,
+                serde_json::from_value(reject).unwrap(),
+                &envelope,
+            )
+            .unwrap();
+            assert!(matches!(
+                reject_outcome
+                    .provider_response_artifacts
+                    .as_ref()
+                    .map(|artifacts| artifacts.status),
+                Some(ContainerProviderResponseArtifactStatus::InterpretedReject)
+            ));
+        }
     }
 
     #[test]
@@ -2416,6 +3218,11 @@ mod tests {
         assert!(legacy_json
             .get("provider_usage_binding")
             .is_some_and(serde_json::Value::is_null));
+        assert!(legacy_json.get("terminal_ack_contract_version").is_none());
+        assert!(legacy_json
+            .get("financial_terminal_contract_version")
+            .is_none());
+        assert!(legacy_json.get("provider_response_binding").is_none());
         assert_eq!(TERMINAL_ACK_PATH, "/internal/v2/operations/terminal-ack");
 
         let mut bound = legacy;
@@ -2454,6 +3261,75 @@ mod tests {
     }
 
     #[test]
+    fn terminal_ack_v3_binds_financial_terminal_and_provider_response() {
+        let authority = test_authority();
+        let success = test_terminal_ack_v3();
+        validate_terminal_ack_envelope(&success).unwrap();
+        let body = serde_json::to_vec(&success).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["terminal_ack_contract_version"], 3);
+        assert_eq!(json["financial_terminal_contract_version"], 2);
+        assert_eq!(
+            json["provider_response_binding"]["client_response_artifact_sha256"],
+            "9".repeat(64)
+        );
+        let token = sign_bound_authority_with_domain(
+            &authority,
+            "terminal-ack-v3-test-1",
+            "POST",
+            TERMINAL_ACK_V3_PATH,
+            &body,
+            1_800_000_000,
+            TERMINAL_ACK_V3_AUTHORITY_DOMAIN,
+        )
+        .unwrap();
+        let claims = authority_claims_for_domain(
+            &token,
+            authority.secret.as_bytes(),
+            TERMINAL_ACK_V3_AUTHORITY_DOMAIN,
+        );
+        assert_eq!(claims.path, TERMINAL_ACK_V3_PATH);
+        assert_eq!(claims.body_sha256, body_sha256(&body));
+
+        for (response_class, provider_status, client_status, response_code) in [
+            ("typed_error", 200, 200, "provider_typed_error"),
+            ("http_error", 429, 429, "provider_http_error"),
+            ("invalid_body", 200, 500, "provider_invalid_body"),
+        ] {
+            let mut rejection = success.clone();
+            rejection.operation_status = "failed".to_string();
+            rejection.response_status = 422;
+            rejection.response_code = Some(response_code.to_string());
+            rejection.result = None;
+            rejection.provider_usage_binding = None;
+            let binding = rejection.provider_response_binding.as_mut().unwrap();
+            binding.status = "interpreted_reject".to_string();
+            binding.response_class = response_class.to_string();
+            binding.provider_status = provider_status;
+            binding.client_status = client_status;
+            binding.response_code = Some(response_code.to_string());
+            validate_terminal_ack_envelope(&rejection).unwrap();
+        }
+
+        let mut downgrade = success.clone();
+        downgrade.terminal_ack_contract_version = None;
+        assert_eq!(
+            validate_terminal_ack_envelope(&downgrade),
+            Err("invalid_terminal_ack")
+        );
+        let mut divergent = success;
+        divergent
+            .provider_response_binding
+            .as_mut()
+            .unwrap()
+            .client_status = 201;
+        assert_eq!(
+            validate_terminal_ack_envelope(&divergent),
+            Err("invalid_terminal_ack")
+        );
+    }
+
+    #[test]
     fn terminal_ack_recovery_requires_an_ordered_second_revision() {
         let mut recovery = test_terminal_ack();
         recovery.operation_from_status = "dispatched".to_string();
@@ -2485,7 +3361,7 @@ mod tests {
     #[test]
     fn terminal_ack_response_and_error_classification_fail_closed() {
         let envelope = test_terminal_ack();
-        let acknowledged = ControllerTerminalAckPayload {
+        let acknowledged = ControllerTerminalAckV2Payload {
             protocol_version: 1,
             billing_event_id: envelope.billing_event_id.clone(),
             operation_id: envelope.operation_id.clone(),
@@ -2495,8 +3371,35 @@ mod tests {
             acknowledged_at: Some(1_800_000_001),
         };
         assert_eq!(
-            terminal_ack_outcome(acknowledged, &envelope),
+            terminal_ack_v2_outcome(acknowledged, &envelope),
             Ok(ContainerTerminalAckOutcome::Acknowledged { final_ack: true })
+        );
+
+        let v3 = test_terminal_ack_v3();
+        let v3_payload = ControllerTerminalAckV3Payload {
+            protocol_version: 1,
+            terminal_ack_contract_version: 3,
+            financial_terminal_contract_version: 2,
+            billing_event_id: v3.billing_event_id.clone(),
+            operation_id: v3.operation_id.clone(),
+            reconciliation_revision: 1,
+            terminal_contract_sha256: v3.terminal_contract_sha256.clone(),
+            client_response_artifact_sha256: "9".repeat(64),
+            status: "duplicate".to_string(),
+            final_ack: true,
+            acknowledged_at: 1_800_000_001,
+        };
+        assert_eq!(
+            terminal_ack_v3_outcome(v3_payload.clone(), &v3),
+            Ok(ContainerTerminalAckOutcome::Duplicate { final_ack: true })
+        );
+        let mut tampered = v3_payload;
+        tampered.client_response_artifact_sha256 = "8".repeat(64);
+        assert_eq!(
+            terminal_ack_v3_outcome(tampered, &v3),
+            Err(ContainerTerminalAckError::Permanent(
+                "terminal_ack_contract_mismatch"
+            ))
         );
 
         let conflict = classify_terminal_ack_error(

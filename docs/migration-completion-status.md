@@ -1452,3 +1452,47 @@ call, DO/Container lifecycle campaign, deployment, secret change, accounting
 mutation, or traffic switch. P5 remote mixed-version, fault/load/cost/SLO,
 retention, rollback, security, and signed approvals remain open. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-18 Financial Terminal P4 Status
+
+This section supersedes the preceding statement that P4 financial terminal
+ownership is absent. P4 is complete only as a local disabled candidate.
+
+### Implemented locally
+
+- Migration 0053 introduces the drained and immutable
+  `container-financial-terminal-v2` contract, generation-fenced response facts,
+  anti-downgrade protection, exact terminal replay, and evidence identity.
+- Exact success writes completed 200 and settles against its immutable usage
+  receipt. Typed, HTTP, and invalid-body rejection writes failed 422, fully
+  refunds the reservation, and leaves request accounting and receipt absent.
+- Controller status v4 snapshots operation, attempt, raw evidence, client
+  artifact, interpretation, and receipt without cross-read mixing.
+- ACK v3 binds only response-backed final success or rejection. A recovery
+  terminal has no complete P3 binding and remains an ACK-v2 projection.
+- The Worker checks the raw R2 object's exact key, version, checksum, size,
+  content type, 12 custom metadata fields, and bounded body digest before
+  terminal convergence; client replay remains independently artifact-bound.
+- Outbox, scheduled terminalization, reconciliation, canary audit, and replay
+  share one immutable terminal event and cannot reopen provider dispatch.
+- Readiness requires D1 head 0053 and the financial-terminal-v2 schema while
+  every response rollout gate remains default false.
+
+### Verified locally
+
+The SQLite verifier passes 53 contiguous migrations, 57 tables, 674 required
+incremental columns, 81 key indexes, and the 0053 drain/terminal positive and
+negative matrix. Worker unit tests pass 837/837 and the wasm target check
+passes. The Controller, response protocol, Workerd lifecycle, atomic-admission,
+outbox, frontend, bundle, Wrangler dry-run, and workspace checks all pass in
+the complete `bun run check` aggregate.
+
+### Still blocked
+
+No authenticated remote 0053 apply/readback, real R2 evidence, Durable Object
+or Container lifecycle/fault campaign, provider call, secret change, financial
+mutation, deployment, or traffic switch occurred. P5 still requires
+reader-first mixed-version rollout, real response-loss/crash tests,
+provider-call counters, load/cost/SLO/alerts, retention/privacy review,
+disable-first rollback rehearsal, and named approvals. Go/VPS remains the
+traffic and financial authority; production remains **NO-GO**.

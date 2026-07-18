@@ -37,6 +37,7 @@ use crate::d1_repositories::{
     RelayContainerReconciliationClaimOutcome, RelayContainerReconciliationLease,
     RelayContainerReconciliationRecord, RelayContainerReconciliationRecordOutcome,
     RelayContainerReconciliationRunClaimOutcome, RelayContainerReconciliationRunLease,
+    RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION,
 };
 
 pub const CONTAINER_RECONCILIATION_SCAN_LIMIT_ENV: &str = "CONTAINER_RECONCILIATION_SCAN_LIMIT";
@@ -1315,9 +1316,16 @@ pub fn client_response_manifest_from_receipt(
             "container terminal receipt has a partial client response",
         ));
     }
-    let status = u16::try_from(receipt.client_response_status.unwrap_or_default())
+    let replay_status = if receipt.financial_terminal_contract_version
+        == RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION
+    {
+        receipt.client_replay_status
+    } else {
+        receipt.client_response_status
+    };
+    let status = u16::try_from(replay_status.unwrap_or_default())
         .map_err(|_| reconciliation_error("container client response status is invalid"))?;
-    if receipt.operation_response_status != Some(i64::from(status)) {
+    if receipt.operation_response_status != receipt.client_response_status {
         return Err(reconciliation_error(
             "container client response status does not match the operation",
         ));
@@ -1466,6 +1474,7 @@ mod tests {
             }),
             provider_usage_receipt_sha256: None,
             provider_attempt: None,
+            provider_response_artifacts: None,
         }
     }
 
@@ -1747,6 +1756,7 @@ mod tests {
                     result: None,
                     provider_usage_receipt_sha256: None,
                     provider_attempt: None,
+                    provider_response_artifacts: None,
                 },
                 None,
                 false,
@@ -1772,6 +1782,7 @@ mod tests {
                     result: None,
                     provider_usage_receipt_sha256: None,
                     provider_attempt: None,
+                    provider_response_artifacts: None,
                 },
                 None,
                 false,
@@ -1860,6 +1871,7 @@ mod tests {
                 dispatched_at: Some(1_025),
                 terminal_at: Some(1_075),
             }),
+            provider_response_artifacts: None,
         };
         assert!(controller_provider_usage_matches(Some(&identity), &outcome));
 

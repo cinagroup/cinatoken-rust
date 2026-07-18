@@ -19,15 +19,18 @@ import {
   type RelayShardLedgerPolicy,
   type StorageAccessGrant,
   type StorageResultRecord,
+  type TerminalAckLedgerOutcome,
 } from "./ledger";
 import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
   INTERNAL_OPERATION_TERMINAL_ACK_PATH,
   INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH,
+  INTERNAL_OPERATION_TERMINAL_ACK_V3_PATH,
   INTERNAL_OPERATION_STATUS_PATH,
   INTERNAL_OPERATION_STATUS_V2_PATH,
   INTERNAL_OPERATION_STATUS_V3_PATH,
+  INTERNAL_OPERATION_STATUS_V4_PATH,
   INTERNAL_READINESS_PATH,
   INTERNAL_STATUS_PATH,
   MAX_OPERATION_BODY_BYTES,
@@ -39,21 +42,26 @@ import {
   type OperationStatusQuery,
   type ShardReadinessProbe,
   type TerminalAckRequest,
+  type TerminalAckRequestV3,
   verifyOperationRequest,
   verifyReadinessRequest,
   verifyStatusRequest,
+  verifyTerminalAckV3Request,
 } from "./protocol";
 import {
   operationOutcomeResponse,
   parseContainerOperationResponse,
+  terminalAckV3Response,
 } from "./operation_outcome";
 import {
   handleOperationStatusRequest,
   handleOperationStatusV2Request,
   handleOperationStatusV3Request,
+  handleOperationStatusV4Request,
   type ShardOperationStatusRpcResult,
   type ShardOperationStatusV2RpcResult,
   type ShardOperationStatusV3RpcResult,
+  type ShardOperationStatusV4RpcResult,
 } from "./operation_status";
 import {
   handleTerminalAckRequest,
@@ -208,10 +216,15 @@ export type ShardReadProviderResponseArtifactsRpcResult =
   | { ok: true; row: ProviderResponseArtifactAttachmentRow | null }
   | { ok: false; error: { code: string; status: number } };
 
+export type ShardTerminalAckV3RpcResult =
+  | { ok: true; result: TerminalAckLedgerOutcome }
+  | { ok: false; error: { code: string; status: number } };
+
 export type {
   ShardOperationStatusRpcResult,
   ShardOperationStatusV2RpcResult,
   ShardOperationStatusV3RpcResult,
+  ShardOperationStatusV4RpcResult,
 } from "./operation_status";
 export type {
   ShardTerminalAckRpcResult,
@@ -223,6 +236,11 @@ export type {
   TerminalAckResponse,
   TerminalAckResultManifest,
 } from "./terminal_ack";
+export type {
+  TerminalAckProviderResponseBinding,
+  TerminalAckRequestV3,
+} from "./protocol";
+export type { TerminalAckV3Response } from "./operation_outcome";
 
 export class RelayShardContainer extends Container<ControllerEnv> {
   override defaultPort = 8080;
@@ -550,6 +568,19 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     }
   }
 
+  async readOperationStatusV4(
+    query: OperationStatusQuery,
+  ): Promise<ShardOperationStatusV4RpcResult> {
+    try {
+      return { ok: true, snapshot: this.ledger.readOperationStatusV4Snapshot(query) };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return { ok: false, error: { code: "operation_status_unavailable", status: 503 } };
+    }
+  }
+
   async acknowledgeGlobalTerminal(
     ack: TerminalAckRequest,
   ): Promise<ShardTerminalAckRpcResult> {
@@ -563,6 +594,31 @@ export class RelayShardContainer extends Container<ControllerEnv> {
       return {
         ok: true,
         result: this.ledger.acknowledgeGlobalTerminal(
+          ack,
+          Math.floor(Date.now() / 1000),
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return { ok: false, error: { code: "terminal_ack_unavailable", status: 503 } };
+    }
+  }
+
+  async acknowledgeGlobalTerminalV3(
+    ack: TerminalAckRequestV3,
+  ): Promise<ShardTerminalAckV3RpcResult> {
+    if (this.env.CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED !== "true") {
+      return {
+        ok: false,
+        error: { code: "container_global_terminal_ack_disabled", status: 503 },
+      };
+    }
+    try {
+      return {
+        ok: true,
+        result: this.ledger.acknowledgeGlobalTerminalV3(
           ack,
           Math.floor(Date.now() / 1000),
         ),
@@ -1005,6 +1061,26 @@ RelayShardContainer.outboundByHost = {
   [PROVIDER_EGRESS_HOST]: providerEgressOutboundHandler,
 };
 
+async function handleTerminalAckV3Request(
+  request: Request,
+  env: ControllerEnv,
+  now = Math.floor(Date.now() / 1000),
+): Promise<Response> {
+  try {
+    const verified = await verifyTerminalAckV3Request(request, env, now);
+    if (env.CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED !== "true") {
+      return jsonError("container_global_terminal_ack_disabled", 503);
+    }
+    const stub = env.RELAY_SHARDS.getByName(verified.ack.shard.instance_name);
+    const outcome = await stub.acknowledgeGlobalTerminalV3(verified.ack);
+    if (!outcome.ok) return jsonError(outcome.error.code, outcome.error.status);
+    return terminalAckV3Response(verified.ack, outcome.result);
+  } catch (error) {
+    if (error instanceof ProtocolError) return jsonError(error.code, error.status);
+    return jsonError("terminal_ack_unavailable", 503);
+  }
+}
+
 const handler: ExportedHandler<ControllerEnv> = {
   async fetch(request, env): Promise<Response> {
     try {
@@ -1018,11 +1094,17 @@ const handler: ExportedHandler<ControllerEnv> = {
       if (path === INTERNAL_OPERATION_STATUS_V3_PATH) {
         return handleOperationStatusV3Request(request, env);
       }
+      if (path === INTERNAL_OPERATION_STATUS_V4_PATH) {
+        return handleOperationStatusV4Request(request, env);
+      }
       if (path === INTERNAL_OPERATION_TERMINAL_ACK_PATH) {
         return handleTerminalAckRequest(request, env);
       }
       if (path === INTERNAL_OPERATION_TERMINAL_ACK_V2_PATH) {
         return handleTerminalAckV2Request(request, env);
+      }
+      if (path === INTERNAL_OPERATION_TERMINAL_ACK_V3_PATH) {
+        return handleTerminalAckV3Request(request, env);
       }
       if (path === INTERNAL_STATUS_PATH) {
         await verifyStatusRequest(request, env);

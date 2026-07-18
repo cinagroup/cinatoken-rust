@@ -15792,10 +15792,10 @@ contracts are mandatory before a Container cutover:
 
 | Contract | Required cinatoken decision and evidence | Current status |
 | --- | --- | --- |
-| Object, tenant, and jurisdiction identity | Version one canonical identity tuple containing environment, opaque tenant scope, shard/ring, object purpose, and approved jurisdiction; derive an HMAC name without raw user/token/API-key material. Select a jurisdiction-restricted subnamespace before deriving the ID, verify `ctx.id.jurisdiction`, and persist namespace, binding, script, class, name digest, jurisdiction, and ring generation. The same name produces a different ID in another jurisdiction and must not create an accidental second owner; use Regional Services separately when ingress locality is required | Design required |
+| Shard, environment, and jurisdiction identity | One DO/Container exists per logical shard, with canonical name `cinatoken-relay-shard-v1-XXXX`. The tenant HMAC digest selects a shard but is never part of the DO name; making the name tenant-specific would silently replace the bounded shard pool with per-tenant Containers. Environment isolation comes from distinct Worker service/namespace/binding deployments. Before a future jurisdiction rollout, select the restricted subnamespace before `getByName`, verify `ctx.id.jurisdiction`, and persist namespace, binding, script, class, canonical-name digest, jurisdiction, and ring generation. The same name produces a different ID in another jurisdiction and must not create an accidental second owner; Regional Services remains a separate ingress decision | Stable shard naming implemented locally; jurisdiction and remote provenance required |
 | DO class lifecycle | Treat service/binding/class, storage backend, and the chosen Wrangler lifecycle declaration as an ABI. The current repository uses legacy `migrations`: retain its append-only tags and never mix them with `exports`. Before first remote Container deployment, explicitly approve staying on that chain or a one-time move to declarative `exports`, now preferred for new Workers. New namespaces use SQLite. Rename/delete/transfer is an atomic class-lifecycle deployment, not a gradual rollout; require old-binding inventory, stored-data compatibility, remote reconciliation output, and a rollback reader | Design and remote rehearsal required |
-| Cold start | Constructor initialization and SQLite schema migration must be idempotent and block requests until complete; memory is cache only. Keep `blockConcurrencyWhile` bounded to schema/state initialization, below its 30-second reset limit, and free of provider/network I/O. Track SQL schema in a durable migration table rather than unsupported `PRAGMA user_version`. Restore durable owner, pending alarm, deadline, and result identity without provider or financial side effects. Initialization failure makes readiness false | Real lifecycle proof required |
-| Alarm ABI N/N-1 | Persist versioned alarm intent, owner generation, due time, and operation identity. A DO has one alarm; `setAlarm` replaces it, so cold-start code must read the existing alarm before scheduling. Delivery is at least once with bounded automatic retries. Version N must read N and N-1; N-1 must never receive an N-only command. Duplicate, late, reordered, and post-rollback alarms are idempotent or quarantined and never resend a provider or settle without current D1 authority | Implementation and mixed-version fault proof required |
+| Cold start | Constructor initialization and SQLite schema migration must be idempotent and block requests until complete; memory is cache only. Keep `blockConcurrencyWhile` bounded to local schema/intent reconstruction and free of provider/network/D1/R2/financial I/O. Track SQL schema in an immutable durable migration table rather than `PRAGMA user_version`. The local candidate restores unarmed deadline intents from SQLite, but the actual `RelayShardContainer` still needs eviction/restart/OOM evidence | Local implementation; real Container lifecycle proof required |
+| Alarm ABI N/N-1 | `@cloudflare/containers` owns the DO alarm and multiplexes application tasks through `schedule()`; application code must not override `alarm()` or call `setAlarm` as a second owner. Persist v1 deadline intent, owner/shard/deadline identity, delivery generation/count, armed state, retry time, and quarantine result in DO SQLite. The reader accepts legacy three-field v0 and strict v1 regardless of writer gates; v1 writes require two default-false gates. Because package 0.3.7 catches callback failures and deletes the one-shot schedule, the callback records delivery and performs bounded application retries itself. Duplicate, early, late, stale-generation, exhausted, and rollback-era delivery is idempotent or quarantined and never calls provider or financial paths | Local v0/v1 bridge implemented; real package alarm and mixed-version proof required |
 | Cross-layer provenance | Join edge deployment, Controller deployment, DO namespace/class/migration/schema/object identity, Container image digest and protocol, broker profile/version, provider request/receipt, D1 migration head and operation, R2 versions/digests, terminal event/outbox, billing receipt, and 0051 lease evidence without storing secrets or prompt/response bodies | End-to-end trace and retention approval required |
 
 These requirements deliberately exceed copying `idFromName`, lazy
@@ -15848,4 +15848,114 @@ completed state. It does not resolve provider-response-before-R2 ambiguity,
 provider-native retry authority, independent amount/invoice authority, complete
 response parity, remote lifecycle evidence, or the cinaVibeSDK-derived
 production contracts above. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
+## 22.246 RelayShardContainer Durable Bootstrap And Deadline Alarm ABI v1 (2026-07-18)
+
+This milestone closes the local claim-to-schedule crash gap for the isolated
+Container Controller. It does not add a D1 migration: the new schema belongs
+to each `RelayShardContainer` SQLite Durable Object, so there is deliberately
+no migration 0052. It also does not deploy a Worker, create or relocate an
+object, start a Container, invoke a provider, mutate financial state, or change
+traffic.
+
+### Frozen shard and bootstrap contract
+
+The bounded capacity model remains one DO and one Container per logical shard.
+The tenant HMAC routing digest selects `shard_index`; it is not part of
+`getByName`. The canonical name remains
+`cinatoken-relay-shard-v1-XXXX`, independent of tenant and ring generation.
+Owner generation, ring generation, shard count/index, and canonical name are
+persisted and compared on every deadline intent. Environment isolation is a
+separate Worker service/namespace/binding decision. Jurisdiction selection is
+still a future pre-ID subnamespace decision and cannot silently relocate an
+existing object.
+
+`RelayShardContainer` now runs a second bounded `blockConcurrencyWhile` stage
+after the `Container` base constructor. It initializes only local DO SQLite and
+rearms pending unarmed intents. It performs no fetch, service-binding call,
+D1/KV/R2 access, Container start, provider action, or financial action. The
+schema records immutable local migrations 1 and 2 and validates their exact
+names on every cold start. Update/delete guards prevent migration-ledger
+rewrites, every recorded row is validated, and an unknown future version fails
+initialization instead of being silently ignored. Failure to rearm any pending
+intent also rejects initialization; the object does not accept work with an
+incomplete recovery set.
+
+### Persistent deadline intent
+
+When both v1 writer gates are true, operation claim and the initial unarmed
+intent commit in the same DO SQLite transaction. Only then does the Controller
+call `schedule()`. A successful schedule is followed by an exact generation-
+fenced `armed_at` update. A crash before scheduling therefore leaves a durable
+unarmed intent for cold-start or replay rearm; a crash after scheduling but
+before `armed_at` can create a duplicate callback, which is harmless because
+the delivery generation and terminal operation state are idempotent fences.
+
+The v1 row freezes payload version/kind, operation and owner generation,
+deadline, delivery generation/count, pending/completed/quarantined state,
+armed and next-delivery times, bounded error code, and the full shard tuple.
+Identity columns are immutable. A terminal operation transition atomically
+marks its intent completed; operation compaction removes only the corresponding
+intent through the existing owner-fenced delete path. Direct intent deletion
+while the operation exists and `INSERT OR REPLACE` identity replacement are
+rejected. SQL and payload validation both cap delivery generation/count at
+eight and require their one-delivery-in-flight relationship.
+
+The callback reader always accepts the legacy exact three-field v0 payload and
+the strict v1 payload. Unknown fields, malformed shards, and future versions
+fail closed. Early delivery advances to a new generation at the original due
+time. Callback failure advances with deterministic exponential backoff and
+bounded jitter; eight delivered generations or the 24-hour recovery horizon
+quarantine the intent. Stale generations are non-mutating. Current-generation
+owner/deadline/shard mismatch quarantines without changing the operation.
+Recovery code performs no provider dispatch, provider retry, settlement,
+refund, D1 write, or R2 write.
+
+`@cloudflare/containers` 0.3.7 owns the platform alarm, catches scheduled
+callback exceptions, and deletes the one-shot schedule. Consequently the
+subclass does not override `alarm()` or call `setAlarm`; it persists delivery
+before reconciliation and creates its own next `schedule()` before returning.
+If delivery persistence or replacement scheduling cannot be committed, the
+callback calls `ctx.abort()` so the invocation cannot continue into base-class
+one-shot cleanup with no durable disposition.
+This dependency behavior is part of the candidate ABI and must be re-audited
+on every package upgrade.
+
+### Compatibility, gates, and evidence boundary
+
+The writer requires both
+`CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED=true` and
+`CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED=true`. Local, staging,
+and production configurations keep both false. The v1 reader/rearm path is not
+gated, which permits a disable-first rollback to an artifact that still reads
+existing v1 state. Before the first v1 write, every object that can receive the
+shard must run the v1 reader; an N-1 artifact without that reader must be
+drained or isolated blue/green and cannot be the rollback target.
+
+New execution has no legacy-writer fallback. If
+`CONTAINER_EXECUTION_ENABLED=true` while either v1 gate is not exact `true`,
+the edge Controller and the shard object both return
+`operation_recovery_intent_v1_disabled` before operation claim, and readiness
+is false. Legacy v0 remains a reader-only rollback/recovery ABI.
+
+Focused local evidence is 95/95 Bun Controller tests and 34/34 Workerd SQLite
+DO tests. It covers exact v0/v1 parsing, future-version rejection, atomic
+claim-plus-intent, eviction persistence, armed readback, early/duplicate/due
+delivery, terminal replay, stale generation, shard mismatch, retry exhaustion,
+future-schema rejection, guarded delete/replace, immutable migration rows, and
+zero provider-journal/terminal-ack writes during recovery. These fixtures
+instantiate the ledger DO, not the real
+`RelayShardContainer` class or Linux Container. Real base-class alarm
+multiplexing, cold start, eviction, sleep/restart/OOM, N/N-1 deployment,
+jurisdiction mismatch, provider-call counters, load/cost/SLO, and remote
+readback remain mandatory.
+
+The next response-parity milestone must use the Go source as authority. It must
+decide and test the source behavior that only HTTP 200 is accepted as ordinary
+success, non-200 responses are rebuilt into the compatible error envelope
+without blindly forwarding upstream error headers, typed error bodies can
+arrive with HTTP 200, and interrupted streams may still settle already observed
+usage. One shared response/error/usage interpreter must serve Worker and
+Container paths before any canary. Go/VPS remains authoritative and production
 remains **NO-GO**.

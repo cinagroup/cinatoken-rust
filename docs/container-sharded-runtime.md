@@ -1048,12 +1048,15 @@ commit from a stale claim owner are rejected.
 The cinaVibeSDK patterns are retained as design input, with these stronger
 cinatoken contracts:
 
-- **Object identity:** derive a versioned opaque DO name from environment,
-  tenant-scope digest, shard/ring, object purpose, and jurisdiction. Raw tenant,
-  user, token, or API-key values never become a DO name. Persist the namespace,
-  service/binding/class tuple, object-name digest, jurisdiction, and ring
-  generation with the operation.
-- **Jurisdiction:** create the jurisdiction-restricted subnamespace before
+- **Object identity:** retain exactly one named DO/Container per logical shard,
+  using `cinatoken-relay-shard-v1-XXXX`. The tenant HMAC routing digest selects
+  the shard and is never part of the DO name; a tenant-specific name would
+  change the architecture into an unbounded per-tenant Container fleet.
+  Separate Worker service/namespace/binding deployments isolate environments.
+  Persist the namespace, service/binding/class tuple, canonical-name digest,
+  jurisdiction, shard index, and ring generation with the operation.
+- **Jurisdiction (future, not implemented locally):** create the
+  jurisdiction-restricted subnamespace before
   deriving the object ID and verify `ctx.id.jurisdiction` inside the object.
   The same name has a different ID in another jurisdiction, so a mismatch must
   fail rather than create a second owner. Existing object identity is
@@ -1075,12 +1078,15 @@ cinatoken contracts:
   I/O, and stays below its reset timeout. SQL schema version lives in a durable
   migration table, not `PRAGMA user_version`. Memory caches are disposable and
   initialization failure closes readiness.
-- **Alarm N/N-1:** a DO has one alarm and a later `setAlarm` replaces it, so
-  cold start reads the existing alarm before scheduling. Persist a versioned
-  intent and owner generation for at-least-once delivery. Version N reads N and
-  N-1; N-1 is isolated from N-only commands. Duplicate, delayed, reordered,
-  bounded platform retries, retry exhaustion, and rollback-era alarms converge
-  or quarantine without a provider resend or stale financial commit.
+- **Alarm N/N-1:** the `Container` base class owns the one platform alarm and
+  multiplexes callbacks through `schedule()`; subclasses do not override
+  `alarm()` or separately call `setAlarm`. Persist versioned application intent
+  and owner/shard/deadline/delivery generations in DO SQLite. The current reader
+  accepts legacy three-field v0 and strict v1 while v1 writing is double-gated.
+  `@cloudflare/containers` 0.3.7 catches callback exceptions and deletes the
+  one-shot task, so the callback must persist delivery first and create its own
+  bounded retry or quarantine. Duplicate, early, delayed, stale, exhausted,
+  and rollback-era tasks never resend a provider or commit financial state.
 - **Provenance:** one redacted execution tuple joins edge and Controller
   deployment IDs, DO namespace/class/migration/schema/object digest,
   jurisdiction, Container image/protocol, broker profile/version, provider
@@ -1101,3 +1107,66 @@ compensation are forbidden. Until remote migration/readback, mixed-version
 lifecycle faults, provider idempotency/lookup, amount/invoice convergence,
 shared response semantics, and named approval are archived, production remains
 **NO-GO**.
+
+## 2026-07-18 Durable Bootstrap And Deadline Alarm Intent v1
+
+The isolated Controller now has a local, default-off deadline recovery bridge.
+This is DO-local SQLite state, not global D1 state, and therefore adds no D1
+0052 migration.
+
+The frozen sequence is:
+
+1. With both writer gates true, `claimOperation` inserts the operation and its
+   first unarmed v1 intent in one synchronous SQLite transaction.
+2. The Controller calls the base class `schedule()` for `deadline_at + 1`.
+3. Exact payload and delivery generation readback marks the intent armed.
+4. A callback records delivery locally before terminal reconciliation.
+5. Success or an already terminal operation marks the intent completed; a
+   transient callback failure advances a deterministic bounded retry; identity
+   conflict or exhaustion quarantines.
+
+The intent stores operation/owner/deadline identity, delivery generation and
+count, armed/next-delivery state, error classification, and the complete shard
+fence. Identity is immutable. A terminal operation update closes a pending
+intent in the same SQLite transaction, and operation compaction removes its
+intent. Direct deletion while the operation exists and replacement insert are
+blocked. At most eight deliveries are accepted by both payload and SQL checks,
+and retries stop after the 24-hour horizon. Cold start validates every migration
+row, rejects unknown future versions, and refuses initialization if any pending
+intent cannot be rearmed.
+
+The reader supports two payloads:
+
+- v0: exact legacy `{operation_id, owner_generation, deadline_at}`;
+- v1: exact version/kind plus delivery generation and canonical shard tuple.
+
+The v1 reader and cold-start rearm remain active even when the writer is off.
+The writer requires both
+`CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED` and
+`CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED`; all tracked scopes
+set both to `false`. A rollback artifact must retain the v1 reader after any v1
+write. An older artifact must be drained or isolated before writer activation.
+Execution is now interlocked with these gates at both the outer Controller and
+the shard DO: enabling execution with either gate false fails before claim and
+makes readiness false. New code never emits v0; v0 is reader-only.
+
+`@cloudflare/containers` 0.3.7 remains the sole platform-alarm owner. Its base
+class multiplexes tasks in `container_schedules`, catches callback exceptions,
+and deletes the one-shot task. `RelayShardContainer` therefore neither
+overrides `alarm()` nor calls `setAlarm`; application retry/quarantine is
+completed inside the callback. A persistence or reschedule failure invokes
+`ctx.abort()` before base-class one-shot cleanup can complete. Constructor rearm
+is bounded to local schema and intent work under `blockConcurrencyWhile` and
+touches no network, D1, R2, provider, Container process, or financial path.
+
+Local tests cover the pure ABI (Controller 95/95) and a real Workerd SQLite
+ledger object (34/34), including eviction. They do not instantiate the actual
+Container-derived
+class, execute its base alarm, or start Linux. Promotion still requires real
+class eviction/restart/OOM, package alarm failure, duplicate schedule,
+mixed-version, jurisdiction, provider-call-counter, load/cost, alert, and
+rollback evidence. Production remains **NO-GO**.
+
+The next implementation milestone is the shared Go-authoritative response
+interpreter for exact HTTP-200 success, HTTP-200 typed errors, compatible
+non-200 envelopes/header filtering, and interrupted-stream usage retention.

@@ -5,6 +5,8 @@ import {
   type ClaimResult,
   type DispatchProviderAttemptOutcome,
   type OperationRow,
+  type OperationRecoveryIntent,
+  type OperationRecoveryIntentOutcome,
   type OperationStatus,
   type PrepareProviderAttemptOutcome,
   type ProviderEgressIdentity,
@@ -23,6 +25,7 @@ import {
   type OperationEnvelope,
   type OperationShard,
 } from "../../services/container-controller/src/protocol";
+import type { RelayShardAlarmIntentV1 } from "../../services/container-controller/src/relay_shard_durable_state";
 
 type ClaimOutcome =
   | { ok: true; result: ClaimResult }
@@ -77,6 +80,71 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
     now: number,
   ): Promise<ClaimResult> {
     return this.ledger.claimOperation(envelope, envelopeSha256, dispatchId, policy, now);
+  }
+
+  async claimWithRecoveryIntent(
+    envelope: OperationEnvelope,
+    envelopeSha256: string,
+    dispatchId: string,
+    policy: RelayShardLedgerPolicy,
+    now: number,
+  ): Promise<ClaimResult> {
+    return this.ledger.claimOperation(
+      envelope,
+      envelopeSha256,
+      dispatchId,
+      policy,
+      now,
+      true,
+    );
+  }
+
+  async ensureOperationRecoveryIntent(
+    envelope: OperationEnvelope,
+    now: number,
+  ): Promise<OperationRecoveryIntent> {
+    return this.ledger.ensureOperationRecoveryIntent(envelope, now);
+  }
+
+  async readOperationRecoveryIntent(
+    operationId: string,
+    ownerGeneration: number,
+  ): Promise<OperationRecoveryIntent | null> {
+    return this.ledger.readOperationRecoveryIntent(operationId, ownerGeneration);
+  }
+
+  async listUnarmedOperationRecoveryIntents(): Promise<OperationRecoveryIntent[]> {
+    return this.ledger.listUnarmedOperationRecoveryIntents();
+  }
+
+  async markOperationRecoveryIntentArmed(
+    payload: RelayShardAlarmIntentV1,
+    now: number,
+  ): Promise<boolean> {
+    return this.ledger.markOperationRecoveryIntentArmed(payload, now);
+  }
+
+  async reconcileOperationRecoveryIntent(
+    payload: RelayShardAlarmIntentV1,
+    now: number,
+  ): Promise<OperationRecoveryIntentOutcome> {
+    return this.ledger.reconcileOperationRecoveryIntent(payload, now);
+  }
+
+  async retryOperationRecoveryIntent(
+    payload: RelayShardAlarmIntentV1,
+    now: number,
+    errorCode: string,
+  ): Promise<OperationRecoveryIntent | null> {
+    return this.ledger.retryOperationRecoveryIntent(payload, now, errorCode);
+  }
+
+  async quarantineOperationRecoveryIntent(
+    payload: RelayShardAlarmIntentV1,
+    now: number,
+    errorCode: string,
+  ): Promise<boolean> {
+    return this.ledger.quarantineOperationRecoveryIntent(payload, now, errorCode);
   }
 
   async claimOutcome(

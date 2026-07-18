@@ -2399,8 +2399,9 @@ Phase 1 still cannot graduate until isolated staging proves:
 - same-batch failure at every statement, lost-response readback, exact frozen
   lease expiry plus D1-clock rejection, duplicate Cron/alarm and zero partial
   accounting;
-- jurisdiction-scoped opaque object/tenant identity, one frozen DO class
-  lifecycle mode (declarative `exports` or retained legacy migrations),
+- stable logical-shard object identity plus a separately approved jurisdiction,
+  one frozen DO class lifecycle mode (declarative `exports` or retained legacy
+  migrations),
   bounded idempotent cold start, single at-least-once alarm ABI N/N-1, and full
   cross-layer provenance;
 - real D1/R2/DO/Controller/Container eviction, restart/OOM, pre-body 4 MiB
@@ -2412,7 +2413,48 @@ Phase 1 still cannot graduate until isolated staging proves:
 - R2 retention, load/cost/SLO/alerts, security/privacy/data review,
   disable-first rollback, and C1-C5/G1-G8 approvals.
 
-The next implementation blockers are the versioned object/jurisdiction and DO
-alarm/class lifecycle contracts, end-to-end provenance, shared response
-interpreter, provider ambiguity authority, and independent financial
-attestation. Go/VPS remains authoritative and production remains **NO-GO**.
+The local alarm/bootstrap substrate is now implemented. Remaining production
+blockers are real Container/package lifecycle and jurisdiction proof, frozen
+class lifecycle, end-to-end provenance, the shared response interpreter,
+provider ambiguity authority, and independent financial attestation. Go/VPS
+remains authoritative and production remains **NO-GO**.
+
+## 2026-07-18 Phase 1 Durable Container Alarm Bridge
+
+The local Controller now persists deadline intent before scheduling whenever
+both new writer gates are enabled. Claim and the first unarmed v1 intent share
+one DO SQLite transaction; cold start and operation replay can rearm an
+unarmed intent. Legacy three-field schedules remain readable, while strict v1
+adds shard and delivery-generation fencing. Early, duplicate, late, stale, and
+failed callbacks converge, retry at most eight deliveries within 24 hours, or
+quarantine without provider or financial I/O.
+
+Both `CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED` and
+`CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED` remain `false` in
+local, staging, and production configuration. Reader/rearm compatibility is
+always present. The state is local to each SQLite DO and adds no D1 migration
+0052. `@cloudflare/containers` remains the only alarm owner; the subclass uses
+`schedule()` and never overrides `alarm()`. Version 0.3.7 catches callback
+exceptions and deletes the one-shot schedule, so application retry/quarantine
+must be persisted and rescheduled before callback return. If persistence or
+rescheduling fails, the object aborts the invocation before package cleanup can
+commit.
+
+Execution has no new legacy-v0 writer path. The outer Controller and shard DO
+both reject execution before claim unless both v1 gates are exact `true`, and
+readiness reports false for either half-enabled combination. V0 remains readable
+only for existing schedules and compatible rollback.
+
+Phase 1 has local proof for pure v0/v1 parsing and Workerd SQLite eviction,
+replay, terminalization, retry, mismatch, and migration-ledger behavior. It
+does not yet have a real `RelayShardContainer`/Linux Container alarm lifecycle
+fixture or remote evidence. Before either writer gate changes, staging must
+deploy the reader everywhere, isolate N-1, exercise real callback deletion and
+restart/OOM faults, read back both gates, and prove zero provider/financial
+delta.
+
+The next implementation milestone is a shared Go-parity response interpreter:
+exact HTTP-200 success policy, HTTP-200 typed errors, compatible non-200 error
+envelopes/header filtering, and interrupted-stream usage settlement. Stable
+logical-shard naming stays canonical; jurisdiction selection and provenance
+remain separate blockers. Production remains **NO-GO**.

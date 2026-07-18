@@ -19,6 +19,12 @@ const terminalAckSource = await Bun.file(
 const controllerLedgerSource = await Bun.file(
   new URL("../services/container-controller/src/ledger.ts", import.meta.url),
 ).text();
+const durableStateSource = await Bun.file(
+  new URL(
+    "../services/container-controller/src/relay_shard_durable_state.ts",
+    import.meta.url,
+  ),
+).text();
 const providerAttemptGatewaySource = await Bun.file(
   new URL("../services/container-controller/src/provider_attempt_gateway.ts", import.meta.url),
 ).text();
@@ -66,6 +72,10 @@ describe("isolated container controller configuration", () => {
       expect(config.vars.CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED).toBe("false");
       expect(config.vars.CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED).toBe("false");
+      expect(
+        config.vars.CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED,
+      ).toBe("false");
       expect(config.vars.CONTAINER_MAX_PROVIDER_ATTEMPTS).toBe("1");
       expect(Number(config.vars.CONTAINER_TERMINAL_RETENTION_SECONDS)).toBeGreaterThanOrEqual(600);
       expect(Number(config.vars.CONTAINER_MAX_TERMINAL_OPERATIONS)).toBeGreaterThan(0);
@@ -101,6 +111,40 @@ describe("isolated container controller configuration", () => {
     expect(rootConfig.containers).toBeUndefined();
     expect(packageJson.scripts["check:container-controller"]).toContain("container-controller");
     expect(packageJson.scripts.check).toContain("bun run check:container-controller");
+  });
+
+  test("operation recovery v1 is durable, rollback-readable, and double-gated", () => {
+    expect(controllerSource).toContain(
+      'env.CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED === "true"',
+    );
+    expect(controllerSource).toContain(
+      'env.CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED === "true"',
+    );
+    expect(controllerSource).toContain(
+      'throw new ProtocolError("operation_recovery_intent_v1_disabled", 503)',
+    );
+    expect(controllerSource).toContain(
+      'return jsonError("operation_recovery_intent_v1_disabled", 503)',
+    );
+    expect(controllerSource).not.toContain(
+      'deadline_at: verified.envelope.execution_deadline_at',
+    );
+    expect(controllerSource).toContain("ctx.blockConcurrencyWhile(async () => {");
+    expect(controllerSource).toContain("await this.rearmPendingOperationRecoveryIntents();");
+    expect(controllerSource).toContain(
+      'this.ctx.abort("operation recovery retry persistence failed")',
+    );
+    expect(controllerSource).toContain(
+      'this.ctx.abort("legacy operation recovery persistence failed")',
+    );
+    expect(controllerSource).toContain("parseOperationRecoverySchedule(payload)");
+    expect(controllerLedgerSource).toContain("cinatoken_shard_schema_migrations");
+    expect(controllerLedgerSource).toContain("cinatoken_shard_alarm_intents");
+    expect(controllerLedgerSource).toContain("persistRecoveryIntentV1 = false");
+    expect(controllerLedgerSource).toContain("this.ensureOperationRecoveryIntentRow(operation, now)");
+    expect(durableStateSource).toContain("LegacyOperationRecoverySchedule");
+    expect(durableStateSource).toContain("RELAY_SHARD_ALARM_MAX_DELIVERIES = 8");
+    expect(durableStateSource).not.toMatch(/D1Database|R2Bucket|fetch\(/);
   });
 
   test("container storage uses named outbound handlers and never exposes generic binding CRUD", () => {

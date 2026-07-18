@@ -225,10 +225,15 @@ pub fn container_local_contracts() -> ContainerLocalContracts {
         .map(|(_, source)| source)
         .unwrap_or_default();
     let recovery_is_persisted_before_execution = operation_fetch
-        .find("\"reconcileOperationDeadline\"")
+        .find("this.ledger.claimOperation(")
+        .zip(operation_fetch.find("await this.armOperationRecoveryIntent(intent);"))
         .zip(operation_fetch.find("this.ledger.transitionOperation("))
         .zip(operation_fetch.find("this.containerFetch(\"http://container/v1/operations\""))
-        .is_some_and(|((schedule, running), dispatch)| schedule < running && running < dispatch);
+        .is_some_and(|(((claim, arm), running), dispatch)| {
+            claim < arm && arm < running && running < dispatch
+        })
+        && ledger.contains("persistRecoveryIntentV1")
+        && ledger.contains("this.ensureOperationRecoveryIntentRow(operation, now)");
     ContainerLocalContracts {
         runtime_compiled: runtime.contains("/v1/operations")
             && runtime.contains("execution_not_enabled")

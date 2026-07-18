@@ -1896,12 +1896,15 @@ schema readiness is unavailable.
 
 ### DO object and lifecycle subgate
 
-Before T8, the deployment packet must define one canonical versioned tuple for
-environment, opaque tenant scope, object purpose, shard/ring, and jurisdiction.
-The derived DO name must not contain raw user/token/API-key values. The tuple's
-digest, namespace, service, binding, class, selected Wrangler lifecycle mode
-and state, SQLite schema, `ctx.id.jurisdiction`, and ring generation must be
-present in redacted operation provenance.
+Before T8, the deployment packet must preserve one canonical DO/Container per
+logical shard. Its name is `cinatoken-relay-shard-v1-XXXX`; the tenant HMAC
+digest selects the shard but never enters the object name. A tenant-specific
+name would invalidate the bounded pool and capacity model. Environment is
+isolated by distinct Worker service/namespace/binding deployments. The packet
+must record the canonical-name digest, namespace, service, binding, class,
+selected Wrangler lifecycle mode and state, SQLite schema,
+`ctx.id.jurisdiction`, shard index, and ring generation in redacted operation
+provenance.
 
 The current repository uses legacy append-only `migrations`; Cloudflare now
 prefers declarative `exports` for new Workers, and the two modes are mutually
@@ -1918,14 +1921,18 @@ no external I/O, and stays below its reset timeout; SQL schema version uses a
 durable migration table rather than `PRAGMA user_version`. It must not execute
 a provider or financial side effect.
 
-Alarm payload/intent is a versioned ABI. A DO has one alarm and `setAlarm`
-replaces the existing value, so constructor/cold-start logic must call
-`getAlarm` before scheduling. Delivery is at least once with bounded automatic
-retry. Version N reads N and N-1; N-1 cannot receive N-only alarm intent.
-Unknown future versions, stale generations, duplicate, late, reordered,
-retry-exhausted, and rollback-era alarms are quarantined or idempotently
-replayed. They never authorize provider resend or settlement. The mixed-version
-rehearsal must join edge, Controller, DO, Container, broker, provider, D1, R2,
+Alarm payload/intent is a versioned ABI. The `Container` base class owns the
+single platform alarm and multiplexes callbacks through `schedule()`;
+`RelayShardContainer` must not override `alarm()` or compete with it through
+direct `setAlarm`. The application persists its own deadline intent in DO
+SQLite. Version N always reads legacy v0 and strict v1, while v1 writing needs
+both default-false gates; N-1 must be drained or isolated before the first v1
+write. In `@cloudflare/containers` 0.3.7 a callback exception is caught and the
+one-shot schedule is deleted, so the callback itself records delivery and
+creates a bounded retry or quarantine. Unknown future versions, stale
+generations, duplicate, early, late, retry-exhausted, and rollback-era tasks
+fail closed without provider resend or settlement. The mixed-version rehearsal
+must join edge, Controller, DO, Container, broker, provider, D1, R2,
 terminal/outbox/billing and 0051 evidence into one redacted cross-layer trace.
 
 ### Rollback and evidence retention
@@ -1955,7 +1962,37 @@ fingerprints, named approval, and archived undo bookmark.
 Open blockers after the local 0051 implementation are provider-native
 idempotency or deterministic lookup, provider-response-before-R2 ambiguity,
 shared non-2xx response semantics, independent amount authority and invoice
-convergence, production R2 orphan policy, the DO identity/class/cold-start/alarm
-ABI and cross-layer provenance contracts, remote fault/lifecycle evidence,
+convergence, production R2 orphan policy, real proof for the locally implemented
+DO identity/cold-start/alarm substrate, frozen class lifecycle, jurisdiction,
+and cross-layer provenance, remote fault/lifecycle evidence,
 load/cost/SLO/alerts, signed rollback, and C1-C5/G1-G8 approval. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-18 Durable Alarm Intent v1 Execution Addendum
+
+This addendum changes the local implementation baseline for the T8 lifecycle
+subgate. It authorizes no remote action and adds no D1 0052.
+
+| Step | Required action | Exit evidence | Abort condition |
+| --- | --- | --- | --- |
+| A0 candidate freeze | Pin `@cloudflare/containers` 0.3.7, Controller artifact, three Wrangler files, generated types, legacy migration chain, and DO-local schema migrations 1/2 | Signed hashes and source/config readback; both v1 writer gates false | Package/config/source drift or any gate true |
+| A1 reader-first deploy | In isolated staging only, deploy v0/v1 reader, local schema validation, and unarmed rearm while writer gates remain false | Every active logical shard reports the same service/binding/class/version; no per-tenant object creation; zero new v1 rows | N-1 object can receive traffic, identity/jurisdiction ambiguity, or unexpected v1 write |
+| A2 real lifecycle fault proof | Exercise actual `RelayShardContainer` cold/warm start, eviction, duplicate schedule, callback throw/delete, Container sleep/restart/OOM, malformed/future payload, and dependency upgrade guard | Intent and package schedule traces converge or quarantine; provider and financial counters remain unchanged | Pending work loses all wake paths, callback escapes without durable disposition, or any provider/financial delta |
+| A3 half-enabled negatives | Test `CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED=true` with staging-verified false, then enabled false with `CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED=true`, while execution is requested | Outer Controller and shard DO both return `operation_recovery_intent_v1_disabled` before claim, readiness is false, and zero operation/intent/v0 rows appear | Any claim, v0/v1 schedule, Container wake, provider action, or ready result occurs |
+| A4 synthetic v1 rehearsal | After named approval, set both gates for an isolated synthetic shard, inject crash before schedule and after schedule/before armed, then duplicate/early/late/stale/exhausted deliveries | One operation terminal outcome, bounded retry/quarantine, exact shard/owner fence, no provider resend or financial mutation | Lost intent, unbounded retry, wrong operation mutation, second provider call, or settlement/refund |
+| A5 rollback | Set both gates false first, retain the v1 reader, drain/quarantine v1 intents, and route new work to the reader-compatible artifact | No new v1 writes; every existing intent completed/quarantined; legacy v0 remains readable | Rollback artifact cannot read v1, schema/evidence deletion, N-1 receives v1, or object is recreated in another jurisdiction |
+
+The application does not own the platform alarm. The `Container` base class
+multiplexes `schedule()` tasks, and package 0.3.7 catches callback exceptions
+before deleting a one-shot task. A2/A4 must therefore prove the application
+records delivery and creates the next schedule before callback return. Direct
+`setAlarm`, subclass `alarm()` overrides, or a second scheduler owner are
+release blockers. A2/A4 must also prove a failed persistence or replacement
+schedule reaches `ctx.abort()` before base one-shot cleanup and is recoverable
+after object restart.
+
+After A0-A5, T8 still remains open for jurisdiction, class migration, full
+cross-layer provenance, remote load/cost/alerts, and mixed-version deployment.
+The next implementation packet must also close Go-parity HTTP 200/non-200 and
+stream-interruption response interpretation before canary promotion. Production
+remains **NO-GO**.

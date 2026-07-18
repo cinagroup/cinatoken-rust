@@ -8,6 +8,15 @@ import {
   type OperationStatusQuery,
   type TerminalAckRequest,
 } from "./protocol";
+import {
+  RELAY_SHARD_ALARM_INTENT_KIND,
+  RELAY_SHARD_ALARM_INTENT_VERSION,
+  RELAY_SHARD_ALARM_MAX_DELIVERIES,
+  buildRelayShardAlarmIntentV1,
+  operationShardsEqual,
+  relayShardAlarmRetryAt,
+  type RelayShardAlarmIntentV1,
+} from "./relay_shard_durable_state";
 
 export const DISPATCH_REPLAY_RETENTION_SECONDS = 600;
 
@@ -202,6 +211,40 @@ export interface RelayShardLedgerPolicy {
   maxTerminalOperations: number;
   globalTerminalCompactionEnabled: boolean;
 }
+
+export type OperationRecoveryIntentState =
+  | "pending"
+  | "completed"
+  | "quarantined";
+
+export interface OperationRecoveryIntent {
+  [key: string]: SqlStorageValue;
+  payload_version: number;
+  intent_kind: string;
+  operation_id: string;
+  owner_generation: number;
+  deadline_at: number;
+  delivery_generation: number;
+  delivery_count: number;
+  state: OperationRecoveryIntentState;
+  armed_at: number | null;
+  next_delivery_at: number;
+  last_error_code: string | null;
+  shard_contract_version: number;
+  ring_generation: number;
+  shard_count: number;
+  shard_index: number;
+  instance_name: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export type OperationRecoveryIntentOutcome =
+  | "completed"
+  | "duplicate"
+  | "not_due"
+  | "stale"
+  | "quarantined";
 
 interface DispatchRow {
   [key: string]: SqlStorageValue;
@@ -776,7 +819,141 @@ export class RelayShardLedger {
       );
       CREATE INDEX IF NOT EXISTS cinatoken_shard_readiness_dispatches_created
         ON cinatoken_shard_readiness_dispatches(created_at_ms);
+      CREATE TABLE IF NOT EXISTS cinatoken_shard_schema_migrations (
+        schema_version INTEGER PRIMARY KEY,
+        migration_name TEXT NOT NULL UNIQUE,
+        applied_at INTEGER NOT NULL CHECK (applied_at > 0)
+      );
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_schema_migration_update_guard
+      BEFORE UPDATE ON cinatoken_shard_schema_migrations
+      FOR EACH ROW
+      BEGIN
+        SELECT RAISE(ABORT, 'shard schema migration is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_schema_migration_delete_guard
+      BEFORE DELETE ON cinatoken_shard_schema_migrations
+      FOR EACH ROW
+      BEGIN
+        SELECT RAISE(ABORT, 'shard schema migration cannot be deleted');
+      END;
+      CREATE TABLE IF NOT EXISTS cinatoken_shard_alarm_intents (
+        operation_id TEXT PRIMARY KEY,
+        owner_generation INTEGER NOT NULL,
+        payload_version INTEGER NOT NULL,
+        intent_kind TEXT NOT NULL,
+        deadline_at INTEGER NOT NULL,
+        delivery_generation INTEGER NOT NULL,
+        delivery_count INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        armed_at INTEGER,
+        next_delivery_at INTEGER NOT NULL,
+        last_error_code TEXT,
+        shard_contract_version INTEGER NOT NULL,
+        ring_generation INTEGER NOT NULL,
+        shard_count INTEGER NOT NULL,
+        shard_index INTEGER NOT NULL,
+        instance_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        CHECK (length(operation_id) BETWEEN 1 AND 128),
+        CHECK (owner_generation > 0),
+        CHECK (payload_version = 1),
+        CHECK (intent_kind = 'operation_deadline'),
+        CHECK (deadline_at > 0),
+        CHECK (delivery_generation BETWEEN 1 AND 8),
+        CHECK (delivery_count BETWEEN 0 AND 8),
+        CHECK (delivery_count <= delivery_generation),
+        CHECK (delivery_generation - delivery_count BETWEEN 0 AND 1),
+        CHECK (state IN ('pending', 'completed', 'quarantined')),
+        CHECK (armed_at IS NULL OR armed_at > 0),
+        CHECK (next_delivery_at > 0),
+        CHECK (
+          last_error_code IS NULL OR
+          (length(last_error_code) BETWEEN 1 AND 96
+            AND last_error_code NOT GLOB '*[^a-z0-9_]*')
+        ),
+        CHECK (shard_contract_version = 1),
+        CHECK (ring_generation > 0),
+        CHECK (shard_count BETWEEN 1 AND 1024),
+        CHECK (shard_index BETWEEN 0 AND shard_count - 1),
+        CHECK (length(instance_name) BETWEEN 29 AND 64),
+        CHECK (created_at > 0 AND updated_at >= created_at),
+        CHECK (
+          (state = 'pending') OR
+          (state IN ('completed', 'quarantined') AND armed_at IS NULL)
+        )
+      );
+      CREATE INDEX IF NOT EXISTS cinatoken_shard_alarm_intents_pending
+        ON cinatoken_shard_alarm_intents(state, armed_at, next_delivery_at, operation_id);
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_alarm_intent_insert_guard
+      BEFORE INSERT ON cinatoken_shard_alarm_intents
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1 FROM cinatoken_shard_alarm_intents AS existing
+         WHERE existing.operation_id = NEW.operation_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'shard alarm intent cannot be replaced');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_alarm_intent_identity_guard
+      BEFORE UPDATE ON cinatoken_shard_alarm_intents
+      FOR EACH ROW
+      WHEN
+        NEW.operation_id IS NOT OLD.operation_id OR
+        NEW.owner_generation IS NOT OLD.owner_generation OR
+        NEW.payload_version IS NOT OLD.payload_version OR
+        NEW.intent_kind IS NOT OLD.intent_kind OR
+        NEW.deadline_at IS NOT OLD.deadline_at OR
+        NEW.shard_contract_version IS NOT OLD.shard_contract_version OR
+        NEW.ring_generation IS NOT OLD.ring_generation OR
+        NEW.shard_count IS NOT OLD.shard_count OR
+        NEW.shard_index IS NOT OLD.shard_index OR
+        NEW.instance_name IS NOT OLD.instance_name OR
+        NEW.created_at IS NOT OLD.created_at
+      BEGIN
+        SELECT RAISE(ABORT, 'shard alarm intent identity is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_alarm_intent_delete_guard
+      BEFORE DELETE ON cinatoken_shard_alarm_intents
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1 FROM cinatoken_shard_operations AS operation
+         WHERE operation.operation_id = OLD.operation_id
+           AND operation.owner_generation = OLD.owner_generation
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'shard alarm intent cannot be deleted before its operation');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_operation_alarm_intent_terminal
+      AFTER UPDATE OF status ON cinatoken_shard_operations
+      FOR EACH ROW
+      WHEN
+        NEW.status IN ('completed', 'failed', 'recovery_required') AND
+        OLD.status NOT IN ('completed', 'failed', 'recovery_required')
+      BEGIN
+        UPDATE cinatoken_shard_alarm_intents
+           SET state = 'completed', armed_at = NULL, last_error_code = NULL,
+               updated_at = MAX(updated_at, NEW.updated_at)
+         WHERE operation_id = NEW.operation_id
+           AND owner_generation = NEW.owner_generation
+           AND state = 'pending';
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_operation_alarm_intent_cleanup
+      AFTER DELETE ON cinatoken_shard_operations
+      FOR EACH ROW
+      BEGIN
+        DELETE FROM cinatoken_shard_alarm_intents
+         WHERE operation_id = OLD.operation_id
+           AND owner_generation = OLD.owner_generation;
+      END;
+      INSERT OR IGNORE INTO cinatoken_shard_schema_migrations
+        (schema_version, migration_name, applied_at)
+      VALUES (1, '0001_legacy_schema_observed', unixepoch());
+      INSERT OR IGNORE INTO cinatoken_shard_schema_migrations
+        (schema_version, migration_name, applied_at)
+      VALUES (2, '0002_operation_deadline_alarm_intent_v1', unixepoch());
     `);
+    this.validateShardSchemaMigrations();
     this.ensureOperationColumns();
     this.ensureProviderAttemptEgressColumns();
     this.ensureProviderUsageReceiptColumns();
@@ -1663,6 +1840,7 @@ export class RelayShardLedger {
     dispatchId: string,
     policy: RelayShardLedgerPolicy,
     now: number,
+    persistRecoveryIntentV1 = false,
   ): ClaimResult {
     this.ensureSchema();
     validatePolicy(policy);
@@ -1692,6 +1870,16 @@ export class RelayShardLedger {
         }
         if (dispatch === null) {
           this.insertDispatch(dispatchId, envelope.operation_id, envelopeSha256, now);
+        }
+        if (
+          persistRecoveryIntentV1 &&
+          (existing.status === "claimed" || existing.status === "running")
+        ) {
+          const operation = this.readStorageOperation(envelope.operation_id);
+          if (operation === null) {
+            throw new ProtocolError("operation_recovery_intent_unavailable", 503);
+          }
+          this.ensureOperationRecoveryIntentRow(operation, now);
         }
         return { kind: "existing", row: existing };
       }
@@ -1723,6 +1911,13 @@ export class RelayShardLedger {
       }
       this.insertDispatch(dispatchId, envelope.operation_id, envelopeSha256, now);
       this.insertOperation(envelope, envelopeSha256, dispatchId, "claimed", null, now);
+      if (persistRecoveryIntentV1) {
+        const operation = this.readStorageOperation(envelope.operation_id);
+        if (operation === null) {
+          throw new ProtocolError("operation_recovery_intent_unavailable", 503);
+        }
+        this.ensureOperationRecoveryIntentRow(operation, now);
+      }
       return { kind: "new" };
     });
   }
@@ -1965,6 +2160,331 @@ export class RelayShardLedger {
         cancelledExpired ||
         changedRowCount(this.storage) === 1
       );
+    });
+  }
+
+  ensureOperationRecoveryIntent(
+    envelope: OperationEnvelope,
+    now: number,
+  ): OperationRecoveryIntent {
+    this.ensureSchema();
+    validateOperationRecoveryNow(now);
+    buildRelayShardAlarmIntentV1(
+      envelope.operation_id,
+      envelope.owner_generation,
+      envelope.execution_deadline_at,
+      1,
+      envelope.shard,
+    );
+    return this.storage.transactionSync(() => {
+      const operation = this.readStorageOperation(envelope.operation_id);
+      if (
+        operation === null ||
+        operation.owner_generation !== envelope.owner_generation ||
+        operation.deadline_at !== envelope.execution_deadline_at ||
+        !operationShardsEqual(storageOperationShard(operation), envelope.shard)
+      ) {
+        throw new ProtocolError("operation_recovery_intent_conflict", 409);
+      }
+      return this.ensureOperationRecoveryIntentRow(operation, now);
+    });
+  }
+
+  readOperationRecoveryIntent(
+    operationId: string,
+    ownerGeneration: number,
+  ): OperationRecoveryIntent | null {
+    this.ensureSchema();
+    validateOperationRecoveryIdentity(operationId, ownerGeneration);
+    return this.readOperationRecoveryIntentRow(operationId, ownerGeneration);
+  }
+
+  listUnarmedOperationRecoveryIntents(limit = 64): OperationRecoveryIntent[] {
+    this.ensureSchema();
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 128) {
+      throw new ProtocolError("invalid_operation_recovery_intent_limit", 500);
+    }
+    const rows = this.storage.sql
+      .exec<OperationRecoveryIntent>(
+        `SELECT payload_version, intent_kind, operation_id, owner_generation, deadline_at,
+                delivery_generation, delivery_count, state, armed_at, next_delivery_at,
+                last_error_code, shard_contract_version, ring_generation, shard_count,
+                shard_index, instance_name, created_at, updated_at
+           FROM cinatoken_shard_alarm_intents
+          WHERE state = 'pending' AND armed_at IS NULL
+          ORDER BY next_delivery_at ASC, operation_id ASC
+          LIMIT ?1`,
+        limit,
+      )
+      .toArray();
+    for (const row of rows) validateOperationRecoveryIntentRow(row);
+    return rows;
+  }
+
+  markOperationRecoveryIntentArmed(
+    payloadValue: RelayShardAlarmIntentV1,
+    now: number,
+  ): boolean {
+    this.ensureSchema();
+    const payload = validateOperationRecoveryIntentPayload(payloadValue);
+    validateOperationRecoveryNow(now);
+    return this.storage.transactionSync(() => {
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_alarm_intents
+            SET armed_at = ?1, updated_at = MAX(updated_at, ?1)
+          WHERE operation_id = ?2 AND owner_generation = ?3
+            AND delivery_generation = ?4 AND state = 'pending'
+            AND armed_at IS NULL
+            AND payload_version = ?5 AND intent_kind = ?6
+            AND deadline_at = ?7
+            AND shard_contract_version = ?8 AND ring_generation = ?9
+            AND shard_count = ?10 AND shard_index = ?11 AND instance_name = ?12`,
+        now,
+        payload.operation_id,
+        payload.owner_generation,
+        payload.delivery_generation,
+        payload.payload_version,
+        payload.kind,
+        payload.deadline_at,
+        payload.shard.contract_version,
+        payload.shard.ring_generation,
+        payload.shard.shard_count,
+        payload.shard.shard_index,
+        payload.shard.instance_name,
+      );
+      if (changedRowCount(this.storage) === 1) return true;
+      const current = this.readOperationRecoveryIntentRow(
+        payload.operation_id,
+        payload.owner_generation,
+      );
+      return (
+        current !== null &&
+        current.state === "pending" &&
+        current.delivery_generation === payload.delivery_generation &&
+        current.armed_at !== null &&
+        operationRecoveryIntentMatchesPayload(current, payload)
+      );
+    });
+  }
+
+  reconcileOperationRecoveryIntent(
+    payloadValue: RelayShardAlarmIntentV1,
+    now: number,
+  ): OperationRecoveryIntentOutcome {
+    this.ensureSchema();
+    const payload = validateOperationRecoveryIntentPayload(payloadValue);
+    validateOperationRecoveryNow(now);
+    const preflight: OperationRecoveryIntentOutcome | "expire" =
+      this.storage.transactionSync(() => {
+        const intent = this.readOperationRecoveryIntentRow(
+          payload.operation_id,
+          payload.owner_generation,
+        );
+        if (intent === null) return "stale";
+        if (intent.state === "completed") return "duplicate";
+        if (intent.state === "quarantined") return "quarantined";
+        if (intent.delivery_generation !== payload.delivery_generation) return "stale";
+        if (!operationRecoveryIntentMatchesPayload(intent, payload)) {
+          this.quarantineOperationRecoveryIntentRow(
+            intent,
+            now,
+            "operation_recovery_payload_mismatch",
+            Math.max(intent.delivery_count, payload.delivery_generation),
+          );
+          return "quarantined";
+        }
+        const operation = this.readStorageOperation(payload.operation_id);
+        if (
+          operation === null ||
+          operation.owner_generation !== payload.owner_generation ||
+          operation.deadline_at !== payload.deadline_at ||
+          !operationShardsEqual(storageOperationShard(operation), payload.shard)
+        ) {
+          this.quarantineOperationRecoveryIntentRow(
+            intent,
+            now,
+            "operation_recovery_operation_mismatch",
+            Math.max(intent.delivery_count, payload.delivery_generation),
+          );
+          return "quarantined";
+        }
+        const deliveredCount = Math.max(
+          intent.delivery_count,
+          payload.delivery_generation,
+        );
+        if (isTerminalOperationStatus(operation.status)) {
+          this.completeOperationRecoveryIntentRow(intent, deliveredCount, now);
+          return "duplicate";
+        }
+        if (payload.deadline_at > now) {
+          if (deliveredCount >= RELAY_SHARD_ALARM_MAX_DELIVERIES) {
+            this.quarantineOperationRecoveryIntentRow(
+              intent,
+              now,
+              "operation_recovery_delivery_exhausted",
+              deliveredCount,
+            );
+            return "quarantined";
+          }
+          this.storage.sql.exec(
+            `UPDATE cinatoken_shard_alarm_intents
+                SET delivery_generation = ?1, delivery_count = ?2, armed_at = NULL,
+                    next_delivery_at = ?3, last_error_code = NULL,
+                    updated_at = MAX(updated_at, ?4)
+              WHERE operation_id = ?5 AND owner_generation = ?6
+                AND state = 'pending' AND delivery_generation = ?7`,
+            payload.delivery_generation + 1,
+            deliveredCount,
+            payload.deadline_at + 1,
+            now,
+            payload.operation_id,
+            payload.owner_generation,
+            payload.delivery_generation,
+          );
+          if (changedRowCount(this.storage) !== 1) {
+            throw new ProtocolError("operation_recovery_intent_conflict", 409);
+          }
+          return "not_due";
+        }
+        this.storage.sql.exec(
+          `UPDATE cinatoken_shard_alarm_intents
+              SET delivery_count = ?1, armed_at = NULL, updated_at = MAX(updated_at, ?2)
+            WHERE operation_id = ?3 AND owner_generation = ?4
+              AND state = 'pending' AND delivery_generation = ?5`,
+          deliveredCount,
+          now,
+          payload.operation_id,
+          payload.owner_generation,
+          payload.delivery_generation,
+        );
+        if (changedRowCount(this.storage) !== 1) {
+          throw new ProtocolError("operation_recovery_intent_conflict", 409);
+        }
+        return "expire";
+      });
+    if (preflight !== "expire") return preflight;
+
+    this.expireOperation(payload.operation_id, payload.owner_generation, now);
+    return this.storage.transactionSync(() => {
+      const intent = this.readOperationRecoveryIntentRow(
+        payload.operation_id,
+        payload.owner_generation,
+      );
+      if (intent === null) return "stale";
+      if (intent.state === "completed") return "completed";
+      if (intent.state === "quarantined") return "quarantined";
+      if (intent.delivery_generation !== payload.delivery_generation) return "stale";
+      const operation = this.readStorageOperation(payload.operation_id);
+      if (operation !== null && isTerminalOperationStatus(operation.status)) {
+        this.completeOperationRecoveryIntentRow(intent, intent.delivery_count, now);
+        return "completed";
+      }
+      throw new ProtocolError("operation_recovery_reconcile_incomplete", 503);
+    });
+  }
+
+  retryOperationRecoveryIntent(
+    payloadValue: RelayShardAlarmIntentV1,
+    now: number,
+    errorCode: string,
+  ): OperationRecoveryIntent | null {
+    this.ensureSchema();
+    const payload = validateOperationRecoveryIntentPayload(payloadValue);
+    validateOperationRecoveryNow(now);
+    validateOperationRecoveryErrorCode(errorCode);
+    return this.storage.transactionSync(() => {
+      const intent = this.readOperationRecoveryIntentRow(
+        payload.operation_id,
+        payload.owner_generation,
+      );
+      if (
+        intent === null ||
+        intent.state !== "pending" ||
+        intent.delivery_generation !== payload.delivery_generation
+      ) {
+        return null;
+      }
+      if (!operationRecoveryIntentMatchesPayload(intent, payload)) {
+        this.quarantineOperationRecoveryIntentRow(
+          intent,
+          now,
+          "operation_recovery_payload_mismatch",
+        );
+        return null;
+      }
+      const deliveredCount = Math.max(
+        intent.delivery_count,
+        payload.delivery_generation,
+      );
+      const retryAt = relayShardAlarmRetryAt(
+        payload.operation_id,
+        deliveredCount,
+        now,
+        payload.deadline_at,
+      );
+      if (retryAt === null) {
+        this.quarantineOperationRecoveryIntentRow(
+          intent,
+          now,
+          errorCode,
+          deliveredCount,
+        );
+        return null;
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_alarm_intents
+            SET delivery_generation = ?1, delivery_count = ?2, armed_at = NULL,
+                next_delivery_at = ?3, last_error_code = ?4,
+                updated_at = MAX(updated_at, ?5)
+          WHERE operation_id = ?6 AND owner_generation = ?7
+            AND state = 'pending' AND delivery_generation = ?8`,
+        payload.delivery_generation + 1,
+        deliveredCount,
+        retryAt,
+        errorCode,
+        now,
+        payload.operation_id,
+        payload.owner_generation,
+        payload.delivery_generation,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("operation_recovery_intent_conflict", 409);
+      }
+      const next = this.readOperationRecoveryIntentRow(
+        payload.operation_id,
+        payload.owner_generation,
+      );
+      if (next === null) {
+        throw new ProtocolError("operation_recovery_intent_unavailable", 503);
+      }
+      return next;
+    });
+  }
+
+  quarantineOperationRecoveryIntent(
+    payloadValue: RelayShardAlarmIntentV1,
+    now: number,
+    errorCode: string,
+  ): boolean {
+    this.ensureSchema();
+    const payload = validateOperationRecoveryIntentPayload(payloadValue);
+    validateOperationRecoveryNow(now);
+    validateOperationRecoveryErrorCode(errorCode);
+    return this.storage.transactionSync(() => {
+      const intent = this.readOperationRecoveryIntentRow(
+        payload.operation_id,
+        payload.owner_generation,
+      );
+      if (
+        intent === null ||
+        intent.state !== "pending" ||
+        intent.delivery_generation !== payload.delivery_generation ||
+        !operationRecoveryIntentMatchesPayload(intent, payload)
+      ) {
+        return false;
+      }
+      this.quarantineOperationRecoveryIntentRow(intent, now, errorCode);
+      return true;
     });
   }
 
@@ -2313,6 +2833,33 @@ export class RelayShardLedger {
       now - policy.dispatchRetentionSeconds,
       excess,
     );
+  }
+
+  private validateShardSchemaMigrations(): void {
+    const rows = this.storage.sql
+      .exec<{ schema_version: number; migration_name: string }>(
+        `SELECT schema_version, migration_name
+           FROM cinatoken_shard_schema_migrations
+          ORDER BY schema_version ASC`,
+      )
+      .toArray();
+    const expected = [
+      { schema_version: 1, migration_name: "0001_legacy_schema_observed" },
+      {
+        schema_version: 2,
+        migration_name: "0002_operation_deadline_alarm_intent_v1",
+      },
+    ];
+    if (
+      rows.length !== expected.length ||
+      rows.some(
+        (row, index) =>
+          row.schema_version !== expected[index]?.schema_version ||
+          row.migration_name !== expected[index]?.migration_name,
+      )
+    ) {
+      throw new ProtocolError("shard_schema_migration_conflict", 500);
+    }
   }
 
   private ensureOperationColumns(): void {
@@ -2879,6 +3426,135 @@ export class RelayShardLedger {
     );
   }
 
+  private ensureOperationRecoveryIntentRow(
+    operation: StorageOperationRow,
+    now: number,
+  ): OperationRecoveryIntent {
+    if (operation.status !== "claimed" && operation.status !== "running") {
+      throw new ProtocolError("operation_recovery_intent_not_authorized", 409);
+    }
+    const payload = buildRelayShardAlarmIntentV1(
+      operation.operation_id,
+      operation.owner_generation,
+      operation.deadline_at,
+      1,
+      storageOperationShard(operation),
+    );
+    const existing = this.readOperationRecoveryIntentRow(
+      operation.operation_id,
+      operation.owner_generation,
+    );
+    if (existing !== null) {
+      if (!operationRecoveryIntentMatchesOperation(existing, operation)) {
+        throw new ProtocolError("operation_recovery_intent_conflict", 409);
+      }
+      return existing;
+    }
+    if (!Number.isSafeInteger(operation.deadline_at + 1)) {
+      throw new ProtocolError("operation_recovery_intent_conflict", 409);
+    }
+    this.storage.sql.exec(
+      `INSERT INTO cinatoken_shard_alarm_intents
+         (operation_id, owner_generation, payload_version, intent_kind, deadline_at,
+          delivery_generation, delivery_count, state, armed_at, next_delivery_at,
+          last_error_code, shard_contract_version, ring_generation, shard_count,
+          shard_index, instance_name, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'pending', NULL, ?7,
+               NULL, ?8, ?9, ?10, ?11, ?12, ?13, ?13)`,
+      payload.operation_id,
+      payload.owner_generation,
+      payload.payload_version,
+      payload.kind,
+      payload.deadline_at,
+      payload.delivery_generation,
+      payload.deadline_at + 1,
+      payload.shard.contract_version,
+      payload.shard.ring_generation,
+      payload.shard.shard_count,
+      payload.shard.shard_index,
+      payload.shard.instance_name,
+      now,
+    );
+    const created = this.readOperationRecoveryIntentRow(
+      operation.operation_id,
+      operation.owner_generation,
+    );
+    if (created === null) {
+      throw new ProtocolError("operation_recovery_intent_unavailable", 503);
+    }
+    return created;
+  }
+
+  private readOperationRecoveryIntentRow(
+    operationId: string,
+    ownerGeneration: number,
+  ): OperationRecoveryIntent | null {
+    const row = firstRow<OperationRecoveryIntent>(
+      this.storage.sql.exec<OperationRecoveryIntent>(
+        `SELECT payload_version, intent_kind, operation_id, owner_generation, deadline_at,
+                delivery_generation, delivery_count, state, armed_at, next_delivery_at,
+                last_error_code, shard_contract_version, ring_generation, shard_count,
+                shard_index, instance_name, created_at, updated_at
+           FROM cinatoken_shard_alarm_intents
+          WHERE operation_id = ?1 AND owner_generation = ?2`,
+        operationId,
+        ownerGeneration,
+      ),
+    );
+    if (row !== null) validateOperationRecoveryIntentRow(row);
+    return row;
+  }
+
+  private completeOperationRecoveryIntentRow(
+    intent: OperationRecoveryIntent,
+    deliveryCount: number,
+    now: number,
+  ): void {
+    this.storage.sql.exec(
+      `UPDATE cinatoken_shard_alarm_intents
+          SET state = 'completed', delivery_count = ?1, armed_at = NULL,
+              last_error_code = NULL, updated_at = MAX(updated_at, ?2)
+        WHERE operation_id = ?3 AND owner_generation = ?4 AND state = 'pending'`,
+      deliveryCount,
+      now,
+      intent.operation_id,
+      intent.owner_generation,
+    );
+    if (changedRowCount(this.storage) !== 1) {
+      throw new ProtocolError("operation_recovery_intent_conflict", 409);
+    }
+  }
+
+  private quarantineOperationRecoveryIntentRow(
+    intent: OperationRecoveryIntent,
+    now: number,
+    errorCode: string,
+    deliveryCount = intent.delivery_count,
+  ): void {
+    validateOperationRecoveryErrorCode(errorCode);
+    if (
+      !Number.isSafeInteger(deliveryCount) ||
+      deliveryCount < 0 ||
+      deliveryCount > RELAY_SHARD_ALARM_MAX_DELIVERIES
+    ) {
+      throw new ProtocolError("operation_recovery_intent_conflict", 409);
+    }
+    this.storage.sql.exec(
+      `UPDATE cinatoken_shard_alarm_intents
+          SET state = 'quarantined', delivery_count = ?1, armed_at = NULL,
+              last_error_code = ?2, updated_at = MAX(updated_at, ?3)
+        WHERE operation_id = ?4 AND owner_generation = ?5 AND state = 'pending'`,
+      deliveryCount,
+      errorCode,
+      now,
+      intent.operation_id,
+      intent.owner_generation,
+    );
+    if (changedRowCount(this.storage) !== 1) {
+      throw new ProtocolError("operation_recovery_intent_conflict", 409);
+    }
+  }
+
   private insertOperation(
     envelope: OperationEnvelope,
     envelopeSha256: string,
@@ -2941,6 +3617,175 @@ export class RelayShardLedger {
       now,
     );
   }
+}
+
+export function operationRecoveryIntentPayload(
+  intent: OperationRecoveryIntent,
+): RelayShardAlarmIntentV1 {
+  validateOperationRecoveryIntentRow(intent);
+  return buildRelayShardAlarmIntentV1(
+    intent.operation_id,
+    intent.owner_generation,
+    intent.deadline_at,
+    intent.delivery_generation,
+    {
+      contract_version: intent.shard_contract_version,
+      ring_generation: intent.ring_generation,
+      shard_count: intent.shard_count,
+      shard_index: intent.shard_index,
+      instance_name: intent.instance_name,
+    },
+  );
+}
+
+function validateOperationRecoveryIntentPayload(
+  payload: RelayShardAlarmIntentV1,
+): RelayShardAlarmIntentV1 {
+  return buildRelayShardAlarmIntentV1(
+    payload.operation_id,
+    payload.owner_generation,
+    payload.deadline_at,
+    payload.delivery_generation,
+    payload.shard,
+  );
+}
+
+function validateOperationRecoveryIntentRow(row: OperationRecoveryIntent): void {
+  operationRecoveryIntentPayloadFields(row);
+  if (
+    row.payload_version !== RELAY_SHARD_ALARM_INTENT_VERSION ||
+    row.intent_kind !== RELAY_SHARD_ALARM_INTENT_KIND ||
+    !Number.isSafeInteger(row.delivery_generation) ||
+    row.delivery_generation < 1 ||
+    row.delivery_generation > RELAY_SHARD_ALARM_MAX_DELIVERIES ||
+    !Number.isSafeInteger(row.delivery_count) ||
+    row.delivery_count < 0 ||
+    row.delivery_count > row.delivery_generation ||
+    row.delivery_generation - row.delivery_count > 1 ||
+    !["pending", "completed", "quarantined"].includes(row.state) ||
+    (row.armed_at !== null &&
+      (!Number.isSafeInteger(row.armed_at) || row.armed_at < 1)) ||
+    (row.state !== "pending" && row.armed_at !== null) ||
+    !Number.isSafeInteger(row.next_delivery_at) ||
+    row.next_delivery_at < 1 ||
+    !Number.isSafeInteger(row.created_at) ||
+    row.created_at < 1 ||
+    !Number.isSafeInteger(row.updated_at) ||
+    row.updated_at < row.created_at ||
+    (row.last_error_code !== null && !validOperationRecoveryErrorCode(row.last_error_code))
+  ) {
+    throw new ProtocolError("operation_recovery_intent_corrupt", 500);
+  }
+}
+
+function operationRecoveryIntentPayloadFields(
+  row: OperationRecoveryIntent,
+): RelayShardAlarmIntentV1 {
+  try {
+    return buildRelayShardAlarmIntentV1(
+      row.operation_id,
+      row.owner_generation,
+      row.deadline_at,
+      row.delivery_generation,
+      {
+        contract_version: row.shard_contract_version,
+        ring_generation: row.ring_generation,
+        shard_count: row.shard_count,
+        shard_index: row.shard_index,
+        instance_name: row.instance_name,
+      },
+    );
+  } catch {
+    throw new ProtocolError("operation_recovery_intent_corrupt", 500);
+  }
+}
+
+function operationRecoveryIntentMatchesPayload(
+  intent: OperationRecoveryIntent,
+  payload: RelayShardAlarmIntentV1,
+): boolean {
+  return (
+    intent.payload_version === payload.payload_version &&
+    intent.intent_kind === payload.kind &&
+    intent.operation_id === payload.operation_id &&
+    intent.owner_generation === payload.owner_generation &&
+    intent.deadline_at === payload.deadline_at &&
+    intent.shard_contract_version === payload.shard.contract_version &&
+    intent.ring_generation === payload.shard.ring_generation &&
+    intent.shard_count === payload.shard.shard_count &&
+    intent.shard_index === payload.shard.shard_index &&
+    intent.instance_name === payload.shard.instance_name
+  );
+}
+
+function operationRecoveryIntentMatchesOperation(
+  intent: OperationRecoveryIntent,
+  operation: StorageOperationRow,
+): boolean {
+  return (
+    intent.operation_id === operation.operation_id &&
+    intent.owner_generation === operation.owner_generation &&
+    intent.deadline_at === operation.deadline_at &&
+    operationShardsEqual(
+      {
+        contract_version: intent.shard_contract_version,
+        ring_generation: intent.ring_generation,
+        shard_count: intent.shard_count,
+        shard_index: intent.shard_index,
+        instance_name: intent.instance_name,
+      },
+      storageOperationShard(operation),
+    )
+  );
+}
+
+function storageOperationShard(operation: StorageOperationRow): OperationShard {
+  return {
+    contract_version: operation.shard_contract_version,
+    ring_generation: operation.ring_generation,
+    shard_count: operation.shard_count,
+    shard_index: operation.shard_index,
+    instance_name: operation.instance_name,
+  };
+}
+
+function validateOperationRecoveryIdentity(
+  operationId: string,
+  ownerGeneration: number,
+): void {
+  if (
+    operationId.length < 1 ||
+    operationId.length > 128 ||
+    !/^[A-Za-z0-9._:-]+$/.test(operationId) ||
+    !Number.isSafeInteger(ownerGeneration) ||
+    ownerGeneration < 1
+  ) {
+    throw new ProtocolError("invalid_operation_recovery_intent_query", 500);
+  }
+}
+
+function validateOperationRecoveryNow(now: number): void {
+  if (!Number.isSafeInteger(now) || now < 1) {
+    throw new ProtocolError("invalid_operation_recovery_time", 500);
+  }
+}
+
+function validateOperationRecoveryErrorCode(errorCode: string): void {
+  if (!validOperationRecoveryErrorCode(errorCode)) {
+    throw new ProtocolError("invalid_operation_recovery_error_code", 500);
+  }
+}
+
+function validOperationRecoveryErrorCode(errorCode: string): boolean {
+  return (
+    errorCode.length >= 1 &&
+    errorCode.length <= 96 &&
+    /^[a-z0-9_]+$/.test(errorCode)
+  );
+}
+
+function isTerminalOperationStatus(status: OperationStatus): boolean {
+  return status === "completed" || status === "failed" || status === "recovery_required";
 }
 
 function terminalAckPayloadJson(ack: TerminalAckRequest): string {

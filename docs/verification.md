@@ -7270,11 +7270,12 @@ probe, and the exact deployment/binding/image/class/migration identifiers.
 Evidence excludes credentials, raw idempotency values, tenant/user/token IDs,
 prompt/response bodies, and provider secrets.
 
-The cinaVibeSDK-derived lifecycle proof remains pending: jurisdiction-scoped
-opaque object/tenant identity, one frozen mutually exclusive class-lifecycle
-mode (`exports` or retained legacy migrations) with old-object drain, bounded
-idempotent cold start, one replace-on-set at-least-once alarm with N/N-1 ABI,
-and redacted cross-layer provenance. Provider-native idempotency/lookup,
+The cinaVibeSDK-derived lifecycle proof remains pending: stable logical-shard
+object identity plus a separately approved jurisdiction, one frozen mutually
+exclusive class-lifecycle mode (`exports` or retained legacy migrations) with
+old-object drain, bounded idempotent cold start, a versioned application intent
+using the `Container` base class's single alarm/schedule owner, N/N-1 ABI, and
+redacted cross-layer provenance. Provider-native idempotency/lookup,
 provider-response-before-R2
 ambiguity, shared non-2xx semantics, independent amount authority and invoice
 convergence, orphan policy, load/cost/SLO/alerts, rollback rehearsal, security
@@ -7286,3 +7287,63 @@ recovery reader, and route new traffic to Go/VPS. Schema rollback, evidence
 deletion, provider resend, ad hoc quota compensation, unversioned class rename,
 and moving an existing object across jurisdiction are forbidden. Production
 remains **NO-GO**.
+
+## RelayShardContainer Durable Alarm Intent v1 Verification (2026-07-18)
+
+This entry covers local source, configuration, pure ABI, and Workerd SQLite
+evidence. It does not claim an actual `RelayShardContainer` base alarm, Linux
+Container process, remote Durable Object, D1 migration, deployment, provider
+request, financial mutation, secret change, or traffic switch. The intent
+schema is DO-local; global D1 remains at migration 0051 and no 0052 was added.
+The runtime identity remains one canonical
+`cinatoken-relay-shard-v1-XXXX` DO/Container per logical shard; tenant HMAC
+selects that shard and is never part of the object name. Jurisdiction remains a
+future pre-ID subnamespace decision.
+
+Confirmed focused commands:
+
+```powershell
+bunx tsc -p services/container-controller/tsconfig.json --noEmit
+# PASS.
+
+bun run test:container-controller
+# PASS: 95 tests across 7 files.
+
+bun run test:container-controller:runtime
+# PASS: 1 file, 34 Workerd SQLite tests.
+```
+
+The evidence covers:
+
+- exact legacy three-field v0 and strict v1 payload parsing, unknown-field and
+  future-version rejection, canonical shard validation, and deterministic
+  bounded retry timing;
+- immutable DO-local schema migration rows 1/2 and exact readback;
+- rejection of unknown future schema rows, direct intent deletion/replacement,
+  and invalid delivery-generation/count relationships;
+- one SQLite transaction for operation claim plus initial unarmed intent;
+- persistence across `evictDurableObject`, armed readback, early delivery with
+  generation advance, stale-generation no-op, due terminalization, duplicate
+  terminal replay, and normal completion before alarm;
+- current-generation shard mismatch quarantine without operation mutation;
+- retry exhaustion at delivery eight with no provider-attempt,
+  provider-retry-state, or terminal-ack rows; and
+- all local/staging/production Controller configurations keeping both v1 writer
+  gates exact `false`, while source retains an ungated v0/v1 reader and rearm;
+  execution is rejected before claim and readiness is false if either writer
+  gate is not exact `true`, with no new legacy-v0 writer path; and
+- callback persistence/reschedule failures and legacy callback persistence
+  failure invoke `ctx.abort()` instead of returning into one-shot cleanup.
+
+The actual Container-derived class is not instantiated by this Workerd fixture.
+Before either writer gate changes, isolated staging must prove package-0.3.7
+alarm multiplexing, callback exception deletion, schedule/armed response loss,
+real cold start/eviction/sleep/restart/OOM, provider and financial counters,
+N/N-1 or blue/green reader-first rollout, jurisdiction mismatch, load/cost/SLO,
+alerts, and disable-first rollback. The application must not override
+`alarm()` or call `setAlarm` beside the `Container` base class.
+
+The next implementation verification packet must compare the Go and Rust
+response interpreters for exact HTTP-200 success, typed error bodies carried by
+HTTP 200, non-200 compatible error envelopes and header filtering, and usage
+retained across interrupted streams. Production remains **NO-GO**.

@@ -11,6 +11,7 @@ import {
 } from "../services/container-controller/src/protocol";
 import {
   RelayShardLedger,
+  operationRecoveryIntentPayload,
   type OperationStatus,
   type RelayShardLedgerPolicy,
   type StorageResultRecord,
@@ -2056,6 +2057,416 @@ describe("RelayShardLedger in Workerd", () => {
       status: "running",
       response_status: null,
       result_object_key: null,
+    });
+  });
+
+  it("records an immutable local schema migration ledger", async () => {
+    const stub = ledgerStub("operation-recovery-schema-ledger");
+    await stub.listUnarmedOperationRecoveryIntents();
+    const result = await runInDurableObject(stub, (_instance, state) => {
+      const rows = state.storage.sql
+        .exec<{ schema_version: number; migration_name: string }>(
+          `SELECT schema_version, migration_name
+             FROM cinatoken_shard_schema_migrations
+            ORDER BY schema_version ASC`,
+        )
+        .toArray();
+      let updateRejected = false;
+      let deleteRejected = false;
+      let futureSchemaRejected = false;
+      try {
+        state.storage.sql.exec(
+          `UPDATE cinatoken_shard_schema_migrations
+              SET migration_name = migration_name
+            WHERE schema_version = 2`,
+        );
+      } catch {
+        updateRejected = true;
+      }
+      try {
+        state.storage.sql.exec(
+          "DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version = 2",
+        );
+      } catch {
+        deleteRejected = true;
+      }
+      state.storage.sql.exec(
+        `INSERT INTO cinatoken_shard_schema_migrations
+           (schema_version, migration_name, applied_at)
+         VALUES (3, '0003_future_schema', ?1)`,
+        BASE_NOW,
+      );
+      try {
+        new RelayShardLedger(state.storage).ensureSchema();
+      } catch (error) {
+        futureSchemaRejected =
+          error instanceof ProtocolError &&
+          error.code === "shard_schema_migration_conflict";
+      }
+      return { rows, updateRejected, deleteRejected, futureSchemaRejected };
+    });
+
+    expect(result).toEqual({
+      rows: [
+        { schema_version: 1, migration_name: "0001_legacy_schema_observed" },
+        {
+          schema_version: 2,
+          migration_name: "0002_operation_deadline_alarm_intent_v1",
+        },
+      ],
+      updateRejected: true,
+      deleteRejected: true,
+      futureSchemaRejected: true,
+    });
+  });
+
+  it("atomically persists an unarmed recovery intent before scheduling and survives eviction", async () => {
+    const stub = ledgerStub("operation-recovery-crash-gap");
+    const operation = operationEnvelope("operation-recovery-crash-gap");
+
+    await expect(
+      stub.claimWithRecoveryIntent(
+        operation,
+        sha256("a"),
+        "dispatch-operation-recovery-crash-gap",
+        ledgerPolicy(),
+        BASE_NOW,
+      ),
+    ).resolves.toEqual({ kind: "new" });
+    const intent = await stub.readOperationRecoveryIntent(operation.operation_id, 1);
+    expect(intent).toMatchObject({
+      payload_version: 1,
+      intent_kind: "operation_deadline",
+      operation_id: operation.operation_id,
+      owner_generation: 1,
+      deadline_at: operation.execution_deadline_at,
+      delivery_generation: 1,
+      delivery_count: 0,
+      state: "pending",
+      armed_at: null,
+      next_delivery_at: operation.execution_deadline_at + 1,
+      last_error_code: null,
+      shard_contract_version: 1,
+      ring_generation: 1,
+      shard_count: 8,
+      shard_index: 3,
+      instance_name: "cinatoken-relay-shard-v1-0003",
+    });
+
+    await evictDurableObject(stub);
+    await expect(stub.listUnarmedOperationRecoveryIntents()).resolves.toHaveLength(1);
+    const payload = operationRecoveryIntentPayload(intent!);
+    await expect(
+      stub.markOperationRecoveryIntentArmed(payload, BASE_NOW + 1),
+    ).resolves.toBe(true);
+    await evictDurableObject(stub);
+    await expect(
+      stub.readOperationRecoveryIntent(operation.operation_id, 1),
+    ).resolves.toMatchObject({ state: "pending", armed_at: BASE_NOW + 1 });
+    const guards = await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("PRAGMA recursive_triggers = OFF");
+      let deleteRejected = false;
+      let replaceRejected = false;
+      let generationNineRejected = false;
+      let generationGapRejected = false;
+      try {
+        state.storage.sql.exec(
+          "DELETE FROM cinatoken_shard_alarm_intents WHERE operation_id = ?1",
+          operation.operation_id,
+        );
+      } catch {
+        deleteRejected = true;
+      }
+      try {
+        state.storage.sql.exec(
+          `INSERT OR REPLACE INTO cinatoken_shard_alarm_intents
+           SELECT * FROM cinatoken_shard_alarm_intents WHERE operation_id = ?1`,
+          operation.operation_id,
+        );
+      } catch {
+        replaceRejected = true;
+      }
+      const insertInvalidIntent = (
+        operationId: string,
+        deliveryGeneration: number,
+        deliveryCount: number,
+      ) =>
+        state.storage.sql.exec(
+          `INSERT INTO cinatoken_shard_alarm_intents
+             (operation_id, owner_generation, payload_version, intent_kind, deadline_at,
+              delivery_generation, delivery_count, state, armed_at, next_delivery_at,
+              last_error_code, shard_contract_version, ring_generation, shard_count,
+              shard_index, instance_name, created_at, updated_at)
+           VALUES (?1, 1, 1, 'operation_deadline', ?2, ?3, ?4, 'pending', NULL, ?5,
+                   NULL, 1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003', ?6, ?6)`,
+          operationId,
+          BASE_NOW + 300,
+          deliveryGeneration,
+          deliveryCount,
+          BASE_NOW + 301,
+          BASE_NOW,
+        );
+      try {
+        insertInvalidIntent("invalid-generation-nine", 9, 8);
+      } catch {
+        generationNineRejected = true;
+      }
+      try {
+        insertInvalidIntent("invalid-generation-gap", 2, 0);
+      } catch {
+        generationGapRejected = true;
+      }
+      const beforeCleanup = state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cinatoken_shard_alarm_intents WHERE operation_id = ?1",
+          operation.operation_id,
+        )
+        .toArray()[0]?.count;
+      state.storage.sql.exec(
+        "DELETE FROM cinatoken_shard_operations WHERE operation_id = ?1",
+        operation.operation_id,
+      );
+      const afterCleanup = state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cinatoken_shard_alarm_intents WHERE operation_id = ?1",
+          operation.operation_id,
+        )
+        .toArray()[0]?.count;
+      return {
+        deleteRejected,
+        replaceRejected,
+        generationNineRejected,
+        generationGapRejected,
+        beforeCleanup,
+        afterCleanup,
+      };
+    });
+    expect(guards).toEqual({
+      deleteRejected: true,
+      replaceRejected: true,
+      generationNineRejected: true,
+      generationGapRejected: true,
+      beforeCleanup: 1,
+      afterCleanup: 0,
+    });
+  });
+
+  it("terminalizes a due operation exactly once without creating provider state", async () => {
+    const stub = ledgerStub("operation-recovery-due-idempotent");
+    const operation = operationEnvelope("operation-recovery-due-idempotent", {
+      execution_deadline_at: BASE_NOW + 10,
+    });
+    await stub.claimWithRecoveryIntent(
+      operation,
+      sha256("b"),
+      "dispatch-operation-recovery-due-idempotent",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    const intent = await stub.readOperationRecoveryIntent(operation.operation_id, 1);
+    const payload = operationRecoveryIntentPayload(intent!);
+    await stub.markOperationRecoveryIntentArmed(payload, BASE_NOW + 1);
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE cinatoken_shard_alarm_intents
+            SET delivery_count = delivery_generation, armed_at = NULL, updated_at = ?1
+          WHERE operation_id = ?2 AND owner_generation = 1`,
+        BASE_NOW + 2,
+        operation.operation_id,
+      );
+    });
+    await evictDurableObject(stub);
+
+    await expect(
+      stub.reconcileOperationRecoveryIntent(payload, operation.execution_deadline_at),
+    ).resolves.toBe("completed");
+    await expect(
+      stub.reconcileOperationRecoveryIntent(payload, operation.execution_deadline_at + 1),
+    ).resolves.toBe("duplicate");
+    await expect(stub.readOutcome(operation.operation_id)).resolves.toMatchObject({
+      status: "failed",
+      response_status: 504,
+      response_code: "container_execution_deadline_expired",
+    });
+    await expect(
+      stub.readOperationRecoveryIntent(operation.operation_id, 1),
+    ).resolves.toMatchObject({ state: "completed", armed_at: null, delivery_count: 1 });
+    await runInDurableObject(stub, (_instance, state) => {
+      const providerAttempts = state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cinatoken_shard_provider_attempts",
+        )
+        .toArray()[0]?.count;
+      const providerRetryStates = state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cinatoken_shard_provider_retry_state",
+        )
+        .toArray()[0]?.count;
+      expect(providerAttempts).toBe(0);
+      expect(providerRetryStates).toBe(0);
+    });
+  });
+
+  it("treats a normally terminal operation as a duplicate alarm", async () => {
+    const stub = ledgerStub("operation-recovery-normal-terminal");
+    const operation = operationEnvelope("operation-recovery-normal-terminal");
+    await stub.claimWithRecoveryIntent(
+      operation,
+      sha256("c"),
+      "dispatch-operation-recovery-normal-terminal",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    const intent = await stub.readOperationRecoveryIntent(operation.operation_id, 1);
+    const payload = operationRecoveryIntentPayload(intent!);
+    await stub.transition(
+      operation.operation_id,
+      1,
+      "claimed",
+      "failed",
+      503,
+      BASE_NOW + 1,
+    );
+
+    await expect(
+      stub.reconcileOperationRecoveryIntent(payload, operation.execution_deadline_at + 1),
+    ).resolves.toBe("duplicate");
+    await expect(stub.readOutcome(operation.operation_id)).resolves.toMatchObject({
+      status: "failed",
+      response_status: 503,
+    });
+    await expect(
+      stub.readOperationRecoveryIntent(operation.operation_id, 1),
+    ).resolves.toMatchObject({ state: "completed", armed_at: null });
+  });
+
+  it("reschedules an early delivery with a new generation and fences the old payload", async () => {
+    const stub = ledgerStub("operation-recovery-early-delivery");
+    const operation = operationEnvelope("operation-recovery-early-delivery", {
+      execution_deadline_at: BASE_NOW + 20,
+    });
+    await stub.claimWithRecoveryIntent(
+      operation,
+      sha256("d"),
+      "dispatch-operation-recovery-early-delivery",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    const firstIntent = await stub.readOperationRecoveryIntent(operation.operation_id, 1);
+    const firstPayload = operationRecoveryIntentPayload(firstIntent!);
+    await stub.markOperationRecoveryIntentArmed(firstPayload, BASE_NOW + 1);
+
+    await expect(
+      stub.reconcileOperationRecoveryIntent(firstPayload, BASE_NOW + 10),
+    ).resolves.toBe("not_due");
+    const secondIntent = await stub.readOperationRecoveryIntent(operation.operation_id, 1);
+    expect(secondIntent).toMatchObject({
+      state: "pending",
+      armed_at: null,
+      delivery_generation: 2,
+      delivery_count: 1,
+      next_delivery_at: operation.execution_deadline_at + 1,
+    });
+    await expect(
+      stub.reconcileOperationRecoveryIntent(firstPayload, operation.execution_deadline_at),
+    ).resolves.toBe("stale");
+    await expect(
+      stub.reconcileOperationRecoveryIntent(
+        operationRecoveryIntentPayload(secondIntent!),
+        operation.execution_deadline_at,
+      ),
+    ).resolves.toBe("completed");
+  });
+
+  it("quarantines a current-generation shard mismatch without mutating the operation", async () => {
+    const stub = ledgerStub("operation-recovery-shard-mismatch");
+    const operation = operationEnvelope("operation-recovery-shard-mismatch");
+    await stub.claimWithRecoveryIntent(
+      operation,
+      sha256("e"),
+      "dispatch-operation-recovery-shard-mismatch",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    const intent = await stub.readOperationRecoveryIntent(operation.operation_id, 1);
+    const payload = operationRecoveryIntentPayload(intent!);
+    const mismatchedPayload = {
+      ...payload,
+      shard: { ...payload.shard, ring_generation: payload.shard.ring_generation + 1 },
+    };
+
+    await expect(
+      stub.reconcileOperationRecoveryIntent(mismatchedPayload, BASE_NOW + 1),
+    ).resolves.toBe("quarantined");
+    await expect(stub.readOutcome(operation.operation_id)).resolves.toMatchObject({
+      status: "claimed",
+      response_status: null,
+    });
+    await expect(
+      stub.readOperationRecoveryIntent(operation.operation_id, 1),
+    ).resolves.toMatchObject({
+      state: "quarantined",
+      armed_at: null,
+      delivery_count: 1,
+      last_error_code: "operation_recovery_payload_mismatch",
+    });
+  });
+
+  it("bounds callback retries at eight deliveries and leaves financial paths untouched", async () => {
+    const stub = ledgerStub("operation-recovery-retry-ceiling");
+    const operation = operationEnvelope("operation-recovery-retry-ceiling", {
+      execution_deadline_at: BASE_NOW + 10,
+    });
+    await stub.claimWithRecoveryIntent(
+      operation,
+      sha256("f"),
+      "dispatch-operation-recovery-retry-ceiling",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    let intent = await stub.readOperationRecoveryIntent(operation.operation_id, 1);
+    const firstPayload = operationRecoveryIntentPayload(intent!);
+    let now = operation.execution_deadline_at + 1;
+    while (intent?.state === "pending") {
+      const next = await stub.retryOperationRecoveryIntent(
+        operationRecoveryIntentPayload(intent),
+        now,
+        "operation_recovery_callback_failed",
+      );
+      now += 301;
+      if (next === null) break;
+      intent = next;
+    }
+
+    await expect(
+      stub.reconcileOperationRecoveryIntent(firstPayload, now),
+    ).resolves.toBe("quarantined");
+    await expect(
+      stub.readOperationRecoveryIntent(operation.operation_id, 1),
+    ).resolves.toMatchObject({
+      state: "quarantined",
+      delivery_generation: 8,
+      delivery_count: 8,
+      armed_at: null,
+      last_error_code: "operation_recovery_callback_failed",
+    });
+    await expect(stub.readOutcome(operation.operation_id)).resolves.toMatchObject({
+      status: "claimed",
+      response_status: null,
+    });
+    await runInDurableObject(stub, (_instance, state) => {
+      const tables = [
+        "cinatoken_shard_provider_attempts",
+        "cinatoken_shard_provider_retry_state",
+        "cinatoken_shard_terminal_acks",
+      ];
+      for (const table of tables) {
+        expect(
+          state.storage.sql
+            .exec<{ count: number }>(`SELECT COUNT(*) AS count FROM ${table}`)
+            .toArray()[0]?.count,
+        ).toBe(0);
+      }
     });
   });
 });

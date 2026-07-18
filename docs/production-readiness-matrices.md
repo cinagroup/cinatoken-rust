@@ -1060,11 +1060,11 @@ inherited proof.
 
 | Boundary | Required production contract | Current verdict |
 | --- | --- | --- |
-| Object/tenant identity | Versioned HMAC identity over environment, opaque tenant scope, purpose, shard/ring and jurisdiction; no raw user/token/API key in DO name; persist namespace/binding/class/name digest | Blocked |
+| Logical-shard identity | Canonical `cinatoken-relay-shard-v1-XXXX` names one DO/Container per shard. Tenant HMAC selects a shard but is absent from the name; environment isolation is a separate Worker namespace/binding. Persist canonical-name digest, namespace/binding/class, shard/ring and future jurisdiction | Local naming contract; jurisdiction/remote proof blocked |
 | Jurisdiction | Resolve jurisdiction before object stub; immutable object placement; explicit versioned transfer and drain for relocation; fail closed on mismatch | Blocked |
 | Class lifecycle | Service/binding/class/storage/lifecycle declaration is an ABI. The repo currently uses legacy append-only `migrations`; approve retaining it or converting once to mutually exclusive declarative `exports`, then freeze the mode. New namespaces use SQLite; rename/delete/transfer is atomic, not gradual; require binding inventory, stored-data compatibility, remote reconciliation, drain and rollback reader | Blocked |
-| Cold start | Bounded idempotent schema/state initialization blocks requests, uses a durable SQL migration table rather than `PRAGMA user_version`, restores owner/deadline/alarm/result, performs no external/provider/financial I/O inside constructor initialization, and closes readiness on failure | Blocked |
-| Alarm ABI N/N-1 | One replace-on-set alarm per DO; cold start reads existing alarm first. Persist versioned intent/owner generation for at-least-once bounded-retry delivery; N reads N/N-1, N-1 is isolated from N-only intent; duplicate/late/reordered/exhausted/rollback alarms converge or quarantine | Blocked |
+| Cold start | Bounded `blockConcurrencyWhile` initializes local SQLite and rearms unarmed deadline intents without network, provider, D1, R2, or financial I/O; immutable local migration ledger replaces `PRAGMA user_version` | Local implementation; real Container lifecycle blocked |
+| Alarm ABI N/N-1 | `Container` owns the platform alarm; application uses `schedule()` plus persistent v1 intent. Reader accepts v0/v1, writer is double-gated false, delivery generation is fenced, retries stop at eight, and package-0.3.7 swallowed callback failures are handled before return | Local bridge; real alarm/mixed-version proof blocked |
 | Cross-layer provenance | Redacted tuple joins edge/Controller versions, DO identity/class/migration/schema, jurisdiction, Container image/protocol, broker/provider, D1/R2, event/outbox/billing and 0051 claim | Blocked |
 | Lifecycle proof | Real eviction, cold/warm start, old object, alarm retry, rolling deploy, rollback, sleep/restart/OOM and jurisdiction mismatch with zero duplicate provider/financial effect | **NO-GO** |
 
@@ -1074,3 +1074,20 @@ place, and only a 0051-aware recovery reader may handle existing owners.
 Provider idempotency/lookup, response parity, amount/invoice authority, orphan
 policy, all DO lifecycle contracts, remote evidence and signed approvals remain
 blocking. Production remains **NO-GO**.
+
+## 2026-07-18 Durable Alarm Intent v1 Matrix
+
+| Gate | Current local evidence | Production acceptance | Status |
+| --- | --- | --- | --- |
+| Capacity identity | Stable `cinatoken-relay-shard-v1-XXXX` names one DO/Container per logical shard; tenant HMAC only selects the index | Remote namespace/binding/name/jurisdiction inventory proves no per-tenant objects or duplicate owners | Local contract |
+| Atomic claim intent | V1-enabled claim and initial unarmed intent share one SQLite transaction | Real crash before schedule leaves one rearmable intent and no lost operation | Local Workerd evidence |
+| Armed handoff | Schedule precedes exact generation-fenced `armed_at`; duplicate after response loss is idempotent | Crash after schedule/before armed produces bounded duplicate and one terminal outcome | Local ledger evidence; real base class blocked |
+| Cold bootstrap | Every immutable local migration row is validated; unknown future versions and any pending-intent rearm failure reject initialization under local-only `blockConcurrencyWhile` | Real object eviction/cold start/restart/OOM proves bounded initialization and zero external/provider/financial I/O | Partial |
+| ABI compatibility | Reader accepts exact legacy v0 and strict v1 regardless of gates; unknown/future payloads fail closed | Reader-first N/N-1 or blue/green campaign; old reader drained before first v1 write; rollback retains v1 reader | Local only |
+| Callback durability | Delivery generation/count, armed state, retry time and quarantine are durable; stale/mismatch paths do not mutate operation; failed persistence/reschedule invokes `ctx.abort()` before one-shot cleanup | Actual package-0.3.7 callback throw/delete, abort and schedule-failure faults leave no invisible pending state | Partial |
+| Retry bound | Deterministic backoff, at most eight deliveries and 24-hour horizon | Real alarm delays/reorders/duplicates/exhaustion trigger alert, retention and operator disposition | Local only |
+| Side-effect isolation | Recovery fixture leaves provider attempt/retry and terminal ACK tables empty; source has no D1/R2/provider/financial call in bootstrap | Deployed provider and financial counters remain unchanged across all lifecycle faults | Local only |
+| Writer interlock | Both v1 gates are exact false in local/staging/production; execution with either gate false is rejected before claim by outer Controller and shard DO, readiness is false, and new code has no v0 writer fallback | Authenticated deployed readback and both synthetic half-enabled negatives prove zero operation, schedule, wake, provider and financial effect | Local source/config only |
+| D1 migration | Intent schema is per-DO SQLite; no 0052 is created | Remote class/schema inventory distinguishes local DO schema from global D1 head 0051 | Design complete; remote blocked |
+| Response parity | Go source is the required authority; the shared Worker/Container audit, differential corpus and interpreter remain the next milestone | Exact HTTP-200 typed-error, non-200 envelope/header, usage and interrupted-stream differential corpus | **Blocked** |
+| Production decision | No remote object, deploy, provider, financial, alarm, or traffic action occurred | A0-A5 lifecycle campaign plus jurisdiction/provenance/load/security/rollback approvals | **NO-GO** |

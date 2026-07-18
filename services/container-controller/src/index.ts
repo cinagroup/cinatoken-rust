@@ -2,7 +2,10 @@ import { Container, ContainerProxy } from "@cloudflare/containers";
 import {
   DISPATCH_REPLAY_RETENTION_SECONDS,
   RelayShardLedger,
+  operationRecoveryIntentPayload,
   operationStorageResult,
+  type OperationRecoveryIntent,
+  type OperationRecoveryIntentOutcome,
   type OperationRow,
   type DispatchProviderAttemptOutcome,
   type ProviderEgressIdentity,
@@ -83,6 +86,11 @@ import {
   type StorageGatewayAction,
   type StorageGatewayEnvironment,
 } from "./storage_gateway";
+import {
+  parseOperationRecoverySchedule,
+  type LegacyOperationRecoverySchedule,
+  type RelayShardAlarmIntentV1,
+} from "./relay_shard_durable_state";
 
 export { ContainerProxy };
 
@@ -102,6 +110,8 @@ interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
   CONTAINER_PROVIDER_ATTEMPT_STAGING_VERIFIED: string;
   CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED: string;
   CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED: string;
+  CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED: string;
+  CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED: string;
   CONTAINER_MAX_PROVIDER_ATTEMPTS: string;
   CONTAINER_MAX_IN_FLIGHT_PER_SHARD: string;
   CONTAINER_TERMINAL_RETENTION_SECONDS: string;
@@ -116,6 +126,13 @@ type ControllerEnv = Omit<
 > & ControllerRuntimeEnvironment & {
   RELAY_SHARDS: DurableObjectNamespace<RelayShardContainer>;
 };
+
+function operationRecoveryIntentWriterEnabled(env: ControllerRuntimeEnvironment): boolean {
+  return (
+    env.CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED === "true" &&
+    env.CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED === "true"
+  );
+}
 
 interface ContainerStorageRuntimeEnvironment {
   CONTAINER_STORAGE_R2_READ_ENABLED: string;
@@ -216,7 +233,48 @@ export class RelayShardContainer extends Container<ControllerEnv> {
 
   static override outbound = (): Response => jsonError("container_egress_denied", 403);
 
-  private readonly ledger = new RelayShardLedger(this.ctx.storage);
+  private readonly ledger: RelayShardLedger;
+
+  constructor(ctx: DurableObjectState<{}>, env: ControllerEnv) {
+    super(ctx, env);
+    this.ledger = new RelayShardLedger(ctx.storage);
+    ctx.blockConcurrencyWhile(async () => {
+      this.ledger.ensureSchema();
+      await this.rearmPendingOperationRecoveryIntents();
+    });
+  }
+
+  private async armOperationRecoveryIntent(intent: OperationRecoveryIntent): Promise<void> {
+    const payload = operationRecoveryIntentPayload(intent);
+    await this.schedule(
+      new Date(intent.next_delivery_at * 1000),
+      "reconcileOperationDeadline",
+      payload,
+    );
+    if (
+      !this.ledger.markOperationRecoveryIntentArmed(
+        payload,
+        Math.floor(Date.now() / 1000),
+      )
+    ) {
+      throw new ProtocolError("operation_recovery_intent_arm_conflict", 409);
+    }
+  }
+
+  private async rearmPendingOperationRecoveryIntents(): Promise<void> {
+    for (const intent of this.ledger.listUnarmedOperationRecoveryIntents()) {
+      await this.armOperationRecoveryIntent(intent);
+    }
+  }
+
+  private async rearmOperationRecoveryIntentIfNeeded(
+    operationId: string,
+    ownerGeneration: number,
+  ): Promise<void> {
+    const intent = this.ledger.readOperationRecoveryIntent(operationId, ownerGeneration);
+    if (intent === null || intent.state !== "pending" || intent.armed_at !== null) return;
+    await this.armOperationRecoveryIntent(intent);
+  }
 
   async authorizeStorageAccess(
     operationId: string,
@@ -441,15 +499,66 @@ export class RelayShardContainer extends Container<ControllerEnv> {
   async reconcileOperationDeadline(payload: unknown): Promise<void> {
     const schedule = parseOperationRecoverySchedule(payload);
     const now = Math.floor(Date.now() / 1000);
-    if (schedule.deadline_at > now) {
-      await this.schedule(
-        new Date((schedule.deadline_at + 1) * 1000),
-        "reconcileOperationDeadline",
-        schedule,
-      );
+    if (schedule.payload_version === 0) {
+      if (schedule.deadline_at > now) {
+        try {
+          await this.schedule(
+            new Date((schedule.deadline_at + 1) * 1000),
+            "reconcileOperationDeadline",
+            legacyOperationRecoverySchedule(schedule),
+          );
+        } catch {
+          this.ctx.abort("legacy operation recovery reschedule failed");
+        }
+        return;
+      }
+      try {
+        this.ledger.expireOperation(schedule.operation_id, schedule.owner_generation, now);
+      } catch {
+        this.ctx.abort("legacy operation recovery persistence failed");
+      }
       return;
     }
-    this.ledger.expireOperation(schedule.operation_id, schedule.owner_generation, now);
+
+    let outcome: OperationRecoveryIntentOutcome;
+    try {
+      outcome = this.ledger.reconcileOperationRecoveryIntent(schedule, now);
+    } catch (error) {
+      const errorCode = operationRecoveryCallbackErrorCode(error);
+      let retry: OperationRecoveryIntent | null = null;
+      try {
+        retry = this.ledger.retryOperationRecoveryIntent(schedule, now, errorCode);
+      } catch {
+        this.ctx.abort("operation recovery retry persistence failed");
+        return;
+      }
+      if (retry === null) return;
+      try {
+        const retryPayload = operationRecoveryIntentPayload(retry);
+        await this.schedule(
+          new Date(retry.next_delivery_at * 1000),
+          "reconcileOperationDeadline",
+          retryPayload,
+        );
+        if (!this.ledger.markOperationRecoveryIntentArmed(retryPayload, now)) {
+          throw new ProtocolError("operation_recovery_intent_arm_conflict", 409);
+        }
+      } catch {
+        this.ctx.abort("operation recovery reschedule failed");
+      }
+      return;
+    }
+    if (outcome !== "not_due") return;
+    const intent = this.ledger.readOperationRecoveryIntent(
+      schedule.operation_id,
+      schedule.owner_generation,
+    );
+    if (intent === null || intent.state !== "pending" || intent.armed_at !== null) return;
+    try {
+      await this.armOperationRecoveryIntent(intent);
+    } catch {
+      this.ctx.abort("operation recovery reschedule failed");
+    }
   }
 
   async readinessProbe(
@@ -529,10 +638,12 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         const capacityAvailable =
           ledgerBeforeCompletion.active_in_flight_operations <
           controllerLedgerPolicy(this.env).maxInFlight;
+        const recoveryIntentWriterReady = operationRecoveryIntentWriterEnabled(this.env);
         const executionReady =
           processReady &&
           readiness.execution_enabled &&
           this.env.CONTAINER_EXECUTION_ENABLED === "true" &&
+          recoveryIntentWriterReady &&
           lifecycleAccepting &&
           capacityAvailable;
         runtime = {
@@ -548,6 +659,8 @@ export class RelayShardContainer extends Container<ControllerEnv> {
             ? "process_ready_execution_disabled"
             : this.env.CONTAINER_EXECUTION_ENABLED !== "true"
               ? "controller_execution_disabled"
+              : !recoveryIntentWriterReady
+                ? "operation_recovery_intent_v1_disabled"
               : !lifecycleAccepting
                 ? "shard_not_accepting"
                 : !capacityAvailable
@@ -608,7 +721,11 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     try {
       const verified = await verifyOperationRequest(request, this.env);
       const now = Math.floor(Date.now() / 1000);
-      if (this.env.CONTAINER_EXECUTION_ENABLED === "true") {
+      const executionEnabled = this.env.CONTAINER_EXECUTION_ENABLED === "true";
+      if (executionEnabled && !operationRecoveryIntentWriterEnabled(this.env)) {
+        throw new ProtocolError("operation_recovery_intent_v1_disabled", 503);
+      }
+      if (executionEnabled) {
         if (this.env.CONTAINER_STORAGE_D1_READ_ENABLED !== "true") {
           throw new ProtocolError("admission_gateway_disabled", 503);
         }
@@ -624,15 +741,22 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         verified.claims.dispatch_id,
         controllerLedgerPolicy(this.env),
         now,
+        executionEnabled,
       );
-      if (claim.kind === "existing") return responseForExisting(claim.row);
+      if (claim.kind === "existing") {
+        await this.rearmOperationRecoveryIntentIfNeeded(
+          verified.envelope.operation_id,
+          verified.envelope.owner_generation,
+        );
+        return responseForExisting(claim.row);
+      }
       if (claim.kind === "capacity") {
         return new Response(JSON.stringify({ error: "container_capacity_exhausted", retryable: true }), {
           status: 503,
           headers: { ...jsonHeaders, "retry-after": "1" },
         });
       }
-      if (this.env.CONTAINER_EXECUTION_ENABLED !== "true") {
+      if (!executionEnabled) {
         const outcome = finalizeOperationOutcome(
           this.ledger,
           verified.envelope.operation_id,
@@ -647,17 +771,29 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         return operationOutcomeResponse(outcome);
       }
 
+      let recoveryIntentPayload: RelayShardAlarmIntentV1 | null = null;
       try {
-        await this.schedule(
-          new Date((verified.envelope.execution_deadline_at + 1) * 1000),
-          "reconcileOperationDeadline",
-          {
-            operation_id: verified.envelope.operation_id,
-            owner_generation: verified.envelope.owner_generation,
-            deadline_at: verified.envelope.execution_deadline_at,
-          } satisfies OperationRecoverySchedule,
+        const intent = this.ledger.readOperationRecoveryIntent(
+          verified.envelope.operation_id,
+          verified.envelope.owner_generation,
         );
+        if (intent === null || intent.state !== "pending") {
+          throw new ProtocolError("operation_recovery_intent_unavailable", 503);
+        }
+        recoveryIntentPayload = operationRecoveryIntentPayload(intent);
+        await this.armOperationRecoveryIntent(intent);
       } catch {
+        if (recoveryIntentPayload !== null) {
+          try {
+            this.ledger.quarantineOperationRecoveryIntent(
+              recoveryIntentPayload,
+              Math.floor(Date.now() / 1000),
+              "operation_recovery_initial_schedule_failed",
+            );
+          } catch {
+            console.error("operation recovery initial quarantine persistence failed");
+          }
+        }
         const outcome = finalizeOperationOutcome(
           this.ledger,
           verified.envelope.operation_id,
@@ -865,6 +1001,9 @@ const handler: ExportedHandler<ControllerEnv> = {
       if (env.CONTAINER_EXECUTION_ENABLED !== "true") {
         return jsonError("container_execution_disabled", 503);
       }
+      if (!operationRecoveryIntentWriterEnabled(env)) {
+        return jsonError("operation_recovery_intent_v1_disabled", 503);
+      }
       const stub = env.RELAY_SHARDS.getByName(verified.envelope.shard.instance_name);
       return await stub.fetch(
         new Request(`https://relay-shard.internal${INTERNAL_OPERATION_PATH}`, {
@@ -888,39 +1027,31 @@ function responseForExisting(row: OperationRow): Response {
   return operationOutcomeResponse(row);
 }
 
-interface OperationRecoverySchedule {
+interface LegacyOperationRecoveryPayload {
   operation_id: string;
   owner_generation: number;
   deadline_at: number;
 }
 
-function parseOperationRecoverySchedule(value: unknown): OperationRecoverySchedule {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new ProtocolError("invalid_operation_recovery_schedule", 500);
-  }
-  const record = value as Record<string, unknown>;
-  const expected = ["operation_id", "owner_generation", "deadline_at"];
-  if (
-    Object.keys(record).length !== expected.length ||
-    expected.some((key) => !(key in record)) ||
-    typeof record.operation_id !== "string" ||
-    record.operation_id.length < 1 ||
-    record.operation_id.length > 128 ||
-    !/^[A-Za-z0-9._:-]+$/.test(record.operation_id) ||
-    typeof record.owner_generation !== "number" ||
-    !Number.isSafeInteger(record.owner_generation) ||
-    record.owner_generation < 1 ||
-    typeof record.deadline_at !== "number" ||
-    !Number.isSafeInteger(record.deadline_at) ||
-    record.deadline_at < 1
-  ) {
-    throw new ProtocolError("invalid_operation_recovery_schedule", 500);
-  }
+function legacyOperationRecoverySchedule(
+  schedule: LegacyOperationRecoverySchedule,
+): LegacyOperationRecoveryPayload {
   return {
-    operation_id: record.operation_id,
-    owner_generation: record.owner_generation,
-    deadline_at: record.deadline_at,
+    operation_id: schedule.operation_id,
+    owner_generation: schedule.owner_generation,
+    deadline_at: schedule.deadline_at,
   };
+}
+
+function operationRecoveryCallbackErrorCode(error: unknown): string {
+  if (
+    error instanceof ProtocolError &&
+    error.code.length <= 96 &&
+    /^[a-z0-9_]+$/.test(error.code)
+  ) {
+    return error.code;
+  }
+  return "operation_recovery_callback_failed";
 }
 
 function finalizeOperationOutcome(

@@ -1269,11 +1269,12 @@ financial mutation, Container lifecycle, alarm, or traffic evidence exists.
    client-versus-scheduler audit digest, transient/permanent failure routing,
    Container restart/OOM, and exact replay without a second provider call or
    accounting change.
-5. Implement and rehearse the cinaVibeSDK-derived production contracts for
-   jurisdiction-scoped opaque object/tenant identity, one explicitly selected
-   DO class-lifecycle mechanism (`exports` for new Workers or the retained
-   legacy migration chain, never both), bounded idempotent cold start, the
-   single at-least-once alarm ABI N/N-1, and complete cross-layer provenance.
+5. Rehearse the locally implemented stable logical-shard identity, bounded
+   cold-start and v0/v1 alarm-intent bridge against the real Container package;
+   add the separately approved jurisdiction, one explicitly selected DO
+   class-lifecycle mechanism (`exports` for new Workers or the retained legacy
+   migration chain, never both), N/N-1 deployment, and complete cross-layer
+   provenance.
 6. Close provider-native idempotency or deterministic lookup, shared non-2xx
    response semantics, independent amount authority, provider invoice
    convergence, R2 retention, load/cost/SLO/alerts, rollback, security review,
@@ -1284,3 +1285,49 @@ reconciliation leases and returning new traffic to Go/VPS. Migration 0051 and
 its evidence remain in place; no old writer, schema rollback, evidence delete,
 provider resend, or ad hoc quota compensation is allowed. Go/VPS remains the
 traffic and financial authority. Production remains **NO-GO**.
+
+## 2026-07-18 RelayShardContainer Alarm Intent v1 Status
+
+### Implemented locally
+
+- DO-local immutable schema migrations 1/2 and the operation deadline intent
+  table are initialized under bounded `blockConcurrencyWhile`; unknown future
+  migration rows or failed pending-intent rearm reject initialization.
+- V1 claim and initial unarmed intent are atomic; schedule success is followed
+  by exact armed readback. Terminal operation transitions close pending intent;
+  direct delete/replacement and out-of-range delivery state are rejected.
+- The callback reads legacy v0 and strict v1, fences owner/shard/deadline and
+  delivery generation, retries deterministically, stops after eight deliveries
+  or 24 hours, and quarantines permanent or exhausted work.
+- The `Container` base class remains the sole alarm owner. Recovery code uses
+  `schedule()` and has no provider, settlement, refund, D1, or R2 action.
+  Package 0.3.7 catches callback exceptions and deletes the one-shot task, so
+  v1 persists delivery and creates its bounded retry/quarantine before return;
+  persistence/reschedule failure calls `ctx.abort()` before cleanup can commit.
+- The bounded pool remains one canonical DO/Container per logical shard;
+  tenant HMAC selects the shard and does not create per-tenant objects.
+- Both `CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED` and
+  `CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED` are generated into
+  all three Controller configurations as exact `false`; v1 reading/rearm is not
+  gated. Execution with either writer gate false is rejected before claim by
+  both Controller layers and reports not-ready; new v0 writes are removed. No
+  D1 0052 exists or is needed.
+
+### Verified locally
+
+TypeScript compilation passes. The Controller Bun suite passes 95/95 and the
+Workerd SQLite suite passes 34/34, including migration immutability, atomic
+claim/intent, eviction persistence, armed state, early and due delivery,
+duplicate terminal replay, stale generation, shard mismatch, retry exhaustion,
+future-schema rejection, delete/replace guards, execution-gate interlock, and
+zero provider-journal/retry/terminal-ack writes from recovery.
+
+### Still blocked
+
+The actual `RelayShardContainer` base alarm and Linux Container were not
+instantiated by the ledger fixture. Remote object/schema/gate readback, real
+eviction/cold start/sleep/restart/OOM, package callback failure, N/N-1 or
+blue/green rollback, jurisdiction, provider-call counter, load/cost/SLO/alert,
+and signed approvals remain open. The next code milestone is shared Go-parity
+response/error/usage interpretation. Go/VPS remains authoritative and
+production remains **NO-GO**.

@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 
@@ -40,6 +41,7 @@ REQUIRED_TABLES = [
     "relay_container_operations",
     "relay_container_atomic_admissions",
     "relay_container_idempotency_aliases",
+    "relay_container_scheduled_terminalizations",
     "relay_container_provider_egress_grants",
     "relay_container_provider_usage_receipts",
     "relay_container_provider_usage_receipt_identities",
@@ -324,6 +326,25 @@ REQUIRED_COLUMNS = {
         "operation_id",
         "canonical_client_idempotency_hmac_sha256",
         "client_request_sha256",
+        "created_at",
+    },
+    "relay_container_scheduled_terminalizations": {
+        "billing_event_id",
+        "reservation_key",
+        "operation_id",
+        "owner_generation",
+        "operation_from_status",
+        "billing_owner_generation",
+        "reconciliation_id",
+        "reconciliation_revision",
+        "observation_claim_generation",
+        "observation_claim_owner",
+        "observation_claim_lease_expires_at",
+        "decision",
+        "provider_usage_receipt_sha256",
+        "provider_result_sha256",
+        "terminal_contract_sha256",
+        "committed_at",
         "created_at",
     },
     "relay_container_provider_egress_grants": {
@@ -718,6 +739,9 @@ REQUIRED_INDEXES = {
     "relay_container_idempotency_aliases": {
         "idx_relay_container_idempotency_aliases_reservation": False,
     },
+    "relay_container_scheduled_terminalizations": {
+        "idx_relay_container_scheduled_terminalizations_committed": False,
+    },
     "relay_container_provider_egress_grants": {
         "idx_relay_container_provider_egress_grants_provider_operation": True,
         "idx_relay_container_provider_egress_grants_worker_version": False,
@@ -819,6 +843,8 @@ def main() -> int:
     relay_container_provider_usage_binding_rollout_verified = False
     relay_container_atomic_admission_verified = False
     relay_container_atomic_admission_rollout_verified = False
+    relay_container_scheduled_terminalization_verified = False
+    relay_container_scheduled_terminalization_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -858,6 +884,8 @@ def main() -> int:
         relay_container_provider_usage_binding_rollout_verified = True
         verify_relay_container_atomic_admission_rollout(schema_paths)
         relay_container_atomic_admission_rollout_verified = True
+        verify_relay_container_scheduled_terminalization_rollout(schema_paths)
+        relay_container_scheduled_terminalization_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -907,6 +935,8 @@ def main() -> int:
         relay_container_conn.close()
         verify_relay_container_atomic_admission(conn)
         relay_container_atomic_admission_verified = True
+        verify_relay_container_scheduled_terminalization(conn)
+        relay_container_scheduled_terminalization_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
@@ -1002,6 +1032,10 @@ def main() -> int:
         message += " + 0050 immutable relay Container atomic admission"
     if relay_container_atomic_admission_rollout_verified:
         message += " + 0050 receipt-first atomic rollout and rollback"
+    if relay_container_scheduled_terminalization_verified:
+        message += " + 0051 owner-fenced scheduled terminalization"
+    if relay_container_scheduled_terminalization_rollout_verified:
+        message += " + 0051 append-only scheduled terminalization rollout"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -4579,6 +4613,374 @@ def verify_relay_container_atomic_admission(conn: sqlite3.Connection) -> None:
         trigger_sql = sqlite_object_sql(conn, "trigger", trigger)
         if trigger_sql is None or error_fragment not in trigger_sql:
             raise SystemExit(f"0050 immutable authority guard is incomplete: {trigger}")
+
+
+def verify_relay_container_scheduled_terminalization(
+    conn: sqlite3.Connection,
+) -> None:
+    required_triggers = (
+        "relay_container_scheduled_terminalization_insert_guard",
+        "relay_container_scheduled_terminalization_immutable_guard",
+        "relay_container_scheduled_terminalization_delete_guard",
+    )
+    for trigger in required_triggers:
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0051 scheduled terminalization trigger missing: {trigger}")
+
+    table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_scheduled_terminalizations"
+    )
+    for fragment in (
+        "billing_event_id TEXT PRIMARY KEY NOT NULL",
+        "operation_from_status IN ('dispatched', 'recovery_required')",
+        "decision = 'settle'",
+        "CHECK (reservation_key = operation_id)",
+        "UNIQUE (operation_id, reconciliation_revision)",
+        "REFERENCES relay_container_terminal_events(billing_event_id)",
+        "REFERENCES relay_container_reconciliation_observations(operation_id)",
+        "REFERENCES relay_container_atomic_admissions(reservation_key)",
+    ):
+        if table_sql is None or fragment not in table_sql:
+            raise SystemExit(f"0051 scheduled terminalization table missing: {fragment}")
+
+    index_sql = sqlite_object_sql(
+        conn,
+        "index",
+        "idx_relay_container_scheduled_terminalizations_committed",
+    )
+    if index_sql is None or "(committed_at, operation_id)" not in index_sql:
+        raise SystemExit("0051 scheduled terminalization committed-order index is not exact")
+
+    insert_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_scheduled_terminalization_insert_guard",
+    )
+    for fragment in (
+        "observation.status = 'leased'",
+        "observation.claim_generation = NEW.observation_claim_generation",
+        "observation.claim_owner = NEW.observation_claim_owner",
+        "observation.claim_lease_expires_at = NEW.observation_claim_lease_expires_at",
+        "observation.updated_at <= NEW.committed_at",
+        "observation.claim_lease_expires_at > NEW.committed_at",
+        "observation.claim_lease_expires_at > unixepoch()",
+        "observation.recovery_deadline_at > NEW.committed_at",
+        "observation.recovery_deadline_at > unixepoch()",
+        "event.operation_status = 'completed'",
+        "event.billing_action = 'settle'",
+        "reservation.status = 'settled'",
+        "reservation.owner_generation = NEW.billing_owner_generation + 1",
+        "FROM relay_container_atomic_admissions AS admission",
+    ):
+        if insert_guard_sql is None or fragment not in insert_guard_sql:
+            raise SystemExit(f"0051 scheduled terminalization fence missing: {fragment}")
+
+    fixture = sqlite3.connect(":memory:")
+    for schema_path in sorted(Path("migrations/d1").glob("*.sql")):
+        fixture.executescript(schema_path.read_text(encoding="utf-8"))
+    fixture.execute("PRAGMA foreign_keys = ON")
+    for table in (
+        "relay_container_operations",
+        "relay_container_terminal_events",
+        "relay_container_reconciliation_observations",
+    ):
+        trigger_names = fixture.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?",
+            (table,),
+        ).fetchall()
+        for (trigger_name,) in trigger_names:
+            fixture.execute(f'DROP TRIGGER "{trigger_name}"')
+
+    def digest(label: str) -> str:
+        return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+    operation_id = "relaycontainer-0051-fixture"
+    operation_created_at = int(time.time()) - 1_000
+    operation_owner_generation = 2
+    billing_owner_generation = 2
+    result_sha256 = digest("0051-provider-result")
+    usage_receipt_sha256 = digest("0051-provider-usage-receipt")
+    reconciliation_id = digest("0051-reconciliation")
+    terminal_contract_sha256 = digest("0051-terminal-contract")
+    billing_event_id = digest("0051-billing-event")
+    claim_owner = "a" * 32
+    claim_generation = 1
+    committed_at = operation_created_at + 200
+    claim_lease_expires_at = operation_created_at + 1_500
+
+    fixture.execute(
+        """
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, token_id, model_name, endpoint_path,
+          request_id_hash, expr_hash, candidate_group_count,
+          reservation_strategy, pre_consumed_quota, status, channel_id,
+          selected_group, selected_at, final_quota, finalization_reason,
+          request_accounted, lease_expires_at, created_at, updated_at,
+          settled_at, owner_generation, owner_deadline_at
+        ) VALUES (?, 510051, 510052, 'gpt-0051-terminalizer',
+          '/v1/chat/completions', ?, ?, 1, 'selected_group', 100,
+          'settled', 510053, 'default', ?, 80, 'provider_completed', 1,
+          ?, ?, ?, ?, 3, ?)
+        """,
+        (
+            operation_id,
+            f"sha256:{digest('0051-request')}",
+            f"sha256:{digest('0051-expression')}",
+            operation_created_at,
+            operation_created_at + 600,
+            operation_created_at,
+            committed_at,
+            committed_at,
+            operation_created_at + 600,
+        ),
+    )
+    input_sha256 = digest("0051-input")
+    fixture.execute(
+        """
+        INSERT INTO relay_container_operations (
+          reservation_key, operation_id, owner_generation,
+          owner_lease_expires_at, channel_id, selected_group, operation_kind,
+          provider_operation_id, admission_sha256, protocol_version,
+          shard_contract_version, ring_generation, shard_count, shard_index,
+          instance_name, execution_deadline_at, input_mode, input_object_key,
+          input_object_version, input_sha256, input_size, input_content_type,
+          trace_id, client_idempotency_hmac_sha256, client_request_sha256,
+          reconciliation_id, status, response_status, response_code,
+          result_object_key, result_object_version, result_sha256, result_size,
+          result_content_type, created_at, updated_at
+        ) VALUES (?, ?, 2, ?, 510053, 'default', 'chat_completions_canary',
+          'provider-op-0051-fixture', ?, 1, 1, 1, 8, 3,
+          'cinatoken-relay-shard-v1-0003', ?, 'r2', ?,
+          'input-version-0051', ?, 2, 'application/json',
+          'trace-0051-fixture', ?, ?, ?, 'completed', 200, NULL,
+          ?, 'result-version-0051', ?, 2, 'application/json', ?, ?)
+        """,
+        (
+            operation_id,
+            operation_id,
+            operation_created_at + 600,
+            digest("0051-operation-admission"),
+            operation_created_at + 300,
+            f"container-inputs/v1/{operation_id}/2/{input_sha256}",
+            input_sha256,
+            digest("0051-client-hmac"),
+            digest("0051-client-request"),
+            reconciliation_id,
+            f"container-results/v1/{operation_id}/2/{result_sha256}",
+            result_sha256,
+            operation_created_at,
+            committed_at,
+        ),
+    )
+    fixture.execute(
+        """
+        INSERT INTO relay_container_atomic_admissions (
+          reservation_key, operation_id, contract_version,
+          atomic_admission_sha256, operation_admission_sha256,
+          client_idempotency_hmac_sha256, client_request_sha256,
+          idempotency_alias_count, idempotency_aliases_sha256,
+          billing_snapshot_sha256, user_id, token_id, pre_consumed_quota,
+          owner_generation, owner_lease_expires_at, channel_id,
+          selected_channel_type, selected_group, selected_snapshot_key,
+          owner_deadline_at, selected_at, created_at, attempt_count,
+          provider_attempt_generation
+        ) VALUES (?, ?, 1, ?, ?, ?, ?, 1, ?, ?, 510051, 510052, 100,
+          2, ?, 510053, 1, 'default', '1', ?, ?, ?, 1, 1)
+        """,
+        (
+            operation_id,
+            operation_id,
+            digest("0051-atomic-admission"),
+            digest("0051-operation-admission"),
+            digest("0051-client-hmac"),
+            digest("0051-client-request"),
+            digest("0051-alias-set"),
+            digest("0051-billing-snapshot"),
+            operation_created_at + 600,
+            operation_created_at + 600,
+            operation_created_at,
+            operation_created_at,
+        ),
+    )
+    fixture.execute(
+        """
+        INSERT INTO relay_container_reconciliation_observations (
+          operation_id, reservation_key, operation_created_at,
+          owner_generation, reconciliation_id, status, claim_generation,
+          claim_owner, claim_lease_expires_at, available_at, attempt_count,
+          consecutive_failures, first_observed_at, last_attempt_at,
+          last_observed_at, last_class, last_error_code,
+          recovery_deadline_at, converged_at, dead_lettered_at,
+          dead_letter_reason, created_at, updated_at
+        ) VALUES (?, ?, ?, 2, ?, 'leased', 1, ?, ?, 0, 1, 0,
+          ?, ?, 0, '', '', ?, 0, 0, '', ?, ?)
+        """,
+        (
+            operation_id,
+            operation_id,
+            operation_created_at,
+            reconciliation_id,
+            claim_owner,
+            claim_lease_expires_at,
+            operation_created_at + 100,
+            operation_created_at + 100,
+            operation_created_at + 2_000,
+            operation_created_at + 50,
+            operation_created_at + 100,
+        ),
+    )
+    headers_json = '{"content-type":"application/json"}'
+    response_sha256 = digest("0051-client-response")
+    outbox_payload = "{}"
+    fixture.execute(
+        """
+        INSERT INTO relay_container_terminal_events (
+          billing_event_id, reservation_key, operation_id, owner_generation,
+          operation_from_status, operation_status, terminal_contract_sha256,
+          billing_action, billing_owner_generation, billing_from_status,
+          billing_final_quota, billing_request_accounted, billing_reason,
+          pre_consumed_quota, user_quota_delta, token_quota_delta,
+          user_used_quota_delta, channel_used_quota_delta, request_count_delta,
+          reconciliation_id, reconciliation_revision, client_response_status,
+          client_response_headers_json, client_response_headers_sha256,
+          client_response_object_key, client_response_object_version,
+          client_response_sha256, client_response_size,
+          client_response_content_type, outbox_schema_version,
+          outbox_payload_json, outbox_payload_sha256, created_at,
+          provider_usage_receipt_sha256, provider_result_sha256,
+          provider_attempt_generation
+        ) VALUES (?, ?, ?, 2, 'dispatched', 'completed', ?, 'settle', 2,
+          'reserved', 80, 1, 'provider_completed', 100, 20, 20, 80, 80, 1,
+          ?, 1, 200, ?, ?, ?, 'response-version-0051', ?, 2,
+          'application/json', 1, ?, ?, ?, ?, ?, 1)
+        """,
+        (
+            billing_event_id,
+            operation_id,
+            operation_id,
+            terminal_contract_sha256,
+            reconciliation_id,
+            headers_json,
+            hashlib.sha256(headers_json.encode("utf-8")).hexdigest(),
+            f"container-client-responses/v1/{operation_id}/2/{response_sha256}",
+            response_sha256,
+            outbox_payload,
+            hashlib.sha256(outbox_payload.encode("utf-8")).hexdigest(),
+            committed_at,
+            usage_receipt_sha256,
+            result_sha256,
+        ),
+    )
+
+    insert_sql = """
+        INSERT INTO relay_container_scheduled_terminalizations (
+          billing_event_id, reservation_key, operation_id, owner_generation,
+          operation_from_status, billing_owner_generation, reconciliation_id,
+          reconciliation_revision, observation_claim_generation,
+          observation_claim_owner, observation_claim_lease_expires_at,
+          decision, provider_usage_receipt_sha256, provider_result_sha256,
+          terminal_contract_sha256, committed_at, created_at
+        ) VALUES (?, ?, ?, 2, 'dispatched', 2, ?, 1, ?, ?, ?, 'settle', ?, ?, ?, ?, ?)
+    """
+
+    def insert_evidence(
+        *,
+        claim: str = claim_owner,
+        claim_expires_at: int = claim_lease_expires_at,
+        receipt: str = usage_receipt_sha256,
+        result: str = result_sha256,
+        at: int = committed_at,
+    ) -> None:
+        fixture.execute(
+            insert_sql,
+            (
+                billing_event_id,
+                operation_id,
+                operation_id,
+                reconciliation_id,
+                claim_generation,
+                claim,
+                claim_expires_at,
+                receipt,
+                result,
+                terminal_contract_sha256,
+                at,
+                at,
+            ),
+        )
+
+    expect_integrity_error(
+        lambda: insert_evidence(at=operation_created_at + 99),
+        "0051 accepted a terminalization timestamp before the observation claim",
+        "relay container scheduled terminalization fence is invalid",
+    )
+    expect_integrity_error(
+        lambda: insert_evidence(at=claim_lease_expires_at),
+        "0051 accepted an expired observation lease",
+        "relay container scheduled terminalization fence is invalid",
+    )
+    expired_database_lease = int(time.time()) - 1
+    fixture.execute(
+        "UPDATE relay_container_reconciliation_observations "
+        "SET claim_lease_expires_at = ? WHERE operation_id = ?",
+        (expired_database_lease, operation_id),
+    )
+    expect_integrity_error(
+        lambda: insert_evidence(claim_expires_at=expired_database_lease),
+        "0051 trusted a stale Worker timestamp after the lease expired in D1",
+        "relay container scheduled terminalization fence is invalid",
+    )
+    fixture.execute(
+        "UPDATE relay_container_reconciliation_observations "
+        "SET claim_lease_expires_at = ? WHERE operation_id = ?",
+        (claim_lease_expires_at, operation_id),
+    )
+    expect_integrity_error(
+        lambda: insert_evidence(claim="b" * 32),
+        "0051 accepted a stale observation owner",
+        "relay container scheduled terminalization fence is invalid",
+    )
+    expect_integrity_error(
+        lambda: insert_evidence(result=digest("0051-forged-result")),
+        "0051 accepted a forged provider result digest",
+        "relay container scheduled terminalization fence is invalid",
+    )
+    insert_evidence()
+    row = fixture.execute(
+        "SELECT decision, operation_from_status, reconciliation_revision, "
+        "observation_claim_generation, observation_claim_owner, "
+        "observation_claim_lease_expires_at "
+        "FROM relay_container_scheduled_terminalizations WHERE billing_event_id = ?",
+        (billing_event_id,),
+    ).fetchone()
+    if row != (
+        "settle",
+        "dispatched",
+        1,
+        1,
+        claim_owner,
+        claim_lease_expires_at,
+    ):
+        raise SystemExit(f"0051 scheduled terminalization evidence mismatch: {row}")
+    expect_integrity_error(
+        lambda: fixture.execute(
+            "UPDATE relay_container_scheduled_terminalizations "
+            "SET committed_at = committed_at + 1 WHERE billing_event_id = ?",
+            (billing_event_id,),
+        ),
+        "0051 allowed scheduled terminalization evidence to be rewritten",
+        "relay container scheduled terminalization is immutable",
+    )
+    expect_integrity_error(
+        lambda: fixture.execute(
+            "DELETE FROM relay_container_scheduled_terminalizations "
+            "WHERE billing_event_id = ?",
+            (billing_event_id,),
+        ),
+        "0051 allowed scheduled terminalization evidence to be deleted",
+        "relay container scheduled terminalization cannot be deleted",
+    )
+    fixture.close()
 
 
 def verify_relay_container_reconciliation_observer(
@@ -9329,8 +9731,10 @@ def verify_relay_container_provider_usage_binding_rollout(
     binding_index = schema_paths.index(binding_path)
     if binding_index == 0 or schema_paths[binding_index - 1] != receipt_path:
         raise SystemExit("0049 provider usage binding must immediately follow 0048")
-    if binding_index != len(schema_paths) - 2:
-        raise SystemExit("0049 provider usage binding must immediately precede D1 head")
+    if binding_index != len(schema_paths) - 3 or schema_paths[binding_index + 1].name != (
+        "0050_relay_container_atomic_admission.sql"
+    ):
+        raise SystemExit("0049 provider usage binding must immediately precede 0050")
 
     binding_sql = binding_path.read_text(encoding="utf-8")
     if "if not exists" in binding_sql.lower():
@@ -9660,6 +10064,76 @@ def verify_relay_container_provider_usage_binding_rollout(
     )
 
 
+def verify_relay_container_scheduled_terminalization_rollout(
+    schema_paths: list[Path],
+) -> None:
+    scheduled_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0051_relay_container_scheduled_terminalization.sql"
+        ),
+        None,
+    )
+    atomic_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0050_relay_container_atomic_admission.sql"
+        ),
+        None,
+    )
+    if scheduled_path is None or atomic_path is None:
+        raise SystemExit("0050/0051 relay Container terminalization migrations not found")
+    if len(schema_paths) != 51:
+        raise SystemExit(
+            f"0051 scheduled terminalization requires exactly 51 D1 migrations, got {len(schema_paths)}"
+        )
+    scheduled_index = schema_paths.index(scheduled_path)
+    if scheduled_index != len(schema_paths) - 1:
+        raise SystemExit("0051 scheduled terminalization must be the current D1 migration head")
+    if scheduled_index == 0 or schema_paths[scheduled_index - 1] != atomic_path:
+        raise SystemExit("0051 scheduled terminalization must immediately follow 0050")
+
+    scheduled_sql = scheduled_path.read_text(encoding="utf-8")
+    if "if not exists" in scheduled_sql.lower():
+        raise SystemExit("0051 critical terminalization objects must fail duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_scheduled_terminalizations",
+        "UNIQUE (operation_id, reconciliation_revision)",
+        "REFERENCES relay_container_terminal_events(billing_event_id)",
+        "REFERENCES relay_container_reconciliation_observations(operation_id)",
+        "REFERENCES relay_container_atomic_admissions(reservation_key)",
+        "CREATE INDEX idx_relay_container_scheduled_terminalizations_committed",
+        "CREATE TRIGGER relay_container_scheduled_terminalization_insert_guard",
+        "observation.updated_at <= NEW.committed_at",
+        "observation.claim_lease_expires_at > NEW.committed_at",
+        "observation.recovery_deadline_at > NEW.committed_at",
+        "event.billing_action = 'settle'",
+        "reservation.status = 'settled'",
+        "CREATE TRIGGER relay_container_scheduled_terminalization_immutable_guard",
+        "CREATE TRIGGER relay_container_scheduled_terminalization_delete_guard",
+    ):
+        if fragment not in scheduled_sql:
+            raise SystemExit(
+                f"0051 scheduled terminalization rollout missing: {fragment}"
+            )
+    upper_scheduled_sql = scheduled_sql.upper()
+    for forbidden in (
+        "ALTER TABLE ",
+        "DROP TABLE ",
+        "UPDATE RELAY_BILLING_RESERVATIONS",
+        "UPDATE RELAY_CONTAINER_OPERATIONS",
+        "UPDATE RELAY_CONTAINER_RECONCILIATION_OBSERVATIONS",
+        "DELETE FROM RELAY_BILLING_RESERVATIONS",
+        "DELETE FROM RELAY_CONTAINER_OPERATIONS",
+    ):
+        if forbidden in upper_scheduled_sql:
+            raise SystemExit(
+                f"0051 scheduled terminalization migration is not append-only: {forbidden}"
+            )
+
+
 def verify_relay_container_atomic_admission_rollout(
     schema_paths: list[Path],
 ) -> None:
@@ -9681,13 +10155,13 @@ def verify_relay_container_atomic_admission_rollout(
     )
     if atomic_path is None or binding_path is None:
         raise SystemExit("0049/0050 relay Container admission migrations not found")
-    if len(schema_paths) != 50:
+    if len(schema_paths) != 51:
         raise SystemExit(
-            f"0050 atomic admission requires exactly 50 D1 migrations, got {len(schema_paths)}"
+            f"0050 atomic admission compatibility requires exactly 51 D1 migrations, got {len(schema_paths)}"
         )
     atomic_index = schema_paths.index(atomic_path)
-    if atomic_index != len(schema_paths) - 1:
-        raise SystemExit("0050 atomic admission must be the current D1 migration head")
+    if atomic_index != len(schema_paths) - 2:
+        raise SystemExit("0050 atomic admission must remain immediately before the 0051 head")
     if atomic_index == 0 or schema_paths[atomic_index - 1] != binding_path:
         raise SystemExit("0050 atomic admission must immediately follow 0049")
 

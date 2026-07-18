@@ -976,3 +976,128 @@ rollback or secret rotation.
 implementation, but `container_chat_canary_admission_compiled()` remains false
 and is the controlling production gate. No deployment is claimed; production
 remains **NO-GO**.
+
+## 2026-07-18 Owner-Fenced Scheduled Terminalizer Runtime
+
+Migration 0051 adds local append-only proof for the reconciliation schedule
+that wins an exact financial terminalization. It does not give the scheduler
+general operation authority. The observer may enter the terminal path only
+when `CONTAINER_SCHEDULED_TERMINALIZER_ENABLED` and
+`CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED` are both exact `true`, the
+existing operation replay authority is ready, `FILE_BUCKET` exists, and the
+0051 table, index, and three guards are ready. Before a scheduled run claims an
+item, a live Controller probe must prove probe enablement, service binding,
+configured authority, signature verification, controller enablement, and
+execution enablement; the capability endpoint uses that same probe. Both new
+gates are tracked as `false` for local, staging, and production; 0051 is not
+remotely applied.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Observe: scheduled scan owns run lease
+    Observe --> ReadOnly: non-terminal, missing, ambiguous, or divergent
+    Observe --> Candidate: D1 dispatched or recovery_required
+    Candidate --> ReadOnly: Controller is not exact Completed + DefinitiveTerminal
+    Candidate --> Verify: exact Controller status v3 terminal
+    Verify --> Retry: store unavailable or replay material missing
+    Verify --> DeadLetter: divergent result or contract/decision conflict
+    Verify --> Commit: exact evidence and live observation lease
+    Commit --> Settled: one D1 batch including 0051 evidence
+    Commit --> Retry: stale ownership or transient store failure
+    Commit --> DeadLetter: permanent financial decision conflict
+    Settled --> Converged: reload completed operation and reobserve
+```
+
+`ReadOnly` never claims, dispatches, wakes, retries, or sends to the provider.
+Only exact Controller `Completed` classified as `DefinitiveTerminal`, using
+status contract v3 with no v1/v2 fallback, is eligible. The result manifest is
+rejected above the 4 MiB replay ceiling before its body is buffered. A matching
+but non-definitive terminal, failed operation, recovery-required Controller
+result, absent receipt, R2 drift, or unavailable store remains observation
+evidence and cannot authorize settlement or refund. Typed terminalizer failures
+preserve exact error codes: availability and missing replay material remain
+bounded retries, while divergent response material, contract violations, and
+conflicting terminal decisions dead-letter immediately.
+
+The D1 terminal batch contains terminal event, outbox, accounting, operation,
+reservation, and 0051 scheduled evidence. The 0051 guard proves the live
+observation claim owner/generation and exact frozen lease expiry, checks both
+lease and recovery horizon against D1 transaction-time `unixepoch()`, maps D1
+`dispatched` to reconciliation revision 1 and `recovery_required` to revision
+2, and checks the exact settled receipt/result/terminal contract plus the 0050
+admission. A stale lease or any later statement failure rolls back every D1
+effect. The R2 client artifact is created before this transaction and is never
+authority by itself; a failed D1 commit leaves an orphan candidate for the
+bounded inventory policy.
+
+Client and scheduled completion use one financial audit schema v2 derived from
+the persisted reservation and operation. It includes the frozen
+`request_id_hash` but excludes per-attempt request ID/CF Ray and client IP, so
+the same terminal decision has the same audit digest regardless of which path
+observes it.
+
+A lost response after D1 commit is safe to read back. The completed operation,
+settled reservation, terminal receipt/event/outbox, and immutable 0051 row
+identify the winner. A later schedule reobserves convergence and does not send
+the provider or settle again. A crash before commit leaves the lease to expire
+and another generation may reobserve. Update/delete of 0051 evidence and a
+commit from a stale claim owner are rejected.
+
+### Durable Object production ABI
+
+The cinaVibeSDK patterns are retained as design input, with these stronger
+cinatoken contracts:
+
+- **Object identity:** derive a versioned opaque DO name from environment,
+  tenant-scope digest, shard/ring, object purpose, and jurisdiction. Raw tenant,
+  user, token, or API-key values never become a DO name. Persist the namespace,
+  service/binding/class tuple, object-name digest, jurisdiction, and ring
+  generation with the operation.
+- **Jurisdiction:** create the jurisdiction-restricted subnamespace before
+  deriving the object ID and verify `ctx.id.jurisdiction` inside the object.
+  The same name has a different ID in another jurisdiction, so a mismatch must
+  fail rather than create a second owner. Existing object identity is
+  immutable; relocation creates an explicitly versioned destination and a
+  drained/verified transfer. Jurisdiction controls DO compute/storage locality;
+  Regional Services is a separate ingress-locality decision.
+- **Class lifecycle:** service name, binding name, class name, storage backend,
+  and the selected Wrangler lifecycle declaration form one ABI. This repository
+  currently uses legacy append-only `migrations`; `exports` is now preferred
+  for new Workers and is mutually exclusive. Freeze one mechanism before the
+  first remote deploy. New namespaces use SQLite. Class rename/delete/transfer
+  is atomic and cannot ride a gradual deployment; require binding inventory,
+  stored-data compatibility, remote reconciliation output, old-object drain,
+  and a compatible rollback reader.
+- **Cold start:** initialization is idempotent, blocks requests until local
+  schema/state validation finishes, restores durable owner/deadline/alarm/result
+  facts, and performs no provider or financial side effect. Constructor
+  `blockConcurrencyWhile` is bounded to schema/state work, performs no external
+  I/O, and stays below its reset timeout. SQL schema version lives in a durable
+  migration table, not `PRAGMA user_version`. Memory caches are disposable and
+  initialization failure closes readiness.
+- **Alarm N/N-1:** a DO has one alarm and a later `setAlarm` replaces it, so
+  cold start reads the existing alarm before scheduling. Persist a versioned
+  intent and owner generation for at-least-once delivery. Version N reads N and
+  N-1; N-1 is isolated from N-only commands. Duplicate, delayed, reordered,
+  bounded platform retries, retry exhaustion, and rollback-era alarms converge
+  or quarantine without a provider resend or stale financial commit.
+- **Provenance:** one redacted execution tuple joins edge and Controller
+  deployment IDs, DO namespace/class/migration/schema/object digest,
+  jurisdiction, Container image/protocol, broker profile/version, provider
+  receipt/result, D1 migration/operation, R2 versions/digests, terminal
+  event/outbox, financial receipt, and 0051 observation claim.
+
+Production evidence must exercise real object eviction, cold/warm start,
+duplicate alarms, old-schema objects, N/N-1 deployment and rollback, class
+migration, jurisdiction mismatch, Container sleep/restart/OOM, D1 response
+loss, and R2 orphan/replay. Readiness must fail before provider I/O whenever an
+identity, class, schema, alarm, or provenance element is unknown.
+
+Normal rollback closes both terminalizer gates first, then admission, prepared
+resume, provider and reconciliation producers; it routes new work to Go/VPS,
+drains leases, and retains 0051 plus a compatible recovery reader. Schema
+rollback, evidence deletion, ambiguous provider retry, and ad hoc financial
+compensation are forbidden. Until remote migration/readback, mixed-version
+lifecycle faults, provider idempotency/lookup, amount/invoice convergence,
+shared response semantics, and named approval are archived, production remains
+**NO-GO**.

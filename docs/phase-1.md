@@ -2340,3 +2340,79 @@ Phase 1 acceptance remains blocked until all of the following are archived:
 The detailed contracts are migration plan section 22.243,
 `docs/container-operation-recovery.md`, the 0049/canary readiness matrices,
 and the matching entry in `docs/verification.md`.
+
+## Migration 0050/0051 Atomic Admission And Scheduled Terminalization
+
+This section supersedes the earlier Phase 1 next-task statement. Migration 0050
+now provides local atomic admission and migration 0051 now provides local
+owner-fenced scheduled settlement for one exact completed operation. Both are
+implementation milestones, not activation milestones. No remote migration,
+deployment, secret, provider, financial, alarm, or traffic action occurred.
+
+The 0051 terminalizer remains disabled unless
+`CONTAINER_SCHEDULED_TERMINALIZER_ENABLED` and
+`CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED` are both exact `true`.
+Existing Container operation replay authority, `FILE_BUCKET`, the compiled
+bounded observer, and complete 0051 schema readiness are also mandatory. A live
+Controller probe must prove probe/binding/authority, verified status, controller
+enablement, and execution enablement before the scheduled run claims an item;
+the capability endpoint uses the same probe. Both new gates remain false for
+every tracked environment, and the final canary admission source gate remains
+false.
+
+Only an observation lease owned by the current claim generation may settle.
+The D1 operation must be `dispatched` or `recovery_required`; Controller status
+must be exact `Completed` and classified `DefinitiveTerminal`; status-v3 with no
+v1/v2 fallback, provider receipt/result, R2 result, immutable 0050 admission,
+reservation, operation, frozen quote and client response must converge. Results
+above the 4 MiB replay ceiling are rejected from the manifest before the body
+is buffered. The terminalizer does not claim, dispatch, wake, retry, or resend
+the provider.
+
+The final D1 batch contains terminal event, outbox, user/token/channel
+accounting, operation completion, reservation settlement, and immutable 0051
+evidence. The evidence insert verifies the active owner/generation, exact frozen
+claim expiry, lease/recovery horizons against D1 transaction-time `unixepoch()`,
+and complete same-batch result. Any failure rolls back all D1 effects. The
+earlier R2 client artifact is non-authoritative until D1 commits and may become
+bounded orphan inventory.
+
+Financial audit schema v2 is shared by client and scheduled replay and is
+derived from the persisted reservation/operation. It keeps the frozen
+`request_id_hash` but excludes current request ID/CF Ray and client IP. Typed
+terminal failures preserve exact codes: unavailable stores and missing replay
+material remain bounded retries, while divergent response evidence, contract
+violations, and conflicting financial decisions dead-letter immediately.
+
+Crash handling is explicit: pre-commit crashes leave no financial decision and
+are reclaimed after lease expiry; post-commit response loss is resolved from
+the immutable terminal/0051 tuple; stale owners cannot commit; duplicate
+schedules reobserve the completed operation without a second provider or
+accounting action. Rollback disables both new gates first, preserves 0050/0051
+and all evidence, drains or quarantines owners, and routes new traffic to
+Go/VPS.
+
+Phase 1 still cannot graduate until isolated staging proves:
+
+- authenticated 0050/0051 apply and exact schema/capability readback with all
+  action gates false;
+- same-batch failure at every statement, lost-response readback, exact frozen
+  lease expiry plus D1-clock rejection, duplicate Cron/alarm and zero partial
+  accounting;
+- jurisdiction-scoped opaque object/tenant identity, one frozen DO class
+  lifecycle mode (declarative `exports` or retained legacy migrations),
+  bounded idempotent cold start, single at-least-once alarm ABI N/N-1, and full
+  cross-layer provenance;
+- real D1/R2/DO/Controller/Container eviction, restart/OOM, pre-body 4 MiB
+  rejection, missing/divergent/orphan and transient/permanent classification,
+  stable client/scheduler audit digest, rolling-version and rollback faults
+  with one provider call at most;
+- provider-native idempotency or deterministic lookup, shared non-2xx response
+  semantics, independent amount authority and provider-invoice convergence;
+- R2 retention, load/cost/SLO/alerts, security/privacy/data review,
+  disable-first rollback, and C1-C5/G1-G8 approvals.
+
+The next implementation blockers are the versioned object/jurisdiction and DO
+alarm/class lifecycle contracts, end-to-end provenance, shared response
+interpreter, provider ambiguity authority, and independent financial
+attestation. Go/VPS remains authoritative and production remains **NO-GO**.

@@ -2647,8 +2647,6 @@ async fn relay_endpoint_with_auth(
                 token_id: auth.token_id,
                 model: &model,
                 endpoint_path: &endpoint.upstream_path,
-                request_id: request_id.as_deref(),
-                client_ip: client_ip.as_deref(),
             };
             match crate::container_relay_canary::replay_or_resume_container_chat_canary(
                 &env,
@@ -3010,8 +3008,6 @@ async fn relay_endpoint_with_auth(
             token_id: auth.token_id,
             model: &model,
             endpoint_path: &endpoint.upstream_path,
-            request_id: request_id.as_deref(),
-            client_ip: client_ip.as_deref(),
         };
         return match crate::container_relay_canary::execute_container_chat_canary(
             &env,

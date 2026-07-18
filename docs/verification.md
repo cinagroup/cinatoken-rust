@@ -7153,3 +7153,136 @@ responses, real `RelayShardContainer` eviction/restart, N/N-1 or blue/green
 rollout, provider idempotency/lookup, and remote D1/R2/DO/provider fault and
 financial convergence. Local pass status leaves Go/VPS authoritative and
 production **NO-GO**.
+
+## Migration 0051 Scheduled Terminalization Verification (2026-07-18)
+
+This entry replaces the prior statement that autonomous terminalization is
+entirely unimplemented. It records a local owner-fenced candidate only. It is
+not evidence of a remote D1 apply, enabled schedule, deployed Worker/Controller/
+DO/Container, provider request, financial mutation, alarm execution, or traffic
+cutover.
+
+### Contract under test
+
+The verification target is deliberately narrow:
+
+- both `CONTAINER_SCHEDULED_TERMINALIZER_ENABLED` and
+  `CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED` are exact booleans,
+  default false in every tracked scope, and both are required;
+- runtime readiness additionally requires existing operation replay authority,
+  `FILE_BUCKET`, observer compilation, the exact 0051 table/index/three-trigger
+  schema, and a live pre-claim Controller probe proving
+  probe/binding/authority/verified/controller/execution readiness;
+- only D1 `dispatched` or `recovery_required` plus Controller exact
+  `Completed`/`DefinitiveTerminal` under status v3, with no v1/v2 fallback,
+  yields a terminal outcome;
+- the path performs no dispatch, wake, provider send, retry, automatic refund,
+  or mutable-price evaluation;
+- status-v3 provider receipt/result, R2 artifact, frozen 0050 admission,
+  reservation, operation and quote must converge, and a result manifest above
+  the 4 MiB replay ceiling must fail before body buffering;
+- terminal event, outbox, accounting, operation, reservation and 0051 evidence
+  are one D1 batch; and
+- claim owner/generation, attempt count, exact frozen lease expiry,
+  lease/recovery horizon against D1 transaction-time `unixepoch()`,
+  reconciliation revision and all terminal hashes are exact and immutable;
+- client and scheduler use one reservation-derived financial audit schema v2,
+  with frozen `request_id_hash` and no current request ID/CF Ray or client IP;
+  and
+- terminalizer errors retain exact class/code: unavailable or missing evidence
+  retries within the horizon, while divergence, contract violation and
+  conflicting financial decisions dead-letter immediately.
+
+### Confirmed local evidence
+
+For the exact local release candidate:
+
+- `python tools/verify_sqlite.py` passes the 51-migration chain and reports 49
+  tables, 557 incremental columns, and 73 key indexes. Its isolated 0051
+  fixture rejects stale Worker time against D1's clock, wrong frozen expiry,
+  expired lease, stale owner, forged result, update and delete, and accepts the
+  exact live owner once;
+- `bun run check:d1:migration-config` reports 51 contiguous migrations with
+  exact head `0051_relay_container_scheduled_terminalization.sql`;
+- `cargo test -p cinatoken-worker --lib` passes 827/827;
+- `bun run check:do-lifecycle-runtime` passes 48/48, including the complete
+  0051 commit, readback, replay, stale-owner, and wrong-frozen-expiry cases;
+- `bun run test:relay-container-atomic-admission:runtime` passes 15/15 and
+  `bun run check:container-scheduler-config` passes 4/4; and
+- workspace tests, the Worker wasm32 check, formatting, `git diff --check`, and
+  the repository-wide `bun run check` aggregate pass. The aggregate also
+  rebuilds and verifies the Controller, Workerd/DO, frontend, migrations,
+  SQLite chain, route ownership, redaction, bundle budgets, and tracked
+  Wrangler dry-runs. Only the existing default-off/dead-code warning class is
+  emitted.
+
+These commands were rerun after implementation edits stopped. They remain the
+required local release gate after any later implementation change; a pass from
+this candidate does not transfer to a later candidate.
+
+```powershell
+cargo fmt --all -- --check
+cargo test -p cinatoken-worker --lib
+cargo test --workspace --exclude cinatoken-worker
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run test:relay-container-atomic-admission:runtime
+bun run check:container-scheduler-config
+bun run check:do-lifecycle-runtime
+bun run check:d1:migration-config
+python tools/verify_sqlite.py
+bun run check
+git diff --check
+```
+
+The focused Workerd terminalization case proves a stale claim or wrong frozen
+expiry on the final 0051 statement rolls back terminal event, outbox, all
+accounting, operation and reservation changes; the live owner then commits
+every statement exactly once; readback is exact; repeat, update and delete
+fail. Rust tests cover both new gate truth tables, missing
+replay/binding/schema/controller-probe prerequisites, exact status-v3
+eligibility, pre-body size rejection, path-independent audit identity, and
+transient/permanent terminal failure routing.
+
+### Required staging fault matrix
+
+| Fault | Required result and archived evidence |
+| --- | --- |
+| One terminalizer gate true | No mutation; capability distinguishes requested, staging-verified, enabled, schema-ready and runtime-ready |
+| Missing replay authority, R2, 0051 schema, or any Controller probe/binding/authority/verified/controller/execution field | Readiness false before item claim and zero Controller terminalization/financial activity |
+| Claimed/running/failed/recovery/matching/conflicting/missing Controller state | Observation/retry/quarantine only; zero provider and financial delta |
+| Stale owner, wrong generation, wrong frozen expiry, stale Worker timestamp, D1-clock-expired lease/recovery horizon | Exact 0051 rejection and full D1 batch rollback |
+| Failure at each D1 statement | No partial event/outbox/accounting/operation/reservation/evidence; unchanged table fingerprints |
+| R2 client artifact created, D1 fails | Object classified as non-authoritative orphan; no settlement inferred; bounded retention/cleanup evidence |
+| D1 commit response lost | One immutable 0051/terminal winner, exact readback/replay, no second accounting or provider call |
+| Client retry versus scheduled replay | Same reservation-derived audit schema-v2 digest; current request ID/CF Ray and client IP cannot change the terminal decision |
+| Result manifest above 4 MiB | Permanent contract failure before R2 body read/buffer, no settlement, bounded Worker memory |
+| Missing/unavailable versus divergent/contract/decision conflict | Missing/unavailable evidence follows bounded retry; permanent classes keep exact error codes and immediately dead-letter; zero provider/financial delta |
+| Duplicate Cron/alarm and lease reclaim | Same winner or safe retry/quarantine; no resend, refund, or duplicate terminal decision |
+| DO eviction/cold start and Container sleep/restart/OOM | Durable state reconstruction, exact object/class/schema/alarm identity, no memory-only authority |
+| N/N-1 and rollback | Version N reads N/N-1 object/alarm state; N-1 never handles N-only intent; incompatible state fails before provider/financial I/O |
+| Jurisdiction/object mismatch | Fail closed with no alternate object creation or silent relocation |
+| Cross-layer provenance gap | Candidate rejected; no promotion until edge/Controller/DO/Container/broker/provider/D1/R2/billing/0051 tuple is complete |
+
+Remote schema evidence must include target account, database name/UUID,
+Time Travel bookmark, migration hash/ledger, normalized table/index/trigger
+bodies, full-table counts/hashes/high-watermarks before and after every negative
+probe, and the exact deployment/binding/image/class/migration identifiers.
+Evidence excludes credentials, raw idempotency values, tenant/user/token IDs,
+prompt/response bodies, and provider secrets.
+
+The cinaVibeSDK-derived lifecycle proof remains pending: jurisdiction-scoped
+opaque object/tenant identity, one frozen mutually exclusive class-lifecycle
+mode (`exports` or retained legacy migrations) with old-object drain, bounded
+idempotent cold start, one replace-on-set at-least-once alarm with N/N-1 ABI,
+and redacted cross-layer provenance. Provider-native idempotency/lookup,
+provider-response-before-R2
+ambiguity, shared non-2xx semantics, independent amount authority and invoice
+convergence, orphan policy, load/cost/SLO/alerts, rollback rehearsal, security
+review and C1-C5/G1-G8 approvals also remain open.
+
+Rollback verification must first read back both new gates false, then drain or
+expire leases, preserve 0050/0051 and all immutable evidence, keep a compatible
+recovery reader, and route new traffic to Go/VPS. Schema rollback, evidence
+deletion, provider resend, ad hoc quota compensation, unversioned class rename,
+and moving an existing object across jurisdiction are forbidden. Production
+remains **NO-GO**.

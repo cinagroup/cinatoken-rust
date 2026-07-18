@@ -1025,3 +1025,52 @@ status only; remote and financial acceptance remain open.
 The canary secret names are `CONTAINER_CHAT_CANARY_IDEMPOTENCY_SECRET` and
 `CONTAINER_SCHEDULER_ROUTING_SECRET`; values must not appear in tracked files,
 CLI arguments, logs, or evidence bundles. Go/VPS remains authoritative.
+
+## 2026-07-18 Migration 0051 Scheduled Terminalization Matrix
+
+This matrix supersedes the local implementation status of the earlier
+`Atomic admission` and `Autonomous terminalization` rows. It does not supersede
+their production acceptance criteria. Migration 0051 is local only, both new
+gates are false in all tracked scopes, and no remote deployment or financial
+action occurred.
+
+| Gate | Current local state | Production acceptance | Status |
+| --- | --- | --- | --- |
+| 0050 atomic owner | Receipt-first D1 admission atomically freezes aliases, reservation, quota, channel authority and prepared operation | Authenticated remote 0050 apply/readback, old-writer drain, concurrent two-version key rotation and exact rollback | Local only |
+| Activation interlock | `CONTAINER_SCHEDULED_TERMINALIZER_ENABLED` and `CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED` are exact booleans and both default false; replay authority, R2 and schema remain independent prerequisites; a live pre-claim Controller probe must prove probe/binding/authority/verified/controller/execution readiness | Deployed readback proves one-gate-only is inert, malformed/missing values fail closed, and readiness drops on each missing prerequisite or probe field | Local only |
+| Exact terminal predicate | Only D1 `dispatched`/`recovery_required` plus Controller exact `Completed`/`DefinitiveTerminal` under status v3 can enter settlement; no v1/v2 fallback exists | Remote negative matrix for v1/v2 and claimed/running/failed/recovery/matching/conflicting/missing/tampered/expired status with zero financial and provider delta | Local only |
+| No provider resend | Terminalization reads Controller/D1/R2 and uses the existing financial writer; it has no dispatch/wake/provider-send action | Provider call counter remains one across Cron/alarm duplicate, response loss, lease reclaim, DO eviction, Container restart and rollback | Local contract only |
+| Owner fence | 0051 checks live observation status, claim owner/generation, attempt count, exact frozen lease expiry, and lease/recovery horizon against both supplied commit time and D1 transaction-time `unixepoch()` | Remote stale-owner, wrong-frozen-expiry, D1-clock-expired lease, stolen-generation, concurrent winner and delayed-request fault proof | Local only |
+| Atomic financial commit | Terminal event, outbox, accounting, operation, reservation and 0051 evidence share one D1 batch; any failed final evidence insert rolls back the batch | Remote failure at every statement ordinal, exact readback after lost response, zero partial rows/quota/stat changes | Local only |
+| Immutable evidence | Billing event and operation/revision uniqueness plus update/delete guards preserve the winning scheduler decision | Normalized remote table/index/trigger readback, direct update/delete/replace probes and retention/restore ownership | Local only |
+| Stable audit identity | Client and scheduled replay derive financial audit schema v2 from the persisted reservation/operation, including frozen `request_id_hash` and excluding current request ID/CF Ray and client IP | Same completed operation yields one audit digest across client retry, Cron, alarm, response loss and lease reclaim; frozen identity mismatch fails before mutation | Local only |
+| Failure taxonomy | Store unavailability and missing replay material remain bounded retries; divergent terminal material, contract violations and conflicting financial decisions keep exact error codes and dead-letter immediately | Inject every terminalizer failure and prove the expected retry/dead-letter class, alert, retention and zero provider/financial side effect | Local only |
+| Result memory bound | The manifest's declared result size is rejected above 4 MiB before the R2 body is buffered | Workerd and remote oversized-object proof shows no body allocation/read, no settlement, bounded logs and stable Worker memory | Local contract only |
+| R2 transaction boundary | Result and client response are exact create/replay artifacts, but the client response write precedes D1 and can be orphaned | Bounded orphan inventory/retention/cleanup, create ambiguity and D1-failure proof; R2 presence never treated as billing authority | Partial |
+| Crash convergence | Pre-commit crash is reclaimed by a later lease; post-commit response loss is resolved by terminal/0051 readback and completed reobservation | Real response loss at every R2/D1/Controller boundary with one settlement, one outbox decision and no provider resend | Local only |
+| Amount and invoice authority | Frozen Rust quote and receipt are recomputed before commit | Independent versioned amount authority plus provider invoice/accounting zero-delta reconciliation | Blocked |
+| Remote state | No remote 0051 apply, deployment, secret, provider, financial, alarm or traffic action occurred | Target UUID/bookmark, schema and capability readback, lifecycle/fault/load/cost/alerts, rollback and C1-C5/G1-G8 approval | **NO-GO** |
+
+## 2026-07-18 DO Identity And Lifecycle Matrix
+
+The cinaVibeSDK audit demonstrates named DOs, SQLite class migrations,
+idempotent/lazy initialization and recurring alarms as useful patterns. The
+following stronger cinatoken contracts remain production gates rather than
+inherited proof.
+
+| Boundary | Required production contract | Current verdict |
+| --- | --- | --- |
+| Object/tenant identity | Versioned HMAC identity over environment, opaque tenant scope, purpose, shard/ring and jurisdiction; no raw user/token/API key in DO name; persist namespace/binding/class/name digest | Blocked |
+| Jurisdiction | Resolve jurisdiction before object stub; immutable object placement; explicit versioned transfer and drain for relocation; fail closed on mismatch | Blocked |
+| Class lifecycle | Service/binding/class/storage/lifecycle declaration is an ABI. The repo currently uses legacy append-only `migrations`; approve retaining it or converting once to mutually exclusive declarative `exports`, then freeze the mode. New namespaces use SQLite; rename/delete/transfer is atomic, not gradual; require binding inventory, stored-data compatibility, remote reconciliation, drain and rollback reader | Blocked |
+| Cold start | Bounded idempotent schema/state initialization blocks requests, uses a durable SQL migration table rather than `PRAGMA user_version`, restores owner/deadline/alarm/result, performs no external/provider/financial I/O inside constructor initialization, and closes readiness on failure | Blocked |
+| Alarm ABI N/N-1 | One replace-on-set alarm per DO; cold start reads existing alarm first. Persist versioned intent/owner generation for at-least-once bounded-retry delivery; N reads N/N-1, N-1 is isolated from N-only intent; duplicate/late/reordered/exhausted/rollback alarms converge or quarantine | Blocked |
+| Cross-layer provenance | Redacted tuple joins edge/Controller versions, DO identity/class/migration/schema, jurisdiction, Container image/protocol, broker/provider, D1/R2, event/outbox/billing and 0051 claim | Blocked |
+| Lifecycle proof | Real eviction, cold/warm start, old object, alarm retry, rolling deploy, rollback, sleep/restart/OOM and jurisdiction mismatch with zero duplicate provider/financial effect | **NO-GO** |
+
+Disable-first rollback closes both scheduled-terminalizer gates before draining
+leases and routing new work to Go/VPS. Schema and immutable evidence stay in
+place, and only a 0051-aware recovery reader may handle existing owners.
+Provider idempotency/lookup, response parity, amount/invoice authority, orphan
+policy, all DO lifecycle contracts, remote evidence and signed approvals remain
+blocking. Production remains **NO-GO**.

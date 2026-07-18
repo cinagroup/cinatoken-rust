@@ -13,8 +13,16 @@ use crate::container_artifacts::{
     ContainerResultArtifactIdentity, ContainerResultObjectState,
 };
 use crate::container_controller::{
-    query_operation_status, ContainerOperationEnvelope, ContainerOperationInput,
-    ContainerOperationOutcome, ContainerOperationStatus, ContainerProviderAttemptStatus,
+    probe as probe_container_controller, query_operation_status, ContainerControllerProbe,
+    ContainerOperationEnvelope, ContainerOperationInput, ContainerOperationOutcome,
+    ContainerOperationStatus, ContainerProviderAttemptStatus,
+};
+use crate::container_relay_canary::{
+    autonomously_terminalize_completed_operation, ContainerScheduledTerminalizationFailureClass,
+    ContainerScheduledTerminalizationOutcome,
+};
+use crate::container_scheduler::{
+    container_operation_runtime_status, container_scheduler_runtime_status,
 };
 use crate::d1_repositories::{
     advance_relay_container_reconciliation_cursor, claim_relay_container_reconciliation,
@@ -22,7 +30,8 @@ use crate::d1_repositories::{
     record_relay_container_reconciliation, relay_container_financial_receipt_integrity_valid,
     relay_container_financial_terminal_receipt_for_operation, relay_container_operation,
     relay_container_provider_usage_receipt_readback, relay_container_reconciliation_candidates,
-    relay_container_reconciliation_schema_ready, RelayContainerFinancialTerminalReceipt,
+    relay_container_reconciliation_schema_ready,
+    relay_container_scheduled_terminalization_schema_ready, RelayContainerFinancialTerminalReceipt,
     RelayContainerOperation, RelayContainerProviderUsageConvergence,
     RelayContainerProviderUsageReceiptIdentity, RelayContainerProviderUsageReceiptReadback,
     RelayContainerReconciliationClaimOutcome, RelayContainerReconciliationLease,
@@ -31,6 +40,10 @@ use crate::d1_repositories::{
 };
 
 pub const CONTAINER_RECONCILIATION_SCAN_LIMIT_ENV: &str = "CONTAINER_RECONCILIATION_SCAN_LIMIT";
+pub const CONTAINER_SCHEDULED_TERMINALIZER_ENABLED_ENV: &str =
+    "CONTAINER_SCHEDULED_TERMINALIZER_ENABLED";
+pub const CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED_ENV: &str =
+    "CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED";
 const DEFAULT_CONTAINER_RECONCILIATION_SCAN_LIMIT: i64 = 4;
 const MAX_CONTAINER_RECONCILIATION_SCAN_LIMIT: i64 = 8;
 const CONTAINER_RECONCILIATION_RUN_LEASE_SECONDS: i64 = 45;
@@ -244,6 +257,16 @@ struct ContainerReconciliationObservation {
     class: ContainerDivergenceClass,
     error_code: &'static str,
     provider_usage_convergence: Option<ContainerProviderUsageConvergence>,
+    terminal_outcome: Option<ContainerOperationOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerScheduledTerminalizerRuntimeStatus {
+    pub configured: bool,
+    pub valid: bool,
+    pub requested: bool,
+    pub staging_verified: bool,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,6 +296,7 @@ pub struct ContainerReconciliationSummary {
     pub claimed: u32,
     pub skipped: u32,
     pub converged: u32,
+    pub terminalized: u32,
     pub retried: u32,
     pub dead_lettered: u32,
     pub stale: u32,
@@ -320,6 +344,68 @@ pub fn container_reconciliation_scan_limit(env: &Env) -> i64 {
         .unwrap_or(DEFAULT_CONTAINER_RECONCILIATION_SCAN_LIMIT)
 }
 
+pub fn container_scheduled_terminalizer_runtime_status(
+    env: &Env,
+) -> ContainerScheduledTerminalizerRuntimeStatus {
+    parse_container_scheduled_terminalizer_runtime_status(
+        env.var(CONTAINER_SCHEDULED_TERMINALIZER_ENABLED_ENV)
+            .ok()
+            .map(|value| value.to_string())
+            .as_deref(),
+        env.var(CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED_ENV)
+            .ok()
+            .map(|value| value.to_string())
+            .as_deref(),
+    )
+}
+
+pub fn container_scheduled_terminalizer_compiled() -> bool {
+    container_reconciliation_observer_compiled()
+        && CONTAINER_RECONCILIATION_ITEM_LEASE_SECONDS >= 30
+        && CONTAINER_RECONCILIATION_WALL_BUDGET_MILLIS < 30_000
+}
+
+pub fn container_scheduled_terminalizer_runtime_ready(
+    env: &Env,
+    schema_ready: bool,
+    controller_probe: Option<&ContainerControllerProbe>,
+) -> bool {
+    let status = container_scheduled_terminalizer_runtime_status(env);
+    container_scheduled_terminalizer_compiled()
+        && status.enabled
+        && schema_ready
+        && container_operation_runtime_status(env).replay_ready()
+        && env.bucket("FILE_BUCKET").is_ok()
+        && controller_probe.is_some_and(container_scheduled_terminalizer_controller_ready)
+}
+
+fn container_scheduled_terminalizer_controller_ready(probe: &ContainerControllerProbe) -> bool {
+    probe.probe_enabled
+        && probe.binding_available
+        && probe.authority_configured
+        && probe.verified
+        && probe.controller_enabled
+        && probe.execution_enabled
+}
+
+fn parse_container_scheduled_terminalizer_runtime_status(
+    enabled: Option<&str>,
+    staging_verified: Option<&str>,
+) -> ContainerScheduledTerminalizerRuntimeStatus {
+    let configured = enabled.is_some() && staging_verified.is_some();
+    let valid = matches!(enabled, Some("true" | "false"))
+        && matches!(staging_verified, Some("true" | "false"));
+    let requested = enabled == Some("true");
+    let staging_verified = staging_verified == Some("true");
+    ContainerScheduledTerminalizerRuntimeStatus {
+        configured,
+        valid,
+        requested,
+        staging_verified,
+        enabled: valid && requested && staging_verified,
+    }
+}
+
 pub fn container_reconciliation_observer_compiled() -> bool {
     DEFAULT_CONTAINER_RECONCILIATION_SCAN_LIMIT > 0
         && MAX_CONTAINER_RECONCILIATION_SCAN_LIMIT <= 8
@@ -340,6 +426,30 @@ pub async fn run_container_reconciliation_observer(
             "container reconciliation observer schema is unavailable",
         ));
     }
+    let terminalizer = container_scheduled_terminalizer_runtime_status(env);
+    let terminalizer_runtime_ready = if terminalizer.enabled {
+        let schema_ready = relay_container_scheduled_terminalization_schema_ready(db).await?;
+        if !schema_ready {
+            return Err(reconciliation_error(
+                "container scheduled terminalization schema is unavailable",
+            ));
+        }
+        let controller_probe =
+            probe_container_controller(env, container_scheduler_runtime_status(env)).await;
+        let runtime_ready = container_scheduled_terminalizer_runtime_ready(
+            env,
+            schema_ready,
+            Some(&controller_probe),
+        );
+        if !runtime_ready {
+            return Err(reconciliation_error(
+                "container scheduled terminalization runtime is not ready",
+            ));
+        }
+        true
+    } else {
+        false
+    };
     let run_owner = random_reconciliation_claim_owner()?;
     let run = match claim_relay_container_reconciliation_run(
         db,
@@ -362,7 +472,9 @@ pub async fn run_container_reconciliation_observer(
             ));
         }
     };
-    let result = run_container_reconciliation_observer_inner(env, db, now, &run).await;
+    let result =
+        run_container_reconciliation_observer_inner(env, db, now, &run, terminalizer_runtime_ready)
+            .await;
     let completed_at = current_unix_seconds();
     let completed = complete_relay_container_reconciliation_run(
         db,
@@ -391,6 +503,7 @@ async fn run_container_reconciliation_observer_inner(
     db: &D1Database,
     now: i64,
     run: &RelayContainerReconciliationRunLease,
+    terminalizer_runtime_ready: bool,
 ) -> worker::Result<ContainerReconciliationSummary> {
     let started_at_millis = worker::Date::now().as_millis();
     let page = relay_container_reconciliation_candidates(
@@ -429,22 +542,74 @@ async fn run_container_reconciliation_observer_inner(
         match claim {
             RelayContainerReconciliationClaimOutcome::Applied(lease) => {
                 summary.claimed = summary.claimed.saturating_add(1);
-                let operation = relay_container_operation(db, &candidate.operation_id)
+                let mut operation = relay_container_operation(db, &candidate.operation_id)
                     .await?
                     .ok_or_else(|| {
                         reconciliation_error(
                             "container reconciliation operation disappeared after claim",
                         )
                     })?;
-                let observation = if attempt_now >= lease.recovery_deadline_at {
+                let mut observation = if attempt_now >= lease.recovery_deadline_at {
                     ContainerReconciliationObservation {
                         class: ContainerDivergenceClass::StoreUnavailable,
                         error_code: "retry_horizon_exhausted",
                         provider_usage_convergence: None,
+                        terminal_outcome: None,
                     }
                 } else {
                     observe_container_operation(env, db, &operation).await
                 };
+                if terminalizer_runtime_ready {
+                    if let Some(outcome) = observation.terminal_outcome.take() {
+                        match autonomously_terminalize_completed_operation(
+                            env,
+                            db,
+                            operation.clone(),
+                            outcome,
+                            &lease,
+                        )
+                        .await
+                        {
+                            Ok(ContainerScheduledTerminalizationOutcome::Settled) => {
+                                summary.terminalized = summary.terminalized.saturating_add(1);
+                                operation = relay_container_operation(db, &candidate.operation_id)
+                                    .await?
+                                    .ok_or_else(|| {
+                                        reconciliation_error(
+                                            "container operation disappeared after scheduled terminalization",
+                                        )
+                                    })?;
+                                observation =
+                                    observe_container_operation(env, db, &operation).await;
+                            }
+                            Err(err) => {
+                                worker::console_error!(
+                                    "container scheduled terminalization failed: {err}"
+                                );
+                                let class = match err.class() {
+                                    ContainerScheduledTerminalizationFailureClass::StoreUnavailable => {
+                                        ContainerDivergenceClass::StoreUnavailable
+                                    }
+                                    ContainerScheduledTerminalizationFailureClass::TerminalResponseMissing => {
+                                        ContainerDivergenceClass::TerminalResponseMissing
+                                    }
+                                    ContainerScheduledTerminalizationFailureClass::TerminalResponseDivergent => {
+                                        ContainerDivergenceClass::TerminalResponseDivergent
+                                    }
+                                    ContainerScheduledTerminalizationFailureClass::ContractViolation => {
+                                        ContainerDivergenceClass::ContractViolation
+                                    }
+                                };
+                                observation = ContainerReconciliationObservation {
+                                    class,
+                                    error_code: err.code(),
+                                    provider_usage_convergence: None,
+                                    terminal_outcome: None,
+                                };
+                            }
+                        }
+                    }
+                }
                 summary.observe(observation.class);
                 let observed_at = current_unix_seconds();
                 let decision =
@@ -571,6 +736,7 @@ async fn observe_container_operation(
                             class: ContainerDivergenceClass::ContractViolation,
                             error_code: "d1_terminal_receipt_missing",
                             provider_usage_convergence: None,
+                            terminal_outcome: None,
                         };
                     }
                     Err(_) => {
@@ -578,6 +744,7 @@ async fn observe_container_operation(
                             class: ContainerDivergenceClass::StoreUnavailable,
                             error_code: "d1_terminal_receipt_unavailable",
                             provider_usage_convergence: None,
+                            terminal_outcome: None,
                         };
                     }
                 }
@@ -599,6 +766,7 @@ async fn observe_container_operation(
                         class: ContainerDivergenceClass::ContractViolation,
                         error_code: "d1_terminal_receipt_missing",
                         provider_usage_convergence: None,
+                        terminal_outcome: None,
                     };
                 }
                 Err(_) => {
@@ -606,6 +774,7 @@ async fn observe_container_operation(
                         class: ContainerDivergenceClass::StoreUnavailable,
                         error_code: "d1_terminal_receipt_unavailable",
                         provider_usage_convergence: None,
+                        terminal_outcome: None,
                     };
                 }
             }
@@ -615,6 +784,7 @@ async fn observe_container_operation(
                 class: ContainerDivergenceClass::ContractViolation,
                 error_code: "d1_operation_status_invalid",
                 provider_usage_convergence: None,
+                terminal_outcome: None,
             };
         }
     };
@@ -625,6 +795,7 @@ async fn observe_container_operation(
                 class: ContainerDivergenceClass::ContractViolation,
                 error_code: "d1_terminal_receipt_missing",
                 provider_usage_convergence: None,
+                terminal_outcome: None,
             };
         };
         match relay_container_provider_usage_receipt_readback(db, operation, receipt).await {
@@ -635,6 +806,7 @@ async fn observe_container_operation(
                     class: ContainerDivergenceClass::ContractViolation,
                     error_code: "d1_provider_usage_receipt_missing",
                     provider_usage_convergence: None,
+                    terminal_outcome: None,
                 };
             }
             Ok(RelayContainerProviderUsageReceiptReadback::Divergent) => {
@@ -642,6 +814,7 @@ async fn observe_container_operation(
                     class: ContainerDivergenceClass::ContractViolation,
                     error_code: "d1_provider_usage_receipt_divergent",
                     provider_usage_convergence: None,
+                    terminal_outcome: None,
                 };
             }
             Err(_) => {
@@ -649,6 +822,7 @@ async fn observe_container_operation(
                     class: ContainerDivergenceClass::StoreUnavailable,
                     error_code: "d1_provider_usage_receipt_unavailable",
                     provider_usage_convergence: None,
+                    terminal_outcome: None,
                 };
             }
         }
@@ -663,11 +837,26 @@ async fn observe_container_operation(
                 class: ContainerDivergenceClass::ContractViolation,
                 error_code: "d1_operation_identity_invalid",
                 provider_usage_convergence: None,
+                terminal_outcome: None,
             };
         }
     };
-    let (controller, controller_error, do_provider_usage_matching) =
+    let (controller, controller_error, do_provider_usage_matching, terminal_outcome) =
         match query_operation_status(env, &envelope).await {
+            Ok(outcome)
+                if matches!(
+                    operation.status.as_str(),
+                    "dispatched" | "recovery_required"
+                ) && outcome.status == ContainerOperationStatus::Completed
+                    && outcome.status_contract_version != 3 =>
+            {
+                (
+                    ContainerDoObservation::ContractViolation,
+                    "controller_status_v3_unavailable",
+                    false,
+                    None,
+                )
+            }
             Ok(outcome)
                 if provider_usage_identity.is_some() && outcome.status_contract_version != 3 =>
             {
@@ -675,6 +864,7 @@ async fn observe_container_operation(
                     ContainerDoObservation::Unavailable,
                     "controller_status_v3_unavailable",
                     false,
+                    None,
                 )
             }
             Ok(outcome) => {
@@ -682,18 +872,18 @@ async fn observe_container_operation(
                     provider_usage_identity.as_ref().is_some_and(|identity| {
                         controller_provider_usage_matches(Some(identity), &outcome)
                     });
-                (
-                    controller_observation(
-                        operation,
-                        &outcome,
-                        provider_usage_identity.as_ref(),
-                        d1 == ContainerD1Observation::TerminalWithReceipt,
-                    ),
-                    "",
-                    provider_usage_matching,
-                )
+                let controller = controller_observation(
+                    operation,
+                    &outcome,
+                    provider_usage_identity.as_ref(),
+                    d1 == ContainerD1Observation::TerminalWithReceipt,
+                );
+                let terminal_outcome = scheduled_terminal_outcome(operation, controller, outcome);
+                (controller, "", provider_usage_matching, terminal_outcome)
             }
-            Err("operation_status_not_found") => (ContainerDoObservation::NotFound, "", false),
+            Err("operation_status_not_found") => {
+                (ContainerDoObservation::NotFound, "", false, None)
+            }
             Err(
                 "authority_rejected"
                 | "route_not_found"
@@ -706,11 +896,13 @@ async fn observe_container_operation(
                 ContainerDoObservation::ContractViolation,
                 "controller_contract_violation",
                 false,
+                None,
             ),
             Err(_) => (
                 ContainerDoObservation::Unavailable,
                 "controller_status_unavailable",
                 false,
+                None,
             ),
         };
     let provider_usage = match provider_usage_identity.as_ref() {
@@ -726,6 +918,7 @@ async fn observe_container_operation(
                 class: ContainerDivergenceClass::ContractViolation,
                 error_code: "d1_terminal_receipt_missing",
                 provider_usage_convergence: None,
+                terminal_outcome: None,
             };
         };
         let manifest = match client_response_manifest_from_receipt(receipt) {
@@ -735,6 +928,7 @@ async fn observe_container_operation(
                     class: ContainerDivergenceClass::ContractViolation,
                     error_code: "client_response_manifest_invalid",
                     provider_usage_convergence: None,
+                    terminal_outcome: None,
                 };
             }
         };
@@ -784,7 +978,23 @@ async fn observe_container_operation(
             _ => controller_error,
         },
         provider_usage_convergence,
+        terminal_outcome,
     }
+}
+
+fn scheduled_terminal_outcome(
+    operation: &RelayContainerOperation,
+    controller: ContainerDoObservation,
+    outcome: ContainerOperationOutcome,
+) -> Option<ContainerOperationOutcome> {
+    (controller == ContainerDoObservation::DefinitiveTerminal
+        && outcome.status_contract_version == 3
+        && outcome.status == ContainerOperationStatus::Completed
+        && matches!(
+            operation.status.as_str(),
+            "dispatched" | "recovery_required"
+        ))
+    .then_some(outcome)
 }
 
 fn container_operation_envelope(
@@ -1427,6 +1637,98 @@ mod tests {
             classes.as_slice(),
             crate::d1_repositories::RELAY_CONTAINER_RECONCILIATION_CLASSES
         );
+    }
+
+    #[test]
+    fn scheduled_terminalizer_requires_both_explicit_gates() {
+        for (enabled, staging_verified, expected_enabled) in [
+            (None, None, false),
+            (Some("true"), None, false),
+            (Some("true"), Some("false"), false),
+            (Some("false"), Some("true"), false),
+            (Some("TRUE"), Some("true"), false),
+            (Some("true"), Some("true"), true),
+        ] {
+            let status =
+                parse_container_scheduled_terminalizer_runtime_status(enabled, staging_verified);
+            assert_eq!(status.enabled, expected_enabled);
+            assert_eq!(status.requested, enabled == Some("true"));
+            assert_eq!(status.staging_verified, staging_verified == Some("true"));
+        }
+        assert!(container_scheduled_terminalizer_compiled());
+    }
+
+    #[test]
+    fn scheduled_terminalizer_requires_a_verified_executing_controller() {
+        let ready = ContainerControllerProbe {
+            probe_enabled: true,
+            binding_available: true,
+            authority_configured: true,
+            verified: true,
+            controller_enabled: true,
+            execution_enabled: true,
+            previous_secret_configured: false,
+            state: "verified",
+        };
+        assert!(container_scheduled_terminalizer_controller_ready(&ready));
+        for gate in 0..6 {
+            let mut probe = ready;
+            match gate {
+                0 => probe.probe_enabled = false,
+                1 => probe.binding_available = false,
+                2 => probe.authority_configured = false,
+                3 => probe.verified = false,
+                4 => probe.controller_enabled = false,
+                _ => probe.execution_enabled = false,
+            }
+            assert!(!container_scheduled_terminalizer_controller_ready(&probe));
+        }
+    }
+
+    #[test]
+    fn scheduled_terminalizer_accepts_only_exact_completed_recoverable_states() {
+        for status in ["dispatched", "recovery_required"] {
+            let operation = test_operation(status);
+            let mut outcome = terminal_outcome(ContainerOperationStatus::Completed);
+            outcome.status_contract_version = 3;
+            assert!(scheduled_terminal_outcome(
+                &operation,
+                ContainerDoObservation::DefinitiveTerminal,
+                outcome,
+            )
+            .is_some());
+        }
+
+        for status in ["prepared", "completed", "failed"] {
+            let operation = test_operation(status);
+            assert!(scheduled_terminal_outcome(
+                &operation,
+                ContainerDoObservation::DefinitiveTerminal,
+                terminal_outcome(ContainerOperationStatus::Completed),
+            )
+            .is_none());
+        }
+        let dispatched = test_operation("dispatched");
+        let mut completed_v3 = terminal_outcome(ContainerOperationStatus::Completed);
+        completed_v3.status_contract_version = 3;
+        assert!(scheduled_terminal_outcome(
+            &dispatched,
+            ContainerDoObservation::Running,
+            completed_v3,
+        )
+        .is_none());
+        assert!(scheduled_terminal_outcome(
+            &dispatched,
+            ContainerDoObservation::DefinitiveTerminal,
+            terminal_outcome(ContainerOperationStatus::Completed),
+        )
+        .is_none());
+        assert!(scheduled_terminal_outcome(
+            &dispatched,
+            ContainerDoObservation::DefinitiveTerminal,
+            terminal_outcome(ContainerOperationStatus::Failed),
+        )
+        .is_none());
     }
 
     #[test]

@@ -1181,3 +1181,106 @@ alert, or rollback behavior.
 
 Go/VPS remains the traffic and financial authority. The overall decision is
 production **NO-GO**.
+
+## 2026-07-18 Scheduled Terminalization Status
+
+Migration `0051_relay_container_scheduled_terminalization.sql` and the local
+owner-fenced scheduled terminalizer are present in the shared source tree. This
+supersedes the 0050 status item that described autonomous terminalization as
+unimplemented. It does not supersede any remote, billing, provider, lifecycle,
+security, or approval blocker.
+
+### Implemented locally
+
+- Two independent exact-boolean gates,
+  `CONTAINER_SCHEDULED_TERMINALIZER_ENABLED` and
+  `CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED`, default to `false` in
+  every tracked environment and must both be `true`.
+- Runtime readiness additionally requires the existing Container operation
+  replay authority, the compiled bounded observer, `FILE_BUCKET`, the complete
+  0051 schema, and a live Controller probe proving probe/binding/authority,
+  verified status, controller enablement, and execution enablement before any
+  reconciliation item is claimed.
+- Only a D1 `dispatched` or `recovery_required` operation with exact Controller
+  `Completed` plus `DefinitiveTerminal` evidence becomes a candidate. The path
+  does not dispatch, wake, retry, or resend the provider.
+- Status v3 provider receipt/result evidence, with no v1/v2 fallback, read-only
+  R2 result verification, frozen 0050 admission/reservation/operation linkage,
+  and the recomputed settlement quote must converge before the financial writer
+  is called. A manifest above the 4 MiB replay ceiling is rejected before the
+  result body is buffered.
+- One D1 batch commits terminal event, outbox, user/token/channel accounting,
+  operation completion, reservation settlement, and the immutable
+  `relay_container_scheduled_terminalizations` row.
+- The 0051 insert guard verifies the active observation claim owner and
+  generation, exact frozen lease expiry, lease and recovery deadline against
+  D1 transaction-time `unixepoch()`, exact reconciliation revision, same-batch
+  terminal tuple, settled reservation, completed operation, and immutable 0050
+  admission. Any failed check rolls back the whole D1 batch.
+- The scheduled evidence is unique per billing event and per
+  operation/reconciliation revision. Update and delete are rejected.
+- After a successful terminal commit, the observer reloads the operation and
+  reobserves convergence. A lost response or crash after commit is resolved by
+  durable readback; a crash before commit leaves no financial authority and a
+  later lease generation may retry observation.
+- Client and scheduled settlement share financial audit schema v2 derived from
+  the persisted reservation and operation. The frozen `request_id_hash` is
+  included; current request ID/CF Ray and client IP are excluded, preventing
+  path-dependent terminal decision hashes.
+- Typed failures preserve exact classes and codes: unavailable stores and
+  missing replay material retry within the bounded horizon; divergent terminal
+  material, contract violations, and conflicting financial decisions
+  dead-letter immediately.
+
+The R2 client response artifact remains outside the D1 transaction. It is
+create-only replay material, not settlement authority; an artifact without the
+matching D1 terminal tuple is orphan inventory and must follow the approved
+retention/cleanup policy.
+
+### Local verification checkpoint
+
+The exact local release candidate passes the 51-migration SQLite verifier with
+49 tables, 557 incremental columns, and 73 key indexes, including stale-owner,
+wrong-frozen-expiry, D1-clock-expired lease, forged-result,
+immutable-update/delete, and valid-commit 0051 fixtures. The migration-config
+audit reports a contiguous 0051 head. Worker Rust tests pass 827/827,
+Workerd/DO lifecycle scenarios pass 48/48, atomic Container admission scenarios
+pass 15/15, and scheduler configuration scenarios pass 4/4. Workspace tests,
+the Worker wasm32 check, formatting, `git diff --check`, and the repository-wide
+`bun run check` aggregate also pass for this candidate.
+
+These results are local SQLite/Workerd/source evidence only. No authenticated
+remote migration, D1 batch, deployment, binding readback, provider response,
+financial mutation, Container lifecycle, alarm, or traffic evidence exists.
+
+### Remaining completion gates
+
+1. Rotate exposed credentials and create separate least-privilege deployment
+   and readback identities without recording secret values.
+2. Sign the exact 0050/0051-aware Worker, Controller, DO, Container, broker,
+   and rollback artifacts; prove all older terminal and reconciliation writers
+   are drained.
+3. Apply/read back 0050 then 0051 in isolated staging with all action gates
+   false; archive target UUID, Time Travel bookmark, normalized schema/trigger
+   bodies, full logical fingerprints, and direct negative probes.
+4. Prove remote same-batch rollback, response-loss readback, lease
+   expiry/reclaim, duplicate schedule/alarm, DO eviction/cold start, pre-body
+   4 MiB rejection, R2 missing/divergent/orphan classification, stable
+   client-versus-scheduler audit digest, transient/permanent failure routing,
+   Container restart/OOM, and exact replay without a second provider call or
+   accounting change.
+5. Implement and rehearse the cinaVibeSDK-derived production contracts for
+   jurisdiction-scoped opaque object/tenant identity, one explicitly selected
+   DO class-lifecycle mechanism (`exports` for new Workers or the retained
+   legacy migration chain, never both), bounded idempotent cold start, the
+   single at-least-once alarm ABI N/N-1, and complete cross-layer provenance.
+6. Close provider-native idempotency or deterministic lookup, shared non-2xx
+   response semantics, independent amount authority, provider invoice
+   convergence, R2 retention, load/cost/SLO/alerts, rollback, security review,
+   and C1-C5/G1-G8 approvals.
+
+Normal rollback disables both scheduled-terminalizer gates before draining
+reconciliation leases and returning new traffic to Go/VPS. Migration 0051 and
+its evidence remain in place; no old writer, schema rollback, evidence delete,
+provider resend, or ad hoc quota compensation is allowed. Go/VPS remains the
+traffic and financial authority. Production remains **NO-GO**.

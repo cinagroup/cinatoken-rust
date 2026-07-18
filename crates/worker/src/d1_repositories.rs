@@ -57,6 +57,8 @@ pub(crate) const RELAY_CONTAINER_PROVIDER_USAGE_BINDING_MIGRATION: &str =
     "0049_relay_container_provider_usage_binding.sql";
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_MIGRATION: &str =
     "0050_relay_container_atomic_admission.sql";
+pub(crate) const RELAY_CONTAINER_SCHEDULED_TERMINALIZATION_MIGRATION: &str =
+    "0051_relay_container_scheduled_terminalization.sql";
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
@@ -804,7 +806,15 @@ pub struct RelayContainerFinancialTerminalCommand<'a> {
     pub client_response: Option<RelayContainerClientResponseRecord<'a>>,
     pub audit_payload_json: &'a str,
     pub audit_payload_sha256: &'a str,
+    pub scheduled_terminalization: Option<RelayContainerScheduledTerminalizationFence<'a>>,
     pub committed_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayContainerScheduledTerminalizationFence<'a> {
+    pub observation_claim_generation: i64,
+    pub observation_claim_owner: &'a str,
+    pub observation_claim_lease_expires_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -4322,6 +4332,16 @@ pub async fn commit_relay_container_financial_terminal(
         &command,
         &prepared,
     )?;
+    if let Some(fence) = command.scheduled_terminalization {
+        push_relay_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked,
+            relay_container_scheduled_terminalization_statement(db, &command, &prepared, fence)?,
+            command.reservation_key,
+            "relay container scheduled terminalization insert failed",
+        )?;
+    }
 
     let results = match db.batch(statements).await {
         Ok(results) => results,
@@ -4930,6 +4950,89 @@ fn relay_container_terminal_outbox_statement(
     .bind_refs(&args)
 }
 
+fn relay_container_scheduled_terminalization_statement(
+    db: &D1Database,
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    prepared: &PreparedRelayContainerFinancialTerminal,
+    fence: RelayContainerScheduledTerminalizationFence<'_>,
+) -> worker::Result<worker::D1PreparedStatement> {
+    if !matches!(
+        command.action,
+        RelayContainerFinancialTerminalAction::Settle { .. }
+    ) || !matches!(
+        command.expected_operation_status,
+        RelayContainerOperationExpectedStatus::Dispatched
+            | RelayContainerOperationExpectedStatus::RecoveryRequired
+    ) || fence.observation_claim_generation <= 0
+        || fence.observation_claim_generation > i64::from(i32::MAX)
+        || fence.observation_claim_lease_expires_at <= command.committed_at
+        || fence.observation_claim_lease_expires_at > i64::from(i32::MAX)
+    {
+        return Err(worker::Error::RustError(
+            "relay container scheduled terminalization command is invalid".to_string(),
+        ));
+    }
+    validate_relay_container_token(
+        fence.observation_claim_owner,
+        "scheduled terminalization claim owner",
+        32,
+        32,
+        |byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+    )?;
+    let provider_usage_receipt_sha256 = prepared
+        .provider_usage_receipt_sha256
+        .as_deref()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "scheduled terminalization provider receipt is unavailable".to_string(),
+            )
+        })?;
+    let provider_result_sha256 = prepared.provider_result_sha256.as_deref().ok_or_else(|| {
+        worker::Error::RustError(
+            "scheduled terminalization provider result is unavailable".to_string(),
+        )
+    })?;
+    let args = vec![
+        D1Type::Text(&prepared.billing_event_id),
+        D1Type::Text(command.reservation_key),
+        D1Type::Text(command.operation_id),
+        relay_container_d1_integer(command.operation_owner_generation, "owner generation")?,
+        D1Type::Text(command.expected_operation_status.as_str()),
+        relay_container_d1_integer(command.billing_owner_generation, "billing owner generation")?,
+        D1Type::Text(&prepared.reconciliation_id),
+        relay_container_d1_integer(prepared.reconciliation_revision, "reconciliation revision")?,
+        relay_container_d1_integer(
+            fence.observation_claim_generation,
+            "observation claim generation",
+        )?,
+        D1Type::Text(fence.observation_claim_owner),
+        relay_container_d1_integer(
+            fence.observation_claim_lease_expires_at,
+            "observation claim lease expiry",
+        )?,
+        D1Type::Text(provider_usage_receipt_sha256),
+        D1Type::Text(provider_result_sha256),
+        D1Type::Text(&prepared.terminal_contract_sha256),
+        relay_container_d1_integer(command.committed_at, "scheduled terminalization time")?,
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO relay_container_scheduled_terminalizations (
+          billing_event_id, reservation_key, operation_id, owner_generation,
+          operation_from_status, billing_owner_generation, reconciliation_id,
+          reconciliation_revision, observation_claim_generation,
+          observation_claim_owner, observation_claim_lease_expires_at,
+          decision, provider_usage_receipt_sha256, provider_result_sha256,
+          terminal_contract_sha256, committed_at, created_at
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'settle', ?12,
+          ?13, ?14, ?15, ?15
+        )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
 fn relay_container_financial_operation_terminal_statement(
     db: &D1Database,
     command: &RelayContainerFinancialTerminalCommand<'_>,
@@ -5323,11 +5426,80 @@ async fn classify_relay_container_financial_readback(
             RelayContainerFinancialTerminalOutcome::InvariantViolation,
         ));
     }
+    if !relay_container_scheduled_terminalization_readback_matches(db, command, prepared).await? {
+        return Ok(Some(
+            RelayContainerFinancialTerminalOutcome::DifferentDecision,
+        ));
+    }
     Ok(Some(if replay {
         RelayContainerFinancialTerminalOutcome::MatchingReplay(receipt)
     } else {
         RelayContainerFinancialTerminalOutcome::Applied(receipt)
     }))
+}
+
+async fn relay_container_scheduled_terminalization_readback_matches(
+    db: &D1Database,
+    command: &RelayContainerFinancialTerminalCommand<'_>,
+    prepared: &PreparedRelayContainerFinancialTerminal,
+) -> worker::Result<bool> {
+    let Some(fence) = command.scheduled_terminalization else {
+        return Ok(true);
+    };
+    let (Some(provider_usage_receipt_sha256), Some(provider_result_sha256)) = (
+        prepared.provider_usage_receipt_sha256.as_deref(),
+        prepared.provider_result_sha256.as_deref(),
+    ) else {
+        return Ok(false);
+    };
+    let args = vec![
+        D1Type::Text(&prepared.billing_event_id),
+        D1Type::Text(command.reservation_key),
+        D1Type::Text(command.operation_id),
+        relay_container_d1_integer(command.operation_owner_generation, "owner generation")?,
+        D1Type::Text(command.expected_operation_status.as_str()),
+        relay_container_d1_integer(command.billing_owner_generation, "billing owner generation")?,
+        D1Type::Text(&prepared.reconciliation_id),
+        relay_container_d1_integer(prepared.reconciliation_revision, "reconciliation revision")?,
+        relay_container_d1_integer(
+            fence.observation_claim_generation,
+            "observation claim generation",
+        )?,
+        D1Type::Text(fence.observation_claim_owner),
+        relay_container_d1_integer(
+            fence.observation_claim_lease_expires_at,
+            "observation claim lease expiry",
+        )?,
+        D1Type::Text(provider_usage_receipt_sha256),
+        D1Type::Text(provider_result_sha256),
+        D1Type::Text(&prepared.terminal_contract_sha256),
+    ];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS count
+            FROM relay_container_scheduled_terminalizations
+            WHERE billing_event_id = ?1
+              AND reservation_key = ?2
+              AND operation_id = ?3
+              AND owner_generation = ?4
+              AND operation_from_status = ?5
+              AND billing_owner_generation = ?6
+              AND reconciliation_id = ?7
+              AND reconciliation_revision = ?8
+              AND observation_claim_generation = ?9
+              AND observation_claim_owner = ?10
+              AND observation_claim_lease_expires_at = ?11
+              AND decision = 'settle'
+              AND provider_usage_receipt_sha256 = ?12
+              AND provider_result_sha256 = ?13
+              AND terminal_contract_sha256 = ?14
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 1).unwrap_or(false))
 }
 
 fn relay_container_financial_receipt_matches(
@@ -7744,6 +7916,51 @@ pub async fn relay_container_atomic_admission_schema_ready(
                     'relay_container_canary_operation_delete_guard'
                   )
               ) = 8
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 1).unwrap_or(false))
+}
+
+pub async fn relay_container_scheduled_terminalization_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    let args = [D1Type::Text(
+        RELAY_CONTAINER_SCHEDULED_TERMINALIZATION_MIGRATION,
+    )];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(DISTINCT name) AS count
+            FROM d1_migrations
+            WHERE name = ?1
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_scheduled_terminalizations'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index'
+                  AND name = 'idx_relay_container_scheduled_terminalizations_committed'
+              )
+              AND EXISTS (
+                SELECT 1 FROM pragma_table_info('relay_container_scheduled_terminalizations')
+                WHERE name = 'observation_claim_lease_expires_at'
+                  AND type = 'INTEGER'
+                  AND "notnull" = 1
+              )
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name IN (
+                    'relay_container_scheduled_terminalization_insert_guard',
+                    'relay_container_scheduled_terminalization_immutable_guard',
+                    'relay_container_scheduled_terminalization_delete_guard'
+                  )
+              ) = 3
             "#,
         )
         .bind_refs(&args)?
@@ -23540,6 +23757,7 @@ mod tests {
                 client_response: Some(response),
                 audit_payload_json: audit_payload,
                 audit_payload_sha256: &audit_sha256,
+                scheduled_terminalization: None,
                 committed_at: 150,
             };
             let prepared =
@@ -23863,6 +24081,7 @@ mod tests {
                 client_response: Some(response),
                 audit_payload_json: audit_payload,
                 audit_payload_sha256: &audit_sha256,
+                scheduled_terminalization: None,
                 committed_at: 150,
             };
             let prepared =
@@ -23905,6 +24124,7 @@ mod tests {
             client_response: None,
             audit_payload_json: audit_payload,
             audit_payload_sha256: &audit_sha256,
+            scheduled_terminalization: None,
             committed_at: 181,
         };
         let quarantined =
@@ -23949,6 +24169,7 @@ mod tests {
             client_response: Some(response),
             audit_payload_json: audit_payload,
             audit_payload_sha256: &audit_sha256,
+            scheduled_terminalization: None,
             committed_at: 250,
         };
         let resolved =
@@ -24131,6 +24352,7 @@ mod tests {
             client_response: None,
             audit_payload_json: audit_payload,
             audit_payload_sha256: &audit_sha256,
+            scheduled_terminalization: None,
             committed_at: 181,
         };
         let prepared_recovery =
@@ -24174,6 +24396,7 @@ mod tests {
             client_response: Some(response),
             audit_payload_json: audit_payload,
             audit_payload_sha256: &audit_sha256,
+            scheduled_terminalization: None,
             committed_at: 250,
         };
         let prepared_resolution =
@@ -24355,6 +24578,7 @@ mod tests {
             audit_payload_json: "{\"action\":\"container_terminal\"}",
             audit_payload_sha256:
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            scheduled_terminalization: None,
             committed_at: 150,
         };
         assert!(validate_relay_container_client_response(&command, response).is_err());
@@ -25364,5 +25588,65 @@ mod tests {
         let migration = include_str!("../../../migrations/d1/0009_prefill_groups.sql");
         assert!(migration.contains("CREATE UNIQUE INDEX IF NOT EXISTS uk_prefill_name"));
         assert!(migration.contains("WHERE deleted_at IS NULL"));
+    }
+
+    #[test]
+    fn scheduled_terminalization_commit_and_replay_require_exact_0051_evidence() {
+        let source = include_str!("d1_repositories.rs");
+        let commit_start = source
+            .find("pub async fn commit_relay_container_financial_terminal")
+            .unwrap();
+        let commit_end = source
+            .find("fn prepare_relay_container_financial_terminal")
+            .unwrap();
+        let commit = &source[commit_start..commit_end];
+        let accounting = commit
+            .find("push_relay_container_financial_accounting_statements")
+            .unwrap();
+        let scheduled_evidence = commit
+            .find("relay_container_scheduled_terminalization_statement")
+            .unwrap();
+        assert!(accounting < scheduled_evidence);
+
+        let classify_start = source
+            .find("async fn classify_relay_container_financial_readback")
+            .unwrap();
+        let classify_end = source
+            .find("fn relay_container_financial_receipt_matches")
+            .unwrap();
+        let classify = &source[classify_start..classify_end];
+        assert!(classify.contains(
+            "relay_container_scheduled_terminalization_readback_matches(db, command, prepared)"
+        ));
+        for fragment in [
+            "observation_claim_generation = ?9",
+            "observation_claim_owner = ?10",
+            "observation_claim_lease_expires_at = ?11",
+            "provider_usage_receipt_sha256 = ?12",
+            "provider_result_sha256 = ?13",
+            "terminal_contract_sha256 = ?14",
+        ] {
+            assert!(
+                classify.contains(fragment),
+                "missing 0051 readback fence: {fragment}"
+            );
+        }
+        let migration = include_str!(
+            "../../../migrations/d1/0051_relay_container_scheduled_terminalization.sql"
+        );
+        assert!(migration.contains(
+            "observation.claim_lease_expires_at = NEW.observation_claim_lease_expires_at"
+        ));
+        assert!(migration.contains("observation.claim_lease_expires_at > unixepoch()"));
+
+        let readiness_start = source
+            .find("pub async fn relay_container_scheduled_terminalization_schema_ready")
+            .unwrap();
+        let readiness_end = source[readiness_start..]
+            .find("pub async fn relay_container_atomic_admission_history_exists")
+            .map(|offset| readiness_start + offset)
+            .unwrap();
+        let readiness = &source[readiness_start..readiness_end];
+        assert!(readiness.contains("AND \"notnull\" = 1"));
     }
 }

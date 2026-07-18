@@ -15339,8 +15339,9 @@ and disable-first rollback before any remote apply.
 Atomic admission alone will not open traffic. These independent blockers must
 also close:
 
-- an owner-fenced scheduled terminalizer must settle or quarantine a completed
-  operation without requiring the original client to retry;
+- an owner-fenced scheduled terminalizer must settle an exact completed
+  operation without requiring the original client to retry, while divergent
+  evidence remains mutation-free for observer retry or dead-letter review;
 - provider non-2xx status, bounded body, and approved headers must be durable,
   and the shared response interpreter must reproduce source success/error,
   usage normalization, and client-header behavior instead of treating every
@@ -15654,3 +15655,197 @@ D1/Controller/R2 and Container lifecycle evidence, scheduled terminalizer,
 shared response interpreter, provider-native idempotency/lookup, and full
 financial evidence remain blockers. No deployment or remote mutation is
 claimed. Go/VPS remains authoritative and production remains **NO-GO**.
+## 22.245 Migration 0051 Owner-Fenced Scheduled Terminalization (2026-07-18)
+
+Migration `0051_relay_container_scheduled_terminalization.sql` closes one
+local recovery gap left after atomic admission: an exact Controller completion
+can now reach the existing financial terminal writer from the bounded
+reconciliation schedule even when no client retry survives. This is a local
+candidate only. Migration 0051 has not been applied to a remote D1 database,
+no Worker, Controller, Durable Object, or Container version was deployed for
+it, no provider or financial action was performed remotely, and no traffic was
+shifted. Both production-facing gates remain `false` in every tracked scope:
+
+- `CONTAINER_SCHEDULED_TERMINALIZER_ENABLED=false`; and
+- `CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED=false`.
+
+The two values are exact lowercase booleans. Missing, malformed, partially
+enabled, or staging-unverified configuration is disabled. The scheduled
+terminalizer is runnable only when both values are `true`, the existing
+Container operation replay authority reports ready, `FILE_BUCKET` is bound,
+the reconciliation observer is compiled, and the 0051 table, index, and all
+three guards pass schema readiness. A live Controller probe must also prove
+that probing is enabled, the service binding exists, authority is configured,
+the signed response verifies, and both controller and execution are enabled.
+The scheduled run performs this probe before claiming reconciliation work, and
+the authenticated capability uses the same result. A capability or environment
+flag is diagnostic until every condition converges; it is not traffic or
+financial authorization.
+
+### Exact terminal evidence and no-resend rule
+
+The observer remains read-only for every non-matching state. It offers a
+terminal outcome only when all of the following are true:
+
+1. the observer owns a live item lease for the exact operation and reservation;
+2. D1 still records the operation as `dispatched` or `recovery_required`;
+3. the signed Controller observation is exact `Completed` and is classified
+   `DefinitiveTerminal`, not claimed, running, missing, ambiguous, merely
+   matching, or conflicting;
+4. status contract v3, with no v1/v2 fallback for this path, binds the
+   successful attempt-generation-1 provider usage receipt and result identity;
+5. the result manifest is at most the 4 MiB replay ceiling before any result
+   body is buffered, and read-only R2 verification finds the exact immutable
+   provider result;
+6. the frozen 0050 admission receipt, reservation, billing snapshot, operation,
+   provider usage receipt, and recomputed settlement quote all converge; and
+7. the exact client response body and allowlisted response metadata can be
+   created or replayed from `FILE_BUCKET`.
+
+The terminalizer never claims, dispatches, wakes, retries, or resends a
+provider request. Controller `Failed`, `RecoveryRequired`, incomplete result,
+missing receipt, R2 drift, quote drift, or any unavailable store remains retry
+or quarantine evidence. Transport/store unavailability and replay material
+that is still missing remain retryable under the bounded observation horizon;
+divergent response material, protocol/identity/quote violations, and conflicting
+financial decisions retain an exact error code and dead-letter immediately.
+None authorizes settlement, refund, compensation, or a second provider attempt.
+
+Client replay and scheduled replay also share financial audit schema v2. The
+terminal audit payload is derived from the persisted billing reservation and
+operation, including the frozen `request_id_hash`; request-attempt metadata such
+as the current CF Ray/request ID or client IP is excluded. An incoming caller
+identity may only validate the frozen user, token, model, and endpoint tuple.
+It cannot change the terminal decision digest, so the same financial decision
+cannot split into two audit identities merely because a later schedule won.
+
+### One financial transaction and immutable scheduler proof
+
+After the R2 client response artifact is created or exactly replayed, one D1
+batch commits the terminal event, terminal outbox row, user/token/channel
+accounting changes, operation terminal transition, reservation settlement, and
+the new `relay_container_scheduled_terminalizations` evidence row. The 0051
+row freezes the billing event, operation and reservation identity, operation
+owner generation, prior operation state, billing generation, reconciliation
+identity/revision, observation claim generation/owner, the exact claim lease
+expiry, provider receipt/result digests, terminal contract digest, and commit
+time.
+
+The insert guard accepts only decision `settle` and proves, at the transaction
+commit timestamp, all of the following:
+
+- the observation is still `leased`, its claim generation equals its attempt
+  count, the 32-hex claim owner and frozen claim expiry are exact, and both
+  lease and recovery horizon are later than the supplied commit time and D1's
+  transaction-time `unixepoch()` value;
+- `dispatched` maps to reconciliation revision 1 and
+  `recovery_required` maps to revision 2;
+- the same-batch terminal event is `completed`/`settle` with the exact receipt,
+  result, terminal-contract, generation, and reconciliation tuple;
+- the operation is now `completed`, the reservation is now `settled` with
+  owner generation advanced once and `request_accounted=1`; and
+- the immutable 0050 atomic admission still binds the same operation,
+  reservation, and owner generation.
+
+Any stale claim, changed owner, expired lease, forged terminal tuple, partial
+accounting update, missing admission receipt, or statement failure aborts the
+entire D1 batch. No terminal event, outbox, accounting, operation, reservation,
+or scheduled-evidence subset may commit. Update and delete of the 0051 row are
+always rejected. The preceding R2 write is deliberately outside D1; an R2
+object left by a failed transaction is non-authoritative orphan inventory and
+must be retained or cleaned only by the separately approved create-only R2
+policy.
+
+### Crash recovery and idempotency
+
+The recovery contract is state-based rather than response-based:
+
+- a crash before D1 commit leaves no financial or scheduled-terminalization
+  decision; the observation lease expires and a later generation may reobserve
+  exact evidence;
+- a stale or concurrent observer cannot settle because 0051 checks the active
+  claim owner/generation inside the same batch;
+- a successful D1 commit followed by response loss remains authoritative: the
+  immutable 0051 row, terminal receipt, terminal event, outbox, completed
+  operation, and settled reservation identify the winner;
+- a crash after commit but before observation completion is recovered by
+  reading the completed operation and recording ordinary four-store
+  convergence; it does not repeat provider I/O or financial mutation; and
+- duplicate schedule, duplicate alarm, replayed Controller status, and lease
+  reclamation must converge to the same terminal evidence or fail closed.
+
+Normal rollback is disable-first and schema-forward. Set both new terminalizer
+gates false, close new canary admission and prepared resume, stop provider and
+terminal producers, drain/reclaim reconciliation leases, route new traffic and
+financial authority to Go/VPS, and retain a 0051-aware recovery reader for
+existing rows. Never drop 0051, delete its immutable evidence, edit
+`d1_migrations`, resend an ambiguous provider attempt, or issue an ad hoc quota
+compensation. A D1 Time Travel restore remains an all-writer-frozen disaster
+procedure with exact target/bookmark and full-fingerprint proof, not routine
+rollback.
+
+### cinaVibeSDK-derived production contracts still open
+
+The cinaVibeSDK audit supplies useful named-object and SQLite-DO patterns, but
+its local conventions are not production evidence for cinatoken. The following
+contracts are mandatory before a Container cutover:
+
+| Contract | Required cinatoken decision and evidence | Current status |
+| --- | --- | --- |
+| Object, tenant, and jurisdiction identity | Version one canonical identity tuple containing environment, opaque tenant scope, shard/ring, object purpose, and approved jurisdiction; derive an HMAC name without raw user/token/API-key material. Select a jurisdiction-restricted subnamespace before deriving the ID, verify `ctx.id.jurisdiction`, and persist namespace, binding, script, class, name digest, jurisdiction, and ring generation. The same name produces a different ID in another jurisdiction and must not create an accidental second owner; use Regional Services separately when ingress locality is required | Design required |
+| DO class lifecycle | Treat service/binding/class, storage backend, and the chosen Wrangler lifecycle declaration as an ABI. The current repository uses legacy `migrations`: retain its append-only tags and never mix them with `exports`. Before first remote Container deployment, explicitly approve staying on that chain or a one-time move to declarative `exports`, now preferred for new Workers. New namespaces use SQLite. Rename/delete/transfer is an atomic class-lifecycle deployment, not a gradual rollout; require old-binding inventory, stored-data compatibility, remote reconciliation output, and a rollback reader | Design and remote rehearsal required |
+| Cold start | Constructor initialization and SQLite schema migration must be idempotent and block requests until complete; memory is cache only. Keep `blockConcurrencyWhile` bounded to schema/state initialization, below its 30-second reset limit, and free of provider/network I/O. Track SQL schema in a durable migration table rather than unsupported `PRAGMA user_version`. Restore durable owner, pending alarm, deadline, and result identity without provider or financial side effects. Initialization failure makes readiness false | Real lifecycle proof required |
+| Alarm ABI N/N-1 | Persist versioned alarm intent, owner generation, due time, and operation identity. A DO has one alarm; `setAlarm` replaces it, so cold-start code must read the existing alarm before scheduling. Delivery is at least once with bounded automatic retries. Version N must read N and N-1; N-1 must never receive an N-only command. Duplicate, late, reordered, and post-rollback alarms are idempotent or quarantined and never resend a provider or settle without current D1 authority | Implementation and mixed-version fault proof required |
+| Cross-layer provenance | Join edge deployment, Controller deployment, DO namespace/class/migration/schema/object identity, Container image digest and protocol, broker profile/version, provider request/receipt, D1 migration head and operation, R2 versions/digests, terminal event/outbox, billing receipt, and 0051 lease evidence without storing secrets or prompt/response bodies | End-to-end trace and retention approval required |
+
+These requirements deliberately exceed copying `idFromName`, lazy
+initialization, recurring alarms, or Wrangler `new_sqlite_classes` from
+cinaVibeSDK. They make placement, compatibility, and ownership auditable across
+eviction, cold start, rolling deploy, rollback, and jurisdiction change.
+
+Current Cloudflare contract anchors are the official
+[data-location](https://developers.cloudflare.com/durable-objects/reference/data-location/),
+[namespace](https://developers.cloudflare.com/durable-objects/api/namespace/),
+[class-lifecycle configuration](https://developers.cloudflare.com/workers/wrangler/configuration/),
+[legacy migration](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/),
+[state initialization](https://developers.cloudflare.com/durable-objects/api/state/),
+[alarm](https://developers.cloudflare.com/durable-objects/api/alarms/), and
+[D1 batch](https://developers.cloudflare.com/d1/worker-api/d1-database/)
+references. The candidate packet must pin the reviewed Wrangler version and
+archive its generated configuration/schema output because these platform
+contracts evolve independently of the repository.
+
+### Promotion evidence and next blockers
+
+The next production packet must be built in isolated staging and must contain:
+
+1. credential rotation, least-privilege deploy/readback identities, signed
+   Worker/Controller/Container artifacts, exact migration hashes, and an
+   inventory proving all pre-0051 terminal/reconciliation writers are gone;
+2. target account/database name and UUID, Time Travel bookmark, migration
+   ledger, normalized 0051 table/index/trigger readback, unchanged full-table
+   fingerprints, and direct stale-owner/wrong-frozen-expiry/expired-lease/
+   stale-Worker-time/forged-event/update/delete negative probes;
+3. same-batch fault injection at every statement proving no partial terminal,
+   outbox, accounting, operation, reservation, or 0051 evidence survives;
+4. real D1/Controller/R2/DO/Container faults covering response loss, lease
+   expiry/reclaim, duplicate schedules and alarms, eviction, cold start,
+   restart/OOM, pre-body 4 MiB rejection, R2 missing/divergent/orphan evidence,
+   transient-versus-permanent classification, provider ambiguity, and exact
+   replay with one stable client/scheduler financial audit digest;
+5. a two-version N/N-1 or isolated blue/green campaign covering DO code/RPC and
+   alarm ABI, object/jurisdiction identity, key rotation, rollback, and complete
+   cross-layer provenance, plus a separate atomic class-lifecycle rehearsal;
+6. zero-delta billing/provider-invoice reconciliation, provider-native
+   idempotency or deterministic lookup for every enabled channel, independent
+   settlement-amount authority, shared non-2xx response interpretation,
+   load/cost/SLO/alert evidence, and the approved orphan/retention runbooks; and
+7. disable-first rollback rehearsal plus named security, billing, data,
+   platform, and SRE ownership and C1-C5/G1-G8 approval.
+
+Migration 0051 resolves the local surviving-client dependency for one exact
+completed state. It does not resolve provider-response-before-R2 ambiguity,
+provider-native retry authority, independent amount/invoice authority, complete
+response parity, remote lifecycle evidence, or the cinaVibeSDK-derived
+production contracts above. Go/VPS remains authoritative and production
+remains **NO-GO**.

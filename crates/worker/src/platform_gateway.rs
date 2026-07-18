@@ -33,6 +33,10 @@ use crate::container_controller::{
     probe as probe_container_controller, probe_shard_readiness,
     CONTAINER_SHARD_READINESS_PROBE_ENABLED_ENV, CONTAINER_SHARD_READINESS_WAKE_ENABLED_ENV,
 };
+use crate::container_reconciliation::{
+    container_scheduled_terminalizer_compiled, container_scheduled_terminalizer_runtime_ready,
+    container_scheduled_terminalizer_runtime_status,
+};
 use crate::container_scheduler::{
     container_local_contracts, container_operation_runtime_status,
     container_scheduler_cutover_guards, container_scheduler_cutover_ready,
@@ -186,7 +190,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0050_relay_container_atomic_admission.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0051_relay_container_scheduled_terminalization.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -274,6 +278,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0048_relay_container_provider_usage_receipts.sql",
     "0049_relay_container_provider_usage_binding.sql",
     "0050_relay_container_atomic_admission.sql",
+    "0051_relay_container_scheduled_terminalization.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -432,6 +437,14 @@ struct PlatformCapabilities {
     container_chat_canary_admission_compiled: bool,
     container_chat_canary_atomic_admission_compiled: bool,
     container_chat_canary_atomic_admission_schema_ready: bool,
+    container_scheduled_terminalizer_compiled: bool,
+    container_scheduled_terminalizer_configured: bool,
+    container_scheduled_terminalizer_config_valid: bool,
+    container_scheduled_terminalizer_requested: bool,
+    container_scheduled_terminalizer_staging_verified: bool,
+    container_scheduled_terminalizer_enabled: bool,
+    container_scheduled_terminalizer_schema_ready: bool,
+    container_scheduled_terminalizer_runtime_ready: bool,
     container_chat_canary_replay_history_probe_known: bool,
     container_chat_canary_replay_history_present: bool,
     container_chat_canary_replay_compiled: bool,
@@ -1020,6 +1033,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_poll_scheduler_status,
         task_poll_recovery_status,
         container_chat_canary_atomic_admission_schema_ready,
+        container_scheduled_terminalizer_schema_ready,
         container_chat_canary_replay_history_probe_known,
         container_chat_canary_replay_history_present,
     ) = match env.d1("DB") {
@@ -1030,6 +1044,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
                     .unwrap_or(false);
             let container_chat_canary_replay_history =
                 crate::d1_repositories::relay_container_atomic_admission_history_exists(&db).await;
+            let container_scheduled_terminalizer_schema_ready =
+                crate::d1_repositories::relay_container_scheduled_terminalization_schema_ready(&db)
+                    .await
+                    .unwrap_or(false);
             let container_chat_canary_replay_history_probe_known =
                 container_chat_canary_replay_history.is_ok();
             let container_chat_canary_replay_history_present =
@@ -1056,6 +1074,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
                         schema_ready: false,
                     }),
                 container_chat_canary_atomic_admission_schema_ready,
+                container_scheduled_terminalizer_schema_ready,
                 container_chat_canary_replay_history_probe_known,
                 container_chat_canary_replay_history_present,
             )
@@ -1073,6 +1092,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             TaskPollRecoveryRuntimeStatus {
                 schema_ready: false,
             },
+            false,
             false,
             false,
             false,
@@ -1160,6 +1180,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         crate::container_relay_canary::container_chat_canary_previous_idempotency_secret_configured(
             &env,
         );
+    let container_scheduled_terminalizer = container_scheduled_terminalizer_runtime_status(&env);
+    let container_scheduled_terminalizer_compiled = container_scheduled_terminalizer_compiled();
     let container_operation_runtime_ready = container_operation_runtime.cutover_ready()
         && container_financial_terminal_compiled
         && container_exact_response_replay_compiled
@@ -1174,6 +1196,12 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduler_routing_secret_configured(&env);
     let container_controller_probe =
         probe_container_controller(&env, container_scheduler_status).await;
+    let container_scheduled_terminalizer_runtime_ready =
+        container_scheduled_terminalizer_runtime_ready(
+            &env,
+            container_scheduled_terminalizer_schema_ready,
+            Some(&container_controller_probe),
+        );
     // Local source contracts are reported separately from deployed bindings,
     // rolling compatibility, and remote fault evidence.
     let container_local_contracts = container_local_contracts();
@@ -1876,6 +1904,15 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_chat_canary_admission_compiled,
         container_chat_canary_atomic_admission_compiled,
         container_chat_canary_atomic_admission_schema_ready,
+        container_scheduled_terminalizer_compiled,
+        container_scheduled_terminalizer_configured: container_scheduled_terminalizer.configured,
+        container_scheduled_terminalizer_config_valid: container_scheduled_terminalizer.valid,
+        container_scheduled_terminalizer_requested: container_scheduled_terminalizer.requested,
+        container_scheduled_terminalizer_staging_verified: container_scheduled_terminalizer
+            .staging_verified,
+        container_scheduled_terminalizer_enabled: container_scheduled_terminalizer.enabled,
+        container_scheduled_terminalizer_schema_ready,
+        container_scheduled_terminalizer_runtime_ready,
         container_chat_canary_replay_history_probe_known,
         container_chat_canary_replay_history_present,
         container_chat_canary_replay_compiled,
@@ -4966,14 +5003,15 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0050_relay_container_atomic_admission.sql"
+            "0051_relay_container_scheduled_terminalization.sql"
         );
         assert_eq!(
-            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 3..],
+            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 4..],
             &[
                 "0048_relay_container_provider_usage_receipts.sql",
                 "0049_relay_container_provider_usage_binding.sql",
                 "0050_relay_container_atomic_admission.sql",
+                "0051_relay_container_scheduled_terminalization.sql",
             ]
         );
         assert!(
@@ -5180,6 +5218,17 @@ mod tests {
             .contains("relay_container_atomic_admission_update_guard"));
         assert!(relay_container_atomic_admission
             .contains("relay_container_canary_operation_delete_guard"));
+        let relay_container_scheduled_terminalization = include_str!(
+            "../../../migrations/d1/0051_relay_container_scheduled_terminalization.sql"
+        );
+        assert!(relay_container_scheduled_terminalization
+            .contains("CREATE TABLE relay_container_scheduled_terminalizations"));
+        assert!(relay_container_scheduled_terminalization
+            .contains("relay_container_scheduled_terminalization_insert_guard"));
+        assert!(relay_container_scheduled_terminalization
+            .contains("relay_container_scheduled_terminalization_immutable_guard"));
+        assert!(relay_container_scheduled_terminalization
+            .contains("relay_container_scheduled_terminalization_delete_guard"));
     }
 
     #[test]

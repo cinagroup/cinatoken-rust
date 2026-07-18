@@ -424,6 +424,337 @@ describe("migration 0050 atomic relay Container admission", () => {
   });
 });
 
+describe("migration 0051 scheduled relay Container terminalization", () => {
+  it("rolls back the full financial terminal batch on a stale observer and commits once with the active lease", async () => {
+    await seedAuthorityState();
+    const intent = await atomicAdmissionIntent("scheduled-terminalization");
+    await runAtomicAdmissionBatch(intent);
+    const terminal = await prepareScheduledTerminalization(intent);
+
+    await expect(
+      runScheduledTerminalizationBatch(intent, terminal, {
+        claimOwner: "b".repeat(32),
+      }),
+    ).rejects.toThrow(
+      /relay container scheduled terminalization fence is invalid/,
+    );
+    await expect(
+      runScheduledTerminalizationBatch(intent, terminal, {
+        claimLeaseExpiresAt: terminal.claimLeaseExpiresAt + 1,
+      }),
+    ).rejects.toThrow(
+      /relay container scheduled terminalization fence is invalid/,
+    );
+    await expect(scheduledTerminalizationState(intent, terminal)).resolves.toEqual({
+      operation: { status: "dispatched", response_status: null },
+      reservation: {
+        status: "reserved",
+        owner_generation: 2,
+        final_quota: 0,
+        request_accounted: 0,
+      },
+      user: { quota: 875, used_quota: 0, request_count: 0 },
+      token: { remain_quota: 375, used_quota: 125 },
+      channel: { used_quota: 0 },
+      counts: { events: 0, outbox: 0, terminalizations: 0 },
+    });
+
+    const results = await runScheduledTerminalizationBatch(intent, terminal);
+    expect(results).toHaveLength(9);
+    expect(results.map((result) => result.meta.changes)).toEqual([
+      1, 1, 1, 1, 1, 1, 1, 1, 1,
+    ]);
+    await expect(scheduledTerminalizationState(intent, terminal)).resolves.toEqual({
+      operation: { status: "completed", response_status: 200 },
+      reservation: {
+        status: "settled",
+        owner_generation: 3,
+        final_quota: 80,
+        request_accounted: 1,
+      },
+      user: { quota: 920, used_quota: 80, request_count: 1 },
+      token: { remain_quota: 420, used_quota: 80 },
+      channel: { used_quota: 80 },
+      counts: { events: 1, outbox: 1, terminalizations: 1 },
+    });
+
+    await expect(
+      runScheduledTerminalizationBatch(intent, terminal),
+    ).rejects.toThrow();
+    await expect(
+      env.DB.prepare(
+        `UPDATE relay_container_scheduled_terminalizations
+         SET committed_at = committed_at + 1
+         WHERE billing_event_id = ?1`,
+      )
+        .bind(terminal.billingEventId)
+        .run(),
+    ).rejects.toThrow(/scheduled terminalization is immutable/);
+    await expect(
+      env.DB.prepare(
+        `DELETE FROM relay_container_scheduled_terminalizations
+         WHERE billing_event_id = ?1`,
+      )
+        .bind(terminal.billingEventId)
+        .run(),
+    ).rejects.toThrow(/scheduled terminalization cannot be deleted/);
+  });
+});
+
+async function prepareScheduledTerminalization(intent) {
+  const observationCreatedAt = intent.createdAt + 301;
+  const claimAt = observationCreatedAt + 1;
+  const terminalAt = claimAt + 1;
+  const claimLeaseExpiresAt = claimAt + 60;
+  const claimOwner = "a".repeat(32);
+  const resultSha256 = hex("7");
+  const usageReceiptSha256 = hex("8");
+  const clientResponseSha256 = hex("9");
+  const headersJson = '{"content-type":"application/json"}';
+  const outboxPayloadJson = "{}";
+
+  await env.DB.prepare(
+    `UPDATE relay_container_operations
+     SET status = 'dispatched', updated_at = ?2
+     WHERE operation_id = ?1 AND status = 'prepared'`,
+  )
+    .bind(intent.operationId, intent.createdAt + 1)
+    .run();
+  await env.DB.prepare(
+    `INSERT INTO relay_container_reconciliation_observations (
+       operation_id, reservation_key, operation_created_at,
+       owner_generation, reconciliation_id, status, available_at,
+       recovery_deadline_at, created_at, updated_at
+     ) VALUES (?1, ?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?5, ?5)`,
+  )
+    .bind(
+      intent.operationId,
+      intent.createdAt,
+      intent.ownerGeneration,
+      intent.reconciliationId,
+      observationCreatedAt,
+      observationCreatedAt + 86_400,
+    )
+    .run();
+  await env.DB.prepare(
+    `UPDATE relay_container_reconciliation_observations
+     SET status = 'leased', claim_generation = 1, claim_owner = ?2,
+         claim_lease_expires_at = ?4, available_at = 0, attempt_count = 1,
+         first_observed_at = ?3, last_attempt_at = ?3, updated_at = ?3
+     WHERE operation_id = ?1`,
+  )
+    .bind(intent.operationId, claimOwner, claimAt, claimLeaseExpiresAt)
+    .run();
+
+  // This suite exercises the 0051 financial batch fence. Provider receipt
+  // authority has its own Workerd coverage and would require the full egress
+  // grant/receipt fixture before the terminal event can be staged here.
+  await env.DB.prepare(
+    "DROP TRIGGER relay_container_terminal_event_provider_usage_guard",
+  ).run();
+
+  return {
+    billingEventId: hex("5"),
+    claimGeneration: 1,
+    claimLeaseExpiresAt,
+    claimOwner,
+    clientResponseObjectKey:
+      `container-client-responses/v1/${intent.operationId}/2/${clientResponseSha256}`,
+    clientResponseSha256,
+    clientResponseVersion: "scheduled-client-response-v1",
+    finalQuota: 80,
+    headersJson,
+    headersSha256: await sha256Text(headersJson),
+    outboxPayloadJson,
+    outboxPayloadSha256: await sha256Text(outboxPayloadJson),
+    resultObjectKey:
+      `container-results/v1/${intent.operationId}/2/${resultSha256}`,
+    resultObjectVersion: "scheduled-provider-result-v1",
+    resultSha256,
+    terminalAt,
+    terminalContractSha256: hex("4"),
+    usageReceiptSha256,
+  };
+}
+
+async function runScheduledTerminalizationBatch(
+  intent,
+  terminal,
+  {
+    claimOwner = terminal.claimOwner,
+    claimLeaseExpiresAt = terminal.claimLeaseExpiresAt,
+  } = {},
+) {
+  const quotaCredit = intent.preConsumedQuota - terminal.finalQuota;
+  return env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO relay_container_terminal_events (
+         billing_event_id, reservation_key, operation_id, owner_generation,
+         operation_from_status, operation_status, terminal_contract_sha256,
+         billing_action, billing_owner_generation, billing_from_status,
+         billing_final_quota, billing_request_accounted, billing_reason,
+         pre_consumed_quota, user_quota_delta, token_quota_delta,
+         user_used_quota_delta, channel_used_quota_delta, request_count_delta,
+         reconciliation_id, reconciliation_revision, client_response_status,
+         client_response_headers_json, client_response_headers_sha256,
+         client_response_object_key, client_response_object_version,
+         client_response_sha256, client_response_size,
+         client_response_content_type, outbox_schema_version,
+         outbox_payload_json, outbox_payload_sha256, created_at,
+         provider_usage_receipt_sha256, provider_result_sha256,
+         provider_attempt_generation
+       ) VALUES (
+         ?1, ?2, ?2, ?3, 'dispatched', 'completed', ?4, 'settle', ?3,
+         'reserved', ?5, 1, 'container_provider_usage_settlement', ?6,
+         ?7, ?7, ?5, ?5, 1, ?8, 1, 200, ?9, ?10, ?11, ?12, ?13, 2,
+         'application/json', 1, ?14, ?15, ?16, ?17, ?18, 1
+       )`,
+    ).bind(
+      terminal.billingEventId,
+      intent.operationId,
+      intent.ownerGeneration,
+      terminal.terminalContractSha256,
+      terminal.finalQuota,
+      intent.preConsumedQuota,
+      quotaCredit,
+      intent.reconciliationId,
+      terminal.headersJson,
+      terminal.headersSha256,
+      terminal.clientResponseObjectKey,
+      terminal.clientResponseVersion,
+      terminal.clientResponseSha256,
+      terminal.outboxPayloadJson,
+      terminal.outboxPayloadSha256,
+      terminal.terminalAt,
+      terminal.usageReceiptSha256,
+      terminal.resultSha256,
+    ),
+    env.DB.prepare(
+      `INSERT INTO relay_container_terminal_outbox_state (
+         billing_event_id, status, delivery_generation, delivery_attempt_count,
+         lease_expires_at, available_at, delivered_at, last_error,
+         created_at, updated_at
+       ) VALUES (?1, 'pending', 0, 0, 0, ?2, 0, '', ?2, ?2)`,
+    ).bind(terminal.billingEventId, terminal.terminalAt),
+    env.DB.prepare(
+      `UPDATE relay_container_operations
+       SET status = 'completed', response_status = 200, response_code = NULL,
+           result_object_key = ?2, result_object_version = ?3,
+           result_sha256 = ?4, result_size = 2,
+           result_content_type = 'application/json', updated_at = ?5
+       WHERE operation_id = ?1 AND reservation_key = ?1
+         AND owner_generation = ?6 AND status = 'dispatched'`,
+    ).bind(
+      intent.operationId,
+      terminal.resultObjectKey,
+      terminal.resultObjectVersion,
+      terminal.resultSha256,
+      terminal.terminalAt,
+      intent.ownerGeneration,
+    ),
+    env.DB.prepare(
+      `UPDATE relay_billing_reservations
+       SET status = 'settled', owner_generation = owner_generation + 1,
+           final_quota = ?2,
+           finalization_reason = 'container_provider_usage_settlement',
+           request_accounted = 1, settled_at = ?3, updated_at = ?3
+       WHERE reservation_key = ?1 AND owner_generation = ?4
+         AND status = 'reserved'`,
+    ).bind(
+      intent.reservationKey,
+      terminal.finalQuota,
+      terminal.terminalAt,
+      intent.ownerGeneration,
+    ),
+    env.DB.prepare("UPDATE users SET quota = quota + ?1 WHERE id = ?2").bind(
+      quotaCredit,
+      userId,
+    ),
+    env.DB.prepare(
+      `UPDATE tokens
+       SET remain_quota = remain_quota + ?1,
+           used_quota = MAX(used_quota - ?1, 0), accessed_time = ?2
+       WHERE id = ?3`,
+    ).bind(quotaCredit, terminal.terminalAt, tokenId),
+    env.DB.prepare(
+      `UPDATE users
+       SET used_quota = used_quota + ?1, request_count = request_count + 1
+       WHERE id = ?2`,
+    ).bind(terminal.finalQuota, userId),
+    env.DB.prepare(
+      "UPDATE channels SET used_quota = used_quota + ?1 WHERE id = ?2",
+    ).bind(terminal.finalQuota, channelId),
+    env.DB.prepare(
+      `INSERT INTO relay_container_scheduled_terminalizations (
+         billing_event_id, reservation_key, operation_id, owner_generation,
+         operation_from_status, billing_owner_generation, reconciliation_id,
+         reconciliation_revision, observation_claim_generation,
+         observation_claim_owner, observation_claim_lease_expires_at,
+         decision, provider_usage_receipt_sha256, provider_result_sha256,
+         terminal_contract_sha256, committed_at, created_at
+       ) VALUES (
+         ?1, ?2, ?2, ?3, 'dispatched', ?3, ?4, 1, ?5, ?6, ?7, 'settle',
+         ?8, ?9, ?10, ?11, ?11
+       )`,
+    ).bind(
+      terminal.billingEventId,
+      intent.operationId,
+      intent.ownerGeneration,
+      intent.reconciliationId,
+      terminal.claimGeneration,
+      claimOwner,
+      claimLeaseExpiresAt,
+      terminal.usageReceiptSha256,
+      terminal.resultSha256,
+      terminal.terminalContractSha256,
+      terminal.terminalAt,
+    ),
+  ]);
+}
+
+async function scheduledTerminalizationState(intent, terminal) {
+  const [operation, reservation, user, token, channel, counts] =
+    await Promise.all([
+      env.DB.prepare(
+        `SELECT status, response_status
+         FROM relay_container_operations WHERE operation_id = ?1`,
+      )
+        .bind(intent.operationId)
+        .first(),
+      env.DB.prepare(
+        `SELECT status, owner_generation, final_quota, request_accounted
+         FROM relay_billing_reservations WHERE reservation_key = ?1`,
+      )
+        .bind(intent.reservationKey)
+        .first(),
+      env.DB.prepare(
+        "SELECT quota, used_quota, request_count FROM users WHERE id = ?1",
+      )
+        .bind(userId)
+        .first(),
+      env.DB.prepare(
+        "SELECT remain_quota, used_quota FROM tokens WHERE id = ?1",
+      )
+        .bind(tokenId)
+        .first(),
+      env.DB.prepare("SELECT used_quota FROM channels WHERE id = ?1")
+        .bind(channelId)
+        .first(),
+      env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM relay_container_terminal_events
+            WHERE operation_id = ?1) AS events,
+           (SELECT COUNT(*) FROM relay_container_terminal_outbox_state
+            WHERE billing_event_id = ?2) AS outbox,
+           (SELECT COUNT(*) FROM relay_container_scheduled_terminalizations
+            WHERE billing_event_id = ?2) AS terminalizations`,
+      )
+        .bind(intent.operationId, terminal.billingEventId)
+        .first(),
+    ]);
+  return { operation, reservation, user, token, channel, counts };
+}
+
 async function seedAuthorityState({
   userQuota = initialUserQuota,
   tokenQuota = initialTokenQuota,

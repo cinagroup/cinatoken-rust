@@ -6,8 +6,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const wranglerPath = path.join(repoRoot, "wrangler.toml");
 const localD1WranglerPath = path.join(repoRoot, "wrangler.d1-local.toml");
 const migrationsDir = path.join(repoRoot, "migrations", "d1");
-const expectedMigrationCount = 50;
-const expectedMigrationHead = "0050_relay_container_atomic_admission.sql";
+const expectedMigrationCount = 51;
+const expectedMigrationHead =
+  "0051_relay_container_scheduled_terminalization.sql";
 const platformGatewayPath = path.join(
   repoRoot,
   "crates",
@@ -86,9 +87,9 @@ for (let index = 0; index < versions.length; index += 1) {
 const platformGateway = await readFile(platformGatewayPath, "utf8");
 const latestMigration = migrationFiles.at(-1);
 assert(
-  platformGateway.includes(
-    `pub const EXPECTED_D1_MIGRATION: &str = "${latestMigration}";`,
-  ),
+  new RegExp(
+    `pub const EXPECTED_D1_MIGRATION: &str\\s*=\\s*"${latestMigration.replaceAll(".", "\\.")}";`,
+  ).test(platformGateway),
   `platform capability expected migration must match ${latestMigration}`,
 );
 const runtimeSetMatch =

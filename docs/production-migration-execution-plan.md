@@ -1825,3 +1825,137 @@ capability readback, and authenticated remote evidence remain absent. Local
 validation totals are recorded above but cannot substitute for those gates.
 The final source gate is false. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-18 Migration 0051 Scheduled Terminalizer Rollout
+
+This stage follows, and cannot bypass, the complete 0050 atomic-admission
+rollout. Migration 0051 is local only. Neither 0051 nor its terminalizer has
+been applied or enabled remotely. The tracked local, staging, and production
+values for `CONTAINER_SCHEDULED_TERMINALIZER_ENABLED` and
+`CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED` are `false`, so this section
+is an execution checklist rather than deployment authorization.
+
+### Promotion invariant
+
+The scheduled observer may mutate financial state only when both new gates are
+exact `true`, existing operation replay authority is ready, `FILE_BUCKET` is
+present, and 0051 schema readiness is true. Before any item claim, a live
+Controller probe must prove probe enablement, service binding, configured
+authority, signature verification, controller enablement, and execution
+enablement. The observer must then hold the exact live claim owner/generation
+and frozen claim expiry and accept only a D1 `dispatched` or
+`recovery_required` operation whose signed Controller state is exact
+`Completed`/`DefinitiveTerminal` under status contract v3.
+
+It may read Controller, D1, and R2 and invoke the existing settlement writer.
+It may not claim or dispatch a DO operation, wake a Container, send/retry the
+provider, infer success from an HTTP transport response, or compensate an
+ambiguous financial state. Results above the 4 MiB replay ceiling are rejected
+from manifest metadata before the body is buffered. Unavailable stores and
+missing replay material remain bounded retries; divergent response material,
+protocol/identity/quote violations, and conflicting financial decisions keep
+their exact error code and dead-letter immediately. None permits a provider or
+financial side effect.
+
+The terminal event, outbox, user/token/channel accounting, operation terminal
+transition, reservation settlement, and 0051 evidence must commit in one D1
+batch. The 0051 insert is last and verifies the active observation owner,
+generation, exact frozen lease expiry, lease/recovery horizons against D1
+transaction-time `unixepoch()`, and the resulting terminal state. A stale
+owner or any failed statement therefore rolls back all D1 effects. The
+preceding R2 client-response create is outside the batch and must be treated as
+non-authoritative orphan inventory until D1 readback succeeds.
+
+Client and scheduled replay use the same financial audit schema v2 derived from
+the persisted reservation and operation. It includes frozen `request_id_hash`
+and excludes request-attempt ID/CF Ray and client IP, so the terminal decision
+digest is path-independent.
+
+### Ordered rollout phases
+
+| Phase | Required action | Exit evidence | Abort condition |
+| --- | --- | --- | --- |
+| T0 credential and candidate freeze | Revoke/rotate exposed credentials; issue separate least-privilege deploy/readback identities; sign exact Worker, Controller, DO, Container, broker and rollback artifacts plus 0050/0051 hashes | Redacted identity/scope record, commit/version/image inventory, all action gates false | Credential remains usable, candidate moves, secret appears in file/log/CLI, or any action gate is true |
+| T1 writer and object inventory | Enumerate Worker, Cron, Queue, alarm, admin, Controller, DO and maintenance owners; inventory object namespace/binding/class/migration/jurisdiction and all open 0050 operations | Named owner matrix, zero old-writer observations for computed drain window, object/class inventory | Unknown writer/object, old owner reappears, or open state lacks compatible recovery ownership |
+| T2 target freeze and backup | Freeze target-D1 writers; validate account/database name and UUID; capture Time Travel bookmark, migration ledger, full logical fingerprints and normalized trigger SQL | Signed target and bookmark packet with retention deadline | Target ambiguity, active writer, incomplete fingerprint, or invalid bookmark |
+| T3 disabled schema apply | Apply/read back 0050 if absent, then only 0051, while canary/provider/terminal/reconciliation gates remain false | Exact migration rows; 0051 table, committed index and three guards; unchanged business fingerprints | Unexpected DML, wrong head/hash/body, missing object, or any enabled writer |
+| T4 direct negative proof | Probe stale owner, wrong generation, wrong frozen lease expiry, lease expired by D1 transaction time despite a fresh Worker timestamp, expired recovery horizon, wrong revision, forged terminal/receipt/result, missing 0050 admission, update and delete | Expected 0051 trigger/check failure and unchanged full-table fingerprints after every probe | Transport ambiguity, unrelated error, or any partial row/accounting change |
+| T5 same-batch fault proof | Inject failure before and after each terminal event/outbox/accounting/operation/reservation/0051 statement and lose the client response after commit | Zero partial commits; one immutable winner after response loss; R2 orphan classified without authority | Duplicate accounting/event/outbox, incomplete terminal tuple, or orphan treated as settlement authority |
+| T6 disabled runtime deploy | Deploy target-first Controller/DO/Container and then edge candidate with both new gates false; read back bindings, migration head and terminalizer capability components | Authenticated version/binding/schema/gate readback, no eligible traffic | Wrong target/version/binding, capability conflates requested with ready, or route reaches terminalizer |
+| T7 isolated exact-terminal rehearsal | Enable only the first gate, prove no mutation; after named approval set staging-verified for a synthetic cohort and exercise exact Controller Completed + DefinitiveTerminal | One settlement and one 0051 row per operation, zero provider resend, exact D1/R2/DO/client replay, and one stable client/scheduler audit digest | Any non-definitive state settles, second provider call occurs, audit digest varies by path, or owner fence is bypassed |
+| T8 lifecycle and mixed-version faults | Exercise lease expiry/reclaim, duplicate Cron/alarm, response loss, DO eviction/cold start, Container sleep/restart/OOM, pre-body 4 MiB rejection, R2 missing/divergent/orphan, transient/permanent error routing, D1 unavailable, N/N-1 deployment and rollback | Redacted traces proving convergence, bounded retry or immediate dead-letter as classified, with no duplicate financial/provider side effect | Unknown alarm/class/object version proceeds, permanent divergence retries, transient outage is treated as success, provenance gap, or unexplained financial delta |
+| T9 financial and operational soak | Reconcile D1 reservation/event/outbox/0051 against provider invoice and Go baseline; run load/cost/SLO/alerts and retention cleanup | Zero unexplained delta, bounded backlog/latency/cost, tested alert and orphan runbook | Amount/invoice mismatch, alert blind spot, unbounded lease/orphan/backlog, or SLO breach |
+| T10 promotion decision | Complete security/privacy/data/platform/SRE reviews, disable-first rollback rehearsal and C1-C5/G1-G8 approval | Signed promotion packet naming cohort, duration, abort owner and rollback artifact | Missing evidence/owner/approval or any unresolved blocker below |
+
+T7 is permitted only in an isolated staging account with synthetic data and
+provider credentials scoped to that rehearsal. Enabling the first gate alone
+must remain inert because the staging-verified gate is still false. The final
+readiness decision must also fail if existing replay authority, `FILE_BUCKET`,
+the Controller probe/binding/authority/verified/execution predicate, or 0051
+schema readiness is unavailable.
+
+### DO object and lifecycle subgate
+
+Before T8, the deployment packet must define one canonical versioned tuple for
+environment, opaque tenant scope, object purpose, shard/ring, and jurisdiction.
+The derived DO name must not contain raw user/token/API-key values. The tuple's
+digest, namespace, service, binding, class, selected Wrangler lifecycle mode
+and state, SQLite schema, `ctx.id.jurisdiction`, and ring generation must be
+present in redacted operation provenance.
+
+The current repository uses legacy append-only `migrations`; Cloudflare now
+prefers declarative `exports` for new Workers, and the two modes are mutually
+exclusive. Before the first remote Container deployment, approve either the
+retained legacy chain or a separately reviewed one-time conversion, then freeze
+that choice through canary and rollback. New namespaces use SQLite. Class
+rename/delete/transfer is atomic and cannot use a gradual deployment. It
+requires old-binding inventory, stored-data compatibility, remote lifecycle
+reconciliation output, old-object readback/drain, and a rollback reader.
+Cold-start initialization must be idempotent and block dispatch until storage
+schema, durable owner, deadline, pending alarm and result identity are valid.
+Constructor `blockConcurrencyWhile` is bounded to schema/state work, performs
+no external I/O, and stays below its reset timeout; SQL schema version uses a
+durable migration table rather than `PRAGMA user_version`. It must not execute
+a provider or financial side effect.
+
+Alarm payload/intent is a versioned ABI. A DO has one alarm and `setAlarm`
+replaces the existing value, so constructor/cold-start logic must call
+`getAlarm` before scheduling. Delivery is at least once with bounded automatic
+retry. Version N reads N and N-1; N-1 cannot receive N-only alarm intent.
+Unknown future versions, stale generations, duplicate, late, reordered,
+retry-exhausted, and rollback-era alarms are quarantined or idempotently
+replayed. They never authorize provider resend or settlement. The mixed-version
+rehearsal must join edge, Controller, DO, Container, broker, provider, D1, R2,
+terminal/outbox/billing and 0051 evidence into one redacted cross-layer trace.
+
+### Rollback and evidence retention
+
+Rollback order is fixed:
+
+1. set both scheduled-terminalizer gates false and verify the deployed
+   readback;
+2. close new canary admission and prepared resume, then stop provider and other
+   terminal/reconciliation producers;
+3. allow active D1 leases to finish or expire, classify every existing 0050
+   owner from exact D1/R2/DO evidence, and never resend an ambiguous provider
+   operation;
+4. route new traffic and financial authority to Go/VPS while retaining a
+   0051-aware Rust recovery reader;
+5. retain 0050/0051 schema, immutable admission/terminal/scheduled evidence,
+   outbox, R2 artifacts, DO storage, deployment and alarm provenance; and
+6. roll application components back in reverse target-first order only to
+   artifacts that can read existing objects and cannot emit incompatible rows.
+
+Do not drop 0051, delete evidence, edit `d1_migrations`, rename/delete a DO
+class as rollback, reuse a DO identity in another jurisdiction, issue ad hoc
+quota SQL, or restore D1 while any writer runs. Time Travel is reserved for an
+all-writer-frozen disaster with exact target/bookmark, complete before/after
+fingerprints, named approval, and archived undo bookmark.
+
+Open blockers after the local 0051 implementation are provider-native
+idempotency or deterministic lookup, provider-response-before-R2 ambiguity,
+shared non-2xx response semantics, independent amount authority and invoice
+convergence, production R2 orphan policy, the DO identity/class/cold-start/alarm
+ABI and cross-layer provenance contracts, remote fault/lifecycle evidence,
+load/cost/SLO/alerts, signed rollback, and C1-C5/G1-G8 approval. Go/VPS remains
+authoritative and production remains **NO-GO**.

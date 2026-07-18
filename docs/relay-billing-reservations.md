@@ -446,3 +446,107 @@ signed rollback artifact, the key-retention and previous-key drain runbook is
 approved, and endpoint-level remote fault/financial proof shows existing
 generation-2 owners can terminalize or resume without new admission, duplicate
 reservation/debit/provider execution, or upstream fallthrough.
+
+## Scheduled Financial Terminalization (0051)
+
+Migration `0051_relay_container_scheduled_terminalization.sql` records the
+exact reconciliation lease that won a locally autonomous settlement. It
+supersedes the prior statement that scheduled terminalization is unimplemented,
+but only for the bounded exact-completion path. It does not authorize a remote
+schema apply, canary, provider request, refund, or financial cutover.
+
+The scheduled path is disabled unless both
+`CONTAINER_SCHEDULED_TERMINALIZER_ENABLED` and
+`CONTAINER_SCHEDULED_TERMINALIZER_STAGING_VERIFIED` are exact `true`. Existing
+operation replay authority, `FILE_BUCKET`, the bounded reconciliation observer,
+and complete 0051 schema readiness are additional requirements. A live
+Controller probe must prove probe/binding/authority, verified status, controller
+enablement, and execution enablement before any scheduled item is claimed. Both
+new gates remain `false` in every tracked environment.
+
+### Financial authority
+
+The scheduler does not invent usage or amount authority. It can settle only an
+existing 0050 atomic admission whose D1 operation is `dispatched` or
+`recovery_required` and whose Controller evidence is exact `Completed` plus
+`DefinitiveTerminal`. It then reuses the same provider-usage settlement path as
+client replay:
+
+1. verify status-v3 attempt 1, with no v1/v2 fallback, provider receipt, result
+   identity, and response status;
+2. reread the immutable provider usage receipt and exact 0050
+   admission/reservation/operation linkage;
+3. recompute the frozen billing snapshot digest, atomic admission digest, and
+   final quota quote;
+4. reject a declared result above the 4 MiB replay ceiling before buffering its
+   body, then verify the create-only R2 result and create or exactly replay the
+   R2 client response; and
+5. submit one owner-fenced D1 financial terminal batch.
+
+It never evaluates mutable current pricing and never sends, retries, or looks
+up a provider as a side effect of terminalization. Missing receipt fields,
+incomplete R2 evidence, amount drift, status mismatch, stale lease, or
+ambiguous provider state fails closed. Store unavailability and replay material
+that is still missing remain bounded retries. Divergent response material,
+protocol/identity/quote violations, and conflicting financial decisions retain
+their exact error codes and dead-letter immediately. Automatic refund or quota
+compensation is not a fallback.
+
+The terminal audit is schema v2 and is path-independent. Both client replay and
+scheduled replay serialize it from the persisted reservation and operation,
+including frozen `request_id_hash`; the current request ID/CF Ray and client IP
+are excluded. Caller-provided user, token, model, and endpoint fields can only
+validate the persisted tuple and cannot alter the financial decision hash.
+
+### Atomic settlement proof
+
+The D1 batch commits the terminal event, outbox, user/token/channel accounting,
+operation completion, reservation settlement, and the 0051 row together. The
+0051 row freezes billing event, reservation/operation, operation owner
+generation, prior operation state, prior billing owner generation,
+reconciliation identity/revision, observation claim generation/owner, exact
+claim lease expiry, receipt and result digests, terminal contract digest, and
+commit time.
+
+Its final insert proves that the observation claim is still leased by the same
+owner/generation with the exact frozen lease expiry, and that lease and recovery
+deadlines are later than both the supplied commit time and D1 transaction-time
+`unixepoch()`. It also proves the same-batch event is exact
+`completed`/`settle`, the operation is completed, the reservation is settled
+with generation advanced exactly once and the request accounted, and the 0050
+admission still matches. `dispatched` is revision 1 and
+`recovery_required` is revision 2. Any failed predicate or statement aborts all
+D1 effects. The row is immutable and cannot be deleted.
+
+The R2 client-response write precedes D1 and cannot join its transaction. A
+failed D1 commit can therefore leave a create-only R2 orphan. That object has
+no billing authority; cleanup requires the separate retention policy and exact
+absence of terminal/admission authority. Operators must never infer settlement
+from R2 presence alone.
+
+### Replay, crash, and rollback
+
+- Before D1 commit, a crash leaves no settlement winner; a later observation
+  lease generation may reverify the entire contract.
+- A stale/concurrent observer cannot commit because claim owner, generation,
+  attempt count, and lease horizon are checked inside D1.
+- After D1 commit, response loss is resolved from the immutable terminal
+  receipt/event/outbox/0051 tuple. The next observer reloads the completed
+  operation and records convergence without a second accounting mutation.
+- Duplicate schedules, Controller status replays, and lease reclamation are
+  idempotent only by durable readback. They never authorize provider resend.
+
+Rollback first sets both terminalizer gates false, then closes new admission,
+prepared resume, provider, and terminal/reconciliation producers. New traffic
+returns to Go/VPS while a 0051-aware reader drains or quarantines existing
+owners. Retain 0050/0051, financial receipts, events/outbox, R2 artifacts and DO
+evidence. Do not drop schema, delete evidence, edit quota by hand, retire an
+identity key before a proved drain, or deploy an incompatible old writer.
+
+Production promotion remains blocked on authenticated 0051 apply/readback,
+remote full-batch rollback and response-loss proof, independent settlement
+amount authority, provider invoice convergence, provider-native idempotency or
+deterministic lookup, R2 orphan retention, shared non-2xx semantics, real
+DO/Container lifecycle and N/N-1 alarm proof, alerts/load/cost, rollback, and
+C1-C5/G1-G8 approval. Go/VPS remains the sole production financial authority
+and production remains **NO-GO**.

@@ -38,6 +38,8 @@ REQUIRED_TABLES = [
     "relay_billing_recovery_state",
     "relay_billing_finalization_incidents",
     "relay_container_operations",
+    "relay_container_atomic_admissions",
+    "relay_container_idempotency_aliases",
     "relay_container_provider_egress_grants",
     "relay_container_provider_usage_receipts",
     "relay_container_provider_usage_receipt_identities",
@@ -289,6 +291,40 @@ REQUIRED_COLUMNS = {
         "result_content_type",
         "created_at",
         "updated_at",
+    },
+    "relay_container_atomic_admissions": {
+        "reservation_key",
+        "operation_id",
+        "contract_version",
+        "atomic_admission_sha256",
+        "operation_admission_sha256",
+        "client_idempotency_hmac_sha256",
+        "client_request_sha256",
+        "idempotency_alias_count",
+        "idempotency_aliases_sha256",
+        "billing_snapshot_sha256",
+        "user_id",
+        "token_id",
+        "pre_consumed_quota",
+        "owner_generation",
+        "owner_lease_expires_at",
+        "channel_id",
+        "selected_channel_type",
+        "selected_group",
+        "selected_snapshot_key",
+        "owner_deadline_at",
+        "selected_at",
+        "created_at",
+        "attempt_count",
+        "provider_attempt_generation",
+    },
+    "relay_container_idempotency_aliases": {
+        "client_idempotency_hmac_sha256",
+        "reservation_key",
+        "operation_id",
+        "canonical_client_idempotency_hmac_sha256",
+        "client_request_sha256",
+        "created_at",
     },
     "relay_container_provider_egress_grants": {
         "operation_id",
@@ -676,6 +712,12 @@ REQUIRED_INDEXES = {
         "idx_relay_container_operations_input_object_identity": False,
         "idx_relay_container_operations_result_object_identity": False,
     },
+    "relay_container_atomic_admissions": {
+        "idx_relay_container_atomic_admissions_created": False,
+    },
+    "relay_container_idempotency_aliases": {
+        "idx_relay_container_idempotency_aliases_reservation": False,
+    },
     "relay_container_provider_egress_grants": {
         "idx_relay_container_provider_egress_grants_provider_operation": True,
         "idx_relay_container_provider_egress_grants_worker_version": False,
@@ -775,6 +817,8 @@ def main() -> int:
     relay_container_provider_usage_receipt_rollout_verified = False
     relay_container_provider_usage_binding_verified = False
     relay_container_provider_usage_binding_rollout_verified = False
+    relay_container_atomic_admission_verified = False
+    relay_container_atomic_admission_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -812,6 +856,8 @@ def main() -> int:
         relay_container_provider_usage_receipt_rollout_verified = True
         verify_relay_container_provider_usage_binding_rollout(schema_paths)
         relay_container_provider_usage_binding_rollout_verified = True
+        verify_relay_container_atomic_admission_rollout(schema_paths)
+        relay_container_atomic_admission_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -831,26 +877,36 @@ def main() -> int:
             raise SystemExit(f"migration failed: {schema_path}: {error}") from error
 
     if not args.schema:
+        relay_container_conn = sqlite3.connect(":memory:")
+        for schema_path in schema_paths:
+            if schema_path.name == "0050_relay_container_atomic_admission.sql":
+                break
+            relay_container_conn.executescript(
+                schema_path.read_text(encoding="utf-8")
+            )
         verify_flat_billing_intent_guard(conn)
         flat_intent_guard_verified = True
-        verify_relay_container_operation(conn)
+        verify_relay_container_operation(relay_container_conn)
         relay_container_operation_verified = True
-        verify_relay_container_financial_terminal(conn)
+        verify_relay_container_financial_terminal(relay_container_conn)
         relay_container_financial_terminal_verified = True
-        verify_relay_container_financial_terminal_enforce(conn)
+        verify_relay_container_financial_terminal_enforce(relay_container_conn)
         relay_container_financial_terminal_enforce_verified = True
-        verify_relay_container_provider_egress_grant(conn)
+        verify_relay_container_provider_egress_grant(relay_container_conn)
         relay_container_provider_egress_grant_verified = True
-        verify_relay_container_provider_usage_receipt(conn)
+        verify_relay_container_provider_usage_receipt(relay_container_conn)
         relay_container_provider_usage_receipt_verified = True
-        verify_relay_container_reconciliation_observer(conn)
+        verify_relay_container_reconciliation_observer(relay_container_conn)
         relay_container_reconciliation_observer_verified = True
-        verify_relay_container_r2_inventory(conn)
+        verify_relay_container_r2_inventory(relay_container_conn)
         relay_container_r2_inventory_verified = True
-        verify_relay_container_reconciliation_retry_apply(conn)
+        verify_relay_container_reconciliation_retry_apply(relay_container_conn)
         relay_container_reconciliation_retry_apply_verified = True
-        verify_relay_container_provider_usage_binding(conn)
+        verify_relay_container_provider_usage_binding(relay_container_conn)
         relay_container_provider_usage_binding_verified = True
+        relay_container_conn.close()
+        verify_relay_container_atomic_admission(conn)
+        relay_container_atomic_admission_verified = True
         verify_task_billing_intents(conn)
         task_billing_intents_verified = True
         verify_task_submit_reconciliation(conn)
@@ -942,6 +998,10 @@ def main() -> int:
         message += " + 0049 four-store provider usage convergence guard"
     if relay_container_provider_usage_binding_rollout_verified:
         message += " + 0049 expand-only provider usage binding rollout"
+    if relay_container_atomic_admission_verified:
+        message += " + 0050 immutable relay Container atomic admission"
+    if relay_container_atomic_admission_rollout_verified:
+        message += " + 0050 receipt-first atomic rollout and rollback"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -4342,6 +4402,183 @@ def verify_relay_container_provider_usage_binding(
         ),
         "0049 allowed a post-convergence receipt INSERT replay",
     )
+
+
+def verify_relay_container_atomic_admission(conn: sqlite3.Connection) -> None:
+    required_triggers = (
+        "relay_container_atomic_admission_operation_insert_guard",
+        "relay_container_atomic_admission_update_guard",
+        "relay_container_atomic_admission_delete_guard",
+        "relay_container_idempotency_alias_insert_guard",
+        "relay_container_idempotency_alias_update_guard",
+        "relay_container_idempotency_alias_delete_guard",
+        "relay_container_canary_atomic_admission_update_guard",
+        "relay_container_canary_operation_delete_guard",
+    )
+    for trigger in required_triggers:
+        if not trigger_exists(conn, trigger):
+            raise SystemExit(f"0050 atomic admission trigger missing: {trigger}")
+
+    table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_atomic_admissions"
+    )
+    required_table_fragments = (
+        "reservation_key TEXT PRIMARY KEY NOT NULL",
+        "operation_id TEXT NOT NULL UNIQUE",
+        "contract_version = 1",
+        "atomic_admission_sha256 TEXT NOT NULL UNIQUE",
+        "client_idempotency_hmac_sha256 TEXT NOT NULL UNIQUE",
+        "idempotency_alias_count INTEGER NOT NULL",
+        "idempotency_alias_count BETWEEN 1 AND 2",
+        "idempotency_aliases_sha256 TEXT NOT NULL",
+        "owner_generation = 2",
+        "attempt_count = 1",
+        "provider_attempt_generation = 1",
+        "CHECK (operation_id = reservation_key)",
+        "CHECK (selected_snapshot_key = CAST(selected_channel_type AS TEXT))",
+        "CHECK (selected_at = created_at)",
+        "CHECK (owner_deadline_at = owner_lease_expires_at)",
+        "REFERENCES relay_billing_reservations(reservation_key)",
+        "REFERENCES relay_container_operations(operation_id)",
+        "ON UPDATE RESTRICT ON DELETE RESTRICT",
+    )
+    for fragment in required_table_fragments:
+        if table_sql is None or fragment not in table_sql:
+            raise SystemExit(f"0050 atomic admission table contract missing: {fragment}")
+
+    alias_table_sql = sqlite_object_sql(
+        conn, "table", "relay_container_idempotency_aliases"
+    )
+    required_alias_table_fragments = (
+        "client_idempotency_hmac_sha256 TEXT PRIMARY KEY NOT NULL",
+        "reservation_key TEXT NOT NULL",
+        "operation_id TEXT NOT NULL",
+        "canonical_client_idempotency_hmac_sha256 TEXT NOT NULL",
+        "client_request_sha256 TEXT NOT NULL",
+        "created_at INTEGER NOT NULL",
+        "CHECK (operation_id = reservation_key)",
+        "REFERENCES relay_container_atomic_admissions(reservation_key)",
+        "REFERENCES relay_container_operations(operation_id)",
+        "ON UPDATE RESTRICT ON DELETE RESTRICT",
+    )
+    for fragment in required_alias_table_fragments:
+        if alias_table_sql is None or fragment not in alias_table_sql:
+            raise SystemExit(
+                f"0050 idempotency alias table contract missing: {fragment}"
+            )
+
+    unique_columns = set()
+    for index_row in conn.execute(
+        'PRAGMA index_list("relay_container_atomic_admissions")'
+    ).fetchall():
+        if not bool(index_row[2]):
+            continue
+        columns = tuple(
+            row[2]
+            for row in conn.execute(
+                f'PRAGMA index_info("{index_row[1]}")'
+            ).fetchall()
+        )
+        unique_columns.add(columns)
+    for columns in (
+        ("reservation_key",),
+        ("operation_id",),
+        ("atomic_admission_sha256",),
+        ("client_idempotency_hmac_sha256",),
+    ):
+        if columns not in unique_columns:
+            raise SystemExit(f"0050 atomic admission unique identity missing: {columns}")
+
+    created_index_sql = sqlite_object_sql(
+        conn, "index", "idx_relay_container_atomic_admissions_created"
+    )
+    if (
+        created_index_sql is None
+        or "(created_at, reservation_key)" not in created_index_sql
+    ):
+        raise SystemExit("0050 atomic admission created-order index is not exact")
+
+    alias_index_sql = sqlite_object_sql(
+        conn,
+        "index",
+        "idx_relay_container_idempotency_aliases_reservation",
+    )
+    if (
+        alias_index_sql is None
+        or "(reservation_key, client_idempotency_hmac_sha256)"
+        not in alias_index_sql
+    ):
+        raise SystemExit("0050 idempotency alias reservation index is not exact")
+
+    insert_guard_sql = sqlite_object_sql(
+        conn,
+        "trigger",
+        "relay_container_atomic_admission_operation_insert_guard",
+    )
+    for fragment in (
+        "NEW.protocol_version = 1",
+        "NEW.operation_kind = 'chat_completions_canary'",
+        "JOIN relay_container_atomic_admissions AS admission",
+        "JOIN relay_container_idempotency_aliases AS canonical_alias",
+        "reservation.status = 'reserved'",
+        "reservation.user_id = admission.user_id",
+        "reservation.token_id = admission.token_id",
+        "reservation.pre_consumed_quota = admission.pre_consumed_quota",
+        "admission.operation_admission_sha256 = NEW.admission_sha256",
+        "admission.client_idempotency_hmac_sha256 = NEW.client_idempotency_hmac_sha256",
+        "admission.client_request_sha256 = NEW.client_request_sha256",
+        "admission.idempotency_alias_count = (",
+        "FROM relay_container_idempotency_aliases AS alias",
+        "NEW.status = 'prepared'",
+        "relay container atomic admission authority mismatch",
+    ):
+        if insert_guard_sql is None or fragment not in insert_guard_sql:
+            raise SystemExit(f"0050 operation insert authority guard missing: {fragment}")
+
+    alias_insert_guard_sql = sqlite_object_sql(
+        conn, "trigger", "relay_container_idempotency_alias_insert_guard"
+    )
+    for fragment in (
+        "BEFORE INSERT ON relay_container_idempotency_aliases",
+        "admission.reservation_key = NEW.reservation_key",
+        "admission.operation_id = NEW.operation_id",
+        "NEW.canonical_client_idempotency_hmac_sha256",
+        "admission.client_request_sha256 = NEW.client_request_sha256",
+        "admission.created_at = NEW.created_at",
+        "relay container idempotency alias authority mismatch",
+    ):
+        if alias_insert_guard_sql is None or fragment not in alias_insert_guard_sql:
+            raise SystemExit(f"0050 idempotency alias insert guard missing: {fragment}")
+
+    for trigger, error_fragment in (
+        (
+            "relay_container_atomic_admission_update_guard",
+            "relay container atomic admission is immutable",
+        ),
+        (
+            "relay_container_atomic_admission_delete_guard",
+            "relay container atomic admission cannot be deleted",
+        ),
+        (
+            "relay_container_idempotency_alias_update_guard",
+            "relay container idempotency alias is immutable",
+        ),
+        (
+            "relay_container_idempotency_alias_delete_guard",
+            "relay container idempotency alias cannot be deleted",
+        ),
+        (
+            "relay_container_canary_atomic_admission_update_guard",
+            "relay container canary operation lacks atomic admission",
+        ),
+        (
+            "relay_container_canary_operation_delete_guard",
+            "relay container canary operation cannot be deleted",
+        ),
+    ):
+        trigger_sql = sqlite_object_sql(conn, "trigger", trigger)
+        if trigger_sql is None or error_fragment not in trigger_sql:
+            raise SystemExit(f"0050 immutable authority guard is incomplete: {trigger}")
 
 
 def verify_relay_container_reconciliation_observer(
@@ -9092,8 +9329,8 @@ def verify_relay_container_provider_usage_binding_rollout(
     binding_index = schema_paths.index(binding_path)
     if binding_index == 0 or schema_paths[binding_index - 1] != receipt_path:
         raise SystemExit("0049 provider usage binding must immediately follow 0048")
-    if binding_index != len(schema_paths) - 1:
-        raise SystemExit("0049 provider usage binding must be the current D1 migration head")
+    if binding_index != len(schema_paths) - 2:
+        raise SystemExit("0049 provider usage binding must immediately precede D1 head")
 
     binding_sql = binding_path.read_text(encoding="utf-8")
     if "if not exists" in binding_sql.lower():
@@ -9421,6 +9658,905 @@ def verify_relay_container_provider_usage_binding_rollout(
         ),
         "0049 allowed historical converged evidence to be silently rewritten",
     )
+
+
+def verify_relay_container_atomic_admission_rollout(
+    schema_paths: list[Path],
+) -> None:
+    atomic_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0050_relay_container_atomic_admission.sql"
+        ),
+        None,
+    )
+    binding_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0049_relay_container_provider_usage_binding.sql"
+        ),
+        None,
+    )
+    if atomic_path is None or binding_path is None:
+        raise SystemExit("0049/0050 relay Container admission migrations not found")
+    if len(schema_paths) != 50:
+        raise SystemExit(
+            f"0050 atomic admission requires exactly 50 D1 migrations, got {len(schema_paths)}"
+        )
+    atomic_index = schema_paths.index(atomic_path)
+    if atomic_index != len(schema_paths) - 1:
+        raise SystemExit("0050 atomic admission must be the current D1 migration head")
+    if atomic_index == 0 or schema_paths[atomic_index - 1] != binding_path:
+        raise SystemExit("0050 atomic admission must immediately follow 0049")
+
+    atomic_sql = atomic_path.read_text(encoding="utf-8")
+    if "if not exists" in atomic_sql.lower():
+        raise SystemExit("0050 critical atomic admission objects must fail duplicate DDL")
+    required_fragments = (
+        "CREATE TABLE migration_0050_relay_container_canary_drain_guard",
+        "CHECK (active_count = 0)",
+        "operation_kind = 'chat_completions_canary'",
+        "CREATE TABLE relay_container_atomic_admissions",
+        "idempotency_alias_count INTEGER NOT NULL",
+        "idempotency_aliases_sha256 TEXT NOT NULL",
+        "FOREIGN KEY (reservation_key)",
+        "REFERENCES relay_billing_reservations(reservation_key)",
+        "FOREIGN KEY (operation_id)",
+        "REFERENCES relay_container_operations(operation_id)",
+        "CREATE INDEX idx_relay_container_atomic_admissions_created",
+        "CREATE TABLE relay_container_idempotency_aliases",
+        "CREATE INDEX idx_relay_container_idempotency_aliases_reservation",
+        "CREATE TRIGGER relay_container_idempotency_alias_insert_guard",
+        "CREATE TRIGGER relay_container_idempotency_alias_update_guard",
+        "CREATE TRIGGER relay_container_idempotency_alias_delete_guard",
+        "CREATE TRIGGER relay_container_atomic_admission_operation_insert_guard",
+        "CREATE TRIGGER relay_container_atomic_admission_update_guard",
+        "CREATE TRIGGER relay_container_atomic_admission_delete_guard",
+        "CREATE TRIGGER relay_container_canary_atomic_admission_update_guard",
+        "CREATE TRIGGER relay_container_canary_operation_delete_guard",
+    )
+    for fragment in required_fragments:
+        if fragment not in atomic_sql:
+            raise SystemExit(f"0050 atomic admission rollout missing: {fragment}")
+    upper_atomic_sql = atomic_sql.upper()
+    for forbidden in (
+        "INSERT INTO RELAY_CONTAINER_OPERATIONS",
+        "UPDATE RELAY_CONTAINER_OPERATIONS",
+        "DELETE FROM RELAY_CONTAINER_OPERATIONS",
+        "INSERT INTO RELAY_BILLING_RESERVATIONS",
+        "UPDATE RELAY_BILLING_RESERVATIONS",
+        "DELETE FROM RELAY_BILLING_RESERVATIONS",
+        "UPDATE USERS",
+        "UPDATE TOKENS",
+        "UPDATE CHANNELS",
+    ):
+        if forbidden in upper_atomic_sql:
+            raise SystemExit(
+                f"0050 atomic admission migration is not expand-only: {forbidden}"
+            )
+
+    def apply_before_atomic(conn: sqlite3.Connection) -> None:
+        for schema_path in schema_paths:
+            if schema_path == atomic_path:
+                break
+            conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    def digest(label: str) -> str:
+        return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+    def idempotency_aliases_digest(aliases: tuple[str, ...]) -> str:
+        hasher = hashlib.sha256()
+        values = (
+            "cinatoken:relay-container-idempotency-alias-set:v1",
+            *sorted(aliases),
+        )
+        for value in values:
+            encoded = value.encode("utf-8")
+            hasher.update(len(encoded).to_bytes(8, "big"))
+            hasher.update(encoded)
+        return hasher.hexdigest()
+
+    assert idempotency_aliases_digest(("a" * 64, "b" * 64)) == (
+        "2abe3436ba079ee481e8992885fa43931306e177fce6ce8eefd51a3f360c6393"
+    )
+
+    pre_0050_operation_sql = """
+        INSERT INTO relay_container_operations (
+          reservation_key, operation_id, owner_generation,
+          owner_lease_expires_at, channel_id, selected_group, operation_kind,
+          provider_operation_id, admission_sha256, protocol_version,
+          shard_contract_version, ring_generation, shard_count, shard_index,
+          instance_name, execution_deadline_at, input_mode, input_object_key,
+          input_object_version, input_sha256, input_size, input_content_type,
+          trace_id, client_idempotency_hmac_sha256, client_request_sha256,
+          reconciliation_id, status, created_at, updated_at
+        ) VALUES (
+          :operation_id, :operation_id, 2,
+          :owner_lease_expires_at, 500050, 'default', :operation_kind,
+          :provider_operation_id, :operation_admission_sha256, 1,
+          1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003',
+          :execution_deadline_at, 'r2', :input_object_key,
+          'pre-0050-input-v1', :input_sha256, 0, 'application/json',
+          :trace_id, :client_idempotency_hmac_sha256, :client_request_sha256,
+          :reconciliation_id, 'prepared', :created_at, :created_at
+        )
+    """
+
+    def pre_0050_operation_values(
+        label: str, operation_kind: str
+    ) -> dict[str, object]:
+        operation_id = f"0050-pre-{label}"
+        input_sha256 = digest(f"0050-pre-input:{label}")
+        created_at = 1_900_000_000
+        return {
+            "operation_id": operation_id,
+            "operation_kind": operation_kind,
+            "provider_operation_id": f"provider:{operation_id}",
+            "operation_admission_sha256": digest(f"0050-pre-admission:{label}"),
+            "owner_lease_expires_at": created_at + 600,
+            "execution_deadline_at": created_at + 300,
+            "input_object_key": (
+                f"container-inputs/v1/{operation_id}/2/{input_sha256}"
+            ),
+            "input_sha256": input_sha256,
+            "trace_id": f"trace:{operation_id}",
+            "client_idempotency_hmac_sha256": digest(
+                f"0050-pre-client:{label}"
+            ),
+            "client_request_sha256": digest(f"0050-pre-request:{label}"),
+            "reconciliation_id": digest(f"0050-pre-reconciliation:{label}"),
+            "created_at": created_at,
+        }
+
+    historical_conn = sqlite3.connect(":memory:")
+    apply_before_atomic(historical_conn)
+    historical = pre_0050_operation_values("historical", "relay_chat")
+    historical_conn.execute(pre_0050_operation_sql, historical)
+    historical_conn.commit()
+    historical_before = historical_conn.execute(
+        "SELECT * FROM relay_container_operations WHERE operation_id = ?",
+        (historical["operation_id"],),
+    ).fetchone()
+    historical_conn.executescript(atomic_sql)
+    historical_after = historical_conn.execute(
+        "SELECT * FROM relay_container_operations WHERE operation_id = ?",
+        (historical["operation_id"],),
+    ).fetchone()
+    if historical_after != historical_before:
+        raise SystemExit("0050 rollout mutated a historical non-canary operation")
+    if historical_conn.execute(
+        "SELECT COUNT(*) FROM relay_container_atomic_admissions"
+    ).fetchone() != (0,):
+        raise SystemExit("0050 rollout backfilled historical atomic admissions")
+    if historical_conn.execute(
+        "SELECT COUNT(*) FROM relay_container_idempotency_aliases"
+    ).fetchone() != (0,):
+        raise SystemExit("0050 rollout backfilled historical idempotency aliases")
+    historical_conn.close()
+
+    drain_conn = sqlite3.connect(":memory:")
+    apply_before_atomic(drain_conn)
+    draining = pre_0050_operation_values(
+        "drain", "chat_completions_canary"
+    )
+    drain_conn.execute(pre_0050_operation_sql, draining)
+    drain_conn.commit()
+    expect_integrity_error(
+        lambda: drain_conn.executescript(atomic_sql),
+        "0050 drain guard accepted a pre-existing protocol-v1 canary operation",
+        "CHECK constraint failed: active_count = 0",
+    )
+    if table_exists(drain_conn, "relay_container_atomic_admissions"):
+        raise SystemExit("0050 drain-guard failure partially installed admission table")
+    if table_exists(drain_conn, "relay_container_idempotency_aliases"):
+        raise SystemExit("0050 drain-guard failure partially installed alias table")
+    drain_conn.close()
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+    conn.execute("PRAGMA foreign_keys = ON")
+    if conn.execute("PRAGMA foreign_keys").fetchone() != (1,):
+        raise SystemExit("0050 atomic fixture could not enable foreign keys")
+
+    user_id = 500050
+    alternate_user_id = 500051
+    token_id = 500052
+    channel_id = 500053
+    ability_id = 500054
+    model_name = "gpt-0050-atomic"
+    initial_user_quota = 1000
+    initial_token_quota = 500
+    reserved_quota = 125
+    conn.execute(
+        "INSERT INTO users (id, username, password, status, quota, used_quota, "
+        "request_count, aff_code, created_at) VALUES (?, 'sqlite-0050-user', "
+        "'disabled', 1, ?, 0, 0, 'sqlite-0050-user', 1)",
+        (user_id, initial_user_quota),
+    )
+    conn.execute(
+        "INSERT INTO users (id, username, password, status, quota, used_quota, "
+        "request_count, aff_code, created_at) VALUES (?, 'sqlite-0050-alternate', "
+        "'disabled', 1, ?, 0, 0, 'sqlite-0050-alternate', 1)",
+        (alternate_user_id, initial_user_quota),
+    )
+    conn.execute(
+        """
+        INSERT INTO tokens (
+          id, user_id, "key", status, name, created_time, accessed_time,
+          expired_time, remain_quota, unlimited_quota, used_quota, "group"
+        ) VALUES (?, ?, ?, 1, 'sqlite 0050 token', 1, 0, -1, ?, 0, 0, 'default')
+        """,
+        (token_id, user_id, digest("0050-token-key"), initial_token_quota),
+    )
+    conn.execute(
+        """
+        INSERT INTO channels (
+          id, type, "key", name, status, "group", models, used_quota
+        ) VALUES (?, 1, ?, 'sqlite 0050 channel', 1, 'default', ?, 0)
+        """,
+        (channel_id, digest("0050-channel-key"), model_name),
+    )
+    conn.execute(
+        "INSERT INTO abilities (id, group_name, model, channel_id, enabled, "
+        "priority, weight) VALUES (?, 'default', ?, ?, 1, 0, 0)",
+        (ability_id, model_name, channel_id),
+    )
+    conn.commit()
+
+    def atomic_intent(label: str, **overrides: object) -> dict[str, object]:
+        operation_id = f"relaycontainer-0050-{label}"
+        created_at = 2_000_000_000
+        input_sha256 = digest(f"0050-input:{label}")
+        canonical_alias = digest(f"0050-client:{label}")
+        billing_snapshot_json = json.dumps(
+            {
+                "billing_mode": "flat",
+                "model_name": model_name,
+                "model_price": reserved_quota,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        values: dict[str, object] = {
+            "reservation_key": operation_id,
+            "operation_id": operation_id,
+            "contract_version": 1,
+            "atomic_admission_sha256": digest(f"0050-atomic:{label}"),
+            "operation_admission_sha256": digest(f"0050-admission:{label}"),
+            "client_idempotency_hmac_sha256": canonical_alias,
+            "client_request_sha256": digest(f"0050-request:{label}"),
+            "client_idempotency_hmac_aliases": (canonical_alias,),
+            "billing_snapshot_sha256": hashlib.sha256(
+                billing_snapshot_json.encode("utf-8")
+            ).hexdigest(),
+            "user_id": user_id,
+            "token_id": token_id,
+            "model_name": model_name,
+            "pre_consumed_quota": reserved_quota,
+            "owner_generation": 2,
+            "owner_lease_expires_at": created_at + 600,
+            "channel_id": channel_id,
+            "selected_channel_type": 1,
+            "selected_group": "default",
+            "selected_snapshot_key": "1",
+            "owner_deadline_at": created_at + 600,
+            "selected_at": created_at,
+            "created_at": created_at,
+            "execution_deadline_at": created_at + 300,
+            "billing_snapshot_json": billing_snapshot_json,
+            "provider_operation_id": f"provider:{operation_id}",
+            "input_sha256": input_sha256,
+            "input_object_key": (
+                f"container-inputs/v1/{operation_id}/2/{input_sha256}"
+            ),
+            "input_object_version": "sqlite-0050-input-v1",
+            "trace_id": f"trace:{operation_id}",
+            "reconciliation_id": digest(f"0050-reconciliation:{label}"),
+        }
+        values.update(overrides)
+        aliases = tuple(values["client_idempotency_hmac_aliases"])
+        values["client_idempotency_hmac_aliases"] = aliases
+        values["idempotency_alias_count"] = len(aliases)
+        values["idempotency_aliases_sha256"] = idempotency_aliases_digest(aliases)
+        return values
+
+    atomic_admission_sql = """
+        INSERT INTO relay_container_atomic_admissions (
+          reservation_key, operation_id, contract_version,
+          atomic_admission_sha256, operation_admission_sha256,
+          client_idempotency_hmac_sha256, client_request_sha256,
+          idempotency_alias_count, idempotency_aliases_sha256,
+          billing_snapshot_sha256, user_id, token_id, pre_consumed_quota,
+          owner_generation, owner_lease_expires_at, channel_id,
+          selected_channel_type, selected_group, selected_snapshot_key,
+          owner_deadline_at, selected_at, created_at,
+          attempt_count, provider_attempt_generation
+        ) VALUES (
+          :reservation_key, :operation_id, :contract_version,
+          :atomic_admission_sha256, :marker_operation_admission_sha256,
+          :client_idempotency_hmac_sha256, :client_request_sha256,
+          :idempotency_alias_count, :idempotency_aliases_sha256,
+          :billing_snapshot_sha256, :user_id, :token_id, :pre_consumed_quota,
+          :owner_generation, :owner_lease_expires_at, :channel_id,
+          :selected_channel_type, :selected_group, :selected_snapshot_key,
+          :owner_deadline_at, :selected_at, :created_at, 1, 1
+        )
+    """
+    idempotency_alias_sql = """
+        INSERT INTO relay_container_idempotency_aliases (
+          client_idempotency_hmac_sha256, reservation_key, operation_id,
+          canonical_client_idempotency_hmac_sha256, client_request_sha256,
+          created_at
+        ) VALUES (
+          :alias, :reservation_key, :operation_id,
+          :client_idempotency_hmac_sha256, :client_request_sha256, :created_at
+        )
+        ON CONFLICT DO NOTHING
+    """
+    selected_reservation_sql = """
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, token_id, model_name, endpoint_path,
+          request_id_hash, expr_hash, billing_kind, billing_snapshot_json,
+          candidate_group_count, reservation_strategy, pre_consumed_quota,
+          status, channel_id, selected_group, selected_at, owner_generation,
+          owner_deadline_at, created_at, updated_at, lease_expires_at
+        ) VALUES (
+          :reservation_key, :user_id, :token_id, :model_name,
+          'chat/completions', :client_request_sha256,
+          'sha256:' || :operation_admission_sha256, 'flat',
+          :billing_snapshot_json, 1, 'selected_group', :pre_consumed_quota,
+          'reserved', :channel_id, :selected_group, :selected_at,
+          :owner_generation, :owner_deadline_at, :created_at, :created_at,
+          :owner_lease_expires_at
+        )
+    """
+    user_debit_sql = """
+        UPDATE users
+        SET quota = quota - :pre_consumed_quota
+        WHERE id = :user_id
+          AND status = 1
+          AND deleted_at IS NULL
+          AND quota >= :pre_consumed_quota
+    """
+    token_debit_sql = """
+        UPDATE tokens
+        SET remain_quota = remain_quota - :pre_consumed_quota,
+            used_quota = used_quota + :pre_consumed_quota,
+            accessed_time = :created_at
+        WHERE id = :token_id
+          AND user_id = :user_id
+          AND status = 1
+          AND deleted_at IS NULL
+          AND (expired_time = -1 OR expired_time >= :created_at)
+          AND (unlimited_quota != 0 OR remain_quota >= :pre_consumed_quota)
+    """
+    channel_authority_sql = """
+        UPDATE channels AS channel
+        SET status = status
+        WHERE id = :channel_id
+          AND status = 1
+          AND type = :selected_channel_type
+          AND instr(',' || replace(channel."group", ' ', '') || ',',
+                    ',' || replace(:selected_group, ' ', '') || ',') > 0
+          AND EXISTS (
+            SELECT 1 FROM abilities AS ability
+            WHERE ability.channel_id = channel.id
+              AND ability.group_name = :selected_group
+              AND ability.model = :model_name
+              AND ability.enabled = 1
+          )
+    """
+    prepared_operation_sql = """
+        INSERT INTO relay_container_operations (
+          reservation_key, operation_id, owner_generation,
+          owner_lease_expires_at, channel_id, selected_group, operation_kind,
+          provider_operation_id, admission_sha256, protocol_version,
+          shard_contract_version, ring_generation, shard_count, shard_index,
+          instance_name, execution_deadline_at, input_mode, input_object_key,
+          input_object_version, input_sha256, input_size, input_content_type,
+          trace_id, client_idempotency_hmac_sha256, client_request_sha256,
+          reconciliation_id, status, created_at, updated_at
+        ) VALUES (
+          :reservation_key, :operation_id, :owner_generation,
+          :owner_lease_expires_at, :channel_id, :selected_group,
+          'chat_completions_canary', :provider_operation_id,
+          :operation_admission_sha256, 1, 1, 1, 8, 3,
+          'cinatoken-relay-shard-v1-0003', :execution_deadline_at, 'r2',
+          :input_object_key, :input_object_version, :input_sha256, 0,
+          'application/json', :trace_id, :client_idempotency_hmac_sha256,
+          :client_request_sha256, :reconciliation_id, 'prepared',
+          :created_at, :created_at
+        )
+    """
+    previous_change_assertion_sql = """
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, model_name, pre_consumed_quota,
+          lease_expires_at, created_at, updated_at
+        )
+        SELECT :reservation_key, 0, '', 0, 0, 0, 0
+        WHERE changes() != 1
+    """
+
+    def assert_previous_change(values: dict[str, object]) -> None:
+        conn.execute(previous_change_assertion_sql, values)
+
+    def run_atomic_batch(
+        values: dict[str, object],
+        marker_operation_admission_sha256: object | None = None,
+    ) -> None:
+        marker_values = dict(values)
+        marker_values["marker_operation_admission_sha256"] = (
+            values["operation_admission_sha256"]
+            if marker_operation_admission_sha256 is None
+            else marker_operation_admission_sha256
+        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("PRAGMA defer_foreign_keys = ON")
+            conn.execute(atomic_admission_sql, marker_values)
+            assert_previous_change(values)
+            for alias in values["client_idempotency_hmac_aliases"]:
+                alias_values = dict(values)
+                alias_values["alias"] = alias
+                conn.execute(idempotency_alias_sql, alias_values)
+                assert_previous_change(values)
+            conn.execute(selected_reservation_sql, values)
+            assert_previous_change(values)
+            conn.execute(user_debit_sql, values)
+            assert_previous_change(values)
+            conn.execute(token_debit_sql, values)
+            assert_previous_change(values)
+            conn.execute(channel_authority_sql, values)
+            assert_previous_change(values)
+            conn.execute(prepared_operation_sql, values)
+            assert_previous_change(values)
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
+
+    def atomic_state(values: dict[str, object]) -> tuple[object, ...]:
+        return (
+            conn.execute(
+                "SELECT quota, used_quota, request_count, status, deleted_at "
+                "FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone(),
+            conn.execute(
+                "SELECT user_id, remain_quota, used_quota, accessed_time, "
+                "status, deleted_at, expired_time FROM tokens WHERE id = ?",
+                (token_id,),
+            ).fetchone(),
+            conn.execute(
+                "SELECT type, status, \"group\", used_quota FROM channels "
+                "WHERE id = ?",
+                (channel_id,),
+            ).fetchone(),
+            conn.execute(
+                "SELECT enabled, group_name, model FROM abilities WHERE id = ?",
+                (ability_id,),
+            ).fetchone(),
+            conn.execute(
+                "SELECT "
+                "(SELECT COUNT(*) FROM relay_billing_reservations "
+                " WHERE reservation_key = ?), "
+                "(SELECT COUNT(*) FROM relay_container_operations "
+                " WHERE operation_id = ?), "
+                "(SELECT COUNT(*) FROM relay_container_atomic_admissions "
+                " WHERE reservation_key = ?), "
+                "(SELECT COUNT(*) FROM relay_container_idempotency_aliases "
+                " WHERE reservation_key = ?)",
+                (
+                    values["reservation_key"],
+                    values["operation_id"],
+                    values["reservation_key"],
+                    values["reservation_key"],
+                ),
+            ).fetchone(),
+        )
+
+    def assert_atomic_failure(
+        values: dict[str, object],
+        context: str,
+        marker_operation_admission_sha256: object | None = None,
+        expected_error: str = "",
+    ) -> None:
+        before = atomic_state(values)
+        expect_integrity_error(
+            lambda: run_atomic_batch(
+                values, marker_operation_admission_sha256
+            ),
+            f"0050 {context} unexpectedly committed",
+            expected_error,
+        )
+        after = atomic_state(values)
+        if after != before:
+            raise SystemExit(
+                f"0050 {context} left partial receipt, reservation, operation, or quota state"
+            )
+
+    success_previous_alias = digest("0050-client-previous:success")
+    success = atomic_intent(
+        "success",
+        client_idempotency_hmac_aliases=(
+            digest("0050-client:success"),
+            success_previous_alias,
+        ),
+    )
+    run_atomic_batch(success)
+    expected_success_state = (
+        (initial_user_quota - reserved_quota, 0, 0, 1, None),
+        (
+            user_id,
+            initial_token_quota - reserved_quota,
+            reserved_quota,
+            success["created_at"],
+            1,
+            None,
+            -1,
+        ),
+        (1, 1, "default", 0),
+        (1, "default", model_name),
+        (1, 1, 1, 2),
+    )
+    if atomic_state(success) != expected_success_state:
+        raise SystemExit(
+            f"0050 exact atomic admission state mismatch: {atomic_state(success)}"
+        )
+
+    admission_columns = (
+        "reservation_key, operation_id, contract_version, "
+        "atomic_admission_sha256, operation_admission_sha256, "
+        "client_idempotency_hmac_sha256, client_request_sha256, "
+        "idempotency_alias_count, idempotency_aliases_sha256, "
+        "billing_snapshot_sha256, user_id, token_id, pre_consumed_quota, "
+        "owner_generation, owner_lease_expires_at, channel_id, "
+        "selected_channel_type, selected_group, selected_snapshot_key, "
+        "owner_deadline_at, selected_at, created_at, attempt_count, "
+        "provider_attempt_generation"
+    )
+    expected_admission = (
+        success["reservation_key"],
+        success["operation_id"],
+        success["contract_version"],
+        success["atomic_admission_sha256"],
+        success["operation_admission_sha256"],
+        success["client_idempotency_hmac_sha256"],
+        success["client_request_sha256"],
+        success["idempotency_alias_count"],
+        success["idempotency_aliases_sha256"],
+        success["billing_snapshot_sha256"],
+        success["user_id"],
+        success["token_id"],
+        success["pre_consumed_quota"],
+        success["owner_generation"],
+        success["owner_lease_expires_at"],
+        success["channel_id"],
+        success["selected_channel_type"],
+        success["selected_group"],
+        success["selected_snapshot_key"],
+        success["owner_deadline_at"],
+        success["selected_at"],
+        success["created_at"],
+        1,
+        1,
+    )
+    stored_admission = conn.execute(
+        f"SELECT {admission_columns} FROM relay_container_atomic_admissions "
+        "WHERE reservation_key = ?",
+        (success["reservation_key"],),
+    ).fetchone()
+    if stored_admission != expected_admission:
+        raise SystemExit("0050 committed receipt does not exactly match admission intent")
+
+    alias_columns = (
+        "client_idempotency_hmac_sha256, reservation_key, operation_id, "
+        "canonical_client_idempotency_hmac_sha256, client_request_sha256, "
+        "created_at"
+    )
+    stored_aliases = conn.execute(
+        f"SELECT {alias_columns} FROM relay_container_idempotency_aliases "
+        "WHERE reservation_key = ? ORDER BY client_idempotency_hmac_sha256",
+        (success["reservation_key"],),
+    ).fetchall()
+    expected_aliases = [
+        (
+            alias,
+            success["reservation_key"],
+            success["operation_id"],
+            success["client_idempotency_hmac_sha256"],
+            success["client_request_sha256"],
+            success["created_at"],
+        )
+        for alias in sorted(success["client_idempotency_hmac_aliases"])
+    ]
+    if stored_aliases != expected_aliases:
+        raise SystemExit("0050 committed idempotency aliases are not exact")
+
+    state_before_replay = atomic_state(success)
+    assert_atomic_failure(success, "exact replay")
+    if atomic_state(success) != state_before_replay:
+        raise SystemExit("0050 exact replay debited quota or rewrote admission state")
+    if conn.execute(
+        f"SELECT {admission_columns} FROM relay_container_atomic_admissions "
+        "WHERE reservation_key = ?",
+        (success["reservation_key"],),
+    ).fetchone() != stored_admission:
+        raise SystemExit("0050 exact replay did not preserve immutable receipt")
+    alias_winner = conn.execute(
+        "SELECT admission.reservation_key, admission.operation_id, "
+        "operation.status, alias.canonical_client_idempotency_hmac_sha256 "
+        "FROM relay_container_idempotency_aliases AS alias "
+        "JOIN relay_container_atomic_admissions AS admission "
+        "ON admission.reservation_key = alias.reservation_key "
+        "AND admission.operation_id = alias.operation_id "
+        "AND admission.client_idempotency_hmac_sha256 = "
+        "alias.canonical_client_idempotency_hmac_sha256 "
+        "AND admission.client_request_sha256 = alias.client_request_sha256 "
+        "AND admission.created_at = alias.created_at "
+        "JOIN relay_container_operations AS operation "
+        "ON operation.reservation_key = alias.reservation_key "
+        "AND operation.operation_id = alias.operation_id "
+        "AND operation.client_idempotency_hmac_sha256 = "
+        "alias.canonical_client_idempotency_hmac_sha256 "
+        "AND operation.client_request_sha256 = alias.client_request_sha256 "
+        "AND operation.created_at = alias.created_at "
+        "WHERE alias.client_idempotency_hmac_sha256 = ? "
+        "AND alias.client_request_sha256 = ?",
+        (success_previous_alias, success["client_request_sha256"]),
+    ).fetchone()
+    if alias_winner != (
+        success["reservation_key"],
+        success["operation_id"],
+        "prepared",
+        success["client_idempotency_hmac_sha256"],
+    ):
+        raise SystemExit("0050 exact replay did not resolve through its alias")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_atomic_admissions SET created_at = created_at "
+            "WHERE reservation_key = ?",
+            (success["reservation_key"],),
+        ),
+        "0050 allowed a no-op rewrite of an immutable admission",
+        "relay container atomic admission is immutable",
+    )
+    conn.rollback()
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_atomic_admissions WHERE reservation_key = ?",
+            (success["reservation_key"],),
+        ),
+        "0050 allowed deletion of an immutable admission",
+        "relay container atomic admission cannot be deleted",
+    )
+    conn.rollback()
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "UPDATE relay_container_idempotency_aliases "
+            "SET created_at = created_at WHERE client_idempotency_hmac_sha256 = ?",
+            (success_previous_alias,),
+        ),
+        "0050 allowed a no-op rewrite of an idempotency alias",
+        "relay container idempotency alias is immutable",
+    )
+    conn.rollback()
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_idempotency_aliases "
+            "WHERE client_idempotency_hmac_sha256 = ?",
+            (success_previous_alias,),
+        ),
+        "0050 allowed deletion of an idempotency alias",
+        "relay container idempotency alias cannot be deleted",
+    )
+    conn.rollback()
+
+    forged_alias = dict(success)
+    forged_alias["alias"] = digest("0050-forged-alias")
+    forged_alias["client_request_sha256"] = digest("0050-forged-alias-request")
+    expect_integrity_error(
+        lambda: conn.execute(idempotency_alias_sql, forged_alias),
+        "0050 accepted an alias outside the receipt authority",
+        "relay container idempotency alias authority mismatch",
+    )
+    conn.rollback()
+
+    conflicting_same_key = dict(success)
+    conflicting_same_key["atomic_admission_sha256"] = digest(
+        "0050-conflicting-same-key"
+    )
+    assert_atomic_failure(conflicting_same_key, "conflicting same-key identity")
+    conflicting_hmac = atomic_intent(
+        "conflicting-hmac",
+        client_idempotency_hmac_sha256=success[
+            "client_idempotency_hmac_sha256"
+        ],
+    )
+    assert_atomic_failure(conflicting_hmac, "conflicting idempotency identity")
+    alias_conflict_canonical = digest("0050-client:alias-conflict")
+    alias_conflict = atomic_intent(
+        "alias-conflict",
+        client_idempotency_hmac_aliases=(
+            alias_conflict_canonical,
+            success_previous_alias,
+        ),
+    )
+    assert_atomic_failure(
+        alias_conflict,
+        "alias claimed by a different request",
+    )
+    conflicting_alias_request = conn.execute(
+        "SELECT client_request_sha256 FROM relay_container_idempotency_aliases "
+        "WHERE client_idempotency_hmac_sha256 = ?",
+        (success_previous_alias,),
+    ).fetchone()
+    if conflicting_alias_request != (success["client_request_sha256"],):
+        raise SystemExit("0050 alias conflict did not preserve the persisted winner")
+    if conn.execute(
+        f"SELECT {admission_columns} FROM relay_container_atomic_admissions "
+        "WHERE reservation_key = ?",
+        (success["reservation_key"],),
+    ).fetchone() != stored_admission:
+        raise SystemExit("0050 conflicting identity rewrote the committed receipt")
+
+    marker_mismatch = atomic_intent("marker-mismatch")
+    assert_atomic_failure(
+        marker_mismatch,
+        "one-alias marker mismatch",
+        marker_operation_admission_sha256=digest("0050-wrong-marker"),
+        expected_error="relay container atomic admission authority mismatch",
+    )
+    dual_marker_canonical = digest("0050-client:dual-marker-mismatch")
+    dual_marker_mismatch = atomic_intent(
+        "dual-marker-mismatch",
+        client_idempotency_hmac_aliases=(
+            dual_marker_canonical,
+            digest("0050-client-previous:dual-marker-mismatch"),
+        ),
+    )
+    assert_atomic_failure(
+        dual_marker_mismatch,
+        "two-alias marker mismatch",
+        marker_operation_admission_sha256=digest("0050-wrong-dual-marker"),
+        expected_error="relay container atomic admission authority mismatch",
+    )
+
+    def run_old_writer(values: dict[str, object]) -> None:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(selected_reservation_sql, values)
+            conn.execute(prepared_operation_sql, values)
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
+
+    old_writer = atomic_intent("old-writer")
+    old_writer_before = atomic_state(old_writer)
+    expect_integrity_error(
+        lambda: run_old_writer(old_writer),
+        "0050 accepted an old unmarked canary operation writer",
+        "relay container atomic admission authority mismatch",
+    )
+    if atomic_state(old_writer) != old_writer_before:
+        raise SystemExit("0050 rejected old writer left a partial reservation")
+
+    authority_scenarios = (
+        (
+            "user quota",
+            "UPDATE users SET quota = ? WHERE id = ?",
+            (reserved_quota - 1, user_id),
+            "UPDATE users SET quota = ? WHERE id = ?",
+            (initial_user_quota - reserved_quota, user_id),
+        ),
+        (
+            "user status",
+            "UPDATE users SET status = 2 WHERE id = ?",
+            (user_id,),
+            "UPDATE users SET status = 1 WHERE id = ?",
+            (user_id,),
+        ),
+        (
+            "user deletion",
+            "UPDATE users SET deleted_at = 1 WHERE id = ?",
+            (user_id,),
+            "UPDATE users SET deleted_at = NULL WHERE id = ?",
+            (user_id,),
+        ),
+        (
+            "token quota",
+            "UPDATE tokens SET remain_quota = ? WHERE id = ?",
+            (reserved_quota - 1, token_id),
+            "UPDATE tokens SET remain_quota = ? WHERE id = ?",
+            (initial_token_quota - reserved_quota, token_id),
+        ),
+        (
+            "token status",
+            "UPDATE tokens SET status = 2 WHERE id = ?",
+            (token_id,),
+            "UPDATE tokens SET status = 1 WHERE id = ?",
+            (token_id,),
+        ),
+        (
+            "token deletion",
+            "UPDATE tokens SET deleted_at = 1 WHERE id = ?",
+            (token_id,),
+            "UPDATE tokens SET deleted_at = NULL WHERE id = ?",
+            (token_id,),
+        ),
+        (
+            "token expiry",
+            "UPDATE tokens SET expired_time = ? WHERE id = ?",
+            (int(success["created_at"]) - 1, token_id),
+            "UPDATE tokens SET expired_time = -1 WHERE id = ?",
+            (token_id,),
+        ),
+        (
+            "token ownership",
+            "UPDATE tokens SET user_id = ? WHERE id = ?",
+            (alternate_user_id, token_id),
+            "UPDATE tokens SET user_id = ? WHERE id = ?",
+            (user_id, token_id),
+        ),
+        (
+            "channel status",
+            "UPDATE channels SET status = 2 WHERE id = ?",
+            (channel_id,),
+            "UPDATE channels SET status = 1 WHERE id = ?",
+            (channel_id,),
+        ),
+        (
+            "channel type",
+            "UPDATE channels SET type = 2 WHERE id = ?",
+            (channel_id,),
+            "UPDATE channels SET type = 1 WHERE id = ?",
+            (channel_id,),
+        ),
+        (
+            "channel group",
+            "UPDATE channels SET \"group\" = 'other' WHERE id = ?",
+            (channel_id,),
+            "UPDATE channels SET \"group\" = 'default' WHERE id = ?",
+            (channel_id,),
+        ),
+        (
+            "channel ability",
+            "UPDATE abilities SET enabled = 0 WHERE id = ?",
+            (ability_id,),
+            "UPDATE abilities SET enabled = 1 WHERE id = ?",
+            (ability_id,),
+        ),
+    )
+    for index, (
+        context,
+        mutation_sql,
+        mutation_params,
+        restore_sql,
+        restore_params,
+    ) in enumerate(authority_scenarios):
+        conn.execute(mutation_sql, mutation_params)
+        conn.commit()
+        authority_intent = atomic_intent(f"authority-{index}")
+        assert_atomic_failure(authority_intent, f"{context} authority failure")
+        conn.execute(restore_sql, restore_params)
+        conn.commit()
+
+    final_counts = conn.execute(
+        "SELECT "
+        "(SELECT COUNT(*) FROM relay_container_atomic_admissions), "
+        "(SELECT COUNT(*) FROM relay_container_idempotency_aliases), "
+        "(SELECT COUNT(*) FROM relay_billing_reservations), "
+        "(SELECT COUNT(*) FROM relay_container_operations)"
+    ).fetchone()
+    if final_counts != (1, 2, 1, 1):
+        raise SystemExit(f"0050 failed batches leaked durable rows: {final_counts}")
+    conn.close()
 
 
 def verify_task_submit_reconciliation_rollout(schema_paths: list[Path]) -> None:

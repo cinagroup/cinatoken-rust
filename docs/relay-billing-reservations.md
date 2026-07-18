@@ -19,6 +19,13 @@ messages retain only a SHA-256 fingerprint and error classification, never the
 raw poison payload. The D1 replay generation and lease survive Worker restart
 or Durable Object hibernation without introducing a global billing DO.
 
+Migration `0050_relay_container_atomic_admission.sql` adds a separate contract
+for the bounded Container chat canary. It does not replace ordinary HTTP relay
+reservation behavior. For that canary only, reservation creation, user/token
+debit, selected channel authority, immutable admission receipt, and prepared
+operation are one D1 transaction with owner generation 2. The production canary
+gate remains false.
+
 ## Invariants
 
 1. The reservation row and user/token debit commit in one D1 batch.
@@ -246,3 +253,196 @@ Production readiness still requires authenticated staging migration, real
 Worker scheduled events, a stream that crosses the original lease, disconnect
 and D1 fault injection, recovery-race accounting and audit reconciliation,
 alerts, retention policy, and rollback proof.
+
+## Container Canary Atomic Admission (0050)
+
+The Container chat canary no longer uses the ordinary sequence of reserve,
+later selected-attempt bind, and separate operation insert. Its local 0050 path
+constructs one complete selected reservation and commits it with the operation
+and immutable admission receipt in one `D1Database.batch()`.
+
+### Stable reservation and frozen settlement identity
+
+The ordinary HTTP reservation key remains contract-scoped. The Container
+canary overrides only its key with
+`relaycontainer-v1-{client_idempotency_hmac_sha256}`. The HMAC covers only user
+ID, token ID, and the validated `Idempotency-Key`. Model, selected
+group/channel, transformed provider input, and pricing are deliberately absent.
+The separate request-conflict digest covers model plus the original request
+body only and remains unchanged after provider-body conversion.
+
+Pricing is not ignored. The atomic admission digest binds the exact expression
+or flat contract hash, canonical billing snapshot JSON, reserved quota, model,
+endpoint, client hashes, selected group/channel/type/snapshot key, transformed
+input, shard, and provider-operation identity of the persisted winner. These
+facts define admission/settlement authority, not client identity. The receipt
+also binds `idempotency_alias_count` and the order-independent
+`idempotency_aliases_sha256` digest of the sorted, length-framed
+current/previous HMAC alias set.
+
+After request parse, model/auth resolution, and relay rate limiting, the relay
+derives current/previous tenant HMAC candidates plus the model/original-body
+digest and queries immutable `relay_container_idempotency_aliases` as the 0050
+authority. Retry/model fallback, current channel-pool discovery, affinity,
+provider conversion, ordinary billing reservation/debit, and send occur only
+after a miss when a successful 0050 history probe proves durable history is
+empty and replay-only mode is inactive. Any miss with existing history returns
+503 because a dropped old secret could otherwise hide the persisted billing
+owner. A match resumes the persisted
+winner even if its channel is disabled or removed. A different model/original
+body is request conflict. Schema/query failure or divergent persisted linkage
+fails closed; immutable divergence is a server-side 503 integrity failure, not
+a client 409. None falls back to a new reservation.
+
+The receipt stores `billing_snapshot_sha256` and the selected channel type plus
+`selected_snapshot_key`. For flat pricing, the key must equal the channel type
+rendered as decimal text. Container provider-usage settlement first reads the
+exact receipt by reservation and verifies its operation linkage, then resolves
+the frozen billing JSON by selected group and this snapshot key. It does not
+look up the flat snapshot with `channel_id` and it never evaluates mutable
+current pricing during replay or recovery.
+
+Settlement quote and final financial commit each reread the admission receipt,
+billing reservation, and Container operation. Both paths recompute
+`billing_snapshot_sha256`, reconstruct the full atomic admission record, and
+recompute `atomic_admission_sha256`; any three-record mismatch rejects before a
+financial mutation.
+
+### All-or-nothing batch
+
+The D1 statement order is authoritative:
+
+1. enable deferred foreign keys;
+2. insert the immutable admission receipt first;
+3. claim every current/previous HMAC alias in the receipt's one- or two-member
+   set under a global alias primary key;
+4. insert the selected `reserved` billing row with generation 2;
+5. debit active, non-deleted user quota;
+6. debit the exact active, non-deleted, unexpired owning token;
+7. recheck selected channel status, type, group, and model authority; and
+8. insert the matching generation-2 `prepared` Container operation.
+
+A guarded assertion follows every required mutation and must observe one
+changed row. The receipt's foreign keys are checked at transaction completion,
+after the reservation and operation exist. Any quota shortage, authority drift,
+trigger rejection, identity/alias collision, or row-count mismatch rolls back
+every alias, the receipt, reservation, both quota mutations, and operation
+together. Post-error readback queries all supplied aliases and returns the
+persisted winner or an immutable/request conflict; it never retries as a fresh
+billing owner.
+
+The receipt also fixes owner lease/deadline, selected/created time, admission
+attempt count 1, and provider attempt generation 1. The stable atomic digest is
+independent of contender timing, lease/deadline, trace, R2 version, and the
+winner-specific operation admission digest, allowing equivalent concurrent
+contenders to classify the same winner by exact readback.
+
+### Replay and settlement safety
+
+- `Applied` means the batch committed and exact readback returned the prepared
+  owner.
+- `MatchingResumable` means the same immutable owner is still prepared,
+  dispatched, or validly recovery-required. It never debits again.
+- `TerminalReplay` requires the exact immutable financial terminal receipt for
+  the completed/failed operation.
+- `RequestConflict` means the client idempotency identity was reused for a
+  different model or original request body.
+- `ImmutableIdentityConflict` covers any missing, one-sided, or divergent
+  receipt/reservation/operation/financial linkage and returns a server-side 503.
+
+Replay dispatch, settlement, and terminal audit use the channel ID and selected
+group stored on the winner operation. A retry-time selector result is never
+allowed to replace or relabel that authority.
+
+The 0050 drain guard refuses to apply over an existing protocol-v1
+`chat_completions_canary` operation. After apply, the operation insert trigger
+requires the receipt, canonical alias, and selected reservation, so an old
+writer cannot leave an unmarked prepared canary operation. Alias and receipt
+update/delete plus canary operation delete are rejected, and operation updates
+require the immutable receipt link.
+
+### Default-off replay-only billing boundary
+
+The local rollback foundation is separate from new admission.
+`CONTAINER_CHAT_CANARY_REPLAY_ONLY_ENABLED` and
+`CONTAINER_CHAT_CANARY_PREPARED_RESUME_ENABLED` default false and require exact
+`true`. The replay-only cohort remains bounded by route, token, and model. New
+admission remains impossible while
+`container_chat_canary_admission_compiled()` is false.
+
+New admission is canonical-current-write: the current secret names the
+reservation and operation, while the same D1 batch claims both the current and
+distinct previous HMACs as immutable aliases. Replay derives current then
+previous candidates and follows either alias to that canonical winner. A
+rolling version with a different current key cannot create a second billing
+owner because the global alias claim conflicts and rolls back its whole batch.
+Previous-key retention and a proved drain remain part of the billing evidence
+contract, because losing that key can hide an existing reservation identity.
+
+Replay cannot treat authority failure as absence. Every eligible idempotent
+request probes 0050 history even when a current or previous secret is present.
+Missing/incomplete schema, failed history/alias queries, immutable linkage
+conflicts, and any alias miss with existing history return 503. Ordinary
+billing after a miss may be reached only when the history probe succeeds,
+reports no durable 0050 history, and replay-only mode is inactive. This strict
+boundary remains until bounded secret-generation/key-ID coverage and retention
+are implemented and remotely proved.
+
+Replay lookup runs after request parse, model/auth, and relay rate limiting but
+before retry/model fallback, current channel discovery/selection, affinity,
+provider transformation, ordinary pre-reserve/debit, and upstream send. In an
+active replay-only cohort, a miss returns HTTP 503 with `Retry-After: 5`; it
+cannot enter ordinary reserve or provider execution. Completed/failed owners
+use read-only terminal replay only when exact-response replay and `FILE_BUCKET`
+are available; otherwise they return HTTP 202 pending. `dispatched` and
+`recovery_required` require Controller/replay readiness. Before `prepared`
+advances in D1 it additionally requires operation replay readiness, scheduler
+enablement, a valid ring and routing secret, the explicit prepared-resume gate,
+and verified Controller binding, authority, controller enablement, and
+execution enablement. Closed gates preserve the existing billing owner in
+`prepared` and return HTTP 202 pending evidence.
+
+### Evidence and production gate
+
+The current local test tree covers the migration/batch path, concurrent winner
+readback without a second debit, quota/authority/marker rollback, old-writer
+rejection, alias schema/digest/immutability checks, three-record settlement,
+frozen snapshot lookup, current/previous identity derivation, and replay state
+decisions. The completed local validation reports Workerd 14/14, Worker Rust
+820/820, and SQLite 50 migrations / 48 tables / 540 incremental columns / 72
+key indexes; the repository-wide `bun run check`, including the root Worker
+Wrangler dry-run, also passes.
+
+Endpoint-level replay-only miss isolation, schema/query 503s,
+missing/stale-secret history, unknown-history probing, history-backed alias
+miss, real-D1 alias collision during key rotation, and replay state gates across
+D1/R2/DO/Controller still lack dedicated local and remote proof.
+
+The R2 input write happens before this batch and is not financial authority.
+Local capability integration now exposes boolean-only
+`container_chat_canary_replay_history_probe_known` and
+`container_chat_canary_replay_history_present`, R2 binding availability, and
+`container_chat_canary_terminal_replay_runtime_ready`,
+`container_chat_canary_dispatched_recovery_runtime_ready`, and
+`container_chat_canary_prepared_resume_runtime_ready`; aggregate replay
+readiness is their conjunction. `container_chat_canary_replay_only_active`
+means only the actual replay-only flag plus a configured cohort predicate and
+cannot replace readiness. An unknown history probe forces every replay-readiness
+field false. A false history boolean is usable only with schema-ready and
+`container_chat_canary_replay_history_probe_known=true`, and no identity is
+exposed.
+
+Remote 0050 apply/readback, endpoint-level Worker faults, a real two-version
+current/previous rotation, remote D1/Controller/R2 evidence, old-writer drain,
+R2 orphan policy, real Container/provider faults, scheduled terminalization,
+invoice/accounting reconciliation, alerts, rollback, and approval remain
+pending. No deployment is claimed. Go/VPS remains authoritative; production
+and the Container canary remain **NO-GO** because
+`container_chat_canary_admission_compiled()` is still false.
+
+The default-off replay-only and atomic current/previous-alias foundation is
+implemented locally. Cutover remains blocked until code audit accepts it as a
+signed rollback artifact, the key-retention and previous-key drain runbook is
+approved, and endpoint-level remote fault/financial proof shows existing
+generation-2 owners can terminalize or resume without new admission, duplicate
+reservation/debit/provider execution, or upstream fallthrough.

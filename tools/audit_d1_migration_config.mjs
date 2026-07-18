@@ -6,6 +6,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const wranglerPath = path.join(repoRoot, "wrangler.toml");
 const localD1WranglerPath = path.join(repoRoot, "wrangler.d1-local.toml");
 const migrationsDir = path.join(repoRoot, "migrations", "d1");
+const expectedMigrationCount = 50;
+const expectedMigrationHead = "0050_relay_container_atomic_admission.sql";
 const platformGatewayPath = path.join(
   repoRoot,
   "crates",
@@ -59,6 +61,14 @@ const migrationFiles = (await readdir(migrationsDir, { withFileTypes: true }))
   .map((entry) => entry.name)
   .sort();
 assert(migrationFiles.length > 0, "migrations/d1 must contain SQL migrations");
+assert(
+  migrationFiles.length === expectedMigrationCount,
+  `migrations/d1 must contain exactly ${expectedMigrationCount} migrations`,
+);
+assert(
+  migrationFiles.at(-1) === expectedMigrationHead,
+  `D1 migration head must be ${expectedMigrationHead}`,
+);
 
 const versions = migrationFiles.map((name) => {
   const match = /^(\d{4})_[a-z0-9_]+\.sql$/.exec(name);

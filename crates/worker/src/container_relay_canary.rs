@@ -1,8 +1,8 @@
 //! Default-off Edge integration for the non-streaming Container chat canary.
 //!
 //! The module deliberately owns no provider credential. It freezes one
-//! transformed request in R2, binds the selected billing attempt in D1 before
-//! dispatch, and only returns bytes after an exact financial-terminal readback.
+//! transformed request in R2, atomically admits billing and operation ownership
+//! in D1 before dispatch, and only returns bytes after exact durable readback.
 
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
@@ -15,28 +15,31 @@ use crate::container_artifacts::{
     ContainerArtifactManifest, ContainerResultArtifactIdentity, ContainerResultObjectState,
 };
 use crate::container_controller::{
-    dispatch_operation, query_operation_status, ContainerOperationEnvelope,
-    ContainerOperationInput, ContainerOperationOutcome, ContainerOperationStatus,
-    ContainerProviderAttemptStatus,
+    dispatch_operation, probe as probe_container_controller, query_operation_status,
+    ContainerControllerProbe, ContainerOperationEnvelope, ContainerOperationInput,
+    ContainerOperationOutcome, ContainerOperationStatus, ContainerProviderAttemptStatus,
 };
 use crate::container_reconciliation::replay_receipt_client_response;
 use crate::container_scheduler::{
     container_operation_runtime_status, container_scheduler_enabled,
-    container_scheduler_runtime_status, plan_container_shard,
-    CONTAINER_SCHEDULER_ROUTING_SECRET_ENV,
+    container_scheduler_routing_secret_configured, container_scheduler_runtime_status,
+    plan_container_shard, CONTAINER_SCHEDULER_ROUTING_SECRET_ENV,
 };
 use crate::d1_repositories::{
-    bind_relay_container_operation, commit_relay_container_financial_terminal,
+    admit_relay_container_operation_atomic, commit_relay_container_financial_terminal,
     lookup_relay_container_client_request, mark_relay_container_operation_dispatched,
-    quote_relay_container_provider_usage_settlement,
+    quote_relay_container_provider_usage_settlement, relay_container_atomic_admission_schema_ready,
+    relay_container_atomic_admission_sha256, relay_container_atomic_reconciliation_id,
     relay_container_financial_terminal_receipt_for_operation, relay_container_operation,
-    relay_container_provider_usage_receipt_readback, RelayContainerClientRequestLookup,
-    RelayContainerClientResponseRecord, RelayContainerFinancialTerminalAction,
-    RelayContainerFinancialTerminalCommand, RelayContainerFinancialTerminalOutcome,
-    RelayContainerOperation, RelayContainerOperationDispatchOutcome,
-    RelayContainerOperationExpectedStatus, RelayContainerOperationRecord,
-    RelayContainerOperationResultRecord, RelayContainerOperationTerminalRecord,
-    RelayContainerOperationWriteOutcome, RelayContainerProviderUsageReceiptReadback,
+    relay_container_provider_usage_receipt_readback, RelayBillingReservationRecord,
+    RelayContainerAtomicAdmissionOutcome, RelayContainerAtomicAdmissionRecord,
+    RelayContainerClientRequestLookup, RelayContainerClientResponseRecord,
+    RelayContainerFinancialTerminalAction, RelayContainerFinancialTerminalCommand,
+    RelayContainerFinancialTerminalOutcome, RelayContainerOperation,
+    RelayContainerOperationDispatchOutcome, RelayContainerOperationExpectedStatus,
+    RelayContainerOperationRecord, RelayContainerOperationResultRecord,
+    RelayContainerOperationTerminalRecord, RelayContainerProviderUsageReceiptReadback,
+    RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION,
 };
 
 pub const CONTAINER_CHAT_CANARY_TOKEN_IDS_ENV: &str = "CONTAINER_CHAT_CANARY_TOKEN_IDS";
@@ -46,6 +49,12 @@ pub const CONTAINER_CHAT_CANARY_DEADLINE_SECONDS_ENV: &str =
     "CONTAINER_CHAT_CANARY_DEADLINE_SECONDS";
 pub const CONTAINER_CHAT_CANARY_IDEMPOTENCY_SECRET_ENV: &str =
     "CONTAINER_CHAT_CANARY_IDEMPOTENCY_SECRET";
+pub const CONTAINER_CHAT_CANARY_IDEMPOTENCY_PREVIOUS_SECRET_ENV: &str =
+    "CONTAINER_CHAT_CANARY_IDEMPOTENCY_PREVIOUS_SECRET";
+pub const CONTAINER_CHAT_CANARY_REPLAY_ONLY_ENABLED_ENV: &str =
+    "CONTAINER_CHAT_CANARY_REPLAY_ONLY_ENABLED";
+pub const CONTAINER_CHAT_CANARY_PREPARED_RESUME_ENABLED_ENV: &str =
+    "CONTAINER_CHAT_CANARY_PREPARED_RESUME_ENABLED";
 
 pub const CONTAINER_CHAT_CANARY_OPERATION_KIND: &str = "chat_completions_canary";
 const CONTAINER_CHAT_CANARY_EGRESS_PROFILE: &str = "openai-chat-completions-canary-v1";
@@ -64,7 +73,6 @@ const REQUEST_DOMAIN: &[u8] = b"cinatoken:container-chat-request:v1\0";
 const PROVIDER_OPERATION_DOMAIN: &[u8] = b"cinatoken:container-provider-operation:v1\0";
 const TRACE_DOMAIN: &[u8] = b"cinatoken:container-trace:v1\0";
 const ADMISSION_DOMAIN: &[u8] = b"cinatoken:container-admission:v1\0";
-const RECONCILIATION_DOMAIN: &[u8] = b"cinatoken:container-reconciliation:v1\0";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ContainerChatCanaryRuntimeConfig {
@@ -105,8 +113,15 @@ pub struct ContainerChatCanaryPlan {
     request_body: Vec<u8>,
     input_sha256: String,
     client_idempotency_hmac_sha256: String,
+    client_idempotency_hmac_aliases: Vec<String>,
     client_request_sha256: String,
     deadline_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerChatCanaryReplayIdentity {
+    client_idempotency_hmac_sha256: Vec<String>,
+    client_request_sha256: String,
 }
 
 impl ContainerChatCanaryPlan {
@@ -156,23 +171,37 @@ pub struct ContainerChatCanaryEligibility<'a> {
 pub struct ContainerChatCanaryAudit<'a> {
     pub user_id: i64,
     pub token_id: i64,
-    pub channel_id: i64,
     pub model: &'a str,
-    pub selected_group: &'a str,
     pub endpoint_path: &'a str,
     pub request_id: Option<&'a str>,
     pub client_ip: Option<&'a str>,
 }
 
 pub struct ContainerChatCanaryExecution<'a> {
-    pub reservation_key: &'a str,
-    pub billing_owner_generation: i64,
-    pub billing_owner_lease_expires_at: i64,
+    pub billing: ContainerChatCanaryBillingContract<'a>,
     pub selected_group: &'a str,
     pub channel_id: i64,
-    pub user_id: i64,
+    pub selected_channel_type: i32,
+    pub selected_snapshot_key: &'a str,
     pub plan: &'a ContainerChatCanaryPlan,
     pub audit: ContainerChatCanaryAudit<'a>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ContainerChatCanaryBillingContract<'a> {
+    pub reservation_key: &'a str,
+    pub user_id: i64,
+    pub token_id: i64,
+    pub model_name: &'a str,
+    pub endpoint_path: &'a str,
+    pub request_id_hash: &'a str,
+    pub contract_hash: &'a str,
+    pub billing_kind: &'a str,
+    pub billing_snapshot_json: &'a str,
+    pub candidate_group_count: i64,
+    pub reservation_strategy: &'a str,
+    pub pre_consumed_quota: i64,
+    pub lease_seconds: i64,
 }
 
 pub fn container_chat_canary_compiled() -> bool {
@@ -184,11 +213,74 @@ pub fn container_chat_canary_compiled() -> bool {
         && MIN_IDEMPOTENCY_SECRET_BYTES >= 32
 }
 
-/// The transport and replay foundation is compiled, but durable admission is
-/// not cutover-safe until billing reservation, selected-attempt binding, and
-/// operation preparation are one atomic D1 ownership transition.
+/// The atomic admission implementation is compiled separately below. This
+/// cutover gate remains closed until migration rollout, remote readiness, and
+/// canary evidence have all been approved for production traffic.
 pub fn container_chat_canary_admission_compiled() -> bool {
     false
+}
+
+pub fn container_chat_canary_atomic_admission_compiled() -> bool {
+    true
+}
+
+pub fn container_chat_canary_replay_compiled() -> bool {
+    true
+}
+
+pub fn container_chat_canary_replay_only_enabled(env: &Env) -> bool {
+    runtime_gate_enabled(env, CONTAINER_CHAT_CANARY_REPLAY_ONLY_ENABLED_ENV)
+}
+
+pub fn container_chat_canary_prepared_resume_enabled(env: &Env) -> bool {
+    runtime_gate_enabled(env, CONTAINER_CHAT_CANARY_PREPARED_RESUME_ENABLED_ENV)
+}
+
+pub fn container_chat_canary_current_idempotency_secret_configured(env: &Env) -> bool {
+    idempotency_secret(env, CONTAINER_CHAT_CANARY_IDEMPOTENCY_SECRET_ENV).is_some()
+}
+
+pub fn container_chat_canary_previous_idempotency_secret_configured(env: &Env) -> bool {
+    idempotency_secret(env, CONTAINER_CHAT_CANARY_IDEMPOTENCY_PREVIOUS_SECRET_ENV).is_some()
+}
+
+pub fn container_chat_canary_replay_cohort_configured(env: &Env) -> bool {
+    container_chat_canary_runtime_config(env).is_some()
+}
+
+pub fn container_chat_canary_replay_only_cohort_active(
+    env: &Env,
+    route_eligible: bool,
+    token_id: i64,
+    model: &str,
+) -> Result<bool, ContainerChatCanaryPlanError> {
+    if !route_eligible || !container_chat_canary_replay_only_enabled(env) {
+        return Ok(false);
+    }
+    let config = container_chat_canary_runtime_config(env)
+        .ok_or(ContainerChatCanaryPlanError::Misconfigured)?;
+    Ok(config.token_ids.contains(&token_id) && config.model == model)
+}
+
+pub fn plan_container_chat_canary_replay_identity(
+    env: &Env,
+    user_id: i64,
+    token_id: i64,
+    model: &str,
+    idempotency_key: &str,
+    request_body: &[u8],
+) -> Result<ContainerChatCanaryReplayIdentity, ContainerChatCanaryPlanError> {
+    let current = idempotency_secret(env, CONTAINER_CHAT_CANARY_IDEMPOTENCY_SECRET_ENV);
+    let previous = idempotency_secret(env, CONTAINER_CHAT_CANARY_IDEMPOTENCY_PREVIOUS_SECRET_ENV);
+    build_container_chat_canary_replay_identity(
+        current.as_deref(),
+        previous.as_deref(),
+        user_id,
+        token_id,
+        model,
+        idempotency_key,
+        request_body,
+    )
 }
 
 pub fn container_chat_canary_cohort_active(
@@ -253,38 +345,34 @@ pub fn plan_container_chat_canary(
     if !valid_idempotency_key(idempotency_key) {
         return Err(ContainerChatCanaryPlanError::InvalidIdempotencyKey);
     }
-    let secret = env
-        .secret(CONTAINER_CHAT_CANARY_IDEMPOTENCY_SECRET_ENV)
-        .ok()
-        .map(|value| value.to_string())
-        .filter(|value| value.as_bytes().len() >= MIN_IDEMPOTENCY_SECRET_BYTES)
+    let secret = idempotency_secret(env, CONTAINER_CHAT_CANARY_IDEMPOTENCY_SECRET_ENV)
         .ok_or(ContainerChatCanaryPlanError::Misconfigured)?;
     let scheduler = container_scheduler_runtime_status(env);
     if !scheduler.configured || !scheduler.valid {
         return Err(ContainerChatCanaryPlanError::Misconfigured);
     }
-    let client_idempotency_hmac_sha256 = client_idempotency_hmac(
-        secret.as_bytes(),
+    let previous = idempotency_secret(env, CONTAINER_CHAT_CANARY_IDEMPOTENCY_PREVIOUS_SECRET_ENV);
+    let replay_identity = build_container_chat_canary_replay_identity(
+        Some(&secret),
+        previous.as_deref(),
         eligibility.user_id,
         eligibility.token_id,
         eligibility.model,
-        eligibility.selected_group,
         idempotency_key,
+        eligibility.request_body,
     )
     .map_err(|_| ContainerChatCanaryPlanError::Misconfigured)?;
-    let client_request_sha256 = domain_hash(
-        REQUEST_DOMAIN,
-        &[
-            eligibility.model.as_bytes(),
-            eligibility.selected_group.as_bytes(),
-            eligibility.request_body,
-        ],
-    );
+    let client_idempotency_hmac_sha256 = replay_identity
+        .client_idempotency_hmac_sha256
+        .first()
+        .cloned()
+        .ok_or(ContainerChatCanaryPlanError::Misconfigured)?;
     Ok(Some(ContainerChatCanaryPlan {
         input_sha256: sha256_hex(eligibility.request_body),
         request_body: eligibility.request_body.to_vec(),
         client_idempotency_hmac_sha256,
-        client_request_sha256,
+        client_idempotency_hmac_aliases: replay_identity.client_idempotency_hmac_sha256,
+        client_request_sha256: replay_identity.client_request_sha256,
         deadline_seconds: config.deadline_seconds,
     }))
 }
@@ -293,33 +381,52 @@ pub async fn replay_or_resume_container_chat_canary(
     env: &Env,
     db: &D1Database,
     context: Option<&Context>,
-    plan: &ContainerChatCanaryPlan,
+    identity: &ContainerChatCanaryReplayIdentity,
     audit: ContainerChatCanaryAudit<'_>,
 ) -> worker::Result<Option<Response>> {
-    match lookup_relay_container_client_request(
-        db,
-        &plan.client_idempotency_hmac_sha256,
-        &plan.client_request_sha256,
-    )
-    .await?
-    {
-        RelayContainerClientRequestLookup::NotFound => Ok(None),
-        RelayContainerClientRequestLookup::RequestConflict => {
-            conflict_response("idempotency_key_reused_with_different_request").map(Some)
-        }
-        RelayContainerClientRequestLookup::MatchingOperation(operation) => {
-            if operation.input_sha256 != plan.input_sha256
-                || operation.operation_kind != CONTAINER_CHAT_CANARY_OPERATION_KIND
-                || operation.channel_id != audit.channel_id
-                || operation.selected_group != audit.selected_group
-            {
-                return conflict_response("idempotency_operation_identity_conflict").map(Some);
+    if !relay_container_atomic_admission_schema_ready(db).await? {
+        return Err(canary_error(
+            "container chat canary replay schema is unavailable",
+        ));
+    }
+    let mut matched = None;
+    for client_hmac in &identity.client_idempotency_hmac_sha256 {
+        match lookup_relay_container_client_request(
+            db,
+            client_hmac,
+            &identity.client_request_sha256,
+        )
+        .await?
+        {
+            RelayContainerClientRequestLookup::NotFound => {}
+            RelayContainerClientRequestLookup::RequestConflict => {
+                return conflict_response("idempotency_key_reused_with_different_request").map(Some)
             }
-            resume_operation(env, db, context, operation, audit)
-                .await
-                .map(Some)
+            RelayContainerClientRequestLookup::ImmutableIdentityConflict => {
+                return Err(canary_error(
+                    "container chat canary idempotency authority is inconsistent",
+                ))
+            }
+            RelayContainerClientRequestLookup::MatchingOperation(operation) => {
+                if replay_operation_identity_conflicts(
+                    matched
+                        .as_ref()
+                        .map(|winner: &RelayContainerOperation| winner.operation_id.as_str()),
+                    &operation.operation_kind,
+                    &operation.operation_id,
+                ) {
+                    return conflict_response("idempotency_operation_identity_conflict").map(Some);
+                }
+                matched = Some(operation);
+            }
         }
     }
+    let Some(operation) = matched else {
+        return Ok(None);
+    };
+    resume_operation(env, db, context, operation, audit)
+        .await
+        .map(Some)
 }
 
 pub async fn execute_container_chat_canary(
@@ -328,24 +435,20 @@ pub async fn execute_container_chat_canary(
     context: Option<&Context>,
     execution: ContainerChatCanaryExecution<'_>,
 ) -> worker::Result<Response> {
-    let now = current_unix_seconds();
-    let execution_deadline_at = now
-        .saturating_add(execution.plan.deadline_seconds)
-        .min(execution.billing_owner_lease_expires_at.saturating_sub(1));
-    if execution.reservation_key.is_empty()
-        || execution.billing_owner_generation <= 0
-        || execution.billing_owner_lease_expires_at <= execution_deadline_at
-        || execution_deadline_at <= now
+    if !container_chat_canary_admission_compiled()
+        || !container_scheduler_enabled(env)
+        || !container_operation_runtime_status(env).cutover_ready()
+        || !relay_container_atomic_admission_schema_ready(db).await?
     {
         return Err(canary_error(
-            "container chat canary billing lease is invalid",
+            "container chat canary atomic admission is unavailable",
         ));
     }
-
+    let owner_generation = RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION;
     let input = put_container_input(
         env,
-        execution.reservation_key,
-        execution.billing_owner_generation,
+        execution.billing.reservation_key,
+        owner_generation,
         "application/json",
         &execution.plan.request_body,
     )
@@ -354,11 +457,26 @@ pub async fn execute_container_chat_canary(
         return Err(canary_error("container chat canary input digest diverged"));
     }
 
+    let now = current_unix_seconds();
+    let owner_lease_expires_at = now.saturating_add(execution.billing.lease_seconds);
+    let execution_deadline_at = now
+        .saturating_add(execution.plan.deadline_seconds)
+        .min(owner_lease_expires_at.saturating_sub(1));
+    if execution.billing.reservation_key.is_empty()
+        || execution.billing.lease_seconds <= execution.plan.deadline_seconds
+        || owner_lease_expires_at <= execution_deadline_at
+        || execution_deadline_at <= now
+    {
+        return Err(canary_error(
+            "container chat canary billing lease is invalid",
+        ));
+    }
+
     let routing_secret = env
         .secret(CONTAINER_SCHEDULER_ROUTING_SECRET_ENV)
         .map(|value| value.to_string())
         .map_err(|_| canary_error("container shard routing secret is unavailable"))?;
-    let tenant_id = format!("user:{}", execution.user_id);
+    let tenant_id = format!("user:{}", execution.billing.user_id);
     let shard = plan_container_shard(
         container_scheduler_runtime_status(env),
         routing_secret.as_bytes(),
@@ -371,7 +489,7 @@ pub async fn execute_container_chat_canary(
         domain_hash(
             PROVIDER_OPERATION_DOMAIN,
             &[
-                execution.reservation_key.as_bytes(),
+                execution.billing.reservation_key.as_bytes(),
                 execution.plan.client_idempotency_hmac_sha256.as_bytes(),
                 execution.plan.input_sha256.as_bytes(),
             ],
@@ -382,54 +500,43 @@ pub async fn execute_container_chat_canary(
         domain_hash(
             TRACE_DOMAIN,
             &[
-                execution.reservation_key.as_bytes(),
+                execution.billing.reservation_key.as_bytes(),
                 execution.plan.client_request_sha256.as_bytes(),
             ],
         )
     );
     let admission_sha256 = operation_admission_sha256(
-        execution.reservation_key,
-        execution.billing_owner_generation,
-        execution.billing_owner_lease_expires_at,
+        execution.billing.reservation_key,
+        owner_generation,
+        owner_lease_expires_at,
         execution_deadline_at,
         &provider_operation_id,
         &input.manifest,
         &shard,
         &trace_id,
     );
-    let reconciliation_id = domain_hash(
-        RECONCILIATION_DOMAIN,
-        &[
-            execution.reservation_key.as_bytes(),
-            admission_sha256.as_bytes(),
-            execution.plan.client_request_sha256.as_bytes(),
-        ],
-    );
-    let envelope = ContainerOperationEnvelope {
-        protocol_version: 1,
-        operation_id: execution.reservation_key.to_string(),
-        operation_kind: CONTAINER_CHAT_CANARY_OPERATION_KIND.to_string(),
-        owner_generation: execution.billing_owner_generation,
-        owner_lease_expires_at: execution.billing_owner_lease_expires_at,
-        execution_deadline_at,
-        provider_operation_id: provider_operation_id.clone(),
-        admission_sha256: admission_sha256.clone(),
-        input: ContainerOperationInput {
-            mode: "r2",
-            sha256: input.manifest.sha256.clone(),
-            size: input.manifest.size,
-            content_type: input.manifest.content_type.clone(),
-            request_object_key: input.manifest.object_key.clone(),
-            object_version: input.manifest.object_version.clone(),
-        },
-        shard: shard.clone(),
-        trace_id: trace_id.clone(),
+    let reservation = RelayBillingReservationRecord {
+        reservation_key: execution.billing.reservation_key,
+        user_id: execution.billing.user_id,
+        token_id: execution.billing.token_id,
+        model_name: execution.billing.model_name,
+        endpoint_path: execution.billing.endpoint_path,
+        request_id_hash: execution.billing.request_id_hash,
+        expr_hash: execution.billing.contract_hash,
+        billing_kind: execution.billing.billing_kind,
+        billing_snapshot_json: execution.billing.billing_snapshot_json,
+        candidate_group_count: execution.billing.candidate_group_count,
+        reservation_strategy: execution.billing.reservation_strategy,
+        pre_consumed_quota: execution.billing.pre_consumed_quota,
+        created_at: now,
+        lease_expires_at: owner_lease_expires_at,
     };
-    let record = RelayContainerOperationRecord {
-        reservation_key: execution.reservation_key,
-        operation_id: execution.reservation_key,
-        owner_generation: execution.billing_owner_generation,
-        owner_lease_expires_at: execution.billing_owner_lease_expires_at,
+    let placeholder_reconciliation_id = "0".repeat(64);
+    let operation = RelayContainerOperationRecord {
+        reservation_key: execution.billing.reservation_key,
+        operation_id: execution.billing.reservation_key,
+        owner_generation,
+        owner_lease_expires_at,
         channel_id: execution.channel_id,
         selected_group: execution.selected_group,
         operation_kind: CONTAINER_CHAT_CANARY_OPERATION_KIND,
@@ -453,22 +560,66 @@ pub async fn execute_container_chat_canary(
         trace_id: &trace_id,
         client_idempotency_hmac_sha256: &execution.plan.client_idempotency_hmac_sha256,
         client_request_sha256: &execution.plan.client_request_sha256,
-        reconciliation_id: &reconciliation_id,
+        reconciliation_id: &placeholder_reconciliation_id,
         created_at: now,
     };
-    match bind_relay_container_operation(db, record).await? {
-        RelayContainerOperationWriteOutcome::Applied
-        | RelayContainerOperationWriteOutcome::MatchingOperation => {}
-        outcome => {
-            return Err(canary_error(&format!(
-                "container operation bind did not apply: {outcome:?}"
-            )))
+    let client_idempotency_hmac_aliases = execution
+        .plan
+        .client_idempotency_hmac_aliases
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let provisional = RelayContainerAtomicAdmissionRecord {
+        reservation,
+        operation,
+        client_idempotency_hmac_aliases: &client_idempotency_hmac_aliases,
+        selected_channel_type: i64::from(execution.selected_channel_type),
+        selected_snapshot_key: execution.selected_snapshot_key,
+        selected_at: now,
+    };
+    let atomic_admission_sha256 = relay_container_atomic_admission_sha256(&provisional);
+    let reconciliation_id = relay_container_atomic_reconciliation_id(&atomic_admission_sha256)?;
+    let operation = RelayContainerOperationRecord {
+        reconciliation_id: &reconciliation_id,
+        ..operation
+    };
+    let admission = RelayContainerAtomicAdmissionRecord {
+        operation,
+        ..provisional
+    };
+    debug_assert_eq!(
+        relay_container_atomic_admission_sha256(&admission),
+        atomic_admission_sha256
+    );
+
+    let outcome = admit_relay_container_operation_atomic(db, admission).await?;
+    let applied = matches!(&outcome, RelayContainerAtomicAdmissionOutcome::Applied(_));
+    let operation = match outcome {
+        RelayContainerAtomicAdmissionOutcome::Applied(operation)
+        | RelayContainerAtomicAdmissionOutcome::MatchingResumable(operation)
+        | RelayContainerAtomicAdmissionOutcome::TerminalReplay(operation) => operation,
+        RelayContainerAtomicAdmissionOutcome::RequestConflict => {
+            return conflict_response("idempotency_key_reused_with_different_request")
         }
+        RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict => {
+            return Err(canary_error(
+                "container chat canary atomic admission authority is inconsistent",
+            ))
+        }
+    };
+    crate::quota_coordinator::observe_or_defer_committed_relay_billing_reservation(
+        context,
+        env,
+        db,
+        &operation.reservation_key,
+    )
+    .await;
+    if applied {
+        let envelope = operation_envelope(&operation)?;
+        dispatch_or_query_operation(env, db, context, operation, &envelope, execution.audit).await
+    } else {
+        resume_operation(env, db, context, operation, execution.audit).await
     }
-    let operation = relay_container_operation(db, execution.reservation_key)
-        .await?
-        .ok_or_else(|| canary_error("container operation readback is missing"))?;
-    dispatch_or_query_operation(env, db, context, operation, &envelope, execution.audit).await
 }
 
 async fn resume_operation(
@@ -478,13 +629,27 @@ async fn resume_operation(
     operation: RelayContainerOperation,
     audit: ContainerChatCanaryAudit<'_>,
 ) -> worker::Result<Response> {
-    match operation.status.as_str() {
-        "completed" | "failed" => replay_terminal_operation(env, db, &operation).await,
-        "prepared" => {
+    let operation_runtime = container_operation_runtime_status(env);
+    let prepared_resume_runtime_ready = if operation.status == "prepared" {
+        prepared_resume_runtime_ready(env).await
+    } else {
+        false
+    };
+    let action = replay_operation_action(
+        &operation.status,
+        operation_runtime.exact_response_replay_enabled && env.bucket("FILE_BUCKET").is_ok(),
+        operation_runtime.replay_ready(),
+        prepared_resume_runtime_ready,
+    );
+    match action {
+        ReplayOperationAction::ReplayTerminal => {
+            replay_terminal_operation(env, db, &operation).await
+        }
+        ReplayOperationAction::DispatchPrepared => {
             let envelope = operation_envelope(&operation)?;
             dispatch_or_query_operation(env, db, context, operation, &envelope, audit).await
         }
-        "dispatched" => {
+        ReplayOperationAction::QueryDispatched => {
             let envelope = operation_envelope(&operation)?;
             match query_operation_status(env, &envelope).await {
                 Ok(outcome) => {
@@ -504,7 +669,7 @@ async fn resume_operation(
                 }
             }
         }
-        "recovery_required" => {
+        ReplayOperationAction::QueryRecovery => {
             let envelope = operation_envelope(&operation)?;
             match query_operation_status(env, &envelope).await {
                 Ok(outcome) if outcome.status == ContainerOperationStatus::Completed => {
@@ -513,8 +678,70 @@ async fn resume_operation(
                 _ => recovery_pending_response(&operation.operation_id, "recovery_required"),
             }
         }
-        _ => Err(canary_error("container operation has an invalid state")),
+        ReplayOperationAction::Pending(code) => {
+            recovery_pending_response(&operation.operation_id, code)
+        }
+        ReplayOperationAction::Invalid => {
+            Err(canary_error("container operation has an invalid state"))
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayOperationAction {
+    ReplayTerminal,
+    DispatchPrepared,
+    QueryDispatched,
+    QueryRecovery,
+    Pending(&'static str),
+    Invalid,
+}
+
+fn replay_operation_action(
+    status: &str,
+    terminal_replay_ready: bool,
+    replay_runtime_ready: bool,
+    prepared_resume_runtime_ready: bool,
+) -> ReplayOperationAction {
+    match status {
+        "completed" | "failed" if terminal_replay_ready => ReplayOperationAction::ReplayTerminal,
+        "completed" | "failed" => {
+            ReplayOperationAction::Pending("container_terminal_replay_paused")
+        }
+        "prepared" if replay_runtime_ready && prepared_resume_runtime_ready => {
+            ReplayOperationAction::DispatchPrepared
+        }
+        "prepared" => ReplayOperationAction::Pending("container_prepared_replay_paused"),
+        "dispatched" if replay_runtime_ready => ReplayOperationAction::QueryDispatched,
+        "recovery_required" if replay_runtime_ready => ReplayOperationAction::QueryRecovery,
+        "dispatched" | "recovery_required" => {
+            ReplayOperationAction::Pending("container_replay_runtime_paused")
+        }
+        _ => ReplayOperationAction::Invalid,
+    }
+}
+
+async fn prepared_resume_runtime_ready(env: &Env) -> bool {
+    let scheduler = container_scheduler_runtime_status(env);
+    if !container_chat_canary_prepared_resume_enabled(env)
+        || !container_scheduler_enabled(env)
+        || !container_operation_runtime_status(env).replay_ready()
+        || !scheduler.configured
+        || !scheduler.valid
+        || !container_scheduler_routing_secret_configured(env)
+    {
+        return false;
+    }
+    let controller = probe_container_controller(env, scheduler).await;
+    prepared_resume_controller_ready(controller)
+}
+
+fn prepared_resume_controller_ready(controller: ContainerControllerProbe) -> bool {
+    controller.binding_available
+        && controller.authority_configured
+        && controller.verified
+        && controller.controller_enabled
+        && controller.execution_enabled
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -946,7 +1173,7 @@ fn terminal_audit_payload(
     completion_tokens: i64,
 ) -> worker::Result<String> {
     serde_json::to_string(&json!({
-        "channel_id": audit.channel_id,
+        "channel_id": operation.channel_id,
         "client_ip_sha256": optional_sha256(audit.client_ip),
         "completion_tokens": completion_tokens,
         "decision": decision,
@@ -957,7 +1184,7 @@ fn terminal_audit_payload(
         "prompt_tokens": prompt_tokens,
         "request_id_sha256": optional_sha256(audit.request_id),
         "schema_version": 1,
-        "selected_group": audit.selected_group,
+        "selected_group": operation.selected_group,
         "token_id": audit.token_id,
         "transport": "container_chat_canary",
         "user_id": audit.user_id,
@@ -1074,8 +1301,6 @@ fn client_idempotency_hmac(
     secret: &[u8],
     user_id: i64,
     token_id: i64,
-    model: &str,
-    selected_group: &str,
     idempotency_key: &str,
 ) -> Result<String, ()> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| ())?;
@@ -1083,14 +1308,74 @@ fn client_idempotency_hmac(
     for field in [
         user_id.to_string(),
         token_id.to_string(),
-        model.to_string(),
-        selected_group.to_string(),
         idempotency_key.to_string(),
     ] {
         mac.update(&(field.len() as u64).to_be_bytes());
         mac.update(field.as_bytes());
     }
     Ok(format!("{:x}", mac.finalize().into_bytes()))
+}
+
+fn replay_operation_identity_conflicts(
+    matched_operation_id: Option<&str>,
+    candidate_kind: &str,
+    candidate_operation_id: &str,
+) -> bool {
+    candidate_kind != CONTAINER_CHAT_CANARY_OPERATION_KIND
+        || matched_operation_id.is_some_and(|winner| winner != candidate_operation_id)
+}
+
+fn build_container_chat_canary_replay_identity(
+    current_secret: Option<&str>,
+    previous_secret: Option<&str>,
+    user_id: i64,
+    token_id: i64,
+    model: &str,
+    idempotency_key: &str,
+    request_body: &[u8],
+) -> Result<ContainerChatCanaryReplayIdentity, ContainerChatCanaryPlanError> {
+    if user_id <= 0
+        || token_id <= 0
+        || model.is_empty()
+        || model.len() > MAX_CONTAINER_CHAT_CANARY_MODEL_BYTES
+        || model.chars().any(char::is_control)
+        || request_body.is_empty()
+        || request_body.len() > MAX_CANARY_REQUEST_BYTES
+    {
+        return Err(ContainerChatCanaryPlanError::IncompatibleRoute);
+    }
+    if !valid_idempotency_key(idempotency_key) {
+        return Err(ContainerChatCanaryPlanError::InvalidIdempotencyKey);
+    }
+    let mut client_hmacs = Vec::new();
+    for secret in [current_secret, previous_secret].into_iter().flatten() {
+        if secret.as_bytes().len() < MIN_IDEMPOTENCY_SECRET_BYTES {
+            continue;
+        }
+        let hmac = client_idempotency_hmac(secret.as_bytes(), user_id, token_id, idempotency_key)
+            .map_err(|_| ContainerChatCanaryPlanError::Misconfigured)?;
+        if !client_hmacs.contains(&hmac) {
+            client_hmacs.push(hmac);
+        }
+    }
+    if client_hmacs.is_empty() {
+        return Err(ContainerChatCanaryPlanError::Misconfigured);
+    }
+    Ok(ContainerChatCanaryReplayIdentity {
+        client_idempotency_hmac_sha256: client_hmacs,
+        client_request_sha256: client_request_sha256(model, request_body),
+    })
+}
+
+fn idempotency_secret(env: &Env, name: &str) -> Option<String> {
+    env.secret(name)
+        .ok()
+        .map(|value| value.to_string())
+        .filter(|value| value.as_bytes().len() >= MIN_IDEMPOTENCY_SECRET_BYTES)
+}
+
+fn runtime_gate_enabled(env: &Env, name: &str) -> bool {
+    env.var(name).ok().map(|value| value.to_string()).as_deref() == Some("true")
 }
 
 fn domain_hash(domain: &[u8], fields: &[&[u8]]) -> String {
@@ -1101,6 +1386,10 @@ fn domain_hash(domain: &[u8], fields: &[&[u8]]) -> String {
         digest.update(field);
     }
     format!("{:x}", digest.finalize())
+}
+
+fn client_request_sha256(model: &str, request_body: &[u8]) -> String {
+    domain_hash(REQUEST_DOMAIN, &[model.as_bytes(), request_body])
 }
 
 fn sha256_hex(value: &[u8]) -> String {
@@ -1137,6 +1426,21 @@ fn conflict_response(code: &str) -> worker::Result<Response> {
         }),
         409,
     )
+}
+
+pub fn replay_only_miss_response() -> worker::Result<Response> {
+    let mut response = no_store_json_response(
+        json!({
+            "error": {
+                "code": "container_replay_identity_not_found",
+                "message": "the replay-only cohort has no matching durable operation",
+                "type": "operation_replay_required",
+            }
+        }),
+        503,
+    )?;
+    response.headers_mut().set("retry-after", "5")?;
+    Ok(response)
 }
 
 fn recovery_pending_response(operation_id: &str, code: &str) -> worker::Result<Response> {
@@ -1226,20 +1530,219 @@ mod tests {
     }
 
     #[test]
+    fn replay_state_requires_runtime_and_an_explicit_prepared_resume_gate() {
+        assert_eq!(
+            replay_operation_action("completed", true, false, false),
+            ReplayOperationAction::ReplayTerminal
+        );
+        assert_eq!(
+            replay_operation_action("completed", false, true, true),
+            ReplayOperationAction::Pending("container_terminal_replay_paused")
+        );
+        assert_eq!(
+            replay_operation_action("prepared", true, true, false),
+            ReplayOperationAction::Pending("container_prepared_replay_paused")
+        );
+        assert_eq!(
+            replay_operation_action("prepared", true, false, true),
+            ReplayOperationAction::Pending("container_prepared_replay_paused")
+        );
+        assert_eq!(
+            replay_operation_action("prepared", true, true, true),
+            ReplayOperationAction::DispatchPrepared
+        );
+        assert_eq!(
+            replay_operation_action("dispatched", true, false, false),
+            ReplayOperationAction::Pending("container_replay_runtime_paused")
+        );
+        assert_eq!(
+            replay_operation_action("dispatched", true, true, false),
+            ReplayOperationAction::QueryDispatched
+        );
+        assert_eq!(
+            replay_operation_action("recovery_required", true, true, false),
+            ReplayOperationAction::QueryRecovery
+        );
+        assert_eq!(
+            replay_operation_action("unknown", true, true, true),
+            ReplayOperationAction::Invalid
+        );
+    }
+
+    #[test]
+    fn prepared_resume_requires_verified_controller_execution_before_dispatch() {
+        let ready = ContainerControllerProbe {
+            probe_enabled: true,
+            binding_available: true,
+            authority_configured: true,
+            verified: true,
+            controller_enabled: true,
+            execution_enabled: true,
+            previous_secret_configured: false,
+            state: "verified",
+        };
+        assert!(prepared_resume_controller_ready(ready));
+
+        for blocked in [
+            ContainerControllerProbe {
+                binding_available: false,
+                ..ready
+            },
+            ContainerControllerProbe {
+                authority_configured: false,
+                ..ready
+            },
+            ContainerControllerProbe {
+                verified: false,
+                ..ready
+            },
+            ContainerControllerProbe {
+                controller_enabled: false,
+                ..ready
+            },
+            ContainerControllerProbe {
+                execution_enabled: false,
+                ..ready
+            },
+        ] {
+            assert!(!prepared_resume_controller_ready(blocked));
+        }
+    }
+
+    #[test]
+    fn dual_secret_replay_must_not_resolve_to_different_operations() {
+        assert!(!replay_operation_identity_conflicts(
+            None,
+            CONTAINER_CHAT_CANARY_OPERATION_KIND,
+            "operation-a"
+        ));
+        assert!(!replay_operation_identity_conflicts(
+            Some("operation-a"),
+            CONTAINER_CHAT_CANARY_OPERATION_KIND,
+            "operation-a"
+        ));
+        assert!(replay_operation_identity_conflicts(
+            Some("operation-a"),
+            CONTAINER_CHAT_CANARY_OPERATION_KIND,
+            "operation-b"
+        ));
+        assert!(replay_operation_identity_conflicts(
+            None,
+            "other_kind",
+            "operation-a"
+        ));
+    }
+
+    #[test]
     fn idempotency_identity_is_tenant_scoped_and_request_conflicts_are_visible() {
         let secret = [7_u8; 32];
-        let first =
-            client_idempotency_hmac(&secret, 1, 2, "gpt", "default", "request-123").unwrap();
-        let replay =
-            client_idempotency_hmac(&secret, 1, 2, "gpt", "default", "request-123").unwrap();
-        let other_token =
-            client_idempotency_hmac(&secret, 1, 3, "gpt", "default", "request-123").unwrap();
+        let first = client_idempotency_hmac(&secret, 1, 2, "request-123").unwrap();
+        let replay = client_idempotency_hmac(&secret, 1, 2, "request-123").unwrap();
+        let other_token = client_idempotency_hmac(&secret, 1, 3, "request-123").unwrap();
         assert_eq!(first, replay);
         assert_ne!(first, other_token);
         assert_eq!(first.len(), 64);
+        let body = br#"{"model":"gpt","messages":[]}"#;
+        assert_eq!(
+            client_request_sha256("gpt", body),
+            client_request_sha256("gpt", body)
+        );
+        assert_ne!(
+            client_request_sha256("gpt", body),
+            client_request_sha256("other", body)
+        );
         assert!(valid_idempotency_key("request-123"));
         assert!(!valid_idempotency_key("short"));
         assert!(!valid_idempotency_key(" request-123"));
+    }
+
+    #[test]
+    fn replay_identity_reads_current_and_previous_secrets_without_duplicate_keys() {
+        let current = "c".repeat(MIN_IDEMPOTENCY_SECRET_BYTES);
+        let previous = "p".repeat(MIN_IDEMPOTENCY_SECRET_BYTES);
+        let body = br#"{"model":"gpt-canary","messages":[]}"#;
+
+        let dual = build_container_chat_canary_replay_identity(
+            Some(&current),
+            Some(&previous),
+            1,
+            2,
+            "gpt-canary",
+            "request-123",
+            body,
+        )
+        .unwrap();
+        assert_eq!(dual.client_idempotency_hmac_sha256.len(), 2);
+        assert_eq!(
+            dual.client_idempotency_hmac_sha256[0],
+            client_idempotency_hmac(current.as_bytes(), 1, 2, "request-123").unwrap()
+        );
+        assert_eq!(
+            dual.client_idempotency_hmac_sha256[1],
+            client_idempotency_hmac(previous.as_bytes(), 1, 2, "request-123").unwrap()
+        );
+
+        let duplicate = build_container_chat_canary_replay_identity(
+            Some(&current),
+            Some(&current),
+            1,
+            2,
+            "gpt-canary",
+            "request-123",
+            body,
+        )
+        .unwrap();
+        assert_eq!(duplicate.client_idempotency_hmac_sha256.len(), 1);
+
+        let previous_only = build_container_chat_canary_replay_identity(
+            None,
+            Some(&previous),
+            1,
+            2,
+            "gpt-canary",
+            "request-123",
+            body,
+        )
+        .unwrap();
+        assert_eq!(previous_only.client_idempotency_hmac_sha256.len(), 1);
+        assert_eq!(
+            previous_only.client_request_sha256,
+            client_request_sha256("gpt-canary", body)
+        );
+    }
+
+    #[test]
+    fn replay_identity_fails_closed_without_a_valid_read_secret() {
+        let short = "s".repeat(MIN_IDEMPOTENCY_SECRET_BYTES - 1);
+        let body = br#"{"model":"gpt-canary","messages":[]}"#;
+        for (current, previous) in [(None, None), (Some(short.as_str()), None)] {
+            assert_eq!(
+                build_container_chat_canary_replay_identity(
+                    current,
+                    previous,
+                    1,
+                    2,
+                    "gpt-canary",
+                    "request-123",
+                    body,
+                ),
+                Err(ContainerChatCanaryPlanError::Misconfigured)
+            );
+        }
+    }
+
+    #[test]
+    fn replay_lookup_precedes_current_channel_discovery_and_ordinary_reserve() {
+        let source = include_str!("relay.rs");
+        let replay = source
+            .find("// Recovery is intentionally classified before current channel discovery.")
+            .unwrap();
+        let channel_discovery = source
+            .find("let mut group_pools = match resolve_relay_group_pools(")
+            .unwrap();
+        let ordinary_reserve = source.find("if container_canary_plan.is_none() {").unwrap();
+        assert!(replay < channel_discovery);
+        assert!(channel_discovery < ordinary_reserve);
     }
 
     #[test]
@@ -1250,11 +1753,13 @@ mod tests {
             request_body: original_body.to_vec(),
             input_sha256: sha256_hex(original_body),
             client_idempotency_hmac_sha256: "a".repeat(64),
+            client_idempotency_hmac_aliases: vec!["a".repeat(64)],
             client_request_sha256: domain_hash(REQUEST_DOMAIN, &[original_body]),
             deadline_seconds: 120,
         };
         let client_request_sha256 = plan.client_request_sha256.clone();
         let client_idempotency_hmac_sha256 = plan.client_idempotency_hmac_sha256.clone();
+        let client_idempotency_hmac_aliases = plan.client_idempotency_hmac_aliases.clone();
 
         let frozen = plan.freeze_provider_request_body(provider_body).unwrap();
 
@@ -1264,6 +1769,10 @@ mod tests {
         assert_eq!(
             frozen.client_idempotency_hmac_sha256,
             client_idempotency_hmac_sha256
+        );
+        assert_eq!(
+            frozen.client_idempotency_hmac_aliases,
+            client_idempotency_hmac_aliases
         );
     }
 
@@ -1276,6 +1785,8 @@ mod tests {
             .unwrap();
         for scope in [default, staging, production] {
             assert!(scope.contains("CONTAINER_CHAT_CANARY_ENABLED = \"false\""));
+            assert!(scope.contains("CONTAINER_CHAT_CANARY_REPLAY_ONLY_ENABLED = \"false\""));
+            assert!(scope.contains("CONTAINER_CHAT_CANARY_PREPARED_RESUME_ENABLED = \"false\""));
             assert!(scope.contains("CONTAINER_CHAT_CANARY_TOKEN_IDS = \"\""));
             assert!(scope.contains("CONTAINER_CHAT_CANARY_CHANNEL_ID = \"0\""));
             assert!(scope.contains("CONTAINER_CHAT_CANARY_MODEL = \"\""));

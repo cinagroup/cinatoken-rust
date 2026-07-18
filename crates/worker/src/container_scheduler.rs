@@ -83,15 +83,18 @@ pub struct ContainerOperationRuntimeStatus {
 }
 
 impl ContainerOperationRuntimeStatus {
-    pub fn cutover_ready(self) -> bool {
+    pub fn replay_ready(self) -> bool {
         self.operation_write_enabled
             && self.terminal_cas_enabled
             && self.financial_terminal_enabled
             && self.exact_response_replay_enabled
             && self.operation_reconciliation_enabled
             && self.divergence_reconciliation_verified
-            && self.chat_canary_enabled
             && self.operation_staging_verified
+    }
+
+    pub fn cutover_ready(self) -> bool {
+        self.replay_ready() && self.chat_canary_enabled
     }
 }
 
@@ -505,6 +508,18 @@ mod tests {
             disabled_one[0] = Some(disabled_value);
             assert!(!parse_container_operation_runtime_status(disabled_one).cutover_ready());
         }
+    }
+
+    #[test]
+    fn replay_readiness_is_independent_of_new_canary_admission() {
+        let mut values = [Some("true"); 8];
+        values[6] = Some("false");
+        let runtime = parse_container_operation_runtime_status(values);
+        assert!(runtime.replay_ready());
+        assert!(!runtime.cutover_ready());
+
+        values[3] = Some("false");
+        assert!(!parse_container_operation_runtime_status(values).replay_ready());
     }
 
     #[test]

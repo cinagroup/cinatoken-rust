@@ -55,6 +55,10 @@ pub(crate) const RELAY_CONTAINER_PROVIDER_USAGE_RECEIPT_MIGRATION: &str =
     "0048_relay_container_provider_usage_receipts.sql";
 pub(crate) const RELAY_CONTAINER_PROVIDER_USAGE_BINDING_MIGRATION: &str =
     "0049_relay_container_provider_usage_binding.sql";
+pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_MIGRATION: &str =
+    "0050_relay_container_atomic_admission.sql";
+pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
+pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_STATUSES: &[&str] =
     &["pending", "leased", "retry", "converged", "dead_letter"];
 pub(crate) const RELAY_CONTAINER_RECONCILIATION_CLASSES: &[&str] = &[
@@ -196,6 +200,16 @@ pub struct RelayContainerOperationRecord<'a> {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RelayContainerAtomicAdmissionRecord<'a> {
+    pub reservation: RelayBillingReservationRecord<'a>,
+    pub operation: RelayContainerOperationRecord<'a>,
+    pub client_idempotency_hmac_aliases: &'a [&'a str],
+    pub selected_channel_type: i64,
+    pub selected_snapshot_key: &'a str,
+    pub selected_at: i64,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct RelayContainerOperation {
     pub reservation_key: String,
@@ -234,6 +248,44 @@ pub struct RelayContainerOperation {
     pub result_content_type: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerAtomicAdmission {
+    reservation_key: String,
+    operation_id: String,
+    contract_version: i64,
+    atomic_admission_sha256: String,
+    operation_admission_sha256: String,
+    client_idempotency_hmac_sha256: String,
+    client_request_sha256: String,
+    idempotency_alias_count: i64,
+    idempotency_aliases_sha256: String,
+    billing_snapshot_sha256: String,
+    user_id: i64,
+    token_id: i64,
+    pre_consumed_quota: i64,
+    owner_generation: i64,
+    owner_lease_expires_at: i64,
+    channel_id: i64,
+    selected_channel_type: i64,
+    selected_group: String,
+    selected_snapshot_key: String,
+    owner_deadline_at: i64,
+    selected_at: i64,
+    created_at: i64,
+    attempt_count: i64,
+    provider_attempt_generation: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerIdempotencyAlias {
+    client_idempotency_hmac_sha256: String,
+    reservation_key: String,
+    operation_id: String,
+    canonical_client_idempotency_hmac_sha256: String,
+    client_request_sha256: String,
+    created_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -590,6 +642,16 @@ pub enum RelayContainerClientRequestLookup {
     NotFound,
     MatchingOperation(RelayContainerOperation),
     RequestConflict,
+    ImmutableIdentityConflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayContainerAtomicAdmissionOutcome {
+    Applied(RelayContainerOperation),
+    MatchingResumable(RelayContainerOperation),
+    TerminalReplay(RelayContainerOperation),
+    RequestConflict,
+    ImmutableIdentityConflict,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2177,6 +2239,7 @@ pub async fn reserve_relay_billing_quota(
     db: &D1Database,
     record: RelayBillingReservationRecord<'_>,
 ) -> worker::Result<RelayBillingReservationWriteOutcome> {
+    let quota = validate_relay_billing_reservation_record(&record)?;
     let reservation_key = non_empty_relay_reservation_field(record.reservation_key, "key")?;
     let model_name = non_empty_relay_reservation_field(record.model_name, "model name")?;
     let reservation_strategy =
@@ -2184,20 +2247,6 @@ pub async fn reserve_relay_billing_quota(
     let expr_hash = non_empty_relay_reservation_field(record.expr_hash, "contract hash")?;
     let billing_kind = non_empty_relay_reservation_field(record.billing_kind, "billing kind")?;
     let billing_snapshot_json = record.billing_snapshot_json.trim();
-    if record.user_id <= 0
-        || record.token_id < 0
-        || record.candidate_group_count <= 0
-        || record.lease_expires_at <= record.created_at
-        || !matches!(billing_kind, "tiered_expr" | "flat")
-        || billing_snapshot_json.len() > RELAY_BILLING_SNAPSHOT_MAX_BYTES
-        || billing_snapshot_json.is_empty()
-    {
-        return Err(worker::Error::RustError(
-            "relay billing reservation identity is invalid".to_string(),
-        ));
-    }
-    validate_relay_billing_snapshot_contract(billing_kind, expr_hash, billing_snapshot_json)?;
-    let quota = quota_i32(record.pre_consumed_quota)?;
     let args = [
         D1Type::Text(reservation_key),
         D1Type::Integer(d1_i32(record.user_id)),
@@ -2268,6 +2317,32 @@ pub async fn reserve_relay_billing_quota(
     Ok(RelayBillingReservationWriteOutcome::Applied {
         owner_generation: 1,
     })
+}
+
+fn validate_relay_billing_reservation_record(
+    record: &RelayBillingReservationRecord<'_>,
+) -> worker::Result<i32> {
+    let _ = non_empty_relay_reservation_field(record.reservation_key, "key")?;
+    let _ = non_empty_relay_reservation_field(record.model_name, "model name")?;
+    let _ = non_empty_relay_reservation_field(record.reservation_strategy, "strategy")?;
+    let expr_hash = non_empty_relay_reservation_field(record.expr_hash, "contract hash")?;
+    let billing_kind = non_empty_relay_reservation_field(record.billing_kind, "billing kind")?;
+    let billing_snapshot_json = record.billing_snapshot_json.trim();
+    if record.user_id <= 0
+        || record.token_id < 0
+        || record.candidate_group_count <= 0
+        || record.created_at <= 0
+        || record.lease_expires_at <= record.created_at
+        || !matches!(billing_kind, "tiered_expr" | "flat")
+        || billing_snapshot_json.len() > RELAY_BILLING_SNAPSHOT_MAX_BYTES
+        || billing_snapshot_json.is_empty()
+    {
+        return Err(worker::Error::RustError(
+            "relay billing reservation identity is invalid".to_string(),
+        ));
+    }
+    validate_relay_billing_snapshot_contract(billing_kind, expr_hash, billing_snapshot_json)?;
+    quota_i32(record.pre_consumed_quota)
 }
 
 fn validate_relay_billing_snapshot_contract(
@@ -2400,6 +2475,39 @@ pub async fn bind_relay_container_operation(
         return Ok(outcome);
     }
 
+    let result = relay_container_operation_insert_statement(db, &record)?
+        .run()
+        .await;
+    if let Ok(result) = &result {
+        if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+            return Ok(RelayContainerOperationWriteOutcome::Applied);
+        }
+    }
+
+    if let Some(current) = relay_container_operation(db, record.reservation_key).await? {
+        return Ok(
+            if relay_container_operation_matches_record(&current, &record) {
+                RelayContainerOperationWriteOutcome::MatchingOperation
+            } else {
+                RelayContainerOperationWriteOutcome::Conflict
+            },
+        );
+    }
+    let Some(current) = relay_billing_reservation(db, record.reservation_key).await? else {
+        return Ok(RelayContainerOperationWriteOutcome::ReservationNotFound);
+    };
+    let conflict = classify_relay_container_operation_reservation(&current, &record);
+    match (result, conflict) {
+        (Err(err), None) => Err(err),
+        (_, Some(outcome)) => Ok(outcome),
+        (Ok(_), None) => Ok(RelayContainerOperationWriteOutcome::Conflict),
+    }
+}
+
+fn relay_container_operation_insert_statement(
+    db: &D1Database,
+    record: &RelayContainerOperationRecord<'_>,
+) -> worker::Result<worker::D1PreparedStatement> {
     let args = [
         D1Type::Text(record.reservation_key),
         D1Type::Text(record.operation_id),
@@ -2429,9 +2537,8 @@ pub async fn bind_relay_container_operation(
         D1Type::Text(record.reconciliation_id),
         relay_container_d1_integer(record.created_at, "created at")?,
     ];
-    let result = db
-        .prepare(
-            r#"
+    db.prepare(
+        r#"
             INSERT INTO relay_container_operations (
               reservation_key, operation_id,
               owner_generation, owner_lease_expires_at,
@@ -2465,34 +2572,435 @@ pub async fn bind_relay_container_operation(
               AND ?16 <= ?4
             ON CONFLICT DO NOTHING
             "#,
-        )
-        .bind_refs(&args)?
-        .run()
-        .await;
-    if let Ok(result) = &result {
-        if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
-            return Ok(RelayContainerOperationWriteOutcome::Applied);
-        }
+    )
+    .bind_refs(&args)
+}
+
+fn append_relay_container_digest_bytes(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+fn relay_container_idempotency_aliases_sha256(aliases: &[&str]) -> String {
+    let mut aliases = aliases.to_vec();
+    aliases.sort_unstable();
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-idempotency-alias-set:v1",
+    );
+    for alias in aliases {
+        append_relay_container_digest_bytes(&mut hasher, alias.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+pub(crate) fn relay_container_atomic_admission_sha256(
+    record: &RelayContainerAtomicAdmissionRecord<'_>,
+) -> String {
+    fn append_bytes(hasher: &mut Sha256, value: &[u8]) {
+        append_relay_container_digest_bytes(hasher, value);
     }
 
-    if let Some(current) = relay_container_operation(db, record.reservation_key).await? {
-        return Ok(
-            if relay_container_operation_matches_record(&current, &record) {
-                RelayContainerOperationWriteOutcome::MatchingOperation
-            } else {
-                RelayContainerOperationWriteOutcome::Conflict
-            },
-        );
+    fn append_i64(hasher: &mut Sha256, value: i64) {
+        append_bytes(hasher, &value.to_be_bytes());
     }
-    let Some(current) = relay_billing_reservation(db, record.reservation_key).await? else {
-        return Ok(RelayContainerOperationWriteOutcome::ReservationNotFound);
+
+    let reservation = &record.reservation;
+    let operation = &record.operation;
+    let mut hasher = Sha256::new();
+    append_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-atomic-admission:v1",
+    );
+    append_i64(
+        &mut hasher,
+        RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION,
+    );
+    append_bytes(&mut hasher, reservation.reservation_key.trim().as_bytes());
+    append_i64(&mut hasher, reservation.user_id);
+    append_i64(&mut hasher, reservation.token_id);
+    append_bytes(&mut hasher, reservation.model_name.trim().as_bytes());
+    append_bytes(&mut hasher, reservation.endpoint_path.trim().as_bytes());
+    append_bytes(&mut hasher, reservation.request_id_hash.trim().as_bytes());
+    append_bytes(&mut hasher, reservation.expr_hash.trim().as_bytes());
+    append_bytes(&mut hasher, reservation.billing_kind.trim().as_bytes());
+    append_bytes(
+        &mut hasher,
+        reservation.billing_snapshot_json.trim().as_bytes(),
+    );
+    append_i64(&mut hasher, reservation.candidate_group_count);
+    append_bytes(
+        &mut hasher,
+        reservation.reservation_strategy.trim().as_bytes(),
+    );
+    append_i64(&mut hasher, reservation.pre_consumed_quota);
+    append_bytes(&mut hasher, operation.operation_id.as_bytes());
+    append_i64(&mut hasher, operation.owner_generation);
+    append_i64(&mut hasher, operation.channel_id);
+    append_i64(&mut hasher, record.selected_channel_type);
+    append_bytes(&mut hasher, operation.selected_group.as_bytes());
+    append_bytes(&mut hasher, record.selected_snapshot_key.as_bytes());
+    append_bytes(&mut hasher, operation.operation_kind.as_bytes());
+    append_bytes(&mut hasher, operation.provider_operation_id.as_bytes());
+    append_i64(&mut hasher, operation.protocol_version);
+    append_i64(&mut hasher, operation.shard_contract_version);
+    append_i64(&mut hasher, operation.ring_generation);
+    append_i64(&mut hasher, operation.shard_count);
+    append_i64(&mut hasher, operation.shard_index);
+    append_bytes(&mut hasher, operation.instance_name.as_bytes());
+    append_bytes(&mut hasher, operation.input_mode.as_bytes());
+    append_bytes(&mut hasher, operation.input_object_key.as_bytes());
+    append_bytes(&mut hasher, operation.input_sha256.as_bytes());
+    append_i64(&mut hasher, operation.input_size);
+    append_bytes(&mut hasher, operation.input_content_type.as_bytes());
+    append_bytes(
+        &mut hasher,
+        operation.client_idempotency_hmac_sha256.as_bytes(),
+    );
+    append_bytes(&mut hasher, operation.client_request_sha256.as_bytes());
+    append_i64(
+        &mut hasher,
+        i64::try_from(record.client_idempotency_hmac_aliases.len()).unwrap_or(i64::MAX),
+    );
+    append_bytes(
+        &mut hasher,
+        relay_container_idempotency_aliases_sha256(record.client_idempotency_hmac_aliases)
+            .as_bytes(),
+    );
+    format!("{:x}", hasher.finalize())
+}
+
+pub(crate) fn relay_container_atomic_reconciliation_id(
+    atomic_admission_sha256: &str,
+) -> worker::Result<String> {
+    validate_relay_container_sha256(atomic_admission_sha256, "atomic admission sha256")?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"cinatoken:relay-container-reconciliation:v1");
+    hasher.update((atomic_admission_sha256.len() as u64).to_be_bytes());
+    hasher.update(atomic_admission_sha256.as_bytes());
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub async fn admit_relay_container_operation_atomic(
+    db: &D1Database,
+    record: RelayContainerAtomicAdmissionRecord<'_>,
+) -> worker::Result<RelayContainerAtomicAdmissionOutcome> {
+    let quota = validate_relay_container_atomic_admission_record(&record)?;
+    let atomic_admission_sha256 = relay_container_atomic_admission_sha256(&record);
+
+    if let Some(outcome) = classify_relay_container_atomic_admission_readback(db, &record).await? {
+        return Ok(outcome);
+    }
+
+    let reservation_key = record.reservation.reservation_key.trim();
+    let mut statements = vec![db.prepare("PRAGMA defer_foreign_keys = ON")];
+    let mut checked = Vec::new();
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        relay_container_atomic_admission_insert_statement(db, &record, &atomic_admission_sha256)?,
+        reservation_key,
+        "relay container atomic admission receipt failed",
+    )?;
+    for alias in record.client_idempotency_hmac_aliases {
+        push_relay_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked,
+            relay_container_idempotency_alias_insert_statement(db, &record, alias)?,
+            reservation_key,
+            "relay container idempotency alias claim failed",
+        )?;
+    }
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        relay_container_atomic_reservation_insert_statement(db, &record)?,
+        reservation_key,
+        "relay container atomic reservation failed",
+    )?;
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        reserve_relay_container_atomic_user_quota_statement(db, record.reservation.user_id, quota)?,
+        reservation_key,
+        "user quota is not enough",
+    )?;
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        debit_relay_container_atomic_token_quota_statement(
+            db,
+            record.reservation.token_id,
+            record.reservation.user_id,
+            quota,
+            record.selected_at,
+        )?,
+        reservation_key,
+        "token quota is not enough",
+    )?;
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        relay_container_atomic_channel_authority_statement(db, &record)?,
+        reservation_key,
+        "relay container channel authority changed",
+    )?;
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        relay_container_operation_insert_statement(db, &record.operation)?,
+        reservation_key,
+        "relay container atomic operation failed",
+    )?;
+
+    let results = match db.batch(statements).await {
+        Ok(results) => results,
+        Err(err) => {
+            if let Some(outcome) =
+                classify_relay_container_atomic_admission_readback(db, &record).await?
+            {
+                return Ok(outcome);
+            }
+            return Err(err);
+        }
     };
-    let conflict = classify_relay_container_operation_reservation(&current, &record);
-    match (result, conflict) {
-        (Err(err), None) => Err(err),
-        (_, Some(outcome)) => Ok(outcome),
-        (Ok(_), None) => Ok(RelayContainerOperationWriteOutcome::Conflict),
+    for (index, message) in checked {
+        require_batch_change(&results, index, message)?;
     }
+
+    match classify_relay_container_atomic_admission_readback(db, &record).await? {
+        Some(RelayContainerAtomicAdmissionOutcome::MatchingResumable(operation)) => {
+            Ok(RelayContainerAtomicAdmissionOutcome::Applied(operation))
+        }
+        Some(outcome) => Ok(outcome),
+        None => Err(worker::Error::RustError(
+            "relay container atomic admission readback is missing".to_string(),
+        )),
+    }
+}
+
+fn relay_container_atomic_reservation_insert_statement(
+    db: &D1Database,
+    record: &RelayContainerAtomicAdmissionRecord<'_>,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let reservation = &record.reservation;
+    let operation = &record.operation;
+    let args = [
+        D1Type::Text(reservation.reservation_key.trim()),
+        D1Type::Integer(d1_i32(reservation.user_id)),
+        D1Type::Integer(d1_i32(reservation.token_id)),
+        D1Type::Text(reservation.model_name.trim()),
+        D1Type::Text(reservation.endpoint_path.trim()),
+        D1Type::Text(reservation.request_id_hash.trim()),
+        D1Type::Text(reservation.expr_hash.trim()),
+        D1Type::Text(reservation.billing_kind.trim()),
+        D1Type::Text(reservation.billing_snapshot_json.trim()),
+        D1Type::Integer(d1_i32(reservation.candidate_group_count)),
+        D1Type::Text(reservation.reservation_strategy.trim()),
+        D1Type::Integer(quota_i32(reservation.pre_consumed_quota)?),
+        relay_container_d1_integer(operation.channel_id, "channel id")?,
+        D1Type::Text(operation.selected_group),
+        relay_container_d1_integer(record.selected_at, "selected at")?,
+        relay_container_d1_integer(reservation.lease_expires_at, "owner lease")?,
+        relay_container_d1_integer(operation.owner_generation, "owner generation")?,
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, token_id, model_name, endpoint_path, request_id_hash,
+          expr_hash, billing_kind, billing_snapshot_json,
+          candidate_group_count, reservation_strategy, pre_consumed_quota,
+          status, channel_id, selected_group, selected_at,
+          lease_expires_at, owner_generation, owner_deadline_at,
+          created_at, updated_at
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+          'reserved', ?13, ?14, ?15, ?16, ?17, ?16, ?15, ?15
+        )
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn relay_container_atomic_admission_insert_statement(
+    db: &D1Database,
+    record: &RelayContainerAtomicAdmissionRecord<'_>,
+    atomic_admission_sha256: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let operation = &record.operation;
+    let billing_snapshot_sha256 =
+        relay_container_sha256_hex(record.reservation.billing_snapshot_json.trim().as_bytes());
+    let idempotency_aliases_sha256 =
+        relay_container_idempotency_aliases_sha256(record.client_idempotency_hmac_aliases);
+    let args = [
+        D1Type::Text(record.reservation.reservation_key.trim()),
+        D1Type::Text(operation.operation_id),
+        relay_container_d1_integer(
+            RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION,
+            "atomic admission contract version",
+        )?,
+        D1Type::Text(atomic_admission_sha256),
+        D1Type::Text(operation.admission_sha256),
+        D1Type::Text(operation.client_idempotency_hmac_sha256),
+        D1Type::Text(operation.client_request_sha256),
+        relay_container_d1_integer(
+            i64::try_from(record.client_idempotency_hmac_aliases.len()).unwrap_or(i64::MAX),
+            "idempotency alias count",
+        )?,
+        D1Type::Text(&idempotency_aliases_sha256),
+        D1Type::Text(&billing_snapshot_sha256),
+        relay_container_d1_integer(record.reservation.user_id, "user id")?,
+        relay_container_d1_integer(record.reservation.token_id, "token id")?,
+        D1Type::Integer(quota_i32(record.reservation.pre_consumed_quota)?),
+        relay_container_d1_integer(operation.owner_generation, "owner generation")?,
+        relay_container_d1_integer(operation.owner_lease_expires_at, "owner lease")?,
+        relay_container_d1_integer(operation.channel_id, "channel id")?,
+        relay_container_d1_integer(record.selected_channel_type, "selected channel type")?,
+        D1Type::Text(operation.selected_group),
+        D1Type::Text(record.selected_snapshot_key),
+        relay_container_d1_integer(operation.owner_lease_expires_at, "owner deadline")?,
+        relay_container_d1_integer(record.selected_at, "selected at")?,
+        relay_container_d1_integer(operation.created_at, "created at")?,
+        D1Type::Integer(1),
+        D1Type::Integer(1),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO relay_container_atomic_admissions (
+          reservation_key, operation_id, contract_version,
+          atomic_admission_sha256, operation_admission_sha256,
+          client_idempotency_hmac_sha256, client_request_sha256,
+          idempotency_alias_count, idempotency_aliases_sha256,
+          billing_snapshot_sha256, user_id, token_id, pre_consumed_quota,
+          owner_generation, owner_lease_expires_at,
+          channel_id, selected_channel_type, selected_group, selected_snapshot_key,
+          owner_deadline_at, selected_at, created_at,
+          attempt_count, provider_attempt_generation
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+          ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+        )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn relay_container_idempotency_alias_insert_statement(
+    db: &D1Database,
+    record: &RelayContainerAtomicAdmissionRecord<'_>,
+    alias: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let operation = &record.operation;
+    let args = [
+        D1Type::Text(alias),
+        D1Type::Text(record.reservation.reservation_key.trim()),
+        D1Type::Text(operation.operation_id),
+        D1Type::Text(operation.client_idempotency_hmac_sha256),
+        D1Type::Text(operation.client_request_sha256),
+        relay_container_d1_integer(operation.created_at, "created at")?,
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO relay_container_idempotency_aliases (
+          client_idempotency_hmac_sha256, reservation_key, operation_id,
+          canonical_client_idempotency_hmac_sha256, client_request_sha256,
+          created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn reserve_relay_container_atomic_user_quota_statement(
+    db: &D1Database,
+    user_id: i64,
+    quota: i32,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(user_id))];
+    db.prepare(
+        r#"
+        UPDATE users
+        SET quota = quota - ?1
+        WHERE id = ?2
+          AND status = 1
+          AND deleted_at IS NULL
+          AND quota >= ?1
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn debit_relay_container_atomic_token_quota_statement(
+    db: &D1Database,
+    token_id: i64,
+    user_id: i64,
+    quota: i32,
+    admitted_at: i64,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        D1Type::Integer(quota),
+        D1Type::Integer(d1_i32(admitted_at)),
+        D1Type::Integer(d1_i32(token_id)),
+        D1Type::Integer(d1_i32(user_id)),
+    ];
+    db.prepare(
+        r#"
+        UPDATE tokens
+        SET remain_quota = remain_quota - ?1,
+            used_quota = used_quota + ?1,
+            accessed_time = ?2
+        WHERE id = ?3
+          AND user_id = ?4
+          AND status = 1
+          AND deleted_at IS NULL
+          AND (expired_time = -1 OR expired_time >= ?2)
+          AND (unlimited_quota != 0 OR remain_quota >= ?1)
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn relay_container_atomic_channel_authority_statement(
+    db: &D1Database,
+    record: &RelayContainerAtomicAdmissionRecord<'_>,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        relay_container_d1_integer(record.operation.channel_id, "channel id")?,
+        relay_container_d1_integer(record.selected_channel_type, "selected channel type")?,
+        D1Type::Text(record.operation.selected_group),
+        D1Type::Text(record.reservation.model_name.trim()),
+    ];
+    db.prepare(
+        r#"
+        UPDATE channels AS channel
+        SET status = status
+        WHERE id = ?1
+          AND status = 1
+          AND type = ?2
+          AND instr(
+                ',' || replace(channel."group", ' ', '') || ',',
+                ',' || replace(?3, ' ', '') || ','
+              ) > 0
+          AND EXISTS (
+            SELECT 1 FROM abilities AS ability
+            WHERE ability.channel_id = channel.id
+              AND ability.group_name = ?3
+              AND ability.model = ?4
+              AND ability.enabled = 1
+          )
+        "#,
+    )
+    .bind_refs(&args)
 }
 
 pub async fn mark_relay_container_operation_dispatched(
@@ -3254,6 +3762,7 @@ fn relay_container_provider_usage_settlement_transition_valid(
 fn relay_container_provider_usage_final_quota(
     payload: &RelayContainerProviderUsageReceiptPayload,
     reservation: &RelayBillingReservation,
+    selected_snapshot_key: Option<&str>,
 ) -> worker::Result<i64> {
     if !payload.usage_present || payload.estimated {
         return Err(worker::Error::RustError(
@@ -3380,10 +3889,14 @@ fn relay_container_provider_usage_final_quota(
                     "relay container flat settlement snapshot is invalid: {err}"
                 ))
             })?;
-            let channel_id = reservation.channel_id.to_string();
+            let selected_snapshot_key = selected_snapshot_key.ok_or_else(|| {
+                worker::Error::RustError(
+                    "relay container selected flat snapshot key is missing".to_string(),
+                )
+            })?;
             let snapshot = snapshots
                 .get(&reservation.selected_group)
-                .and_then(|group| group.get(&channel_id))
+                .and_then(|group| group.get(selected_snapshot_key))
                 .ok_or_else(|| {
                     worker::Error::RustError(
                         "relay container selected flat settlement snapshot is missing".to_string(),
@@ -3584,7 +4097,26 @@ pub async fn quote_relay_container_provider_usage_settlement(
     {
         return Ok(None);
     }
-    let final_quota = relay_container_provider_usage_final_quota(&payload, &reservation)?;
+    let Some(admission) =
+        relay_container_atomic_admission_by_reservation(db, &operation.reservation_key).await?
+    else {
+        return Ok(None);
+    };
+    let aliases =
+        relay_container_idempotency_aliases_by_reservation(db, &operation.reservation_key).await?;
+    if !relay_container_atomic_admission_integrity_valid(
+        &admission,
+        operation,
+        &reservation,
+        &aliases,
+    ) {
+        return Ok(None);
+    }
+    let final_quota = relay_container_provider_usage_final_quota(
+        &payload,
+        &reservation,
+        Some(&admission.selected_snapshot_key),
+    )?;
     Ok(Some(RelayContainerProviderUsageSettlementQuote {
         final_quota,
         prompt_tokens: payload.prompt_tokens,
@@ -3656,7 +4188,27 @@ async fn validate_relay_container_provider_usage_settlement(
     ) {
         return Ok(None);
     }
-    relay_container_provider_usage_final_quota(&payload, reservation).map(Some)
+    let Some(admission) =
+        relay_container_atomic_admission_by_reservation(db, command.reservation_key).await?
+    else {
+        return Ok(None);
+    };
+    let aliases =
+        relay_container_idempotency_aliases_by_reservation(db, command.reservation_key).await?;
+    if !relay_container_atomic_admission_integrity_valid(
+        &admission,
+        operation,
+        reservation,
+        &aliases,
+    ) {
+        return Ok(None);
+    }
+    relay_container_provider_usage_final_quota(
+        &payload,
+        reservation,
+        Some(&admission.selected_snapshot_key),
+    )
+    .map(Some)
 }
 
 /// Commits the Container operation outcome and its financial effects as one D1 transaction.
@@ -4899,50 +5451,270 @@ pub async fn lookup_relay_container_client_request(
         "client idempotency hmac sha256",
     )?;
     validate_relay_container_sha256(client_request_sha256, "client request sha256")?;
-    let args = [D1Type::Text(client_idempotency_hmac_sha256)];
-    let operation = db
-        .prepare(
-            r#"
-            SELECT reservation_key, operation_id,
-                   owner_generation, owner_lease_expires_at,
-                   channel_id, selected_group,
-                   operation_kind, provider_operation_id, admission_sha256,
-                   protocol_version, shard_contract_version,
-                   ring_generation, shard_count, shard_index, instance_name,
-                   execution_deadline_at,
-                   input_mode, input_object_key, input_object_version,
-                   input_sha256, input_size, input_content_type, trace_id,
-                   client_idempotency_hmac_sha256, client_request_sha256,
-                   reconciliation_id,
-                   status, response_status, response_code,
-                   result_object_key, result_object_version, result_sha256,
-                   result_size, result_content_type,
-                   created_at, updated_at
-            FROM relay_container_operations
-            WHERE client_idempotency_hmac_sha256 = ?1
-            LIMIT 1
-            "#,
-        )
-        .bind_refs(&args)?
-        .first::<RelayContainerOperation>(None)
-        .await?;
-    Ok(classify_relay_container_client_request(
-        operation,
+    let Some(alias) = relay_container_idempotency_alias(db, client_idempotency_hmac_sha256).await?
+    else {
+        return Ok(RelayContainerClientRequestLookup::NotFound);
+    };
+    let operation = relay_container_operation(db, &alias.reservation_key).await?;
+    let admission =
+        relay_container_atomic_admission_by_reservation(db, &alias.reservation_key).await?;
+    let outcome = classify_relay_container_client_request(
+        alias,
+        operation.clone(),
+        admission.clone(),
         client_request_sha256,
-    ))
+    );
+    let RelayContainerClientRequestLookup::MatchingOperation(operation) = outcome else {
+        return Ok(outcome);
+    };
+    let Some(admission) = admission else {
+        return Ok(RelayContainerClientRequestLookup::ImmutableIdentityConflict);
+    };
+    let Some(reservation) = relay_billing_reservation(db, &operation.reservation_key).await? else {
+        return Ok(RelayContainerClientRequestLookup::ImmutableIdentityConflict);
+    };
+    let aliases =
+        relay_container_idempotency_aliases_by_reservation(db, &operation.reservation_key).await?;
+    if relay_container_atomic_admission_integrity_valid(
+        &admission,
+        &operation,
+        &reservation,
+        &aliases,
+    ) {
+        Ok(RelayContainerClientRequestLookup::MatchingOperation(
+            operation,
+        ))
+    } else {
+        Ok(RelayContainerClientRequestLookup::ImmutableIdentityConflict)
+    }
 }
 
 fn classify_relay_container_client_request(
+    alias: RelayContainerIdempotencyAlias,
     operation: Option<RelayContainerOperation>,
+    admission: Option<RelayContainerAtomicAdmission>,
     client_request_sha256: &str,
 ) -> RelayContainerClientRequestLookup {
-    match operation {
-        None => RelayContainerClientRequestLookup::NotFound,
-        Some(operation) if operation.client_request_sha256 == client_request_sha256 => {
+    match (operation, admission) {
+        (Some(operation), Some(admission))
+            if alias.client_request_sha256 != client_request_sha256
+                || operation.client_request_sha256 != client_request_sha256
+                || admission.client_request_sha256 != client_request_sha256 =>
+        {
+            RelayContainerClientRequestLookup::RequestConflict
+        }
+        (Some(operation), Some(admission))
+            if relay_container_idempotency_alias_links_operation(
+                &alias, &admission, &operation,
+            ) && relay_container_atomic_admission_links_operation(&admission, &operation) =>
+        {
             RelayContainerClientRequestLookup::MatchingOperation(operation)
         }
-        Some(_) => RelayContainerClientRequestLookup::RequestConflict,
+        _ => RelayContainerClientRequestLookup::ImmutableIdentityConflict,
     }
+}
+
+async fn relay_container_idempotency_alias(
+    db: &D1Database,
+    client_idempotency_hmac_sha256: &str,
+) -> worker::Result<Option<RelayContainerIdempotencyAlias>> {
+    let args = [D1Type::Text(client_idempotency_hmac_sha256)];
+    db.prepare(
+        r#"
+        SELECT client_idempotency_hmac_sha256, reservation_key, operation_id,
+               canonical_client_idempotency_hmac_sha256,
+               client_request_sha256, created_at
+        FROM relay_container_idempotency_aliases
+        WHERE client_idempotency_hmac_sha256 = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerIdempotencyAlias>(None)
+    .await
+}
+
+async fn relay_container_atomic_admission_by_reservation(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<Option<RelayContainerAtomicAdmission>> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    let args = [D1Type::Text(reservation_key)];
+    db.prepare(
+        r#"
+        SELECT reservation_key, operation_id, contract_version,
+               atomic_admission_sha256, operation_admission_sha256,
+               client_idempotency_hmac_sha256, client_request_sha256,
+               idempotency_alias_count, idempotency_aliases_sha256,
+               billing_snapshot_sha256, user_id, token_id, pre_consumed_quota,
+               owner_generation, owner_lease_expires_at,
+               channel_id, selected_channel_type, selected_group,
+               selected_snapshot_key, owner_deadline_at,
+               selected_at, created_at, attempt_count, provider_attempt_generation
+        FROM relay_container_atomic_admissions
+        WHERE reservation_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerAtomicAdmission>(None)
+    .await
+}
+
+async fn relay_container_idempotency_aliases_by_reservation(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<Vec<RelayContainerIdempotencyAlias>> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    let args = [D1Type::Text(reservation_key)];
+    db.prepare(
+        r#"
+        SELECT client_idempotency_hmac_sha256, reservation_key, operation_id,
+               canonical_client_idempotency_hmac_sha256,
+               client_request_sha256, created_at
+        FROM relay_container_idempotency_aliases
+        WHERE reservation_key = ?1
+        ORDER BY client_idempotency_hmac_sha256 ASC
+        LIMIT 3
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RelayContainerIdempotencyAlias>()
+}
+
+fn relay_container_idempotency_alias_links_operation(
+    alias: &RelayContainerIdempotencyAlias,
+    admission: &RelayContainerAtomicAdmission,
+    operation: &RelayContainerOperation,
+) -> bool {
+    alias.reservation_key == admission.reservation_key
+        && alias.operation_id == admission.operation_id
+        && alias.reservation_key == operation.reservation_key
+        && alias.operation_id == operation.operation_id
+        && alias.canonical_client_idempotency_hmac_sha256
+            == admission.client_idempotency_hmac_sha256
+        && alias.canonical_client_idempotency_hmac_sha256
+            == operation.client_idempotency_hmac_sha256
+        && alias.client_request_sha256 == admission.client_request_sha256
+        && alias.client_request_sha256 == operation.client_request_sha256
+        && alias.created_at == admission.created_at
+        && alias.created_at == operation.created_at
+}
+
+fn relay_container_atomic_admission_links_operation(
+    admission: &RelayContainerAtomicAdmission,
+    operation: &RelayContainerOperation,
+) -> bool {
+    admission.reservation_key == operation.reservation_key
+        && admission.operation_id == operation.operation_id
+        && admission.contract_version == RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION
+        && admission.operation_admission_sha256 == operation.admission_sha256
+        && admission.client_idempotency_hmac_sha256 == operation.client_idempotency_hmac_sha256
+        && admission.client_request_sha256 == operation.client_request_sha256
+        && admission.owner_generation == operation.owner_generation
+        && admission.owner_lease_expires_at == operation.owner_lease_expires_at
+        && admission.owner_deadline_at == admission.owner_lease_expires_at
+        && admission.channel_id == operation.channel_id
+        && admission.selected_group == operation.selected_group
+        && admission.created_at == operation.created_at
+        && admission.selected_at == admission.created_at
+        && admission.attempt_count == 1
+        && admission.provider_attempt_generation == 1
+        && operation.protocol_version == 1
+        && operation.operation_kind == "chat_completions_canary"
+}
+
+fn relay_container_atomic_admission_integrity_valid(
+    admission: &RelayContainerAtomicAdmission,
+    operation: &RelayContainerOperation,
+    reservation: &RelayBillingReservation,
+    aliases: &[RelayContainerIdempotencyAlias],
+) -> bool {
+    let alias_values = aliases
+        .iter()
+        .map(|alias| alias.client_idempotency_hmac_sha256.as_str())
+        .collect::<Vec<_>>();
+    if !relay_container_atomic_admission_links_operation(admission, operation)
+        || aliases.len() != usize::try_from(admission.idempotency_alias_count).unwrap_or(0)
+        || !(1..=2).contains(&aliases.len())
+        || !aliases.iter().all(|alias| {
+            relay_container_idempotency_alias_links_operation(alias, admission, operation)
+        })
+        || !alias_values.contains(&admission.client_idempotency_hmac_sha256.as_str())
+        || admission.idempotency_aliases_sha256
+            != relay_container_idempotency_aliases_sha256(&alias_values)
+        || admission.reservation_key != reservation.reservation_key
+        || admission.billing_snapshot_sha256
+            != relay_container_sha256_hex(reservation.billing_snapshot_json.as_bytes())
+        || admission.user_id != reservation.user_id
+        || admission.token_id != reservation.token_id
+        || admission.pre_consumed_quota != reservation.pre_consumed_quota
+        || admission.owner_generation != RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+        || admission.owner_lease_expires_at != reservation.lease_expires_at
+        || admission.owner_deadline_at != reservation.owner_deadline_at
+        || admission.channel_id != reservation.channel_id
+        || admission.selected_group != reservation.selected_group
+        || admission.selected_snapshot_key != admission.selected_channel_type.to_string()
+        || admission.selected_at != reservation.selected_at
+        || admission.created_at != reservation.created_at
+    {
+        return false;
+    }
+
+    let record = RelayContainerAtomicAdmissionRecord {
+        reservation: RelayBillingReservationRecord {
+            reservation_key: &reservation.reservation_key,
+            user_id: reservation.user_id,
+            token_id: reservation.token_id,
+            model_name: &reservation.model_name,
+            endpoint_path: &reservation.endpoint_path,
+            request_id_hash: &reservation.request_id_hash,
+            expr_hash: &reservation.expr_hash,
+            billing_kind: &reservation.billing_kind,
+            billing_snapshot_json: &reservation.billing_snapshot_json,
+            candidate_group_count: reservation.candidate_group_count,
+            reservation_strategy: &reservation.reservation_strategy,
+            pre_consumed_quota: reservation.pre_consumed_quota,
+            created_at: reservation.created_at,
+            lease_expires_at: reservation.lease_expires_at,
+        },
+        operation: RelayContainerOperationRecord {
+            reservation_key: &operation.reservation_key,
+            operation_id: &operation.operation_id,
+            owner_generation: operation.owner_generation,
+            owner_lease_expires_at: operation.owner_lease_expires_at,
+            channel_id: operation.channel_id,
+            selected_group: &operation.selected_group,
+            operation_kind: &operation.operation_kind,
+            provider_operation_id: &operation.provider_operation_id,
+            admission_sha256: &operation.admission_sha256,
+            protocol_version: operation.protocol_version,
+            shard_contract_version: operation.shard_contract_version,
+            ring_generation: operation.ring_generation,
+            shard_count: operation.shard_count,
+            shard_index: operation.shard_index,
+            instance_name: &operation.instance_name,
+            execution_deadline_at: operation.execution_deadline_at,
+            input_mode: &operation.input_mode,
+            input_object_key: &operation.input_object_key,
+            input_object_version: &operation.input_object_version,
+            input_sha256: &operation.input_sha256,
+            input_size: operation.input_size,
+            input_content_type: &operation.input_content_type,
+            trace_id: &operation.trace_id,
+            client_idempotency_hmac_sha256: &operation.client_idempotency_hmac_sha256,
+            client_request_sha256: &operation.client_request_sha256,
+            reconciliation_id: &operation.reconciliation_id,
+            created_at: operation.created_at,
+        },
+        client_idempotency_hmac_aliases: &alias_values,
+        selected_channel_type: admission.selected_channel_type,
+        selected_snapshot_key: &admission.selected_snapshot_key,
+        selected_at: admission.selected_at,
+    };
+    relay_container_atomic_admission_sha256(&record) == admission.atomic_admission_sha256
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -6906,6 +7678,104 @@ pub async fn relay_container_operation_schema_ready(db: &D1Database) -> worker::
         .first::<CountRow>(None)
         .await?;
     Ok(row.map(|row| row.count == 4).unwrap_or(false))
+}
+
+pub async fn relay_container_atomic_admission_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    let args = [D1Type::Text(RELAY_CONTAINER_ATOMIC_ADMISSION_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(DISTINCT name) AS count
+            FROM d1_migrations
+            WHERE name = ?1
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_atomic_admissions'
+              )
+              AND (
+                SELECT COUNT(*)
+                FROM pragma_table_info('relay_container_atomic_admissions')
+                WHERE name IN (
+                  'idempotency_alias_count',
+                  'idempotency_aliases_sha256'
+                )
+              ) = 2
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index'
+                  AND name = 'idx_relay_container_atomic_admissions_created'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_container_idempotency_aliases'
+              )
+              AND (
+                SELECT COUNT(*)
+                FROM pragma_table_info('relay_container_idempotency_aliases')
+                WHERE name IN (
+                  'client_idempotency_hmac_sha256',
+                  'reservation_key',
+                  'operation_id',
+                  'canonical_client_idempotency_hmac_sha256',
+                  'client_request_sha256',
+                  'created_at'
+                )
+              ) = 6
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index'
+                  AND name = 'idx_relay_container_idempotency_aliases_reservation'
+              )
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name IN (
+                    'relay_container_atomic_admission_operation_insert_guard',
+                    'relay_container_atomic_admission_update_guard',
+                    'relay_container_atomic_admission_delete_guard',
+                    'relay_container_idempotency_alias_insert_guard',
+                    'relay_container_idempotency_alias_update_guard',
+                    'relay_container_idempotency_alias_delete_guard',
+                    'relay_container_canary_atomic_admission_update_guard',
+                    'relay_container_canary_operation_delete_guard'
+                  )
+              ) = 8
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 1).unwrap_or(false))
+}
+
+pub async fn relay_container_atomic_admission_history_exists(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    let args = [D1Type::Text(RELAY_CONTAINER_ATOMIC_ADMISSION_MIGRATION)];
+    let migration = db
+        .prepare("SELECT COUNT(*) AS count FROM d1_migrations WHERE name = ?1")
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?
+        .map(|row| row.count == 1)
+        .unwrap_or(false);
+    if !migration {
+        return Ok(false);
+    }
+    if !relay_container_atomic_admission_schema_ready(db).await? {
+        return Err(worker::Error::RustError(
+            "relay container atomic admission schema is unavailable".to_string(),
+        ));
+    }
+    let row = db
+        .prepare("SELECT EXISTS(SELECT 1 FROM relay_container_atomic_admissions) AS count")
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 1).unwrap_or(false))
 }
 
 pub async fn relay_container_provider_egress_schema_ready(db: &D1Database) -> worker::Result<bool> {
@@ -9705,6 +10575,225 @@ fn relay_container_operation_matches_record(
         && current.client_request_sha256 == expected.client_request_sha256
         && current.reconciliation_id == expected.reconciliation_id
         && current.created_at == expected.created_at
+}
+
+async fn classify_relay_container_atomic_admission_readback(
+    db: &D1Database,
+    expected: &RelayContainerAtomicAdmissionRecord<'_>,
+) -> worker::Result<Option<RelayContainerAtomicAdmissionOutcome>> {
+    let mut winner = None;
+    for alias in expected.client_idempotency_hmac_aliases {
+        match lookup_relay_container_client_request(
+            db,
+            alias,
+            expected.operation.client_request_sha256,
+        )
+        .await?
+        {
+            RelayContainerClientRequestLookup::NotFound => {}
+            RelayContainerClientRequestLookup::RequestConflict => {
+                return Ok(Some(RelayContainerAtomicAdmissionOutcome::RequestConflict));
+            }
+            RelayContainerClientRequestLookup::ImmutableIdentityConflict => {
+                return Ok(Some(
+                    RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict,
+                ));
+            }
+            RelayContainerClientRequestLookup::MatchingOperation(operation) => {
+                if winner
+                    .as_ref()
+                    .is_some_and(|current: &RelayContainerOperation| {
+                        current.operation_id != operation.operation_id
+                    })
+                {
+                    return Ok(Some(
+                        RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict,
+                    ));
+                }
+                winner = Some(operation);
+            }
+        }
+    }
+    let Some(operation) = winner else {
+        let reservation =
+            relay_billing_reservation(db, expected.reservation.reservation_key).await?;
+        let operation = relay_container_operation(db, expected.reservation.reservation_key).await?;
+        let admission = relay_container_atomic_admission_by_reservation(
+            db,
+            expected.reservation.reservation_key,
+        )
+        .await?;
+        let aliases = relay_container_idempotency_aliases_by_reservation(
+            db,
+            expected.reservation.reservation_key,
+        )
+        .await?;
+        return Ok(
+            if reservation.is_none()
+                && operation.is_none()
+                && admission.is_none()
+                && aliases.is_empty()
+            {
+                None
+            } else {
+                Some(RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict)
+            },
+        );
+    };
+    let Some(admission) =
+        relay_container_atomic_admission_by_reservation(db, &operation.reservation_key).await?
+    else {
+        return Ok(Some(
+            RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict,
+        ));
+    };
+    let Some(reservation) = relay_billing_reservation(db, &operation.reservation_key).await? else {
+        return Ok(Some(
+            RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict,
+        ));
+    };
+    let aliases =
+        relay_container_idempotency_aliases_by_reservation(db, &operation.reservation_key).await?;
+    if !relay_container_atomic_admission_integrity_valid(
+        &admission,
+        &operation,
+        &reservation,
+        &aliases,
+    ) {
+        return Ok(Some(
+            RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict,
+        ));
+    }
+
+    match operation.status.as_str() {
+        "prepared" | "dispatched" => {
+            if reservation.status == "reserved"
+                && reservation.owner_generation == admission.owner_generation
+                && reservation.owner_deadline_at == admission.owner_lease_expires_at
+            {
+                Ok(Some(
+                    RelayContainerAtomicAdmissionOutcome::MatchingResumable(operation),
+                ))
+            } else {
+                Ok(Some(
+                    RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict,
+                ))
+            }
+        }
+        "recovery_required" => {
+            let receipt = relay_container_financial_terminal_receipt_for_operation(
+                db,
+                &operation.operation_id,
+            )
+            .await?;
+            if reservation.status == "recovery_required"
+                && receipt.as_ref().is_some_and(|receipt| {
+                    receipt.billing_action == "recovery_required"
+                        && relay_container_terminal_outbox_receipt_routes_to_operation(
+                            receipt, &operation,
+                        )
+                })
+            {
+                Ok(Some(
+                    RelayContainerAtomicAdmissionOutcome::MatchingResumable(operation),
+                ))
+            } else {
+                Ok(Some(
+                    RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict,
+                ))
+            }
+        }
+        "completed" | "failed" => {
+            let receipt = relay_container_financial_terminal_receipt_for_operation(
+                db,
+                &operation.operation_id,
+            )
+            .await?;
+            if receipt.as_ref().is_some_and(|receipt| {
+                relay_container_terminal_outbox_receipt_routes_to_operation(receipt, &operation)
+            }) {
+                Ok(Some(RelayContainerAtomicAdmissionOutcome::TerminalReplay(
+                    operation,
+                )))
+            } else {
+                Ok(Some(
+                    RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict,
+                ))
+            }
+        }
+        _ => Ok(Some(
+            RelayContainerAtomicAdmissionOutcome::ImmutableIdentityConflict,
+        )),
+    }
+}
+
+#[cfg(test)]
+fn relay_container_operation_matches_atomic_admission(
+    current: &RelayContainerOperation,
+    expected: &RelayContainerOperationRecord<'_>,
+) -> bool {
+    current.reservation_key == expected.reservation_key
+        && current.operation_id == expected.operation_id
+        && current.owner_generation == RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+        && current.channel_id == expected.channel_id
+        && current.selected_group == expected.selected_group
+        && current.operation_kind == expected.operation_kind
+        && current.provider_operation_id == expected.provider_operation_id
+        && current.protocol_version == expected.protocol_version
+        && current.shard_contract_version == expected.shard_contract_version
+        && current.ring_generation == expected.ring_generation
+        && current.shard_count == expected.shard_count
+        && current.shard_index == expected.shard_index
+        && current.instance_name == expected.instance_name
+        && current.input_mode == expected.input_mode
+        && current.input_object_key == expected.input_object_key
+        && current.input_sha256 == expected.input_sha256
+        && current.input_size == expected.input_size
+        && current.input_content_type == expected.input_content_type
+        && current.client_idempotency_hmac_sha256 == expected.client_idempotency_hmac_sha256
+        && current.client_request_sha256 == expected.client_request_sha256
+        && current.reconciliation_id == expected.reconciliation_id
+}
+
+fn validate_relay_container_atomic_admission_record(
+    record: &RelayContainerAtomicAdmissionRecord<'_>,
+) -> worker::Result<i32> {
+    let quota = validate_relay_billing_reservation_record(&record.reservation)?;
+    validate_relay_container_operation_record(&record.operation)?;
+    let reservation = &record.reservation;
+    let operation = &record.operation;
+    let aliases = record.client_idempotency_hmac_aliases;
+    for alias in aliases {
+        validate_relay_container_sha256(alias, "client idempotency alias sha256")?;
+    }
+    let atomic_admission_sha256 = relay_container_atomic_admission_sha256(record);
+    let reconciliation_id = relay_container_atomic_reconciliation_id(&atomic_admission_sha256)?;
+    if quota <= 0
+        || reservation.token_id <= 0
+        || reservation.reservation_key.trim() != operation.reservation_key
+        || reservation.lease_expires_at != operation.owner_lease_expires_at
+        || reservation.created_at != record.selected_at
+        || operation.created_at != record.selected_at
+        || operation.owner_generation != RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
+        || operation.channel_id <= 0
+        || record.selected_channel_type <= 0
+        || operation.selected_group.is_empty()
+        || record.selected_snapshot_key != record.selected_channel_type.to_string()
+        || operation.operation_kind != "chat_completions_canary"
+        || operation.protocol_version != 1
+        || operation.reconciliation_id != reconciliation_id
+        || !(1..=2).contains(&aliases.len())
+        || !aliases.contains(&operation.client_idempotency_hmac_sha256)
+        || aliases
+            .iter()
+            .enumerate()
+            .any(|(index, alias)| aliases[..index].contains(alias))
+    {
+        return Err(worker::Error::RustError(
+            "relay container atomic admission identity is invalid".to_string(),
+        ));
+    }
+    Ok(quota)
 }
 
 fn validate_relay_container_operation_record(
@@ -21359,6 +22448,64 @@ mod tests {
         assert!(migration.contains("SET owner_generation = 2"));
     }
 
+    #[test]
+    fn relay_container_atomic_admission_migration_is_expand_only_and_closes_old_writers() {
+        let migration =
+            include_str!("../../../migrations/d1/0050_relay_container_atomic_admission.sql");
+        assert!(migration.contains("CHECK (active_count = 0)"));
+        assert!(migration.contains("operation_kind = 'chat_completions_canary'"));
+        assert!(migration.contains("CREATE TABLE relay_container_atomic_admissions"));
+        assert!(migration.contains("CREATE TABLE relay_container_idempotency_aliases"));
+        assert!(migration.contains("idempotency_aliases_sha256 TEXT NOT NULL"));
+        assert!(migration.contains("FOREIGN KEY (reservation_key)"));
+        assert!(migration.contains("FOREIGN KEY (operation_id)"));
+        assert!(migration
+            .contains("CHECK (selected_snapshot_key = CAST(selected_channel_type AS TEXT))"));
+        for trigger in [
+            "relay_container_atomic_admission_operation_insert_guard",
+            "relay_container_atomic_admission_update_guard",
+            "relay_container_atomic_admission_delete_guard",
+            "relay_container_idempotency_alias_insert_guard",
+            "relay_container_idempotency_alias_update_guard",
+            "relay_container_idempotency_alias_delete_guard",
+            "relay_container_canary_atomic_admission_update_guard",
+            "relay_container_canary_operation_delete_guard",
+        ] {
+            assert!(
+                migration.contains(trigger),
+                "missing 0050 trigger {trigger}"
+            );
+        }
+        assert!(!migration.contains("UPDATE relay_billing_reservations SET"));
+        assert!(!migration.contains("UPDATE relay_container_operations SET"));
+
+        let source = include_str!("d1_repositories.rs");
+        let start = source
+            .find("pub async fn admit_relay_container_operation_atomic")
+            .unwrap();
+        let end = source[start..]
+            .find("fn relay_container_atomic_reservation_insert_statement")
+            .map(|offset| start + offset)
+            .unwrap();
+        let admission = &source[start..end];
+        let positions = [
+            "PRAGMA defer_foreign_keys = ON",
+            "relay_container_atomic_admission_insert_statement",
+            "relay_container_idempotency_alias_insert_statement",
+            "relay_container_atomic_reservation_insert_statement",
+            "reserve_relay_container_atomic_user_quota_statement",
+            "debit_relay_container_atomic_token_quota_statement",
+            "relay_container_atomic_channel_authority_statement",
+            "relay_container_operation_insert_statement",
+        ]
+        .map(|fragment| {
+            admission
+                .find(fragment)
+                .unwrap_or_else(|| panic!("missing atomic admission step {fragment}"))
+        });
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
     fn relay_container_test_record() -> RelayContainerOperationRecord<'static> {
         RelayContainerOperationRecord {
             reservation_key: "relayreserve-test",
@@ -21367,7 +22514,7 @@ mod tests {
             owner_lease_expires_at: 200,
             channel_id: 7,
             selected_group: "vip",
-            operation_kind: "relay_openai",
+            operation_kind: "chat_completions_canary",
             provider_operation_id: "provider-op-001",
             admission_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             protocol_version: 1,
@@ -21436,6 +22583,378 @@ mod tests {
             created_at: record.created_at,
             updated_at: record.created_at,
         }
+    }
+
+    fn relay_container_test_atomic_admission(
+        operation: &RelayContainerOperation,
+    ) -> RelayContainerAtomicAdmission {
+        let aliases = [operation.client_idempotency_hmac_sha256.as_str()];
+        RelayContainerAtomicAdmission {
+            reservation_key: operation.reservation_key.clone(),
+            operation_id: operation.operation_id.clone(),
+            contract_version: RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION,
+            atomic_admission_sha256:
+                "abababababababababababababababababababababababababababababababab".to_string(),
+            operation_admission_sha256: operation.admission_sha256.clone(),
+            client_idempotency_hmac_sha256: operation.client_idempotency_hmac_sha256.clone(),
+            client_request_sha256: operation.client_request_sha256.clone(),
+            idempotency_alias_count: 1,
+            idempotency_aliases_sha256: relay_container_idempotency_aliases_sha256(&aliases),
+            billing_snapshot_sha256:
+                "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc".to_string(),
+            user_id: 1,
+            token_id: 2,
+            pre_consumed_quota: 100,
+            owner_generation: operation.owner_generation,
+            owner_lease_expires_at: operation.owner_lease_expires_at,
+            channel_id: operation.channel_id,
+            selected_channel_type: 1,
+            selected_group: operation.selected_group.clone(),
+            selected_snapshot_key: "1".to_string(),
+            owner_deadline_at: operation.owner_lease_expires_at,
+            selected_at: operation.created_at,
+            created_at: operation.created_at,
+            attempt_count: 1,
+            provider_attempt_generation: 1,
+        }
+    }
+
+    fn relay_container_test_idempotency_alias(
+        operation: &RelayContainerOperation,
+    ) -> RelayContainerIdempotencyAlias {
+        RelayContainerIdempotencyAlias {
+            client_idempotency_hmac_sha256: operation.client_idempotency_hmac_sha256.clone(),
+            reservation_key: operation.reservation_key.clone(),
+            operation_id: operation.operation_id.clone(),
+            canonical_client_idempotency_hmac_sha256: operation
+                .client_idempotency_hmac_sha256
+                .clone(),
+            client_request_sha256: operation.client_request_sha256.clone(),
+            created_at: operation.created_at,
+        }
+    }
+
+    fn relay_container_test_atomic_admission_record<'a>(
+        billing_snapshot_json: &'a str,
+        contract_hash: &'a str,
+        reconciliation_id: &'a str,
+    ) -> RelayContainerAtomicAdmissionRecord<'a> {
+        RelayContainerAtomicAdmissionRecord {
+            reservation: RelayBillingReservationRecord {
+                reservation_key: "relayreserve-test",
+                user_id: 1,
+                token_id: 2,
+                model_name: "gpt-test",
+                endpoint_path: "chat/completions",
+                request_id_hash:
+                    "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                expr_hash: contract_hash,
+                billing_kind: "flat",
+                billing_snapshot_json,
+                candidate_group_count: 1,
+                reservation_strategy: "selected_group",
+                pre_consumed_quota: 100,
+                created_at: 20,
+                lease_expires_at: 200,
+            },
+            operation: RelayContainerOperationRecord {
+                reconciliation_id,
+                ..relay_container_test_record()
+            },
+            client_idempotency_hmac_aliases: &[
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            ],
+            selected_channel_type: 1,
+            selected_snapshot_key: "1",
+            selected_at: 20,
+        }
+    }
+
+    #[test]
+    fn relay_container_idempotency_alias_digest_matches_cross_runtime_contract() {
+        let aliases = [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ];
+        assert_eq!(
+            relay_container_idempotency_aliases_sha256(&aliases),
+            "2abe3436ba079ee481e8992885fa43931306e177fce6ce8eefd51a3f360c6393"
+        );
+        assert_eq!(
+            relay_container_idempotency_aliases_sha256(&[aliases[1], aliases[0]]),
+            relay_container_idempotency_aliases_sha256(&aliases)
+        );
+    }
+
+    #[test]
+    fn relay_container_atomic_admission_hash_excludes_winner_ephemera() {
+        let snapshot = "{}";
+        let contract_hash = format!(
+            "{RELAY_FLAT_BILLING_CONTRACT_PREFIX}{}",
+            relay_container_sha256_hex(snapshot.as_bytes())
+        );
+        let baseline = relay_container_test_atomic_admission_record(
+            snapshot,
+            &contract_hash,
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        );
+        let baseline_hash = relay_container_atomic_admission_sha256(&baseline);
+
+        let loser = RelayContainerAtomicAdmissionRecord {
+            reservation: RelayBillingReservationRecord {
+                created_at: 30,
+                lease_expires_at: 220,
+                ..baseline.reservation
+            },
+            operation: RelayContainerOperationRecord {
+                owner_lease_expires_at: 220,
+                execution_deadline_at: 190,
+                admission_sha256:
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                input_object_version: "version-002",
+                trace_id: "trace-002",
+                created_at: 30,
+                ..baseline.operation
+            },
+            selected_at: 30,
+            ..baseline
+        };
+        assert_eq!(
+            relay_container_atomic_admission_sha256(&loser),
+            baseline_hash
+        );
+
+        let changed_pricing = RelayContainerAtomicAdmissionRecord {
+            reservation: RelayBillingReservationRecord {
+                expr_hash: "flat-v4:changed",
+                billing_snapshot_json: "{\"changed\":true}",
+                ..baseline.reservation
+            },
+            ..baseline
+        };
+        assert_ne!(
+            relay_container_atomic_admission_sha256(&changed_pricing),
+            baseline_hash
+        );
+        let changed_request = RelayContainerAtomicAdmissionRecord {
+            operation: RelayContainerOperationRecord {
+                client_request_sha256:
+                    "abababababababababababababababababababababababababababababababab",
+                ..baseline.operation
+            },
+            ..baseline
+        };
+        assert_ne!(
+            relay_container_atomic_admission_sha256(&changed_request),
+            baseline_hash
+        );
+        let dual_aliases = [
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        ];
+        let reversed_aliases = [dual_aliases[1], dual_aliases[0]];
+        let dual_alias_record = RelayContainerAtomicAdmissionRecord {
+            client_idempotency_hmac_aliases: &dual_aliases,
+            ..baseline
+        };
+        let reversed_alias_record = RelayContainerAtomicAdmissionRecord {
+            client_idempotency_hmac_aliases: &reversed_aliases,
+            ..baseline
+        };
+        assert_ne!(
+            relay_container_atomic_admission_sha256(&dual_alias_record),
+            baseline_hash
+        );
+        assert_eq!(
+            relay_container_atomic_admission_sha256(&dual_alias_record),
+            relay_container_atomic_admission_sha256(&reversed_alias_record)
+        );
+        let changed_channel_contract = RelayContainerAtomicAdmissionRecord {
+            selected_channel_type: 2,
+            selected_snapshot_key: "2",
+            ..baseline
+        };
+        assert_ne!(
+            relay_container_atomic_admission_sha256(&changed_channel_contract),
+            baseline_hash
+        );
+
+        let reconciliation_id = relay_container_atomic_reconciliation_id(&baseline_hash).unwrap();
+        assert_eq!(reconciliation_id.len(), 64);
+        assert_ne!(reconciliation_id, baseline_hash);
+    }
+
+    #[test]
+    fn relay_container_atomic_admission_validation_fences_generation_and_snapshot_key() {
+        let snapshot = "{}";
+        let contract_hash = format!(
+            "{RELAY_FLAT_BILLING_CONTRACT_PREFIX}{}",
+            relay_container_sha256_hex(snapshot.as_bytes())
+        );
+        let provisional = relay_container_test_atomic_admission_record(
+            snapshot,
+            &contract_hash,
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        );
+        let atomic_hash = relay_container_atomic_admission_sha256(&provisional);
+        let reconciliation_id = relay_container_atomic_reconciliation_id(&atomic_hash).unwrap();
+        let valid = RelayContainerAtomicAdmissionRecord {
+            operation: RelayContainerOperationRecord {
+                reconciliation_id: &reconciliation_id,
+                ..provisional.operation
+            },
+            ..provisional
+        };
+        assert_eq!(
+            validate_relay_container_atomic_admission_record(&valid).unwrap(),
+            100
+        );
+
+        let wrong_generation = RelayContainerAtomicAdmissionRecord {
+            operation: RelayContainerOperationRecord {
+                owner_generation: 1,
+                ..valid.operation
+            },
+            ..valid
+        };
+        assert!(validate_relay_container_atomic_admission_record(&wrong_generation).is_err());
+        let wrong_snapshot_key = RelayContainerAtomicAdmissionRecord {
+            selected_snapshot_key: "7",
+            ..valid
+        };
+        assert!(validate_relay_container_atomic_admission_record(&wrong_snapshot_key).is_err());
+        let duplicate_aliases = [
+            valid.operation.client_idempotency_hmac_sha256,
+            valid.operation.client_idempotency_hmac_sha256,
+        ];
+        let duplicate_alias = RelayContainerAtomicAdmissionRecord {
+            client_idempotency_hmac_aliases: &duplicate_aliases,
+            ..valid
+        };
+        assert!(validate_relay_container_atomic_admission_record(&duplicate_alias).is_err());
+        let missing_canonical_aliases =
+            ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"];
+        let missing_canonical = RelayContainerAtomicAdmissionRecord {
+            client_idempotency_hmac_aliases: &missing_canonical_aliases,
+            ..valid
+        };
+        assert!(validate_relay_container_atomic_admission_record(&missing_canonical).is_err());
+    }
+
+    #[test]
+    fn relay_container_atomic_replay_uses_persisted_winner_ephemera() {
+        let current = relay_container_test_operation();
+        let loser = RelayContainerOperationRecord {
+            owner_lease_expires_at: 220,
+            execution_deadline_at: 190,
+            admission_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            input_object_version: "version-002",
+            trace_id: "trace-002",
+            created_at: 30,
+            ..relay_container_test_record()
+        };
+        assert!(relay_container_operation_matches_atomic_admission(
+            &current, &loser
+        ));
+        assert!(!relay_container_operation_matches_atomic_admission(
+            &current,
+            &RelayContainerOperationRecord {
+                channel_id: 8,
+                ..loser
+            }
+        ));
+    }
+
+    #[test]
+    fn relay_container_atomic_settlement_revalidates_all_three_durable_records() {
+        let snapshot = "{}";
+        let contract_hash = format!(
+            "{RELAY_FLAT_BILLING_CONTRACT_PREFIX}{}",
+            relay_container_sha256_hex(snapshot.as_bytes())
+        );
+        let provisional = relay_container_test_atomic_admission_record(
+            snapshot,
+            &contract_hash,
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        );
+        let atomic_hash = relay_container_atomic_admission_sha256(&provisional);
+        let reconciliation_id = relay_container_atomic_reconciliation_id(&atomic_hash).unwrap();
+        let record = RelayContainerAtomicAdmissionRecord {
+            operation: RelayContainerOperationRecord {
+                reconciliation_id: &reconciliation_id,
+                ..provisional.operation
+            },
+            ..provisional
+        };
+
+        let mut operation = relay_container_test_operation();
+        operation.reconciliation_id = reconciliation_id.clone();
+        let mut reservation = relay_billing_test_reservation("reserved");
+        reservation.request_id_hash = record.reservation.request_id_hash.to_string();
+        reservation.expr_hash = contract_hash;
+        reservation.billing_kind = "flat".to_string();
+        reservation.billing_snapshot_json = snapshot.to_string();
+        reservation.candidate_group_count = 1;
+        reservation.reservation_strategy = "selected_group".to_string();
+        reservation.selected_at = 20;
+        reservation.lease_expires_at = 200;
+        reservation.owner_deadline_at = 200;
+        reservation.created_at = 20;
+        reservation.updated_at = 20;
+
+        let mut admission = relay_container_test_atomic_admission(&operation);
+        let aliases = vec![relay_container_test_idempotency_alias(&operation)];
+        admission.atomic_admission_sha256 = atomic_hash;
+        admission.billing_snapshot_sha256 = relay_container_sha256_hex(snapshot.as_bytes());
+        assert!(relay_container_atomic_admission_integrity_valid(
+            &admission,
+            &operation,
+            &reservation,
+            &aliases,
+        ));
+
+        reservation.status = "recovery_required".to_string();
+        reservation.owner_generation = 3;
+        assert!(relay_container_atomic_admission_integrity_valid(
+            &admission,
+            &operation,
+            &reservation,
+            &aliases,
+        ));
+
+        let mut tampered_reservation = reservation.clone();
+        tampered_reservation.billing_snapshot_json = "{\"price\":2}".to_string();
+        assert!(!relay_container_atomic_admission_integrity_valid(
+            &admission,
+            &operation,
+            &tampered_reservation,
+            &aliases,
+        ));
+        let mut tampered_admission = admission.clone();
+        tampered_admission.atomic_admission_sha256 =
+            "9999999999999999999999999999999999999999999999999999999999999999".to_string();
+        assert!(!relay_container_atomic_admission_integrity_valid(
+            &tampered_admission,
+            &operation,
+            &reservation,
+            &aliases,
+        ));
+        tampered_admission = admission.clone();
+        tampered_admission.selected_snapshot_key = "7".to_string();
+        assert!(!relay_container_atomic_admission_integrity_valid(
+            &tampered_admission,
+            &operation,
+            &reservation,
+            &aliases,
+        ));
+        let mut tampered_aliases = aliases;
+        tampered_aliases[0].client_request_sha256 = "8".repeat(64);
+        assert!(!relay_container_atomic_admission_integrity_valid(
+            &admission,
+            &operation,
+            &reservation,
+            &tampered_aliases,
+        ));
     }
 
     fn relay_container_test_result() -> RelayContainerOperationResultRecord<'static> {
@@ -22118,21 +23637,23 @@ mod tests {
 
         let payload = relay_container_test_provider_usage_payload();
         assert_eq!(
-            relay_container_provider_usage_final_quota(&payload, &reservation).unwrap(),
+            relay_container_provider_usage_final_quota(&payload, &reservation, None).unwrap(),
             3_500
         );
 
         let mut missing = payload.clone();
         missing.usage_present = false;
         missing.reported_usage_fields = 0;
-        assert!(relay_container_provider_usage_final_quota(&missing, &reservation).is_err());
+        assert!(relay_container_provider_usage_final_quota(&missing, &reservation, None).is_err());
 
         let mut unversioned_tool_charge = payload;
         unversioned_tool_charge.responses_web_search_calls = 1;
-        assert!(
-            relay_container_provider_usage_final_quota(&unversioned_tool_charge, &reservation)
-                .is_err()
-        );
+        assert!(relay_container_provider_usage_final_quota(
+            &unversioned_tool_charge,
+            &reservation,
+            None,
+        )
+        .is_err());
 
         let cache_snapshot = cinatoken_billing::estimate_tiered_billing_snapshot_with_request_at(
             "gpt-test",
@@ -22156,13 +23677,19 @@ mod tests {
         missing_cache_evidence.reported_usage_fields =
             RELAY_CONTAINER_USAGE_PROMPT_REPORTED | RELAY_CONTAINER_USAGE_COMPLETION_REPORTED;
         missing_cache_evidence.total_tokens = 0;
-        assert!(
-            relay_container_provider_usage_final_quota(&missing_cache_evidence, &reservation)
-                .is_err()
-        );
+        assert!(relay_container_provider_usage_final_quota(
+            &missing_cache_evidence,
+            &reservation,
+            None,
+        )
+        .is_err());
         missing_cache_evidence.reported_usage_fields |= RELAY_CONTAINER_USAGE_CACHED_REPORTED;
         assert_eq!(
-            relay_container_provider_usage_final_quota(&missing_cache_evidence, &reservation)
+            relay_container_provider_usage_final_quota(
+                &missing_cache_evidence,
+                &reservation,
+                None,
+            )
                 .unwrap(),
             3_500
         );
@@ -22187,6 +23714,7 @@ mod tests {
         let error = relay_container_provider_usage_final_quota(
             &relay_container_test_provider_usage_payload(),
             &reservation,
+            None,
         )
         .expect_err("OpenAI-semantic cc1h settlement must fail closed");
         assert!(error
@@ -22216,6 +23744,7 @@ mod tests {
         let error = relay_container_provider_usage_final_quota(
             &relay_container_test_provider_usage_payload(),
             &reservation,
+            None,
         )
         .expect_err("non-finite tiered quota must fail closed");
         assert!(error.to_string().contains("produced an invalid quota"));
@@ -22251,7 +23780,7 @@ mod tests {
         reservation.selected_group = "default".to_string();
         reservation.billing_snapshot_json = serde_json::to_string(&BTreeMap::from([(
             "default".to_string(),
-            BTreeMap::from([(reservation.channel_id.to_string(), snapshot.clone())]),
+            BTreeMap::from([("1".to_string(), snapshot.clone())]),
         )]))
         .unwrap();
 
@@ -22260,20 +23789,22 @@ mod tests {
             RELAY_CONTAINER_USAGE_PROMPT_REPORTED | RELAY_CONTAINER_USAGE_COMPLETION_REPORTED;
         payload.total_tokens = 0;
         assert_eq!(
-            relay_container_provider_usage_final_quota(&payload, &reservation).unwrap(),
+            relay_container_provider_usage_final_quota(&payload, &reservation, Some("1")).unwrap(),
             1_500
         );
 
         snapshot.cache_ratio = 0.5;
         reservation.billing_snapshot_json = serde_json::to_string(&BTreeMap::from([(
             "default".to_string(),
-            BTreeMap::from([(reservation.channel_id.to_string(), snapshot.clone())]),
+            BTreeMap::from([("1".to_string(), snapshot.clone())]),
         )]))
         .unwrap();
-        assert!(relay_container_provider_usage_final_quota(&payload, &reservation).is_err());
+        assert!(
+            relay_container_provider_usage_final_quota(&payload, &reservation, Some("1")).is_err()
+        );
         payload.reported_usage_fields |= RELAY_CONTAINER_USAGE_CACHED_REPORTED;
         assert_eq!(
-            relay_container_provider_usage_final_quota(&payload, &reservation).unwrap(),
+            relay_container_provider_usage_final_quota(&payload, &reservation, Some("1")).unwrap(),
             1_500
         );
 
@@ -22281,10 +23812,10 @@ mod tests {
         snapshot.model_ratio = f64::MAX;
         reservation.billing_snapshot_json = serde_json::to_string(&BTreeMap::from([(
             "default".to_string(),
-            BTreeMap::from([(reservation.channel_id.to_string(), snapshot)]),
+            BTreeMap::from([("1".to_string(), snapshot)]),
         )]))
         .unwrap();
-        let error = relay_container_provider_usage_final_quota(&payload, &reservation)
+        let error = relay_container_provider_usage_final_quota(&payload, &reservation, Some("1"))
             .expect_err("overflowed flat quota must fail closed");
         assert!(error.to_string().contains("produced an invalid quota"));
     }
@@ -22832,21 +24363,35 @@ mod tests {
     #[test]
     fn relay_container_client_idempotency_rejects_same_key_different_request() {
         let operation = relay_container_test_operation();
+        let admission = relay_container_test_atomic_admission(&operation);
+        let alias = relay_container_test_idempotency_alias(&operation);
         let request_sha256 = operation.client_request_sha256.clone();
         assert!(matches!(
-            classify_relay_container_client_request(Some(operation.clone()), &request_sha256),
+            classify_relay_container_client_request(
+                alias.clone(),
+                Some(operation.clone()),
+                Some(admission.clone()),
+                &request_sha256
+            ),
             RelayContainerClientRequestLookup::MatchingOperation(_)
         ));
         assert_eq!(
             classify_relay_container_client_request(
+                alias.clone(),
                 Some(operation),
+                Some(admission),
                 "abababababababababababababababababababababababababababababababab",
             ),
             RelayContainerClientRequestLookup::RequestConflict
         );
         assert_eq!(
-            classify_relay_container_client_request(None, &request_sha256),
-            RelayContainerClientRequestLookup::NotFound
+            classify_relay_container_client_request(
+                alias,
+                Some(relay_container_test_operation()),
+                None,
+                &request_sha256,
+            ),
+            RelayContainerClientRequestLookup::ImmutableIdentityConflict
         );
     }
 

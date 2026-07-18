@@ -186,7 +186,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0049_relay_container_provider_usage_binding.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0050_relay_container_atomic_admission.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -273,6 +273,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0047_relay_container_provider_egress_grants.sql",
     "0048_relay_container_provider_usage_receipts.sql",
     "0049_relay_container_provider_usage_binding.sql",
+    "0050_relay_container_atomic_admission.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -429,6 +430,22 @@ struct PlatformCapabilities {
     container_divergence_reconciliation_verified: bool,
     container_chat_canary_enabled: bool,
     container_chat_canary_admission_compiled: bool,
+    container_chat_canary_atomic_admission_compiled: bool,
+    container_chat_canary_atomic_admission_schema_ready: bool,
+    container_chat_canary_replay_history_probe_known: bool,
+    container_chat_canary_replay_history_present: bool,
+    container_chat_canary_replay_compiled: bool,
+    container_chat_canary_r2_binding_available: bool,
+    container_chat_canary_terminal_replay_runtime_ready: bool,
+    container_chat_canary_dispatched_recovery_runtime_ready: bool,
+    container_chat_canary_prepared_resume_runtime_ready: bool,
+    container_chat_canary_replay_runtime_ready: bool,
+    container_chat_canary_replay_cohort_configured: bool,
+    container_chat_canary_replay_only_enabled: bool,
+    container_chat_canary_replay_only_active: bool,
+    container_chat_canary_prepared_resume_enabled: bool,
+    container_chat_canary_current_idempotency_secret_configured: bool,
+    container_chat_canary_previous_idempotency_secret_configured: bool,
     container_operation_staging_verified: bool,
     container_operation_runtime_ready: bool,
     container_scheduler_n_minus_one_protocol_compiled: bool,
@@ -1002,29 +1019,47 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_poll_lease_status,
         task_poll_scheduler_status,
         task_poll_recovery_status,
+        container_chat_canary_atomic_admission_schema_ready,
+        container_chat_canary_replay_history_probe_known,
+        container_chat_canary_replay_history_present,
     ) = match env.d1("DB") {
-        Ok(db) => (
-            crate::task_repository::task_billing_intent_schema_ready(&db)
-                .await
-                .unwrap_or(false),
-            crate::task_repository::task_poll_lease_runtime_status(&db)
-                .await
-                .unwrap_or(TaskPollLeaseRuntimeStatus {
-                    schema_ready: false,
-                    authority_enabled: false,
-                    enforcement_enabled: false,
-                }),
-            crate::task_repository::task_poll_scheduler_runtime_status(&db)
-                .await
-                .unwrap_or(TaskPollSchedulerRuntimeStatus {
-                    schema_ready: false,
-                }),
-            crate::task_repository::task_poll_recovery_runtime_status(&db)
-                .await
-                .unwrap_or(TaskPollRecoveryRuntimeStatus {
-                    schema_ready: false,
-                }),
-        ),
+        Ok(db) => {
+            let container_chat_canary_atomic_admission_schema_ready =
+                crate::d1_repositories::relay_container_atomic_admission_schema_ready(&db)
+                    .await
+                    .unwrap_or(false);
+            let container_chat_canary_replay_history =
+                crate::d1_repositories::relay_container_atomic_admission_history_exists(&db).await;
+            let container_chat_canary_replay_history_probe_known =
+                container_chat_canary_replay_history.is_ok();
+            let container_chat_canary_replay_history_present =
+                container_chat_canary_replay_history.unwrap_or(false);
+            (
+                crate::task_repository::task_billing_intent_schema_ready(&db)
+                    .await
+                    .unwrap_or(false),
+                crate::task_repository::task_poll_lease_runtime_status(&db)
+                    .await
+                    .unwrap_or(TaskPollLeaseRuntimeStatus {
+                        schema_ready: false,
+                        authority_enabled: false,
+                        enforcement_enabled: false,
+                    }),
+                crate::task_repository::task_poll_scheduler_runtime_status(&db)
+                    .await
+                    .unwrap_or(TaskPollSchedulerRuntimeStatus {
+                        schema_ready: false,
+                    }),
+                crate::task_repository::task_poll_recovery_runtime_status(&db)
+                    .await
+                    .unwrap_or(TaskPollRecoveryRuntimeStatus {
+                        schema_ready: false,
+                    }),
+                container_chat_canary_atomic_admission_schema_ready,
+                container_chat_canary_replay_history_probe_known,
+                container_chat_canary_replay_history_present,
+            )
+        }
         Err(_) => (
             false,
             TaskPollLeaseRuntimeStatus {
@@ -1038,6 +1073,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             TaskPollRecoveryRuntimeStatus {
                 schema_ready: false,
             },
+            false,
+            false,
+            false,
         ),
     };
     let ai_gateway_id = runtime_value(&env, AI_GATEWAY_ID_ENV);
@@ -1104,10 +1142,30 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         crate::container_reconciliation::container_reconciliation_observer_compiled();
     let container_chat_canary_admission_compiled =
         crate::container_relay_canary::container_chat_canary_admission_compiled();
+    let container_chat_canary_atomic_admission_compiled =
+        crate::container_relay_canary::container_chat_canary_atomic_admission_compiled();
+    let container_chat_canary_replay_compiled =
+        crate::container_relay_canary::container_chat_canary_replay_compiled();
+    let container_chat_canary_replay_cohort_configured =
+        crate::container_relay_canary::container_chat_canary_replay_cohort_configured(&env);
+    let container_chat_canary_replay_only_enabled =
+        crate::container_relay_canary::container_chat_canary_replay_only_enabled(&env);
+    let container_chat_canary_prepared_resume_enabled =
+        crate::container_relay_canary::container_chat_canary_prepared_resume_enabled(&env);
+    let container_chat_canary_current_idempotency_secret_configured =
+        crate::container_relay_canary::container_chat_canary_current_idempotency_secret_configured(
+            &env,
+        );
+    let container_chat_canary_previous_idempotency_secret_configured =
+        crate::container_relay_canary::container_chat_canary_previous_idempotency_secret_configured(
+            &env,
+        );
     let container_operation_runtime_ready = container_operation_runtime.cutover_ready()
         && container_financial_terminal_compiled
         && container_exact_response_replay_compiled
         && container_divergence_reconciliation_compiled
+        && container_chat_canary_atomic_admission_compiled
+        && container_chat_canary_atomic_admission_schema_ready
         && container_chat_canary_admission_compiled;
     let container_scheduler_contract_version = CONTAINER_SHARD_CONTRACT_VERSION;
     let container_scheduler_foundation_compiled = container_scheduler_foundation_compiled();
@@ -1134,6 +1192,49 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_controller_probe.execution_enabled;
     let container_scheduler_controller_previous_secret_configured =
         container_controller_probe.previous_secret_configured;
+    let container_chat_canary_idempotency_secret_configured =
+        container_chat_canary_current_idempotency_secret_configured
+            || container_chat_canary_previous_idempotency_secret_configured;
+    let container_chat_canary_r2_binding_available = env
+        .bucket(crate::container_artifacts::CONTAINER_ARTIFACT_BUCKET)
+        .is_ok();
+    let container_chat_canary_terminal_replay_runtime_ready =
+        is_container_chat_canary_terminal_replay_runtime_ready(
+            container_chat_canary_atomic_admission_schema_ready,
+            container_chat_canary_replay_history_probe_known,
+            container_chat_canary_replay_compiled,
+            container_chat_canary_idempotency_secret_configured,
+            container_operation_runtime.exact_response_replay_enabled,
+            container_chat_canary_r2_binding_available,
+        );
+    let container_chat_canary_dispatched_recovery_runtime_ready =
+        is_container_chat_canary_dispatched_recovery_runtime_ready(
+            container_chat_canary_atomic_admission_schema_ready,
+            container_chat_canary_replay_history_probe_known,
+            container_chat_canary_replay_compiled,
+            container_chat_canary_idempotency_secret_configured,
+            container_operation_runtime.replay_ready(),
+            container_scheduler_controller_service_binding_available,
+            container_scheduler_controller_authority_configured,
+            container_scheduler_controller_ready,
+            container_scheduler_status.valid,
+            container_scheduler_routing_secret_configured,
+        );
+    let container_chat_canary_prepared_resume_runtime_ready =
+        is_container_chat_canary_prepared_resume_runtime_ready(
+            container_chat_canary_dispatched_recovery_runtime_ready,
+            container_scheduler_enabled,
+            container_chat_canary_prepared_resume_enabled,
+        );
+    let container_chat_canary_replay_runtime_ready = is_container_chat_canary_replay_runtime_ready(
+        container_chat_canary_terminal_replay_runtime_ready,
+        container_chat_canary_dispatched_recovery_runtime_ready,
+        container_chat_canary_prepared_resume_runtime_ready,
+    );
+    let container_chat_canary_replay_only_active = is_container_chat_canary_replay_only_active(
+        container_chat_canary_replay_only_enabled,
+        container_chat_canary_replay_cohort_configured,
+    );
     let container_scheduler_shard_readiness_probe_compiled = true;
     let container_scheduler_shard_readiness_probe_enabled =
         env_flag(&env, CONTAINER_SHARD_READINESS_PROBE_ENABLED_ENV);
@@ -1773,6 +1874,22 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             .divergence_reconciliation_verified,
         container_chat_canary_enabled: container_operation_runtime.chat_canary_enabled,
         container_chat_canary_admission_compiled,
+        container_chat_canary_atomic_admission_compiled,
+        container_chat_canary_atomic_admission_schema_ready,
+        container_chat_canary_replay_history_probe_known,
+        container_chat_canary_replay_history_present,
+        container_chat_canary_replay_compiled,
+        container_chat_canary_r2_binding_available,
+        container_chat_canary_terminal_replay_runtime_ready,
+        container_chat_canary_dispatched_recovery_runtime_ready,
+        container_chat_canary_prepared_resume_runtime_ready,
+        container_chat_canary_replay_runtime_ready,
+        container_chat_canary_replay_cohort_configured,
+        container_chat_canary_replay_only_enabled,
+        container_chat_canary_replay_only_active,
+        container_chat_canary_prepared_resume_enabled,
+        container_chat_canary_current_idempotency_secret_configured,
+        container_chat_canary_previous_idempotency_secret_configured,
         container_operation_staging_verified: container_operation_runtime
             .operation_staging_verified,
         container_operation_runtime_ready,
@@ -3772,6 +3889,72 @@ fn quota_coordinator_cutover_guards() -> Vec<&'static str> {
     ]
 }
 
+fn is_container_chat_canary_terminal_replay_runtime_ready(
+    atomic_admission_schema_ready: bool,
+    replay_history_probe_known: bool,
+    replay_compiled: bool,
+    idempotency_secret_configured: bool,
+    exact_response_replay_enabled: bool,
+    r2_binding_available: bool,
+) -> bool {
+    atomic_admission_schema_ready
+        && replay_history_probe_known
+        && replay_compiled
+        && idempotency_secret_configured
+        && exact_response_replay_enabled
+        && r2_binding_available
+}
+
+#[allow(clippy::too_many_arguments)]
+fn is_container_chat_canary_dispatched_recovery_runtime_ready(
+    atomic_admission_schema_ready: bool,
+    replay_history_probe_known: bool,
+    replay_compiled: bool,
+    idempotency_secret_configured: bool,
+    operation_replay_ready: bool,
+    controller_service_binding_available: bool,
+    controller_authority_configured: bool,
+    controller_ready: bool,
+    scheduler_status_valid: bool,
+    scheduler_routing_secret_configured: bool,
+) -> bool {
+    atomic_admission_schema_ready
+        && replay_history_probe_known
+        && replay_compiled
+        && idempotency_secret_configured
+        && operation_replay_ready
+        && controller_service_binding_available
+        && controller_authority_configured
+        && controller_ready
+        && scheduler_status_valid
+        && scheduler_routing_secret_configured
+}
+
+fn is_container_chat_canary_prepared_resume_runtime_ready(
+    dispatched_recovery_runtime_ready: bool,
+    scheduler_enabled: bool,
+    prepared_resume_enabled: bool,
+) -> bool {
+    dispatched_recovery_runtime_ready && scheduler_enabled && prepared_resume_enabled
+}
+
+fn is_container_chat_canary_replay_runtime_ready(
+    terminal_replay_runtime_ready: bool,
+    dispatched_recovery_runtime_ready: bool,
+    prepared_resume_runtime_ready: bool,
+) -> bool {
+    terminal_replay_runtime_ready
+        && dispatched_recovery_runtime_ready
+        && prepared_resume_runtime_ready
+}
+
+fn is_container_chat_canary_replay_only_active(
+    replay_only_enabled: bool,
+    replay_cohort_configured: bool,
+) -> bool {
+    replay_only_enabled && replay_cohort_configured
+}
+
 fn quota_coordinator_shadow_runtime_ready(
     binding_available: bool,
     shadow_enabled: bool,
@@ -4435,6 +4618,68 @@ mod tests {
     }
 
     #[test]
+    fn container_chat_canary_recovery_readiness_matches_each_state_path() {
+        assert!(is_container_chat_canary_terminal_replay_runtime_ready(
+            true, true, true, true, true, true
+        ));
+        for false_gate in 0..6 {
+            let mut gates = [true; 6];
+            gates[false_gate] = false;
+            assert!(
+                !is_container_chat_canary_terminal_replay_runtime_ready(
+                    gates[0], gates[1], gates[2], gates[3], gates[4], gates[5]
+                ),
+                "expected terminal replay to wait on gate index {false_gate}"
+            );
+        }
+
+        assert!(is_container_chat_canary_dispatched_recovery_runtime_ready(
+            true, true, true, true, true, true, true, true, true, true
+        ));
+        for false_gate in 0..10 {
+            let mut gates = [true; 10];
+            gates[false_gate] = false;
+            assert!(
+                !is_container_chat_canary_dispatched_recovery_runtime_ready(
+                    gates[0], gates[1], gates[2], gates[3], gates[4], gates[5], gates[6], gates[7],
+                    gates[8], gates[9]
+                ),
+                "expected dispatched recovery to wait on gate index {false_gate}"
+            );
+        }
+
+        assert!(is_container_chat_canary_prepared_resume_runtime_ready(
+            true, true, true
+        ));
+        for false_gate in 0..3 {
+            let mut gates = [true; 3];
+            gates[false_gate] = false;
+            assert!(
+                !is_container_chat_canary_prepared_resume_runtime_ready(
+                    gates[0], gates[1], gates[2]
+                ),
+                "expected prepared resume to wait on gate index {false_gate}"
+            );
+        }
+
+        assert!(is_container_chat_canary_replay_runtime_ready(
+            true, true, true
+        ));
+        for false_gate in 0..3 {
+            let mut gates = [true; 3];
+            gates[false_gate] = false;
+            assert!(
+                !is_container_chat_canary_replay_runtime_ready(gates[0], gates[1], gates[2]),
+                "expected aggregate replay readiness to wait on state index {false_gate}"
+            );
+        }
+
+        assert!(is_container_chat_canary_replay_only_active(true, true));
+        assert!(!is_container_chat_canary_replay_only_active(true, false));
+        assert!(!is_container_chat_canary_replay_only_active(false, true));
+    }
+
+    #[test]
     fn wfp_tenant_capability_contract_is_operator_visible() {
         let routes = wfp_tenant_supported_routes();
         for route in [
@@ -4721,14 +4966,14 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0049_relay_container_provider_usage_binding.sql"
+            "0050_relay_container_atomic_admission.sql"
         );
         assert_eq!(
             &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 3..],
             &[
-                "0047_relay_container_provider_egress_grants.sql",
                 "0048_relay_container_provider_usage_receipts.sql",
                 "0049_relay_container_provider_usage_binding.sql",
+                "0050_relay_container_atomic_admission.sql",
             ]
         );
         assert!(
@@ -4915,6 +5160,26 @@ mod tests {
             .contains("relay_container_reconciliation_provider_usage_convergence_guard"));
         assert!(relay_container_provider_usage_binding
             .contains("relay_container_provider_usage_receipt_reconciliation_guard"));
+        let relay_container_atomic_admission =
+            include_str!("../../../migrations/d1/0050_relay_container_atomic_admission.sql");
+        assert!(relay_container_atomic_admission
+            .contains("CREATE TABLE relay_container_atomic_admissions"));
+        assert!(relay_container_atomic_admission
+            .contains("CREATE TABLE relay_container_idempotency_aliases"));
+        assert!(relay_container_atomic_admission
+            .contains("CREATE INDEX idx_relay_container_idempotency_aliases_reservation"));
+        assert!(relay_container_atomic_admission
+            .contains("relay_container_idempotency_alias_insert_guard"));
+        assert!(relay_container_atomic_admission
+            .contains("relay_container_idempotency_alias_update_guard"));
+        assert!(relay_container_atomic_admission
+            .contains("relay_container_idempotency_alias_delete_guard"));
+        assert!(relay_container_atomic_admission
+            .contains("relay_container_atomic_admission_operation_insert_guard"));
+        assert!(relay_container_atomic_admission
+            .contains("relay_container_atomic_admission_update_guard"));
+        assert!(relay_container_atomic_admission
+            .contains("relay_container_canary_operation_delete_guard"));
     }
 
     #[test]

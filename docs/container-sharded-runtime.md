@@ -784,3 +784,195 @@ edge Worker version, Controller ingress version, shard DO code version, or
 Container artifact digest as one end-to-end execution tuple. It also does not
 provide a remote version pin, provider idempotency, or deployment promotion
 proof. All execution gates remain false and production remains **NO-GO**.
+
+## 2026-07-18 D1 Atomic Admission Boundary
+
+Migration `0050_relay_container_atomic_admission.sql` closes the local partial
+admission gap for the bounded chat canary. It does not move financial authority
+into the shard DO or Linux Container. The edge remains responsible for client
+idempotency, frozen pricing, user/token quota, selected channel authority, and
+the global operation owner before the Controller may receive a dispatch.
+
+```mermaid
+sequenceDiagram
+    participant E as Edge Worker
+    participant R as R2 input store
+    participant D as D1 global ledger
+    participant S as Shard DO and Controller
+    participant C as Linux Container
+
+    E->>R: Create or exactly replay immutable input
+    E->>D: One receipt-first deferred-FK batch
+    Note over D: Receipt, all HMAC aliases, reservation, quota/authority, prepared operation
+    D-->>E: Exact generation-2 operation readback
+    E->>S: Dispatch CAS only after committed admission
+    S->>C: Owner-fenced operation
+```
+
+R2 remains outside the transaction. An input object written by a losing or
+failed contender is not admission, dispatch, or billing authority. Production
+must define bounded orphan retention and deletion using immutable object
+identity and age; cleanup must never infer that an R2 object represents a
+committed operation.
+
+### Global owner contract
+
+One tenant-scoped client idempotency HMAC over user ID, token ID, and the
+validated `Idempotency-Key` produces one stable reservation key. Model,
+selected group/channel, transformed provider input, and pricing are excluded.
+The request-conflict digest is separately defined as model plus the original
+request body only.
+
+The immutable atomic digest binds the persisted winner's frozen billing
+snapshot, selected channel/group/type/snapshot key, transformed input content,
+shard/ring, provider-operation identity, and order-independent HMAC alias-set
+digest. These are dispatch and settlement authority, not client identity. The
+current secret defines the canonical reservation/operation identity. The same
+batch claims the current HMAC and, when distinct, the previous-key HMAC in
+immutable `relay_container_idempotency_aliases`; its global alias primary key
+is the rolling-version serialization point.
+
+After request parse, model/auth resolution, and relay rate limiting, the edge
+derives current/previous HMAC candidates plus the model/original-body digest and
+queries that alias table as the 0050 replay authority. A `NotFound` reaches
+retry/fallback parsing, current
+channel-pool discovery, affinity, provider conversion, ordinary reserve/debit,
+or send only when a successful history probe proves 0050 history is empty and
+replay-only mode is inactive. Any miss with durable history returns 503 because
+an absent older secret generation cannot be distinguished from a new request.
+A matching alias resumes the persisted winner even if its channel is
+disabled or removed. A different model/original body is a request conflict;
+schema/query failure or internally divergent persisted state fails closed, and
+immutable divergence is a server-side 503 rather than a client 409.
+
+The admitted canary owner is fixed to generation 2 with attempt count 1 and
+provider attempt generation 1. The selected flat-pricing snapshot key is the
+textual selected channel type and is persisted in the receipt. This keeps later
+provider-usage settlement tied to the admitted pricing map even if the channel
+row changes.
+
+Three-record settlement revalidation does not trust receipt linkage from
+admission time alone. Both the quote and final financial commit reread the
+atomic receipt, billing reservation, and Container operation, recompute the
+billing snapshot SHA-256 and complete atomic admission digest, and reject
+before mutation if any record diverges.
+
+The D1 batch inserts that receipt first under deferred foreign keys, then every
+one- or two-member alias claim, the selected reservation, user debit, token
+debit, channel-authority no-op update, and prepared operation. Each mutation is
+followed by a one-row guard. The authority statements recheck user
+status/deletion/quota, token ownership/status/deletion/expiry/quota, and channel
+status/type/group/model ability inside the same transaction. Any alias conflict
+or later failure rolls back all alias, admission, and financial changes;
+post-error readback checks all supplied aliases for the persisted winner.
+
+### Dispatch and replay rule
+
+The receipt is the only marker that the edge may interpret as admitted. It
+stores `idempotency_alias_count` and the order-independent
+`idempotency_aliases_sha256` digest of the sorted, length-framed alias set. The
+operation insert trigger requires the exact receipt, canonical alias, and
+reservation, so a pre-0050 writer cannot leave an unmarked canary operation.
+Alias and receipt mutation/deletion are rejected; canary operation deletion is
+rejected; later operation updates require exact receipt linkage.
+
+Only an exact newly applied or matching resumable readback may continue to the
+dispatch CAS. A completed/failed replay requires the immutable financial
+terminal receipt; `recovery_required` also requires matching financial
+evidence. A missing receipt, one-sided reservation/operation, owner mismatch,
+snapshot drift, or divergent terminal record fails closed as immutable
+identity conflict. Dispatch, settlement, and terminal audit take channel/group
+from the persisted operation, never a retry-time selection. The DO and
+Container cannot repair or override that result.
+
+### Replay-only rollback boundary
+
+The local edge now has a replay-only foundation separate from new admission.
+`CONTAINER_CHAT_CANARY_REPLAY_ONLY_ENABLED` and
+`CONTAINER_CHAT_CANARY_PREPARED_RESUME_ENABLED` are default-false exact-`true`
+gates. Replay-only remains restricted to the eligible route and configured
+token/model cohort. It does not change the final
+`container_chat_canary_admission_compiled()` false gate.
+
+New admission is canonical-current-write and atomically claims the current plus
+distinct previous HMAC aliases. Replay derives current then previous candidates
+and follows either alias to the persisted canonical-current winner. A rolling
+Worker using the other current key cannot create a second reservation or
+operation because the global alias claim conflicts, rolls back the batch, and
+forces persisted-winner readback. Removing the previous key before a proved
+drain would strand otherwise valid historical identities.
+
+The recovery lookup cannot fall back around its authority. Every eligible
+idempotent request probes 0050 history even when one or both read secrets are
+configured. Missing/incomplete schema, failed history/alias queries, divergent
+linkage, or any alias miss with existing history returns 503. Ordinary relay
+processing after a miss is allowed only when the history probe succeeds,
+reports no durable 0050 history, and replay-only mode is inactive. This remains
+strict until bounded secret-generation/key-ID coverage and retention are
+implemented and remotely verified.
+
+Replay lookup runs after request parse, model/auth, and relay rate limiting but
+before retry/model fallback, current channel discovery/selection, affinity,
+provider transformation, ordinary reserve/debit, and upstream send. In an
+active replay-only cohort, a miss returns HTTP 503 with `Retry-After: 5` and
+cannot fall through to ordinary admission or provider execution. A
+completed/failed owner permits read-only terminal replay only with the
+exact-response replay gate and `FILE_BUCKET`; otherwise it returns HTTP 202
+pending. `dispatched`/`recovery_required` require Controller/replay readiness.
+Before `prepared` advances in D1 it additionally requires operation replay
+readiness, scheduler enablement, a valid ring and routing secret, the explicit
+prepared-resume gate, and a verified Controller status proving binding,
+authority, controller enablement, and execution enablement. Closed state gates
+leave the durable owner `prepared` rather than dispatching a replacement.
+
+### Verification and rollout status
+
+The current local test tree covers the actual migration/batch path,
+all-or-nothing admission, persisted-winner readback, quota/authority/marker
+rollback, old-writer rejection, alias schema/digest/immutability, three-record
+settlement, current/previous identity derivation, and state-specific replay
+decisions. The completed local validation reports Workerd 14/14, Worker Rust
+820/820, and SQLite 50 migrations / 48 tables / 540 incremental columns / 72
+key indexes; the repository-wide `bun run check`, including the root Worker
+Wrangler dry-run, also passes. Endpoint-level replay-only miss isolation,
+schema/query 503s, missing/stale-secret history, unknown-history probing,
+history-backed alias misses, real-D1 alias collision under key rotation, and
+state gates across D1/R2/DO/Controller still require dedicated local and remote
+proof.
+
+Before 0050 can be applied remotely, every pre-0050 canary writer must be
+disabled, inventoried, removed, and observed absent for a computed drain
+window. The migration itself rejects any existing protocol-v1 chat canary
+operation. After apply, operators must read back the exact receipt table,
+alias table, both indexes, all eight guards, normalized trigger bodies,
+alias-set integrity, and unchanged business-data fingerprints while every
+execution gate remains false.
+
+Aggregate platform capability/migration-head wiring is complete locally. It now
+reports boolean-only `container_chat_canary_replay_history_probe_known` and
+`container_chat_canary_replay_history_present`, R2 binding
+availability, `container_chat_canary_terminal_replay_runtime_ready`,
+`container_chat_canary_dispatched_recovery_runtime_ready`, and
+`container_chat_canary_prepared_resume_runtime_ready`, plus aggregate replay
+readiness and atomic compiled/schema fields.
+`container_chat_canary_replay_only_active` is only the actual flag plus a
+configured cohort predicate; it does not include or replace any readiness.
+Individual route/token/model membership remains a request-time check. An
+unknown history probe forces all replay-readiness fields false. A false history
+value is rollback evidence only when schema readiness and
+`container_chat_canary_replay_history_probe_known=true`; no identity is exposed.
+Authenticated remote schema/capability proof, real Container lifecycle, N/N-1
+campaign, endpoint-level Worker fault matrix, real two-version key rotation,
+remote D1/Controller/R2 evidence, R2 orphan policy, scheduled terminalizer,
+provider idempotency/lookup, shared response interpretation, financial
+convergence, load/cost/alerts, and rollback rehearsal are pending. The
+default-off replay-only and atomic current/previous-alias foundation is
+implemented locally, but cutover still requires code audit, a signed
+replay-only artifact, a key-retention/previous-key drain runbook, dedicated
+fault proof, and rehearsal.
+Existing owners must remain replayable without allowing new admission across
+rollback or secret rotation.
+`container_chat_canary_atomic_admission_compiled()` is true for the local
+implementation, but `container_chat_canary_admission_compiled()` remains false
+and is the controlling production gate. No deployment is claimed; production
+remains **NO-GO**.

@@ -1,6 +1,6 @@
 # Migration Completion Status
 
-Date: 2026-07-18
+Date: 2026-07-19
 
 This is the short status page. The current requirement-level evidence audit is
 `docs/migration-progress-audit-2026-07-13.md`; the canonical Go route list is
@@ -24,7 +24,7 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 | Frontend migration | React/Bun source, strict lint, bundle redaction/budget, route audit, and production build pass locally | Locally wired | Deployed browser hard-refresh, session/role/CRUD/2FA/Passkey, callback, console, performance, and rollback evidence |
 | Rust scheduling gateway | `cinatoken-gateway` is the live versioned owner planner before Worker execution adapters | Locally wired | Main/API/static/tenant host matrix, negative dispatch, edge-auth parity, and rollback smoke on Cloudflare |
 | Rust Durable Objects | RealtimeSession has a six-scenario local workerd/D1/mock-upstream suite plus an explicit release-Wasm Workerd/SQLite hibernate-evict-restore test for the client socket, attachment/bridge segment, and persisted metrics; reservation binding, settlement, and refund are isolated by bridge segment; TaskRunner, channel affinity, Passkey ceremony, and WFP authority replay have focused tests | Locally exercised substrate | Active-upstream eviction must prove 1011 fail-closed, exactly-once refund/lease handoff, no replacement call, and clean reconnect; deployed eviction/alarm/reconnect/replay/load evidence remains required on Cloudflare staging |
-| Container chat atomic admission | Migration 0050 plus the Rust canary use canonical-current identity, immutable global current/previous HMAC aliases, an order-independent alias-set receipt digest, history-probe-aware fail-closed replay (including 503 for every history-backed alias miss), frozen billing/channel authority, one deferred-FK D1 batch, generation-2 ownership, pre-dispatch Controller readiness, three-record settlement revalidation, and state-specific replay readiness; local capability wiring and the 14-case Workerd / 50-migration SQLite verification are complete | Implemented locally, hard-disabled | Drain every old writer, apply/read back 0050 in isolated staging, implement and prove bounded key-generation coverage/retention, code-audit and sign the replay-only rollback contract, run endpoint-level Worker faults and a real two-version key rotation against remote D1/Controller/R2, archive financial/rollback evidence, and retain `container_chat_canary_admission_compiled=false` until approval |
+| Container chat atomic admission | Migration 0050 plus the Rust canary use canonical-current identity, immutable global current/previous HMAC aliases, an order-independent alias-set receipt digest, history-probe-aware fail-closed replay (including 503 for every history-backed alias miss), frozen billing/channel authority, one deferred-FK D1 batch, generation-2 ownership, pre-dispatch Controller readiness, three-record settlement revalidation, and state-specific replay readiness; local capability wiring and the 14-case Workerd / 53-migration SQLite verification are complete | Implemented locally, hard-disabled | Drain every old writer, apply/read back ordered 0050-0053 in isolated staging, implement and prove bounded key-generation coverage/retention, code-audit and sign the replay-only rollback contract, run endpoint-level Worker faults and a real two-version key rotation against remote D1/Controller/R2, archive financial/rollback evidence, and retain `container_chat_canary_admission_compiled=false` until approval |
 | WFP Rust tenant script | Dedicated Rust/Wasm tenant crate, strict artifact manifest/uploader, central-authority v3 transport, signed physical-target/policy claims, outbound invocation context, platform-owned Gateway policy, and final-boundary replay guard are present; tenant has no authority key, replay binding, bearer, or Gateway policy authority | Gated substrate | Real staging namespace/schema-3 outbound readback, live context/policy propagation, missing-worker/resource-limit/context faults, tenant-policy spoof negatives, one paid provider call, central billing outcome, and traces |
 | AI Gateway multi-model forwarding | Default-off direct and cross-model paths, actual-serving-group billing contract, and operator readiness exist | Gated substrate | Deployed provider-route canary, usage/error reconciliation, terminal audit delivery, fault injection, and rollback |
 | HTTP flat billing intent | Migrations 0029-0030, schema-v4 immutable per-candidate snapshots, domain-separated digest validation, reserve/bind/Queue/CAS finalization, request-id replay rejection, exact-decimal final rounding, fail-closed unknown-model admission, a hash-bound Go-generated flat manifest, and Ali synchronous image actual-count settlement pass locally | Gated local substrate | Complete Ali asynchronous task settlement, free-model runtime policy, and provider usage staging reconciliation; regenerate the manifest at cutover; obtain remote 0030/Queue/D1/invoice, abort/idle, rollback, and approval evidence |
@@ -35,11 +35,12 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 This re-audit keeps the overall migration goal open. Passing local gates proves
 implementation readiness only for the covered behavior.
 
-The current source-tree D1 head is migration 0050 with 50 contiguous migration
-files. Older dated sections below retain their historical head/count snapshots.
-The 0050 receipt table and Rust repository path are local candidate work, not
-remote schema evidence. Flat intent runtime and Container atomic-admission
-readiness do not imply pricing or traffic cutover readiness;
+The current source-tree D1 head is migration 0053 with 53 contiguous migration
+files, 57 tables, 674 checked incremental columns, and 81 key indexes. Older
+dated sections below retain their historical head/count snapshots. The
+0050-0053 admission, response, and financial terminal paths are local candidate
+work, not remote schema evidence. Flat intent runtime and Container readiness
+do not imply pricing or traffic cutover readiness;
 `relay_flat_billing_go_parity_ready` and
 `container_chat_canary_admission_compiled()` remain hard false.
 
@@ -1496,3 +1497,47 @@ reader-first mixed-version rollout, real response-loss/crash tests,
 provider-call counters, load/cost/SLO/alerts, retention/privacy review,
 disable-first rollback rehearsal, and named approvals. Go/VPS remains the
 traffic and financial authority; production remains **NO-GO**.
+
+## 2026-07-19 P5 Evidence Gate Status
+
+### Implemented locally
+
+- Canonical P5 subject identity binds commits, Worker/Container artifacts,
+  shared resources, shard/ring, 0053, protocol contracts, cohort, and evidence.
+- Ten category-specific evidence schemas enforce reader-first rollout, exact
+  schema, lifecycle and financial faults, provenance, load/cost/SLO, rollback,
+  and security/privacy thresholds.
+- An external trust policy supplies role-scoped Ed25519 public keys. Five
+  distinct owners sign only after the newest evidence capture.
+- The verifier performs bounded, regular-file-only, in-bundle path and SHA-256
+  checks; it rejects noncanonical JSON and never reads credentials or uses the
+  network.
+- Local/staging/production Controller configurations now share the same tracked
+  D1 name/ID, CONFIG_KV, FILE_BUCKET, and Service Binding values as edge.
+  Production placeholders remain hard deployment blockers until authenticated
+  resource readback replaces them.
+- Controller deploy commands now run a fail-closed preflight first. It rejects
+  placeholder/zero IDs, public previews, disabled observability, any enabled
+  action gate, and missing Controller/provider-egress secret names without
+  reading or printing secret values.
+- The staging runbook uses the 0053/53 schema baseline; the cutover runbook
+  explicitly requires ordered 0052/0053 apply/readback/retention plus the P5
+  packet and Go/VPS process-owned drain gate.
+
+### Verified locally
+
+`bun run check:relay-container:p5-evidence` passes 34/34. The expanded
+Controller config suite passes 12/12, and the deploy-preflight suite passes
+18/18. The contract-description command reports ten evidence kinds, five
+approval roles, and explicit false authority for remote mutation, customer
+traffic, and production cutover.
+
+### Still blocked
+
+No real packet exists. Remote collectors, replacement credentials, exact
+versions/resources, all-shard readback, 0053 apply, real Container faults,
+provider and financial counters, cross-layer traces, sustained load/cost/SLO,
+alert delivery, rollback rehearsal, and owner signatures remain absent.
+Production additionally needs a lossless Go/VPS drain and reverse data sync;
+Go process maps and request-local billing state make a time-only drain unsafe.
+Production remains **NO-GO**.

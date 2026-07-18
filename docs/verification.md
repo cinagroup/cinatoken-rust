@@ -263,7 +263,7 @@ Last checked: 2026-07-17
   archived against isolated staging D1 through the Worker binding path plus
   live no-double-charge evidence.
 - `bun tools/smoke_realtime_settlement_batch.mjs --staging-plan --database
-  cinatoken-rust-staging --wrangler-env staging --json`: passed and emitted
+  cinatoken-rust-db-staging --wrangler-env staging --json`: passed and emitted
   reviewed setup, verification, duplicate-marker pre-check, and cleanup
   artifacts plus explicit Worker-binding apply requirements. The plan
   intentionally warns that standalone `wrangler d1 execute` SQL is not
@@ -7584,3 +7584,40 @@ authenticated remote 0053/R2/DO/Container proof, mixed-version rollout,
 response-loss and crash campaign, load/cost/SLO/alert evidence, retention and
 privacy review, rollback rehearsal, and signed approvals. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-19 P5 Evidence Verifier Verification
+
+The local packet verifier adds no remote evidence and cannot authorize traffic.
+It proves that a future packet cannot omit or mix candidate, schema, lifecycle,
+financial, provenance, load, rollback, security, or approval facts.
+
+```powershell
+bun run plan:relay-container:p5-evidence
+# PASS: reports ten evidence kinds, five approval roles, no network/credentials,
+# and false remote/customer/production authority.
+
+bun run check:relay-container:p5-evidence
+# PASS: 34/34 contract and adversarial tests.
+
+bun test tests/container-controller-config.test.mjs
+# PASS: 12/12, including exact edge/Controller D1/KV/R2/service identities.
+
+bun run check:container-controller:deploy-preflight
+# PASS: 18/18 deploy-preflight tests plus a credential-free tracked-staging
+# self-test; the self-test is explicitly not deploy-ready.
+```
+
+Negative coverage includes canonical encoding, byte/hash/candidate drift,
+customer scope, freshness/expiry, reader-before-writer order, lifecycle and
+provenance completeness, duplicate provider/financial effects, financial
+terminal conservation, refund request accounting, load thresholds,
+disable-first rollback, bundle path and symlink confinement, external trust
+root, distinct public-key material, nonelapsed cohort windows, total timestamp
+ordering, and complete fresh role-correct signatures with increasing validity
+windows. File reads use one handle with before/after identity, size, and
+timestamp checks.
+
+No real evidence bundle, trust policy, private key, Cloudflare credential,
+remote readback, deployment, provider call, financial mutation, or traffic
+change was used. Full repository verification must still pass after this local
+increment. Production remains **NO-GO**.

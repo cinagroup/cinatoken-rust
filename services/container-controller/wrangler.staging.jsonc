@@ -46,7 +46,7 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "cinatoken-rust-staging",
+      "database_name": "cinatoken-rust-db-staging",
       "database_id": "c285553f-7f98-4ec2-b4d6-f84a3b409f3e"
     }
   ],

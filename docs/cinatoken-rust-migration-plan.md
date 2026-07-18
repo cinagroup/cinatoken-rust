@@ -9353,7 +9353,7 @@ Validation:
   with all six replay checks plus local validation of the staging-plan
   setup/verify/cleanup SQL artifacts and redaction constraints.
 - `bun tools/smoke_realtime_settlement_batch.mjs --staging-plan --database
-  cinatoken-rust-staging --wrangler-env staging --json` passed and emitted
+  cinatoken-rust-db-staging --wrangler-env staging --json` passed and emitted
   reviewed setup/verify/cleanup artifacts plus Worker-binding apply evidence
   requirements.
 - `bun run check` passed, including the new settlement-batch contract plus the
@@ -16214,3 +16214,98 @@ loss and crash boundaries, provider-call counters, lifecycle/load/cost/SLO and
 alert evidence, retention/privacy review, disable-first rollback rehearsal,
 and named approvals. Go/VPS remains authoritative; production remains
 **NO-GO**.
+
+## 22.249 P5 Evidence Gate Local Candidate (2026-07-19)
+
+The first executable P5 promotion boundary now exists locally. It closes the
+previous gap where R3-R9, T0-T10, staging smoke, load/cost, rollback, and owner
+approval were detailed only in prose and could not be bound to one immutable
+candidate.
+
+### Offline decision contract
+
+`tools/relay_container_p5_evidence_contract.mjs` and
+`tools/verify_relay_container_p5_evidence.mjs` verify canonical JSON without
+network access, credentials, subprocesses, or file writes. The signed subject
+binds the Rust/Go/cinaVibeSDK commits, Worker versions, Container image/SBOM,
+shared D1/KV/R2/Service Binding/DO identities, shard/ring, protocol versions,
+0053 schema head, bounded synthetic cohort, and every evidence file's path,
+size, digest, capture time, and expiry.
+
+Ten evidence kinds are conjunctive: candidate freeze, remote inventory,
+reader-first rollout, schema readback, lifecycle faults, response/financial
+faults, cross-layer provenance, load/cost/SLO, rollback rehearsal, and
+security/privacy review. Exact fact schemas reject a generic `pass` claim.
+Thresholds include all eight shards, 0053/53 with the current schema baseline,
+twelve lifecycle scenarios, all P4 outcomes, zero duplicate provider/financial
+effects, exact response-class and settled-plus-refunded operation conservation,
+at least one hour/1,000 load requests, delivered alert drills,
+approved 1x/2x/5x cost, and disable-first rollback within 15 minutes.
+
+The trust policy must be supplied outside the bundle and contains only
+Ed25519 public keys. Security, finance, operations, product, and rollback each
+use a distinct key ID and cryptographically distinct public key to sign the
+exact subject digest after all evidence is captured. Evidence paths use
+single-handle identity/size/time checks and must resolve to regular non-symlink
+files. Evidence, manifest, approval, and cohort windows are totally ordered and
+must not already be elapsed. Changing a candidate, artifact, cohort, timestamp,
+or path invalidates all approvals.
+
+Even a complete packet returns only
+`eligible-for-isolated-staging-synthetic-canary-review`; customer traffic and
+production eligibility remain false. Local tests cover the complete fixture
+and 33 adversarial classes. `bun run check` now includes that suite.
+
+### Cross-plane config correction
+
+Edge and Controller already referenced the same staging D1 UUID, but their D1
+names differed. The three Controller configs now use the same D1 names as the
+edge config. The Controller configuration suite also requires exact shared D1
+name/ID, CONFIG_KV identity, FILE_BUCKET name, and private Controller Service
+Binding target in local, staging, and production configurations. Production
+placeholder IDs remain a hard deploy blocker until authenticated readback.
+
+The Controller deploy scripts now execute a dedicated preflight before
+Wrangler deploy. Its 18-test contract rejects placeholder/zero IDs, public
+entrypoints, disabled observability, enabled action gates, malformed resource
+identity, unbounded secret-inventory subprocesses, and missing Controller or
+provider-egress secret names. Live preflight uses only argument-array,
+read-only `wrangler secret list` calls and emits names/status, never values.
+
+This follows Cloudflare's current recommendation to use the stable database
+name for migrations and prevents a P5 packet from accepting identity only
+because two bindings happen to carry the same UUID.
+
+### Source-audit production interlock
+
+The refreshed cinaVibeSDK audit confirms deterministic DO/Container identity
+and lifecycle hooks are useful references, while its Agent-to-Sandbox extra
+owner, direct preview route, process-local recovery, fail-open readiness,
+ephemeral metadata, and one-step rollout are not copied. One canonical
+`RelayShardContainer`, Jump Hash/ring fencing, durable SQLite intent, immutable
+global evidence, and `[10,100]` Container rollout remain the target.
+
+The refreshed Go audit adds a harder production-cutover gate. Go/VPS holds
+deferred accounting deltas in process maps and settlement/refund state in a
+request-local `BillingSession`; its public status route is not dependency
+readiness, and background master ownership is configuration-based. Therefore
+production cutover must prove ingress drain, zero HTTP/SSE/WebSocket sockets,
+two successful batch intervals, one export interval, stable SQL/LOG_DB
+snapshots, zero in-flight process-owned finance, exactly one scheduler owner,
+zero unexplained reconciliation delta, and reverse synchronization of every
+Cloudflare write into the hot Go rollback target.
+
+That production extension is frozen in
+`docs/relay-container-p5-evidence-contract.md` and
+`docs/cutover-rollback-runbook.md`. Elapsed time or `/api/status` alone cannot
+authorize Go shutdown.
+
+### Remaining P5 execution
+
+The verifier does not create its own proof. Authenticated read-only collectors,
+Container image/SBOM/signature readback, all-shard inventory, real lifecycle
+fault orchestration, provider/financial counters, cross-layer trace collection,
+version upload/override and gradual-deployment evidence, load/cost/alerts, and
+real independent signatures remain absent. No Cloudflare resource or traffic
+state changed in this increment. Go/VPS remains authoritative and production
+remains **NO-GO**.

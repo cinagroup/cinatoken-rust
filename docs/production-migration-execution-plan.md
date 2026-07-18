@@ -389,8 +389,8 @@ environment and is not a Container cutover flag.
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0045 first and 0046 only after its drain gate, with every mutation/cutover/retry gate false; `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 46/46 and 43-table replay plus a clean 0046 pre/post audit are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence; authenticated resource and secret-name readback; disabled provider-egress, Controller, then edge reader deployment; remote 0001-0051 with every action gate false; drained 0052 followed by 0053 apply/readback; `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 53/53 replay with 57 tables, 674 checked incremental columns, and 81 key indexes plus clean 0052/0053 pre/post audits are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go, and Container operation/billing/quota/audit terminal state commits atomically | Golden fixtures, cross-ledger D1 batch rollback faults, exact replay, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -404,7 +404,7 @@ environment and is not a Container cutover flag.
 | Workstream | Current Status | Production Target | Next Evidence |
 | --- | --- | --- | --- |
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
-| Data migration | Partial: local exact-set SQLite replay passes 46/46 migrations, 43 tables, 434 checked incremental columns, and 64 key indexes; 0041 freezes same-state Container lifecycle outcomes, 0042 adds immutable financial terminal/outbox authority, 0043 adds observer-only reconciliation, 0044 adds observer-only R2 inventory, 0045 adds default-off audited observer retry apply, and trigger-only 0046 rejects new v1 legacy identity, direct-terminal inserts, event/outbox-less terminal updates, and revision-2 predecessor gaps; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 0001-0045 staging apply with all gates false; candidate writer/version inventory; clean computed drain window; 0046 backup/apply/readback/post-audit; immutable negative probes; real source inventory; staging import report; rollback point |
+| Data migration | Partial: local exact-set SQLite replay passes 53/53 migrations, 57 tables, 674 checked incremental columns, and 81 key indexes; 0052 adds drained immutable provider/client response evidence and 0053 adds financial terminal v2 while all tracked action gates remain false; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated reader-first remote staging apply with all gates false; exact writer/version inventory; pre-0052 drain; ordered 0052 then 0053 backup/apply/readback/post-audit; immutable negative probes; unchanged business fingerprint; real source inventory; staging import report; rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
 | Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers plus bounded commit-watermark compaction and a 1.5 MB local JSON guard, but no deployed retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, deployed hot-token window/structured-clone/load/cost report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
@@ -2043,6 +2043,30 @@ or delete.
 
 Rollback disables admission, response-artifact writing, terminal consumption,
 provider egress, scheduler ownership, and traffic before changing artifacts.
-It retains 0052, both R2 namespaces, identity/inventory rows, and P3-capable
+It retains 0053, both R2 namespaces, identity/inventory rows, and P3/P4-capable
 readers until every operation is completed or quarantined. Go/VPS remains the
 fallback and production remains **NO-GO**.
+
+## 2026-07-19 P5 Evidence Decision Addendum
+
+The R5 isolated-staging exit now has an executable verifier contract in
+`docs/relay-container-p5-evidence-contract.md`. Ten exact evidence kinds and
+five external Ed25519 approvals bind one immutable candidate. The verifier is
+offline, bounded, credential-free, and has no deployment or traffic authority.
+
+The ordered operational campaign remains unchanged: provider egress first,
+Controller second, edge reader third, all gates false, ordered 0052/0053
+readback and direct negatives, then isolated faults/load/rollback and approval.
+Both Controller deploy scripts run a fail-closed config/secret-name preflight;
+the tracked production placeholder IDs intentionally block that preflight.
+Cloudflare gradual deployments can skew Service Binding versions, so the
+packet must prove version override/pinning or a blue/green namespace;
+percentages alone are insufficient.
+
+The production decision adds a separate Go/VPS drain requirement because the
+source holds deferred accounting and request-local billing state in process
+memory. Before Go can become the rollback-only target, ingress and sockets are
+zero, two batch intervals and one export interval are stable, no process-owned
+finance remains, all scheduler owners are unique, source/target reconciliation
+has no unexplained delta, and reverse synchronization contains every accepted
+Cloudflare write. No local verifier fixture satisfies those external gates.

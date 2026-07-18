@@ -47,6 +47,11 @@ const providerEgressTargets = {
   "wrangler.staging.jsonc": "cinatoken-container-egress-staging",
   "wrangler.production.jsonc": "cinatoken-container-egress-production",
 };
+const rootEnvironmentForControllerConfig = {
+  "wrangler.jsonc": rootConfig,
+  "wrangler.staging.jsonc": rootConfig.env.staging,
+  "wrangler.production.jsonc": rootConfig.env.production,
+};
 
 describe("isolated container controller configuration", () => {
   for (const file of configFiles) {
@@ -108,6 +113,30 @@ describe("isolated container controller configuration", () => {
         rollout_step_percentage: [10, 100],
         ssh: { enabled: false },
       });
+    });
+
+    test(`${file} shares exact edge resource identities`, async () => {
+      const config = JSON.parse(
+        await Bun.file(new URL(`../services/container-controller/${file}`, import.meta.url)).text(),
+      );
+      const edge = rootEnvironmentForControllerConfig[file];
+      expect(edge.services.find((item) => item.binding === "CONTAINER_CONTROLLER")).toEqual({
+        binding: "CONTAINER_CONTROLLER",
+        service: config.name,
+      });
+      expect(config.d1_databases).toEqual([
+        {
+          binding: "DB",
+          database_name: edge.d1_databases.find((item) => item.binding === "DB").database_name,
+          database_id: edge.d1_databases.find((item) => item.binding === "DB").database_id,
+        },
+      ]);
+      expect(config.kv_namespaces).toEqual([
+        edge.kv_namespaces.find((item) => item.binding === "CONFIG_KV"),
+      ]);
+      expect(config.r2_buckets).toEqual([
+        edge.r2_buckets.find((item) => item.binding === "FILE_BUCKET"),
+      ]);
     });
   }
 

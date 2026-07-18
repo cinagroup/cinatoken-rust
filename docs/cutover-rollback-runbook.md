@@ -155,12 +155,51 @@ git diff --check
 - Confirm D1 backup/export path and retention.
 - Confirm Support knows customer impact and abort language.
 
+## Go/VPS Process-Owned Drain Gate
+
+Do not stop or demote Go/VPS based only on elapsed time, load-balancer request
+count, `/api/status`, or an application-level active connection counter. The Go
+source retains process-owned state that must be proven empty:
+
+- deferred user, token, channel, usage, and request deltas are held in memory
+  until batch flush;
+- a failed batch update can lose the swapped batch unless independently
+  reconciled;
+- `BillingSession` settlement and refund decisions are request-process state;
+- SSE/WebSocket work can outlive an ordinary HTTP request counter; and
+- background scheduler ownership is configuration-based, not a durable lease.
+
+Before the T-0 switch, archive all of the following:
+
+1. the exact Go binary/image commit, replicas, master/slave role, SQL/LOG_DB,
+   Redis and scheduler-owner inventory;
+2. an ingress-freeze timestamp and zero LB plus OS HTTP/SSE/WebSocket sockets;
+3. zero new relay/task submissions and zero in-flight settlement/refund work;
+4. at least two complete configured batch intervals and one data-export
+   interval after the final accepted request;
+5. final successful batch/export logs with zero batch, token-adjustment,
+   settlement, refund, or log-write error;
+6. two stable SQL snapshots one interval apart plus row/high-watermark/chunk
+   hashes for business and active log databases; and
+7. zero unexplained quota, request, channel, subscription, task, provider, or
+   audit delta against the Rust target.
+
+If Cloudflare has accepted any write, the hot Go rollback target must contain
+that write through proven reverse synchronization. A forward-only import with
+no zero-lag CDC or reverse path makes post-write rollback unsafe and blocks
+cutover. The versioned production extension is specified in
+`docs/relay-container-p5-evidence-contract.md`.
+
 ## T-0 Cutover Checklist
 
 1. Confirm go/no-go from every role.
 2. Capture final Go/VPS source backup/export for selected scope.
-3. Apply final D1 migration/import for selected scope.
-4. Verify row counts and sample hashes for selected table families.
+3. With compatible P3/P4 readers deployed and every action gate false, prove
+   the pre-0052 writer/operation drain, then apply ordered 0052 and 0053 for the
+   selected scope.
+4. Read back the exact 0053/53, 57-table, 674-column, 81-index baseline; verify
+   unchanged business fingerprints, direct old-writer negatives, and zero
+   provider or financial delta before any canary admission.
 5. Confirm billing shadow/apply mode and abort thresholds.
 6. Warm caches for selected token/channel/model groups where applicable.
 7. Upload Worker version without sending customer traffic, if using Cloudflare
@@ -169,6 +208,10 @@ git diff --check
 9. Start canary.
 10. Watch logs/traces/metrics continuously during the observation window.
 11. Record every promotion decision with timestamp, metrics, and approver.
+
+Rollback keeps migration 0053, protocol-v3 response readers, financial-terminal
+v2/ACK-v3 readers, both response-artifact namespaces, and immutable evidence
+until every accepted operation is completed or quarantined.
 
 ## Cloudflare Worker Version Canary
 

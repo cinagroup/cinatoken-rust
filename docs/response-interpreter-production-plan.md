@@ -501,3 +501,20 @@ R3/R4 remote storage and lifecycle proof and R7-R9 rollout, operations, and
 approval work remain open as P5. Every response gate is still false, no
 Cloudflare state changed, Go/VPS remains authoritative, and production remains
 **NO-GO**.
+
+## 2026-07-19 P5 Evidence Contract
+
+R7-R9 now have a local machine-readable acceptance boundary. The P5 verifier
+requires exact lifecycle and response/financial fault campaigns, complete
+cross-layer provenance, load/cost/SLO and alert facts, disable-first rollback,
+security/privacy review, and five owner approvals with distinct Ed25519 public
+keys bound to one candidate digest. It also binds R3-R6 remote schema,
+artifacts, reader-first
+version rollout, and financial terminal evidence into that same subject.
+
+The verifier cannot create evidence or promote traffic. Its only successful
+decision is eligibility for human review of an isolated staging synthetic
+canary; customer and production authority are always false. R7-R9 remain open
+until authenticated collectors produce real facts and owners sign them. The
+full schema and Go cutover extension are in
+`docs/relay-container-p5-evidence-contract.md`. Production remains **NO-GO**.

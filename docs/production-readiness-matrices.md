@@ -1110,4 +1110,23 @@ or approval requirement.
 | Financial owner | Exact-200 success boundary is frozen; typed-200 and non-200 cannot use receipt-v1 success semantics | One immutable settle/refund/reject CAS, outbox and audit decision under duplicate/lost-response faults | **Blocked (P4)** |
 | Remote state | No remote migration, object, deploy, secret, provider, financial or traffic mutation occurred | Reader-first staging, real lifecycle/fault/load/cost/SLO/alerts, rollback, security and C1-C5/G1-G8 approval | **NO-GO (P5)** |
 
+## 2026-07-19 P4/P5 Superseding Matrix
+
+This section supersedes the preceding P2 rows that mark P3 protocol and P4
+financial ownership blocked. P3 and P4 are verified local disabled candidates.
+P5 now has a verifier but no remote evidence packet.
+
+| Gate | Current local evidence | Production acceptance | Status |
+| --- | --- | --- | --- |
+| P3 response protocol | Exact protocol v3 envelope, Rust encoder, Controller verifier/store/replay, DO schema migration 3, runtime rejection outcome, and edge status v4 replay are locally verified | Real N/N-1 or isolated blue/green reader-first campaign with exact replay and version-skew faults | Local candidate |
+| P4 terminal owner | Status v4, financial terminal v2/0053, ACK v3, exact success settle and interpreted-reject refund are locally verified | Real duplicate/lost-response/statement-fault and invoice/accounting convergence | Local candidate |
+| Cross-plane resource identity | Controller and edge configs share the same tracked D1 name/ID, CONFIG_KV, FILE_BUCKET and private service target; an 18-test deploy preflight rejects placeholders, public entrypoints, enabled action gates and missing required secret names; production IDs are still placeholders | Authenticated account/resource/version readback with no alias ambiguity and no placeholder | Local contract; production blocked |
+| P5 packet identity | Canonical subject binds candidate, resources, protocols, cohort and every evidence digest | Real collector output from the exact frozen candidate | Local verifier |
+| Reader-first rollout | Exact evidence schema requires egress -> Controller -> edge, compatible readers on every shard, no writer, and N/N-1 or blue/green proof | Version upload/override, all-shard readback and real skew campaign | Blocked |
+| Lifecycle and financial faults | Twelve lifecycle scenarios plus all P4 outcomes and statement faults are mandatory, with zero duplicate provider/financial effects | Real DO/Container/R2/D1/provider execution and counters | Blocked |
+| Provenance/load/rollback | Exact schemas and thresholds require complete trace, one-hour/1,000-request load, alerts, 1x/2x/5x cost and disable-first rollback | Authenticated redacted evidence and retained immutable state | Blocked |
+| Approval | External policy plus distinct security, finance, operations, product and rollback Ed25519 signatures | Real independently controlled keys and fresh signatures | Blocked |
+| Go/VPS production drain | Cutover runbook now requires process-map flush, zero in-flight BillingSession, stable DB/LOG_DB snapshots, one scheduler owner and reverse sync | Execute against the live rollback target with zero unexplained delta | Blocked |
+| P5 decision | Verifier can approve only review of an isolated staging synthetic canary; customer/production booleans are hard false | Complete remote packet, production drain, G1-G8/C1-C5 and release decision | **NO-GO** |
+
 Production remains **NO-GO** and Go/VPS remains authoritative.

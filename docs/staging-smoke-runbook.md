@@ -25,7 +25,7 @@ Use `docs/cloudflare-production-config-checklist.md` before Phase 1,
 Do not use production secrets in staging. Do not paste secret values into this
 file or any smoke report.
 
-Current gate state (2026-07-14): **NO-GO for remote staging promotion**.
+Current gate state (2026-07-19): **NO-GO for remote staging promotion**.
 Local migration/config checks and a local Worker-binding Realtime settlement
 smoke have passed, but Wrangler is not authenticated and no remote staging
 deploy, migration, binding, log, trace, or smoke result was captured. An
@@ -40,9 +40,9 @@ Required local state:
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
   so Wrangler's local `workerd` can start.
 - `bun run check:d1:migration-config` passes.
-- `bun run verify:sqlite` reports 24 migrations, 29 required tables, 106
-  incremental key columns, and 21 key indexes, including the 0020 and 0021
-  active-reservation guards.
+- `bun run verify:sqlite` reports 53 migrations, 57 required tables, 674
+  incremental columns, and 81 key indexes through
+  `0053_relay_container_financial_terminal_v2.sql`.
 - `bun run check:cf:billing-queue` passes.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
@@ -139,12 +139,40 @@ bun run check:cf:startup
 Pass criteria:
 
 - No test failures.
-- All three D1 binding tables use `migrations/d1`; migrations 0001-0023 are
-  contiguous; the local SQLite verifier finds all 29 required tables, 105
-  incremental key columns, and 20 key indexes.
+- All three D1 binding tables use `migrations/d1`; migrations 0001-0053 are
+  contiguous; the local SQLite verifier finds all 57 required tables, 674
+  incremental columns, and 81 key indexes.
 - No formatting or whitespace errors.
 - Cloudflare dry-run/startup checks pass, or the missing local dependency is
   recorded as a known local limitation.
+
+## Phase 0a: Relay Container P5 Evidence Contract
+
+Before collecting remote Container evidence, run the credential-free contract
+and adversarial tests:
+
+```powershell
+bun run plan:relay-container:p5-evidence
+bun run check:relay-container:p5-evidence
+```
+
+Use `docs/relay-container-p5-evidence-contract.md` for the canonical manifest,
+ten evidence kinds, external Ed25519 trust policy, five independent approvals,
+and reader-first order. The local self-test is not staging evidence. A real
+packet is verified only with:
+
+```powershell
+$ManifestPath = "C:\secure\cinatoken-p5\manifest.json"
+$TrustPolicyPath = "C:\secure\cinatoken-trust\staging-p5-policy.json"
+bun run verify:relay-container:p5-evidence -- `
+  --manifest $ManifestPath `
+  --trust-policy $TrustPolicyPath `
+  --json
+```
+
+Even a valid packet authorizes only release review of an isolated staging
+synthetic canary. It never authorizes remote mutation, customer traffic,
+production cutover, or Go/VPS shutdown.
 
 ## Phase 0b: TaskRunner Replay Probe Plan
 
@@ -216,6 +244,17 @@ exposed token and authenticated Wrangler with a replacement credential. Record
 the account identity and token scope/owner/rotation time, never the token value.
 If Wrangler is unauthenticated, stop here and mark Phase 1 blocked; local schema
 or localhost smoke output cannot be promoted into this phase.
+
+```powershell
+bun run check:container-controller:deploy-preflight
+bun run preflight:container-controller:staging
+```
+
+The first command is credential-free and must report `readyForDeploy=false`.
+The second is a live, read-only secret-name inventory and must pass before
+`bun run deploy:container-controller:staging`; the deploy command repeats the
+preflight automatically. Neither command substitutes for authenticated
+D1/KV/R2/Service Binding/version readback in the P5 packet.
 
 Record:
 

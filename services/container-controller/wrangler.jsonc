@@ -46,7 +46,7 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "cinatoken-rust-local",
+      "database_name": "cinatoken-rust-db",
       "database_id": "00000000-0000-0000-0000-000000000000"
     }
   ],

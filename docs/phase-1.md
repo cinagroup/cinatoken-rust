@@ -2590,3 +2590,36 @@ identity. Replays must match exactly; partial or contradictory evidence cannot
 settle, refund, deliver, or authorize another provider request. The complete
 local aggregate passes with D1 head 0053 and 837 Worker tests. Go/VPS remains
 the traffic and financial authority until P5 is completed and approved.
+
+## 2026-07-19 P5 Evidence Gate Local Candidate
+
+P5 now has an offline, fail-closed evidence contract. It requires one canonical
+candidate plus ten exact evidence kinds and five independent Ed25519 owner
+approvals. Artifact hashes, freshness, candidate identity, reader-first order,
+0053 schema, lifecycle/financial faults, provenance, load/cost/SLO, rollback,
+and security/privacy are verified together rather than accepted as separate
+free-form reports.
+
+The local contract suite passes 34 tests. It rejects noncanonical JSON,
+candidate or artifact drift, stale evidence, customer traffic, writer-before-
+reader ordering, incomplete lifecycle/provenance, duplicate provider or
+financial effects, non-conserving response/settle/refund counts, elapsed cohort
+windows, request accounting on refunds, weak load, unsafe rollback, path
+traversal or symlink evidence, same-directory trust-policy aliases, duplicate
+public-key material, and missing, premature, inverted-window, wrong-role, or
+tampered approvals.
+
+Three Controller configs now use the same configured D1 names as their edge
+environment, and configuration tests bind the same D1 name/ID, CONFIG_KV,
+FILE_BUCKET, and Controller Service Binding values across both planes.
+Production IDs remain placeholders and are not authenticated identities.
+The deploy path now adds a separate 18-test preflight that rejects placeholders,
+zero IDs, public entrypoints, disabled observability, enabled action gates, and
+missing remote secret names before Wrangler can deploy the Controller.
+
+This is verifier implementation, not remote P5 evidence. A complete packet can
+only become eligible for human review of an isolated staging synthetic canary;
+it cannot authorize customer traffic or production. Authenticated collectors,
+real faults/load/rollback and approvals remain open. Production cutover also
+requires the separately documented Go/VPS process-state drain and reversible
+data path. Go/VPS remains authoritative and production remains **NO-GO**.

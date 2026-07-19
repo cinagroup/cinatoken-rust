@@ -2627,11 +2627,12 @@ data path. Go/VPS remains authoritative and production remains **NO-GO**.
 ## 2026-07-19 P5 Foundation And Production Drain Contracts
 
 Phase 1 now includes the missing collection boundary behind the offline P5
-verifier. The foundation collector is staging-only, uses a fixed 13-command
-read-only Wrangler allowlist, and captures exact control-plane digests before
+verifier. Foundation collector version 4 is staging-only, uses 13 fixed direct
+Cloudflare API GET requests, and captures exact control-plane digests before
 and after a bounded observation window. A dedicated rotated readback token is
-mapped only into the child Wrangler environment; no credential, raw response,
-payload, account ID, KV ID, or Container application ID is emitted.
+injected only into in-memory Authorization headers after the credential-free
+request plan is validated; no credential, raw response, cursor, payload,
+account ID, KV ID, or Container application ID is emitted.
 
 The collector fails closed unless the before/after snapshots are complete and
 stable and the same window includes app-owned shard-registry, action-gate,
@@ -2648,7 +2649,7 @@ LOG_DB snapshots; unique scheduler ownership; zero forward/reverse
 reconciliation delta; complete task/order disposition; and measured rollback.
 A complete packet is review input only and never authorizes cutover.
 
-Focused local verification passes 42 P5 tests, 16 foundation collector tests,
+Focused local verification passes 44 P5 evidence tests, 24 foundation collector tests,
 23 Go/VPS cutover tests, and 22 shared subprocess/deploy-preflight tests. No
 authenticated collection or remote mutation occurred. Phase 1 remains
 production **NO-GO** pending real staging and Go/VPS evidence.
@@ -2686,11 +2687,13 @@ Phase 1 therefore requires a root-authorized same-version one-time campaign
 with nonce, expiry, per-shard consumption, automatic seal, and immutable audit
 before live activation collection can begin.
 
-Control-plane list pagination is now fail-closed because the pinned Wrangler
-output cannot prove there is no next page. Therefore this local advance does
-not make foundation evidence ready. Remote 0054 apply/readback, explicit
-Cloudflare API pagination, the one-time activation campaign, real runtime/image
-provenance, all-shard probes,
+Collector version 4 now provides fail-closed direct API pagination locally:
+strict KV page-number totals and opaque Container tokens must reach explicit
+terminal conditions without duplicates, loops, drift, or unsafe responses.
+This does not make foundation evidence ready because no rotated credential or
+real staging endpoint was used. Remote 0054/0055 apply/readback, authenticated
+Cloudflare API pagination, a live one-time activation campaign, real
+runtime/image provenance, all-shard probes,
 fault/load/rollback campaigns, Go/VPS drain, and approvals remain open.
 Production remains **NO-GO**.
 
@@ -2720,11 +2723,11 @@ The shard collector now uses capture v2 and foundation sources v3. It reads a
 stable `sealed_complete` campaign before and after the observation, validates
 receipts `0..N-1`, recomputes readiness/activation/consumption hashes, and
 requires one matching 0054 row per receipt. Local P5 focused tests cover 44
-evidence cases, 16 foundation cases plus self-test, and 13 shard/campaign
+evidence cases, 24 foundation cases plus self-test, and 13 shard/campaign
 collector cases.
 
 This closes the local campaign implementation blocker only. Credential
 rotation, remote 0055 apply/readback, same-version deployment, a live N/N
-campaign, authoritative all-page Cloudflare inventory, provenance and traffic
+campaign, authenticated collector-v4 all-page Cloudflare inventory, provenance and traffic
 sources, P5 faults/load/cost/SLO, five approvals, and the Go/VPS drain and
 reverse-sync packet remain open. Production remains **NO-GO**.

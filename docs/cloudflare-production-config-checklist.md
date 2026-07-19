@@ -1417,3 +1417,58 @@ This is a staging evidence capability, not a production traffic flag.
 - Go/VPS remains authoritative until the independent drain, reconciliation,
   reverse-sync, and measured rollback packet passes. Production remains
   **NO-GO**.
+
+## P5 Foundation Readback Checklist
+
+Collector version 4 is the approved local implementation for Cloudflare
+control-plane pagination. It is read-only evidence tooling and does not
+authorize deployment, wake, provider/financial work, traffic, or cutover.
+
+### Credential and permissions
+
+- Revoke the exposed credential before any remote command. Create a distinct,
+  least-privilege staging readback token; do not reuse deploy, runtime, WFP, AI
+  Gateway, or provider credentials.
+- Supply it only through `CINATOKEN_P5_READBACK_TOKEN` in the approved operator
+  process. Never place it in argv, URLs, tracked files, evidence, logs, shell
+  history, tickets, Worker bindings, or Container environment.
+- Independently review the token's account and resource scope. A successful
+  local fixture or a broad Cloudflare role is not permission approval.
+
+### Fixed remote inventory
+
+- Require exactly the collector's 13 HTTPS GET requests: three Worker version/
+  deployment pairs, D1 info, R2 info, KV namespaces, Container applications,
+  exact Container info, Container instances, and Container deployments.
+- Reject any method, origin, account path, resource path, or query key outside
+  the fixed plan. Redirects, non-200 status, non-JSON content, unsuccessful API
+  envelopes, credential reflection, and raw-response output fail closed.
+- Require exact Worker version IDs, D1/R2/KV identities, Container application
+  ID, and `configuration.image` digest. Container deployment inventory does
+  not replace SBOM/signature/runtime-to-image provenance.
+
+### Pagination and bounds
+
+- KV must traverse every declared page with stable `per_page`, `total_count`,
+  and `total_pages`, exact page/count metadata, unique records, and accumulated
+  count equal to the terminal total.
+- Container application and instance requests must follow bounded, unique
+  opaque page tokens until an explicit-null terminal. A short page, expected
+  object match, repeated token, duplicate record, or missing terminal is not
+  completion.
+- Single-response endpoints must not return pagination metadata. Enforce the
+  4 MiB streamed page, 16 MiB snapshot, 1,024-page, 100,000-record, fatal UTF-8,
+  60-second per-request, and five-minute whole-readback limits.
+
+### S4 evidence gate
+
+- Run the exact readback before and after one 300-7200 second observation and
+  require identical canonical digests plus `paginationComplete=true`.
+- Overlap the same window with the sealed 0055 N/N campaign and 0054 ledger,
+  all-false action gates, SBOM/provenance, complete R2 writer/object inventory,
+  and zero-customer-traffic isolation sources v3.
+- Archive the canonical foundation capture, collector source digest, endpoint/
+  permission review, timestamps, counts, terminal facts, and reviewer record.
+  Do not archive raw responses, cursors, account/resource IDs, or secrets.
+- No authenticated collector-v4 run has yet been archived. S4, P5, and
+  production therefore remain **NO-GO**.

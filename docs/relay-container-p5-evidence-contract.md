@@ -165,23 +165,29 @@ mutate resources.
 The foundation collector is also staging-only and read-only. It binds the
 `candidate-freeze` and `remote-inventory` facts to one canonical capture,
 collector artifact digest, five-minute-to-two-hour observation window, and
-complete pagination result. Its fixed 13-command Wrangler allowlist performs
-only exact Worker version/deployment, D1, R2, KV, and Container readback. It
-emits digests and status metadata rather than raw control-plane output.
+complete pagination result. Collector version 4 replaces the former Wrangler
+plan with 13 fixed, credential-free Cloudflare API GET requests for exact
+Worker version/deployment, D1, R2, KV, and Container readback. It emits digests
+and structural status metadata rather than raw control-plane output.
 
-The current Wrangler list commands do not expose enough cursor state for this
-collector to prove that every page was traversed. Every deployments, KV, and
-Container list command is therefore classified as `unverifiable-list`, emits
-`paginationComplete=false`, and remains `not-proven` even when its first page
-is shorter than the requested limit. Foundation and P5 remain **NO-GO** until
-a later control-plane reader explicitly traverses every page and proves a
-terminal cursor. Item count and page size are not substitutes for that work.
+The direct reader traverses strict KV page numbers and opaque Container page
+tokens to explicit-null terminal conditions, rejects duplicate records, token
+loops, metadata drift, short-page inference, unsafe envelopes, redirects,
+per-request/whole-readback timeout, and bounded-response violations, and treats
+official non-paginated endpoints as single responses only when they contain no
+pagination metadata. It requires the first Worker deployment to carry the
+candidate at 100%, nonempty current Container placements to use the candidate
+image, endpoint-specific result schemas, and a recomputed digest over all 13
+strict summary records. This closes
+the local pagination implementation blocker. Foundation and P5 remain
+**NO-GO** until a rotated least-privilege token has produced stable,
+authenticated before/after readback and all independent evidence sources.
 
 Cloudflare Container instance inventory cannot prove sleeping Durable Object
 members. The collector therefore requires a stable app-owned shard activation
 ledger plus separate action-gate, SBOM/signature/provenance, R2 writer/object,
 and traffic-isolation sources. The shard source embeds the canonical capture
-under foundation sources v2 and binds its recomputed
+under foundation sources v3 and binds its recomputed
 `sourceArtifactSha256`. Missing or incomplete sources produce explicit
 blockers and `paginationComplete=false`; they can never be converted into a
 P5 pass by elapsed time. The complete contracts and live SOP are in
@@ -342,9 +348,10 @@ files, and every evidence and approval validity window must increase strictly.
    rows must be fresh for this campaign, activation generation must be one,
    and sources-v3 action-gate, SBOM/provenance, R2, traffic-isolation, and
    control-plane facts must overlap the same window.
-8. Implement and archive explicit full pagination for every Cloudflare
-   control-plane list. Until that reader exists, foundation and P5 remain
-   `not-proven` regardless of the activation ledger result.
+8. Run and archive collector-v4 direct API readback with explicit terminal
+   pagination for every Cloudflare control-plane list. Until the authenticated
+   before/after capture passes, foundation and P5 remain `not-proven`
+   regardless of the activation ledger result.
 9. Run lifecycle and response/financial fault campaigns against a bounded
    synthetic cohort. Pin or blue/green-isolate downstream Service Binding
    versions during skew tests.
@@ -414,7 +421,7 @@ requires `python tools/verify_sqlite.py` and
 and never infer a pass from this paragraph.
 
 On the current worktree, the focused 0055 checks pass the 55-migration
-62/771/91 SQLite verifier, 44 P5 verifier tests, 16 foundation collector tests
+62/771/91 SQLite verifier, 44 P5 verifier tests, 24 foundation collector tests
 plus its offline self-test, 13 shard-registry/campaign collector tests, and 22 deploy-preflight
 tests. These are still local contract checks, not Cloudflare evidence.
 

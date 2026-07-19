@@ -16,7 +16,23 @@ export const APPROVAL_DOMAIN =
   "cinatoken-relay-container-p5-approval-v1";
 export const FOUNDATION_CAPTURE_CONTRACT =
   "cinatoken-relay-container-p5-foundation-capture-v1";
-export const FOUNDATION_COLLECTOR_VERSION = 3;
+export const FOUNDATION_COLLECTOR_VERSION = 4;
+
+const FOUNDATION_READBACK_KEYS = Object.freeze([
+  "edge-version",
+  "edge-deployments",
+  "controller-version",
+  "controller-deployments",
+  "provider-egress-version",
+  "provider-egress-deployments",
+  "d1-info",
+  "r2-info",
+  "kv-namespaces",
+  "container-applications",
+  "container-info",
+  "container-instances",
+  "container-deployments",
+]);
 
 export const REQUIRED_APPROVAL_ROLES = Object.freeze([
   "security",
@@ -876,7 +892,7 @@ function validateFoundationCaptureReport(value, candidate, candidateDigestSha256
   return { binding, evidenceFacts };
 }
 
-function validateFoundationReadback(value, label) {
+export function validateFoundationReadback(value, label) {
   const readback = requireObject(value, `[foundation] ${label} readback`);
   exactKeys(
     readback,
@@ -893,12 +909,104 @@ function validateFoundationReadback(value, label) {
   requireExact(readback.stderrEmpty, true, `[foundation] ${label} stderr`);
   if (
     !Array.isArray(readback.commands) ||
-    readback.commands.length !== 13 ||
+    readback.commands.length !== FOUNDATION_READBACK_KEYS.length ||
     readback.commands.some((item) => !isPlainObject(item))
   ) {
     throw new Error(`[foundation] ${label} command inventory is invalid`);
   }
+  readback.commands.forEach((item, index) =>
+    validateFoundationReadbackCommand(item, label, index),
+  );
+  requireExact(
+    readback.digestSha256,
+    sha256Hex(Buffer.from(canonicalJson(readback.commands), "utf8")),
+    `[foundation] ${label} readback digest binding`,
+  );
   return readback;
+}
+
+function validateFoundationReadbackCommand(command, label, index) {
+  exactKeys(
+    command,
+    [
+      "key",
+      "status",
+      "transport",
+      "requestSha256",
+      "outputSha256",
+      "outputBytes",
+      "stderrSha256",
+      "stderrEmpty",
+      "expectedValuesPresent",
+      "expectedContainerImageDigestPresent",
+      "itemCount",
+      "paginationMode",
+      "pageCount",
+      "paginationEvidenceSha256",
+      "paginationComplete",
+    ],
+    `[foundation] ${label} readback command`,
+  );
+  const key = FOUNDATION_READBACK_KEYS[index];
+  requireExact(command.key, key, `[foundation] ${label} readback command key`);
+  requireExact(command.status, "pass", `[foundation] ${label} command status`);
+  requireExact(
+    command.transport,
+    "cloudflare-api",
+    `[foundation] ${label} command transport`,
+  );
+  requireSha256(command.requestSha256, `[foundation] ${label} request digest`);
+  requireSha256(command.outputSha256, `[foundation] ${label} output digest`);
+  requireInteger(
+    command.outputBytes,
+    1,
+    16 * 1024 * 1024,
+    `[foundation] ${label} output bytes`,
+  );
+  requireExact(command.stderrSha256, null, `[foundation] ${label} stderr digest`);
+  requireExact(command.stderrEmpty, true, `[foundation] ${label} diagnostics`);
+  requireExact(
+    command.expectedValuesPresent,
+    true,
+    `[foundation] ${label} expected identity`,
+  );
+  requireExact(
+    command.expectedContainerImageDigestPresent,
+    key === "container-info" || key === "container-deployments" ? true : null,
+    `[foundation] ${label} image identity`,
+  );
+  requireInteger(
+    command.itemCount,
+    key === "container-instances" ? 0 : 1,
+    100_000,
+    `[foundation] ${label} item count`,
+  );
+  const expectedMode =
+    key === "kv-namespaces"
+      ? "page-number"
+      : key === "container-applications" || key === "container-instances"
+        ? "page-token"
+        : "single-response";
+  requireExact(
+    command.paginationMode,
+    expectedMode,
+    `[foundation] ${label} pagination mode`,
+  );
+  requireInteger(
+    command.pageCount,
+    1,
+    1_024,
+    `[foundation] ${label} page count`,
+  );
+  requireSha256(
+    command.paginationEvidenceSha256,
+    `[foundation] ${label} pagination digest`,
+  );
+  requireExact(
+    command.paginationComplete,
+    true,
+    `[foundation] ${label} pagination completeness`,
+  );
 }
 
 function validateFoundationSourceSummary(value, startedAt, endedAt) {

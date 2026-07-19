@@ -776,15 +776,52 @@ function foundationCaptureFixture(candidate, candidateDigestSha256) {
       candidate,
     ),
   };
+  const readbackKeys = [
+    "edge-version",
+    "edge-deployments",
+    "controller-version",
+    "controller-deployments",
+    "provider-egress-version",
+    "provider-egress-deployments",
+    "d1-info",
+    "r2-info",
+    "kv-namespaces",
+    "container-applications",
+    "container-info",
+    "container-instances",
+    "container-deployments",
+  ];
+  const commands = readbackKeys.map((key, index) => ({
+    key,
+    status: "pass",
+    transport: "cloudflare-api",
+    requestSha256: sha256Hex(Buffer.from(`request:${index}`, "utf8")),
+    outputSha256: sha256Hex(Buffer.from(`output:${index}`, "utf8")),
+    outputBytes: 10,
+    stderrSha256: null,
+    stderrEmpty: true,
+    expectedValuesPresent: true,
+    expectedContainerImageDigestPresent:
+      key === "container-info" || key === "container-deployments" ? true : null,
+    itemCount: 1,
+    paginationMode:
+      key === "kv-namespaces"
+        ? "page-number"
+        : key === "container-applications" || key === "container-instances"
+          ? "page-token"
+          : "single-response",
+    pageCount: 1,
+    paginationEvidenceSha256: sha256Hex(
+      Buffer.from(`pagination:${index}`, "utf8"),
+    ),
+    paginationComplete: true,
+  }));
   const readback = {
-    digestSha256: "c".repeat(64),
+    digestSha256: sha256Hex(Buffer.from(canonicalJson(commands), "utf8")),
     complete: true,
     paginationComplete: true,
     stderrEmpty: true,
-    commands: Array.from({ length: 13 }, (_, index) => ({
-      key: `readback-${index + 1}`,
-      status: "pass",
-    })),
+    commands,
   };
   const subject = {
     mode: "live-readback",

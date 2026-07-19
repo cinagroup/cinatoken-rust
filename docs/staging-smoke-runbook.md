@@ -2333,9 +2333,41 @@ campaign and retires the candidate. Do not issue a blind retry.
 4. Run the campaign-aware shard collector before and after 300-7200 seconds.
    Campaign, receipts, activation high watermark, entries, and all other
    sources-v3 facts must be stable.
-5. Keep S4 blocked until Cloudflare Worker/Container/KV/R2/D1 inventory uses an
-   authoritative cursor-aware all-page reader. Wrangler first-page output is
-   not completeness proof.
+5. Run foundation collector v4 against the fixed direct Cloudflare API
+   allowlist. Require exact stable before/after Worker/Container/KV/R2/D1
+   inventory and `paginationComplete=true`; page size and expected-object
+   presence are not completeness proof.
+
+### Collector-v4 control-plane capture
+
+Before provisioning a token, run the local contract and credential-free plan:
+
+```powershell
+bun run check:relay-container:p5-foundation
+bun run plan:relay-container:p5-foundation -- `
+  --request C:\secure-evidence\p5\foundation-request.json
+```
+
+After security has recorded revocation of the exposed credential, provision a
+distinct least-privilege staging value as `CINATOKEN_P5_READBACK_TOKEN` in the
+approved operator process and run:
+
+```powershell
+bun run collect:relay-container:p5-foundation -- `
+  --request C:\secure-evidence\p5\foundation-request.json `
+  --source-bundle C:\secure-evidence\p5\foundation-sources.json `
+  --confirm-staging-readback `
+  --confirm-replacement-token `
+  --confirm-observation-window
+```
+
+The result must report 13 passing fixed requests, identical before/after
+digests, explicit KV and Container terminal pagination, complete sources v3,
+and `foundationEvidenceReady=true`. Any permission failure, redirect, response
+overflow, cursor loop, duplicate, metadata drift, identity/image mismatch,
+source-time mismatch, or readback drift aborts S4. Retain the canonical capture
+and reviewer records, never the token, raw responses, cursors, or private
+account/resource IDs. No authenticated run has yet satisfied this phase.
 
 Rollback preserves the campaign, claims, receipts, seal, 0054 activations, DO
 journal, image, and audit evidence. Go/VPS remains authoritative; production

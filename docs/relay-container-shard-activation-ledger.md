@@ -328,24 +328,22 @@ The P5 manifest binds the complete canonical foundation capture file at
 checks file bytes, capture/collector bindings, stable readback, and exact
 candidate-freeze/remote-inventory facts before owner approvals are accepted.
 
-## Control-Plane Pagination Blocker
+## Control-Plane Pagination Boundary
 
-The activation API has explicit frozen keyset pagination. The current Wrangler
-control-plane reader does not have equivalent all-pages proof for Worker
-deployments, KV namespaces, Container applications, Container instances, or
-Container images.
+The activation API retains its explicit frozen keyset pagination. Foundation
+collector version 4 now gives the Cloudflare control plane an equivalent local
+all-pages implementation through 13 fixed direct API GET requests. KV pages
+must carry stable page/count/total metadata and terminate at their exact total;
+Container application and instance pages must follow bounded, unique opaque
+tokens to an explicit-null terminal. Duplicate records, repeated
+cursors, metadata drift, short-page inference, unexpected pagination on a
+single-response endpoint, or any response bound violation fails closed.
 
-`tools/lib/cloudflare_readback.mjs` classifies those list commands as
-`unverifiable-list`. They always produce `paginationComplete=false` and
-`status=not-proven`, even when a first page has fewer than 100 items. The
-foundation collector consequently cannot produce a live ready packet from the
-current 13-command Wrangler plan.
-
-This is an intentional fail-closed boundary. A later implementation must use
-an authoritative Cloudflare control-plane endpoint and explicitly traverse all
-pages/cursors. It must not infer completeness from item count, a short page, or
-the presence of the expected object. Until that reader exists, foundation and
-P5 remain **NO-GO** regardless of a complete shard activation capture.
+This closes the implementation blocker, not the evidence gate. No
+authenticated readback was run with a rotated credential. Foundation and P5
+remain **NO-GO** until staging proves the real endpoint permissions and stable
+before/after inventory together with the complete shard activation capture and
+all other sources-v3 evidence.
 
 ## Ordered Staging Rollout
 
@@ -355,7 +353,7 @@ P5 remain **NO-GO** regardless of a complete shard activation capture.
 | S1 schema readers | Back up staging D1, prove old-writer/operation drain, apply and read back 0054 then 0055, then deploy provider-egress, Controller reader, and edge reader | Exact 0055/55 and 62/771/91 schema; immutable negatives; unchanged business fingerprint | Schema drift, incompatible writer, unexpected row, or provider/financial delta |
 | S2 runtime rollout | Roll the Container candidate at 10% and then 100% while activation recording remains false | Exact control-plane image, compatible readiness/runtime build, N/N-1 reader proof, zero customer traffic | Unknown image/build, incompatible readiness, or unexplained wake/effect |
 | S3 candidate recording | Create one root-authorized same-version campaign, retain its nonce only in the approved operator process, and issue exactly one signed readiness probe per logical shard | D1 claim precedes every DO lookup; exact completed replays are replay-only; campaign is `sealed_complete` with N/N claims, consumptions, receipts, and 0054 activations | Version/gate/candidate drift, second wake, ambiguous journal, missing/hash-mismatched replay, failed/expired/aborted seal, stale or execution-ready receipt |
-| S4 stability capture | Read the sealed campaign and activation snapshots before/after, plus action-gate, SBOM/provenance, R2, traffic, and Cloudflare inventory over one 300-7200 second window | Frozen high watermark, complete keyset traversal, identical campaign/receipt/entry digests, sources-v3 artifact digest, explicit Cloudflare all-pages proof | Cursor gap/repeat, campaign drift, receipt mismatch, source-time mismatch, non-false gate, or unverifiable Wrangler list |
+| S4 stability capture | Read the sealed campaign and activation snapshots before/after, plus action-gate, SBOM/provenance, R2, traffic, and Cloudflare inventory over one 300-7200 second window | Frozen high watermark, complete keyset traversal, identical campaign/receipt/entry digests, sources-v3 artifact digest, explicit Cloudflare all-pages proof | Cursor gap/repeat, campaign drift, receipt mismatch, source-time mismatch, non-false gate, or incomplete direct API readback |
 | S5 P5 campaigns | Only after S4, run lifecycle, response/financial, provenance, load/cost/SLO, rollback, privacy, and five-owner signature gates | Ten evidence kinds and five independent signatures over one subject | Customer traffic, duplicate effect, stale evidence, failed rollback, or any unknown |
 
 Rollback is disable-first and retains migrations 0054/0055, immutable campaign,
@@ -416,8 +414,9 @@ This section supersedes every earlier S3 statement that says a same-version
 campaign or receipt-aware collector is unimplemented. It does not supersede
 the remote blockers: the exposed credential must be rotated, remote 0055 must
 be backed up/applied/read back, a candidate must be deployed without changing
-static gates, an approved live campaign must complete, and Cloudflare
-control-plane pagination must be proven before S4 or P5 can pass.
+static gates, an approved live campaign must complete, and collector-v4
+Cloudflare control-plane pagination must be run and archived before S4 or P5
+can pass.
 
 ## Verification Boundary
 
@@ -446,11 +445,11 @@ Current worktree results:
 - deploy-preflight/bounded-subprocess tests: 22 pass, self-test explicitly not
   deploy-ready;
 - shard-registry and campaign collector tests: 13 pass;
-- foundation collector tests: 16 pass plus offline self-test; and
+- foundation collector tests: 24 pass plus offline self-test; and
 - P5 evidence verifier tests: 44 pass.
 
 These commands test local contracts only. They cannot prove remote migration
-state, deployed Worker versions, Container image provenance, all-page
+state, deployed Worker versions, Container image provenance, authenticated all-page
 Cloudflare inventory, N/N live activations, zero customer traffic, or owner
 approvals. No document or local test authorizes deployment or remote mutation.
 Foundation, P5, customer traffic, production cutover, and Go/VPS shutdown all

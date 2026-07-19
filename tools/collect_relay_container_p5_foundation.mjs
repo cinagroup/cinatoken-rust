@@ -9,11 +9,12 @@ import {
   FOUNDATION_COLLECTOR_VERSION,
   canonicalJson,
   p5CandidateDigestSha256,
+  validateFoundationReadback,
   validateP5Candidate,
 } from "./relay_container_p5_evidence_contract.mjs";
 import {
-  CLOUDFLARE_READBACK_COMMAND_KEYS,
-  assertReadOnlyWranglerCommand,
+  CLOUDFLARE_READBACK_REQUEST_KEYS,
+  assertReadOnlyCloudflareRequest,
   buildCloudflareReadbackPlan,
   executeCloudflareReadback,
   sha256,
@@ -280,7 +281,7 @@ export async function buildFoundationDryRun({
     digestCanonical(request),
     "request digest",
   );
-  const plan = buildCloudflareReadbackPlan(request, dependencies.commandPaths);
+  const plan = buildCloudflareReadbackPlan(request);
   const foundationCollectorSha256 =
     dependencies.collectorArtifactDigest ?? (await collectorArtifactDigest());
   return {
@@ -299,7 +300,7 @@ export async function buildFoundationDryRun({
     foundationCollectorSha256,
     sourceBundleProvided,
     observationSeconds: request.observationSeconds,
-    commandKeys: plan.plan.map((item) => item.key),
+    requestKeys: plan.plan.map((item) => item.key),
     safetyBoundary: safetyBoundary({
       credentialsRead: false,
       networkReadbackPerformed: false,
@@ -324,7 +325,7 @@ export async function collectP5Foundation(
     "request digest",
   );
   const candidateDigestSha256 = p5CandidateDigestSha256(request.candidate);
-  const plan = buildCloudflareReadbackPlan(request, dependencies.commandPaths);
+  const plan = buildCloudflareReadbackPlan(request);
   const now = dependencies.now ?? (() => new Date());
   const sleep = dependencies.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const readback = dependencies.executeReadback ?? executeCloudflareReadback;
@@ -332,15 +333,17 @@ export async function collectP5Foundation(
     dependencies.collectorArtifactDigest ?? (await collectorArtifactDigest());
   const before = await readback(plan, {
     apiToken,
-    runCommand: dependencies.runCommand,
+    fetchImpl: dependencies.fetchImpl,
   });
+  validateFoundationReadback(before, "before");
   const observationStartedAt = canonicalTimestamp(now(), "observation start");
   await sleep(request.observationSeconds * 1000);
   const observationEndedAt = canonicalTimestamp(now(), "observation end");
   const after = await readback(plan, {
     apiToken,
-    runCommand: dependencies.runCommand,
+    fetchImpl: dependencies.fetchImpl,
   });
+  validateFoundationReadback(after, "after");
   const collectorDigestAfter =
     dependencies.collectorArtifactDigest ?? (await collectorArtifactDigest());
   const durationSeconds =
@@ -473,25 +476,25 @@ export async function collectP5Foundation(
 export async function runSelfTest() {
   const request = validateFoundationRequest(selfTestRequest());
   const plan = buildCloudflareReadbackPlan(request);
-  for (const item of plan.plan) assertReadOnlyWranglerCommand(item);
+  for (const item of plan.plan) assertReadOnlyCloudflareRequest(item);
   let rejectedMutation = false;
   try {
-    assertReadOnlyWranglerCommand({
+    assertReadOnlyCloudflareRequest({
       ...plan.plan[0],
-      args: [plan.plan[0].wranglerCliPath, "deploy", "--name", "unsafe"],
+      method: "POST",
     });
   } catch {
     rejectedMutation = true;
   }
   if (!rejectedMutation) {
-    throw new P5FoundationCollectorError("self-test accepted a mutating Wrangler command");
+    throw new P5FoundationCollectorError("self-test accepted a mutating API request");
   }
   const dryRun = await buildFoundationDryRun({
     request,
     dependencies: { collectorArtifactDigest: "f".repeat(64) },
   });
   if (
-    dryRun.commandKeys.length !== CLOUDFLARE_READBACK_COMMAND_KEYS.length ||
+    dryRun.requestKeys.length !== CLOUDFLARE_READBACK_REQUEST_KEYS.length ||
     dryRun.p5Eligible !== false ||
     dryRun.safetyBoundary.credentialsRead !== false
   ) {
@@ -506,8 +509,8 @@ export async function runSelfTest() {
     p5Eligible: false,
     productionEligible: false,
     customerTrafficEligible: false,
-    commandCount: plan.plan.length,
-    mutatingCommandRejected: true,
+    requestCount: plan.plan.length,
+    nonGetRequestRejected: true,
     credentialsRead: false,
     networkReadbackPerformed: false,
     writesFiles: false,
@@ -534,7 +537,7 @@ function collectBlockers({
     blockers.push("cloudflare-pagination-not-proven");
   }
   if (before.stderrEmpty !== true || after.stderrEmpty !== true) {
-    blockers.push("wrangler-stderr-not-empty");
+    blockers.push("cloudflare-readback-diagnostics-not-empty");
   }
   if (before.digestSha256 !== after.digestSha256) {
     blockers.push("cloudflare-readback-drift");
@@ -896,13 +899,9 @@ async function collectorArtifactDigest() {
       "lib",
       "relay_container_shard_registry.mjs",
     ),
-    path.join(repoRoot, "tools", "lib", "bounded_subprocess.mjs"),
     path.join(repoRoot, "tools", "relay_container_p5_evidence_contract.mjs"),
     path.join(repoRoot, "package.json"),
     path.join(repoRoot, "bun.lock"),
-    path.join(repoRoot, "node_modules", "wrangler", "package.json"),
-    path.join(repoRoot, "node_modules", "wrangler", "bin", "wrangler.js"),
-    path.join(repoRoot, "node_modules", "wrangler", "wrangler-dist", "cli.js"),
   ];
   const artifacts = [];
   for (const file of files) {
@@ -1028,8 +1027,8 @@ function usage(exitCode) {
       "  bun tools/collect_relay_container_p5_foundation.mjs --request <canonical.json> [--source-bundle <canonical.json>] --confirm-staging-readback --confirm-replacement-token --confirm-observation-window",
       "  bun tools/collect_relay_container_p5_foundation.mjs --self-test",
       "",
-      `Live mode reads only ${REPLACEMENT_TOKEN_ENV} and maps it to child CLOUDFLARE_API_TOKEN.`,
-      "The command is staging-only, performs read-only Wrangler calls, writes no files, and never authorizes P5 or production traffic.",
+      `Live mode reads only ${REPLACEMENT_TOKEN_ENV} and injects it only into in-memory Cloudflare API Authorization headers.`,
+      "The command is staging-only, performs fixed read-only HTTPS GET requests, writes no files, and never authorizes P5 or production traffic.",
     ].join("\n"),
   );
   process.exit(exitCode);

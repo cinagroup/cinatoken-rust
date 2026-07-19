@@ -2152,9 +2152,10 @@ the other.
 9. In parallel, collect the exact action-gate, SBOM/provenance, R2 inventory,
    traffic-isolation, Worker deployment, D1/R2/KV, and Container application
    evidence. All artifacts must overlap one observation window.
-10. Do not mark control-plane pagination complete from page size. Use a direct
-   Cloudflare endpoint with explicit cursor traversal, or keep the foundation
-   packet blocked.
+10. Run foundation collector v4's fixed direct Cloudflare API readback. Require
+    stable KV page/count totals, bounded unique Container page tokens with an
+    explicit terminal, no duplicate records, and identical before/after
+    digests; page size or finding the expected object is never completion.
 11. Archive the canonical foundation capture itself at
     `evidence/foundation-capture.json`; the manifest must bind its byte count
     and full SHA-256, and its emitted facts must exactly match the two evidence
@@ -2163,22 +2164,24 @@ the other.
     isolated synthetic canary be reviewed. Customer and production authority
     remain separate decisions.
 
-Step 6 is implemented locally as migration 0055 but is not deployed or
-exercised; step 10 remains unimplemented. Remote S3/S4 therefore remain
-blocked. Local fixtures for activation and foundation integrity waive neither
+Steps 6 and 10 are implemented locally but are not deployed or exercised.
+Remote S3/S4 therefore remain blocked until a rotated least-privilege token
+proves the real endpoint permissions and collector-v4 before/after inventory.
+Local fixtures for activation and foundation integrity waive neither
 requirement.
 
 Rollback disables customer admission, provider/financial writers, schedulers,
-and activation recording before artifact changes. It retains 0054, activation
-rows, P3/P4 readers, R2 artifacts, DO state, and evidence. The hot Go target is
+and activation recording before artifact changes. It retains 0054/0055,
+activation/campaign rows, P3/P4 readers, R2 artifacts, DO state, and evidence. The hot Go target is
 usable only after the live drain contract proves all process-local work and
 bidirectional synchronization. Production remains **NO-GO**.
 
 ## 2026-07-19 Migration 0055 Activation Campaign Addendum
 
-This addendum supersedes step 6 above: the same-version one-time campaign is
-implemented locally. Step 10, remote execution, and production authorization
-remain blocked.
+This addendum supersedes the former step-6 implementation gap: the same-version
+one-time campaign is implemented locally. A later collector-v4 increment also
+closes the step-10 local implementation gap. Authenticated remote execution
+and production authorization remain blocked.
 
 ### Promotion invariant
 

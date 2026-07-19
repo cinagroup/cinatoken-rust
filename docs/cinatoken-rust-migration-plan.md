@@ -16601,3 +16601,99 @@ Cloudflare control-plane pagination, load/fault/cost/SLO evidence, signed P5,
 and the independent Go/VPS drain and reversible-write packet remain open.
 Go/VPS therefore remains the traffic and financial authority and production
 remains **NO-GO**.
+
+## 22.254 Authoritative Cloudflare Readback Pagination (2026-07-19)
+
+This increment closes the local control-plane pagination implementation gap
+identified in 22.251 through 22.253. It does not claim an authenticated
+Cloudflare capture. The exposed credential is still disallowed and must be
+revoked before a separately approved least-privilege readback identity is used.
+
+### Why direct API readback
+
+The repository-pinned Wrangler 4.110 JSON paths for Container application and
+instance listing consume only one API page and discard the opaque next-page
+token, while the current [Wrangler Containers command documentation](https://developers.cloudflare.com/workers/wrangler/commands/containers/)
+describes noninteractive instance listing as all-pages. Foundation evidence
+cannot depend on that version/output ambiguity. Collector version 4 therefore
+uses the authoritative Cloudflare REST responses directly and preserves their
+terminal pagination metadata. The [Workers deployments API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/)
+and pinned client both define the first deployment as the latest one actively
+serving traffic, which is why the collector validates that element rather than
+searching deployment history.
+
+This is an offline operator evidence tool, not Worker runtime code. Runtime
+Workers continue to use bindings and Service Bindings; direct REST collection
+does not weaken [Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/)
+for runtime request paths.
+
+### Fixed read-only inventory
+
+`tools/lib/cloudflare_readback.mjs` builds exactly 13 credential-free HTTPS GET
+requests under `https://api.cloudflare.com/client/v4` and the validated staging
+account:
+
+| Keys | Result contract | Pagination proof |
+| --- | --- | --- |
+| edge, Controller, and provider-egress version plus deployment readback | exact candidate Worker version/deployment identity | official single response; pagination metadata is rejected |
+| D1 database and R2 bucket information | exact candidate resource identity | official single response; pagination metadata is rejected |
+| KV namespaces | exact CONFIG_KV namespace presence | strict `page/per_page/count/total_count/total_pages`, stable totals, exact terminal accumulated count |
+| Container applications | exact application presence | bounded opaque `page_token` traversal to explicit-null terminal |
+| exact Container application information | application identity and exact `configuration.image` digest | official single response; pagination metadata is rejected |
+| Container instances | structural instance and Durable Object inventory | bounded opaque `page_token` traversal to explicit-null terminal |
+| Container deployments | application deployment stability inventory | official single response; pagination metadata is rejected |
+
+Deployment inventory does not replace image provenance. The Container
+application must still report the exact image digest, and the independent
+SBOM/signature source must map that image to the runtime executable build.
+Running instances also remain insufficient to prove sleeping logical shards;
+the app-owned 0054/0055 campaign ledger remains mandatory.
+
+### Network and evidence bounds
+
+The complete URL is reclassified against a closed method/origin/account/path/
+query allowlist immediately before every fetch. Authorization is injected only
+at that call; it never appears in the plan, URL, child environment, command
+argument, report, or file. Redirects fail. Each response must be HTTP 200 JSON,
+remain under 4 MiB while streaming, decode as fatal UTF-8, and contain a valid
+Cloudflare success envelope. The collector caps one snapshot at 16 MiB, 1,024
+pages, and 100,000 records, with a 60-second deadline covering headers and body
+for each request and one five-minute deadline for the complete readback.
+
+KV totals may not change between pages. Container cursors may not repeat or
+self-loop and must terminate with an explicit null. Duplicate records across
+pages, unsafe integers, malformed shapes, unexpected pagination metadata,
+missing terminal state, aggregate overflow, or decoded token reflection fails
+closed. The first Worker deployment must be the candidate at 100%; Container
+deployment inventory must be nonempty and every current placement must use the
+candidate image. Only hashes, byte/item/page counts, identity matches, and
+structural terminal facts enter the capture; raw responses,
+cursors, account/resource IDs, and credentials do not.
+
+### Verification and rollout effect
+
+The focused collector suite now passes 24 tests with 267 assertions plus the
+offline self-test. It covers fixed allowlisting, Authorization-only token use,
+image binding, page-number and opaque-token traversal, repeated cursors,
+metadata drift, parsed credential reflection, invalid envelopes/content types,
+declared, streamed, and aggregate response overflow, official single-response
+handling, endpoint-specific schemas, active deployment selection, whole-
+readback timeout, strict summary digest validation, before/after drift, source
+overlap, and a bounded 1,024-shard source bundle.
+
+The same worktree then completed `bun run check` with exit code 0, including
+Worker 850/850, Durable Object lifecycle 48/48, frontend contract 71/71,
+Wrangler dry-run, wasm builds/checks, the complete Rust workspace, migration
+and configuration audits, bundle redaction/budget checks, and all three P5
+evidence gates.
+
+This supersedes only statements that the all-page reader itself is
+unimplemented. S4 still requires a rotated token and an archived authenticated
+run proving real endpoint permissions, exact stable before/after inventory,
+remote 0055 schema/readback, a live sealed N/N campaign, sources-v3
+SBOM/provenance/R2/traffic evidence, and no action gate. P5 additionally needs
+fault/load/cost/SLO/rollback evidence and five signatures; production also
+needs the independent Go/VPS drain and reversible-write packet. No remote API,
+migration, deployment, Container wake, provider call, financial mutation, or
+traffic change occurred. Go/VPS remains authoritative and production remains
+**NO-GO**.

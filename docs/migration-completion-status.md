@@ -1550,13 +1550,13 @@ Production remains **NO-GO**.
 
 ### Implemented locally
 
-- A staging-only foundation collector runs a fixed 13-command, argument-array
-  Wrangler readback before and after a bounded five-minute-to-two-hour window.
-  It uses the repository-pinned Wrangler entrypoint, minimal child environment,
-  bounded process-tree termination, fatal UTF-8, and digest-only output.
-- The collector maps only a rotated `CINATOKEN_P5_READBACK_TOKEN` into child
-  `CLOUDFLARE_API_TOKEN`. Live mode requires three explicit confirmations and
-  never accepts a credential argument or writes a file.
+- Foundation collector version 4 runs 13 fixed direct Cloudflare API GET
+  requests before and after a bounded five-minute-to-two-hour window. Its
+  credential-free plan enforces the exact API origin/account/path/query
+  allowlist, fatal UTF-8, streamed and aggregate bounds, and digest-only output.
+- The collector injects a rotated `CINATOKEN_P5_READBACK_TOKEN` only into
+  in-memory Authorization headers. Live mode requires three explicit
+  confirmations and never accepts a credential argument or writes a file.
 - Candidate-freeze and remote-inventory P5 facts now bind the same canonical
   foundation capture, collector artifact digest, observation window, and
   complete pagination result.
@@ -1573,8 +1573,8 @@ Production remains **NO-GO**.
 
 ### Verified locally
 
-- P5 evidence verifier: 42/42.
-- P5 foundation collector: 16/16 plus offline self-test.
+- P5 evidence verifier: 44/44.
+- P5 foundation collector: 24/24 plus offline self-test.
 - Go/VPS cutover evidence contract: 23/23.
 - Shared bounded subprocess plus Controller deploy preflight: 22/22.
 - Both contract-description commands return hard-false customer/production
@@ -1609,7 +1609,7 @@ and production remains **NO-GO**.
   missing/duplicate/unknown shard counts from entries, and requires stable
   before/after snapshots for every index in the candidate ring.
 - P5 candidate/source contracts bind runtime build and image-provenance digests,
-  use sources v2, and enforce the real 1024-shard limit.
+  use sources v3, and enforce the real 1024-shard limit.
 - The P5 manifest reads and hashes the actual canonical foundation capture and
   compares both emitted fact objects, rather than accepting a shared digest
   claim alone.
@@ -1618,11 +1618,12 @@ and production remains **NO-GO**.
 
 ### Still blocked
 
-No authenticated 0054 apply/readback, Worker/Container deployment, runtime
-probe, source-v2 packet, image provenance artifact, or live VPS observation was
-performed. Wrangler list pagination is deliberately `not-proven` until an
-authoritative cursor-aware collector exists. A same-version one-time activation
-campaign is now implemented locally but has not been deployed or exercised;
+No authenticated 0054/0055 apply/readback, Worker/Container deployment,
+runtime probe, sources-v3 packet, image provenance artifact, or live VPS
+observation was performed. Collector version 4 now implements bounded,
+cursor-aware all-page Cloudflare readback locally, but no rotated credential
+has exercised the real endpoints. A same-version one-time activation campaign
+is implemented locally but has not been deployed or exercised;
 changing the static gate would still create a different Controller version and
 cannot satisfy the action-gate evidence. The exposed
 credential must be rotated before any remote action. Go/VPS remains
@@ -1670,8 +1671,8 @@ text.
 
 The exposed Cloudflare credential has not been rotated. Remote staging has not
 applied or read back 0055, no same-version candidate was deployed, no campaign
-or DO journal exists remotely, and no Container was woken. Authoritative
-Cloudflare all-page control-plane inventory, sources-v3, P5 fault/load/cost/SLO
+or DO journal exists remotely, and no Container was woken. Authenticated,
+stable collector-v4 all-page control-plane inventory, sources-v3, P5 fault/load/cost/SLO
 evidence, five approvals, Go/VPS process drain, reverse synchronization, and a
 measured rollback remain absent. Go/VPS stays authoritative and production
 remains **NO-GO**.

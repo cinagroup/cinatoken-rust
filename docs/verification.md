@@ -7795,3 +7795,46 @@ or P5 source mismatch blocks promotion. Local pass results still cannot prove
 credential rotation, remote schema state, deployed version/image identity,
 live N/N consumption, all-page Cloudflare inventory, customer isolation, owner
 approval, or Go/VPS drain. Production remains **NO-GO**.
+
+## Cloudflare All-Page Readback Verification (2026-07-19)
+
+This increment supersedes only the preceding statement that the Cloudflare
+all-page reader is locally absent. Foundation collector version 4 uses a fixed
+direct API GET allowlist and still grants no remote, customer, P5, or production
+authority.
+
+Focused verification completed as follows:
+
+```powershell
+bun run check:relay-container:p5-foundation
+# PASS: 24/24 tests, 267 expectations, then the offline self-test.
+# Self-test: 13 credential-free read requests; non-GET rejected; no credential,
+# network, file write, customer traffic, P5, or production authority.
+
+bun run check:relay-container:p5-evidence
+# PASS: 44/44 tests, 55 expectations.
+
+bun run check:relay-container:p5-shard-registry
+# PASS: 13/13 tests, 61 expectations.
+
+bun run check
+# PASS: complete aggregate with exit code 0, including Worker 850/850,
+# DO lifecycle 48/48, frontend contracts 71/71, Wrangler dry-run, wasm builds,
+# workspace tests, migration/config audits, and bundle redaction/budget gates.
+```
+
+The new coverage proves exact API origin/account/path/query classification,
+Authorization-only token injection, redirect and envelope rejection, 60-second
+header/body plus five-minute whole-readback timeout scope, fatal UTF-8, 4 MiB
+streamed page and 16 MiB aggregate bounds, strict KV page totals, explicit-null
+Container token termination, duplicate/loop/page-limit/drift rejection,
+single-response pagination rejection, endpoint-specific object schemas, first-
+active Worker deployment at 100%, nonempty current Container deployment image
+binding, parsed Unicode-escaped token-reflection failure, and strict 13-record
+readback digest validation. No authenticated API request was made.
+
+Remote staging must still rotate the exposed credential, prove the replacement
+token's exact permissions, apply/read back 0055, deploy the frozen candidate,
+complete and seal the N/N campaign, capture identical before/after inventory
+and all sources-v3 evidence, run P5 faults/load/cost/SLO/rollback, collect five
+signatures, and complete the Go/VPS drain. Production remains **NO-GO**.

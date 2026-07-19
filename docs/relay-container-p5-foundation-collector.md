@@ -43,7 +43,7 @@ bun run collect:relay-container:p5-foundation -- `
 ```
 
 The app-owned shard source is collected independently before it is embedded in
-foundation sources v2:
+foundation sources v3:
 
 ```powershell
 bun run collect:relay-container:p5-shard-registry -- `
@@ -62,10 +62,10 @@ argument, repository file, evidence file, shell history, or ticket. The
 previously exposed credential is not acceptable; it must be revoked and a
 rotated replacement credential must be used.
 
-The collector reads only `CINATOKEN_P5_READBACK_TOKEN`. For each child process
-it builds a minimal environment and maps that value to
-`CLOUDFLARE_API_TOKEN`; it does not forward `HOME`, `USERPROFILE`, unrelated
-credentials, or the parent environment wholesale.
+The collector reads only `CINATOKEN_P5_READBACK_TOKEN`. It injects that value
+only as the in-memory `Authorization: Bearer ...` header of each fixed HTTPS
+GET after validating the complete credential-free request plan. It never puts
+the token in a URL, command argument, output object, file, or child process.
 
 ## Request Contract
 
@@ -107,51 +107,55 @@ Unknown fields, production identities, short observation windows, candidate
 drift, unsafe integers, noncanonical JSON, symbolic links, multiply linked
 files, invalid UTF-8, and credential-shaped values fail closed.
 
-## Read-Only Wrangler Allowlist
+## Read-Only Cloudflare API Allowlist
 
-The collector invokes the repository-pinned `node_modules/wrangler/bin/wrangler.js`
-through `process.execPath`, `shell=false`, a fixed argument array, bounded
-stdout/stderr, fatal UTF-8 decoding, a 60-second command timeout, and process
-tree termination. Only these 13 operations are accepted:
+Collector version 4 uses direct Cloudflare REST readback so terminal
+pagination evidence is independent of Wrangler output formatting. The plan
+contains exactly 13 credential-free requests under the fixed origin
+`https://api.cloudflare.com/client/v4`, the exact staging account path, and a
+closed path/query allowlist:
 
-1. exact edge Worker version view and deployment list;
-2. exact Controller Worker version view and deployment list;
-3. exact provider-egress Worker version view and deployment list;
-4. exact D1 database info;
-5. exact R2 bucket info;
-6. KV namespace list;
-7. Container application list and exact application info, including the
-   deployed `configuration.image` digest;
-8. Container instance list; and
-9. Container image registry list.
+1. exact edge Worker version and deployment inventory;
+2. exact Controller Worker version and deployment inventory;
+3. exact provider-egress Worker version and deployment inventory;
+4. exact D1 database and R2 bucket information;
+5. all KV namespaces;
+6. all Container applications plus exact application information, including
+   the deployed `configuration.image` digest;
+7. all Container instances; and
+8. Container application deployment inventory.
 
-The allowlist rejects deploy, upload, build, push, create, update, put, get,
-delete, rollback, secret, tail, SSH, execute, and wake operations. No shell is
-used. Cloudflare currently requires broader Containers API permission for some
-list operations than their read-only behavior suggests; that platform scope
-does not expand this collector's fixed command allowlist.
+Every operation is `GET`; redirects are errors, arbitrary hosts/paths/query
+keys are rejected, and the account ID in each URL must equal the validated
+request account. There is no shell or child process. Each request has a
+60-second per-request deadline covering both headers and body plus a five-minute
+whole-readback deadline, requires HTTP 200 and JSON,
+decodes UTF-8 fatally, caps each streamed body at 4 MiB, and caps aggregate
+readback at 16 MiB, 1,024 pages, and 100,000 items. Credential reflection is a
+fatal collector error. Raw responses, cursors, private IDs, and credentials
+are never emitted; output contains only structural pagination facts, counts,
+byte counts, identity matches, and canonical SHA-256 digests.
 
-Raw Wrangler output is never emitted. Each command contributes only its key,
-status, byte count, canonical output digest, optional stderr digest, expected
-identity result, item count, and pagination result. Any reflected credential,
-invalid JSON, invalid UTF-8, output overflow, timeout, command failure,
-unexpected stderr, or missing identity becomes a fail-closed blocker.
-
-More importantly, every Wrangler list operation in the current allowlist is
-classified as `unverifiable-list`. Wrangler's output does not provide the
-collector enough cursor state to prove a terminal page, so deployments, KV
-namespace, Container application, Container instance, and Container image
-lists always return `paginationComplete=false` and `status=not-proven`. A
-short first page, including fewer than 100 Container items, is not evidence of
-completion. The six single-object version/D1/R2/Container-info operations can
-pass locally, but the aggregate 13-command readback cannot establish
-foundation readiness.
+KV uses strict page-number traversal. Every page must report matching
+`page`, `per_page`, `count`, `total_count`, and `total_pages`; totals must stay
+stable, records must be unique, and the final accumulated count must equal the
+reported total. Container applications and instances use opaque page tokens;
+tokens must be bounded, non-repeating, and eventually return explicit null.
+Official single-response endpoints reject unexpected pagination metadata.
+Neither a short page nor finding the expected object proves completion.
+Worker deployment readback accepts only the first deployment documented as
+actively serving traffic and requires exactly the candidate version at 100%.
+Container deployment inventory must be nonempty; every current placement must
+use the candidate image digest. Worker version, D1, R2, and Container-info
+responses have endpoint-specific object/field contracts rather than recursive
+value matching. The offline verifier also validates every one of the 13 summary
+records and recomputes the aggregate readback digest.
 
 ## Observation And Stability
 
 The collector records a complete before snapshot, starts the bounded observation
 after that snapshot finishes, observes for 300 through 7200 seconds, ends the
-observation before starting the same 13-command after snapshot, and then records
+observation before starting the same 13-request after snapshot, and then records
 that complete after snapshot. Readback command time therefore cannot inflate an
 otherwise valid observation beyond the P5 verifier's two-hour maximum. Both
 snapshots must:
@@ -159,7 +163,7 @@ snapshots must:
 - complete without unsafe output;
 - prove their bounded pagination;
 - contain every exact candidate identity;
-- have empty stderr; and
+- have no transport or API-envelope diagnostic; and
 - have the same canonical digest.
 
 The two P5 evidence records must be captured no later than 15 minutes after the
@@ -167,20 +171,19 @@ foundation observation ends. The offline verifier rejects a longer sealing
 lag even when the original window length was valid.
 
 The collector code inventory is also hashed before and after the observation.
-It includes the collector, readback library, bounded subprocess library, P5
-evidence contract, shard registry collector/library, root package/lock files,
-and the installed Wrangler package, launcher, and executable CLI bundle. Any
-tool or pinned Wrangler artifact drift blocks foundation readiness.
+It includes the foundation and shard collectors, both readback libraries, the
+P5 evidence contract, and the root package/lock files. Any tool artifact drift
+blocks foundation readiness.
 
-The registry list is stability inventory, not image-digest proof: pinned
-Wrangler filters digest tags from `containers images list`. The exact candidate
-digest must instead match the Container application's `configuration.image`
-field as either the digest itself or the digest suffix of an image reference;
-the independent SBOM source must bind the same digest.
+Container deployment inventory is stability evidence, not image-digest proof.
+The exact candidate digest must match the Container application's
+`configuration.image` field as either the digest itself or the digest suffix
+of an image reference; the independent SBOM/provenance source must bind the
+same digest.
 
 ## Required External Sources
 
-Wrangler control-plane output is not a complete shard ledger. In particular,
+Cloudflare control-plane inventory is not a complete shard ledger. In particular,
 Container application and instance lists cannot prove every sleeping Durable
 Object member. A live capture therefore remains `not-proven` unless a strict
 canonical source bundle is supplied with contract:
@@ -328,30 +331,33 @@ The evidence order is fixed:
    capture the sealed campaign receipts, fresh stable activation ledger, and
    all other sources-v3
    artifacts over the same 300-7200 second observation window; and
-7. perform explicit full Cloudflare control-plane pagination before attempting
-   the remaining P5 campaigns, signatures, or isolated-canary review.
+7. run and archive the direct API before/after readback with explicit terminal
+   pagination before attempting the remaining P5 campaigns, signatures, or
+   isolated-canary review.
 
-Step 5 is implemented locally but has not been deployed or exercised. Step 7
-remains unimplemented because the current Wrangler list reader cannot prove
-terminal pagination. Therefore
-the foundation packet and P5 decision remain **NO-GO** even if a local shard
-fixture is complete. All tracked local/staging/production Controller action
-gates, including activation recording, remain default `false`; editing the
-static environment variable is not an approved workaround.
+Steps 5 and 7 are implemented locally but have not been deployed or exercised.
+The exposed credential must first be revoked and replaced with a separately
+approved least-privilege readback identity. A live packet must then prove the
+real endpoints, permissions, exact before/after inventory, and every external
+source over one window. Until that authenticated capture exists, the
+foundation packet and P5 decision remain **NO-GO** even if local fixtures are
+complete. All tracked local/staging/production Controller action gates,
+including activation recording, remain default `false`; editing the static
+environment variable is not an approved workaround.
 
 ## Fail-Closed Meaning
 
 Foundation readiness is blocked by any absent source, partial page, candidate
-identity miss, before/after drift, collector drift, nonempty Wrangler stderr,
+identity miss, before/after drift, collector drift, unsafe HTTP/API envelope,
 unknown R2 writer/object, incomplete shard registry, customer traffic,
 unverified isolation, action gate, SBOM/signature issue, or source timestamp
 outside the observation window.
 
 Passing local tests proves only the collector contract and redaction boundary.
-The current worktree passes 16 foundation collector tests plus the offline
-self-test and 13 shard-registry/campaign collector tests. Those fixtures inject complete
-pagination where needed; they do not make Wrangler list output complete.
-The current Wrangler list pagination boundary intentionally prevents a live
-foundation pass until an explicit all-pages reader is implemented. No
-authenticated readback was run in this implementation increment, no remote
-resource changed, and foundation, P5, and production remain **NO-GO**.
+The current focused baseline passes 24 foundation collector tests with 267
+assertions plus the offline self-test and 13 shard-registry/campaign collector
+tests. The fixtures prove local page-number, opaque-token, single-response,
+duplicate, drift, credential-reflection, timeout/envelope, and streamed-size
+boundaries; they are not authenticated Cloudflare evidence. No authenticated
+readback was run in this implementation increment, no remote resource changed,
+and foundation, P5, and production remain **NO-GO**.

@@ -35,10 +35,11 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 This re-audit keeps the overall migration goal open. Passing local gates proves
 implementation readiness only for the covered behavior.
 
-The current source-tree D1 head is migration 0054 with 54 contiguous migration
-files, 58 tables, 694 checked incremental columns, and 83 key indexes. Older
+The current source-tree D1 head is migration 0055 with 55 contiguous migration
+files, 62 tables, 771 checked incremental columns, and 91 key indexes. Older
 dated sections below retain their historical head/count snapshots. The
-0050-0054 admission, response, financial terminal, and shard-activation paths
+0050-0055 admission, response, financial terminal, shard-activation, and
+one-time campaign paths
 are local candidate work, not remote schema evidence. Flat intent runtime and
 Container readiness do not imply pricing or traffic cutover readiness;
 `relay_flat_billing_go_parity_ready` and
@@ -1521,7 +1522,7 @@ traffic and financial authority; production remains **NO-GO**.
   placeholder/zero IDs, public previews, disabled observability, any enabled
   action gate, and missing Controller/provider-egress secret names without
   reading or printing secret values.
-- The staging runbook uses the 0054/54 and 58/694/83 schema baseline; the
+- The staging runbook uses the 0055/55 and 62/771/91 schema baseline; the
   cutover runbook explicitly requires ordered 0052/0053/0054
   apply/readback/retention plus the P5 packet and Go/VPS process-owned drain
   gate.
@@ -1621,7 +1622,56 @@ No authenticated 0054 apply/readback, Worker/Container deployment, runtime
 probe, source-v2 packet, image provenance artifact, or live VPS observation was
 performed. Wrangler list pagination is deliberately `not-proven` until an
 authoritative cursor-aware collector exists. A same-version one-time activation
-campaign is also absent; changing the static gate would create a different
-Controller version and cannot satisfy the action-gate evidence. The exposed
+campaign is now implemented locally but has not been deployed or exercised;
+changing the static gate would still create a different Controller version and
+cannot satisfy the action-gate evidence. The exposed
 credential must be rotated before any remote action. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-19 Migration 0055 Activation Campaign Status
+
+### Implemented locally
+
+- Migration 0055 advances the D1 baseline to 55 migrations, 62 tables, 771
+  checked incremental columns, and 91 key indexes. Campaign, claim,
+  consumption, and seal rows are immutable; expiry materialization is bounded
+  and idempotent.
+- Root create/status APIs bind one nonce hash to the exact Controller version,
+  all-false 22-gate inventory, foundation manifest, runtime candidate, ring,
+  environment, root operator, and D1 expiry. The status API validates and
+  returns full receipts.
+- The Controller claims D1 before any DO lookup, strips the raw nonce before
+  RPC, and treats completed D1 consumption as replay-only. D1 and DO readiness
+  result hashes must match.
+- Durable Object schema v6 journals each probe as started, completed, or
+  ambiguous with canonical result JSON/hash and a minimum two-hour retention
+  horizon. Timeout never grants a second wake.
+- Final D1 consumption atomically projects the matching 0054 activation and
+  auto-seals only at N/N. Failed, expired, and aborted campaigns cannot
+  promote and retire any candidate with effect evidence.
+- The root readiness gateway now recognizes a strict campaign credential as
+  the one-time capability. Ordinary probe/wake requests remain governed by
+  their default-off static flags; malformed or absent campaigns cannot bypass
+  them.
+- Shard registry capture v2 and foundation sources v3 require a stable
+  `sealed_complete` campaign, exact receipts `0..N-1`, recomputed readiness,
+  activation and consumption hashes, and one matching 0054 row per receipt.
+
+### Local verification boundary
+
+The required gate includes the full Worker unit suite and wasm check,
+Controller Bun/type/portable/Workerd suites, exact SQLite migration verifier,
+P5 shard/foundation/evidence suites, repository aggregate check, formatting,
+and diff hygiene. These commands prove local contracts only; their final
+counts must be copied from the actual release-candidate run, not this status
+text.
+
+### Still blocked
+
+The exposed Cloudflare credential has not been rotated. Remote staging has not
+applied or read back 0055, no same-version candidate was deployed, no campaign
+or DO journal exists remotely, and no Container was woken. Authoritative
+Cloudflare all-page control-plane inventory, sources-v3, P5 fault/load/cost/SLO
+evidence, five approvals, Go/VPS process drain, reverse synchronization, and a
+measured rollback remain absent. Go/VPS stays authoritative and production
+remains **NO-GO**.

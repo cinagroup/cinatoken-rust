@@ -2361,26 +2361,31 @@ mod tests {
             controller_enabled: true,
             execution_enabled: true,
             previous_secret_configured: false,
+            controller_version_id: Some("controller-version-test".to_string()),
+            shard_activation_write_enabled: false,
+            shard_activation_candidate_build_configured: false,
+            all_action_gates_false: false,
+            action_gate_inventory_sha256: Some("a".repeat(64)),
             state: "verified",
         };
-        assert!(prepared_resume_controller_ready(ready));
+        assert!(prepared_resume_controller_ready(ready.clone()));
 
         for blocked in [
             ContainerControllerProbe {
                 binding_available: false,
-                ..ready
+                ..ready.clone()
             },
             ContainerControllerProbe {
                 authority_configured: false,
-                ..ready
+                ..ready.clone()
             },
             ContainerControllerProbe {
                 verified: false,
-                ..ready
+                ..ready.clone()
             },
             ContainerControllerProbe {
                 controller_enabled: false,
-                ..ready
+                ..ready.clone()
             },
             ContainerControllerProbe {
                 execution_enabled: false,

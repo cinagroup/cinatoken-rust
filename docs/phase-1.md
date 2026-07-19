@@ -2693,3 +2693,38 @@ Cloudflare API pagination, the one-time activation campaign, real runtime/image
 provenance, all-shard probes,
 fault/load/rollback campaigns, Go/VPS drain, and approvals remain open.
 Production remains **NO-GO**.
+
+## 2026-07-19 P5 Shard Activation Campaign v1
+
+The same-version ceremony required by the preceding section is now implemented
+locally. Migration 0055 advances the exact D1 baseline to 55 migrations, 62
+tables, 771 checked incremental columns, and 91 key indexes. It adds immutable
+campaign, claim, consumption, and seal evidence plus bounded expiry
+materialization. Final consumption atomically creates the matching 0054 row and
+seals only at N/N.
+
+The protocol is D1-first and at-most-once. A campaign readiness request claims
+its shard before any Durable Object lookup. The Controller strips the raw nonce
+before `readinessProbeV2`; the DO v6 journal stores started/completed/ambiguous
+state, exact canonical result JSON/hash, and at least two hours of terminal
+retention. Timeout never authorizes a second wake. Completed D1 consumption is
+replayed only when the DO hash matches.
+
+The legacy static activation writer and all 22 Controller action gates remain
+false. A strict root campaign credential is the one-time capability that lets
+the edge readiness endpoint bypass only its ordinary probe/wake flags. Missing
+or malformed campaign requests remain static-gated, and production wake still
+requires prior staging verification.
+
+The shard collector now uses capture v2 and foundation sources v3. It reads a
+stable `sealed_complete` campaign before and after the observation, validates
+receipts `0..N-1`, recomputes readiness/activation/consumption hashes, and
+requires one matching 0054 row per receipt. Local P5 focused tests cover 44
+evidence cases, 16 foundation cases plus self-test, and 13 shard/campaign
+collector cases.
+
+This closes the local campaign implementation blocker only. Credential
+rotation, remote 0055 apply/readback, same-version deployment, a live N/N
+campaign, authoritative all-page Cloudflare inventory, provenance and traffic
+sources, P5 faults/load/cost/SLO, five approvals, and the Go/VPS drain and
+reverse-sync packet remain open. Production remains **NO-GO**.

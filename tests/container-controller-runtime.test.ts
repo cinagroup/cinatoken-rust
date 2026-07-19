@@ -2719,7 +2719,7 @@ describe("RelayShardLedger in Workerd", () => {
       state.storage.sql.exec(`
         DROP TRIGGER cinatoken_shard_schema_migration_update_guard;
         DROP TRIGGER cinatoken_shard_schema_migration_delete_guard;
-        DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version = 4;
+        DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version >= 4;
         DROP TRIGGER cinatoken_shard_terminal_ack_contract_insert_guard;
         DROP TRIGGER cinatoken_shard_terminal_ack_contract_update_guard;
         DROP TRIGGER cinatoken_shard_operation_terminal_ack_cleanup;
@@ -3479,10 +3479,7 @@ describe("RelayShardLedger in Workerd", () => {
         "DROP TRIGGER cinatoken_shard_schema_migration_delete_guard",
       );
       state.storage.sql.exec(
-        "DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version = 3",
-      );
-      state.storage.sql.exec(
-        "DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version = 4",
+        "DELETE FROM cinatoken_shard_schema_migrations WHERE schema_version >= 3",
       );
       state.storage.sql.exec(
         "DROP TABLE cinatoken_shard_provider_response_attachment_identities",
@@ -3527,6 +3524,14 @@ describe("RelayShardLedger in Workerd", () => {
           schema_version: 4,
           migration_name: "0004_terminal_ack_v3_convergence",
         },
+        {
+          schema_version: 5,
+          migration_name: "0005_readiness_probe_recovery_v1",
+        },
+        {
+          schema_version: 6,
+          migration_name: "0006_readiness_probe_at_most_once_journal_v1",
+        },
       ],
       tables: [
         { name: "cinatoken_shard_provider_response_attachment_identities" },
@@ -3568,7 +3573,7 @@ describe("RelayShardLedger in Workerd", () => {
       state.storage.sql.exec(
         `INSERT INTO cinatoken_shard_schema_migrations
            (schema_version, migration_name, applied_at)
-         VALUES (5, '0005_future_schema', ?1)`,
+         VALUES (7, '0007_future_schema', ?1)`,
         BASE_NOW,
       );
       try {
@@ -3595,6 +3600,14 @@ describe("RelayShardLedger in Workerd", () => {
         {
           schema_version: 4,
           migration_name: "0004_terminal_ack_v3_convergence",
+        },
+        {
+          schema_version: 5,
+          migration_name: "0005_readiness_probe_recovery_v1",
+        },
+        {
+          schema_version: 6,
+          migration_name: "0006_readiness_probe_at_most_once_journal_v1",
         },
       ],
       updateRejected: true,

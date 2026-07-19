@@ -16,7 +16,7 @@ export const APPROVAL_DOMAIN =
   "cinatoken-relay-container-p5-approval-v1";
 export const FOUNDATION_CAPTURE_CONTRACT =
   "cinatoken-relay-container-p5-foundation-capture-v1";
-export const FOUNDATION_COLLECTOR_VERSION = 2;
+export const FOUNDATION_COLLECTOR_VERSION = 3;
 
 export const REQUIRED_APPROVAL_ROLES = Object.freeze([
   "security",
@@ -87,7 +87,7 @@ const PINNED_GO_SOURCE_COMMIT =
 const PINNED_VIBE_SOURCE_COMMIT =
   "918e97480ee44e357abe99bf33c27259d6ac7ebd";
 const EXPECTED_MIGRATION_HEAD =
-  "0054_relay_container_shard_activations.sql";
+  "0055_relay_container_shard_activation_campaigns.sql";
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const gitCommitPattern = /^[0-9a-f]{40}$/;
@@ -593,7 +593,7 @@ function validateCandidate(value) {
   requireInteger(candidate.ringGeneration, 1, 1_000_000, "[candidate] ring generation");
   requireInteger(candidate.shardCount, 1, 1024, "[candidate] shard count");
   requireExact(candidate.migrationHead, EXPECTED_MIGRATION_HEAD, "[candidate] migration head");
-  requireExact(candidate.migrationCount, 54, "[candidate] migration count");
+  requireExact(candidate.migrationCount, 55, "[candidate] migration count");
   requireExact(candidate.responseProtocolVersion, 3, "[candidate] response protocol");
   requireExact(candidate.statusContractVersion, 4, "[candidate] status contract");
   requireExact(candidate.financialTerminalContractVersion, 2, "[candidate] terminal contract");
@@ -844,6 +844,19 @@ function validateFoundationCaptureReport(value, candidate, candidateDigestSha256
   );
   requireObject(evidenceFacts.candidateFreeze, "[foundation] candidate-freeze facts");
   requireObject(evidenceFacts.remoteInventory, "[foundation] remote-inventory facts");
+  const freezeCampaign = validateShardActivationCampaignEvidence(
+    evidenceFacts.candidateFreeze.shardActivationCampaign,
+    candidate,
+    "foundation candidate-freeze",
+  );
+  const inventoryCampaign = validateShardActivationCampaignEvidence(
+    evidenceFacts.remoteInventory.shardActivationCampaign,
+    candidate,
+    "foundation remote-inventory",
+  );
+  if (canonicalJson(freezeCampaign) !== canonicalJson(inventoryCampaign)) {
+    throw new Error("[foundation] facts must bind the same sealed activation campaign");
+  }
   requireExact(
     evidenceFacts.candidateFreeze.artifactInventorySha256,
     subject.artifactInventorySha256,
@@ -1215,6 +1228,7 @@ function validateCandidateFreeze(facts, candidate, evidence) {
       "unapprovedCriticalVulnerabilities",
       "unapprovedHighVulnerabilities",
       "allActionGatesFalse",
+      "shardActivationCampaign",
       "artifactInventorySha256",
       "foundationCaptureContract",
       "foundationCaptureSha256",
@@ -1250,6 +1264,11 @@ function validateCandidateFreeze(facts, candidate, evidence) {
   requireExact(facts.unapprovedCriticalVulnerabilities, 0, "[candidate-freeze] critical vulnerabilities");
   requireExact(facts.unapprovedHighVulnerabilities, 0, "[candidate-freeze] high vulnerabilities");
   requireExact(facts.allActionGatesFalse, true, "[candidate-freeze] action gates");
+  validateShardActivationCampaignEvidence(
+    facts.shardActivationCampaign,
+    candidate,
+    "candidate-freeze",
+  );
   requireSha256(facts.artifactInventorySha256, "[candidate-freeze] inventory digest");
   return {
     foundationBinding: validateFoundationBinding(
@@ -1280,6 +1299,7 @@ function validateRemoteInventory(facts, candidate, evidence) {
       "ringGeneration",
       "shardCount",
       "verifiedShardCount",
+      "shardActivationCampaign",
       "unknownWriterCount",
       "unknownObjectCount",
       "customerTrafficCount",
@@ -1314,6 +1334,11 @@ function validateRemoteInventory(facts, candidate, evidence) {
     requireExact(facts[field], candidate[field], `[remote-inventory] ${field}`);
   }
   requireExact(facts.verifiedShardCount, candidate.shardCount, "[remote-inventory] verified shards");
+  validateShardActivationCampaignEvidence(
+    facts.shardActivationCampaign,
+    candidate,
+    "remote-inventory",
+  );
   requireExact(facts.unknownWriterCount, 0, "[remote-inventory] unknown writers");
   requireExact(facts.unknownObjectCount, 0, "[remote-inventory] unknown objects");
   requireExact(facts.customerTrafficCount, 0, "[remote-inventory] customer traffic");
@@ -1325,6 +1350,104 @@ function validateRemoteInventory(facts, candidate, evidence) {
       "remote-inventory",
     ),
   };
+}
+
+function validateShardActivationCampaignEvidence(value, candidate, label) {
+  const campaign = requireObject(value, `[${label}] shard activation campaign`);
+  exactKeys(
+    campaign,
+    [
+      "campaignContract",
+      "state",
+      "campaignId",
+      "campaignDigestSha256",
+      "controllerVersionId",
+      "actionGateInventorySha256",
+      "actionGateCount",
+      "allActionGatesFalse",
+      "foundationManifestSha256",
+      "runtimeBuildId",
+      "ringGeneration",
+      "shardCount",
+      "shardContractVersion",
+      "runtimeProtocolVersion",
+      "runtimeContractVersion",
+      "activationGeneration",
+      "environment",
+      "claimedShardCount",
+      "consumedShardCount",
+      "sealReason",
+      "sealDetailCode",
+      "lastConsumptionDigestSha256",
+      "sealedAt",
+      "receiptCount",
+      "receiptSetSha256",
+    ],
+    `[${label}] shard activation campaign`,
+  );
+  requireExact(
+    campaign.campaignContract,
+    "cinatoken-relay-container-shard-activation-campaign-v1",
+    `[${label}] campaign contract`,
+  );
+  requireExact(campaign.state, "sealed_complete", `[${label}] campaign state`);
+  requireSha256(campaign.campaignId, `[${label}] campaign ID`);
+  requireSha256(campaign.campaignDigestSha256, `[${label}] campaign digest`);
+  requireExact(
+    campaign.controllerVersionId,
+    candidate.controllerWorkerVersionId,
+    `[${label}] campaign Controller version`,
+  );
+  requireSha256(
+    campaign.actionGateInventorySha256,
+    `[${label}] action gate inventory digest`,
+  );
+  requireExact(campaign.actionGateCount, 22, `[${label}] action gate count`);
+  requireExact(campaign.allActionGatesFalse, true, `[${label}] action gate state`);
+  requireSha256(
+    campaign.foundationManifestSha256,
+    `[${label}] foundation manifest digest`,
+  );
+  requireExact(
+    campaign.runtimeBuildId,
+    candidate.containerRuntimeBuildId,
+    `[${label}] campaign runtime build`,
+  );
+  requireExact(
+    campaign.ringGeneration,
+    candidate.ringGeneration,
+    `[${label}] campaign ring generation`,
+  );
+  requireExact(campaign.shardCount, candidate.shardCount, `[${label}] campaign shard count`);
+  requireExact(campaign.shardContractVersion, 1, `[${label}] shard contract`);
+  requireExact(campaign.runtimeProtocolVersion, 1, `[${label}] runtime protocol`);
+  requireExact(campaign.runtimeContractVersion, 1, `[${label}] runtime contract`);
+  requireExact(campaign.activationGeneration, 1, `[${label}] activation generation`);
+  requireExact(campaign.environment, "staging", `[${label}] campaign environment`);
+  requireExact(
+    campaign.claimedShardCount,
+    candidate.shardCount,
+    `[${label}] claimed shard count`,
+  );
+  requireExact(
+    campaign.consumedShardCount,
+    candidate.shardCount,
+    `[${label}] consumed shard count`,
+  );
+  requireExact(campaign.sealReason, "complete", `[${label}] campaign seal reason`);
+  requireExact(
+    campaign.sealDetailCode,
+    "all_shards_consumed",
+    `[${label}] campaign seal detail`,
+  );
+  requireSha256(
+    campaign.lastConsumptionDigestSha256,
+    `[${label}] last consumption digest`,
+  );
+  requireInteger(campaign.sealedAt, 1, Number.MAX_SAFE_INTEGER, `[${label}] sealed timestamp`);
+  requireExact(campaign.receiptCount, candidate.shardCount, `[${label}] receipt count`);
+  requireSha256(campaign.receiptSetSha256, `[${label}] receipt set digest`);
+  return campaign;
 }
 
 function validateFoundationBinding(facts, evidence, label) {
@@ -1442,10 +1565,10 @@ function validateSchemaReadback(facts) {
     "[schema-readback] facts",
   );
   requireExact(facts.migrationHead, EXPECTED_MIGRATION_HEAD, "[schema-readback] migration head");
-  requireExact(facts.migrationCount, 54, "[schema-readback] migration count");
-  requireExact(facts.tableCount, 58, "[schema-readback] table count");
-  requireExact(facts.incrementalColumnCount, 694, "[schema-readback] incremental columns");
-  requireExact(facts.keyIndexCount, 83, "[schema-readback] key indexes");
+  requireExact(facts.migrationCount, 55, "[schema-readback] migration count");
+  requireExact(facts.tableCount, 62, "[schema-readback] table count");
+  requireExact(facts.incrementalColumnCount, 771, "[schema-readback] incremental columns");
+  requireExact(facts.keyIndexCount, 91, "[schema-readback] key indexes");
   requireSha256(facts.schemaFingerprintSha256, "[schema-readback] schema fingerprint");
   requireSha256(facts.businessFingerprintBeforeSha256, "[schema-readback] before fingerprint");
   requireExact(

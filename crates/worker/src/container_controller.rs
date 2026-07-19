@@ -64,6 +64,7 @@ const TERMINAL_ACK_V3_URL: &str =
 const TERMINAL_ACK_V3_AUTHORITY_DOMAIN: &[u8] = b"cinatoken-container-terminal-ack:v3\0";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(12);
+const ACTIVATION_CAMPAIGN_READINESS_MAX_AGE_SECONDS: u64 = 3_600;
 const STATUS_MAX_BYTES: usize = 4 * 1024;
 const READINESS_MAX_BYTES: usize = 4 * 1024;
 const OPERATION_RESPONSE_MAX_BYTES: usize = 8 * 1024;
@@ -76,6 +77,26 @@ struct ShardReadinessRequest<'a> {
     protocol_version: u32,
     shard: &'a ShardPlan,
     wake_container: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activation_campaign: Option<&'a ShardActivationCampaignCredential>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ShardActivationCampaignCredential {
+    pub contract_version: u32,
+    pub campaign_id: String,
+    pub nonce: String,
+    pub confirm_consume: bool,
+}
+
+pub(crate) fn valid_shard_activation_campaign_credential(
+    campaign: &ShardActivationCampaignCredential,
+) -> bool {
+    campaign.contract_version == 1
+        && valid_lower_hex(&campaign.campaign_id, 64)
+        && valid_lower_hex(&campaign.nonce, 64)
+        && campaign.confirm_consume
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -561,10 +582,11 @@ pub struct RuntimeReadinessSnapshot {
     pub execution_ready: bool,
     pub protocol_version: u32,
     pub shard_contract_version: u32,
+    pub runtime_build_id: Option<String>,
     pub execution_enabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerControllerProbe {
     pub probe_enabled: bool,
     pub binding_available: bool,
@@ -573,6 +595,11 @@ pub struct ContainerControllerProbe {
     pub controller_enabled: bool,
     pub execution_enabled: bool,
     pub previous_secret_configured: bool,
+    pub controller_version_id: Option<String>,
+    pub shard_activation_write_enabled: bool,
+    pub shard_activation_candidate_build_configured: bool,
+    pub all_action_gates_false: bool,
+    pub action_gate_inventory_sha256: Option<String>,
     pub state: &'static str,
 }
 
@@ -593,6 +620,11 @@ struct ControllerStatusPayload {
     protocol_version: u32,
     ring_generation: u64,
     shard_count: u16,
+    controller_version_id: String,
+    shard_activation_write_enabled: bool,
+    shard_activation_candidate_build_configured: bool,
+    all_action_gates_false: bool,
+    action_gate_inventory_sha256: String,
     authority_current_secret_configured: bool,
     authority_previous_secret_configured: bool,
 }
@@ -668,6 +700,12 @@ pub async fn probe(
         controller_enabled: payload.controller_enabled,
         execution_enabled: payload.execution_enabled,
         previous_secret_configured: payload.authority_previous_secret_configured,
+        controller_version_id: Some(payload.controller_version_id),
+        shard_activation_write_enabled: payload.shard_activation_write_enabled,
+        shard_activation_candidate_build_configured: payload
+            .shard_activation_candidate_build_configured,
+        all_action_gates_false: payload.all_action_gates_false,
+        action_gate_inventory_sha256: Some(payload.action_gate_inventory_sha256),
         state: "verified",
     }
 }
@@ -676,16 +714,26 @@ pub async fn probe_shard_readiness(
     env: &Env,
     shard: &ShardPlan,
     wake_container: bool,
+    activation_campaign: Option<&ShardActivationCampaignCredential>,
 ) -> Result<ShardReadinessResponse, &'static str> {
+    if activation_campaign.is_some_and(|campaign| {
+        !wake_container || !valid_shard_activation_campaign_credential(campaign)
+    }) {
+        return Err("invalid_activation_campaign");
+    }
     let fetcher = env
         .service(CONTAINER_CONTROLLER_BINDING)
         .map_err(|_| "binding_unavailable")?;
     let authority = authority_config(env).ok_or("authority_unavailable")?;
-    let dispatch_id = random_dispatch_id("readiness").ok_or("entropy_unavailable")?;
+    let dispatch_id = match activation_campaign {
+        Some(campaign) => activation_campaign_probe_id(&campaign.campaign_id, shard.shard_index),
+        None => random_dispatch_id("readiness").ok_or("entropy_unavailable")?,
+    };
     let body = serde_json::to_vec(&ShardReadinessRequest {
         protocol_version: authority.protocol_version,
         shard,
         wake_container,
+        activation_campaign,
     })
     .map_err(|_| "request_encode_failed")?;
     let now = (worker::Date::now().as_millis() / 1000) as i64;
@@ -699,6 +747,7 @@ pub async fn probe_shard_readiness(
         &dispatch_id,
         shard,
         wake_container,
+        activation_campaign.is_some(),
     );
     let delay = Delay::from(READINESS_TIMEOUT);
     futures_util::pin_mut!(operation);
@@ -956,6 +1005,7 @@ async fn execute_readiness_probe(
     dispatch_id: &str,
     shard: &ShardPlan,
     wake_container: bool,
+    activation_campaign: bool,
 ) -> Result<ShardReadinessResponse, &'static str> {
     let mut response = fetcher
         .fetch_request(request)
@@ -979,7 +1029,13 @@ async fn execute_readiness_probe(
         let error = serde_json::from_slice::<ControllerErrorPayload>(&body)
             .map_err(|_| "invalid_response_body")?;
         return Err(match (status, error.error.as_str()) {
+            (403, code) if code.starts_with("shard_activation_campaign_") => {
+                "activation_campaign_rejected"
+            }
             (403, _) => "authority_rejected",
+            (409, code) if code.starts_with("shard_activation_campaign_") => {
+                "activation_campaign_conflict"
+            }
             (409, "stale_shard_fence" | "ring_generation_in_flight") => "shard_fence_rejected",
             (
                 409,
@@ -998,7 +1054,15 @@ async fn execute_readiness_probe(
     let payload = serde_json::from_slice::<ShardReadinessResponse>(&body)
         .map_err(|_| "invalid_response_body")?;
     let now = (worker::Date::now().as_millis() / 1000) as u64;
-    if !readiness_response_matches(&payload, authority, dispatch_id, shard, wake_container, now) {
+    if !readiness_response_matches(
+        &payload,
+        authority,
+        dispatch_id,
+        shard,
+        wake_container,
+        activation_campaign,
+        now,
+    ) {
         return Err("contract_mismatch");
     }
     Ok(payload)
@@ -2203,6 +2267,7 @@ fn readiness_response_matches(
     dispatch_id: &str,
     shard: &ShardPlan,
     wake_container: bool,
+    activation_campaign: bool,
     now: u64,
 ) -> bool {
     let container_state_valid = payload.container_state.as_ref().map_or(true, |state| {
@@ -2258,6 +2323,10 @@ fn readiness_response_matches(
     let runtime_valid = payload.runtime.as_ref().map_or(true, |runtime| {
         runtime.protocol_version == authority.protocol_version
             && runtime.shard_contract_version == shard.contract_version
+            && runtime
+                .runtime_build_id
+                .as_deref()
+                .map_or(true, valid_sha256)
             && (!runtime.execution_ready || (runtime.process_ready && runtime.execution_enabled))
             && (!runtime.process_ready
                 || payload
@@ -2295,7 +2364,12 @@ fn readiness_response_matches(
         && payload.wake_requested == wake_container
         && payload.checked_at > 0
         && payload.checked_at <= now.saturating_add(5)
-        && payload.checked_at >= now.saturating_sub(120)
+        && payload.checked_at
+            >= now.saturating_sub(if activation_campaign {
+                ACTIVATION_CAMPAIGN_READINESS_MAX_AGE_SECONDS
+            } else {
+                120
+            })
         && container_state_valid
         && lifecycle_valid
         && persisted_valid
@@ -2480,7 +2554,23 @@ fn status_matches(
     payload.protocol_version == authority.protocol_version
         && payload.ring_generation == runtime.ring_generation
         && payload.shard_count == runtime.shard_count
+        && valid_controller_version_id(&payload.controller_version_id)
+        && valid_sha256(&payload.action_gate_inventory_sha256)
         && payload.authority_current_secret_configured
+}
+
+fn valid_controller_version_id(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+        })
+}
+
+fn valid_lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn failed_probe(
@@ -2497,8 +2587,20 @@ fn failed_probe(
         controller_enabled: false,
         execution_enabled: false,
         previous_secret_configured: false,
+        controller_version_id: None,
+        shard_activation_write_enabled: false,
+        shard_activation_candidate_build_configured: false,
+        all_action_gates_false: false,
+        action_gate_inventory_sha256: None,
         state,
     }
+}
+
+fn activation_campaign_probe_id(campaign_id: &str, shard_index: u16) -> String {
+    let identity = format!(
+        "cinatoken:relay-container-shard-activation-probe:v1\0{campaign_id}\0{shard_index}"
+    );
+    body_sha256(identity.as_bytes())
 }
 
 fn runtime_value(env: &Env, name: &str) -> Option<String> {
@@ -2527,6 +2629,24 @@ mod tests {
         dispatch_id: String,
         issued_at: i64,
         token: String,
+    }
+
+    #[test]
+    fn activation_campaign_credential_is_an_exact_one_time_capability() {
+        let valid = ShardActivationCampaignCredential {
+            contract_version: 1,
+            campaign_id: "a".repeat(64),
+            nonce: "b".repeat(64),
+            confirm_consume: true,
+        };
+        assert!(valid_shard_activation_campaign_credential(&valid));
+
+        let mut invalid = valid.clone();
+        invalid.confirm_consume = false;
+        assert!(!valid_shard_activation_campaign_credential(&invalid));
+        invalid.confirm_consume = true;
+        invalid.nonce = "B".repeat(64);
+        assert!(!valid_shard_activation_campaign_credential(&invalid));
     }
 
     #[test]
@@ -2569,6 +2689,11 @@ mod tests {
             protocol_version: 1,
             ring_generation: 7,
             shard_count: 16,
+            controller_version_id: "controller-version-test".to_string(),
+            shard_activation_write_enabled: false,
+            shard_activation_candidate_build_configured: false,
+            all_action_gates_false: true,
+            action_gate_inventory_sha256: "a".repeat(64),
             authority_current_secret_configured: true,
             authority_previous_secret_configured: false,
         };
@@ -2578,6 +2703,17 @@ mod tests {
         payload.shard_count = 16;
         payload.authority_current_secret_configured = false;
         assert!(!status_matches(&payload, &authority, runtime));
+    }
+
+    #[test]
+    fn activation_campaign_probe_identity_matches_the_controller_vector() {
+        assert_eq!(
+            activation_campaign_probe_id(
+                "a9f9f7aa3b8672759a9a7b37b5ee3a093930c3041ef4b741f0e3c824fbf1a477",
+                7,
+            ),
+            "6a3d0e58ee9be4b475264a2496ab965364535d8979fbcf88df79a9f761c41b74"
+        );
     }
 
     fn test_authority() -> AuthorityConfig {
@@ -2734,6 +2870,7 @@ mod tests {
             protocol_version: 1,
             shard: &shard,
             wake_container: false,
+            activation_campaign: None,
         })
         .unwrap();
         assert!(!body.is_empty());
@@ -3722,6 +3859,7 @@ mod tests {
             "readiness-test-1",
             &shard,
             false,
+            false,
             1_800_000_001,
         ));
         response.ready = true;
@@ -3730,6 +3868,7 @@ mod tests {
             &authority,
             "readiness-test-1",
             &shard,
+            false,
             false,
             1_800_000_001,
         ));
@@ -3777,6 +3916,7 @@ mod tests {
                 execution_ready: false,
                 protocol_version: 1,
                 shard_contract_version: 1,
+                runtime_build_id: Some("b".repeat(64)),
                 execution_enabled: false,
             }),
         };
@@ -3786,6 +3926,7 @@ mod tests {
             "readiness-live-1",
             &shard,
             true,
+            false,
             1_800_000_002,
         ));
         response.ready = true;
@@ -3796,6 +3937,7 @@ mod tests {
             "readiness-live-1",
             &shard,
             true,
+            false,
             1_800_000_002,
         ));
     }

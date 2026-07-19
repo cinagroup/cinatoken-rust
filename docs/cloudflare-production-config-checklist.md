@@ -1356,3 +1356,64 @@ versioned multi-attempt R2 contract land in a separate candidate. Rollback is
 gate-off first; retain unacknowledged attempts/events and classify every
 dispatched operation before Controller or image rollback. Never delete journal
 evidence to clear capacity.
+
+## Migration 0055 Activation Campaign Checklist
+
+This is a staging evidence capability, not a production traffic flag.
+
+### Disabled configuration invariant
+
+- Keep all 22 Controller campaign action gates exactly `false`, including
+  `CONTAINER_READINESS_PROBE_ENABLED`, `CONTAINER_READINESS_WAKE_ENABLED`, and
+  `CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED`.
+- Keep `CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID` empty so the
+  legacy 0054 writer cannot become active.
+- Keep edge `CONTAINER_SHARD_READINESS_PROBE_ENABLED=false` and
+  `CONTAINER_SHARD_READINESS_WAKE_ENABLED=false`. Ordinary readiness requests
+  remain blocked; only a strict 0055 campaign credential authorizes the one-
+  time path.
+- Production still requires
+  `CONTAINER_SHARD_READINESS_STAGING_VERIFIED=true` before any wake. Do not set
+  it merely to make a local or staging fixture pass.
+
+### Schema and bindings
+
+- Confirm the configured D1 migration head is
+  `0055_relay_container_shard_activation_campaigns.sql` and all three D1
+  bindings report the same contiguous 55-file set.
+- Read back four campaign tables, the expiry view, eight indexes, fourteen
+  triggers, exact ordered columns, D1-clock defaults, immutable guards, and the
+  0054 authority trigger.
+- Confirm Controller `DB`, `RELAY_SHARDS`, `CF_VERSION_METADATA`, private
+  Service Binding, ring generation/count, runtime protocol, and environment
+  match the frozen candidate.
+- Confirm minute cron is present for bounded expiry materialization, but do not
+  use cron output as proof that an individual campaign sealed correctly.
+
+### Operator and nonce handling
+
+- Campaign creation requires root auth, fresh step-up verification,
+  `confirm_create=true`, exact environment/ring/shard count, foundation
+  manifest, runtime build, contract versions, generation 1, and lifetime
+  60-3600 seconds.
+- Treat the returned nonce as a short-lived bearer capability. Keep it only in
+  the approved operator process; never put it in a CLI argument, tracked file,
+  evidence packet, shell history, log, metric, or ticket.
+- Before the first shard, read back the open campaign and verify zero claims,
+  zero consumptions, the exact Controller version and all-false gate digest.
+- Use one deterministic campaign readiness request per shard. Do not parallel
+  retry a timed-out shard and do not create another campaign after any claim or
+  wake for that candidate.
+
+### Completion and rollback
+
+- Accept only `sealed_complete`, `complete/all_shards_consumed`, N/N counts,
+  exact receipts `0..N-1`, valid result/activation/consumption hashes, and one
+  matching 0054 activation per receipt.
+- Treat `sealed_failed`, `sealed_expired`, `sealed_aborted`, `invalid`, and
+  `expiry_pending_seal` as non-promotable. Preserve D1 and DO evidence.
+- Rollback is gate-off and traffic-off first. Retain 0054/0055, DO journal,
+  Controller/edge readers, candidate image, R2 artifacts, and audit records.
+- Go/VPS remains authoritative until the independent drain, reconciliation,
+  reverse-sync, and measured rollback packet passes. Production remains
+  **NO-GO**.

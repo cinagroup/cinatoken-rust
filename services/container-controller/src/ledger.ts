@@ -21,6 +21,8 @@ import {
 } from "./relay_shard_durable_state";
 
 export const DISPATCH_REPLAY_RETENTION_SECONDS = 600;
+export const READINESS_PROBE_JOURNAL_RETENTION_MS = 2 * 60 * 60 * 1_000;
+export const READINESS_PROBE_RESULT_JSON_MAX_BYTES = 16_384;
 
 export type OperationStatus =
   | "claimed"
@@ -383,8 +385,62 @@ export interface ReadinessCompletion {
   containerExitCode: number | null;
   runtimeProtocolVersion: number | null;
   runtimeContractVersion: number | null;
+  runtimeBuildId: string | null;
   runtimeExecutionEnabled: boolean | null;
   processReady: boolean;
+  executionReady: boolean;
+}
+
+export interface ReadinessProbeReplay {
+  completedAtMs: number;
+  resultCode: string;
+  containerStatus:
+    | "running"
+    | "healthy"
+    | "stopping"
+    | "stopped"
+    | "stopped_with_code"
+    | null;
+  containerLastChangeMs: number | null;
+  containerExitCode: number | null;
+  runtimeProtocolVersion: number | null;
+  runtimeContractVersion: number | null;
+  runtimeBuildId: string | null;
+  runtimeExecutionEnabled: boolean | null;
+  processReady: boolean;
+  executionReady: boolean;
+}
+
+export interface ReadinessProbeWakePermit {
+  kind: "wake";
+  probeId: string;
+  claimDigestSha256: string;
+  generation: number;
+  startedAtMs: number;
+  deadlineAtMs: number;
+  retentionUntilMs: number;
+}
+
+export interface ReadinessProbeCompletedReplay {
+  kind: "completed";
+  probeId: string;
+  claimDigestSha256: string;
+  generation: number;
+  startedAtMs: number;
+  deadlineAtMs: number;
+  retentionUntilMs: number;
+  completedAtMs: number;
+  resultJson: string;
+  resultSha256: string;
+}
+
+export type BeginOrReplayReadinessProbeOutcome =
+  | ReadinessProbeWakePermit
+  | ReadinessProbeCompletedReplay;
+
+export interface ReadinessProbeJournalCompletion extends ReadinessCompletion {
+  resultJson: string;
+  resultSha256: string;
 }
 
 interface ReadinessRow {
@@ -401,9 +457,33 @@ interface ReadinessRow {
   container_exit_code: number | null;
   runtime_protocol_version: number | null;
   runtime_contract_version: number | null;
+  runtime_build_id: string | null;
   runtime_execution_enabled: number | null;
+  process_ready: number | null;
+  execution_ready: number | null;
   last_ready_at_ms: number | null;
 }
+
+interface ReadinessProbeJournalRow {
+  [key: string]: SqlStorageValue;
+  probe_id: string;
+  claim_digest_sha256: string;
+  generation: number;
+  state: "started" | "completed" | "ambiguous";
+  started_at_ms: number;
+  deadline_at_ms: number;
+  retention_until_ms: number;
+  completed_at_ms: number | null;
+  ambiguous_at_ms: number | null;
+  result_json: string | null;
+  result_sha256: string | null;
+  result_size_bytes: number | null;
+}
+
+type ReadinessProbeJournalTransactionOutcome =
+  | ReadinessProbeWakePermit
+  | { kind: "completed_row"; row: ReadinessProbeJournalRow }
+  | { kind: "ambiguous" };
 
 interface StorageOperationRow {
   [key: string]: SqlStorageValue;
@@ -471,6 +551,7 @@ interface ProviderResponseArtifactAttachmentSqlRow {
 
 const TERMINAL_STATUS_SQL = "'completed', 'failed', 'recovery_required'";
 const MAX_UNIX_TIMESTAMP_SECONDS = 253_402_300_799;
+const MAX_UNIX_TIMESTAMP_MILLISECONDS = MAX_UNIX_TIMESTAMP_SECONDS * 1_000;
 
 export class RelayShardLedger {
   private schemaReady = false;
@@ -1275,7 +1356,10 @@ export class RelayShardLedger {
         container_exit_code INTEGER,
         runtime_protocol_version INTEGER,
         runtime_contract_version INTEGER,
+        runtime_build_id TEXT,
         runtime_execution_enabled INTEGER,
+        process_ready INTEGER,
+        execution_ready INTEGER,
         last_ready_at_ms INTEGER
       );
       CREATE TABLE IF NOT EXISTS cinatoken_shard_readiness_dispatches (
@@ -1421,7 +1505,7 @@ export class RelayShardLedger {
         (schema_version, migration_name, applied_at)
       VALUES (3, '0003_provider_response_artifact_attachment_v1', unixepoch());
     `);
-    this.validateShardSchemaMigrations(true);
+    this.validateShardSchemaMigrations(3);
     this.ensureOperationColumns();
     this.ensureProviderAttemptEgressColumns();
     this.ensureProviderUsageReceiptColumns();
@@ -1435,6 +1519,20 @@ export class RelayShardLedger {
       `INSERT OR IGNORE INTO cinatoken_shard_schema_migrations
          (schema_version, migration_name, applied_at)
        VALUES (4, '0004_terminal_ack_v3_convergence', unixepoch())`,
+    );
+    this.validateShardSchemaMigrations(2);
+    this.ensureReadinessReplayColumns();
+    this.storage.sql.exec(
+      `INSERT OR IGNORE INTO cinatoken_shard_schema_migrations
+         (schema_version, migration_name, applied_at)
+       VALUES (5, '0005_readiness_probe_recovery_v1', unixepoch())`,
+    );
+    this.validateShardSchemaMigrations(1);
+    this.ensureReadinessProbeJournalV6();
+    this.storage.sql.exec(
+      `INSERT OR IGNORE INTO cinatoken_shard_schema_migrations
+         (schema_version, migration_name, applied_at)
+       VALUES (6, '0006_readiness_probe_at_most_once_journal_v1', unixepoch())`,
     );
     this.validateShardSchemaMigrations();
     this.storage.sql.exec(
@@ -3532,6 +3630,379 @@ export class RelayShardLedger {
     });
   }
 
+  async beginOrReplayReadinessProbe(
+    shard: OperationShard,
+    probeId: string,
+    claimDigestSha256: string,
+    nowMs: number,
+    deadlineAtMs: number | null,
+    allowWake: boolean,
+  ): Promise<BeginOrReplayReadinessProbeOutcome> {
+    this.ensureSchema();
+    validateReadinessProbeJournalIdentity(probeId, claimDigestSha256, nowMs);
+    if (typeof allowWake !== "boolean") {
+      throw new ProtocolError("invalid_readiness_probe_journal", 400);
+    }
+    if (allowWake) {
+      validateReadinessProbeWakeDeadline(nowMs, deadlineAtMs);
+    } else if (deadlineAtMs !== null) {
+      throw new ProtocolError("invalid_readiness_probe_journal", 400);
+    }
+
+    const outcome = this.storage.transactionSync<ReadinessProbeJournalTransactionOutcome>(() => {
+      const state = this.readShardStateRow();
+      if (state === null) throw new ProtocolError("shard_not_initialized", 409);
+      assertShardStateMatches(state, shard);
+
+      const existing = this.readReadinessProbeJournalRow(probeId);
+      if (existing !== null) {
+        if (existing.claim_digest_sha256 !== claimDigestSha256) {
+          throw new ProtocolError("readiness_probe_claim_mismatch", 409);
+        }
+        if (existing.state === "completed") {
+          return { kind: "completed_row", row: existing };
+        }
+        if (existing.state === "ambiguous") {
+          throw new ProtocolError("readiness_probe_ambiguous", 409);
+        }
+        if (existing.deadline_at_ms > nowMs) {
+          throw new ProtocolError("readiness_probe_in_progress", 409);
+        }
+
+        const ambiguousAtMs = Math.min(
+          Math.max(nowMs, existing.deadline_at_ms),
+          existing.retention_until_ms,
+        );
+        this.storage.sql.exec(
+          `UPDATE cinatoken_shard_readiness_probe_journal
+              SET state = 'ambiguous', ambiguous_at_ms = ?1
+            WHERE probe_id = ?2
+              AND claim_digest_sha256 = ?3
+              AND generation = ?4
+              AND state = 'started'
+              AND started_at_ms = ?5
+              AND deadline_at_ms = ?6
+              AND deadline_at_ms <= ?7`,
+          ambiguousAtMs,
+          probeId,
+          claimDigestSha256,
+          existing.generation,
+          existing.started_at_ms,
+          existing.deadline_at_ms,
+          nowMs,
+        );
+        if (changedRowCount(this.storage) !== 1) {
+          throw new ProtocolError("readiness_probe_superseded", 409);
+        }
+        this.recordReadinessProbeAmbiguousSummary(existing, ambiguousAtMs);
+        return { kind: "ambiguous" };
+      }
+
+      if (!allowWake) {
+        throw new ProtocolError("readiness_probe_missing", 503);
+      }
+      if (state.lifecycle_state === "draining") {
+        throw new ProtocolError("shard_draining", 503);
+      }
+      this.maintainReadinessProbeJournal();
+
+      const legacyGeneration = this.readReadinessRow()?.probe_generation ?? 0;
+      const journalGeneration =
+        firstRow<{ generation: number | null }>(
+          this.storage.sql.exec<{ generation: number | null }>(
+            `SELECT MAX(generation) AS generation
+               FROM cinatoken_shard_readiness_probe_journal`,
+          ),
+        )?.generation ?? 0;
+      const generation = Math.max(legacyGeneration, journalGeneration) + 1;
+      if (!Number.isSafeInteger(generation)) {
+        throw new ProtocolError("readiness_probe_generation_exhausted", 503);
+      }
+      const wakeDeadlineAtMs = deadlineAtMs as number;
+      const retentionUntilMs =
+        wakeDeadlineAtMs + READINESS_PROBE_JOURNAL_RETENTION_MS;
+      this.storage.sql.exec(
+        `INSERT INTO cinatoken_shard_readiness_probe_journal
+           (probe_id, claim_digest_sha256, generation, state, started_at_ms,
+            deadline_at_ms, retention_until_ms, completed_at_ms, ambiguous_at_ms,
+            result_json, result_sha256, result_size_bytes)
+         VALUES (?1, ?2, ?3, 'started', ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL)`,
+        probeId,
+        claimDigestSha256,
+        generation,
+        nowMs,
+        wakeDeadlineAtMs,
+        retentionUntilMs,
+      );
+      this.storage.sql.exec(
+        `INSERT INTO cinatoken_shard_readiness
+           (singleton, probe_generation, phase, last_probe_id, started_at_ms, deadline_at_ms,
+            completed_at_ms, result_code, container_status, container_last_change_ms,
+            container_exit_code, runtime_protocol_version, runtime_contract_version,
+            runtime_build_id, runtime_execution_enabled, process_ready, execution_ready)
+         VALUES (1, ?1, 'probing', ?2, ?3, ?4,
+                 NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+         ON CONFLICT(singleton) DO UPDATE SET
+           probe_generation = excluded.probe_generation,
+           phase = excluded.phase,
+           last_probe_id = excluded.last_probe_id,
+           started_at_ms = excluded.started_at_ms,
+           deadline_at_ms = excluded.deadline_at_ms,
+           completed_at_ms = NULL,
+           result_code = NULL,
+           container_status = NULL,
+           container_last_change_ms = NULL,
+           container_exit_code = NULL,
+           runtime_protocol_version = NULL,
+           runtime_contract_version = NULL,
+           runtime_build_id = NULL,
+           runtime_execution_enabled = NULL,
+           process_ready = NULL,
+           execution_ready = NULL`,
+        generation,
+        probeId,
+        nowMs,
+        wakeDeadlineAtMs,
+      );
+      return {
+        kind: "wake",
+        probeId,
+        claimDigestSha256,
+        generation,
+        startedAtMs: nowMs,
+        deadlineAtMs: wakeDeadlineAtMs,
+        retentionUntilMs,
+      };
+    });
+
+    if (outcome.kind === "ambiguous") {
+      throw new ProtocolError("readiness_probe_ambiguous", 409);
+    }
+    if (outcome.kind === "completed_row") {
+      return readinessProbeJournalCompletedReplay(outcome.row);
+    }
+    return outcome;
+  }
+
+  async replayReadinessProbeJournal(
+    shard: OperationShard,
+    probeId: string,
+    claimDigestSha256: string,
+    nowMs: number,
+  ): Promise<ReadinessProbeCompletedReplay> {
+    const replay = await this.beginOrReplayReadinessProbe(
+      shard,
+      probeId,
+      claimDigestSha256,
+      nowMs,
+      null,
+      false,
+    );
+    if (replay.kind !== "completed") {
+      throw new ProtocolError("readiness_probe_missing", 503);
+    }
+    return replay;
+  }
+
+  async completeReadinessProbeJournal(
+    shard: OperationShard,
+    permit: ReadinessProbeWakePermit,
+    completedAtMs: number,
+    completion: ReadinessProbeJournalCompletion,
+  ): Promise<ReadinessProbeCompletedReplay> {
+    this.ensureSchema();
+    validateReadinessProbeWakePermit(permit, completedAtMs);
+    validateReadinessJournalCompletion(completion, permit, completedAtMs);
+    const resultSizeBytes = new TextEncoder().encode(completion.resultJson).byteLength;
+    const computedResultSha256 = await sha256Utf8(completion.resultJson);
+    if (computedResultSha256 !== completion.resultSha256) {
+      throw new ProtocolError("invalid_readiness_probe_result", 400);
+    }
+
+    const outcome = this.storage.transactionSync<ReadinessProbeJournalTransactionOutcome>(() => {
+      const state = this.readShardStateRow();
+      if (state === null) throw new ProtocolError("shard_not_initialized", 409);
+      assertShardStateMatches(state, shard);
+      const existing = this.readReadinessProbeJournalRow(permit.probeId);
+      if (existing === null) {
+        throw new ProtocolError("readiness_probe_missing", 503);
+      }
+      if (existing.claim_digest_sha256 !== permit.claimDigestSha256) {
+        throw new ProtocolError("readiness_probe_claim_mismatch", 409);
+      }
+      if (
+        existing.generation !== permit.generation ||
+        existing.started_at_ms !== permit.startedAtMs ||
+        existing.deadline_at_ms !== permit.deadlineAtMs ||
+        existing.retention_until_ms !== permit.retentionUntilMs
+      ) {
+        throw new ProtocolError("readiness_probe_superseded", 409);
+      }
+      if (existing.state === "completed") {
+        return { kind: "completed_row", row: existing };
+      }
+      if (existing.state === "ambiguous") {
+        throw new ProtocolError("readiness_probe_ambiguous", 409);
+      }
+      if (completedAtMs > existing.deadline_at_ms) {
+        const ambiguousAtMs = Math.min(
+          completedAtMs,
+          existing.retention_until_ms,
+        );
+        this.storage.sql.exec(
+          `UPDATE cinatoken_shard_readiness_probe_journal
+              SET state = 'ambiguous', ambiguous_at_ms = ?1
+            WHERE probe_id = ?2
+              AND claim_digest_sha256 = ?3
+              AND generation = ?4
+              AND state = 'started'
+              AND started_at_ms = ?5
+              AND deadline_at_ms = ?6`,
+          ambiguousAtMs,
+          permit.probeId,
+          permit.claimDigestSha256,
+          permit.generation,
+          permit.startedAtMs,
+          permit.deadlineAtMs,
+        );
+        if (changedRowCount(this.storage) !== 1) {
+          throw new ProtocolError("readiness_probe_superseded", 409);
+        }
+        this.recordReadinessProbeAmbiguousSummary(existing, ambiguousAtMs);
+        return { kind: "ambiguous" };
+      }
+
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_readiness_probe_journal
+            SET state = 'completed', completed_at_ms = ?1,
+                result_json = ?2, result_sha256 = ?3, result_size_bytes = ?4
+          WHERE probe_id = ?5
+            AND claim_digest_sha256 = ?6
+            AND generation = ?7
+            AND state = 'started'
+            AND started_at_ms = ?8
+            AND deadline_at_ms = ?9
+            AND retention_until_ms = ?10`,
+        completedAtMs,
+        completion.resultJson,
+        completion.resultSha256,
+        resultSizeBytes,
+        permit.probeId,
+        permit.claimDigestSha256,
+        permit.generation,
+        permit.startedAtMs,
+        permit.deadlineAtMs,
+        permit.retentionUntilMs,
+      );
+      if (changedRowCount(this.storage) !== 1) {
+        throw new ProtocolError("readiness_probe_superseded", 409);
+      }
+      this.storage.sql.exec(
+        `UPDATE cinatoken_shard_readiness
+            SET phase = 'complete', completed_at_ms = ?1, result_code = ?2,
+                container_status = ?3, container_last_change_ms = ?4,
+                container_exit_code = ?5, runtime_protocol_version = ?6,
+                runtime_contract_version = ?7, runtime_build_id = ?8,
+                runtime_execution_enabled = ?9, process_ready = ?10,
+                execution_ready = ?11,
+                last_ready_at_ms = CASE WHEN ?10 = 1 THEN ?1 ELSE last_ready_at_ms END
+          WHERE singleton = 1
+            AND probe_generation = ?12
+            AND last_probe_id = ?13
+            AND started_at_ms = ?14
+            AND phase = 'probing'`,
+        completedAtMs,
+        completion.resultCode,
+        completion.containerStatus,
+        completion.containerLastChangeMs,
+        completion.containerExitCode,
+        completion.runtimeProtocolVersion,
+        completion.runtimeContractVersion,
+        completion.runtimeBuildId,
+        completion.runtimeExecutionEnabled === null
+          ? null
+          : completion.runtimeExecutionEnabled
+            ? 1
+            : 0,
+        completion.processReady ? 1 : 0,
+        completion.executionReady ? 1 : 0,
+        permit.generation,
+        permit.probeId,
+        permit.startedAtMs,
+      );
+      const row = this.readReadinessProbeJournalRow(permit.probeId);
+      if (row === null || row.state !== "completed") {
+        throw new ProtocolError("readiness_probe_result_corrupt", 500);
+      }
+      return { kind: "completed_row", row };
+    });
+
+    if (outcome.kind === "ambiguous") {
+      throw new ProtocolError("readiness_probe_ambiguous", 409);
+    }
+    if (outcome.kind !== "completed_row") {
+      throw new ProtocolError("readiness_probe_superseded", 409);
+    }
+    const replay = await readinessProbeJournalCompletedReplay(outcome.row);
+    if (
+      replay.completedAtMs !== completedAtMs ||
+      replay.resultJson !== completion.resultJson ||
+      replay.resultSha256 !== completion.resultSha256
+    ) {
+      throw new ProtocolError("readiness_probe_completion_conflict", 409);
+    }
+    return replay;
+  }
+
+  recoverReadinessProbe(
+    shard: OperationShard,
+    probeId: string,
+    nowMs: number,
+  ): ReadinessProbeReplay | null {
+    this.ensureSchema();
+    return this.storage.transactionSync(() => {
+      const state = this.readShardStateRow();
+      if (state === null) throw new ProtocolError("shard_not_initialized", 409);
+      assertShardStateMatches(state, shard);
+      const dispatch = firstRow<{ dispatch_id: string }>(
+        this.storage.sql.exec<{ dispatch_id: string }>(
+          `SELECT dispatch_id FROM cinatoken_shard_readiness_dispatches WHERE dispatch_id = ?1`,
+          probeId,
+        ),
+      );
+      if (dispatch === null) return null;
+
+      let row = this.readReadinessRow();
+      if (row === null || row.last_probe_id !== probeId) {
+        throw new ProtocolError("readiness_probe_replay", 409);
+      }
+      if (row.phase === "probing") {
+        if (row.deadline_at_ms > nowMs) {
+          throw new ProtocolError("readiness_probe_in_progress", 409);
+        }
+        this.storage.sql.exec(
+          `UPDATE cinatoken_shard_readiness
+              SET phase = 'complete', completed_at_ms = deadline_at_ms,
+                  result_code = 'container_readiness_timeout', container_status = NULL,
+                  container_last_change_ms = NULL, container_exit_code = NULL,
+                  runtime_protocol_version = NULL, runtime_contract_version = NULL,
+                  runtime_build_id = NULL, runtime_execution_enabled = NULL,
+                  process_ready = 0, execution_ready = 0
+            WHERE singleton = 1 AND last_probe_id = ?1 AND phase = 'probing'
+              AND deadline_at_ms <= ?2`,
+          probeId,
+          nowMs,
+        );
+        if (changedRowCount(this.storage) !== 1) {
+          throw new ProtocolError("readiness_probe_in_progress", 409);
+        }
+        row = this.readReadinessRow();
+      }
+      if (row === null) throw new ProtocolError("readiness_probe_replay", 409);
+      return readinessProbeReplay(row);
+    });
+  }
+
   beginReadinessProbe(
     shard: OperationShard,
     probeId: string,
@@ -3594,9 +4065,11 @@ export class RelayShardLedger {
           `UPDATE cinatoken_shard_readiness
               SET probe_generation = ?1, phase = 'probing', last_probe_id = ?2,
                   started_at_ms = ?3, deadline_at_ms = ?4, completed_at_ms = NULL,
-                  result_code = NULL, container_status = NULL, container_last_change_ms = NULL,
-                  container_exit_code = NULL, runtime_protocol_version = NULL,
-                  runtime_contract_version = NULL, runtime_execution_enabled = NULL
+                   result_code = NULL, container_status = NULL, container_last_change_ms = NULL,
+                   container_exit_code = NULL, runtime_protocol_version = NULL,
+                   runtime_contract_version = NULL, runtime_build_id = NULL,
+                   runtime_execution_enabled = NULL, process_ready = NULL,
+                   execution_ready = NULL
             WHERE singleton = 1`,
           generation,
           probeId,
@@ -3620,9 +4093,10 @@ export class RelayShardLedger {
             SET phase = 'complete', completed_at_ms = ?1, result_code = ?2,
                 container_status = ?3, container_last_change_ms = ?4, container_exit_code = ?5,
                 runtime_protocol_version = ?6, runtime_contract_version = ?7,
-                runtime_execution_enabled = ?8,
-                last_ready_at_ms = CASE WHEN ?9 = 1 THEN ?1 ELSE last_ready_at_ms END
-          WHERE singleton = 1 AND probe_generation = ?10 AND phase = 'probing'`,
+                runtime_build_id = ?8, runtime_execution_enabled = ?9,
+                process_ready = ?10, execution_ready = ?11,
+                last_ready_at_ms = CASE WHEN ?10 = 1 THEN ?1 ELSE last_ready_at_ms END
+          WHERE singleton = 1 AND probe_generation = ?12 AND phase = 'probing'`,
         completedAtMs,
         completion.resultCode,
         completion.containerStatus,
@@ -3630,12 +4104,14 @@ export class RelayShardLedger {
         completion.containerExitCode,
         completion.runtimeProtocolVersion,
         completion.runtimeContractVersion,
+        completion.runtimeBuildId,
         completion.runtimeExecutionEnabled === null
           ? null
           : completion.runtimeExecutionEnabled
             ? 1
             : 0,
         completion.processReady ? 1 : 0,
+        completion.executionReady ? 1 : 0,
         generation,
       );
       return changedRowCount(this.storage) === 1;
@@ -3845,7 +4321,7 @@ export class RelayShardLedger {
     );
   }
 
-  private validateShardSchemaMigrations(allowPendingV4 = false): void {
+  private validateShardSchemaMigrations(allowedPendingTail = 0): void {
     const rows = this.storage.sql
       .exec<{ schema_version: number; migration_name: string }>(
         `SELECT schema_version, migration_name
@@ -3867,13 +4343,19 @@ export class RelayShardLedger {
         schema_version: 4,
         migration_name: "0004_terminal_ack_v3_convergence",
       },
+      {
+        schema_version: 5,
+        migration_name: "0005_readiness_probe_recovery_v1",
+      },
+      {
+        schema_version: 6,
+        migration_name: "0006_readiness_probe_at_most_once_journal_v1",
+      },
     ];
-    const expectedLength =
-      allowPendingV4 && rows.length === expected.length - 1
-        ? expected.length - 1
-        : expected.length;
+    const minimumExpectedLength = expected.length - allowedPendingTail;
     if (
-      rows.length !== expectedLength ||
+      rows.length < minimumExpectedLength ||
+      rows.length > expected.length ||
       rows.some(
         (row, index) =>
           row.schema_version !== expected[index]?.schema_version ||
@@ -4019,6 +4501,157 @@ export class RelayShardLedger {
           `ALTER TABLE cinatoken_shard_operations ADD COLUMN ${name} ${definition}`,
         );
       }
+    }
+  }
+
+  private ensureReadinessReplayColumns(): void {
+    const existing = new Set(
+      this.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(cinatoken_shard_readiness)")
+        .toArray()
+        .map(({ name }) => name),
+    );
+    const additions: ReadonlyArray<readonly [string, string]> = [
+      ["runtime_build_id", "TEXT"],
+      ["process_ready", "INTEGER"],
+      ["execution_ready", "INTEGER"],
+    ];
+    for (const [name, definition] of additions) {
+      if (!existing.has(name)) {
+        this.storage.sql.exec(
+          `ALTER TABLE cinatoken_shard_readiness ADD COLUMN ${name} ${definition}`,
+        );
+      }
+    }
+  }
+
+  private ensureReadinessProbeJournalV6(): void {
+    this.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS cinatoken_shard_readiness_probe_journal (
+        probe_id TEXT PRIMARY KEY,
+        claim_digest_sha256 TEXT NOT NULL,
+        generation INTEGER NOT NULL UNIQUE,
+        state TEXT NOT NULL,
+        started_at_ms INTEGER NOT NULL,
+        deadline_at_ms INTEGER NOT NULL,
+        retention_until_ms INTEGER NOT NULL,
+        completed_at_ms INTEGER,
+        ambiguous_at_ms INTEGER,
+        result_json TEXT,
+        result_sha256 TEXT,
+        result_size_bytes INTEGER,
+        CHECK (length(probe_id) = 64 AND probe_id NOT GLOB '*[^0-9a-f]*'),
+        CHECK (
+          length(claim_digest_sha256) = 64 AND
+          claim_digest_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (generation > 0),
+        CHECK (state IN ('started', 'completed', 'ambiguous')),
+        CHECK (
+          started_at_ms > 0 AND
+          deadline_at_ms > started_at_ms AND
+          deadline_at_ms <= ${MAX_UNIX_TIMESTAMP_MILLISECONDS} AND
+          retention_until_ms >= deadline_at_ms + ${READINESS_PROBE_JOURNAL_RETENTION_MS} AND
+          retention_until_ms <= ${MAX_UNIX_TIMESTAMP_MILLISECONDS}
+        ),
+        CHECK (
+          (state = 'started' AND completed_at_ms IS NULL AND ambiguous_at_ms IS NULL
+            AND result_json IS NULL AND result_sha256 IS NULL AND result_size_bytes IS NULL)
+          OR
+          (state = 'completed' AND completed_at_ms BETWEEN started_at_ms AND deadline_at_ms
+            AND ambiguous_at_ms IS NULL
+            AND result_json IS NOT NULL
+            AND result_size_bytes BETWEEN 2 AND ${READINESS_PROBE_RESULT_JSON_MAX_BYTES}
+            AND length(CAST(result_json AS BLOB)) = result_size_bytes
+            AND result_sha256 IS NOT NULL
+            AND length(result_sha256) = 64
+            AND result_sha256 NOT GLOB '*[^0-9a-f]*')
+          OR
+          (state = 'ambiguous' AND completed_at_ms IS NULL
+            AND ambiguous_at_ms BETWEEN deadline_at_ms AND retention_until_ms
+            AND result_json IS NULL AND result_sha256 IS NULL AND result_size_bytes IS NULL)
+        )
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS cinatoken_shard_readiness_probe_journal_state_deadline
+        ON cinatoken_shard_readiness_probe_journal(state, deadline_at_ms, probe_id);
+      CREATE INDEX IF NOT EXISTS cinatoken_shard_readiness_probe_journal_retention
+        ON cinatoken_shard_readiness_probe_journal(retention_until_ms, probe_id);
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_readiness_probe_journal_identity_guard
+      BEFORE UPDATE ON cinatoken_shard_readiness_probe_journal
+      FOR EACH ROW
+      WHEN
+        NEW.probe_id IS NOT OLD.probe_id OR
+        NEW.claim_digest_sha256 IS NOT OLD.claim_digest_sha256 OR
+        NEW.generation IS NOT OLD.generation OR
+        NEW.started_at_ms IS NOT OLD.started_at_ms OR
+        NEW.deadline_at_ms IS NOT OLD.deadline_at_ms OR
+        NEW.retention_until_ms IS NOT OLD.retention_until_ms
+      BEGIN
+        SELECT RAISE(ABORT, 'readiness probe journal identity is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_readiness_probe_journal_transition_guard
+      BEFORE UPDATE ON cinatoken_shard_readiness_probe_journal
+      FOR EACH ROW
+      WHEN
+        (OLD.state IN ('completed', 'ambiguous')) OR
+        (OLD.state = 'started' AND NEW.state NOT IN ('completed', 'ambiguous'))
+      BEGIN
+        SELECT RAISE(ABORT, 'readiness probe journal terminal state is immutable');
+      END;
+      CREATE TRIGGER IF NOT EXISTS cinatoken_shard_readiness_probe_journal_retention_guard
+      BEFORE DELETE ON cinatoken_shard_readiness_probe_journal
+      FOR EACH ROW
+      WHEN
+        OLD.state NOT IN ('completed', 'ambiguous') OR
+        OLD.retention_until_ms >= unixepoch() * 1000
+      BEGIN
+        SELECT RAISE(ABORT, 'readiness probe journal retention is active');
+      END;
+    `);
+
+    const expectedColumns = [
+      "probe_id",
+      "claim_digest_sha256",
+      "generation",
+      "state",
+      "started_at_ms",
+      "deadline_at_ms",
+      "retention_until_ms",
+      "completed_at_ms",
+      "ambiguous_at_ms",
+      "result_json",
+      "result_sha256",
+      "result_size_bytes",
+    ];
+    const columns = this.storage.sql
+      .exec<{ name: string }>(
+        "PRAGMA table_info(cinatoken_shard_readiness_probe_journal)",
+      )
+      .toArray()
+      .map(({ name }) => name);
+    const expectedObjects = [
+      "cinatoken_shard_readiness_probe_journal_identity_guard",
+      "cinatoken_shard_readiness_probe_journal_retention",
+      "cinatoken_shard_readiness_probe_journal_retention_guard",
+      "cinatoken_shard_readiness_probe_journal_state_deadline",
+      "cinatoken_shard_readiness_probe_journal_transition_guard",
+    ];
+    const objects = this.storage.sql
+      .exec<{ name: string }>(
+        `SELECT name FROM sqlite_master
+          WHERE name IN (${expectedObjects.map(() => "?").join(", ")})
+          ORDER BY name ASC`,
+        ...expectedObjects,
+      )
+      .toArray()
+      .map(({ name }) => name);
+    if (
+      columns.length !== expectedColumns.length ||
+      columns.some((name, index) => name !== expectedColumns[index]) ||
+      objects.length !== expectedObjects.length ||
+      objects.some((name, index) => name !== expectedObjects[index])
+    ) {
+      throw new ProtocolError("shard_schema_migration_conflict", 500);
     }
   }
 
@@ -4803,9 +5436,79 @@ export class RelayShardLedger {
         `SELECT probe_generation, phase, last_probe_id, started_at_ms, deadline_at_ms,
                 completed_at_ms, result_code, container_status, container_last_change_ms,
                 container_exit_code, runtime_protocol_version, runtime_contract_version,
-                runtime_execution_enabled, last_ready_at_ms
+                runtime_build_id, runtime_execution_enabled, process_ready, execution_ready,
+                last_ready_at_ms
            FROM cinatoken_shard_readiness WHERE singleton = 1`,
       ),
+    );
+  }
+
+  private readReadinessProbeJournalRow(
+    probeId: string,
+  ): ReadinessProbeJournalRow | null {
+    return firstRow<ReadinessProbeJournalRow>(
+      this.storage.sql.exec<ReadinessProbeJournalRow>(
+        `SELECT probe_id, claim_digest_sha256, generation, state, started_at_ms,
+                deadline_at_ms, retention_until_ms, completed_at_ms, ambiguous_at_ms,
+                result_json, result_sha256, result_size_bytes
+           FROM cinatoken_shard_readiness_probe_journal
+          WHERE probe_id = ?1`,
+        probeId,
+      ),
+    );
+  }
+
+  private recordReadinessProbeAmbiguousSummary(
+    row: ReadinessProbeJournalRow,
+    ambiguousAtMs: number,
+  ): void {
+    this.storage.sql.exec(
+      `UPDATE cinatoken_shard_readiness
+          SET phase = 'complete', completed_at_ms = ?1,
+              result_code = 'container_readiness_ambiguous',
+              container_status = NULL, container_last_change_ms = NULL,
+              container_exit_code = NULL, runtime_protocol_version = NULL,
+              runtime_contract_version = NULL, runtime_build_id = NULL,
+              runtime_execution_enabled = NULL, process_ready = 0, execution_ready = 0
+        WHERE singleton = 1
+          AND probe_generation = ?2
+          AND last_probe_id = ?3
+          AND started_at_ms = ?4
+          AND phase = 'probing'`,
+      ambiguousAtMs,
+      row.generation,
+      row.probe_id,
+      row.started_at_ms,
+    );
+  }
+
+  private maintainReadinessProbeJournal(): void {
+    this.storage.sql.exec(
+      `UPDATE cinatoken_shard_readiness_probe_journal
+          SET state = 'ambiguous',
+              ambiguous_at_ms = MIN(
+                retention_until_ms,
+                MAX(deadline_at_ms, unixepoch() * 1000)
+              )
+        WHERE probe_id IN (
+          SELECT probe_id
+            FROM cinatoken_shard_readiness_probe_journal
+           WHERE state = 'started'
+             AND deadline_at_ms <= unixepoch() * 1000
+           ORDER BY deadline_at_ms ASC, probe_id ASC
+           LIMIT 64
+        )`,
+    );
+    this.storage.sql.exec(
+      `DELETE FROM cinatoken_shard_readiness_probe_journal
+        WHERE probe_id IN (
+          SELECT probe_id
+            FROM cinatoken_shard_readiness_probe_journal
+           WHERE state IN ('completed', 'ambiguous')
+             AND retention_until_ms < unixepoch() * 1000
+           ORDER BY retention_until_ms ASC, probe_id ASC
+           LIMIT 64
+        )`,
     );
   }
 
@@ -5663,6 +6366,212 @@ function assertShardStateMatches(state: ShardStateRow, shard: OperationShard): v
   }
 }
 
+function validateReadinessProbeJournalIdentity(
+  probeId: string,
+  claimDigestSha256: string,
+  nowMs: number,
+): void {
+  if (
+    !/^[0-9a-f]{64}$/.test(probeId) ||
+    !/^[0-9a-f]{64}$/.test(claimDigestSha256) ||
+    !Number.isSafeInteger(nowMs) ||
+    nowMs < 1 ||
+    nowMs > MAX_UNIX_TIMESTAMP_MILLISECONDS
+  ) {
+    throw new ProtocolError("invalid_readiness_probe_journal", 400);
+  }
+}
+
+function validateReadinessProbeWakeDeadline(
+  nowMs: number,
+  deadlineAtMs: number | null,
+): asserts deadlineAtMs is number {
+  if (
+    deadlineAtMs === null ||
+    !Number.isSafeInteger(deadlineAtMs) ||
+    deadlineAtMs <= nowMs ||
+    deadlineAtMs > nowMs + 5 * 60 * 1_000 ||
+    deadlineAtMs + READINESS_PROBE_JOURNAL_RETENTION_MS >
+      MAX_UNIX_TIMESTAMP_MILLISECONDS
+  ) {
+    throw new ProtocolError("invalid_readiness_probe_journal", 400);
+  }
+}
+
+function validateReadinessProbeWakePermit(
+  permit: ReadinessProbeWakePermit,
+  completedAtMs: number,
+): void {
+  if (
+    permit === null ||
+    typeof permit !== "object" ||
+    permit.kind !== "wake" ||
+    !/^[0-9a-f]{64}$/.test(permit.probeId) ||
+    !/^[0-9a-f]{64}$/.test(permit.claimDigestSha256) ||
+    !Number.isSafeInteger(permit.generation) ||
+    permit.generation < 1 ||
+    !Number.isSafeInteger(permit.startedAtMs) ||
+    permit.startedAtMs < 1 ||
+    !Number.isSafeInteger(permit.deadlineAtMs) ||
+    permit.deadlineAtMs <= permit.startedAtMs ||
+    permit.deadlineAtMs > permit.startedAtMs + 5 * 60 * 1_000 ||
+    !Number.isSafeInteger(permit.retentionUntilMs) ||
+    permit.retentionUntilMs !==
+      permit.deadlineAtMs + READINESS_PROBE_JOURNAL_RETENTION_MS ||
+    permit.retentionUntilMs > MAX_UNIX_TIMESTAMP_MILLISECONDS ||
+    !Number.isSafeInteger(completedAtMs) ||
+    completedAtMs < permit.startedAtMs ||
+    completedAtMs > permit.retentionUntilMs
+  ) {
+    throw new ProtocolError("invalid_readiness_probe_journal", 400);
+  }
+}
+
+function validateReadinessJournalCompletion(
+  completion: ReadinessProbeJournalCompletion,
+  permit: ReadinessProbeWakePermit,
+  completedAtMs: number,
+): void {
+  if (
+    completion === null ||
+    typeof completion !== "object" ||
+    typeof completion.resultJson !== "string" ||
+    !/^[0-9a-f]{64}$/.test(completion.resultSha256) ||
+    typeof completion.resultCode !== "string" ||
+    completion.resultCode.length < 1 ||
+    completion.resultCode.length > 96 ||
+    !/^[a-z0-9_:-]+$/.test(completion.resultCode) ||
+    typeof completion.processReady !== "boolean" ||
+    typeof completion.executionReady !== "boolean"
+  ) {
+    throw new ProtocolError("invalid_readiness_probe_result", 400);
+  }
+  parseCanonicalReadinessProbeResult(
+    completion.resultJson,
+    "invalid_readiness_probe_result",
+    400,
+  );
+  try {
+    readinessProbeReplay({
+      probe_generation: permit.generation,
+      phase: "complete",
+      last_probe_id: permit.probeId,
+      started_at_ms: permit.startedAtMs,
+      deadline_at_ms: permit.deadlineAtMs,
+      completed_at_ms: completedAtMs,
+      result_code: completion.resultCode,
+      container_status: completion.containerStatus,
+      container_last_change_ms: completion.containerLastChangeMs,
+      container_exit_code: completion.containerExitCode,
+      runtime_protocol_version: completion.runtimeProtocolVersion,
+      runtime_contract_version: completion.runtimeContractVersion,
+      runtime_build_id: completion.runtimeBuildId,
+      runtime_execution_enabled:
+        completion.runtimeExecutionEnabled === null
+          ? null
+          : completion.runtimeExecutionEnabled
+            ? 1
+            : 0,
+      process_ready: completion.processReady ? 1 : 0,
+      execution_ready: completion.executionReady ? 1 : 0,
+      last_ready_at_ms: completion.processReady ? completedAtMs : null,
+    });
+  } catch {
+    throw new ProtocolError("invalid_readiness_probe_result", 400);
+  }
+}
+
+async function readinessProbeJournalCompletedReplay(
+  row: ReadinessProbeJournalRow,
+): Promise<ReadinessProbeCompletedReplay> {
+  if (
+    row.state !== "completed" ||
+    !/^[0-9a-f]{64}$/.test(row.probe_id) ||
+    !/^[0-9a-f]{64}$/.test(row.claim_digest_sha256) ||
+    !Number.isSafeInteger(row.generation) ||
+    row.generation < 1 ||
+    !Number.isSafeInteger(row.started_at_ms) ||
+    row.started_at_ms < 1 ||
+    !Number.isSafeInteger(row.deadline_at_ms) ||
+    row.deadline_at_ms <= row.started_at_ms ||
+    !Number.isSafeInteger(row.retention_until_ms) ||
+    row.retention_until_ms <
+      row.deadline_at_ms + READINESS_PROBE_JOURNAL_RETENTION_MS ||
+    row.retention_until_ms > MAX_UNIX_TIMESTAMP_MILLISECONDS ||
+    row.completed_at_ms === null ||
+    !Number.isSafeInteger(row.completed_at_ms) ||
+    row.completed_at_ms < row.started_at_ms ||
+    row.completed_at_ms > row.deadline_at_ms ||
+    row.ambiguous_at_ms !== null ||
+    row.result_json === null ||
+    row.result_sha256 === null ||
+    !/^[0-9a-f]{64}$/.test(row.result_sha256) ||
+    row.result_size_bytes === null ||
+    !Number.isSafeInteger(row.result_size_bytes)
+  ) {
+    throw new ProtocolError("readiness_probe_result_corrupt", 500);
+  }
+  const resultSizeBytes = new TextEncoder().encode(row.result_json).byteLength;
+  if (
+    resultSizeBytes !== row.result_size_bytes ||
+    resultSizeBytes < 2 ||
+    resultSizeBytes > READINESS_PROBE_RESULT_JSON_MAX_BYTES
+  ) {
+    throw new ProtocolError("readiness_probe_result_corrupt", 500);
+  }
+  parseCanonicalReadinessProbeResult(
+    row.result_json,
+    "readiness_probe_result_corrupt",
+    500,
+  );
+  if ((await sha256Utf8(row.result_json)) !== row.result_sha256) {
+    throw new ProtocolError("readiness_probe_result_corrupt", 500);
+  }
+  return {
+    kind: "completed",
+    probeId: row.probe_id,
+    claimDigestSha256: row.claim_digest_sha256,
+    generation: row.generation,
+    startedAtMs: row.started_at_ms,
+    deadlineAtMs: row.deadline_at_ms,
+    retentionUntilMs: row.retention_until_ms,
+    completedAtMs: row.completed_at_ms,
+    resultJson: row.result_json,
+    resultSha256: row.result_sha256,
+  };
+}
+
+function parseCanonicalReadinessProbeResult(
+  resultJson: string,
+  errorCode: string,
+  status: number,
+): Record<string, unknown> {
+  const size = new TextEncoder().encode(resultJson).byteLength;
+  if (size < 2 || size > READINESS_PROBE_RESULT_JSON_MAX_BYTES) {
+    throw new ProtocolError(errorCode, status);
+  }
+  try {
+    const value = JSON.parse(resultJson) as unknown;
+    if (!isRecord(value) || JSON.stringify(value) !== resultJson) {
+      throw new Error("non-canonical readiness result");
+    }
+    return value;
+  } catch {
+    throw new ProtocolError(errorCode, status);
+  }
+}
+
+async function sha256Utf8(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
 function readinessSnapshot(row: ReadinessRow | null): PersistedReadinessSnapshot {
   if (row === null) {
     return {
@@ -5698,6 +6607,57 @@ function readinessSnapshot(row: ReadinessRow | null): PersistedReadinessSnapshot
     runtime_execution_enabled:
       row.runtime_execution_enabled === null ? null : row.runtime_execution_enabled === 1,
     last_ready_at_ms: row.last_ready_at_ms,
+  };
+}
+
+function readinessProbeReplay(row: ReadinessRow): ReadinessProbeReplay {
+  const containerStatus = row.container_status;
+  const validContainerStatus =
+    containerStatus === null ||
+    ["running", "healthy", "stopping", "stopped", "stopped_with_code"].includes(
+      containerStatus,
+    );
+  const runtimeAbsent =
+    row.runtime_protocol_version === null &&
+    row.runtime_contract_version === null &&
+    row.runtime_build_id === null &&
+    row.runtime_execution_enabled === null;
+  const runtimePresent =
+    Number.isSafeInteger(row.runtime_protocol_version) &&
+    (row.runtime_protocol_version ?? 0) > 0 &&
+    Number.isSafeInteger(row.runtime_contract_version) &&
+    (row.runtime_contract_version ?? 0) > 0 &&
+    (row.runtime_build_id === null || /^[0-9a-f]{64}$/.test(row.runtime_build_id)) &&
+    (row.runtime_execution_enabled === 0 || row.runtime_execution_enabled === 1);
+  if (
+    row.phase !== "complete" ||
+    row.completed_at_ms === null ||
+    row.completed_at_ms <= 0 ||
+    row.result_code === null ||
+    !validContainerStatus ||
+    (containerStatus === null) !== (row.container_last_change_ms === null) ||
+    (containerStatus !== "stopped_with_code" && row.container_exit_code !== null) ||
+    (row.process_ready !== 0 && row.process_ready !== 1) ||
+    (row.execution_ready !== 0 && row.execution_ready !== 1) ||
+    (!runtimeAbsent && !runtimePresent) ||
+    (row.execution_ready === 1 &&
+      (row.process_ready !== 1 || row.runtime_execution_enabled !== 1))
+  ) {
+    throw new ProtocolError("readiness_probe_replay_invalid", 500);
+  }
+  return {
+    completedAtMs: row.completed_at_ms,
+    resultCode: row.result_code,
+    containerStatus: containerStatus as ReadinessProbeReplay["containerStatus"],
+    containerLastChangeMs: row.container_last_change_ms,
+    containerExitCode: row.container_exit_code,
+    runtimeProtocolVersion: row.runtime_protocol_version,
+    runtimeContractVersion: row.runtime_contract_version,
+    runtimeBuildId: row.runtime_build_id,
+    runtimeExecutionEnabled:
+      row.runtime_execution_enabled === null ? null : row.runtime_execution_enabled === 1,
+    processReady: row.process_ready === 1,
+    executionReady: row.execution_ready === 1,
   };
 }
 

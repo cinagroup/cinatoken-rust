@@ -40,9 +40,9 @@ Required local state:
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
   so Wrangler's local `workerd` can start.
 - `bun run check:d1:migration-config` passes.
-- `bun run verify:sqlite` reports 54 migrations, 58 required tables, 694
-  incremental columns, and 83 key indexes through
-  `0054_relay_container_shard_activations.sql`.
+- `bun run verify:sqlite` reports 55 migrations, 62 required tables, 771
+  incremental columns, and 91 key indexes through
+  `0055_relay_container_shard_activation_campaigns.sql`.
 - `bun run check:cf:billing-queue` passes.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
@@ -139,9 +139,9 @@ bun run check:cf:startup
 Pass criteria:
 
 - No test failures.
-- All three D1 binding tables use `migrations/d1`; migrations 0001-0054 are
-  contiguous; the local SQLite verifier finds all 58 required tables, 694
-  incremental columns, and 83 key indexes.
+- All three D1 binding tables use `migrations/d1`; migrations 0001-0055 are
+  contiguous; the local SQLite verifier finds all 62 required tables, 771
+  incremental columns, and 91 key indexes.
 - No formatting or whitespace errors.
 - Cloudflare dry-run/startup checks pass, or the missing local dependency is
   recorded as a known local limitation.
@@ -2244,3 +2244,99 @@ Rollback disables required-key admission and Rust task traffic first. Preserve
 unknown operation before Go/VPS resumes. Repeat the rollback under provider
 timeout, D1 ambiguity, deployment replacement, and alert-delivery failure.
 Production remains **NO-GO**.
+
+## Phase 4k: Migration 0055 One-Time Shard Activation Campaign
+
+This phase is a synthetic staging evidence ceremony. It must run with zero
+customer traffic and every Controller execution/provider/financial/action gate
+false. It does not authorize production.
+
+### Preconditions
+
+1. Rotate the exposed Cloudflare credential and use separate least-privilege
+   deploy and readback identities. Keep secrets out of arguments, files,
+   evidence, and logs.
+2. Freeze commits, Worker version IDs, Container image digest, runtime build,
+   provenance/SBOM, foundation manifest, ring, resources, migration bytes, and
+   rollback artifacts.
+3. Back up staging D1, prove old-writer and in-flight operation drain, apply
+   0054 then 0055, and archive exact 0055/55 and 62/771/91 readback plus
+   immutable negative probes and unchanged business fingerprints.
+4. Deploy readers first, then roll the Container candidate 10% and 100% with
+   zero customer/provider/financial delta. Do not enable the legacy activation
+   writer or ordinary Controller readiness/wake gates.
+5. Verify the root campaign create path is step-up protected and the root
+   readiness path accepts a campaign only when its four credential fields are
+   exact and `confirm_consume=true`.
+
+### Campaign creation
+
+The root create request binds only non-secret candidate facts:
+
+```json
+{
+  "contract_version": 1,
+  "expected_environment": "staging",
+  "expected_ring_generation": 1,
+  "expected_shard_count": 8,
+  "foundation_manifest_sha256": "<lowercase-sha256>",
+  "runtime_build_id": "<lowercase-sha256>",
+  "shard_contract_version": 1,
+  "runtime_protocol_version": 1,
+  "runtime_contract_version": 1,
+  "activation_generation": 1,
+  "expires_in_seconds": 600,
+  "confirm_create": true
+}
+```
+
+Store neither the response nor the returned nonce in the evidence bundle. The
+operator may retain the campaign ID and public digests. Immediately GET status
+and require `state=open`, zero claims/consumptions, exact candidate fields, and
+no receipts.
+
+### Per-shard execution
+
+For each index `0..N-1`, in deterministic order, submit this root readiness
+body through an authenticated client that keeps the nonce in memory:
+
+```json
+{
+  "shard_index": 0,
+  "expected_ring_generation": 1,
+  "wake_container": true,
+  "confirm_wake": true,
+  "activation_campaign": {
+    "contract_version": 1,
+    "campaign_id": "<campaign-id>",
+    "nonce": "<in-memory-one-time-nonce>",
+    "confirm_consume": true
+  }
+}
+```
+
+After each response, read campaign status. Counts may advance by one or replay
+the same completed shard, but they must never skip, regress, or bind another
+Controller/build/ring. A timeout, ambiguous journal, hash mismatch, readiness
+rejection, unexpected second wake, or non-complete terminal seal aborts the
+campaign and retires the candidate. Do not issue a blind retry.
+
+### Completion, replay, and S4
+
+1. After the final shard, require `sealed_complete`, N/N claims and
+   consumptions, receipt indices `0..N-1`, and a final receipt matching the seal
+   digest and timestamp.
+2. Replay one already-completed shard once. It must return the exact stored
+   result hash through replay-only mode with no wake and no new D1 row.
+3. Read the frozen 0054 ledger and require one candidate activation per receipt
+   with no unknown row.
+4. Run the campaign-aware shard collector before and after 300-7200 seconds.
+   Campaign, receipts, activation high watermark, entries, and all other
+   sources-v3 facts must be stable.
+5. Keep S4 blocked until Cloudflare Worker/Container/KV/R2/D1 inventory uses an
+   authoritative cursor-aware all-page reader. Wrangler first-page output is
+   not completeness proof.
+
+Rollback preserves the campaign, claims, receipts, seal, 0054 activations, DO
+journal, image, and audit evidence. Go/VPS remains authoritative; production
+remains **NO-GO**.

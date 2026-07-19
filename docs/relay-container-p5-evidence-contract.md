@@ -2,20 +2,20 @@
 
 Date: 2026-07-19
 
-Status: local, credential-free evidence-verifier candidate. It authorizes no
+Status: local, credential-free, campaign-aware evidence-verifier candidate. It authorizes no
 remote mutation, customer traffic, production cutover, or Go/VPS shutdown.
 
 Current baseline: migration head
-`0054_relay_container_shard_activations.sql`, migration count 54, and the
-locally verified schema shape of 58 tables, 694 incremental columns, and 83
-key indexes. This 0054/54 baseline supersedes every historical 0053/53
-reference retained below. Nothing in this document claims that 0054 was
+`0055_relay_container_shard_activation_campaigns.sql`, migration count 55, and the
+locally verified schema shape of 62 tables, 771 incremental columns, and 91
+key indexes. This 0055/55 baseline supersedes every historical 0054/54
+reference retained below. Nothing in this document claims that 0055 was
 applied, deployed, or read back from Cloudflare.
 
-Historical baseline, retained for continuity: P4 ended at
-`0053_relay_container_financial_terminal_v2.sql`, count 53, with 57 tables,
-674 incremental columns, and 81 key indexes. Those values describe the
-superseded pre-activation state and cannot satisfy the current P5 verifier.
+Historical activation baseline, retained for continuity: 0054 ended at 54
+migrations with 58 tables, 694 incremental columns, and 83 key indexes. Those
+values describe the pre-campaign state and cannot satisfy the current P5
+verifier.
 
 ## Purpose
 
@@ -231,7 +231,7 @@ All ten kinds are required exactly once and in contract order:
 | `candidate-freeze` | Exact commit/version/image/runtime-build/provenance/SBOM inventory, image signature and runtime-to-image provenance verified, zero unapproved critical/high vulnerabilities, every action gate false |
 | `remote-inventory` | Account digest, exact shared D1/KV/R2 identities, Controller/egress services, DO namespace/binding/class, candidate runtime build and image provenance, all shards accounted for, zero unknown writers/objects/customer traffic |
 | `reader-first-rollout` | Egress before Controller, Controller before edge, readers before writers, every shard on a compatible reader, no new response write, public `/internal` 404, N/N-1 or blue/green skew proof |
-| `schema-readback` | Remote 0054/54 and exact 58-table/694-column/83-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
+| `schema-readback` | Remote 0055/55 and exact 62-table/771-column/91-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
 | `lifecycle-fault-campaign` | Cold/warm start, DO eviction, Container sleep/restart/OOM, duplicate alarm, callback failure, malformed/future payload, N-1, and response loss; zero duplicate provider/financial effects |
 | `response-financial-fault-campaign` | Success, typed error, HTTP error, invalid body, and recovery; every D1 statement fault; response-class totals equal provider operations, one provider operation per send, settled plus refunded terminal conservation, zero request accounting on refund, exact client replay and classified R2 orphans |
 | `cross-layer-provenance` | Complete redacted edge/Controller/DO/Container/broker/provider/D1/R2/financial/audit/client tuple with no identity gap or payload/credential leak |
@@ -261,9 +261,9 @@ candidate-freeze and remote-inventory facts to equal the two evidence records
 after removing their seven shared binding fields. The five owner signatures
 therefore bind the capture bytes through the signed manifest subject.
 
-The operative external-source bundle is schema version 2 with contract
-`cinatoken-relay-container-p5-foundation-sources-v2`. Its `shardRegistry`
-source embeds the complete before/after activation capture and must set
+The operative external-source bundle is schema version 3 with contract
+`cinatoken-relay-container-p5-foundation-sources-v3`. Its `shardRegistry`
+source embeds the complete before/after campaign-aware activation capture and must set
 `sourceArtifactSha256` to the SHA-256 of the collector's canonical rebuilt
 capture. A v1 aggregate N/N assertion is historical context only and cannot
 satisfy this baseline.
@@ -322,8 +322,8 @@ files, and every evidence and approval validity window must increase strictly.
    migration SQL, and rollback artifacts. Every tracked local, staging, and
    production action gate defaults to false.
 3. Back up staging D1, prove old-writer and operation drain, apply/read back
-   0054 after the already ordered 0052/0053 reader chain, and verify the exact
-   0054/54 and 58/694/83 baseline with immutable negatives and unchanged
+   0054 then 0055 after the already ordered 0052/0053 reader chain, and verify the exact
+   0055/55 and 62/771/91 baseline with immutable negatives and unchanged
    business fingerprints.
 4. Upload a disabled provider-egress version, then a Controller reader, then an
    edge reader with the private Service Binding. Activation recording remains
@@ -331,18 +331,16 @@ files, and every evidence and approval validity window must increase strictly.
 5. Roll the Container candidate at 10% and 100%. At each stage read back the
    exact image, compatible runtime protocol/build, zero customer traffic, and
    zero provider/financial delta.
-6. Before recording, implement and approve a same-Controller-version,
-   one-time activation campaign with a root-authorized nonce, fixed candidate,
-   expiry, per-shard consumption, automatic seal, and immutable audit record.
-   The current static environment-variable gate is not sufficient: toggling it
-   creates another Worker version, so rows written by the enabled version
-   cannot support an all-gates-false capture for the disabled candidate
-   version. Until this dynamic ceremony exists, S3 is **NO-GO**.
+6. Create one root-authorized same-Controller-version activation campaign and
+   use its one-time nonce without changing any static gate. D1 must claim each
+   shard before DO lookup; completed claims use replay-only journal reads; only
+   a `sealed_complete` N/N campaign can continue.
 7. After that campaign is sealed and every effective action gate is false,
-   capture the root-only activation ledger before and after 300-7200 seconds
-   using the first page's frozen high watermark and complete keyset traversal.
-   Rows must be fresh for this campaign, activation generation must be one,
-   and sources-v2 action-gate, SBOM/provenance, R2, traffic-isolation, and
+   capture the root-only campaign receipts and activation ledger before and
+   after 300-7200 seconds using the first page's frozen high watermark and
+   complete keyset traversal. Receipts and 0054 rows must match one-to-one,
+   rows must be fresh for this campaign, activation generation must be one,
+   and sources-v3 action-gate, SBOM/provenance, R2, traffic-isolation, and
    control-plane facts must overlap the same window.
 8. Implement and archive explicit full pagination for every Cloudflare
    control-plane list. Until that reader exists, foundation and P5 remain
@@ -415,9 +413,9 @@ requires `python tools/verify_sqlite.py` and
 `bun run check:relay-container:p5-shard-registry`; report their actual output
 and never infer a pass from this paragraph.
 
-On the current worktree, the focused 0054 checks pass the 54-migration
-58/694/83 SQLite verifier, 42 P5 verifier tests, 16 foundation collector tests
-plus its offline self-test, 8 shard-registry tests, and 22 deploy-preflight
+On the current worktree, the focused 0055 checks pass the 55-migration
+62/771/91 SQLite verifier, 44 P5 verifier tests, 16 foundation collector tests
+plus its offline self-test, 13 shard-registry/campaign collector tests, and 22 deploy-preflight
 tests. These are still local contract checks, not Cloudflare evidence.
 
 Those fixtures are tests of the verifier, not Cloudflare evidence. No remote

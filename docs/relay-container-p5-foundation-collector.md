@@ -15,8 +15,8 @@ are ready for independent evidence assembly and owner review. The other eight
 P5 evidence kinds, the signed manifest, and all five independent approvals are
 still mandatory.
 
-Current local baseline: D1 head 0054/count 54, 58 tables, 694 incremental
-columns, and 83 key indexes. This supersedes the retained historical 0053/53
+Current local baseline: D1 head 0055/count 55, 62 tables, 771 incremental
+columns, and 91 key indexes. This supersedes the retained historical 0053/53
 foundation text. No live Cloudflare readback, migration application,
 deployment, Durable Object/Container wake, or traffic change is claimed.
 
@@ -96,10 +96,10 @@ The candidate remains pinned to:
   `918e97480ee44e357abe99bf33c27259d6ac7ebd`;
 - Container image digest, runtime executable build SHA-256, and a separate
   runtime-to-image provenance SHA-256;
-- migration `0054_relay_container_shard_activations.sql`, count 54; and
+- migration `0055_relay_container_shard_activation_campaigns.sql`, count 55; and
 - response/status/financial-terminal/terminal-ACK contracts 3/4/2/3.
 
-The earlier 0053/53 candidate was the financial-terminal P4 baseline. It is
+The earlier 0054/54 candidate was the pre-campaign activation baseline. It is
 retained as history only; a new foundation request using it must fail the
 current P5 candidate validator.
 
@@ -186,10 +186,10 @@ Object member. A live capture therefore remains `not-proven` unless a strict
 canonical source bundle is supplied with contract:
 
 ```text
-cinatoken-relay-container-p5-foundation-sources-v2
+cinatoken-relay-container-p5-foundation-sources-v3
 ```
 
-The bundle has `schemaVersion=2`; it is candidate-bound, account-bound,
+The bundle has `schemaVersion=3`; it is candidate-bound, account-bound,
 captured inside the observation window, pagination-complete, and contains these
 five independently identified source records:
 
@@ -228,9 +228,12 @@ session cookie from `CINATOKEN_P5_SHARD_REGISTRY_COOKIE`, never a CLI argument.
 Redirects fail, each response has a 15-second deadline, and streamed response
 bytes are cancelled above 1 MiB rather than buffered without a bound.
 
-For both before and after snapshots it calls only root-authenticated,
+For both before and after snapshots it first calls root-authenticated,
 `Cache-Control: no-store`
-`GET /api/platform/container/shards/activations`. The first response freezes
+`GET /api/platform/container/shards/activation-campaigns`, then calls
+`GET /api/platform/container/shards/activations`. The campaign readback must be
+`sealed_complete`, bind the exact candidate and foundation manifest, and carry
+one validated consumption receipt per shard. The first activation response freezes
 `high_watermark`; every later request sends that same value plus the previous
 page's keyset cursor. Pages contain at most 64 records, sequences and cursors
 must increase strictly, the terminal page must return `next_cursor=null`, and
@@ -239,9 +242,11 @@ the frozen high watermark. The collector caps this evidence inventory at 4096
 ledger records and 65 pages; exceeding either bound fails closed.
 
 The Worker reader and the offline collector independently recompute every
-`activation_digest_sha256` using the same length-prefixed domain-separated
-contract as the Controller writer. The capture then compares before/after high
-watermarks, record counts, canonical entry digests, and records. From the
+`activation_digest_sha256` and `consumption_digest_sha256` using the same
+length-prefixed domain-separated contracts as the Controller writer. Each
+receipt must match exactly one 0054 activation. The capture then compares
+before/after campaign snapshots, receipt sets, high watermarks, record counts,
+canonical entry digests, and records. From the
 validated records it derives, rather than trusts, `verifiedShardCount`,
 `missingShardCount`, `duplicateShardCount`, and `unknownShardCount`; rebuilding
 the capture rejects any forged derived count. Evidence is ready only for
@@ -310,23 +315,25 @@ The evidence order is fixed:
 1. rotate the exposed credential and freeze commits, Worker versions, image,
    runtime build, provenance, SBOM, resources, migration, and rollback facts;
 2. with every tracked action gate at its default `false`, back up D1 and
-   apply/read back 0054/54 after the reader-compatible 0052/0053 chain;
+   apply/read back 0054 then 0055, proving the 0055/55 and 62/771/91 baseline;
 3. deploy provider-egress, Controller reader, then edge reader while activation
    recording remains false;
 4. roll the Container image at 10% and 100% and prove its image/runtime identity
    with zero customer/provider/financial delta;
-5. implement a same-version, root-authorized one-time activation campaign with
-   an approval nonce, fixed candidate, expiry, per-shard consumption and an
-   automatic immutable seal; the current static activation environment toggle
-   cannot satisfy this because changing it creates a different Worker version;
+5. create the implemented same-version, root-authorized one-time activation
+   campaign, keep its nonce out of files and command arguments, and consume one
+   D1-first/DO-journaled readiness claim per logical shard without changing a
+   static activation environment variable;
 6. only after the campaign is sealed and every effective action gate is false,
-   capture the fresh stable activation ledger and all other sources-v2
+   capture the sealed campaign receipts, fresh stable activation ledger, and
+   all other sources-v3
    artifacts over the same 300-7200 second observation window; and
 7. perform explicit full Cloudflare control-plane pagination before attempting
    the remaining P5 campaigns, signatures, or isolated-canary review.
 
-Steps 5 and 7 are not implemented: there is no dynamic one-time campaign, and
-the current Wrangler list reader cannot prove terminal pagination. Therefore
+Step 5 is implemented locally but has not been deployed or exercised. Step 7
+remains unimplemented because the current Wrangler list reader cannot prove
+terminal pagination. Therefore
 the foundation packet and P5 decision remain **NO-GO** even if a local shard
 fixture is complete. All tracked local/staging/production Controller action
 gates, including activation recording, remain default `false`; editing the
@@ -342,7 +349,7 @@ outside the observation window.
 
 Passing local tests proves only the collector contract and redaction boundary.
 The current worktree passes 16 foundation collector tests plus the offline
-self-test and 8 shard-registry collector tests. Those fixtures inject complete
+self-test and 13 shard-registry/campaign collector tests. Those fixtures inject complete
 pagination where needed; they do not make Wrangler list output complete.
 The current Wrangler list pagination boundary intentionally prevents a live
 foundation pass until an explicit all-pages reader is implemented. No

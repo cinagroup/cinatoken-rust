@@ -22,10 +22,13 @@ import {
   sha256,
 } from "../tools/lib/cloudflare_readback.mjs";
 import {
+  SHARD_ACTIVATION_CAMPAIGN_CONTRACT,
   SHARD_ACTIVATION_LEDGER_CONTRACT,
   activationDigestSha256,
   buildActivationSnapshot,
+  buildCampaignSnapshot,
   buildShardRegistryCapture,
+  campaignConsumptionDigestSha256,
   sha256Canonical,
 } from "../tools/lib/relay_container_shard_registry.mjs";
 
@@ -289,6 +292,12 @@ describe("Relay Container P5 foundation collector", () => {
     expect(result.subject.evidenceFacts.remoteInventory.verifiedShardCount).toBe(8);
     expect(result.subject.evidenceFacts.remoteInventory.unknownWriterCount).toBe(0);
     expect(result.subject.evidenceFacts.candidateFreeze.allActionGatesFalse).toBe(true);
+    expect(
+      result.subject.evidenceFacts.remoteInventory.shardActivationCampaign.state,
+    ).toBe("sealed_complete");
+    expect(
+      result.subject.evidenceFacts.remoteInventory.shardActivationCampaign.receiptCount,
+    ).toBe(8);
     expect(result.foundationCaptureSha256).toBe(digest(result.subject));
     expect(result.binding.foundationCaptureSha256).toBe(
       result.foundationCaptureSha256,
@@ -546,8 +555,8 @@ function requestFixture() {
       containerClass: "RelayShardContainer",
       ringGeneration: 1,
       shardCount: 8,
-      migrationHead: "0054_relay_container_shard_activations.sql",
-      migrationCount: 54,
+      migrationHead: "0055_relay_container_shard_activation_campaigns.sql",
+      migrationCount: 55,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,
@@ -565,7 +574,7 @@ function sourcesFixture(request) {
   });
   const shardCapture = shardRegistryCaptureFixture(request);
   const sources = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     contract: FOUNDATION_SOURCES_CONTRACT,
     environment: "staging",
     candidateDigestSha256: p5CandidateDigestSha256(request.candidate),
@@ -577,6 +586,7 @@ function sourcesFixture(request) {
         ...base(),
         controllerVersionId: request.candidate.controllerWorkerVersionId,
         actionGateInventorySha256: "9".repeat(64),
+        actionGateCount: 22,
         allActionGatesFalse: true,
       },
       sbom: {
@@ -625,36 +635,10 @@ function shardRegistryCaptureFixture(request) {
     ringGeneration: request.candidate.ringGeneration,
     shardCount: request.candidate.shardCount,
   };
-  const records = Array.from({ length: candidate.shardCount }, (_, shardIndex) => {
-    const record = {
-      registry_event_sequence: shardIndex + 1,
-      shard_count: candidate.shardCount,
-      shard_index: shardIndex,
-      instance_name: `cinatoken-relay-shard-v1-${String(shardIndex).padStart(4, "0")}`,
-      shard_contract_version: 1,
-      runtime_protocol_version: 1,
-      runtime_contract_version: 1,
-      runtime_build_id: candidate.runtimeBuildId,
-      activation_generation: 1,
-      activation_probe_generation: shardIndex + 1,
-      environment: "staging",
-      container_status: "healthy",
-      readiness_result_code: "process_ready_execution_disabled",
-      process_ready: true,
-      runtime_execution_enabled: false,
-      controller_execution_enabled: false,
-      activation_digest_sha256: "",
-      activated_at:
-        Math.floor(Date.parse("2026-07-19T09:59:00.000Z") / 1_000) +
-        (shardIndex % 30),
-    };
-    record.activation_digest_sha256 = activationDigestSha256({
-      controllerVersionId: candidate.controllerVersionId,
-      ringGeneration: candidate.ringGeneration,
-      record,
-    });
-    return record;
-  });
+  const campaign = campaignFixture(candidate);
+  const records = campaign.receipts.map((receipt, shardIndex) =>
+    activationRecordFromReceipt(receipt, shardIndex + 1),
+  );
   const highWatermark = records.at(-1).registry_event_sequence;
   const pages = [];
   for (let offset = 0; offset < records.length; offset += 64) {
@@ -687,6 +671,16 @@ function shardRegistryCaptureFixture(request) {
     candidate,
     observationStartedAt: before.capturedAt,
     observationEndedAt: after.capturedAt,
+    campaignBefore: buildCampaignSnapshot({
+      capturedAt: before.capturedAt,
+      campaign,
+      expected: candidate,
+    }),
+    campaignAfter: buildCampaignSnapshot({
+      capturedAt: after.capturedAt,
+      campaign,
+      expected: candidate,
+    }),
     before,
     after,
   });
@@ -694,43 +688,140 @@ function shardRegistryCaptureFixture(request) {
 
 function retimeShardCapture(sources, observationStartedAt, observationEndedAt) {
   const current = sources.sources.shardRegistry.capture;
-  const activatedAt = Math.floor(Date.parse(observationStartedAt) / 1_000) - 60;
-  const records = current.before.records.map((record, index) => {
-    const adjusted = {
-      ...record,
-      activated_at: activatedAt + (index % 30),
-      activation_digest_sha256: "",
-    };
-    adjusted.activation_digest_sha256 = activationDigestSha256({
-      controllerVersionId: current.candidate.controllerVersionId,
-      ringGeneration: current.candidate.ringGeneration,
-      record: adjusted,
-    });
-    return adjusted;
-  });
-  const entriesSha256 = sha256Canonical(records);
   const before = {
     ...current.before,
     capturedAt: observationStartedAt,
-    entriesSha256,
-    records,
   };
   const after = {
     ...current.after,
     capturedAt: observationEndedAt,
-    entriesSha256,
-    records,
+  };
+  const campaignBefore = {
+    ...current.campaign,
+    capturedAt: observationStartedAt,
+  };
+  const campaignAfter = {
+    ...current.campaign,
+    capturedAt: observationEndedAt,
   };
   const capture = buildShardRegistryCapture({
     candidate: current.candidate,
     observationStartedAt,
     observationEndedAt,
+    campaignBefore,
+    campaignAfter,
     before,
     after,
   });
   sources.sources.shardRegistry.capture = capture;
   sources.sources.shardRegistry.sourceArtifactSha256 = sha256Canonical(capture);
   return sources;
+}
+
+function campaignFixture(candidate) {
+  const campaign = {
+    contract_version: 1,
+    campaign_contract: SHARD_ACTIVATION_CAMPAIGN_CONTRACT,
+    state: "sealed_complete",
+    campaign_id: "c".repeat(64),
+    controller_version_id: candidate.controllerVersionId,
+    action_gate_inventory_sha256: "9".repeat(64),
+    action_gate_count: 22,
+    all_action_gates_false: true,
+    foundation_manifest_sha256: "6".repeat(64),
+    runtime_build_id: candidate.runtimeBuildId,
+    ring_generation: candidate.ringGeneration,
+    shard_count: candidate.shardCount,
+    shard_contract_version: 1,
+    runtime_protocol_version: 1,
+    runtime_contract_version: 1,
+    activation_generation: 1,
+    environment: "staging",
+    campaign_digest_sha256: "d".repeat(64),
+    created_at: epoch("2026-07-19T09:55:00.000Z"),
+    expires_at: epoch("2026-07-19T10:55:00.000Z"),
+    claimed_shard_count: candidate.shardCount,
+    consumed_shard_count: candidate.shardCount,
+    seal_reason: "complete",
+    seal_detail_code: "all_shards_consumed",
+    last_consumption_digest_sha256: "",
+    sealed_at: epoch("2026-07-19T09:59:30.000Z"),
+    receipts: [],
+  };
+  campaign.receipts = Array.from({ length: candidate.shardCount }, (_, shardIndex) =>
+    receiptFixture(campaign, shardIndex),
+  );
+  campaign.last_consumption_digest_sha256 = campaign.receipts.at(-1).consumption_digest_sha256;
+  return campaign;
+}
+
+function receiptFixture(campaign, shardIndex) {
+  const receipt = {
+    campaign_id: campaign.campaign_id,
+    shard_index: shardIndex,
+    claim_digest_sha256: digest(`claim:${shardIndex}`),
+    probe_id: digest(`probe:${shardIndex}`),
+    campaign_digest_sha256: campaign.campaign_digest_sha256,
+    controller_version_id: campaign.controller_version_id,
+    action_gate_inventory_sha256: campaign.action_gate_inventory_sha256,
+    action_gate_count: 22,
+    all_action_gates_false: true,
+    foundation_manifest_sha256: campaign.foundation_manifest_sha256,
+    ring_generation: campaign.ring_generation,
+    shard_count: campaign.shard_count,
+    instance_name: `cinatoken-relay-shard-v1-${String(shardIndex).padStart(4, "0")}`,
+    shard_contract_version: 1,
+    runtime_protocol_version: 1,
+    runtime_contract_version: 1,
+    runtime_build_id: campaign.runtime_build_id,
+    activation_generation: 1,
+    activation_probe_generation: shardIndex + 1,
+    environment: "staging",
+    container_status: "healthy",
+    readiness_result_code: "process_ready_execution_disabled",
+    readiness_result_sha256: digest(`readiness:${shardIndex}`),
+    process_ready: true,
+    runtime_execution_enabled: false,
+    controller_execution_enabled: false,
+    activation_digest_sha256: "",
+    consumption_digest_sha256: "",
+    readiness_checked_at: campaign.sealed_at - 1,
+    consumed_at: shardIndex + 1 === campaign.shard_count ? campaign.sealed_at : campaign.sealed_at - 1,
+  };
+  receipt.activation_digest_sha256 = activationDigestSha256({
+    controllerVersionId: receipt.controller_version_id,
+    ringGeneration: receipt.ring_generation,
+    record: activationRecordFromReceipt(receipt, shardIndex + 1),
+  });
+  receipt.consumption_digest_sha256 = campaignConsumptionDigestSha256(receipt);
+  return receipt;
+}
+
+function activationRecordFromReceipt(receipt, sequence) {
+  return {
+    registry_event_sequence: sequence,
+    shard_count: receipt.shard_count,
+    shard_index: receipt.shard_index,
+    instance_name: receipt.instance_name,
+    shard_contract_version: receipt.shard_contract_version,
+    runtime_protocol_version: receipt.runtime_protocol_version,
+    runtime_contract_version: receipt.runtime_contract_version,
+    runtime_build_id: receipt.runtime_build_id,
+    activation_generation: receipt.activation_generation,
+    activation_probe_generation: receipt.activation_probe_generation,
+    environment: receipt.environment,
+    container_status: receipt.container_status,
+    readiness_result_code: receipt.readiness_result_code,
+    process_ready: receipt.process_ready,
+    runtime_execution_enabled: receipt.runtime_execution_enabled,
+    controller_execution_enabled: receipt.controller_execution_enabled,
+    activation_digest_sha256: receipt.activation_digest_sha256,
+    activated_at: receipt.readiness_checked_at,
+  };
+}
+
+function epoch(value) {
+  return Math.floor(Date.parse(value) / 1_000);
 }
 
 function refreshSourceDigest(source) {

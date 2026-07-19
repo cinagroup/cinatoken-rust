@@ -2,38 +2,44 @@
 
 Date: 2026-07-19
 
-Status: local, default-inert P5 evidence implementation. No D1 migration was
-applied remotely, no Worker or Container was deployed, no Durable Object or
-Container was woken for this document, and no customer, provider, financial,
-or production authority changed.
+Status: local, default-inert P5 evidence implementation with the 0055 one-time
+activation campaign implemented. No D1 migration was applied remotely, no
+campaign was created or consumed, no Worker or Container was deployed, no
+Durable Object or Container was woken for this document, and no customer,
+provider, financial, or production authority changed.
 
 ## Operative Baseline
 
 The operative D1 head is
-`0054_relay_container_shard_activations.sql`, migration count 54. The local
+`0055_relay_container_shard_activation_campaigns.sql`, migration count 55. The local
 SQLite verifier currently reports:
 
 ```text
-54 migrations
-58 tables
-694 incremental columns
-83 key indexes
+55 migrations
+62 tables
+771 incremental columns
+91 key indexes
 ```
 
-This 0054/54 and 58/694/83 baseline supersedes the historical 0053/53 and
-57/674/81 financial-terminal baseline. The earlier baseline remains useful P4
-history, but it is not a valid P5 schema readback.
+This 0055/55 and 62/771/91 baseline supersedes the historical 0054/54 and
+58/694/83 activation-ledger baseline. The earlier baseline remains useful P5
+history, but it is not a valid current schema readback.
 
 The evidence chain has five independently checked links:
 
 1. the running Container runtime identifies its executable bytes;
 2. the Controller binds that runtime to one Cloudflare Worker version and an
    expected runtime build gate;
-3. migration 0054 stores one immutable activation fact per candidate shard;
-4. a root-only Worker API reads a frozen D1 snapshot without touching a shard
+3. migration 0055 claims each campaign shard before any Durable Object lookup;
+4. the shard Durable Object journals one probe as started, completed, or
+   ambiguous and never performs a second wake for the same claim;
+5. final D1 consumption atomically projects one immutable 0054 activation fact
+   and automatically seals the campaign at N/N;
+6. a root-only Worker API reads the campaign receipts and a frozen 0054 D1
+   snapshot without touching a shard
    Durable Object or Container; and
-5. the offline collector rebuilds every digest and derives N/N completeness
-   before foundation sources v2 can consume the capture.
+7. the offline collector rebuilds every digest and derives N/N completeness
+   before foundation sources v3 can consume the capture.
 
 Breaking any link leaves the shard source `not-proven`.
 
@@ -76,7 +82,7 @@ python tools/verify_sqlite.py
 bun run check:d1:migration-config
 ```
 
-The 58/694/83 numbers above come from the first command on the current worktree,
+The 62/771/91 numbers above come from the first command on the current worktree,
 not from an estimate. They are local schema evidence only.
 
 ## Candidate Identity Chain
@@ -155,30 +161,35 @@ readiness wake, and activation-recording gate at exact `false`.
 The deploy preflight enforces those values, including
 `CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED=false`.
 
-Activation recording is therefore not enabled merely by deploying the current
-tree. The current static environment-variable gate is intentionally
-insufficient for a production ceremony: enabling or disabling a Worker
-variable creates another Controller version, while the ledger and action-gate
-source must bind the same version and the final capture requires every
-effective action gate false. A later same-version one-time campaign must add a
-root-authorized approval nonce, fixed candidate, expiry, per-shard consumption,
-automatic seal, and immutable audit record. Until then, activation recording
-remains an explicit **NO-GO** step; toggling the static variable is not an
-approved workaround. Runtime and Controller execution remain disabled for any
-future shard-registry campaign, and the offline collector accepts only
+Activation recording is not enabled merely by deploying the current tree. The
+legacy static writer remains disabled and must not be toggled: changing a
+Worker variable creates another Controller version and breaks the same-version
+evidence chain. Migration 0055 now supplies the approved dynamic capability.
+A root operator can create a bounded one-time campaign only after step-up
+verification, exact candidate binding, verified Controller readback, and proof
+that all 22 action gates are false. The nonce is returned once, only its hash is
+stored, and it is never logged.
+
+The campaign does not make production GO. Each signed readiness request must
+present the exact campaign credential; D1 atomically claims that shard before
+the Controller resolves a Durable Object stub. The raw nonce is stripped before
+the V2 Durable Object RPC. Runtime and Controller execution remain disabled,
+and the offline collector accepts only
 `readiness_result_code=process_ready_execution_disabled` with both execution
 flags false. An `execution_ready` row is valid at the storage/API layer but is
 an unknown candidate row for this disabled P5 source and blocks N/N evidence.
 
 ## Root-Only Read API
 
-The main Worker registers only:
+The main Worker registers these root-only evidence APIs:
 
 ```text
 GET /api/platform/container/shards/activations
+POST /api/platform/container/shards/activation-campaigns
+GET /api/platform/container/shards/activation-campaigns?campaign_id=<sha256>
 ```
 
-The handler requires root authentication before D1 access and adds
+The activation-list handler requires root authentication before D1 access and adds
 `Cache-Control: no-store` to success and error responses. The strict query is:
 
 ```text
@@ -295,8 +306,8 @@ by the collector.
 The only current source-bundle contract is:
 
 ```text
-schemaVersion=2
-cinatoken-relay-container-p5-foundation-sources-v2
+schemaVersion=3
+cinatoken-relay-container-p5-foundation-sources-v3
 ```
 
 The `shardRegistry` source contains `doNamespaceIdSha256` and the full canonical
@@ -341,16 +352,72 @@ P5 remain **NO-GO** regardless of a complete shard activation capture.
 | Step | Required order | Evidence gate | Abort condition |
 | --- | --- | --- | --- |
 | S0 candidate freeze | Rotate the exposed credential, create least-privilege identities, and freeze commits, Worker versions, image, runtime build, provenance, SBOM, resources, and rollback artifacts | One canonical P5 candidate; every tracked action gate defaults false | Old credential, placeholder identity, or missing provenance |
-| S1 schema readers | Back up staging D1, prove old-writer/operation drain, apply and read back 0054, then deploy provider-egress, Controller reader, and edge reader | Exact 0054/54 and 58/694/83 schema; immutable negatives; unchanged business fingerprint | Schema drift, incompatible writer, unexpected row, or provider/financial delta |
+| S1 schema readers | Back up staging D1, prove old-writer/operation drain, apply and read back 0054 then 0055, then deploy provider-egress, Controller reader, and edge reader | Exact 0055/55 and 62/771/91 schema; immutable negatives; unchanged business fingerprint | Schema drift, incompatible writer, unexpected row, or provider/financial delta |
 | S2 runtime rollout | Roll the Container candidate at 10% and then 100% while activation recording remains false | Exact control-plane image, compatible readiness/runtime build, N/N-1 reader proof, zero customer traffic | Unknown image/build, incompatible readiness, or unexplained wake/effect |
-| S3 candidate recording | Implement and approve a same-version one-time campaign with root nonce, fixed candidate, expiry, per-shard consumption and automatic seal; then probe every logical shard without editing static Worker variables | Exactly one fresh disabled-execution candidate row for every index `0..N-1`, followed by a sealed campaign and all effective gates false | Campaign mechanism absent, version changes, missing/duplicate row, old/unknown build, wrong ring, conflict, stale row, or execution-ready row |
-| S4 stability capture | Collect before/after activation snapshots plus action-gate, SBOM/provenance, R2, traffic, and Cloudflare inventory over one 300-7200 second window | Frozen high watermark, complete keyset traversal, identical entry digests, sources-v2 artifact digest, explicit Cloudflare all-pages proof | Cursor gap/repeat, drift, source-time mismatch, non-false gate, or unverifiable Wrangler list |
+| S3 candidate recording | Create one root-authorized same-version campaign, retain its nonce only in the approved operator process, and issue exactly one signed readiness probe per logical shard | D1 claim precedes every DO lookup; exact completed replays are replay-only; campaign is `sealed_complete` with N/N claims, consumptions, receipts, and 0054 activations | Version/gate/candidate drift, second wake, ambiguous journal, missing/hash-mismatched replay, failed/expired/aborted seal, stale or execution-ready receipt |
+| S4 stability capture | Read the sealed campaign and activation snapshots before/after, plus action-gate, SBOM/provenance, R2, traffic, and Cloudflare inventory over one 300-7200 second window | Frozen high watermark, complete keyset traversal, identical campaign/receipt/entry digests, sources-v3 artifact digest, explicit Cloudflare all-pages proof | Cursor gap/repeat, campaign drift, receipt mismatch, source-time mismatch, non-false gate, or unverifiable Wrangler list |
 | S5 P5 campaigns | Only after S4, run lifecycle, response/financial, provenance, load/cost/SLO, rollback, privacy, and five-owner signature gates | Ten evidence kinds and five independent signatures over one subject | Customer traffic, duplicate effect, stale evidence, failed rollback, or any unknown |
 
-Rollback is disable-first and retains migration 0054, immutable activation
-rows, P3/P4 readers, R2 artifacts, Durable Object state, and evidence. Go/VPS
+Rollback is disable-first and retains migrations 0054/0055, immutable campaign,
+claim, consumption, seal and activation rows, DO journals, P3/P4 readers, R2
+artifacts, and evidence. Go/VPS
 remains authoritative until its separate drain and reversible-write contract
 passes.
+
+## Migration 0055 One-Time Authority
+
+Migration 0055 adds four immutable tables, one bounded expiry-candidate view,
+eight indexes, and fourteen triggers. The tables separate campaign identity,
+per-shard claim, final consumption, and terminal seal. The campaign digest
+binds the nonce hash, exact Controller version, 22-name all-false action-gate
+inventory, foundation manifest, runtime build, ring, shard count, runtime
+contracts, environment, root operator ID, and D1 validity window.
+
+The acquisition order is a safety invariant:
+
+1. verify the signed readiness request and campaign credential;
+2. acquire or recover the exact D1 claim;
+3. only then resolve `RELAY_SHARDS.getByName`;
+4. call `readinessProbeV2` with probe ID, claim digest, and replay-only mode;
+5. persist the canonical readiness result and SHA-256 in the Durable Object;
+6. finalize D1 with that result SHA-256; and
+7. let the 0055 trigger insert the matching 0054 activation and seal at N/N.
+
+An exact already-consumed D1 claim returns completed readback even after the
+campaign later seals or expires. The Controller must then use replay-only mode
+and compare the Durable Object result hash with the hash stored in D1. A
+missing journal, malformed result, or hash mismatch fails closed; it never
+authorizes another wake.
+
+The Durable Object schema migration
+`0006_readiness_probe_at_most_once_journal_v1` stores one row per probe with an
+immutable claim digest and generation. States are `started`, `completed`, and
+`ambiguous`. Completion stores the exact canonical JSON, byte length, and
+SHA-256. Crossing the deadline without a committed completion materializes
+`ambiguous`; timeout is not treated as permission to retry the Container. A
+terminal row is retained for at least two hours after the probe deadline.
+Maintenance converts and deletes at most 64 rows per pass.
+
+Only `complete/all_shards_consumed` with claimed N/N, consumed N/N, exact
+receipt coverage `0..N-1`, and a matching final consumption digest is exposed
+as `sealed_complete`. `failed`, `expired`, and `aborted` are terminal and cannot
+promote. Once any claim, wake, activation, or consumption exists, that
+candidate is retired after a non-complete terminal seal; it cannot be recycled
+into a new campaign.
+
+`GET /api/platform/container/shards/activation-campaigns` returns the complete
+receipt set, not an aggregate assertion. The Worker validates candidate fields,
+action gates, instance names, readiness flags, timestamps, uniqueness,
+activation digests, consumption digests, and the seal's final-receipt pointer
+before serializing a response. The P5 collector independently repeats those
+checks and requires one matching 0054 activation per receipt.
+
+This section supersedes every earlier S3 statement that says a same-version
+campaign or receipt-aware collector is unimplemented. It does not supersede
+the remote blockers: the exposed credential must be rotated, remote 0055 must
+be backed up/applied/read back, a candidate must be deployed without changing
+static gates, an approved live campaign must complete, and Cloudflare
+control-plane pagination must be proven before S4 or P5 can pass.
 
 ## Verification Boundary
 
@@ -369,8 +436,8 @@ git diff --check -- docs/relay-container-p5-evidence-contract.md `
 
 Current worktree results:
 
-- SQLite schema verifier: pass, 54 migrations and 58/694/83 schema baseline;
-- D1 migration/config audit: pass, contiguous 0001 through 0054;
+- SQLite schema verifier: pass, 55 migrations and 62/771/91 schema baseline;
+- D1 migration/config audit: pass, contiguous 0001 through 0055;
 - runtime readiness build-ID test: 1 pass;
 - Controller activation writer tests: 5 pass, including the exact 0054 schema
   through a real SQLite catalog;
@@ -378,9 +445,9 @@ Current worktree results:
 - Controller default-off config tests: 12 pass;
 - deploy-preflight/bounded-subprocess tests: 22 pass, self-test explicitly not
   deploy-ready;
-- shard-registry collector tests: 8 pass;
+- shard-registry and campaign collector tests: 13 pass;
 - foundation collector tests: 16 pass plus offline self-test; and
-- P5 evidence verifier tests: 42 pass.
+- P5 evidence verifier tests: 44 pass.
 
 These commands test local contracts only. They cannot prove remote migration
 state, deployed Worker versions, Container image provenance, all-page

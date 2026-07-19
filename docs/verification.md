@@ -7697,25 +7697,26 @@ Confirmed final local commands and results:
 
 ```powershell
 bun run check:relay-container:p5-evidence
-# PASS: 42/42 contract and adversarial tests.
+# PASS: 44/44 tests, 55 expectations.
 
 bun run check:relay-container:p5-foundation
-# PASS: 16/16 tests, 229 expectations, then the offline self-test.
+# PASS: 16/16 tests, 231 expectations, then the offline self-test.
 
 bun run check:relay-container:p5-shard-registry
-# PASS: 8/8 tests, 39 expectations.
+# PASS: 13/13 shard/campaign collector tests, 61 expectations.
 
 bun run check:container-controller
-# PASS: 197 Bun tests, 176 portable protocol tests, and 45 Workerd runtime tests.
+# PASS: 210 Bun tests with 1433 expectations, 176 portable protocol tests,
+# and 45 Workerd runtime tests.
 
 python tools/verify_sqlite.py
-# PASS: 54 migrations, 58 tables, 694 incremental columns, 83 key indexes.
+# PASS: 55 migrations, 62 tables, 771 incremental columns, 91 key indexes.
 
 bun tools/audit_d1_migration_config.mjs
-# PASS: 3 bindings and 54 contiguous migrations through 0054.
+# PASS: 3 bindings and 55 contiguous migrations through 0055.
 
 cargo test -p cinatoken-worker --lib
-# PASS: 839/839.
+# PASS: 850/850.
 
 cargo test --workspace --exclude cinatoken-worker
 # PASS, including Container runtime 13 unit tests and 7 HTTP tests.
@@ -7733,12 +7734,64 @@ git diff --check
 ```
 
 No Cloudflare credential, remote mutation, deployment, D1 migration, Container
-wake, provider call, financial mutation, or traffic change was used. A static
-activation-writer environment toggle cannot produce activation rows and a
-false-gate readback for the same Controller version, so it is not an acceptable
-promotion ceremony. A root-authorized, one-time, candidate-bound, expiring,
-single-consumption activation campaign with automatic seal and replay rejection
-must be implemented and proven under one version. Complete Wrangler control
-plane pagination, remote schema/business fingerprints, rotated credentials,
-fresh evidence, and signed approvals also remain mandatory. Go/VPS remains
-authoritative and production remains **NO-GO**.
+wake, provider call, financial mutation, or traffic change was used. The local
+root-authorized, one-time, candidate-bound campaign now closes the static-toggle
+version gap, but it has not been applied or exercised remotely. Complete
+Cloudflare control-plane pagination, remote schema/business fingerprints,
+rotated credentials, fresh evidence, and signed approvals remain mandatory.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Migration 0055 One-Time Activation Verification (2026-07-19)
+
+This section supersedes the implementation blocker above. The campaign exists
+locally, but no remote campaign evidence exists.
+
+The local gate must prove all of these contracts together:
+
+- exact 0055 schema head: 55 migrations, 62 tables, 771 checked incremental
+  columns, 91 key indexes, four campaign tables, one expiry view, eight indexes,
+  and fourteen triggers;
+- root creation requires root plus step-up, all 22 Controller gates false,
+  exact candidate/ring/foundation bindings, bounded lifetime, and nonce-free
+  logs/audit;
+- D1 claim source order precedes every DO lookup; the raw nonce is absent from
+  `readinessProbeV2`; completed consumption selects replay-only mode;
+- DO schema migration v6 preserves exact canonical result JSON/hash, marks
+  expired started rows ambiguous, retains terminal evidence for at least two
+  hours, and never issues a second wake;
+- final D1 consumption writes one matching 0054 row and seals only at N/N;
+- root status recomputes activation and consumption hashes and validates the
+  final seal pointer before returning receipts;
+- ordinary root readiness probe/wake requests remain static-gated while a
+  strict campaign credential is the only bypass; and
+- shard capture v2/foundation sources v3 require a stable sealed campaign,
+  exact receipt coverage, and one-to-one 0054 evidence.
+
+Run the supported local commands, not a direct `bun test` of the Workerd file:
+
+```powershell
+cargo fmt --all -- --check
+cargo test -p cinatoken-worker --lib --no-fail-fast
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bunx tsc -p services/container-controller/tsconfig.json --noEmit
+bun run test:container-controller
+bun run test:container-controller:protocol-portable
+bun run test:container-controller:runtime
+bun run verify:sqlite
+bun run check:relay-container:p5-shard-registry
+bun run check:relay-container:p5-foundation
+bun run check:relay-container:p5-evidence
+bun run check
+git diff --check
+```
+
+The Workerd runtime entrypoint is the repository Vitest script because it
+provides the `cloudflare:workers` environment and Durable Object eviction
+harness. A plain Bun test invocation is not an equivalent runtime check.
+
+Any failed command, schema-count drift, second wake, ambiguous replay, receipt
+hash mismatch, non-complete seal, static-gate bypass without a valid campaign,
+or P5 source mismatch blocks promotion. Local pass results still cannot prove
+credential rotation, remote schema state, deployed version/image identity,
+live N/N consumption, all-page Cloudflare inventory, customer isolation, owner
+approval, or Go/VPS drain. Production remains **NO-GO**.

@@ -232,6 +232,10 @@ REQUIRED_TABLES = [
     "relay_billing_finalization_incidents",
     "relay_container_operations",
     "relay_container_shard_activations",
+    "relay_container_shard_activation_campaigns",
+    "relay_container_shard_activation_campaign_claims",
+    "relay_container_shard_activation_campaign_consumptions",
+    "relay_container_shard_activation_campaign_seals",
     "relay_container_atomic_admissions",
     "relay_container_idempotency_aliases",
     "relay_container_scheduled_terminalizations",
@@ -517,6 +521,91 @@ REQUIRED_COLUMNS = {
         "controller_execution_enabled",
         "activation_digest_sha256",
         "activated_at",
+    },
+    "relay_container_shard_activation_campaigns": {
+        "campaign_id",
+        "campaign_nonce_sha256",
+        "controller_version_id",
+        "action_gate_inventory_sha256",
+        "action_gate_count",
+        "all_action_gates_false",
+        "foundation_manifest_sha256",
+        "runtime_build_id",
+        "ring_generation",
+        "shard_count",
+        "shard_contract_version",
+        "runtime_protocol_version",
+        "runtime_contract_version",
+        "activation_generation",
+        "environment",
+        "created_by_admin_id",
+        "campaign_digest_sha256",
+        "created_at",
+        "expires_at",
+    },
+    "relay_container_shard_activation_campaign_claims": {
+        "campaign_id",
+        "shard_index",
+        "presented_nonce_sha256",
+        "campaign_digest_sha256",
+        "controller_version_id",
+        "action_gate_inventory_sha256",
+        "action_gate_count",
+        "all_action_gates_false",
+        "foundation_manifest_sha256",
+        "runtime_build_id",
+        "ring_generation",
+        "shard_count",
+        "instance_name",
+        "shard_contract_version",
+        "runtime_protocol_version",
+        "runtime_contract_version",
+        "activation_generation",
+        "probe_id",
+        "claim_digest_sha256",
+        "environment",
+        "claimed_at",
+    },
+    "relay_container_shard_activation_campaign_consumptions": {
+        "campaign_id",
+        "shard_index",
+        "claim_digest_sha256",
+        "probe_id",
+        "campaign_digest_sha256",
+        "controller_version_id",
+        "action_gate_inventory_sha256",
+        "action_gate_count",
+        "all_action_gates_false",
+        "foundation_manifest_sha256",
+        "ring_generation",
+        "shard_count",
+        "instance_name",
+        "shard_contract_version",
+        "runtime_protocol_version",
+        "runtime_contract_version",
+        "runtime_build_id",
+        "activation_generation",
+        "activation_probe_generation",
+        "environment",
+        "container_status",
+        "readiness_result_code",
+        "readiness_result_sha256",
+        "process_ready",
+        "runtime_execution_enabled",
+        "controller_execution_enabled",
+        "activation_digest_sha256",
+        "consumption_digest_sha256",
+        "readiness_checked_at",
+        "consumed_at",
+    },
+    "relay_container_shard_activation_campaign_seals": {
+        "campaign_id",
+        "campaign_digest_sha256",
+        "consumed_shard_count",
+        "seal_reason",
+        "seal_detail_code",
+        "last_consumption_digest_sha256",
+        "sealed_at",
     },
     "relay_container_atomic_admissions": {
         "reservation_key",
@@ -1093,6 +1182,20 @@ REQUIRED_INDEXES = {
         "idx_relay_container_shard_activations_identity": True,
         "idx_relay_container_shard_activations_instance": True,
     },
+    "relay_container_shard_activation_campaigns": {
+        "idx_relay_container_shard_activation_campaigns_nonce": True,
+        "idx_relay_container_shard_activation_campaigns_candidate": False,
+    },
+    "relay_container_shard_activation_campaign_claims": {
+        "idx_relay_container_shard_activation_campaign_claims_probe": True,
+        "idx_relay_container_shard_activation_campaign_claims_digest": True,
+        "idx_relay_container_shard_activation_campaign_claims_instance": True,
+    },
+    "relay_container_shard_activation_campaign_consumptions": {
+        "idx_relay_container_shard_activation_campaign_consumptions_activation": True,
+        "idx_relay_container_shard_activation_campaign_consumptions_consumption": True,
+        "idx_relay_container_shard_activation_campaign_consumptions_instance": True,
+    },
     "relay_container_atomic_admissions": {
         "idx_relay_container_atomic_admissions_created": False,
         "idx_relay_container_atomic_admissions_response_artifact_identity": True,
@@ -1226,6 +1329,7 @@ def main() -> int:
     relay_container_financial_terminal_v2_verified = False
     relay_container_financial_terminal_v2_rollout_verified = False
     relay_container_shard_activation_rollout_verified = False
+    relay_container_shard_activation_campaign_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -1273,6 +1377,8 @@ def main() -> int:
         relay_container_financial_terminal_v2_rollout_verified = True
         verify_relay_container_shard_activation_rollout(schema_paths)
         relay_container_shard_activation_rollout_verified = True
+        verify_relay_container_shard_activation_campaign_rollout(schema_paths)
+        relay_container_shard_activation_campaign_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -1473,6 +1579,8 @@ def main() -> int:
         message += " + 0053 drained financial-terminal v2 rollout"
     if relay_container_shard_activation_rollout_verified:
         message += " + 0054 immutable shard activation ledger"
+    if relay_container_shard_activation_campaign_rollout_verified:
+        message += " + 0055 one-time shard activation campaigns"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -12733,7 +12841,7 @@ def verify_relay_container_provider_usage_binding_rollout(
     binding_index = schema_paths.index(binding_path)
     if binding_index == 0 or schema_paths[binding_index - 1] != receipt_path:
         raise SystemExit("0049 provider usage binding must immediately follow 0048")
-    if binding_index != len(schema_paths) - 6 or schema_paths[binding_index + 1].name != (
+    if binding_index != len(schema_paths) - 7 or schema_paths[binding_index + 1].name != (
         "0050_relay_container_atomic_admission.sql"
     ):
         raise SystemExit("0049 provider usage binding must immediately precede 0050")
@@ -13097,12 +13205,12 @@ def verify_relay_container_scheduled_terminalization_rollout(
     )
     if response_artifact_path is None:
         raise SystemExit("0051/0052 relay Container response migrations not found")
-    if len(schema_paths) != 54:
+    if len(schema_paths) != 55:
         raise SystemExit(
-            f"0051 scheduled terminalization compatibility requires exactly 54 D1 migrations, got {len(schema_paths)}"
+            f"0051 scheduled terminalization compatibility requires exactly 55 D1 migrations, got {len(schema_paths)}"
         )
     scheduled_index = schema_paths.index(scheduled_path)
-    if scheduled_index != len(schema_paths) - 4:
+    if scheduled_index != len(schema_paths) - 5:
         raise SystemExit("0051 scheduled terminalization must immediately precede 0052")
     if scheduled_index == 0 or schema_paths[scheduled_index - 1] != atomic_path:
         raise SystemExit("0051 scheduled terminalization must immediately follow 0050")
@@ -13169,12 +13277,12 @@ def verify_relay_container_response_artifacts_rollout(
     )
     if response_path is None or scheduled_path is None:
         raise SystemExit("0051/0052 relay Container response-artifact migrations not found")
-    if len(schema_paths) != 54:
+    if len(schema_paths) != 55:
         raise SystemExit(
-            f"0052 response artifacts require exactly 54 D1 migrations, got {len(schema_paths)}"
+            f"0052 response artifacts require exactly 55 D1 migrations, got {len(schema_paths)}"
         )
     response_index = schema_paths.index(response_path)
-    if response_index != len(schema_paths) - 3:
+    if response_index != len(schema_paths) - 4:
         raise SystemExit("0052 response artifacts must immediately precede 0053")
     if response_index == 0 or schema_paths[response_index - 1] != scheduled_path:
         raise SystemExit("0052 response artifacts must immediately follow 0051")
@@ -13472,13 +13580,13 @@ def verify_relay_container_financial_terminal_v2_rollout(
     )
     if v2_path is None or response_path is None or activation_path is None:
         raise SystemExit("0052/0053/0054 relay Container migrations not found")
-    if len(schema_paths) != 54:
+    if len(schema_paths) != 55:
         raise SystemExit(
-            "0053 financial terminal v2 requires exactly 54 D1 migrations, "
+            "0053 financial terminal v2 requires exactly 55 D1 migrations, "
             f"got {len(schema_paths)}"
         )
     v2_index = schema_paths.index(v2_path)
-    if v2_index != len(schema_paths) - 2:
+    if v2_index != len(schema_paths) - 3:
         raise SystemExit("0053 financial terminal v2 must immediately precede 0054")
     if v2_index == 0 or schema_paths[v2_index - 1] != response_path:
         raise SystemExit("0053 financial terminal v2 must immediately follow 0052")
@@ -13890,14 +13998,14 @@ def verify_relay_container_shard_activation_rollout(
     )
     if activation_path is None or v2_path is None:
         raise SystemExit("0053/0054 relay Container activation migrations not found")
-    if len(schema_paths) != 54:
+    if len(schema_paths) != 55:
         raise SystemExit(
-            "0054 shard activations require exactly 54 D1 migrations, "
+            "0054 shard activations require exactly 55 D1 migrations, "
             f"got {len(schema_paths)}"
         )
     activation_index = schema_paths.index(activation_path)
-    if activation_index != len(schema_paths) - 1:
-        raise SystemExit("0054 shard activations must be the D1 migration head")
+    if activation_index != len(schema_paths) - 2:
+        raise SystemExit("0054 shard activations must immediately precede 0055")
     if activation_index == 0 or schema_paths[activation_index - 1] != v2_path:
         raise SystemExit("0054 shard activations must immediately follow 0053")
 
@@ -13991,7 +14099,7 @@ def verify_relay_container_shard_activation_rollout(
             raise SystemExit(f"0054 shard activation rollout missing: {fragment}")
 
     schema_conn = sqlite3.connect(":memory:")
-    for schema_path in schema_paths:
+    for schema_path in schema_paths[: activation_index + 1]:
         schema_conn.executescript(schema_path.read_text(encoding="utf-8"))
 
     expected_columns = (
@@ -14291,6 +14399,1474 @@ def verify_relay_container_shard_activation_rollout(
     schema_conn.close()
 
 
+def verify_relay_container_shard_activation_campaign_rollout(
+    schema_paths: list[Path],
+) -> None:
+    campaign_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0055_relay_container_shard_activation_campaigns.sql"
+        ),
+        None,
+    )
+    activation_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0054_relay_container_shard_activations.sql"
+        ),
+        None,
+    )
+    if campaign_path is None or activation_path is None:
+        raise SystemExit("0054/0055 relay Container activation migrations not found")
+    if len(schema_paths) != 55:
+        raise SystemExit(
+            "0055 activation campaigns require exactly 55 D1 migrations, "
+            f"got {len(schema_paths)}"
+        )
+    campaign_index = schema_paths.index(campaign_path)
+    if campaign_index != len(schema_paths) - 1:
+        raise SystemExit("0055 activation campaigns must be the D1 migration head")
+    if campaign_index == 0 or schema_paths[campaign_index - 1] != activation_path:
+        raise SystemExit("0055 activation campaigns must immediately follow 0054")
+
+    campaign_sql = campaign_path.read_text(encoding="utf-8")
+    if "if not exists" in campaign_sql.lower():
+        raise SystemExit("0055 critical activation campaign objects must fail duplicate DDL")
+
+    def normalized_sql(sql: str) -> str:
+        uncommented = []
+        for line in sql.splitlines():
+            content = line.split("--", 1)[0].strip()
+            if content:
+                uncommented.append(content)
+        return " ".join(" ".join(uncommented).split())
+
+    statements: list[str] = []
+    pending = ""
+    for line in campaign_sql.splitlines():
+        content = line.split("--", 1)[0].strip()
+        if not content:
+            continue
+        pending = f"{pending}\n{content}".strip()
+        if sqlite3.complete_statement(pending):
+            statements.append(pending)
+            pending = ""
+    if pending:
+        raise SystemExit("0055 migration has an incomplete SQL statement")
+    if len(statements) != 27:
+        raise SystemExit(
+            f"0055 migration must contain exactly 27 statements, got {len(statements)}"
+        )
+    expected_statement_prefixes = (
+        "CREATE TABLE RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGNS",
+        "CREATE TABLE RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CLAIMS",
+        "CREATE TABLE RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CONSUMPTIONS",
+        "CREATE TABLE RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_SEALS",
+        "CREATE VIEW RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_CANDIDATES",
+        "CREATE UNIQUE INDEX IDX_RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGNS_NONCE",
+        "CREATE INDEX IDX_RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGNS_CANDIDATE",
+        "CREATE UNIQUE INDEX IDX_RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CLAIMS_PROBE",
+        "CREATE UNIQUE INDEX IDX_RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CLAIMS_DIGEST",
+        "CREATE UNIQUE INDEX IDX_RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CLAIMS_INSTANCE",
+        "CREATE UNIQUE INDEX IDX_RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CONSUMPTIONS_ACTIVATION",
+        "CREATE UNIQUE INDEX IDX_RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CONSUMPTIONS_CONSUMPTION",
+        "CREATE UNIQUE INDEX IDX_RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CONSUMPTIONS_INSTANCE",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_INSERT_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_UPDATE_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_DELETE_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CLAIM_INSERT_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CLAIM_UPDATE_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CLAIM_DELETE_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CONSUMPTION_INSERT_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CONSUMPTION_APPLY",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CONSUMPTION_UPDATE_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_CONSUMPTION_DELETE_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_SEAL_INSERT_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_SEAL_UPDATE_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_SEAL_DELETE_GUARD",
+        "CREATE TRIGGER RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_AUTHORITY_GUARD",
+    )
+    normalized_statements = [normalized_sql(statement).upper() for statement in statements]
+    for statement, expected_prefix in zip(
+        normalized_statements, expected_statement_prefixes, strict=True
+    ):
+        if not statement.startswith(expected_prefix):
+            raise SystemExit(
+                "0055 migration contains an unexpected statement: "
+                f"{statement[:120]}"
+            )
+
+    normalized_campaign_sql = normalized_sql(campaign_sql)
+    required_fragments = (
+        "action_gate_count = 22",
+        "all_action_gates_false = 1",
+        "claimed_at INTEGER NOT NULL DEFAULT (unixepoch())",
+        "consumed_at INTEGER NOT NULL DEFAULT (unixepoch())",
+        "sealed_at INTEGER NOT NULL DEFAULT (unixepoch())",
+        "probe_id TEXT NOT NULL",
+        "readiness_checked_at INTEGER NOT NULL",
+        "seal_reason IN ('complete', 'failed', 'expired', 'aborted')",
+        "seal_detail_code IN",
+        "campaign.expires_at <= unixepoch()",
+        "CREATE VIEW relay_container_shard_activation_campaign_expiry_candidates",
+        "INSERT INTO relay_container_shard_activations",
+        "NEW.readiness_checked_at",
+        "JOIN relay_container_shard_activation_campaign_claims AS claim",
+        "relay container shard activation candidate is not reusable",
+        "relay container shard activation requires a matching final consumption",
+    )
+    for fragment in required_fragments:
+        if fragment not in normalized_campaign_sql:
+            raise SystemExit(f"0055 activation campaign rollout missing: {fragment}")
+    claim_definition = campaign_sql.split(
+        "CREATE TABLE relay_container_shard_activation_campaign_claims", 1
+    )[1].split(
+        "CREATE TABLE relay_container_shard_activation_campaign_consumptions", 1
+    )[0]
+    if "activation_probe_generation" in normalized_sql(claim_definition):
+        raise SystemExit("0055 claim schema predicts DO-local activation probe generation")
+
+    d1_clock = [1_700_055_000]
+    schema_conn = sqlite3.connect(":memory:")
+    schema_conn.create_function("unixepoch", 0, lambda: d1_clock[0])
+    schema_conn.execute("PRAGMA foreign_keys = ON")
+    for schema_path in schema_paths:
+        schema_conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    campaign_columns = (
+        "campaign_id",
+        "campaign_nonce_sha256",
+        "controller_version_id",
+        "action_gate_inventory_sha256",
+        "action_gate_count",
+        "all_action_gates_false",
+        "foundation_manifest_sha256",
+        "runtime_build_id",
+        "ring_generation",
+        "shard_count",
+        "shard_contract_version",
+        "runtime_protocol_version",
+        "runtime_contract_version",
+        "activation_generation",
+        "environment",
+        "created_by_admin_id",
+        "campaign_digest_sha256",
+        "created_at",
+        "expires_at",
+    )
+    claim_columns = (
+        "campaign_id",
+        "shard_index",
+        "presented_nonce_sha256",
+        "campaign_digest_sha256",
+        "controller_version_id",
+        "action_gate_inventory_sha256",
+        "action_gate_count",
+        "all_action_gates_false",
+        "foundation_manifest_sha256",
+        "runtime_build_id",
+        "ring_generation",
+        "shard_count",
+        "instance_name",
+        "shard_contract_version",
+        "runtime_protocol_version",
+        "runtime_contract_version",
+        "activation_generation",
+        "probe_id",
+        "claim_digest_sha256",
+        "environment",
+        "claimed_at",
+    )
+    consumption_columns = (
+        "campaign_id",
+        "shard_index",
+        "claim_digest_sha256",
+        "probe_id",
+        "campaign_digest_sha256",
+        "controller_version_id",
+        "action_gate_inventory_sha256",
+        "action_gate_count",
+        "all_action_gates_false",
+        "foundation_manifest_sha256",
+        "ring_generation",
+        "shard_count",
+        "instance_name",
+        "shard_contract_version",
+        "runtime_protocol_version",
+        "runtime_contract_version",
+        "runtime_build_id",
+        "activation_generation",
+        "activation_probe_generation",
+        "environment",
+        "container_status",
+        "readiness_result_code",
+        "readiness_result_sha256",
+        "process_ready",
+        "runtime_execution_enabled",
+        "controller_execution_enabled",
+        "activation_digest_sha256",
+        "consumption_digest_sha256",
+        "readiness_checked_at",
+        "consumed_at",
+    )
+    seal_columns = (
+        "campaign_id",
+        "campaign_digest_sha256",
+        "consumed_shard_count",
+        "seal_reason",
+        "seal_detail_code",
+        "last_consumption_digest_sha256",
+        "sealed_at",
+    )
+    table_shapes = {
+        "relay_container_shard_activation_campaigns": (
+            campaign_columns,
+            {
+                "action_gate_count",
+                "all_action_gates_false",
+                "ring_generation",
+                "shard_count",
+                "shard_contract_version",
+                "runtime_protocol_version",
+                "runtime_contract_version",
+                "activation_generation",
+                "created_by_admin_id",
+                "created_at",
+                "expires_at",
+            },
+            {"campaign_id": 1},
+            {},
+            set(),
+        ),
+        "relay_container_shard_activation_campaign_claims": (
+            claim_columns,
+            {
+                "shard_index",
+                "action_gate_count",
+                "all_action_gates_false",
+                "ring_generation",
+                "shard_count",
+                "shard_contract_version",
+                "runtime_protocol_version",
+                "runtime_contract_version",
+                "activation_generation",
+                "claimed_at",
+            },
+            {"campaign_id": 1, "shard_index": 2},
+            {"claimed_at": "unixepoch()"},
+            set(),
+        ),
+        "relay_container_shard_activation_campaign_consumptions": (
+            consumption_columns,
+            {
+                "shard_index",
+                "action_gate_count",
+                "all_action_gates_false",
+                "ring_generation",
+                "shard_count",
+                "shard_contract_version",
+                "runtime_protocol_version",
+                "runtime_contract_version",
+                "activation_generation",
+                "activation_probe_generation",
+                "process_ready",
+                "runtime_execution_enabled",
+                "controller_execution_enabled",
+                "readiness_checked_at",
+                "consumed_at",
+            },
+            {"campaign_id": 1, "shard_index": 2},
+            {"consumed_at": "unixepoch()"},
+            set(),
+        ),
+        "relay_container_shard_activation_campaign_seals": (
+            seal_columns,
+            {"consumed_shard_count", "sealed_at"},
+            {"campaign_id": 1},
+            {"sealed_at": "unixepoch()"},
+            {"last_consumption_digest_sha256"},
+        ),
+    }
+    for table, (
+        expected_columns,
+        integer_columns,
+        primary_key_positions,
+        defaults,
+        nullable_columns,
+    ) in table_shapes.items():
+        rows = schema_conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+        actual_columns = tuple(row[1] for row in rows)
+        if actual_columns != expected_columns:
+            raise SystemExit(f"0055 table {table} ordered columns differ: {actual_columns}")
+        for row in rows:
+            column = row[1]
+            expected_shape = (
+                "INTEGER" if column in integer_columns else "TEXT",
+                column not in nullable_columns,
+                defaults.get(column),
+                primary_key_positions.get(column, 0),
+            )
+            actual_shape = (row[2].upper(), bool(row[3]), row[4], row[5])
+            if actual_shape != expected_shape:
+                raise SystemExit(
+                    f"0055 column {table}.{column} differs: "
+                    f"actual={actual_shape}, expected={expected_shape}"
+                )
+
+    expected_foreign_keys = {
+        "relay_container_shard_activation_campaign_claims": (
+            (
+                "relay_container_shard_activation_campaigns",
+                "campaign_id",
+                "campaign_id",
+                "RESTRICT",
+                "RESTRICT",
+            ),
+        ),
+        "relay_container_shard_activation_campaign_consumptions": (
+            (
+                "relay_container_shard_activation_campaign_claims",
+                "campaign_id",
+                "campaign_id",
+                "RESTRICT",
+                "RESTRICT",
+            ),
+            (
+                "relay_container_shard_activation_campaign_claims",
+                "shard_index",
+                "shard_index",
+                "RESTRICT",
+                "RESTRICT",
+            ),
+        ),
+        "relay_container_shard_activation_campaign_seals": (
+            (
+                "relay_container_shard_activation_campaigns",
+                "campaign_id",
+                "campaign_id",
+                "RESTRICT",
+                "RESTRICT",
+            ),
+        ),
+    }
+    for table, expected_rows in expected_foreign_keys.items():
+        rows = schema_conn.execute(f'PRAGMA foreign_key_list("{table}")').fetchall()
+        actual_rows = tuple((row[2], row[3], row[4], row[5], row[6]) for row in rows)
+        if actual_rows != expected_rows:
+            raise SystemExit(f"0055 table {table} foreign keys differ: {actual_rows}")
+
+    view_columns = tuple(
+        row[1]
+        for row in schema_conn.execute(
+            'PRAGMA table_info("relay_container_shard_activation_campaign_expiry_candidates")'
+        ).fetchall()
+    )
+    if view_columns != (
+        "campaign_id",
+        "campaign_digest_sha256",
+        "consumed_shard_count",
+        "last_consumption_digest_sha256",
+    ):
+        raise SystemExit(f"0055 expiry candidate view columns differ: {view_columns}")
+    view_sql = sqlite_object_sql(
+        schema_conn,
+        "view",
+        "relay_container_shard_activation_campaign_expiry_candidates",
+    )
+    if view_sql is None:
+        raise SystemExit("0055 expiry candidate view is missing")
+    for fragment in (
+        "campaign.expires_at <= unixepoch()",
+        "NOT EXISTS",
+        ") < campaign.shard_count",
+    ):
+        if fragment not in normalized_sql(view_sql):
+            raise SystemExit(f"0055 expiry candidate view missing: {fragment}")
+
+    expected_indexes = {
+        "relay_container_shard_activation_campaigns": {
+            "idx_relay_container_shard_activation_campaigns_nonce": (
+                True,
+                ("campaign_nonce_sha256",),
+            ),
+            "idx_relay_container_shard_activation_campaigns_candidate": (
+                False,
+                (
+                    "controller_version_id",
+                    "runtime_build_id",
+                    "ring_generation",
+                    "expires_at",
+                    "campaign_id",
+                ),
+            ),
+        },
+        "relay_container_shard_activation_campaign_claims": {
+            "idx_relay_container_shard_activation_campaign_claims_probe": (
+                True,
+                ("probe_id",),
+            ),
+            "idx_relay_container_shard_activation_campaign_claims_digest": (
+                True,
+                ("claim_digest_sha256",),
+            ),
+            "idx_relay_container_shard_activation_campaign_claims_instance": (
+                True,
+                ("campaign_id", "instance_name"),
+            ),
+        },
+        "relay_container_shard_activation_campaign_consumptions": {
+            "idx_relay_container_shard_activation_campaign_consumptions_activation": (
+                True,
+                ("activation_digest_sha256",),
+            ),
+            "idx_relay_container_shard_activation_campaign_consumptions_consumption": (
+                True,
+                ("consumption_digest_sha256",),
+            ),
+            "idx_relay_container_shard_activation_campaign_consumptions_instance": (
+                True,
+                ("campaign_id", "instance_name"),
+            ),
+        },
+        "relay_container_shard_activation_campaign_seals": {},
+    }
+    for table, expected_table_indexes in expected_indexes.items():
+        explicit_indexes = {
+            row[1]: row
+            for row in schema_conn.execute(f'PRAGMA index_list("{table}")').fetchall()
+            if row[3] == "c"
+        }
+        if set(explicit_indexes) != set(expected_table_indexes):
+            raise SystemExit(
+                f"0055 table {table} explicit indexes differ: {sorted(explicit_indexes)}"
+            )
+        for index_name, (expected_unique, expected_columns) in expected_table_indexes.items():
+            index_row = explicit_indexes[index_name]
+            if bool(index_row[2]) != expected_unique or bool(index_row[4]):
+                raise SystemExit(f"0055 index shape differs: {index_row}")
+            actual_columns = tuple(
+                row[2]
+                for row in schema_conn.execute(
+                    f'PRAGMA index_info("{index_name}")'
+                ).fetchall()
+            )
+            if actual_columns != expected_columns:
+                raise SystemExit(
+                    f"0055 index {index_name} columns differ: {actual_columns}"
+                )
+
+    expected_triggers = {
+        "relay_container_shard_activation_campaign_insert_guard",
+        "relay_container_shard_activation_campaign_update_guard",
+        "relay_container_shard_activation_campaign_delete_guard",
+        "relay_container_shard_activation_campaign_claim_insert_guard",
+        "relay_container_shard_activation_campaign_claim_update_guard",
+        "relay_container_shard_activation_campaign_claim_delete_guard",
+        "relay_container_shard_activation_campaign_consumption_insert_guard",
+        "relay_container_shard_activation_campaign_consumption_apply",
+        "relay_container_shard_activation_campaign_consumption_update_guard",
+        "relay_container_shard_activation_campaign_consumption_delete_guard",
+        "relay_container_shard_activation_campaign_seal_insert_guard",
+        "relay_container_shard_activation_campaign_seal_update_guard",
+        "relay_container_shard_activation_campaign_seal_delete_guard",
+        "relay_container_shard_activation_campaign_authority_guard",
+    }
+    trigger_rows = schema_conn.execute(
+        "SELECT name, sql FROM sqlite_master "
+        "WHERE type = 'trigger' "
+        "AND name LIKE 'relay_container_shard_activation_campaign_%'"
+    ).fetchall()
+    actual_triggers = {row[0]: row[1] for row in trigger_rows}
+    if set(actual_triggers) != expected_triggers:
+        raise SystemExit(
+            "0055 activation campaign triggers differ: "
+            f"actual={sorted(actual_triggers)}"
+        )
+    trigger_fragments = {
+        "relay_container_shard_activation_campaign_insert_guard": (
+            "NEW.created_at < unixepoch() - 5",
+            "NEW.expires_at < unixepoch() + 60",
+            "campaign.action_gate_inventory_sha256 <> NEW.action_gate_inventory_sha256",
+            "unixepoch() < campaign.expires_at",
+            "seal.seal_reason IN ('expired', 'aborted')",
+            "FROM relay_container_shard_activation_campaign_claims AS claim",
+            "FROM relay_container_shard_activation_campaign_consumptions AS consumption",
+            "relay container shard activation candidate is not reusable",
+        ),
+        "relay_container_shard_activation_campaign_claim_insert_guard": (
+            "NEW.claimed_at <> unixepoch()",
+            "unixepoch() < campaign.expires_at",
+            "campaign.campaign_nonce_sha256 = NEW.presented_nonce_sha256",
+            "campaign.campaign_digest_sha256 = NEW.campaign_digest_sha256",
+            "campaign.action_gate_inventory_sha256 = NEW.action_gate_inventory_sha256",
+            "NEW.instance_name = printf",
+            "relay container shard activation claim replayed",
+        ),
+        "relay_container_shard_activation_campaign_consumption_insert_guard": (
+            "consumption requires a claim",
+            "NEW.consumed_at <> unixepoch()",
+            "unixepoch() < campaign.expires_at",
+            "claim.claim_digest_sha256 = NEW.claim_digest_sha256",
+            "claim.probe_id = NEW.probe_id",
+            "NEW.activation_probe_generation NOT BETWEEN 1 AND 1000000",
+            "NEW.readiness_checked_at BETWEEN claim.claimed_at AND unixepoch()",
+        ),
+        "relay_container_shard_activation_campaign_consumption_apply": (
+            "AFTER INSERT ON relay_container_shard_activation_campaign_consumptions",
+            "INSERT INTO relay_container_shard_activations",
+            "NEW.readiness_checked_at",
+            "'complete'",
+            "'all_shards_consumed'",
+            ") = campaign.shard_count",
+        ),
+        "relay_container_shard_activation_campaign_seal_insert_guard": (
+            "NEW.sealed_at <> unixepoch()",
+            "NEW.seal_reason = 'complete'",
+            "NEW.seal_reason = 'failed'",
+            "NEW.seal_reason = 'expired'",
+            "campaign.expires_at <= unixepoch()",
+            "NEW.seal_reason = 'aborted'",
+        ),
+        "relay_container_shard_activation_campaign_authority_guard": (
+            "JOIN relay_container_shard_activation_campaign_claims AS claim",
+            "JOIN relay_container_shard_activation_campaigns AS campaign",
+            "claim.claim_digest_sha256 = consumption.claim_digest_sha256",
+            "consumption.readiness_checked_at = NEW.activated_at",
+        ),
+    }
+    for trigger_name, fragments in trigger_fragments.items():
+        trigger_sql = normalized_sql(actual_triggers[trigger_name] or "")
+        for fragment in fragments:
+            if fragment not in trigger_sql:
+                raise SystemExit(f"0055 trigger {trigger_name} missing: {fragment}")
+    claim_guard_sql = normalized_sql(
+        actual_triggers[
+            "relay_container_shard_activation_campaign_claim_insert_guard"
+        ]
+        or ""
+    )
+    if "activation_probe_generation" in claim_guard_sql:
+        raise SystemExit(
+            "0055 claim guard predicts DO-local activation probe generation"
+        )
+
+    immutable_triggers = {
+        "relay_container_shard_activation_campaign_update_guard": "campaign rows",
+        "relay_container_shard_activation_campaign_delete_guard": "campaign rows",
+        "relay_container_shard_activation_campaign_claim_update_guard": "claim rows",
+        "relay_container_shard_activation_campaign_claim_delete_guard": "claim rows",
+        "relay_container_shard_activation_campaign_consumption_update_guard": "consumption rows",
+        "relay_container_shard_activation_campaign_consumption_delete_guard": "consumption rows",
+        "relay_container_shard_activation_campaign_seal_update_guard": "seal rows",
+        "relay_container_shard_activation_campaign_seal_delete_guard": "seal rows",
+    }
+    for trigger_name, error_fragment in immutable_triggers.items():
+        if error_fragment not in normalized_sql(actual_triggers[trigger_name] or ""):
+            raise SystemExit(f"0055 immutable trigger {trigger_name} has no stable error")
+
+    _verify_relay_container_shard_activation_campaign_runtime(
+        schema_conn,
+        d1_clock,
+        campaign_sql,
+        campaign_columns,
+        claim_columns,
+        consumption_columns,
+        seal_columns,
+    )
+    schema_conn.close()
+
+
+def _verify_relay_container_shard_activation_campaign_runtime(
+    conn: sqlite3.Connection,
+    d1_clock: list[int],
+    campaign_sql: str,
+    campaign_columns: tuple[str, ...],
+    claim_columns: tuple[str, ...],
+    consumption_columns: tuple[str, ...],
+    seal_columns: tuple[str, ...],
+) -> None:
+    campaign_insert_sql = f"""
+        INSERT INTO relay_container_shard_activation_campaigns (
+          {", ".join(campaign_columns)}
+        ) VALUES (
+          {", ".join(f":{column}" for column in campaign_columns)}
+        )
+    """
+    claim_insert_columns = tuple(
+        column for column in claim_columns if column != "claimed_at"
+    )
+    claim_insert_sql = f"""
+        INSERT INTO relay_container_shard_activation_campaign_claims (
+          {", ".join(claim_insert_columns)}
+        ) VALUES (
+          {", ".join(f":{column}" for column in claim_insert_columns)}
+        )
+    """
+    claim_insert_with_time_sql = f"""
+        INSERT INTO relay_container_shard_activation_campaign_claims (
+          {", ".join(claim_columns)}
+        ) VALUES (
+          {", ".join(f":{column}" for column in claim_columns)}
+        )
+    """
+    consumption_insert_columns = tuple(
+        column for column in consumption_columns if column != "consumed_at"
+    )
+    consumption_insert_sql = f"""
+        INSERT INTO relay_container_shard_activation_campaign_consumptions (
+          {", ".join(consumption_insert_columns)}
+        ) VALUES (
+          {", ".join(f":{column}" for column in consumption_insert_columns)}
+        )
+    """
+    consumption_insert_with_time_sql = f"""
+        INSERT INTO relay_container_shard_activation_campaign_consumptions (
+          {", ".join(consumption_columns)}
+        ) VALUES (
+          {", ".join(f":{column}" for column in consumption_columns)}
+        )
+    """
+    seal_insert_columns = tuple(column for column in seal_columns if column != "sealed_at")
+    seal_insert_sql = f"""
+        INSERT INTO relay_container_shard_activation_campaign_seals (
+          {", ".join(seal_insert_columns)}
+        ) VALUES (
+          {", ".join(f":{column}" for column in seal_insert_columns)}
+        )
+    """
+    expiry_materialization_sql = """
+        INSERT OR IGNORE INTO relay_container_shard_activation_campaign_seals (
+          campaign_id,
+          campaign_digest_sha256,
+          consumed_shard_count,
+          seal_reason,
+          seal_detail_code,
+          last_consumption_digest_sha256,
+          sealed_at
+        )
+        SELECT
+          campaign_id,
+          campaign_digest_sha256,
+          consumed_shard_count,
+          'expired',
+          'campaign_expired',
+          last_consumption_digest_sha256,
+          unixepoch()
+        FROM relay_container_shard_activation_campaign_expiry_candidates
+    """
+    activation_columns = (
+        "controller_version_id",
+        "ring_generation",
+        "shard_count",
+        "shard_index",
+        "instance_name",
+        "shard_contract_version",
+        "runtime_protocol_version",
+        "runtime_contract_version",
+        "runtime_build_id",
+        "activation_generation",
+        "activation_probe_generation",
+        "environment",
+        "container_status",
+        "readiness_result_code",
+        "process_ready",
+        "runtime_execution_enabled",
+        "controller_execution_enabled",
+        "activation_digest_sha256",
+        "activated_at",
+    )
+    activation_insert_sql = f"""
+        INSERT INTO relay_container_shard_activations (
+          {", ".join(activation_columns)}
+        ) VALUES (
+          {", ".join(f":{column}" for column in activation_columns)}
+        )
+    """
+
+    def digest_parts(domain: str, parts: tuple[object, ...]) -> str:
+        digest = hashlib.sha256()
+        digest.update(domain.encode("utf-8"))
+        digest.update(b"\0")
+        for part in parts:
+            digest.update(str(part).encode("utf-8"))
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def test_sha256(label: str) -> str:
+        return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+    def campaign_digest(values: dict[str, object]) -> str:
+        return digest_parts(
+            "cinatoken:relay-container-shard-activation-campaign:v1",
+            tuple(
+                values[column]
+                for column in (
+                    "campaign_id",
+                    "campaign_nonce_sha256",
+                    "controller_version_id",
+                    "action_gate_inventory_sha256",
+                    "action_gate_count",
+                    "all_action_gates_false",
+                    "foundation_manifest_sha256",
+                    "runtime_build_id",
+                    "ring_generation",
+                    "shard_count",
+                    "shard_contract_version",
+                    "runtime_protocol_version",
+                    "runtime_contract_version",
+                    "activation_generation",
+                    "environment",
+                    "created_by_admin_id",
+                    "created_at",
+                    "expires_at",
+                )
+            ),
+        )
+
+    def campaign_values(label: str, **overrides: object) -> dict[str, object]:
+        values: dict[str, object] = {
+            "campaign_id": test_sha256(f"0055:{label}:campaign"),
+            "campaign_nonce_sha256": test_sha256(f"0055:{label}:nonce"),
+            "controller_version_id": f"controller-{label}",
+            "action_gate_inventory_sha256": test_sha256(
+                f"0055:{label}:action-gates-all-false"
+            ),
+            "action_gate_count": 22,
+            "all_action_gates_false": 1,
+            "foundation_manifest_sha256": test_sha256(
+                f"0055:{label}:foundation"
+            ),
+            "runtime_build_id": test_sha256(f"0055:{label}:runtime"),
+            "ring_generation": 55,
+            "shard_count": 2,
+            "shard_contract_version": 1,
+            "runtime_protocol_version": 1,
+            "runtime_contract_version": 1,
+            "activation_generation": 1,
+            "environment": "staging",
+            "created_by_admin_id": 1,
+            "created_at": d1_clock[0],
+            "expires_at": d1_clock[0] + 600,
+        }
+        values.update(overrides)
+        if "campaign_digest_sha256" not in overrides:
+            values["campaign_digest_sha256"] = campaign_digest(values)
+        return values
+
+    def deterministic_probe_id(campaign_id: object, shard_index: int) -> str:
+        return digest_parts(
+            "cinatoken:relay-container-shard-activation-probe:v1",
+            (campaign_id, shard_index),
+        )
+
+    def claim_digest(values: dict[str, object]) -> str:
+        return digest_parts(
+            "cinatoken:relay-container-shard-activation-claim:v1",
+            tuple(
+                values[column]
+                for column in claim_columns
+                if column not in {"claim_digest_sha256", "claimed_at"}
+            ),
+        )
+
+    def claim_values(
+        campaign: dict[str, object],
+        shard_index: int,
+        **overrides: object,
+    ) -> dict[str, object]:
+        values: dict[str, object] = {
+            "campaign_id": campaign["campaign_id"],
+            "shard_index": shard_index,
+            "presented_nonce_sha256": campaign["campaign_nonce_sha256"],
+            "campaign_digest_sha256": campaign["campaign_digest_sha256"],
+            "controller_version_id": campaign["controller_version_id"],
+            "action_gate_inventory_sha256": campaign[
+                "action_gate_inventory_sha256"
+            ],
+            "action_gate_count": campaign["action_gate_count"],
+            "all_action_gates_false": campaign["all_action_gates_false"],
+            "foundation_manifest_sha256": campaign[
+                "foundation_manifest_sha256"
+            ],
+            "runtime_build_id": campaign["runtime_build_id"],
+            "ring_generation": campaign["ring_generation"],
+            "shard_count": campaign["shard_count"],
+            "instance_name": f"cinatoken-relay-shard-v1-{shard_index:04d}",
+            "shard_contract_version": campaign["shard_contract_version"],
+            "runtime_protocol_version": campaign["runtime_protocol_version"],
+            "runtime_contract_version": campaign["runtime_contract_version"],
+            "activation_generation": campaign["activation_generation"],
+            "probe_id": deterministic_probe_id(campaign["campaign_id"], shard_index),
+            "environment": campaign["environment"],
+            "claimed_at": d1_clock[0],
+        }
+        values.update(overrides)
+        if "claim_digest_sha256" not in overrides:
+            values["claim_digest_sha256"] = claim_digest(values)
+        return values
+
+    def activation_digest(values: dict[str, object]) -> str:
+        return digest_parts(
+            "cinatoken:relay-container-shard-activation:v1",
+            tuple(
+                values[column]
+                for column in (
+                    "controller_version_id",
+                    "runtime_build_id",
+                    "ring_generation",
+                    "shard_count",
+                    "shard_index",
+                    "instance_name",
+                    "activation_generation",
+                    "activation_probe_generation",
+                    "probe_id",
+                    "readiness_checked_at",
+                )
+            ),
+        )
+
+    def consumption_digest(values: dict[str, object]) -> str:
+        return digest_parts(
+            "cinatoken:relay-container-shard-activation-campaign-consumption:v1",
+            (
+                values["campaign_id"],
+                values["campaign_digest_sha256"],
+                values["claim_digest_sha256"],
+                values["activation_digest_sha256"],
+                values["readiness_result_sha256"],
+                values["readiness_checked_at"],
+            ),
+        )
+
+    def consumption_values(
+        claim: dict[str, object],
+        **overrides: object,
+    ) -> dict[str, object]:
+        values: dict[str, object] = {
+            "campaign_id": claim["campaign_id"],
+            "shard_index": claim["shard_index"],
+            "claim_digest_sha256": claim["claim_digest_sha256"],
+            "probe_id": claim["probe_id"],
+            "campaign_digest_sha256": claim["campaign_digest_sha256"],
+            "controller_version_id": claim["controller_version_id"],
+            "action_gate_inventory_sha256": claim[
+                "action_gate_inventory_sha256"
+            ],
+            "action_gate_count": claim["action_gate_count"],
+            "all_action_gates_false": claim["all_action_gates_false"],
+            "foundation_manifest_sha256": claim[
+                "foundation_manifest_sha256"
+            ],
+            "ring_generation": claim["ring_generation"],
+            "shard_count": claim["shard_count"],
+            "instance_name": claim["instance_name"],
+            "shard_contract_version": claim["shard_contract_version"],
+            "runtime_protocol_version": claim["runtime_protocol_version"],
+            "runtime_contract_version": claim["runtime_contract_version"],
+            "runtime_build_id": claim["runtime_build_id"],
+            "activation_generation": claim["activation_generation"],
+            "activation_probe_generation": int(claim["shard_index"]) + 1,
+            "environment": claim["environment"],
+            "container_status": "healthy",
+            "readiness_result_code": "process_ready_execution_disabled",
+            "readiness_result_sha256": test_sha256(
+                f"readiness-result-{claim['campaign_id']}-{claim['shard_index']}"
+            ),
+            "process_ready": 1,
+            "runtime_execution_enabled": 0,
+            "controller_execution_enabled": 0,
+            "readiness_checked_at": d1_clock[0],
+            "consumed_at": d1_clock[0],
+        }
+        values.update(overrides)
+        if "activation_digest_sha256" not in overrides:
+            values["activation_digest_sha256"] = activation_digest(values)
+        if "consumption_digest_sha256" not in overrides:
+            values["consumption_digest_sha256"] = consumption_digest(values)
+        return values
+
+    def activation_values(consumption: dict[str, object]) -> dict[str, object]:
+        return {
+            "controller_version_id": consumption["controller_version_id"],
+            "ring_generation": consumption["ring_generation"],
+            "shard_count": consumption["shard_count"],
+            "shard_index": consumption["shard_index"],
+            "instance_name": consumption["instance_name"],
+            "shard_contract_version": consumption["shard_contract_version"],
+            "runtime_protocol_version": consumption["runtime_protocol_version"],
+            "runtime_contract_version": consumption["runtime_contract_version"],
+            "runtime_build_id": consumption["runtime_build_id"],
+            "activation_generation": consumption["activation_generation"],
+            "activation_probe_generation": consumption[
+                "activation_probe_generation"
+            ],
+            "environment": consumption["environment"],
+            "container_status": consumption["container_status"],
+            "readiness_result_code": consumption["readiness_result_code"],
+            "process_ready": consumption["process_ready"],
+            "runtime_execution_enabled": consumption[
+                "runtime_execution_enabled"
+            ],
+            "controller_execution_enabled": consumption[
+                "controller_execution_enabled"
+            ],
+            "activation_digest_sha256": consumption["activation_digest_sha256"],
+            "activated_at": consumption["readiness_checked_at"],
+        }
+
+    def seal_values(
+        campaign: dict[str, object],
+        reason: str,
+        detail: str,
+        consumed_count: int = 0,
+        last_digest: object = None,
+    ) -> dict[str, object]:
+        return {
+            "campaign_id": campaign["campaign_id"],
+            "campaign_digest_sha256": campaign["campaign_digest_sha256"],
+            "consumed_shard_count": consumed_count,
+            "seal_reason": reason,
+            "seal_detail_code": detail,
+            "last_consumption_digest_sha256": last_digest,
+            "sealed_at": d1_clock[0],
+        }
+
+    primary = campaign_values("primary")
+    changed_inventory = {**primary, "action_gate_inventory_sha256": test_sha256("changed")}
+    changed_inventory["campaign_digest_sha256"] = campaign_digest(changed_inventory)
+    if changed_inventory["campaign_digest_sha256"] == primary["campaign_digest_sha256"]:
+        raise SystemExit("0055 campaign digest does not bind action gate inventory")
+    conn.execute(campaign_insert_sql, primary)
+
+    campaign_negative_cases = (
+        (
+            campaign_values(
+                "old-clock",
+                created_at=d1_clock[0] - 6,
+                expires_at=d1_clock[0] + 600,
+            ),
+            "0055 accepted an application campaign timestamp outside D1 tolerance",
+            "creation time is outside D1 clock tolerance",
+        ),
+        (
+            campaign_values("long-window", expires_at=d1_clock[0] + 3601),
+            "0055 accepted a campaign beyond the D1 expiry window",
+            "expiry is outside the D1 window",
+        ),
+        (
+            campaign_values("gate-count", action_gate_count=21),
+            "0055 accepted an incomplete action gate inventory",
+            "CHECK constraint failed",
+        ),
+        (
+            campaign_values("gate-state", all_action_gates_false=0),
+            "0055 accepted an enabled action gate",
+            "CHECK constraint failed",
+        ),
+    )
+    for values, failure_message, expected_error in campaign_negative_cases:
+        expect_integrity_error(
+            lambda values=values: conn.execute(campaign_insert_sql, values),
+            failure_message,
+            expected_error,
+        )
+
+    active_duplicate = campaign_values(
+        "active-duplicate",
+        controller_version_id=primary["controller_version_id"],
+        action_gate_inventory_sha256=primary["action_gate_inventory_sha256"],
+        foundation_manifest_sha256=primary["foundation_manifest_sha256"],
+        runtime_build_id=primary["runtime_build_id"],
+        ring_generation=primary["ring_generation"],
+    )
+    expect_integrity_error(
+        lambda: conn.execute(campaign_insert_sql, active_duplicate),
+        "0055 accepted an overlapping D1-active candidate campaign",
+        "candidate already has an active campaign",
+    )
+    inventory_drift = campaign_values(
+        "inventory-drift",
+        controller_version_id=primary["controller_version_id"],
+        action_gate_inventory_sha256=test_sha256("different-controller-gates"),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(campaign_insert_sql, inventory_drift),
+        "0055 accepted two action gate inventories for one Controller version",
+        "controller action gate inventory mismatch",
+    )
+
+    wrong_nonce_claim = claim_values(
+        primary,
+        0,
+        presented_nonce_sha256=test_sha256("wrong-nonce"),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(claim_insert_sql, wrong_nonce_claim),
+        "0055 claim accepted a wrong nonce",
+        "campaign nonce mismatch",
+    )
+    wrong_candidate_claim = claim_values(
+        primary,
+        0,
+        runtime_build_id=test_sha256("wrong-runtime"),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(claim_insert_sql, wrong_candidate_claim),
+        "0055 claim accepted a candidate mismatch",
+        "campaign candidate mismatch",
+    )
+    wrong_controller_claim = claim_values(
+        primary,
+        0,
+        controller_version_id="controller-wrong",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(claim_insert_sql, wrong_controller_claim),
+        "0055 claim accepted a Controller mismatch",
+        "campaign candidate mismatch",
+    )
+    wrong_instance_claim = claim_values(
+        primary,
+        0,
+        instance_name="cinatoken-relay-shard-v1-0001",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(claim_insert_sql, wrong_instance_claim),
+        "0055 claim accepted a non-canonical shard instance",
+        "claim identity mismatch",
+    )
+    wrong_time_claim = claim_values(primary, 0, claimed_at=d1_clock[0] - 1)
+    expect_integrity_error(
+        lambda: conn.execute(claim_insert_with_time_sql, wrong_time_claim),
+        "0055 claim trusted a caller timestamp",
+        "claim time must come from D1",
+    )
+
+    primary_claim_zero = claim_values(primary, 0)
+    conn.execute(claim_insert_sql, primary_claim_zero)
+    stored_claim = conn.execute(
+        "SELECT probe_id, claimed_at FROM relay_container_shard_activation_campaign_claims "
+        "WHERE campaign_id = ? AND shard_index = 0",
+        (primary["campaign_id"],),
+    ).fetchone()
+    if stored_claim != (primary_claim_zero["probe_id"], d1_clock[0]):
+        raise SystemExit(f"0055 claim did not store deterministic D1 evidence: {stored_claim}")
+    expect_integrity_error(
+        lambda: conn.execute(claim_insert_sql, primary_claim_zero),
+        "0055 accepted a replayed claim",
+        "claim replayed",
+    )
+
+    late = campaign_values("late", expires_at=d1_clock[0] + 60)
+    clean_expired = campaign_values("clean-expired", expires_at=d1_clock[0] + 60)
+    conn.execute(campaign_insert_sql, late)
+    conn.execute(campaign_insert_sql, clean_expired)
+    late_claim = claim_values(late, 0)
+    conn.execute(claim_insert_sql, late_claim)
+    conn.execute(expiry_materialization_sql)
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_shard_activation_campaign_seals"
+    ).fetchone() != (0,):
+        raise SystemExit("0055 expiry materialized before the D1 deadline")
+
+    d1_clock[0] += 60
+    expired_claim = claim_values(late, 1)
+    expect_integrity_error(
+        lambda: conn.execute(claim_insert_sql, expired_claim),
+        "0055 claim used caller evidence to bypass campaign expiry",
+        "outside its D1 validity window",
+    )
+    late_consumption = consumption_values(
+        late_claim,
+        readiness_checked_at=late_claim["claimed_at"],
+    )
+    expect_integrity_error(
+        lambda: conn.execute(consumption_insert_sql, late_consumption),
+        "0055 final consumption trusted readiness time over D1 expiry",
+        "outside its D1 validity window",
+    )
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_shard_activations"
+    ).fetchone() != (0,):
+        raise SystemExit("0055 expired final consumption wrote activation evidence")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_shard_activation_campaign_seals"
+    ).fetchone() != (0,):
+        raise SystemExit("0055 expiry was materialized as an implicit trigger side effect")
+
+    conn.execute(expiry_materialization_sql)
+    expiry_rows = conn.execute(
+        "SELECT campaign_id, consumed_shard_count, seal_reason, seal_detail_code, "
+        "last_consumption_digest_sha256, sealed_at "
+        "FROM relay_container_shard_activation_campaign_seals "
+        "WHERE campaign_id IN (?, ?) ORDER BY campaign_id",
+        (late["campaign_id"], clean_expired["campaign_id"]),
+    ).fetchall()
+    expected_expiry_rows = sorted(
+        (
+            (late["campaign_id"], 0, "expired", "campaign_expired", None, d1_clock[0]),
+            (
+                clean_expired["campaign_id"],
+                0,
+                "expired",
+                "campaign_expired",
+                None,
+                d1_clock[0],
+            ),
+        )
+    )
+    if expiry_rows != expected_expiry_rows:
+        raise SystemExit(f"0055 expiry materialization differs: {expiry_rows}")
+    conn.execute(expiry_materialization_sql)
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_shard_activation_campaign_seals "
+        "WHERE campaign_id IN (?, ?)",
+        (late["campaign_id"], clean_expired["campaign_id"]),
+    ).fetchone() != (2,):
+        raise SystemExit("0055 expiry materialization is not idempotent")
+
+    retired_late = campaign_values(
+        "retired-late",
+        controller_version_id=late["controller_version_id"],
+        action_gate_inventory_sha256=late["action_gate_inventory_sha256"],
+        foundation_manifest_sha256=late["foundation_manifest_sha256"],
+        runtime_build_id=late["runtime_build_id"],
+        ring_generation=late["ring_generation"],
+    )
+    expect_integrity_error(
+        lambda: conn.execute(campaign_insert_sql, retired_late),
+        "0055 reused an expired candidate that had a claim",
+        "candidate is not reusable",
+    )
+    reusable_expired = campaign_values(
+        "reusable-expired",
+        controller_version_id=clean_expired["controller_version_id"],
+        action_gate_inventory_sha256=clean_expired[
+            "action_gate_inventory_sha256"
+        ],
+        foundation_manifest_sha256=clean_expired["foundation_manifest_sha256"],
+        runtime_build_id=clean_expired["runtime_build_id"],
+        ring_generation=clean_expired["ring_generation"],
+    )
+    conn.execute(campaign_insert_sql, reusable_expired)
+
+    synthetic_claim_one = claim_values(primary, 1)
+    no_claim_consumption = consumption_values(synthetic_claim_one)
+    expect_integrity_error(
+        lambda: conn.execute(consumption_insert_sql, no_claim_consumption),
+        "0055 final consumption succeeded without a claim",
+        "consumption requires a claim",
+    )
+    direct_activation = activation_values(consumption_values(primary_claim_zero))
+    expect_integrity_error(
+        lambda: conn.execute(activation_insert_sql, direct_activation),
+        "0055 allowed a direct 0054 activation writer",
+        "requires a matching final consumption",
+    )
+
+    invalid_consumptions = (
+        (
+            consumption_values(
+                primary_claim_zero,
+                claim_digest_sha256=test_sha256("wrong-claim-digest"),
+            ),
+            consumption_insert_sql,
+            "0055 final consumption accepted a wrong claim digest",
+            "consumption claim mismatch",
+        ),
+        (
+            consumption_values(
+                primary_claim_zero,
+                probe_id=test_sha256("wrong-probe"),
+            ),
+            consumption_insert_sql,
+            "0055 final consumption accepted a wrong probe ID",
+            "consumption claim mismatch",
+        ),
+        (
+            consumption_values(primary_claim_zero, container_status="starting"),
+            consumption_insert_sql,
+            "0055 final consumption accepted a non-ready runtime",
+            "consumption readiness mismatch",
+        ),
+        (
+            consumption_values(primary_claim_zero, activation_probe_generation=0),
+            consumption_insert_sql,
+            "0055 final consumption accepted an invalid DO-local generation",
+            "consumption readiness mismatch",
+        ),
+        (
+            consumption_values(
+                primary_claim_zero,
+                readiness_result_sha256="g" * 64,
+            ),
+            consumption_insert_sql,
+            "0055 final consumption accepted a malformed readiness result digest",
+            "CHECK constraint failed",
+        ),
+        (
+            consumption_values(
+                primary_claim_zero,
+                readiness_checked_at=d1_clock[0] + 1,
+            ),
+            consumption_insert_sql,
+            "0055 final consumption accepted a future readiness timestamp",
+            "readiness time is invalid",
+        ),
+        (
+            consumption_values(primary_claim_zero, consumed_at=d1_clock[0] - 1),
+            consumption_insert_with_time_sql,
+            "0055 final consumption trusted a caller consumption timestamp",
+            "consumption time must come from D1",
+        ),
+    )
+    for values, statement, failure_message, expected_error in invalid_consumptions:
+        expect_integrity_error(
+            lambda values=values, statement=statement: conn.execute(statement, values),
+            failure_message,
+            expected_error,
+        )
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_shard_activation_campaign_consumptions"
+    ).fetchone() != (0,):
+        raise SystemExit("0055 invalid final consumption left a receipt")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_shard_activations"
+    ).fetchone() != (0,):
+        raise SystemExit("0055 invalid final consumption left activation evidence")
+
+    d1_clock[0] += 1
+    first_consumption = consumption_values(primary_claim_zero)
+    conn.execute(consumption_insert_sql, first_consumption)
+    activation_row = conn.execute(
+        "SELECT activation_probe_generation, activated_at "
+        "FROM relay_container_shard_activations WHERE shard_index = 0"
+    ).fetchone()
+    if activation_row != (
+        first_consumption["activation_probe_generation"],
+        first_consumption["readiness_checked_at"],
+    ):
+        raise SystemExit(f"0055 did not project final DO evidence into 0054: {activation_row}")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_shard_activation_campaign_seals "
+        "WHERE campaign_id = ?",
+        (primary["campaign_id"],),
+    ).fetchone() != (0,):
+        raise SystemExit("0055 sealed a two-shard campaign after N-1 final receipts")
+
+    d1_clock[0] += 1
+    primary_claim_one = claim_values(primary, 1)
+    conn.execute(claim_insert_sql, primary_claim_one)
+    duplicate_probe_claim = claim_values(
+        reusable_expired,
+        0,
+        probe_id=primary_claim_one["probe_id"],
+    )
+    expect_integrity_error(
+        lambda: conn.execute(claim_insert_sql, duplicate_probe_claim),
+        "0055 accepted a duplicate deterministic probe ID",
+        "UNIQUE constraint failed",
+    )
+
+    d1_clock[0] += 1
+    second_consumption = consumption_values(primary_claim_one)
+    conn.execute(consumption_insert_sql, second_consumption)
+    primary_seal = conn.execute(
+        "SELECT consumed_shard_count, seal_reason, seal_detail_code, "
+        "last_consumption_digest_sha256, sealed_at "
+        "FROM relay_container_shard_activation_campaign_seals "
+        "WHERE campaign_id = ?",
+        (primary["campaign_id"],),
+    ).fetchone()
+    if primary_seal != (
+        2,
+        "complete",
+        "all_shards_consumed",
+        second_consumption["consumption_digest_sha256"],
+        d1_clock[0],
+    ):
+        raise SystemExit(f"0055 N/N completion seal differs: {primary_seal}")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_shard_activations"
+    ).fetchone() != (2,):
+        raise SystemExit("0055 N/N final receipts did not write two 0054 rows")
+
+    complete_rebuild = campaign_values(
+        "complete-rebuild",
+        controller_version_id=primary["controller_version_id"],
+        action_gate_inventory_sha256=primary["action_gate_inventory_sha256"],
+        foundation_manifest_sha256=primary["foundation_manifest_sha256"],
+        runtime_build_id=primary["runtime_build_id"],
+        ring_generation=primary["ring_generation"],
+    )
+    expect_integrity_error(
+        lambda: conn.execute(campaign_insert_sql, complete_rebuild),
+        "0055 rebuilt a completed candidate",
+        "candidate already activated",
+    )
+
+    failed = campaign_values("failed")
+    conn.execute(campaign_insert_sql, failed)
+    failed_claim = claim_values(failed, 0)
+    conn.execute(claim_insert_sql, failed_claim)
+    expect_integrity_error(
+        lambda: conn.execute(
+            seal_insert_sql,
+            seal_values(failed, "failed", "campaign_expired"),
+        ),
+        "0055 accepted a mismatched failed seal detail",
+        "seal reason mismatch",
+    )
+    conn.execute(
+        seal_insert_sql,
+        seal_values(failed, "failed", "claim_execution_failed"),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(claim_insert_sql, claim_values(failed, 1)),
+        "0055 allowed a claim after a failed seal",
+        "campaign is sealed",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            consumption_insert_sql,
+            consumption_values(failed_claim),
+        ),
+        "0055 allowed final consumption after a failed seal",
+        "campaign is sealed",
+    )
+    failed_rebuild = campaign_values(
+        "failed-rebuild",
+        controller_version_id=failed["controller_version_id"],
+        action_gate_inventory_sha256=failed["action_gate_inventory_sha256"],
+        foundation_manifest_sha256=failed["foundation_manifest_sha256"],
+        runtime_build_id=failed["runtime_build_id"],
+        ring_generation=failed["ring_generation"],
+    )
+    expect_integrity_error(
+        lambda: conn.execute(campaign_insert_sql, failed_rebuild),
+        "0055 reused a failed candidate that had a claim",
+        "candidate is not reusable",
+    )
+
+    clean_aborted = campaign_values("clean-aborted")
+    conn.execute(campaign_insert_sql, clean_aborted)
+    conn.execute(
+        seal_insert_sql,
+        seal_values(clean_aborted, "aborted", "operator_aborted"),
+    )
+    reusable_aborted = campaign_values(
+        "reusable-aborted",
+        controller_version_id=clean_aborted["controller_version_id"],
+        action_gate_inventory_sha256=clean_aborted[
+            "action_gate_inventory_sha256"
+        ],
+        foundation_manifest_sha256=clean_aborted["foundation_manifest_sha256"],
+        runtime_build_id=clean_aborted["runtime_build_id"],
+        ring_generation=clean_aborted["ring_generation"],
+    )
+    conn.execute(campaign_insert_sql, reusable_aborted)
+
+    immutable_mutations = (
+        (
+            lambda: conn.execute(
+                "UPDATE relay_container_shard_activation_campaigns "
+                "SET created_by_admin_id = created_by_admin_id + 1 "
+                "WHERE campaign_id = ?",
+                (primary["campaign_id"],),
+            ),
+            "0055 allowed a campaign update",
+            "campaign rows are immutable",
+        ),
+        (
+            lambda: conn.execute(
+                "DELETE FROM relay_container_shard_activation_campaigns "
+                "WHERE campaign_id = ?",
+                (primary["campaign_id"],),
+            ),
+            "0055 allowed a campaign delete",
+            "campaign rows are immutable",
+        ),
+        (
+            lambda: conn.execute(
+                "UPDATE relay_container_shard_activation_campaign_claims "
+                "SET claimed_at = claimed_at + 1 "
+                "WHERE campaign_id = ? AND shard_index = 0",
+                (primary["campaign_id"],),
+            ),
+            "0055 allowed a claim update",
+            "claim rows are immutable",
+        ),
+        (
+            lambda: conn.execute(
+                "DELETE FROM relay_container_shard_activation_campaign_claims "
+                "WHERE campaign_id = ? AND shard_index = 0",
+                (primary["campaign_id"],),
+            ),
+            "0055 allowed a claim delete",
+            "claim rows are immutable",
+        ),
+        (
+            lambda: conn.execute(
+                "UPDATE relay_container_shard_activation_campaign_consumptions "
+                "SET consumed_at = consumed_at + 1 "
+                "WHERE campaign_id = ? AND shard_index = 0",
+                (primary["campaign_id"],),
+            ),
+            "0055 allowed a final consumption update",
+            "consumption rows are immutable",
+        ),
+        (
+            lambda: conn.execute(
+                "DELETE FROM relay_container_shard_activation_campaign_consumptions "
+                "WHERE campaign_id = ? AND shard_index = 0",
+                (primary["campaign_id"],),
+            ),
+            "0055 allowed a final consumption delete",
+            "consumption rows are immutable",
+        ),
+        (
+            lambda: conn.execute(
+                "UPDATE relay_container_shard_activation_campaign_seals "
+                "SET sealed_at = sealed_at + 1 WHERE campaign_id = ?",
+                (primary["campaign_id"],),
+            ),
+            "0055 allowed a seal update",
+            "seal rows are immutable",
+        ),
+        (
+            lambda: conn.execute(
+                "DELETE FROM relay_container_shard_activation_campaign_seals "
+                "WHERE campaign_id = ?",
+                (primary["campaign_id"],),
+            ),
+            "0055 allowed a seal delete",
+            "seal rows are immutable",
+        ),
+    )
+    for action, failure_message, expected_error in immutable_mutations:
+        expect_integrity_error(action, failure_message, expected_error)
+
+    schema_before_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        conn.executescript(campaign_sql)
+    except sqlite3.Error as error:
+        if "already exists" not in str(error):
+            raise SystemExit(
+                f"0055 duplicate DDL failed for an unexpected reason: {error}"
+            ) from error
+    else:
+        raise SystemExit("0055 critical activation campaign objects accepted duplicate DDL")
+    schema_after_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0055 duplicate DDL attempt changed persistent schema")
+
+
 def verify_relay_container_atomic_admission_rollout(
     schema_paths: list[Path],
 ) -> None:
@@ -14312,14 +15888,14 @@ def verify_relay_container_atomic_admission_rollout(
     )
     if atomic_path is None or binding_path is None:
         raise SystemExit("0049/0050 relay Container admission migrations not found")
-    if len(schema_paths) != 54:
+    if len(schema_paths) != 55:
         raise SystemExit(
-            f"0050 atomic admission compatibility requires exactly 54 D1 migrations, got {len(schema_paths)}"
+            f"0050 atomic admission compatibility requires exactly 55 D1 migrations, got {len(schema_paths)}"
         )
     atomic_index = schema_paths.index(atomic_path)
-    if atomic_index != len(schema_paths) - 5:
+    if atomic_index != len(schema_paths) - 6:
         raise SystemExit(
-            "0050 atomic admission must remain immediately before 0051, 0052, 0053, and 0054"
+            "0050 atomic admission must remain immediately before 0051 through 0055"
         )
     if atomic_index == 0 or schema_paths[atomic_index - 1] != binding_path:
         raise SystemExit("0050 atomic admission must immediately follow 0049")

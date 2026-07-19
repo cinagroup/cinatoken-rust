@@ -8,6 +8,7 @@ import {
   SHARD_REGISTRY_CAPTURE_CONTRACT,
   ShardRegistryError,
   buildActivationSnapshot,
+  buildCampaignSnapshot,
   buildShardRegistryCapture,
   canonicalJson,
   validateRegistryCandidate,
@@ -21,7 +22,9 @@ const minObservationSeconds = 5 * 60;
 const maxObservationSeconds = 2 * 60 * 60;
 const maxRequestBytes = 256 * 1024;
 const maxResponseBytes = 1024 * 1024;
+const maxCampaignResponseBytes = 4 * 1024 * 1024;
 const maxPages = Math.ceil(MAX_LEDGER_RECORDS / ACTIVATION_PAGE_SIZE) + 1;
+const lowerSha256Pattern = /^[0-9a-f]{64}$/;
 
 if (import.meta.main) {
   try {
@@ -41,6 +44,8 @@ if (import.meta.main) {
           origin: request.origin,
           observationSeconds: request.observationSeconds,
           candidate: request.candidate,
+          campaignId: request.campaignId,
+          foundationManifestSha256: request.foundationManifestSha256,
           credentialConfigured: false,
           remoteMutationPerformed: false,
           shardDoOrContainerWakePerformed: false,
@@ -101,7 +106,16 @@ export function validateCollectorRequest(value) {
   if (!isPlainObject(value)) throw new ShardRegistryError("collector request must be an object");
   exactKeys(
     value,
-    ["schemaVersion", "contract", "environment", "origin", "observationSeconds", "candidate"],
+    [
+      "schemaVersion",
+      "contract",
+      "environment",
+      "origin",
+      "observationSeconds",
+      "candidate",
+      "campaignId",
+      "foundationManifestSha256",
+    ],
     "collector request",
   );
   if (value.schemaVersion !== 1 || value.contract !== SHARD_REGISTRY_REQUEST_CONTRACT) {
@@ -118,7 +132,35 @@ export function validateCollectorRequest(value) {
     throw new ShardRegistryError("collector observation window is invalid");
   }
   const origin = validateStagingOrigin(value.origin);
+  requireSha256(value.campaignId, "collector campaign ID");
+  requireSha256(value.foundationManifestSha256, "collector foundation manifest digest");
   return { ...value, origin, candidate: validateRegistryCandidate(value.candidate) };
+}
+
+export async function collectCampaignSnapshot(
+  { origin, candidate, campaignId, foundationManifestSha256, capturedAt },
+  { cookie, fetchImpl = fetch } = {},
+) {
+  validateStagingOrigin(origin);
+  candidate = validateRegistryCandidate(candidate);
+  requireSha256(campaignId, "campaign ID");
+  requireSha256(foundationManifestSha256, "campaign foundation manifest digest");
+  requireCookie(cookie);
+  if (typeof fetchImpl !== "function") throw new ShardRegistryError("fetch implementation is invalid");
+  const url = new URL("/api/platform/container/shards/activation-campaigns", origin);
+  url.searchParams.set("campaign_id", campaignId);
+  const campaign = await fetchEnvelopeData(
+    url,
+    cookie,
+    fetchImpl,
+    maxCampaignResponseBytes,
+    "campaign",
+  );
+  return buildCampaignSnapshot({
+    capturedAt,
+    campaign,
+    expected: { ...candidate, campaignId, foundationManifestSha256 },
+  });
 }
 
 export async function collectActivationSnapshot(
@@ -142,7 +184,13 @@ export async function collectActivationSnapshot(
       url.searchParams.set("high_watermark", String(highWatermark));
     }
     if (cursor !== null) url.searchParams.set("cursor", cursor);
-    const page = await fetchActivationPage(url, cookie, fetchImpl);
+    const page = await fetchEnvelopeData(
+      url,
+      cookie,
+      fetchImpl,
+      maxResponseBytes,
+      "activation",
+    );
     if (highWatermark === null) highWatermark = page.high_watermark;
     pages.push(page);
     if (page.pagination_complete) {
@@ -163,6 +211,16 @@ export async function collectShardRegistry(
   request = validateCollectorRequest(request);
   requireCookie(cookie);
   const observationStartedAt = timestamp(now(), "observation start");
+  const campaignBefore = await collectCampaignSnapshot(
+    {
+      origin: request.origin,
+      candidate: request.candidate,
+      campaignId: request.campaignId,
+      foundationManifestSha256: request.foundationManifestSha256,
+      capturedAt: observationStartedAt,
+    },
+    { cookie, fetchImpl },
+  );
   const before = await collectActivationSnapshot(
     { origin: request.origin, candidate: request.candidate, capturedAt: observationStartedAt },
     { cookie, fetchImpl },
@@ -173,6 +231,16 @@ export async function collectShardRegistry(
   if (elapsed < request.observationSeconds || elapsed > maxObservationSeconds) {
     throw new ShardRegistryError("observed shard registry window is invalid");
   }
+  const campaignAfter = await collectCampaignSnapshot(
+    {
+      origin: request.origin,
+      candidate: request.candidate,
+      campaignId: request.campaignId,
+      foundationManifestSha256: request.foundationManifestSha256,
+      capturedAt: observationEndedAt,
+    },
+    { cookie, fetchImpl },
+  );
   const after = await collectActivationSnapshot(
     { origin: request.origin, candidate: request.candidate, capturedAt: observationEndedAt },
     { cookie, fetchImpl },
@@ -181,12 +249,14 @@ export async function collectShardRegistry(
     candidate: request.candidate,
     observationStartedAt,
     observationEndedAt,
+    campaignBefore,
+    campaignAfter,
     before,
     after,
   });
 }
 
-async function fetchActivationPage(url, cookie, fetchImpl) {
+async function fetchEnvelopeData(url, cookie, fetchImpl, maximumBytes, label) {
   let response;
   try {
     response = await fetchImpl(url, {
@@ -196,29 +266,29 @@ async function fetchActivationPage(url, cookie, fetchImpl) {
       signal: AbortSignal.timeout(15_000),
     });
   } catch {
-    throw new ShardRegistryError("activation readback request failed");
+    throw new ShardRegistryError(`${label} readback request failed`);
   }
   if (!response || response.status !== 200) {
-    throw new ShardRegistryError("activation readback did not return 200");
+    throw new ShardRegistryError(`${label} readback did not return 200`);
   }
   if (response.headers.get("cache-control") !== "no-store") {
-    throw new ShardRegistryError("activation readback is missing no-store");
+    throw new ShardRegistryError(`${label} readback is missing no-store`);
   }
   const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
   if (contentType !== "application/json") {
-    throw new ShardRegistryError("activation readback content type is invalid");
+    throw new ShardRegistryError(`${label} readback content type is invalid`);
   }
-  const bytes = await readBoundedResponse(response, maxResponseBytes);
+  const bytes = await readBoundedResponse(response, maximumBytes, label);
   let envelope;
   try {
     envelope = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
-    throw new ShardRegistryError("activation readback body is invalid JSON");
+    throw new ShardRegistryError(`${label} readback body is invalid JSON`);
   }
-  if (!isPlainObject(envelope)) throw new ShardRegistryError("activation envelope is invalid");
-  exactKeys(envelope, ["success", "message", "data"], "activation envelope");
+  if (!isPlainObject(envelope)) throw new ShardRegistryError(`${label} envelope is invalid`);
+  exactKeys(envelope, ["success", "message", "data"], `${label} envelope`);
   if (envelope.success !== true || envelope.message !== "") {
-    throw new ShardRegistryError("activation envelope did not report success");
+    throw new ShardRegistryError(`${label} envelope did not report success`);
   }
   return envelope.data;
 }
@@ -336,11 +406,11 @@ function validateStagingOrigin(value) {
   return url.origin;
 }
 
-async function readBoundedResponse(response, maximumBytes) {
+async function readBoundedResponse(response, maximumBytes, label) {
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) {
-      throw new ShardRegistryError("activation readback content length is invalid");
+      throw new ShardRegistryError(`${label} readback content length is invalid`);
     }
     const parsedLength = Number(declaredLength);
     if (
@@ -348,11 +418,11 @@ async function readBoundedResponse(response, maximumBytes) {
       parsedLength < 1 ||
       parsedLength > maximumBytes
     ) {
-      throw new ShardRegistryError("activation readback body is outside its bound");
+      throw new ShardRegistryError(`${label} readback body is outside its bound`);
     }
   }
   const reader = response.body?.getReader();
-  if (!reader) throw new ShardRegistryError("activation readback body is unavailable");
+  if (!reader) throw new ShardRegistryError(`${label} readback body is unavailable`);
   const chunks = [];
   let total = 0;
   try {
@@ -360,11 +430,11 @@ async function readBoundedResponse(response, maximumBytes) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!(value instanceof Uint8Array)) {
-        throw new ShardRegistryError("activation readback body chunk is invalid");
+        throw new ShardRegistryError(`${label} readback body chunk is invalid`);
       }
       total += value.byteLength;
       if (total > maximumBytes) {
-        throw new ShardRegistryError("activation readback body is outside its bound");
+        throw new ShardRegistryError(`${label} readback body is outside its bound`);
       }
       chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
     }
@@ -373,7 +443,7 @@ async function readBoundedResponse(response, maximumBytes) {
     throw error;
   }
   if (total === 0 || (declaredLength !== null && total !== Number(declaredLength))) {
-    throw new ShardRegistryError("activation readback body is outside its bound");
+    throw new ShardRegistryError(`${label} readback body is outside its bound`);
   }
   return Buffer.concat(chunks, total);
 }
@@ -419,5 +489,11 @@ function exactKeys(value, expected, label) {
   const wanted = [...expected].sort();
   if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
     throw new ShardRegistryError(`${label} fields are invalid`);
+  }
+}
+
+function requireSha256(value, label) {
+  if (typeof value !== "string" || !lowerSha256Pattern.test(value)) {
+    throw new ShardRegistryError(`${label} is invalid`);
   }
 }

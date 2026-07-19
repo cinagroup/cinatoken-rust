@@ -32,6 +32,7 @@ use crate::admin::{
 };
 use crate::container_controller::{
     probe as probe_container_controller, probe_shard_readiness,
+    valid_shard_activation_campaign_credential, ShardActivationCampaignCredential,
     CONTAINER_SHARD_READINESS_PROBE_ENABLED_ENV, CONTAINER_SHARD_READINESS_WAKE_ENABLED_ENV,
 };
 use crate::container_reconciliation::{
@@ -191,7 +192,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0054_relay_container_shard_activations.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0055_relay_container_shard_activation_campaigns.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -283,6 +284,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0052_relay_container_provider_response_artifacts.sql",
     "0053_relay_container_financial_terminal_v2.sql",
     "0054_relay_container_shard_activations.sql",
+    "0055_relay_container_shard_activation_campaigns.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -848,6 +850,8 @@ struct ContainerShardReadinessRequest {
     expected_ring_generation: u64,
     wake_container: bool,
     confirm_wake: bool,
+    #[serde(default)]
+    activation_campaign: Option<ShardActivationCampaignCredential>,
 }
 
 /// Root-only targeted shard inspection. Ledger mode is side-effect free;
@@ -857,12 +861,6 @@ pub async fn container_shard_readiness(mut req: Request, env: Env) -> WorkerResu
         Ok(admin) => admin,
         Err(response) => return Ok(response),
     };
-    if !env_flag(&env, CONTAINER_SHARD_READINESS_PROBE_ENABLED_ENV) {
-        return Ok(envelope_error_response(
-            503,
-            "container shard readiness probe is disabled",
-        ));
-    }
     let content_type = req
         .headers()
         .get("content-type")?
@@ -933,6 +931,22 @@ pub async fn container_shard_readiness(mut req: Request, env: Env) -> WorkerResu
             "confirm_wake must exactly match wake_container",
         ));
     }
+    if input.activation_campaign.is_some() && !input.wake_container {
+        return Ok(envelope_error_response(
+            400,
+            "activation campaign requires wake_container=true",
+        ));
+    }
+    if input
+        .activation_campaign
+        .as_ref()
+        .is_some_and(|campaign| !valid_shard_activation_campaign_credential(campaign))
+    {
+        return Ok(envelope_error_response(
+            400,
+            "container shard activation campaign is invalid",
+        ));
+    }
     let runtime = container_scheduler_runtime_status(&env);
     if !runtime.valid {
         return Ok(envelope_error_response(
@@ -946,21 +960,16 @@ pub async fn container_shard_readiness(mut req: Request, env: Env) -> WorkerResu
             "container shard ring generation changed",
         ));
     }
-    if input.wake_container {
-        if !env_flag(&env, CONTAINER_SHARD_READINESS_WAKE_ENABLED_ENV) {
-            return Ok(envelope_error_response(
-                503,
-                "container shard readiness wake is disabled",
-            ));
-        }
-        let production = runtime_value(&env, "ENVIRONMENT")
-            .is_some_and(|value| matches!(value.as_str(), "production" | "prod"));
-        if production && !env_flag(&env, CONTAINER_SHARD_READINESS_STAGING_VERIFIED_ENV) {
-            return Ok(envelope_error_response(
-                403,
-                "container shard readiness wake is not staging-verified",
-            ));
-        }
+    let production = runtime_value(&env, "ENVIRONMENT")
+        .is_some_and(|value| matches!(value.as_str(), "production" | "prod"));
+    if let Some((status, message)) = shard_readiness_gate_error(
+        &input,
+        env_flag(&env, CONTAINER_SHARD_READINESS_PROBE_ENABLED_ENV),
+        env_flag(&env, CONTAINER_SHARD_READINESS_WAKE_ENABLED_ENV),
+        production,
+        env_flag(&env, CONTAINER_SHARD_READINESS_STAGING_VERIFIED_ENV),
+    ) {
+        return Ok(envelope_error_response(status, message));
     }
     let shard = match ShardRing::new(runtime.ring_generation, runtime.shard_count)
         .and_then(|ring| ring.shard(input.shard_index))
@@ -973,7 +982,14 @@ pub async fn container_shard_readiness(mut req: Request, env: Env) -> WorkerResu
             ));
         }
     };
-    let result = match probe_shard_readiness(&env, &shard, input.wake_container).await {
+    let result = match probe_shard_readiness(
+        &env,
+        &shard,
+        input.wake_container,
+        input.activation_campaign.as_ref(),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(error) => {
             worker::console_warn!(
@@ -993,6 +1009,16 @@ pub async fn container_shard_readiness(mut req: Request, env: Env) -> WorkerResu
                     "container shard readiness conflicts with an active or replayed probe",
                 ),
                 "readiness_rate_limited" => (429, "container shard readiness rate limited"),
+                "invalid_activation_campaign" => {
+                    (400, "container shard activation campaign is invalid")
+                }
+                "activation_campaign_conflict" => (
+                    409,
+                    "container shard activation campaign conflicts with stored state",
+                ),
+                "activation_campaign_rejected" => {
+                    (403, "container shard activation campaign was rejected")
+                }
                 "timeout" => (504, "container shard readiness timed out"),
                 "authority_rejected"
                 | "contract_mismatch"
@@ -1018,11 +1044,38 @@ pub async fn container_shard_readiness(mut req: Request, env: Env) -> WorkerResu
             "mode": &result.mode,
             "ready": result.ready,
             "result_code": &result.result_code,
+            "activation_campaign_id": input
+                .activation_campaign
+                .as_ref()
+                .map(|campaign| campaign.campaign_id.as_str()),
         })
     );
     let mut response = envelope_ok_response(&result)?;
     response.headers_mut().set("Cache-Control", "no-store")?;
     Ok(response)
+}
+
+fn shard_readiness_gate_error(
+    input: &ContainerShardReadinessRequest,
+    probe_enabled: bool,
+    wake_enabled: bool,
+    production: bool,
+    staging_verified: bool,
+) -> Option<(u16, &'static str)> {
+    let campaign_authorized = input.activation_campaign.is_some();
+    if !campaign_authorized && !probe_enabled {
+        return Some((503, "container shard readiness probe is disabled"));
+    }
+    if input.wake_container && !campaign_authorized && !wake_enabled {
+        return Some((503, "container shard readiness wake is disabled"));
+    }
+    if input.wake_container && production && !staging_verified {
+        return Some((
+            403,
+            "container shard readiness wake is not staging-verified",
+        ));
+    }
+    None
 }
 
 /// Admin-only capability probe for the production migration cockpit.
@@ -4301,6 +4354,56 @@ fn gateway_error(status: u16, code: &str, message: &str) -> WorkerResult<Respons
 mod tests {
     use super::*;
 
+    fn readiness_gate_request(
+        wake_container: bool,
+        activation_campaign: Option<ShardActivationCampaignCredential>,
+    ) -> ContainerShardReadinessRequest {
+        ContainerShardReadinessRequest {
+            shard_index: 0,
+            expected_ring_generation: 1,
+            wake_container,
+            confirm_wake: wake_container,
+            activation_campaign,
+        }
+    }
+
+    fn activation_campaign_credential() -> ShardActivationCampaignCredential {
+        ShardActivationCampaignCredential {
+            contract_version: 1,
+            campaign_id: "a".repeat(64),
+            nonce: "b".repeat(64),
+            confirm_consume: true,
+        }
+    }
+
+    #[test]
+    fn one_time_campaign_replaces_static_readiness_gates_without_weakening_normal_probes() {
+        let ledger = readiness_gate_request(false, None);
+        assert_eq!(
+            shard_readiness_gate_error(&ledger, false, false, false, false),
+            Some((503, "container shard readiness probe is disabled"))
+        );
+
+        let wake = readiness_gate_request(true, None);
+        assert_eq!(
+            shard_readiness_gate_error(&wake, true, false, false, false),
+            Some((503, "container shard readiness wake is disabled"))
+        );
+
+        let campaign = readiness_gate_request(true, Some(activation_campaign_credential()));
+        assert_eq!(
+            shard_readiness_gate_error(&campaign, false, false, false, false),
+            None
+        );
+        assert_eq!(
+            shard_readiness_gate_error(&campaign, false, false, true, false),
+            Some((
+                403,
+                "container shard readiness wake is not staging-verified"
+            ))
+        );
+    }
+
     #[test]
     fn scheduling_gateway_contract_is_operator_visible_and_tenant_first() {
         assert_eq!(SCHEDULING_GATEWAY_OWNER_CONTRACT_VERSION, 1);
@@ -5083,10 +5186,10 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0054_relay_container_shard_activations.sql"
+            "0055_relay_container_shard_activation_campaigns.sql"
         );
         assert_eq!(
-            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 6..],
+            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 7..],
             &[
                 "0049_relay_container_provider_usage_binding.sql",
                 "0050_relay_container_atomic_admission.sql",
@@ -5094,6 +5197,7 @@ mod tests {
                 "0052_relay_container_provider_response_artifacts.sql",
                 "0053_relay_container_financial_terminal_v2.sql",
                 "0054_relay_container_shard_activations.sql",
+                "0055_relay_container_shard_activation_campaigns.sql",
             ]
         );
         assert!(

@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 
 export const SHARD_REGISTRY_CAPTURE_CONTRACT =
-  "cinatoken-relay-container-shard-registry-capture-v1";
+  "cinatoken-relay-container-shard-registry-capture-v2";
 export const SHARD_ACTIVATION_LEDGER_CONTRACT =
   "cinatoken-relay-container-shard-activation-v1";
-export const SHARD_REGISTRY_COLLECTOR_VERSION = 1;
+export const SHARD_ACTIVATION_CAMPAIGN_CONTRACT =
+  "cinatoken-relay-container-shard-activation-campaign-v1";
+export const SHARD_REGISTRY_COLLECTOR_VERSION = 2;
 
 export const MAX_SHARD_COUNT = 1_024;
 export const MAX_LEDGER_RECORDS = 4_096;
@@ -12,11 +14,13 @@ export const ACTIVATION_PAGE_SIZE = 64;
 
 const MIN_OBSERVATION_SECONDS = 5 * 60;
 const MAX_OBSERVATION_SECONDS = 2 * 60 * 60;
-const ACTIVATION_FRESHNESS_SECONDS = 2 * 60 * 60;
-const ACTIVATION_CLOCK_SKEW_SECONDS = 60;
 
 const activationDigestDomain = Buffer.from(
   "cinatoken:relay-container-shard-activation:v1\0",
+  "utf8",
+);
+const consumptionDigestDomain = Buffer.from(
+  "cinatoken:relay-container-shard-activation-campaign-consumption:v1\0",
   "utf8",
 );
 const lowerSha256Pattern = /^[0-9a-f]{64}$/;
@@ -44,6 +48,103 @@ const activationRecordKeys = Object.freeze([
   "activated_at",
 ]);
 
+const campaignReadbackKeys = Object.freeze([
+  "contract_version",
+  "campaign_contract",
+  "state",
+  "campaign_id",
+  "controller_version_id",
+  "action_gate_inventory_sha256",
+  "action_gate_count",
+  "all_action_gates_false",
+  "foundation_manifest_sha256",
+  "runtime_build_id",
+  "ring_generation",
+  "shard_count",
+  "shard_contract_version",
+  "runtime_protocol_version",
+  "runtime_contract_version",
+  "activation_generation",
+  "environment",
+  "campaign_digest_sha256",
+  "created_at",
+  "expires_at",
+  "claimed_shard_count",
+  "consumed_shard_count",
+  "seal_reason",
+  "seal_detail_code",
+  "last_consumption_digest_sha256",
+  "sealed_at",
+  "receipts",
+]);
+
+const campaignReceiptKeys = Object.freeze([
+  "campaign_id",
+  "shard_index",
+  "claim_digest_sha256",
+  "probe_id",
+  "campaign_digest_sha256",
+  "controller_version_id",
+  "action_gate_inventory_sha256",
+  "action_gate_count",
+  "all_action_gates_false",
+  "foundation_manifest_sha256",
+  "ring_generation",
+  "shard_count",
+  "instance_name",
+  "shard_contract_version",
+  "runtime_protocol_version",
+  "runtime_contract_version",
+  "runtime_build_id",
+  "activation_generation",
+  "activation_probe_generation",
+  "environment",
+  "container_status",
+  "readiness_result_code",
+  "readiness_result_sha256",
+  "process_ready",
+  "runtime_execution_enabled",
+  "controller_execution_enabled",
+  "activation_digest_sha256",
+  "consumption_digest_sha256",
+  "readiness_checked_at",
+  "consumed_at",
+]);
+
+const campaignSnapshotKeys = Object.freeze([
+  "capturedAt",
+  "contractVersion",
+  "campaignContract",
+  "state",
+  "campaignId",
+  "controllerVersionId",
+  "actionGateInventorySha256",
+  "actionGateCount",
+  "allActionGatesFalse",
+  "foundationManifestSha256",
+  "runtimeBuildId",
+  "ringGeneration",
+  "shardCount",
+  "shardContractVersion",
+  "runtimeProtocolVersion",
+  "runtimeContractVersion",
+  "activationGeneration",
+  "environment",
+  "campaignDigestSha256",
+  "createdAt",
+  "expiresAt",
+  "claimedShardCount",
+  "consumedShardCount",
+  "sealReason",
+  "sealDetailCode",
+  "lastConsumptionDigestSha256",
+  "sealedAt",
+  "receiptCount",
+  "receiptSetSha256",
+  "snapshotSha256",
+  "receipts",
+]);
+
 export class ShardRegistryError extends Error {}
 
 export function canonicalJson(value) {
@@ -58,7 +159,7 @@ export function activationDigestSha256({ controllerVersionId, ringGeneration, re
   requireToken(controllerVersionId, versionIdPattern, "Controller version ID");
   requireInteger(ringGeneration, 1, 1_000_000, "ring generation");
   validateActivationRecordShape(record);
-  const values = [
+  return digestParts(activationDigestDomain, [
     controllerVersionId,
     ringGeneration,
     record.shard_count,
@@ -77,17 +178,90 @@ export function activationDigestSha256({ controllerVersionId, ringGeneration, re
     Number(record.runtime_execution_enabled),
     Number(record.controller_execution_enabled),
     record.activated_at,
-  ];
-  const hash = createHash("sha256");
-  hash.update(activationDigestDomain);
-  for (const value of values) {
-    const bytes = Buffer.from(String(value), "utf8");
-    const length = Buffer.allocUnsafe(4);
-    length.writeUInt32BE(bytes.length);
-    hash.update(length);
-    hash.update(bytes);
+  ]);
+}
+
+export function campaignConsumptionDigestSha256(receipt) {
+  receipt = requireObject(receipt, "campaign consumption receipt");
+  for (const field of [
+    "campaign_id",
+    "campaign_digest_sha256",
+    "claim_digest_sha256",
+    "activation_digest_sha256",
+    "readiness_result_sha256",
+  ]) {
+    requireToken(receipt[field], lowerSha256Pattern, `campaign receipt ${field}`);
   }
-  return hash.digest("hex");
+  requireInteger(
+    receipt.readiness_checked_at,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    "campaign receipt readiness timestamp",
+  );
+  return digestParts(consumptionDigestDomain, [
+    receipt.campaign_id,
+    receipt.campaign_digest_sha256,
+    receipt.claim_digest_sha256,
+    receipt.activation_digest_sha256,
+    receipt.readiness_result_sha256,
+    receipt.readiness_checked_at,
+  ]);
+}
+
+export function buildCampaignSnapshot({ capturedAt, campaign, expected = {} }) {
+  requireTimestamp(capturedAt, "campaign snapshot capturedAt");
+  campaign = validateCampaignReadback(campaign, expected);
+  const receiptSetSha256 = sha256Canonical(campaign.receipts);
+  const snapshot = {
+    capturedAt,
+    contractVersion: campaign.contract_version,
+    campaignContract: campaign.campaign_contract,
+    state: campaign.state,
+    campaignId: campaign.campaign_id,
+    controllerVersionId: campaign.controller_version_id,
+    actionGateInventorySha256: campaign.action_gate_inventory_sha256,
+    actionGateCount: campaign.action_gate_count,
+    allActionGatesFalse: campaign.all_action_gates_false,
+    foundationManifestSha256: campaign.foundation_manifest_sha256,
+    runtimeBuildId: campaign.runtime_build_id,
+    ringGeneration: campaign.ring_generation,
+    shardCount: campaign.shard_count,
+    shardContractVersion: campaign.shard_contract_version,
+    runtimeProtocolVersion: campaign.runtime_protocol_version,
+    runtimeContractVersion: campaign.runtime_contract_version,
+    activationGeneration: campaign.activation_generation,
+    environment: campaign.environment,
+    campaignDigestSha256: campaign.campaign_digest_sha256,
+    createdAt: campaign.created_at,
+    expiresAt: campaign.expires_at,
+    claimedShardCount: campaign.claimed_shard_count,
+    consumedShardCount: campaign.consumed_shard_count,
+    sealReason: campaign.seal_reason,
+    sealDetailCode: campaign.seal_detail_code,
+    lastConsumptionDigestSha256: campaign.last_consumption_digest_sha256,
+    sealedAt: campaign.sealed_at,
+    receiptCount: campaign.receipts.length,
+    receiptSetSha256,
+    snapshotSha256: "",
+    receipts: campaign.receipts,
+  };
+  snapshot.snapshotSha256 = campaignSnapshotDigest(snapshot);
+  return snapshot;
+}
+
+export function validateCampaignSnapshot(value, expected = {}) {
+  const snapshot = requireObject(value, "campaign snapshot");
+  exactKeys(snapshot, campaignSnapshotKeys, "campaign snapshot");
+  requireTimestamp(snapshot.capturedAt, "campaign snapshot capturedAt");
+  const rebuilt = buildCampaignSnapshot({
+    capturedAt: snapshot.capturedAt,
+    campaign: campaignReadbackFromSnapshot(snapshot),
+    expected,
+  });
+  if (canonicalJson(rebuilt) !== canonicalJson(snapshot)) {
+    throw new ShardRegistryError("campaign snapshot contains derived-field drift");
+  }
+  return rebuilt;
 }
 
 export function validateActivationPage(value, expected = {}) {
@@ -222,7 +396,15 @@ export function buildActivationSnapshot({ capturedAt, pages }) {
   };
 }
 
-export function buildShardRegistryCapture({ candidate, observationStartedAt, observationEndedAt, before, after }) {
+export function buildShardRegistryCapture({
+  candidate,
+  observationStartedAt,
+  observationEndedAt,
+  campaignBefore,
+  campaignAfter,
+  before,
+  after,
+}) {
   candidate = validateRegistryCandidate(candidate);
   requireTimestamp(observationStartedAt, "registry observation start");
   requireTimestamp(observationEndedAt, "registry observation end");
@@ -234,8 +416,20 @@ export function buildShardRegistryCapture({ candidate, observationStartedAt, obs
   ) {
     throw new ShardRegistryError("registry observation window is invalid");
   }
+  campaignBefore = validateCampaignSnapshot(campaignBefore, candidate);
+  campaignAfter = validateCampaignSnapshot(campaignAfter, candidate);
   before = validateSnapshot(before, candidate, "before");
   after = validateSnapshot(after, candidate, "after");
+  requireExact(
+    campaignBefore.capturedAt,
+    observationStartedAt,
+    "before campaign observation boundary",
+  );
+  requireExact(
+    campaignAfter.capturedAt,
+    observationEndedAt,
+    "after campaign observation boundary",
+  );
   requireExact(
     before.capturedAt,
     observationStartedAt,
@@ -247,6 +441,9 @@ export function buildShardRegistryCapture({ candidate, observationStartedAt, obs
     "after activation observation boundary",
   );
 
+  if (campaignBefore.snapshotSha256 !== campaignAfter.snapshotSha256) {
+    throw new ShardRegistryError("activation campaign readback drifted");
+  }
   const blockers = [];
   if (before.highWatermark !== after.highWatermark) blockers.push("activation-high-watermark-drift");
   if (before.totalRecords !== after.totalRecords) blockers.push("activation-record-count-drift");
@@ -255,25 +452,35 @@ export function buildShardRegistryCapture({ candidate, observationStartedAt, obs
     blockers.push("activation-record-drift");
   }
 
-  const assessment = assessCandidateRows(
+  const assessment = assessCampaignReceipts(
     after.records,
+    campaignAfter.receipts,
     candidate,
-    observationStartedAt,
   );
   blockers.push(...assessment.blockers);
   const uniqueBlockers = [...new Set(blockers)].sort();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     contract: SHARD_REGISTRY_CAPTURE_CONTRACT,
     environment: "staging",
     collectorVersion: SHARD_REGISTRY_COLLECTOR_VERSION,
     candidate,
+    campaign: campaignBefore,
+    campaignReadback: {
+      beforeCapturedAt: campaignBefore.capturedAt,
+      afterCapturedAt: campaignAfter.capturedAt,
+      beforeSnapshotSha256: campaignBefore.snapshotSha256,
+      afterSnapshotSha256: campaignAfter.snapshotSha256,
+      stable: campaignBefore.snapshotSha256 === campaignAfter.snapshotSha256,
+    },
     observationStartedAt,
     observationEndedAt,
     before,
     after,
+    stableCampaignSha256: campaignBefore.snapshotSha256,
     stableEntriesSha256: before.entriesSha256,
     verifiedShardCount: assessment.verifiedShardCount,
+    verifiedReceiptCount: assessment.verifiedReceiptCount,
     missingShardCount: assessment.missingShardCount,
     duplicateShardCount: assessment.duplicateShardCount,
     unknownShardCount: assessment.unknownShardCount,
@@ -300,12 +507,16 @@ export function validateShardRegistryCapture(value, expectedCandidate = undefine
       "environment",
       "collectorVersion",
       "candidate",
+      "campaign",
+      "campaignReadback",
       "observationStartedAt",
       "observationEndedAt",
       "before",
       "after",
+      "stableCampaignSha256",
       "stableEntriesSha256",
       "verifiedShardCount",
+      "verifiedReceiptCount",
       "missingShardCount",
       "duplicateShardCount",
       "unknownShardCount",
@@ -316,10 +527,29 @@ export function validateShardRegistryCapture(value, expectedCandidate = undefine
     ],
     "shard registry capture",
   );
+  const readback = requireObject(capture.campaignReadback, "campaign readback summary");
+  exactKeys(
+    readback,
+    [
+      "beforeCapturedAt",
+      "afterCapturedAt",
+      "beforeSnapshotSha256",
+      "afterSnapshotSha256",
+      "stable",
+    ],
+    "campaign readback summary",
+  );
+  const campaignAfter = {
+    ...capture.campaign,
+    capturedAt: readback.afterCapturedAt,
+    snapshotSha256: readback.afterSnapshotSha256,
+  };
   const rebuilt = buildShardRegistryCapture({
     candidate: capture.candidate,
     observationStartedAt: capture.observationStartedAt,
     observationEndedAt: capture.observationEndedAt,
+    campaignBefore: capture.campaign,
+    campaignAfter,
     before: capture.before,
     after: capture.after,
   });
@@ -356,6 +586,172 @@ export function validateRegistryCandidate(value) {
   requireInteger(candidate.ringGeneration, 1, 1_000_000, "candidate ring generation");
   requireInteger(candidate.shardCount, 1, MAX_SHARD_COUNT, "candidate shard count");
   return { ...candidate };
+}
+
+function validateCampaignReadback(value, expected) {
+  const campaign = requireObject(value, "activation campaign readback");
+  exactKeys(campaign, campaignReadbackKeys, "activation campaign readback");
+  requireExact(campaign.contract_version, 1, "campaign contract version");
+  requireExact(campaign.campaign_contract, SHARD_ACTIVATION_CAMPAIGN_CONTRACT, "campaign contract");
+  requireExact(campaign.state, "sealed_complete", "campaign state");
+  requireToken(campaign.campaign_id, lowerSha256Pattern, "campaign ID");
+  requireToken(campaign.controller_version_id, versionIdPattern, "campaign Controller version ID");
+  requireToken(campaign.action_gate_inventory_sha256, lowerSha256Pattern, "campaign action gate digest");
+  requireExact(campaign.action_gate_count, 22, "campaign action gate count");
+  requireExact(campaign.all_action_gates_false, true, "campaign action gate state");
+  requireToken(campaign.foundation_manifest_sha256, lowerSha256Pattern, "campaign foundation manifest digest");
+  requireToken(campaign.runtime_build_id, lowerSha256Pattern, "campaign runtime build ID");
+  requireInteger(campaign.ring_generation, 1, 1_000_000, "campaign ring generation");
+  requireInteger(campaign.shard_count, 1, MAX_SHARD_COUNT, "campaign shard count");
+  requireExact(campaign.shard_contract_version, 1, "campaign shard contract version");
+  requireExact(campaign.runtime_protocol_version, 1, "campaign runtime protocol version");
+  requireExact(campaign.runtime_contract_version, 1, "campaign runtime contract version");
+  requireExact(campaign.activation_generation, 1, "campaign activation generation");
+  requireExact(campaign.environment, "staging", "campaign environment");
+  requireToken(campaign.campaign_digest_sha256, lowerSha256Pattern, "campaign digest");
+  requireInteger(campaign.created_at, 1, Number.MAX_SAFE_INTEGER, "campaign creation timestamp");
+  requireInteger(campaign.expires_at, campaign.created_at + 1, Number.MAX_SAFE_INTEGER, "campaign expiry timestamp");
+  if (campaign.expires_at > campaign.created_at + 3_600) {
+    throw new ShardRegistryError("campaign expiry window is invalid");
+  }
+  requireExact(campaign.claimed_shard_count, campaign.shard_count, "campaign claimed shard count");
+  requireExact(campaign.consumed_shard_count, campaign.shard_count, "campaign consumed shard count");
+  requireExact(campaign.seal_reason, "complete", "campaign seal reason");
+  requireExact(campaign.seal_detail_code, "all_shards_consumed", "campaign seal detail");
+  requireToken(campaign.last_consumption_digest_sha256, lowerSha256Pattern, "campaign last consumption digest");
+  requireInteger(campaign.sealed_at, campaign.created_at, campaign.expires_at, "campaign seal timestamp");
+  if (!Array.isArray(campaign.receipts) || campaign.receipts.length !== campaign.shard_count) {
+    throw new ShardRegistryError("campaign receipts do not cover every shard");
+  }
+  const seenClaimDigests = new Set();
+  const seenProbeIds = new Set();
+  const seenActivationDigests = new Set();
+  const seenConsumptionDigests = new Set();
+  let lastReceiptFound = false;
+  const receipts = campaign.receipts.map((receipt, shardIndex) => {
+    validateCampaignReceipt(receipt, campaign, shardIndex);
+    requireUnique(seenClaimDigests, receipt.claim_digest_sha256, "campaign receipt claim digest");
+    requireUnique(seenProbeIds, receipt.probe_id, "campaign receipt probe ID");
+    requireUnique(
+      seenActivationDigests,
+      receipt.activation_digest_sha256,
+      "campaign receipt activation digest",
+    );
+    requireUnique(
+      seenConsumptionDigests,
+      receipt.consumption_digest_sha256,
+      "campaign receipt consumption digest",
+    );
+    if (receipt.consumption_digest_sha256 === campaign.last_consumption_digest_sha256) {
+      if (receipt.consumed_at !== campaign.sealed_at) {
+        throw new ShardRegistryError("campaign final receipt does not match the seal timestamp");
+      }
+      lastReceiptFound = true;
+    }
+    return receipt;
+  });
+  if (!lastReceiptFound) {
+    throw new ShardRegistryError("campaign seal does not reference a consumption receipt");
+  }
+  if (expected.campaignId !== undefined) {
+    requireExact(campaign.campaign_id, expected.campaignId, "campaign ID");
+  }
+  if (expected.foundationManifestSha256 !== undefined) {
+    requireExact(
+      campaign.foundation_manifest_sha256,
+      expected.foundationManifestSha256,
+      "campaign foundation manifest digest",
+    );
+  }
+  if (expected.controllerVersionId !== undefined) {
+    requireExact(campaign.controller_version_id, expected.controllerVersionId, "campaign Controller version ID");
+  }
+  if (expected.runtimeBuildId !== undefined) {
+    requireExact(campaign.runtime_build_id, expected.runtimeBuildId, "campaign runtime build ID");
+  }
+  if (expected.ringGeneration !== undefined) {
+    requireExact(campaign.ring_generation, expected.ringGeneration, "campaign ring generation");
+  }
+  if (expected.shardCount !== undefined) {
+    requireExact(campaign.shard_count, expected.shardCount, "campaign shard count");
+  }
+  return { ...campaign, receipts };
+}
+
+function validateCampaignReceipt(receipt, campaign, expectedShardIndex) {
+  receipt = requireObject(receipt, "campaign consumption receipt");
+  exactKeys(receipt, campaignReceiptKeys, "campaign consumption receipt");
+  requireExact(receipt.campaign_id, campaign.campaign_id, "receipt campaign ID");
+  requireExact(receipt.shard_index, expectedShardIndex, "receipt shard coverage");
+  requireToken(receipt.claim_digest_sha256, lowerSha256Pattern, "receipt claim digest");
+  requireToken(receipt.probe_id, lowerSha256Pattern, "receipt probe ID");
+  requireExact(receipt.campaign_digest_sha256, campaign.campaign_digest_sha256, "receipt campaign digest");
+  requireExact(receipt.controller_version_id, campaign.controller_version_id, "receipt Controller version ID");
+  requireExact(
+    receipt.action_gate_inventory_sha256,
+    campaign.action_gate_inventory_sha256,
+    "receipt action gate digest",
+  );
+  requireExact(receipt.action_gate_count, 22, "receipt action gate count");
+  requireExact(receipt.all_action_gates_false, true, "receipt action gate state");
+  requireExact(
+    receipt.foundation_manifest_sha256,
+    campaign.foundation_manifest_sha256,
+    "receipt foundation manifest digest",
+  );
+  requireExact(receipt.ring_generation, campaign.ring_generation, "receipt ring generation");
+  requireExact(receipt.shard_count, campaign.shard_count, "receipt shard count");
+  requireExact(
+    receipt.instance_name,
+    `cinatoken-relay-shard-v1-${String(expectedShardIndex).padStart(4, "0")}`,
+    "receipt instance name",
+  );
+  requireExact(receipt.shard_contract_version, campaign.shard_contract_version, "receipt shard contract");
+  requireExact(receipt.runtime_protocol_version, campaign.runtime_protocol_version, "receipt runtime protocol");
+  requireExact(receipt.runtime_contract_version, campaign.runtime_contract_version, "receipt runtime contract");
+  requireExact(receipt.runtime_build_id, campaign.runtime_build_id, "receipt runtime build ID");
+  requireExact(receipt.activation_generation, campaign.activation_generation, "receipt activation generation");
+  requireInteger(receipt.activation_probe_generation, 1, 1_000_000, "receipt activation probe generation");
+  requireExact(receipt.environment, campaign.environment, "receipt environment");
+  requireExact(receipt.container_status, "healthy", "receipt Container status");
+  requireExact(
+    receipt.readiness_result_code,
+    "process_ready_execution_disabled",
+    "receipt readiness result",
+  );
+  requireToken(receipt.readiness_result_sha256, lowerSha256Pattern, "receipt readiness result digest");
+  requireExact(receipt.process_ready, true, "receipt process readiness");
+  requireExact(receipt.runtime_execution_enabled, false, "receipt runtime execution gate");
+  requireExact(receipt.controller_execution_enabled, false, "receipt Controller execution gate");
+  requireToken(receipt.activation_digest_sha256, lowerSha256Pattern, "receipt activation digest");
+  requireToken(receipt.consumption_digest_sha256, lowerSha256Pattern, "receipt consumption digest");
+  requireInteger(
+    receipt.readiness_checked_at,
+    campaign.created_at,
+    campaign.expires_at,
+    "receipt readiness timestamp",
+  );
+  requireInteger(
+    receipt.consumed_at,
+    receipt.readiness_checked_at,
+    campaign.expires_at,
+    "receipt consumption timestamp",
+  );
+  const activationRecord = activationRecordFromReceipt(receipt, 1);
+  requireExact(
+    receipt.activation_digest_sha256,
+    activationDigestSha256({
+      controllerVersionId: campaign.controller_version_id,
+      ringGeneration: campaign.ring_generation,
+      record: activationRecord,
+    }),
+    "receipt activation digest",
+  );
+  requireExact(
+    receipt.consumption_digest_sha256,
+    campaignConsumptionDigestSha256(receipt),
+    "receipt consumption digest",
+  );
 }
 
 function validateSnapshot(snapshot, candidate, label) {
@@ -403,63 +799,68 @@ function validateSnapshot(snapshot, candidate, label) {
   return snapshot;
 }
 
-function assessCandidateRows(records, candidate, observationStartedAt) {
-  const candidateByShard = new Map();
+function assessCampaignReceipts(records, receipts, candidate) {
+  const receiptByDigest = new Map(
+    receipts.map((receipt) => [receipt.activation_digest_sha256, receipt]),
+  );
+  const associatedByShard = new Map();
   let unknownShardCount = 0;
-  let staleActivationCount = 0;
-  const observationStartedSeconds = Date.parse(observationStartedAt) / 1_000;
-  const minimumActivatedAt =
-    observationStartedSeconds - ACTIVATION_FRESHNESS_SECONDS;
-  const maximumActivatedAt =
-    observationStartedSeconds + ACTIVATION_CLOCK_SKEW_SECONDS;
   for (const record of records) {
-    const matches =
-      record.runtime_build_id === candidate.runtimeBuildId &&
-      record.shard_count === candidate.shardCount &&
-      record.shard_contract_version === 1 &&
-      record.runtime_protocol_version === 1 &&
-      record.runtime_contract_version === 1 &&
-      record.activation_generation === 1 &&
-      record.environment === "staging" &&
-      record.container_status === "healthy" &&
-      record.readiness_result_code === "process_ready_execution_disabled" &&
-      record.process_ready === true &&
-      record.runtime_execution_enabled === false &&
-      record.controller_execution_enabled === false;
-    if (!matches) {
+    const receipt = receiptByDigest.get(record.activation_digest_sha256);
+    if (!receipt || !activationMatchesReceipt(record, receipt, candidate)) {
       unknownShardCount += 1;
       continue;
     }
-    if (
-      record.activated_at < minimumActivatedAt ||
-      record.activated_at > maximumActivatedAt
-    ) {
-      staleActivationCount += 1;
-      continue;
-    }
-    const rows = candidateByShard.get(record.shard_index) ?? [];
+    const rows = associatedByShard.get(receipt.shard_index) ?? [];
     rows.push(record);
-    candidateByShard.set(record.shard_index, rows);
+    associatedByShard.set(receipt.shard_index, rows);
   }
   let verifiedShardCount = 0;
   let missingShardCount = 0;
   let duplicateShardCount = 0;
   for (let shardIndex = 0; shardIndex < candidate.shardCount; shardIndex += 1) {
-    const rows = candidateByShard.get(shardIndex) ?? [];
+    const rows = associatedByShard.get(shardIndex) ?? [];
     if (rows.length === 0) missingShardCount += 1;
     else if (rows.length === 1) verifiedShardCount += 1;
     else duplicateShardCount += rows.length - 1;
   }
-  for (const shardIndex of candidateByShard.keys()) {
-    if (shardIndex < 0 || shardIndex >= candidate.shardCount) unknownShardCount += 1;
-  }
   const blockers = [];
-  if (verifiedShardCount !== candidate.shardCount) blockers.push("candidate-shards-incomplete");
-  if (missingShardCount !== 0) blockers.push("candidate-shards-missing");
-  if (duplicateShardCount !== 0) blockers.push("candidate-shards-duplicated");
+  if (verifiedShardCount !== candidate.shardCount) blockers.push("campaign-receipt-activations-incomplete");
+  if (missingShardCount !== 0) blockers.push("campaign-receipt-activations-missing");
+  if (duplicateShardCount !== 0) blockers.push("campaign-receipt-activations-duplicated");
   if (unknownShardCount !== 0) blockers.push("unknown-shard-activations-present");
-  if (staleActivationCount !== 0) blockers.push("candidate-shard-activations-stale");
-  return { verifiedShardCount, missingShardCount, duplicateShardCount, unknownShardCount, blockers };
+  return {
+    verifiedShardCount,
+    verifiedReceiptCount: verifiedShardCount,
+    missingShardCount,
+    duplicateShardCount,
+    unknownShardCount,
+    blockers,
+  };
+}
+
+function activationMatchesReceipt(record, receipt, candidate) {
+  return (
+    record.shard_count === receipt.shard_count &&
+    record.shard_count === candidate.shardCount &&
+    record.shard_index === receipt.shard_index &&
+    record.instance_name === receipt.instance_name &&
+    record.shard_contract_version === receipt.shard_contract_version &&
+    record.runtime_protocol_version === receipt.runtime_protocol_version &&
+    record.runtime_contract_version === receipt.runtime_contract_version &&
+    record.runtime_build_id === receipt.runtime_build_id &&
+    record.runtime_build_id === candidate.runtimeBuildId &&
+    record.activation_generation === receipt.activation_generation &&
+    record.activation_probe_generation === receipt.activation_probe_generation &&
+    record.environment === receipt.environment &&
+    record.container_status === receipt.container_status &&
+    record.readiness_result_code === receipt.readiness_result_code &&
+    record.process_ready === receipt.process_ready &&
+    record.runtime_execution_enabled === receipt.runtime_execution_enabled &&
+    record.controller_execution_enabled === receipt.controller_execution_enabled &&
+    record.activation_digest_sha256 === receipt.activation_digest_sha256 &&
+    record.activated_at === receipt.readiness_checked_at
+  );
 }
 
 function validateActivationRecord(record, { controllerVersionId, ringGeneration, highWatermark }) {
@@ -484,10 +885,7 @@ function validateActivationRecord(record, { controllerVersionId, ringGeneration,
   requireToken(record.runtime_build_id, lowerSha256Pattern, "activation runtime build ID");
   requireExact(record.environment, "staging", "activation environment");
   requireExact(record.container_status, "healthy", "activation Container status");
-  if (![
-    "process_ready_execution_disabled",
-    "execution_ready",
-  ].includes(record.readiness_result_code)) {
+  if (!["process_ready_execution_disabled", "execution_ready"].includes(record.readiness_result_code)) {
     throw new ShardRegistryError("activation readiness result is invalid");
   }
   requireBoolean(record.process_ready, "activation process readiness");
@@ -519,6 +917,81 @@ function validateActivationRecord(record, { controllerVersionId, ringGeneration,
 function validateActivationRecordShape(record) {
   record = requireObject(record, "activation record");
   exactKeys(record, activationRecordKeys, "activation record");
+}
+
+function activationRecordFromReceipt(receipt, registryEventSequence) {
+  return {
+    registry_event_sequence: registryEventSequence,
+    shard_count: receipt.shard_count,
+    shard_index: receipt.shard_index,
+    instance_name: receipt.instance_name,
+    shard_contract_version: receipt.shard_contract_version,
+    runtime_protocol_version: receipt.runtime_protocol_version,
+    runtime_contract_version: receipt.runtime_contract_version,
+    runtime_build_id: receipt.runtime_build_id,
+    activation_generation: receipt.activation_generation,
+    activation_probe_generation: receipt.activation_probe_generation,
+    environment: receipt.environment,
+    container_status: receipt.container_status,
+    readiness_result_code: receipt.readiness_result_code,
+    process_ready: receipt.process_ready,
+    runtime_execution_enabled: receipt.runtime_execution_enabled,
+    controller_execution_enabled: receipt.controller_execution_enabled,
+    activation_digest_sha256: receipt.activation_digest_sha256,
+    activated_at: receipt.readiness_checked_at,
+  };
+}
+
+function campaignSnapshotDigest(snapshot) {
+  const digestInput = { ...snapshot };
+  delete digestInput.capturedAt;
+  delete digestInput.snapshotSha256;
+  return sha256Canonical(digestInput);
+}
+
+function campaignReadbackFromSnapshot(snapshot) {
+  return {
+    contract_version: snapshot.contractVersion,
+    campaign_contract: snapshot.campaignContract,
+    state: snapshot.state,
+    campaign_id: snapshot.campaignId,
+    controller_version_id: snapshot.controllerVersionId,
+    action_gate_inventory_sha256: snapshot.actionGateInventorySha256,
+    action_gate_count: snapshot.actionGateCount,
+    all_action_gates_false: snapshot.allActionGatesFalse,
+    foundation_manifest_sha256: snapshot.foundationManifestSha256,
+    runtime_build_id: snapshot.runtimeBuildId,
+    ring_generation: snapshot.ringGeneration,
+    shard_count: snapshot.shardCount,
+    shard_contract_version: snapshot.shardContractVersion,
+    runtime_protocol_version: snapshot.runtimeProtocolVersion,
+    runtime_contract_version: snapshot.runtimeContractVersion,
+    activation_generation: snapshot.activationGeneration,
+    environment: snapshot.environment,
+    campaign_digest_sha256: snapshot.campaignDigestSha256,
+    created_at: snapshot.createdAt,
+    expires_at: snapshot.expiresAt,
+    claimed_shard_count: snapshot.claimedShardCount,
+    consumed_shard_count: snapshot.consumedShardCount,
+    seal_reason: snapshot.sealReason,
+    seal_detail_code: snapshot.sealDetailCode,
+    last_consumption_digest_sha256: snapshot.lastConsumptionDigestSha256,
+    sealed_at: snapshot.sealedAt,
+    receipts: snapshot.receipts,
+  };
+}
+
+function digestParts(domain, values) {
+  const hash = createHash("sha256");
+  hash.update(domain);
+  for (const value of values) {
+    const bytes = Buffer.from(String(value), "utf8");
+    const length = Buffer.allocUnsafe(4);
+    length.writeUInt32BE(bytes.length);
+    hash.update(length);
+    hash.update(bytes);
+  }
+  return hash.digest("hex");
 }
 
 function canonicalValue(value) {
@@ -571,6 +1044,10 @@ function requireInteger(value, min, max, label) {
 
 function requireBoolean(value, label) {
   if (typeof value !== "boolean") throw new ShardRegistryError(`${label} is invalid`);
+}
+
+function requireUnique(seen, value, label) {
+  if (!seen.add(value)) throw new ShardRegistryError(`${label} is duplicated`);
 }
 
 function requireTimestamp(value, label) {

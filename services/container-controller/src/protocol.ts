@@ -208,6 +208,14 @@ export interface ShardReadinessProbe {
   protocol_version: number;
   shard: OperationShard;
   wake_container: boolean;
+  activation_campaign?: ShardActivationCampaignCredential;
+}
+
+export interface ShardActivationCampaignCredential {
+  contract_version: 1;
+  campaign_id: string;
+  nonce: string;
+  confirm_consume: true;
 }
 
 export interface VerifiedShardReadinessProbe {
@@ -1216,7 +1224,12 @@ export function parseReadinessProbe(
 ): ShardReadinessProbe {
   const code = "invalid_readiness_probe";
   const value = parseJsonObject(body, code);
-  assertExactKeys(value, ["protocol_version", "shard", "wake_container"], code);
+  assertExactKeys(
+    value,
+    ["protocol_version", "shard", "wake_container", "activation_campaign"],
+    code,
+    true,
+  );
   const shardValue = readObject(value, "shard", code);
   assertExactKeys(
     shardValue,
@@ -1232,11 +1245,34 @@ export function parseReadinessProbe(
     instance_name: readString(shardValue, "instance_name", 29, 64, /^[a-z0-9-]+$/, code),
   };
   validateShardFence(protocolVersion, shard, env);
-  return {
+  const wakeContainer = readBoolean(value, "wake_container", code);
+  const probe: ShardReadinessProbe = {
     protocol_version: protocolVersion,
     shard,
-    wake_container: readBoolean(value, "wake_container", code),
+    wake_container: wakeContainer,
   };
+  if (value.activation_campaign !== undefined) {
+    const campaign = readObject(value, "activation_campaign", code);
+    assertExactKeys(
+      campaign,
+      ["contract_version", "campaign_id", "nonce", "confirm_consume"],
+      code,
+    );
+    if (
+      !wakeContainer ||
+      readInteger(campaign, "contract_version", 1, 1, code) !== 1 ||
+      !readBoolean(campaign, "confirm_consume", code)
+    ) {
+      throw new ProtocolError(code, 400);
+    }
+    probe.activation_campaign = {
+      contract_version: 1,
+      campaign_id: readString(campaign, "campaign_id", 64, 64, LOWER_HEX_64, code),
+      nonce: readString(campaign, "nonce", 64, 64, LOWER_HEX_64, code),
+      confirm_consume: true,
+    };
+  }
+  return probe;
 }
 
 function validateShardFence(

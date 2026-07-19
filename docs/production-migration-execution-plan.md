@@ -389,8 +389,8 @@ environment and is not a Container cutover flag.
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence; authenticated resource and secret-name readback; disabled provider-egress, Controller, then edge reader deployment; remote 0001-0051 with every action gate false; drained 0052 followed by 0053, then default-off 0054 apply/readback; `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 54/54 replay with 58 tables, 694 checked incremental columns, and 83 key indexes plus clean 0052/0053/0054 pre/post audits are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence; authenticated resource and secret-name readback; disabled provider-egress, Controller, then edge reader deployment; remote 0001-0051 with every action gate false; drained 0052 followed by 0053, then default-off 0054 and 0055 apply/readback; `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 55/55 replay with 62 tables, 771 checked incremental columns, and 91 key indexes plus clean 0052/0053/0054/0055 pre/post audits are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go, and Container operation/billing/quota/audit terminal state commits atomically | Golden fixtures, cross-ledger D1 batch rollback faults, exact replay, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -404,7 +404,7 @@ environment and is not a Container cutover flag.
 | Workstream | Current Status | Production Target | Next Evidence |
 | --- | --- | --- | --- |
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
-| Data migration | Partial: local exact-set SQLite replay passes 54/54 migrations, 58 tables, 694 checked incremental columns, and 83 key indexes; 0052 adds drained immutable provider/client response evidence, 0053 adds financial terminal v2, and 0054 adds the immutable shard activation ledger while all tracked action gates remain false; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated reader-first remote staging apply with all gates false; exact writer/version inventory; pre-0052 drain; ordered 0052, 0053, then 0054 backup/apply/readback/post-audit; immutable negative probes; unchanged business fingerprint; real source inventory; staging import report; rollback point |
+| Data migration | Partial: local exact-set SQLite replay passes 55/55 migrations, 62 tables, 771 checked incremental columns, and 91 key indexes; 0052 adds drained immutable provider/client response evidence, 0053 adds financial terminal v2, 0054 adds the immutable shard activation ledger, and 0055 adds one-time campaign authority while all tracked Controller action gates remain false; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated reader-first remote staging apply with all gates false; exact writer/version inventory; pre-0052 drain; ordered 0052, 0053, 0054, then 0055 backup/apply/readback/post-audit; immutable negative probes; unchanged business fingerprint; real source inventory; staging import report; rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
 | Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers plus bounded commit-watermark compaction and a 1.5 MB local JSON guard, but no deployed retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, deployed hot-token window/structured-clone/load/cost report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
@@ -2163,8 +2163,9 @@ the other.
     isolated synthetic canary be reviewed. Customer and production authority
     remain separate decisions.
 
-Steps 6 and 10 are currently unimplemented and independently block S3/S4.
-Local fixtures for activation and foundation integrity do not waive either
+Step 6 is implemented locally as migration 0055 but is not deployed or
+exercised; step 10 remains unimplemented. Remote S3/S4 therefore remain
+blocked. Local fixtures for activation and foundation integrity waive neither
 requirement.
 
 Rollback disables customer admission, provider/financial writers, schedulers,
@@ -2172,3 +2173,52 @@ and activation recording before artifact changes. It retains 0054, activation
 rows, P3/P4 readers, R2 artifacts, DO state, and evidence. The hot Go target is
 usable only after the live drain contract proves all process-local work and
 bidirectional synchronization. Production remains **NO-GO**.
+
+## 2026-07-19 Migration 0055 Activation Campaign Addendum
+
+This addendum supersedes step 6 above: the same-version one-time campaign is
+implemented locally. Step 10, remote execution, and production authorization
+remain blocked.
+
+### Promotion invariant
+
+S3 succeeds only when one immutable campaign is bound to the deployed
+Controller version and frozen candidate, every one of the 22 Controller action
+gates is false, D1 claims each shard before a DO lookup, the DO performs at
+most one wake per claim, and D1 seals `complete/all_shards_consumed` with exact
+N/N receipts and matching 0054 rows. Aggregate counts without receipts, an
+expired/failed/aborted campaign, or a second campaign after any candidate
+effect is not promotable.
+
+### Execution phases
+
+| Phase | Required action | Pass evidence | Abort and retain |
+| --- | --- | --- | --- |
+| A credential and candidate freeze | Rotate the exposed credential; split deploy/readback identities; freeze commits, versions, image/build/provenance, foundation manifest, resources and rollback | One canonical candidate, no secret in argv/files/output, all static gates false | Any old token, placeholder identity, candidate drift, or provenance gap |
+| B schema expand | Back up staging D1; prove writer/operation drain; apply 0054 then 0055 | Remote 0055/55, 62/771/91, four tables/one view/eight indexes/fourteen triggers, immutable negatives, unchanged business fingerprint | Schema/catalog drift, unexpected rows, incompatible writer, provider or financial delta |
+| C reader/runtime rollout | Deploy provider-egress, Controller and edge readers; roll the exact Container 10% then 100% | Same Controller version metadata, exact runtime build/image, compatible readiness, zero customer/provider/financial effect | Version or image mismatch, N-1 incompatibility, unexplained wake/effect |
+| D campaign create | Root plus step-up creates one 60-3600 second campaign | Open status with zero claims/consumptions; exact candidate/action-gate/foundation digest; nonce handled only in operator memory | Legacy writer enabled, any action gate true, active/conflicting campaign, schema not ready |
+| E shard consumption | Submit one deterministic campaign readiness request per index | D1 claim precedes DO lookup; completed retry is replay-only; result JSON/hash stable; no second wake | Ambiguous journal, timeout, result/hash mismatch, readiness rejection, version/ring/build drift |
+| F seal and readback | Read root campaign status and 0054 frozen snapshot | `sealed_complete`, N/N, receipts `0..N-1`, one-to-one activation rows, final seal digest/timestamp match | Any non-complete seal, gap/duplicate, stale or execution-ready receipt, unexpected activation |
+| G S4 stability and P5 | Capture campaign, activation, action-gate, SBOM/provenance, R2, traffic and control-plane sources over 300-7200 seconds | Identical before/after campaign and activation digests, sources-v3, explicit all-page proof, ten P5 kinds, five signatures | Drift, partial pagination, traffic, unknown writer/object, stale evidence, signature failure |
+
+The campaign capability bypasses only the ordinary edge readiness probe/wake
+flags when a strict campaign credential is present. Ordinary probes remain
+default-off, Controller execution/readiness/provider/action gates remain false,
+and production wake still requires prior staging verification. Do not turn on
+the legacy `CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED` path.
+
+### Failure and rollback
+
+On a pre-claim failure, preserve the open campaign and diagnose without a
+Container wake. On a post-claim timeout or lost response, read the exact D1
+claim and DO journal; never retry a wake. Ambiguous or corrupt journal evidence
+seals failed and retires the candidate. Expiry cron is bounded and idempotent.
+Rollback retains 0054/0055, campaign and journal evidence, readers, image,
+artifacts, and the hot Go authority; it disables customer admission and all
+provider/financial/scheduler writers before any artifact rollback.
+
+No remote action occurred for this addendum. The exposed credential still
+requires rotation, remote 0055 is unapplied, no campaign has run, all-page
+Cloudflare inventory is unproven, and the P5/Go drain packets are absent.
+Production remains **NO-GO**.

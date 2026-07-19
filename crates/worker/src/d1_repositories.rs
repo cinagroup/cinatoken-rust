@@ -65,6 +65,9 @@ pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_V2_MIGRATION: &str =
     "0053_relay_container_financial_terminal_v2.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_MIGRATION: &str =
     "0054_relay_container_shard_activations.sql";
+pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_MIGRATION: &str =
+    "0055_relay_container_shard_activation_campaigns.sql";
+pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT: i64 = 64;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
 pub(crate) const RELAY_CONTAINER_FINANCIAL_TERMINAL_CONTRACT_VERSION: i64 = 2;
@@ -662,6 +665,105 @@ pub struct RelayContainerShardActivationRow {
     pub controller_execution_enabled: i64,
     pub activation_digest_sha256: String,
     pub activated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerShardActivationCampaign<'a> {
+    pub campaign_id: &'a str,
+    pub campaign_nonce_sha256: &'a str,
+    pub controller_version_id: &'a str,
+    pub action_gate_inventory_sha256: &'a str,
+    pub action_gate_count: i64,
+    pub all_action_gates_false: i64,
+    pub foundation_manifest_sha256: &'a str,
+    pub runtime_build_id: &'a str,
+    pub ring_generation: i64,
+    pub shard_count: i64,
+    pub shard_contract_version: i64,
+    pub runtime_protocol_version: i64,
+    pub runtime_contract_version: i64,
+    pub activation_generation: i64,
+    pub environment: &'a str,
+    pub created_by_admin_id: i64,
+    pub campaign_digest_sha256: &'a str,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerShardActivationCampaignStatusRow {
+    pub campaign_id: String,
+    pub campaign_nonce_sha256: String,
+    pub controller_version_id: String,
+    pub action_gate_inventory_sha256: String,
+    pub action_gate_count: i64,
+    pub all_action_gates_false: i64,
+    pub foundation_manifest_sha256: String,
+    pub runtime_build_id: String,
+    pub ring_generation: i64,
+    pub shard_count: i64,
+    pub shard_contract_version: i64,
+    pub runtime_protocol_version: i64,
+    pub runtime_contract_version: i64,
+    pub activation_generation: i64,
+    pub environment: String,
+    pub created_by_admin_id: i64,
+    pub campaign_digest_sha256: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub claimed_shard_count: i64,
+    pub consumed_shard_count: i64,
+    pub seal_reason: Option<String>,
+    pub seal_detail_code: Option<String>,
+    pub last_consumption_digest_sha256: Option<String>,
+    pub sealed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerShardActivationCampaignReceiptRow {
+    pub campaign_id: String,
+    pub shard_index: i64,
+    pub claim_digest_sha256: String,
+    pub probe_id: String,
+    pub campaign_digest_sha256: String,
+    pub controller_version_id: String,
+    pub action_gate_inventory_sha256: String,
+    pub action_gate_count: i64,
+    pub all_action_gates_false: i64,
+    pub foundation_manifest_sha256: String,
+    pub ring_generation: i64,
+    pub shard_count: i64,
+    pub instance_name: String,
+    pub shard_contract_version: i64,
+    pub runtime_protocol_version: i64,
+    pub runtime_contract_version: i64,
+    pub runtime_build_id: String,
+    pub activation_generation: i64,
+    pub activation_probe_generation: i64,
+    pub environment: String,
+    pub container_status: String,
+    pub readiness_result_code: String,
+    pub readiness_result_sha256: String,
+    pub process_ready: i64,
+    pub runtime_execution_enabled: i64,
+    pub controller_execution_enabled: i64,
+    pub activation_digest_sha256: String,
+    pub consumption_digest_sha256: String,
+    pub readiness_checked_at: i64,
+    pub consumed_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerShardActivationCampaignSchemaRow {
+    migration_count: i64,
+    table_count: i64,
+    view_count: i64,
+    campaign_columns: String,
+    claim_columns: String,
+    consumption_columns: String,
+    seal_columns: String,
+    index_count: i64,
+    trigger_count: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10866,6 +10968,374 @@ pub async fn relay_container_shard_activation_schema_ready(
         .first::<CountRow>(None)
         .await?;
     Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn relay_container_shard_activation_campaign_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    let row = db
+        .prepare(
+            r#"
+            SELECT
+              (SELECT COUNT(1)
+               FROM d1_migrations
+               WHERE name = ?1) AS migration_count,
+              (SELECT COUNT(1)
+               FROM sqlite_master
+               WHERE type = 'table'
+                  AND name IN (
+                    'relay_container_shard_activation_campaigns',
+                    'relay_container_shard_activation_campaign_claims',
+                    'relay_container_shard_activation_campaign_consumptions',
+                    'relay_container_shard_activation_campaign_seals'
+                  )) AS table_count,
+              (SELECT COUNT(1)
+               FROM sqlite_master
+               WHERE type = 'view'
+                 AND name = 'relay_container_shard_activation_campaign_expiry_candidates')
+                AS view_count,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_shard_activation_campaigns')
+                 ORDER BY cid
+               )) AS campaign_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_shard_activation_campaign_claims')
+                 ORDER BY cid
+               )) AS claim_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_shard_activation_campaign_consumptions')
+                 ORDER BY cid
+               )) AS consumption_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_shard_activation_campaign_seals')
+                 ORDER BY cid
+               )) AS seal_columns,
+              (SELECT COUNT(1)
+               FROM sqlite_master
+               WHERE type = 'index'
+                 AND name IN (
+                    'idx_relay_container_shard_activation_campaigns_nonce',
+                    'idx_relay_container_shard_activation_campaigns_candidate',
+                    'idx_relay_container_shard_activation_campaign_claims_probe',
+                    'idx_relay_container_shard_activation_campaign_claims_digest',
+                    'idx_relay_container_shard_activation_campaign_claims_instance',
+                    'idx_relay_container_shard_activation_campaign_consumptions_activation',
+                    'idx_relay_container_shard_activation_campaign_consumptions_consumption',
+                    'idx_relay_container_shard_activation_campaign_consumptions_instance'
+                 )) AS index_count,
+              (SELECT COUNT(1)
+               FROM sqlite_master
+               WHERE type = 'trigger'
+                 AND name IN (
+                   'relay_container_shard_activation_campaign_insert_guard',
+                    'relay_container_shard_activation_campaign_update_guard',
+                    'relay_container_shard_activation_campaign_delete_guard',
+                    'relay_container_shard_activation_campaign_claim_insert_guard',
+                    'relay_container_shard_activation_campaign_claim_update_guard',
+                    'relay_container_shard_activation_campaign_claim_delete_guard',
+                    'relay_container_shard_activation_campaign_consumption_insert_guard',
+                   'relay_container_shard_activation_campaign_consumption_apply',
+                   'relay_container_shard_activation_campaign_consumption_update_guard',
+                   'relay_container_shard_activation_campaign_consumption_delete_guard',
+                   'relay_container_shard_activation_campaign_seal_insert_guard',
+                   'relay_container_shard_activation_campaign_seal_update_guard',
+                   'relay_container_shard_activation_campaign_seal_delete_guard',
+                   'relay_container_shard_activation_campaign_authority_guard'
+                 )) AS trigger_count
+            "#,
+        )
+        .bind_refs(&D1Type::Text(
+            RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_MIGRATION,
+        ))?
+        .first::<RelayContainerShardActivationCampaignSchemaRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| {
+        row.migration_count == 1
+            && row.table_count == 4
+            && row.view_count == 1
+            && row.campaign_columns
+                == "campaign_id,campaign_nonce_sha256,controller_version_id,action_gate_inventory_sha256,action_gate_count,all_action_gates_false,foundation_manifest_sha256,runtime_build_id,ring_generation,shard_count,shard_contract_version,runtime_protocol_version,runtime_contract_version,activation_generation,environment,created_by_admin_id,campaign_digest_sha256,created_at,expires_at"
+            && row.claim_columns
+                == "campaign_id,shard_index,presented_nonce_sha256,campaign_digest_sha256,controller_version_id,action_gate_inventory_sha256,action_gate_count,all_action_gates_false,foundation_manifest_sha256,runtime_build_id,ring_generation,shard_count,instance_name,shard_contract_version,runtime_protocol_version,runtime_contract_version,activation_generation,probe_id,claim_digest_sha256,environment,claimed_at"
+            && row.consumption_columns
+                == "campaign_id,shard_index,claim_digest_sha256,probe_id,campaign_digest_sha256,controller_version_id,action_gate_inventory_sha256,action_gate_count,all_action_gates_false,foundation_manifest_sha256,ring_generation,shard_count,instance_name,shard_contract_version,runtime_protocol_version,runtime_contract_version,runtime_build_id,activation_generation,activation_probe_generation,environment,container_status,readiness_result_code,readiness_result_sha256,process_ready,runtime_execution_enabled,controller_execution_enabled,activation_digest_sha256,consumption_digest_sha256,readiness_checked_at,consumed_at"
+            && row.seal_columns
+                == "campaign_id,campaign_digest_sha256,consumed_shard_count,seal_reason,seal_detail_code,last_consumption_digest_sha256,sealed_at"
+            && row.index_count == 8
+            && row.trigger_count == 14
+    }))
+}
+
+pub async fn materialize_expired_relay_container_shard_activation_campaigns(
+    db: &D1Database,
+    limit: i64,
+) -> worker::Result<i64> {
+    if !(1..=RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT).contains(&limit) {
+        return Err(worker::Error::RustError(
+            "shard activation campaign expiry materialization limit is invalid".to_string(),
+        ));
+    }
+    let limit = limit.to_string();
+    let result = db
+        .prepare(
+            r#"
+            INSERT OR IGNORE INTO relay_container_shard_activation_campaign_seals (
+              campaign_id, campaign_digest_sha256, consumed_shard_count,
+              seal_reason, seal_detail_code, last_consumption_digest_sha256,
+              sealed_at
+            )
+            SELECT campaign_id, campaign_digest_sha256, consumed_shard_count,
+                   'expired', 'campaign_expired',
+                   last_consumption_digest_sha256, unixepoch()
+            FROM relay_container_shard_activation_campaign_expiry_candidates
+            ORDER BY campaign_id
+            LIMIT CAST(?1 AS INTEGER)
+            "#,
+        )
+        .bind_refs(&D1Type::Text(&limit))?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) as i64)
+}
+
+pub async fn materialize_expired_relay_container_shard_activation_campaign(
+    db: &D1Database,
+    campaign_id: &str,
+) -> worker::Result<bool> {
+    validate_relay_container_sha256(campaign_id, "shard activation campaign ID")?;
+    let result = db
+        .prepare(
+            r#"
+            INSERT OR IGNORE INTO relay_container_shard_activation_campaign_seals (
+              campaign_id, campaign_digest_sha256, consumed_shard_count,
+              seal_reason, seal_detail_code, last_consumption_digest_sha256,
+              sealed_at
+            )
+            SELECT campaign_id, campaign_digest_sha256, consumed_shard_count,
+                   'expired', 'campaign_expired',
+                   last_consumption_digest_sha256, unixepoch()
+            FROM relay_container_shard_activation_campaign_expiry_candidates
+            WHERE campaign_id = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind_refs(&D1Type::Text(campaign_id))?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+pub async fn relay_container_shard_activation_campaign_status(
+    db: &D1Database,
+    campaign_id: &str,
+) -> worker::Result<Option<RelayContainerShardActivationCampaignStatusRow>> {
+    validate_relay_container_sha256(campaign_id, "shard activation campaign ID")?;
+    relay_container_shard_activation_campaign_status_statement(db, campaign_id)?
+        .first::<RelayContainerShardActivationCampaignStatusRow>(None)
+        .await
+}
+
+pub async fn relay_container_shard_activation_campaign_receipts(
+    db: &D1Database,
+    campaign_id: &str,
+) -> worker::Result<Vec<RelayContainerShardActivationCampaignReceiptRow>> {
+    validate_relay_container_sha256(campaign_id, "shard activation campaign ID")?;
+    db.prepare(
+        r#"
+        SELECT campaign_id, shard_index, claim_digest_sha256, probe_id,
+               campaign_digest_sha256, controller_version_id,
+               action_gate_inventory_sha256, action_gate_count,
+               all_action_gates_false, foundation_manifest_sha256,
+               ring_generation, shard_count, instance_name,
+               shard_contract_version, runtime_protocol_version,
+               runtime_contract_version, runtime_build_id,
+               activation_generation, activation_probe_generation,
+               environment, container_status, readiness_result_code,
+               readiness_result_sha256, process_ready,
+               runtime_execution_enabled, controller_execution_enabled,
+               activation_digest_sha256, consumption_digest_sha256,
+               readiness_checked_at, consumed_at
+        FROM relay_container_shard_activation_campaign_consumptions
+        WHERE campaign_id = ?1
+        ORDER BY shard_index ASC
+        LIMIT 1025
+        "#,
+    )
+    .bind_refs(&D1Type::Text(campaign_id))?
+    .all()
+    .await?
+    .results::<RelayContainerShardActivationCampaignReceiptRow>()
+}
+
+pub async fn create_relay_container_shard_activation_campaign(
+    db: &D1Database,
+    campaign: &RelayContainerShardActivationCampaign<'_>,
+    admin_audit: worker::D1PreparedStatement,
+) -> worker::Result<RelayContainerShardActivationCampaignStatusRow> {
+    validate_relay_container_sha256(campaign.campaign_id, "shard activation campaign ID")?;
+    validate_relay_container_sha256(
+        campaign.campaign_nonce_sha256,
+        "shard activation campaign nonce digest",
+    )?;
+    validate_relay_container_sha256(
+        campaign.foundation_manifest_sha256,
+        "shard activation foundation manifest digest",
+    )?;
+    validate_relay_container_sha256(
+        campaign.action_gate_inventory_sha256,
+        "shard activation action gate inventory digest",
+    )?;
+    validate_relay_container_sha256(
+        campaign.runtime_build_id,
+        "shard activation runtime build ID",
+    )?;
+    validate_relay_container_sha256(
+        campaign.campaign_digest_sha256,
+        "shard activation campaign digest",
+    )?;
+    validate_relay_container_token(
+        campaign.controller_version_id,
+        "Controller version ID",
+        1,
+        128,
+        |byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'),
+    )?;
+    if !campaign
+        .controller_version_id
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+        || !(1..=1_000_000).contains(&campaign.ring_generation)
+        || !(1..=1_024).contains(&campaign.shard_count)
+        || !(1..=1_000_000).contains(&campaign.shard_contract_version)
+        || !(1..=1_000_000).contains(&campaign.runtime_protocol_version)
+        || !(1..=1_000_000).contains(&campaign.runtime_contract_version)
+        || !(1..=1_000_000).contains(&campaign.activation_generation)
+        || campaign.action_gate_count != 22
+        || campaign.all_action_gates_false != 1
+        || !matches!(campaign.environment, "staging" | "production")
+        || campaign.created_by_admin_id <= 0
+        || campaign.created_at <= 0
+        || campaign.expires_at <= campaign.created_at
+        || campaign.expires_at > campaign.created_at.saturating_add(3_600)
+    {
+        return Err(worker::Error::RustError(
+            "shard activation campaign is invalid".to_string(),
+        ));
+    }
+
+    let ring_generation = campaign.ring_generation.to_string();
+    let shard_count = campaign.shard_count.to_string();
+    let shard_contract_version = campaign.shard_contract_version.to_string();
+    let runtime_protocol_version = campaign.runtime_protocol_version.to_string();
+    let runtime_contract_version = campaign.runtime_contract_version.to_string();
+    let activation_generation = campaign.activation_generation.to_string();
+    let action_gate_count = campaign.action_gate_count.to_string();
+    let all_action_gates_false = campaign.all_action_gates_false.to_string();
+    let created_by_admin_id = campaign.created_by_admin_id.to_string();
+    let created_at = campaign.created_at.to_string();
+    let expires_at = campaign.expires_at.to_string();
+    let args = [
+        D1Type::Text(campaign.campaign_id),
+        D1Type::Text(campaign.campaign_nonce_sha256),
+        D1Type::Text(campaign.controller_version_id),
+        D1Type::Text(campaign.action_gate_inventory_sha256),
+        D1Type::Text(&action_gate_count),
+        D1Type::Text(&all_action_gates_false),
+        D1Type::Text(campaign.foundation_manifest_sha256),
+        D1Type::Text(campaign.runtime_build_id),
+        D1Type::Text(&ring_generation),
+        D1Type::Text(&shard_count),
+        D1Type::Text(&shard_contract_version),
+        D1Type::Text(&runtime_protocol_version),
+        D1Type::Text(&runtime_contract_version),
+        D1Type::Text(&activation_generation),
+        D1Type::Text(campaign.environment),
+        D1Type::Text(&created_by_admin_id),
+        D1Type::Text(campaign.campaign_digest_sha256),
+        D1Type::Text(&created_at),
+        D1Type::Text(&expires_at),
+    ];
+    let insert = db
+        .prepare(
+            r#"
+            INSERT INTO relay_container_shard_activation_campaigns (
+              campaign_id, campaign_nonce_sha256, controller_version_id,
+              action_gate_inventory_sha256, action_gate_count,
+              all_action_gates_false, foundation_manifest_sha256,
+              runtime_build_id, ring_generation, shard_count,
+              shard_contract_version, runtime_protocol_version,
+              runtime_contract_version, activation_generation, environment,
+              created_by_admin_id, campaign_digest_sha256, created_at, expires_at
+            ) VALUES (
+              ?1, ?2, ?3, ?4, CAST(?5 AS INTEGER), CAST(?6 AS INTEGER),
+              ?7, ?8, CAST(?9 AS INTEGER), CAST(?10 AS INTEGER),
+              CAST(?11 AS INTEGER), CAST(?12 AS INTEGER), CAST(?13 AS INTEGER),
+              CAST(?14 AS INTEGER), ?15, CAST(?16 AS INTEGER), ?17,
+              CAST(?18 AS INTEGER), CAST(?19 AS INTEGER)
+            )
+            "#,
+        )
+        .bind_refs(&args)?;
+    let readback =
+        relay_container_shard_activation_campaign_status_statement(db, campaign.campaign_id)?;
+    let mut results = db.batch(vec![insert, admin_audit, readback]).await?;
+    if results.len() != 3 || !batch_changed(&results, 0)? || !batch_changed(&results, 1)? {
+        return Err(worker::Error::RustError(
+            "shard activation campaign batch returned an invalid result".to_string(),
+        ));
+    }
+    results
+        .pop()
+        .expect("campaign readback result exists")
+        .results::<RelayContainerShardActivationCampaignStatusRow>()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            worker::Error::RustError("shard activation campaign readback is missing".to_string())
+        })
+}
+
+fn relay_container_shard_activation_campaign_status_statement(
+    db: &D1Database,
+    campaign_id: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    db.prepare(
+        r#"
+        SELECT campaign.campaign_id, campaign.campaign_nonce_sha256,
+               campaign.controller_version_id,
+               campaign.action_gate_inventory_sha256,
+               campaign.action_gate_count, campaign.all_action_gates_false,
+               campaign.foundation_manifest_sha256, campaign.runtime_build_id,
+               campaign.ring_generation, campaign.shard_count,
+               campaign.shard_contract_version, campaign.runtime_protocol_version,
+               campaign.runtime_contract_version, campaign.activation_generation,
+               campaign.environment, campaign.created_by_admin_id,
+               campaign.campaign_digest_sha256, campaign.created_at,
+               campaign.expires_at,
+               (SELECT COUNT(1)
+                FROM relay_container_shard_activation_campaign_claims AS claim
+                WHERE claim.campaign_id = campaign.campaign_id)
+                 AS claimed_shard_count,
+               (SELECT COUNT(1)
+                FROM relay_container_shard_activation_campaign_consumptions AS consumption
+                WHERE consumption.campaign_id = campaign.campaign_id)
+                 AS consumed_shard_count,
+               seal.seal_reason, seal.seal_detail_code,
+               seal.last_consumption_digest_sha256,
+               seal.sealed_at
+        FROM relay_container_shard_activation_campaigns AS campaign
+        LEFT JOIN relay_container_shard_activation_campaign_seals AS seal
+          ON seal.campaign_id = campaign.campaign_id
+        WHERE campaign.campaign_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&D1Type::Text(campaign_id))
 }
 
 pub async fn relay_container_shard_activation_snapshot(
@@ -27008,5 +27478,35 @@ mod tests {
             .unwrap();
         let readiness = &source[readiness_start..readiness_end];
         assert!(readiness.contains("AND \"notnull\" = 1"));
+    }
+
+    #[test]
+    fn shard_activation_campaign_expiry_materialization_is_bounded_and_idempotent() {
+        assert_eq!(RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT, 64);
+        let source = include_str!("d1_repositories.rs");
+        let sweep_start = source
+            .find("pub async fn materialize_expired_relay_container_shard_activation_campaigns")
+            .unwrap();
+        let single_start = source[sweep_start..]
+            .find("pub async fn materialize_expired_relay_container_shard_activation_campaign(\n")
+            .map(|offset| sweep_start + offset)
+            .unwrap();
+        let sweep = &source[sweep_start..single_start];
+        assert!(
+            sweep.contains("INSERT OR IGNORE INTO relay_container_shard_activation_campaign_seals")
+        );
+        assert!(sweep.contains("FROM relay_container_shard_activation_campaign_expiry_candidates"));
+        assert!(sweep.contains("ORDER BY campaign_id"));
+        assert!(sweep.contains("LIMIT CAST(?1 AS INTEGER)"));
+
+        let schema_start = source
+            .find("pub async fn relay_container_shard_activation_campaign_schema_ready")
+            .unwrap();
+        let schema_end = source[schema_start..]
+            .find("pub async fn materialize_expired_relay_container_shard_activation_campaigns")
+            .map(|offset| schema_start + offset)
+            .unwrap();
+        let schema = &source[schema_start..schema_end];
+        assert!(schema.contains("readiness_result_code,readiness_result_sha256,process_ready"));
     }
 }

@@ -173,6 +173,35 @@ describe("Relay Container P5 evidence contract", () => {
     await expect(verify(bundle)).rejects.toThrow(/readback stability/);
   });
 
+  test("rejects failed or cross-campaign foundation evidence", async () => {
+    const failed = await createBundle({
+      mutateFoundationCapture: (capture) => {
+        capture.subject.evidenceFacts.remoteInventory.shardActivationCampaign.state =
+          "sealed_failed";
+      },
+    });
+    await expect(verify(failed)).rejects.toThrow(/campaign state/);
+
+    const crossCampaign = await createBundle({
+      mutateFoundationCapture: (capture) => {
+        capture.subject.evidenceFacts.remoteInventory.shardActivationCampaign.campaignId =
+          "f".repeat(64);
+      },
+    });
+    await expect(verify(crossCampaign)).rejects.toThrow(/same sealed activation campaign/);
+  });
+
+  test("rejects the pre-0055 schema totals", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "schema-readback") {
+          evidence.facts.incrementalColumnCount = 770;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/incremental columns/);
+  });
+
   test("rejects evidence facts that differ from the bound foundation artifact", async () => {
     const bundle = await createBundle({
       mutateEvidence: (kind, evidence) => {
@@ -727,8 +756,8 @@ function candidateFixture() {
     containerClass: "RelayShardContainer",
     ringGeneration: 1,
     shardCount: 8,
-    migrationHead: "0054_relay_container_shard_activations.sql",
-    migrationCount: 54,
+    migrationHead: "0055_relay_container_shard_activation_campaigns.sql",
+    migrationCount: 55,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,
@@ -846,6 +875,7 @@ function foundationEvidenceFactsFixture(kind, candidate) {
       unapprovedCriticalVulnerabilities: 0,
       unapprovedHighVulnerabilities: 0,
       allActionGatesFalse: true,
+      shardActivationCampaign: shardActivationCampaignFixture(candidate),
       artifactInventorySha256: "8".repeat(64),
     };
   }
@@ -868,6 +898,7 @@ function foundationEvidenceFactsFixture(kind, candidate) {
       ringGeneration: candidate.ringGeneration,
       shardCount: candidate.shardCount,
       verifiedShardCount: candidate.shardCount,
+      shardActivationCampaign: shardActivationCampaignFixture(candidate),
       unknownWriterCount: 0,
       unknownObjectCount: 0,
       customerTrafficCount: 0,
@@ -875,6 +906,37 @@ function foundationEvidenceFactsFixture(kind, candidate) {
     };
   }
   throw new Error(`unsupported foundation facts fixture: ${kind}`);
+}
+
+function shardActivationCampaignFixture(candidate) {
+  return {
+    campaignContract:
+      "cinatoken-relay-container-shard-activation-campaign-v1",
+    state: "sealed_complete",
+    campaignId: "c".repeat(64),
+    campaignDigestSha256: "d".repeat(64),
+    controllerVersionId: candidate.controllerWorkerVersionId,
+    actionGateInventorySha256: "9".repeat(64),
+    actionGateCount: 22,
+    allActionGatesFalse: true,
+    foundationManifestSha256: "6".repeat(64),
+    runtimeBuildId: candidate.containerRuntimeBuildId,
+    ringGeneration: candidate.ringGeneration,
+    shardCount: candidate.shardCount,
+    shardContractVersion: 1,
+    runtimeProtocolVersion: 1,
+    runtimeContractVersion: 1,
+    activationGeneration: 1,
+    environment: "staging",
+    claimedShardCount: candidate.shardCount,
+    consumedShardCount: candidate.shardCount,
+    sealReason: "complete",
+    sealDetailCode: "all_shards_consumed",
+    lastConsumptionDigestSha256: "a".repeat(64),
+    sealedAt: Math.floor(Date.parse("2026-07-19T09:49:00.000Z") / 1_000),
+    receiptCount: candidate.shardCount,
+    receiptSetSha256: "b".repeat(64),
+  };
 }
 
 function factsFixture(kind, candidate, foundationBinding) {
@@ -908,10 +970,10 @@ function factsFixture(kind, candidate, foundationBinding) {
     case "schema-readback":
       return {
         migrationHead: candidate.migrationHead,
-        migrationCount: 54,
-        tableCount: 58,
-        incrementalColumnCount: 694,
-        keyIndexCount: 83,
+        migrationCount: 55,
+        tableCount: 62,
+        incrementalColumnCount: 771,
+        keyIndexCount: 91,
         schemaFingerprintSha256: "a".repeat(64),
         businessFingerprintBeforeSha256: "b".repeat(64),
         businessFingerprintAfterSha256: "b".repeat(64),

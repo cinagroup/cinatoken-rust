@@ -27,7 +27,7 @@ import {
 export const FOUNDATION_REQUEST_CONTRACT =
   "cinatoken-relay-container-p5-foundation-request-v1";
 export const FOUNDATION_SOURCES_CONTRACT =
-  "cinatoken-relay-container-p5-foundation-sources-v2";
+  "cinatoken-relay-container-p5-foundation-sources-v3";
 export const REPLACEMENT_TOKEN_ENV = "CINATOKEN_P5_READBACK_TOKEN";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -242,7 +242,7 @@ export function validateFoundationSources(value, candidateDigestSha256, candidat
     ],
     "foundation sources",
   );
-  requireExact(bundle.schemaVersion, 2, "source schemaVersion");
+  requireExact(bundle.schemaVersion, 3, "source schemaVersion");
   requireExact(bundle.contract, FOUNDATION_SOURCES_CONTRACT, "source contract");
   requireExact(bundle.environment, "staging", "source environment");
   requireExact(
@@ -589,6 +589,17 @@ function collectBlockers({
   }
   if (actionGates.allActionGatesFalse !== true) blockers.push("action-gates-not-false");
   if (
+    actionGates.actionGateInventorySha256 !==
+      shardRegistry.capture.campaign.actionGateInventorySha256 ||
+    actionGates.actionGateCount !== shardRegistry.capture.campaign.actionGateCount ||
+    actionGates.allActionGatesFalse !==
+      shardRegistry.capture.campaign.allActionGatesFalse ||
+    actionGates.controllerVersionId !==
+      shardRegistry.capture.campaign.controllerVersionId
+  ) {
+    blockers.push("action-gates-campaign-mismatch");
+  }
+  if (
     sbom.containerImageDigest !== request.candidate.containerImageDigest ||
     sbom.containerRuntimeBuildId !== request.candidate.containerRuntimeBuildId ||
     sbom.containerImageProvenanceSha256 !==
@@ -633,6 +644,9 @@ function collectBlockers({
 
 function buildEvidenceFacts({ request, sources, artifactInventorySha256 }) {
   const { actionGates, sbom, shardRegistry, r2Inventory, traffic } = sources.sources;
+  const shardActivationCampaign = campaignEvidenceFromCapture(
+    shardRegistry.capture,
+  );
   return {
     candidateFreeze: {
       repositoryCommit: request.candidate.commitSha,
@@ -652,6 +666,7 @@ function buildEvidenceFacts({ request, sources, artifactInventorySha256 }) {
       unapprovedCriticalVulnerabilities: sbom.unapprovedCriticalVulnerabilities,
       unapprovedHighVulnerabilities: sbom.unapprovedHighVulnerabilities,
       allActionGatesFalse: actionGates.allActionGatesFalse,
+      shardActivationCampaign,
       artifactInventorySha256,
     },
     remoteInventory: {
@@ -673,11 +688,43 @@ function buildEvidenceFacts({ request, sources, artifactInventorySha256 }) {
       ringGeneration: request.candidate.ringGeneration,
       shardCount: request.candidate.shardCount,
       verifiedShardCount: shardRegistry.capture.verifiedShardCount,
+      shardActivationCampaign,
       unknownWriterCount: r2Inventory.unknownWriterCount,
       unknownObjectCount: r2Inventory.unknownObjectCount,
       customerTrafficCount: traffic.customerTrafficCount,
       environmentIsolationVerified: traffic.environmentIsolationVerified,
     },
+  };
+}
+
+function campaignEvidenceFromCapture(capture) {
+  const campaign = capture.campaign;
+  return {
+    campaignContract: campaign.campaignContract,
+    state: campaign.state,
+    campaignId: campaign.campaignId,
+    campaignDigestSha256: campaign.campaignDigestSha256,
+    controllerVersionId: campaign.controllerVersionId,
+    actionGateInventorySha256: campaign.actionGateInventorySha256,
+    actionGateCount: campaign.actionGateCount,
+    allActionGatesFalse: campaign.allActionGatesFalse,
+    foundationManifestSha256: campaign.foundationManifestSha256,
+    runtimeBuildId: campaign.runtimeBuildId,
+    ringGeneration: campaign.ringGeneration,
+    shardCount: campaign.shardCount,
+    shardContractVersion: campaign.shardContractVersion,
+    runtimeProtocolVersion: campaign.runtimeProtocolVersion,
+    runtimeContractVersion: campaign.runtimeContractVersion,
+    activationGeneration: campaign.activationGeneration,
+    environment: campaign.environment,
+    claimedShardCount: campaign.claimedShardCount,
+    consumedShardCount: campaign.consumedShardCount,
+    sealReason: campaign.sealReason,
+    sealDetailCode: campaign.sealDetailCode,
+    lastConsumptionDigestSha256: campaign.lastConsumptionDigestSha256,
+    sealedAt: campaign.sealedAt,
+    receiptCount: campaign.receiptCount,
+    receiptSetSha256: campaign.receiptSetSha256,
   };
 }
 
@@ -719,6 +766,7 @@ function validateActionGates(value) {
   validateSourceBase(value, "actionGates", [
     "controllerVersionId",
     "actionGateInventorySha256",
+    "actionGateCount",
     "allActionGatesFalse",
   ]);
   requireToken(
@@ -730,6 +778,7 @@ function validateActionGates(value) {
     value.actionGateInventorySha256,
     "actionGates inventory digest",
   );
+  requireExact(value.actionGateCount, 22, "actionGates inventory count");
   requireBoolean(value.allActionGatesFalse, "actionGates allActionGatesFalse");
   validateSourceRecordDigest(value, "actionGates");
 }
@@ -1020,8 +1069,8 @@ function selfTestRequest() {
       containerClass: "RelayShardContainer",
       ringGeneration: 1,
       shardCount: 8,
-      migrationHead: "0054_relay_container_shard_activations.sql",
-      migrationCount: 54,
+      migrationHead: "0055_relay_container_shard_activation_campaigns.sql",
+      migrationCount: 55,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,

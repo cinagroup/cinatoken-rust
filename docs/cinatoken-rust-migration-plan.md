@@ -16516,3 +16516,88 @@ external signatures must be archived even though every source record now has
 a canonical self-digest. No credential, Cloudflare API, migration, deployment,
 Container wake, provider call, financial mutation, or traffic switch was used.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.253 Migration 0055 Same-Version Activation Campaign (2026-07-19)
+
+This increment implements the S3 ceremony required by 22.252 without changing
+any Controller action gate. It is local only. No Cloudflare credential, remote
+D1 database, Worker version, Durable Object, Container, customer request,
+provider request, financial row, or traffic route was touched.
+
+### Local authority and storage
+
+- D1 migration 0055 adds immutable campaign, claim, consumption, and seal
+  tables, a bounded expiry-candidate view, eight indexes, and fourteen
+  triggers. The local schema head is now 0055/55 with 62 tables, 771 checked
+  incremental columns, and 91 key indexes.
+- Root `POST /api/platform/container/shards/activation-campaigns` requires root
+  auth plus step-up verification. It binds one random nonce hash to the exact
+  Controller version, 22-name all-false action-gate inventory, foundation
+  manifest, runtime build, ring, runtime contracts, environment, operator, and
+  D1 expiry. The plaintext nonce is returned once and is excluded from audit
+  fields and logs.
+- Root `GET` on the same path materializes only that campaign's expiry and
+  returns complete validated receipts. Minute cron materializes at most 64
+  expired campaigns per pass. Reads do not resolve a shard DO or wake a
+  Container.
+- Final consumption is a single D1 transaction boundary: it requires the exact
+  prior claim and readiness result hash, inserts the matching immutable 0054
+  activation, and automatically seals only at N/N.
+
+### Frozen one-time protocol
+
+For a campaign request, the Controller must claim D1 before
+`RELAY_SHARDS.getByName`. It strips the raw nonce before the DO RPC and sends
+only the deterministic probe ID and claim digest. Durable Object schema v6
+journals `started`, `completed`, or `ambiguous` for that exact pair, including
+canonical result JSON and SHA-256. A deadline crossing becomes ambiguous and
+never permits a second wake. Terminal journal evidence is retained for at
+least two hours after the deadline.
+
+An exact consumed claim is replayable even after a terminal campaign seal, but
+only through replay-only DO lookup. The D1 readiness-result hash and DO result
+hash must match. A missing journal, claim mismatch, corrupt JSON, hash drift,
+or ambiguous timeout fails closed. Failed, expired, or aborted campaigns retire
+the candidate once any claim/wake/activation exists. Only
+`complete/all_shards_consumed`, N/N claims, N/N consumptions, and exact receipt
+coverage `0..N-1` can enter S4.
+
+The ordinary root readiness probe and wake paths remain controlled by their
+static default-off flags. A syntactically valid one-time campaign credential is
+the only staging path that bypasses those two legacy flags; malformed or absent
+campaigns do not bypass them, and production still requires prior staging
+verification. The legacy 0054 static activation writer remains disabled.
+
+### Ordered remote execution
+
+1. Rotate the exposed Cloudflare credential and create separate least-
+   privilege deploy/readback identities without putting secrets in arguments,
+   tracked files, evidence, or logs.
+2. Freeze commits, three Worker version IDs, image digest, runtime build,
+   provenance/SBOM, foundation manifest, ring, resource IDs, migration bytes,
+   and rollback artifacts.
+3. Back up staging D1, prove compatible writers and operation drain, apply 0054
+   then 0055, and archive exact schema/readback/immutable-negative/business-
+   fingerprint evidence.
+4. Deploy readers first and the Container candidate at 10% then 100%, keeping
+   every Controller action gate and the legacy activation writer false.
+5. Create one bounded campaign. Keep its nonce only in the approved operator
+   process. For each shard index, call the root readiness endpoint once with
+   `wake_container=true`, matching confirmation, and the campaign credential.
+6. Stop immediately on any non-200, ambiguous result, version/build/ring drift,
+   unexpected wake, or terminal seal other than complete. Do not create a
+   replacement campaign for a candidate that has any effect evidence.
+7. Require root campaign readback to be `sealed_complete`, N/N, with every
+   receipt digest valid and one-to-one with 0054. Then run the campaign-aware
+   shard collector before and after the bounded S4 window.
+8. Continue to P5 only after authoritative all-page Cloudflare inventory,
+   sources-v3, ten evidence categories, and five independent approvals pass.
+
+### Audit verdict
+
+The former S3 implementation blocker is closed locally. Remote 0055 apply and
+readback, actual same-version deployment, live N/N campaign, explicit
+Cloudflare control-plane pagination, load/fault/cost/SLO evidence, signed P5,
+and the independent Go/VPS drain and reversible-write packet remain open.
+Go/VPS therefore remains the traffic and financial authority and production
+remains **NO-GO**.

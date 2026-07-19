@@ -1277,11 +1277,11 @@ describe("Rust Durable Object lifecycle contracts", () => {
       success: true,
       data: {
         d1_migration_status_available: true,
-        d1_migration_applied_count: 54,
+        d1_migration_applied_count: 55,
         d1_migration_latest:
-          "0054_relay_container_shard_activations.sql",
+          "0055_relay_container_shard_activation_campaigns.sql",
         d1_expected_migration:
-          "0054_relay_container_shard_activations.sql",
+          "0055_relay_container_shard_activation_campaigns.sql",
         d1_expected_migration_applied: true,
         d1_migration_set_matches: true,
         d1_migration_ready: true,

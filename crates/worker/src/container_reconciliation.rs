@@ -1677,11 +1677,16 @@ mod tests {
             controller_enabled: true,
             execution_enabled: true,
             previous_secret_configured: false,
+            controller_version_id: Some("controller-version-test".to_string()),
+            shard_activation_write_enabled: false,
+            shard_activation_candidate_build_configured: false,
+            all_action_gates_false: false,
+            action_gate_inventory_sha256: Some("a".repeat(64)),
             state: "verified",
         };
         assert!(container_scheduled_terminalizer_controller_ready(&ready));
         for gate in 0..6 {
-            let mut probe = ready;
+            let mut probe = ready.clone();
             match gate {
                 0 => probe.probe_enabled = false,
                 1 => probe.binding_available = false,

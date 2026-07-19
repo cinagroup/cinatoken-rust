@@ -1365,6 +1365,26 @@ describe("container controller private protocol", () => {
     );
     expect(live.probe.wake_container).toBe(true);
     expect(live.probe.shard.instance_name).toBe("cinatoken-relay-shard-v1-0003");
+
+    const campaign = await verifyReadinessRequest(
+      await signedReadinessRequest({
+        ...readinessProbe(true),
+        activation_campaign: {
+          contract_version: 1,
+          campaign_id: "a".repeat(64),
+          nonce: "b".repeat(64),
+          confirm_consume: true,
+        },
+      }),
+      env,
+      now + 1,
+    );
+    expect(campaign.probe.activation_campaign).toEqual({
+      contract_version: 1,
+      campaign_id: "a".repeat(64),
+      nonce: "b".repeat(64),
+      confirm_consume: true,
+    });
   });
 
   test("readiness rejects body tampering, unknown fields, stale fences, and oversized bodies", async () => {
@@ -1395,6 +1415,43 @@ describe("container controller private protocol", () => {
         now + 1,
       ),
     ).rejects.toMatchObject({ code: "stale_shard_fence", status: 409 });
+    for (const invalidCampaignProbe of [
+      {
+        ...readinessProbe(false),
+        activation_campaign: {
+          contract_version: 1,
+          campaign_id: "a".repeat(64),
+          nonce: "b".repeat(64),
+          confirm_consume: true,
+        },
+      },
+      {
+        ...readinessProbe(true),
+        activation_campaign: {
+          contract_version: 1,
+          campaign_id: "a".repeat(63),
+          nonce: "b".repeat(64),
+          confirm_consume: true,
+        },
+      },
+      {
+        ...readinessProbe(true),
+        activation_campaign: {
+          contract_version: 1,
+          campaign_id: "a".repeat(64),
+          nonce: "b".repeat(64),
+          confirm_consume: false,
+        },
+      },
+    ]) {
+      await expect(
+        verifyReadinessRequest(
+          await signedReadinessRequest(invalidCampaignProbe),
+          env,
+          now + 1,
+        ),
+      ).rejects.toMatchObject({ code: "invalid_readiness_probe", status: 400 });
+    }
     const oversized = new Request(`https://controller.internal${INTERNAL_READINESS_PATH}`, {
       method: "POST",
       headers: { "content-type": "application/json", [AUTHORITY_HEADER]: "not-used" },

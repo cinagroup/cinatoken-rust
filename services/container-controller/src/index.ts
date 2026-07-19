@@ -16,6 +16,9 @@ import {
   type ProviderRetryPolicy,
   type RecordProviderAttemptOutcome,
   type RecordStorageResultOutcome,
+  type ReadinessProbeCompletedReplay,
+  type ReadinessProbeJournalCompletion,
+  type ReadinessProbeWakePermit,
   type RelayShardLedgerPolicy,
   type StorageAccessGrant,
   type StorageResultRecord,
@@ -104,8 +107,15 @@ import {
 } from "./relay_shard_durable_state";
 import {
   SHARD_ACTIVATION_WRITE_ENABLED_ENV,
-  recordShardActivation,
 } from "./shard_activation";
+import {
+  campaignActionGateInventory,
+  claimShardActivationCampaign,
+  finalizeShardActivationCampaign,
+  sealShardActivationCampaignFailure,
+  type ShardActivationCampaignAcquire,
+  type ShardActivationCampaignClaim,
+} from "./shard_activation_campaign";
 
 export { ContainerProxy };
 
@@ -199,6 +209,17 @@ export interface ShardReadinessResult {
 type ShardReadinessRpcResult =
   | { ok: true; result: ShardReadinessResult }
   | { ok: false; error: { code: string; status: number } };
+
+type ShardReadinessRpcResultV2 =
+  | { ok: true; result: ShardReadinessResult; result_sha256: string }
+  | { ok: false; error: { code: string; status: number } };
+
+interface ReadinessObservation {
+  completedAtMs: number;
+  resultCode: string;
+  containerState: ContainerStateSnapshot | null;
+  runtime: RuntimeReadinessSnapshot | null;
+}
 
 export type ShardStorageAccessRpcResult =
   | { ok: true; grant: StorageAccessGrant }
@@ -729,6 +750,46 @@ export class RelayShardContainer extends Container<ControllerEnv> {
       }
 
       this.ledger.initializeShardForReadiness(probe.shard, Math.floor(startedAtMs / 1000));
+      const replay = this.ledger.recoverReadinessProbe(probe.shard, probeId, startedAtMs);
+      if (replay !== null) {
+        const containerState: ContainerStateSnapshot | null =
+          replay.containerStatus === null
+            ? null
+            : {
+                status: replay.containerStatus,
+                last_change_ms: replay.containerLastChangeMs as number,
+                exit_code: replay.containerExitCode,
+              };
+        const runtime: RuntimeReadinessSnapshot | null =
+          replay.runtimeProtocolVersion === null
+            ? null
+            : {
+                process_ready: replay.processReady,
+                execution_ready: replay.executionReady,
+                protocol_version: replay.runtimeProtocolVersion,
+                shard_contract_version: replay.runtimeContractVersion as number,
+                runtime_build_id: replay.runtimeBuildId,
+                execution_enabled: replay.runtimeExecutionEnabled as boolean,
+              };
+        return {
+          ok: true,
+          result: {
+            checked_at: Math.floor(replay.completedAtMs / 1000),
+            mode: "live",
+            ready: replay.executionReady,
+            verdict: replay.executionReady ? "ready" : "not_ready",
+            result_code: replay.resultCode,
+            shard: probe.shard,
+            wake_requested: true,
+            container_state: containerState,
+            ledger: this.ledger.readShardReadiness(
+              probe.shard,
+              Math.floor(startedAtMs / 1000),
+            ),
+            runtime,
+          },
+        };
+      }
       const generation = this.ledger.beginReadinessProbe(
         probe.shard,
         probeId,
@@ -736,90 +797,8 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         startedAtMs + READINESS_TIMEOUT_MS,
         READINESS_COOLDOWN_MS,
       );
-      let containerState: ContainerStateSnapshot | null = null;
-      let runtime: RuntimeReadinessSnapshot | null = null;
-      let resultCode = "container_readiness_unavailable";
-      try {
-        const deadlineAtMs = startedAtMs + READINESS_TIMEOUT_MS;
-        const response = await this.containerFetch("http://container/readyz", {
-          method: "GET",
-          headers: { accept: "application/json" },
-          signal: AbortSignal.timeout(Math.max(1, deadlineAtMs - Date.now())),
-        });
-        const body = await readBoundedResponse(
-          response,
-          READINESS_RESPONSE_MAX_BYTES,
-          deadlineAtMs,
-        );
-        if (response.status !== 200) {
-          throw new ProtocolError(
-            response.status === 429
-              ? "container_start_rate_limited"
-              : response.status === 503
-                ? "container_start_unavailable"
-                : "container_readiness_rejected",
-            response.status === 429 ? 429 : 503,
-          );
-        }
-        const readiness = validateRuntimeReadinessResponse(response, body);
-        containerState = containerStateSnapshot(
-          await withAbsoluteDeadline(
-            this.getState(),
-            deadlineAtMs,
-            "container_readiness_timeout",
-            504,
-          ),
-        );
-        const processReady = containerState.status === "healthy";
-        const ledgerBeforeCompletion = this.ledger.readShardReadiness(
-          probe.shard,
-          Math.floor(Date.now() / 1000),
-        );
-        const lifecycleAccepting = !["draining", "stopped", "error"].includes(
-          ledgerBeforeCompletion.lifecycle_state ?? "",
-        );
-        const capacityAvailable =
-          ledgerBeforeCompletion.active_in_flight_operations <
-          controllerLedgerPolicy(this.env).maxInFlight;
-        const recoveryIntentWriterReady = operationRecoveryIntentWriterEnabled(this.env);
-        const executionReady =
-          processReady &&
-          readiness.execution_enabled &&
-          this.env.CONTAINER_EXECUTION_ENABLED === "true" &&
-          recoveryIntentWriterReady &&
-          lifecycleAccepting &&
-          capacityAvailable;
-        runtime = {
-          process_ready: processReady,
-          execution_ready: executionReady,
-          protocol_version: readiness.protocol_version,
-          shard_contract_version: readiness.shard_contract_version,
-          runtime_build_id: readiness.runtime_build_id,
-          execution_enabled: readiness.execution_enabled,
-        };
-        resultCode = !processReady
-          ? "container_not_healthy"
-          : !readiness.execution_enabled
-            ? "process_ready_execution_disabled"
-            : this.env.CONTAINER_EXECUTION_ENABLED !== "true"
-              ? "controller_execution_disabled"
-              : !recoveryIntentWriterReady
-                ? "operation_recovery_intent_v1_disabled"
-              : !lifecycleAccepting
-                ? "shard_not_accepting"
-                : !capacityAvailable
-                  ? "shard_capacity_exhausted"
-                  : "execution_ready";
-      } catch (error) {
-        resultCode = error instanceof ProtocolError ? error.code : "container_readiness_unavailable";
-        try {
-          containerState = containerStateSnapshot(await this.getState());
-        } catch {
-          containerState = null;
-        }
-      }
-
-      const completedAtMs = Date.now();
+      const { completedAtMs, resultCode, containerState, runtime } =
+        await this.observeContainerReadiness(probe, startedAtMs);
       const completed = this.ledger.completeReadinessProbe(generation, completedAtMs, {
         resultCode,
         containerStatus: containerState?.status ?? null,
@@ -827,8 +806,10 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         containerExitCode: containerState?.exit_code ?? null,
         runtimeProtocolVersion: runtime?.protocol_version ?? null,
         runtimeContractVersion: runtime?.shard_contract_version ?? null,
+        runtimeBuildId: runtime?.runtime_build_id ?? null,
         runtimeExecutionEnabled: runtime?.execution_enabled ?? null,
         processReady: runtime?.process_ready ?? false,
+        executionReady: runtime?.execution_ready ?? false,
       });
       if (!completed) throw new ProtocolError("readiness_probe_superseded", 409);
       const executionReady = runtime?.execution_ready ?? false;
@@ -859,6 +840,158 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         error: { code: "container_readiness_unavailable", status: 504 },
       };
     }
+  }
+
+  async readinessProbeV2(
+    probe: ShardReadinessProbe,
+    probeId: string,
+    claimDigestSha256: string,
+    replayOnly: boolean,
+  ): Promise<ShardReadinessRpcResultV2> {
+    const startedAtMs = Date.now();
+    try {
+      if (
+        !probe.wake_container ||
+        probe.activation_campaign !== undefined ||
+        typeof replayOnly !== "boolean"
+      ) {
+        throw new ProtocolError("invalid_readiness_probe_journal", 400);
+      }
+      this.ledger.initializeShardForReadiness(
+        probe.shard,
+        Math.floor(startedAtMs / 1_000),
+      );
+      const journal = replayOnly
+        ? await this.ledger.replayReadinessProbeJournal(
+            probe.shard,
+            probeId,
+            claimDigestSha256,
+            startedAtMs,
+          )
+        : await this.ledger.beginOrReplayReadinessProbe(
+            probe.shard,
+            probeId,
+            claimDigestSha256,
+            startedAtMs,
+            startedAtMs + READINESS_TIMEOUT_MS,
+            true,
+          );
+      if (journal.kind === "completed") {
+        return readinessJournalRpcSuccess(probe, journal);
+      }
+
+      const observation = await this.observeContainerReadiness(probe, startedAtMs);
+      const completion = await readinessJournalCompletion(
+        this.ledger,
+        probe,
+        journal,
+        observation,
+      );
+      const replay = await this.ledger.completeReadinessProbeJournal(
+        probe.shard,
+        journal,
+        observation.completedAtMs,
+        completion,
+      );
+      return readinessJournalRpcSuccess(probe, replay);
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return {
+        ok: false,
+        error: { code: "readiness_probe_journal_unavailable", status: 503 },
+      };
+    }
+  }
+
+  private async observeContainerReadiness(
+    probe: ShardReadinessProbe,
+    startedAtMs: number,
+  ): Promise<ReadinessObservation> {
+    let containerState: ContainerStateSnapshot | null = null;
+    let runtime: RuntimeReadinessSnapshot | null = null;
+    let resultCode = "container_readiness_unavailable";
+    try {
+      const deadlineAtMs = startedAtMs + READINESS_TIMEOUT_MS;
+      const response = await this.containerFetch("http://container/readyz", {
+        method: "GET",
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(Math.max(1, deadlineAtMs - Date.now())),
+      });
+      const body = await readBoundedResponse(
+        response,
+        READINESS_RESPONSE_MAX_BYTES,
+        deadlineAtMs,
+      );
+      if (response.status !== 200) {
+        throw new ProtocolError(
+          response.status === 429
+            ? "container_start_rate_limited"
+            : response.status === 503
+              ? "container_start_unavailable"
+              : "container_readiness_rejected",
+          response.status === 429 ? 429 : 503,
+        );
+      }
+      const readiness = validateRuntimeReadinessResponse(response, body);
+      containerState = containerStateSnapshot(
+        await withAbsoluteDeadline(
+          this.getState(),
+          deadlineAtMs,
+          "container_readiness_timeout",
+          504,
+        ),
+      );
+      const processReady = containerState.status === "healthy";
+      const ledgerBeforeCompletion = this.ledger.readShardReadiness(
+        probe.shard,
+        Math.floor(Date.now() / 1000),
+      );
+      const lifecycleAccepting = !["draining", "stopped", "error"].includes(
+        ledgerBeforeCompletion.lifecycle_state ?? "",
+      );
+      const capacityAvailable =
+        ledgerBeforeCompletion.active_in_flight_operations <
+        controllerLedgerPolicy(this.env).maxInFlight;
+      const recoveryIntentWriterReady = operationRecoveryIntentWriterEnabled(this.env);
+      const executionReady =
+        processReady &&
+        readiness.execution_enabled &&
+        this.env.CONTAINER_EXECUTION_ENABLED === "true" &&
+        recoveryIntentWriterReady &&
+        lifecycleAccepting &&
+        capacityAvailable;
+      runtime = {
+        process_ready: processReady,
+        execution_ready: executionReady,
+        protocol_version: readiness.protocol_version,
+        shard_contract_version: readiness.shard_contract_version,
+        runtime_build_id: readiness.runtime_build_id,
+        execution_enabled: readiness.execution_enabled,
+      };
+      resultCode = !processReady
+        ? "container_not_healthy"
+        : !readiness.execution_enabled
+          ? "process_ready_execution_disabled"
+          : this.env.CONTAINER_EXECUTION_ENABLED !== "true"
+            ? "controller_execution_disabled"
+            : !recoveryIntentWriterReady
+              ? "operation_recovery_intent_v1_disabled"
+              : !lifecycleAccepting
+                ? "shard_not_accepting"
+                : !capacityAvailable
+                  ? "shard_capacity_exhausted"
+                  : "execution_ready";
+    } catch (error) {
+      resultCode = error instanceof ProtocolError ? error.code : "container_readiness_unavailable";
+      try {
+        containerState = containerStateSnapshot(await this.getState());
+      } catch {
+        containerState = null;
+      }
+    }
+    return { completedAtMs: Date.now(), resultCode, containerState, runtime };
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -1061,6 +1194,198 @@ export class RelayShardContainer extends Container<ControllerEnv> {
   }
 }
 
+async function readinessJournalCompletion(
+  ledger: RelayShardLedger,
+  probe: ShardReadinessProbe,
+  permit: ReadinessProbeWakePermit,
+  observation: ReadinessObservation,
+): Promise<ReadinessProbeJournalCompletion> {
+  const { completedAtMs, resultCode, containerState, runtime } = observation;
+  const ledgerSnapshot = ledger.readShardReadiness(
+    probe.shard,
+    Math.floor(completedAtMs / 1_000),
+  );
+  const result: ShardReadinessResult = {
+    checked_at: Math.floor(completedAtMs / 1_000),
+    mode: "live",
+    ready: runtime?.execution_ready ?? false,
+    verdict: runtime?.execution_ready ? "ready" : "not_ready",
+    result_code: resultCode,
+    shard: probe.shard,
+    wake_requested: true,
+    container_state: containerState,
+    ledger: {
+      ...ledgerSnapshot,
+      readiness: {
+        generation: permit.generation,
+        phase: "complete",
+        last_probe_id: permit.probeId,
+        started_at_ms: permit.startedAtMs,
+        deadline_at_ms: permit.deadlineAtMs,
+        completed_at_ms: completedAtMs,
+        result_code: resultCode,
+        container_status: containerState?.status ?? null,
+        container_last_change_ms: containerState?.last_change_ms ?? null,
+        container_exit_code: containerState?.exit_code ?? null,
+        runtime_protocol_version: runtime?.protocol_version ?? null,
+        runtime_contract_version: runtime?.shard_contract_version ?? null,
+        runtime_execution_enabled: runtime?.execution_enabled ?? null,
+        last_ready_at_ms:
+          runtime?.process_ready === true
+            ? completedAtMs
+            : ledgerSnapshot.readiness.last_ready_at_ms,
+      },
+    },
+    runtime,
+  };
+  const resultJson = JSON.stringify(result);
+  return {
+    resultCode,
+    containerStatus: containerState?.status ?? null,
+    containerLastChangeMs: containerState?.last_change_ms ?? null,
+    containerExitCode: containerState?.exit_code ?? null,
+    runtimeProtocolVersion: runtime?.protocol_version ?? null,
+    runtimeContractVersion: runtime?.shard_contract_version ?? null,
+    runtimeBuildId: runtime?.runtime_build_id ?? null,
+    runtimeExecutionEnabled: runtime?.execution_enabled ?? null,
+    processReady: runtime?.process_ready ?? false,
+    executionReady: runtime?.execution_ready ?? false,
+    resultJson,
+    resultSha256: await sha256Utf8(resultJson),
+  };
+}
+
+function readinessJournalRpcSuccess(
+  probe: ShardReadinessProbe,
+  replay: ReadinessProbeCompletedReplay,
+): ShardReadinessRpcResultV2 {
+  const parsed: unknown = JSON.parse(replay.resultJson);
+  if (
+    JSON.stringify(parsed) !== replay.resultJson ||
+    !isJournalReadinessResult(parsed, probe.shard, replay)
+  ) {
+    throw new ProtocolError("readiness_probe_result_corrupt", 500);
+  }
+  return { ok: true, result: parsed, result_sha256: replay.resultSha256 };
+}
+
+function isJournalReadinessResult(
+  value: unknown,
+  shard: OperationShard,
+  replay: ReadinessProbeCompletedReplay,
+): value is ShardReadinessResult {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "checked_at",
+    "mode",
+    "ready",
+    "verdict",
+    "result_code",
+    "shard",
+    "wake_requested",
+    "container_state",
+    "ledger",
+    "runtime",
+  ])) return false;
+  if (!isRecord(value.shard) || !operationShardEquals(value.shard, shard)) return false;
+  if (!isRecord(value.ledger) || !isRecord(value.ledger.readiness)) return false;
+  const readiness = value.ledger.readiness;
+  if (
+    value.checked_at !== Math.floor(replay.completedAtMs / 1_000) ||
+    value.mode !== "live" ||
+    typeof value.ready !== "boolean" ||
+    value.verdict !== (value.ready ? "ready" : "not_ready") ||
+    typeof value.result_code !== "string" ||
+    value.result_code.length < 1 ||
+    value.result_code.length > 128 ||
+    value.wake_requested !== true ||
+    value.ledger.initialized !== true ||
+    !nonNegativeInteger(value.ledger.active_in_flight_operations) ||
+    !nonNegativeInteger(value.ledger.expired_in_flight_operations) ||
+    !nonNegativeInteger(value.ledger.terminal_operations) ||
+    readiness.generation !== replay.generation ||
+    readiness.phase !== "complete" ||
+    readiness.last_probe_id !== replay.probeId ||
+    readiness.started_at_ms !== replay.startedAtMs ||
+    readiness.deadline_at_ms !== replay.deadlineAtMs ||
+    readiness.completed_at_ms !== replay.completedAtMs ||
+    readiness.result_code !== value.result_code
+  ) {
+    return false;
+  }
+  if (value.container_state !== null) {
+    if (!isRecord(value.container_state)) return false;
+    if (
+      !["running", "healthy", "stopping", "stopped", "stopped_with_code"].includes(
+        typeof value.container_state.status === "string" ? value.container_state.status : "",
+      ) ||
+      !nonNegativeInteger(value.container_state.last_change_ms) ||
+      !nullableInteger(value.container_state.exit_code)
+    ) {
+      return false;
+    }
+  }
+  if (value.runtime === null) return value.ready === false;
+  if (!isRecord(value.runtime)) return false;
+  return (
+    typeof value.runtime.process_ready === "boolean" &&
+    typeof value.runtime.execution_ready === "boolean" &&
+    value.ready === value.runtime.execution_ready &&
+    positiveInteger(value.runtime.protocol_version) &&
+    positiveInteger(value.runtime.shard_contract_version) &&
+    (value.runtime.runtime_build_id === null ||
+      (typeof value.runtime.runtime_build_id === "string" &&
+        /^[0-9a-f]{64}$/.test(value.runtime.runtime_build_id))) &&
+    typeof value.runtime.execution_enabled === "boolean"
+  );
+}
+
+function operationShardEquals(value: Record<string, unknown>, shard: OperationShard): boolean {
+  return (
+    hasExactKeys(value, [
+      "contract_version",
+      "ring_generation",
+      "shard_count",
+      "shard_index",
+      "instance_name",
+    ]) &&
+    value.contract_version === shard.contract_version &&
+    value.ring_generation === shard.ring_generation &&
+    value.shard_count === shard.shard_count &&
+    value.shard_index === shard.shard_index &&
+    value.instance_name === shard.instance_name
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function nonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function positiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+function nullableInteger(value: unknown): value is number | null {
+  return value === null || Number.isSafeInteger(value);
+}
+
+async function sha256Utf8(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
 RelayShardContainer.outboundByHost = {
   [R2_INPUT_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.R2_INPUT_GET),
   [R2_RESULT_HOST]: storageOutboundHandler(STORAGE_GATEWAY_ACTIONS.R2_RESULT_PUT),
@@ -1090,69 +1415,160 @@ async function handleTerminalAckV3Request(
   }
 }
 
-async function persistShardActivationIfEnabled(
+async function claimShardActivationCampaignBeforeWake(
   env: ControllerEnv,
-  result: ShardReadinessResult,
-): Promise<void> {
+  probe: ShardReadinessProbe,
+  probeId: string,
+): Promise<ShardActivationCampaignAcquire | null> {
+  const campaign = probe.activation_campaign;
+  if (campaign === undefined) {
+    if (env[SHARD_ACTIVATION_WRITE_ENABLED_ENV] === "true") {
+      throw new ProtocolError("shard_activation_legacy_writer_retired", 503);
+    }
+    return null;
+  }
+  const actionGateInventory = await campaignActionGateInventory(env);
   if (
-    env[SHARD_ACTIVATION_WRITE_ENABLED_ENV] !== "true"
+    !actionGateInventory.allActionGatesFalse ||
+    /^[0-9a-f]{64}$/.test(
+      env.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID,
+    )
   ) {
-    return;
-  }
-  const expectedRuntimeBuildId =
-    env.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID;
-  if (!/^[0-9a-f]{64}$/.test(expectedRuntimeBuildId)) {
-    throw new ProtocolError("shard_activation_candidate_unconfigured", 503);
-  }
-  if (
-    result.mode !== "live" ||
-    result.wake_requested !== true ||
-    result.container_state?.status !== "healthy" ||
-    result.runtime?.process_ready !== true ||
-    result.runtime.runtime_build_id === null ||
-    ![
-      "process_ready_execution_disabled",
-      "execution_ready",
-    ].includes(result.result_code)
-  ) {
-    return;
-  }
-  if (result.runtime.runtime_build_id !== expectedRuntimeBuildId) {
-    throw new ProtocolError("shard_activation_runtime_build_mismatch", 409);
+    throw new ProtocolError("shard_activation_campaign_action_gate_enabled", 409);
   }
   if (env.ENVIRONMENT !== "staging" && env.ENVIRONMENT !== "production") {
     throw new ProtocolError("shard_activation_environment_invalid", 503);
+  }
+  return claimShardActivationCampaign(env.DB, {
+    credential: campaign,
+    controllerVersionId: env.CF_VERSION_METADATA.id,
+    actionGateInventory,
+    shard: probe.shard,
+    runtimeProtocolVersion: probe.protocol_version,
+    environment: env.ENVIRONMENT,
+    probeId,
+  });
+}
+
+async function finalizeClaimedShardActivationCampaign(
+  env: ControllerEnv,
+  result: ShardReadinessResult,
+  claim: ShardActivationCampaignClaim,
+  readinessResultSha256: string,
+): Promise<void> {
+  const probeGeneration = campaignReadinessProbeGeneration(result, claim);
+  let outcome;
+  try {
+    outcome = await finalizeShardActivationCampaign(env.DB, claim, {
+      controllerVersionId: env.CF_VERSION_METADATA.id,
+      shard: result.shard,
+      runtimeProtocolVersion: result.runtime!.protocol_version,
+      runtimeContractVersion: result.runtime!.shard_contract_version,
+      runtimeBuildId: result.runtime!.runtime_build_id!,
+      activationGeneration: 1,
+      activationProbeGeneration: probeGeneration,
+      environment: claim.environment,
+      containerStatus: "healthy",
+      readinessResultCode: "process_ready_execution_disabled",
+      processReady: true,
+      runtimeExecutionEnabled: false,
+      controllerExecutionEnabled: false,
+      activatedAt: result.checked_at,
+    }, readinessResultSha256);
+  } catch (error) {
+    if (
+      error instanceof ProtocolError &&
+      [
+        "shard_activation_campaign_readiness_ineligible",
+        "shard_activation_campaign_candidate_mismatch",
+        "shard_activation_campaign_claim_missing",
+        "shard_activation_campaign_conflict",
+      ].includes(error.code)
+    ) {
+      await sealCampaignFailureBestEffort(env, claim.campaignId, "claim_execution_failed");
+    }
+    throw error;
+  }
+  console.log(
+    JSON.stringify({
+      event: "relay_container_shard_activation_campaign_consumed",
+      campaign_id: outcome.campaignId,
+      campaign_digest_sha256: outcome.campaignDigestSha256,
+      claim_digest_sha256: outcome.claimDigestSha256,
+      consumption_digest_sha256: outcome.consumptionDigestSha256,
+      readiness_result_sha256: readinessResultSha256,
+      claimed_shard_count: outcome.claimedShardCount,
+      consumed_shard_count: outcome.consumedShardCount,
+      campaign_sealed: outcome.sealed,
+      controller_version_id: env.CF_VERSION_METADATA.id,
+      ring_generation: result.shard.ring_generation,
+      shard_index: result.shard.shard_index,
+    }),
+  );
+}
+
+function campaignReadinessProbeGeneration(
+  result: ShardReadinessResult,
+  claim: ShardActivationCampaignClaim,
+): number {
+  if (
+    result.mode !== "live" ||
+    result.wake_requested !== true ||
+    result.ready ||
+    result.verdict !== "not_ready" ||
+    result.container_state?.status !== "healthy" ||
+    result.runtime?.process_ready !== true ||
+    result.runtime.execution_ready ||
+    result.runtime.runtime_build_id === null ||
+    result.result_code !== "process_ready_execution_disabled" ||
+    result.runtime.execution_enabled ||
+    result.ledger.readiness.phase !== "complete" ||
+    result.ledger.readiness.last_probe_id !== claim.probeId ||
+    result.ledger.readiness.result_code !== result.result_code
+  ) {
+    throw new ProtocolError("shard_activation_campaign_readiness_ineligible", 409);
   }
   const probeGeneration = result.ledger.readiness.generation;
   if (!Number.isSafeInteger(probeGeneration) || probeGeneration < 1) {
     throw new ProtocolError("shard_activation_probe_invalid", 502);
   }
-  const outcome = await recordShardActivation(env.DB, {
-    controllerVersionId: env.CF_VERSION_METADATA.id,
-    shard: result.shard,
-    runtimeProtocolVersion: result.runtime.protocol_version,
-    runtimeContractVersion: result.runtime.shard_contract_version,
-    runtimeBuildId: result.runtime.runtime_build_id,
-    activationGeneration: 1,
-    activationProbeGeneration: probeGeneration,
-    environment: env.ENVIRONMENT,
-    containerStatus: "healthy",
-    readinessResultCode: result.result_code as
-      | "process_ready_execution_disabled"
-      | "execution_ready",
-    processReady: true,
-    runtimeExecutionEnabled: result.runtime.execution_enabled,
-    controllerExecutionEnabled: env.CONTAINER_EXECUTION_ENABLED === "true",
-    activatedAt: result.checked_at,
-  });
-  console.log(
+  return probeGeneration;
+}
+
+async function sealCampaignFailureBestEffort(
+  env: ControllerEnv,
+  campaignId: string,
+  detail: "claim_execution_failed" | "readiness_rejected",
+): Promise<void> {
+  try {
+    await sealShardActivationCampaignFailure(env.DB, campaignId, detail);
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "relay_container_shard_activation_campaign_failure_seal",
+      status: "unavailable",
+      campaign_id: campaignId,
+      detail_code: detail,
+      error: error instanceof ProtocolError ? error.code : "unknown",
+    }));
+  }
+}
+
+function readinessResponse(
+  probe: ShardReadinessProbe,
+  probeId: string,
+  result: ShardReadinessResult,
+  readinessResultSha256?: string,
+): Response {
+  return new Response(
     JSON.stringify({
-      event: "relay_container_shard_activation",
-      outcome,
-      controller_version_id: env.CF_VERSION_METADATA.id,
-      ring_generation: result.shard.ring_generation,
-      shard_index: result.shard.shard_index,
+      protocol_version: probe.protocol_version,
+      probe_id: probeId,
+      ...(readinessResultSha256 === undefined
+        ? {}
+        : { readiness_result_sha256: readinessResultSha256 }),
+      ...result,
     }),
+    { status: 200, headers: jsonHeaders },
   );
 }
 
@@ -1183,6 +1599,7 @@ const handler: ExportedHandler<ControllerEnv> = {
       }
       if (path === INTERNAL_STATUS_PATH) {
         await verifyStatusRequest(request, env);
+        const actionGates = await campaignActionGateInventory(env);
         return new Response(
           JSON.stringify({
             controller_enabled: env.CONTAINER_CONTROLLER_ENABLED === "true",
@@ -1197,6 +1614,8 @@ const handler: ExportedHandler<ControllerEnv> = {
               /^[0-9a-f]{64}$/.test(
                 env.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID,
               ),
+            all_action_gates_false: actionGates.allActionGatesFalse,
+            action_gate_inventory_sha256: actionGates.digestSha256,
             authority_current_secret_configured: authoritySecretConfigured(
               env.CONTAINER_AUTHORITY_CURRENT_SECRET,
             ),
@@ -1209,32 +1628,109 @@ const handler: ExportedHandler<ControllerEnv> = {
       }
       if (path === INTERNAL_READINESS_PATH) {
         const verified = await verifyReadinessRequest(request, env);
-        if (env.CONTAINER_CONTROLLER_ENABLED !== "true") {
-          return jsonError("container_controller_disabled", 503);
-        }
-        if (env.CONTAINER_READINESS_PROBE_ENABLED !== "true") {
-          return jsonError("container_readiness_probe_disabled", 503);
-        }
-        if (
-          verified.probe.wake_container &&
-          env.CONTAINER_READINESS_WAKE_ENABLED !== "true"
-        ) {
-          return jsonError("container_readiness_wake_disabled", 503);
-        }
-        const stub = env.RELAY_SHARDS.getByName(verified.probe.shard.instance_name);
-        const outcome = await stub.readinessProbe(
+        const campaignAcquire = await claimShardActivationCampaignBeforeWake(
+          env,
           verified.probe,
           verified.claims.dispatch_id,
         );
-        if (!outcome.ok) return jsonError(outcome.error.code, outcome.error.status);
-        await persistShardActivationIfEnabled(env, outcome.result);
-        return new Response(
-          JSON.stringify({
-            protocol_version: verified.probe.protocol_version,
-            probe_id: verified.claims.dispatch_id,
-            ...outcome.result,
-          }),
-          { status: 200, headers: jsonHeaders },
+        if (campaignAcquire === null) {
+          if (env.CONTAINER_CONTROLLER_ENABLED !== "true") {
+            return jsonError("container_controller_disabled", 503);
+          }
+          if (env.CONTAINER_READINESS_PROBE_ENABLED !== "true") {
+            return jsonError("container_readiness_probe_disabled", 503);
+          }
+          if (
+            verified.probe.wake_container &&
+            env.CONTAINER_READINESS_WAKE_ENABLED !== "true"
+          ) {
+            return jsonError("container_readiness_wake_disabled", 503);
+          }
+          const stub = env.RELAY_SHARDS.getByName(verified.probe.shard.instance_name);
+          const outcome = await stub.readinessProbe(
+            verified.probe,
+            verified.claims.dispatch_id,
+          );
+          if (!outcome.ok) return jsonError(outcome.error.code, outcome.error.status);
+          return readinessResponse(verified.probe, verified.claims.dispatch_id, outcome.result);
+        }
+
+        const claim = campaignAcquire.claim;
+        const shardProbe: ShardReadinessProbe = {
+          protocol_version: verified.probe.protocol_version,
+          shard: verified.probe.shard,
+          wake_container: verified.probe.wake_container,
+        };
+        const stub = env.RELAY_SHARDS.getByName(verified.probe.shard.instance_name);
+        let outcome: ShardReadinessRpcResultV2;
+        try {
+          outcome = await stub.readinessProbeV2(
+            shardProbe,
+            verified.claims.dispatch_id,
+            claim.claimDigestSha256,
+            campaignAcquire.kind === "completed",
+          );
+        } catch {
+          return jsonError("readiness_probe_journal_unavailable", 503);
+        }
+        if (!outcome.ok) {
+          if (
+            campaignAcquire.kind === "claimed" &&
+            [
+              "readiness_probe_ambiguous",
+              "readiness_probe_superseded",
+              "readiness_probe_claim_mismatch",
+              "readiness_probe_result_corrupt",
+              "invalid_readiness_probe_result",
+              "readiness_probe_completion_conflict",
+            ].includes(outcome.error.code)
+          ) {
+            await sealCampaignFailureBestEffort(
+              env,
+              claim.campaignId,
+              "claim_execution_failed",
+            );
+          }
+          return jsonError(outcome.error.code, outcome.error.status);
+        }
+        if (
+          campaignAcquire.kind === "completed" &&
+          campaignAcquire.readinessResultSha256 !== outcome.result_sha256
+        ) {
+          return jsonError("readiness_probe_result_mismatch", 502);
+        }
+        if (campaignAcquire.kind === "completed") {
+          campaignReadinessProbeGeneration(outcome.result, claim);
+        } else {
+          try {
+            await finalizeClaimedShardActivationCampaign(
+              env,
+              outcome.result,
+              claim,
+              outcome.result_sha256,
+            );
+          } catch (error) {
+            if (
+              error instanceof ProtocolError &&
+              [
+                "shard_activation_campaign_readiness_ineligible",
+                "shard_activation_probe_invalid",
+              ].includes(error.code)
+            ) {
+              await sealCampaignFailureBestEffort(
+                env,
+                claim.campaignId,
+                "readiness_rejected",
+              );
+            }
+            throw error;
+          }
+        }
+        return readinessResponse(
+          verified.probe,
+          verified.claims.dispatch_id,
+          outcome.result,
+          outcome.result_sha256,
         );
       }
       if (path !== INTERNAL_OPERATION_PATH) return jsonError("route_not_found", 404);

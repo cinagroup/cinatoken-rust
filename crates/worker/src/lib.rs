@@ -33,6 +33,7 @@ mod container_reconciliation_admin;
 mod container_relay_canary;
 mod container_scheduler;
 mod container_shard_activation_admin;
+mod container_shard_activation_campaign_admin;
 mod container_terminal_outbox;
 mod container_terminal_outbox_admin;
 mod d1_repositories;
@@ -202,6 +203,18 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async(
             "/api/platform/container/shards/activations",
             |req, ctx| async move { container_shard_activation_admin::list(req, ctx.env).await },
+        )
+        .get_async(
+            "/api/platform/container/shards/activation-campaigns",
+            |req, ctx| async move {
+                container_shard_activation_campaign_admin::status(req, ctx.env).await
+            },
+        )
+        .post_async(
+            "/api/platform/container/shards/activation-campaigns",
+            |req, ctx| async move {
+                container_shard_activation_campaign_admin::create(req, ctx.env).await
+            },
         )
         .post_async(
             "/api/platform/container/shards/readiness",
@@ -1551,6 +1564,54 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "v1beta".to_string());
     let now = (worker::Date::now().as_millis() / 1000) as i64;
+    match d1_repositories::relay_container_shard_activation_campaign_schema_ready(&db).await {
+        Ok(true) => {
+            match d1_repositories::materialize_expired_relay_container_shard_activation_campaigns(
+                &db,
+                d1_repositories::RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT,
+            )
+            .await
+            {
+                Ok(materialized) if materialized > 0 => worker::console_log!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "relay_container_shard_activation_campaign_expiry_materialization",
+                        "status": "materialized",
+                        "scope": "minute_cron",
+                        "limit": d1_repositories::RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT,
+                        "materialized": materialized,
+                    })
+                ),
+                Ok(_) => {}
+                Err(err) => worker::console_error!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "relay_container_shard_activation_campaign_expiry_materialization",
+                        "status": "error",
+                        "scope": "minute_cron",
+                        "error": err.to_string(),
+                    })
+                ),
+            }
+        }
+        Ok(false) => worker::console_error!(
+            "{}",
+            serde_json::json!({
+                "event": "relay_container_shard_activation_campaign_expiry_materialization",
+                "status": "schema_not_ready",
+                "scope": "minute_cron",
+            })
+        ),
+        Err(err) => worker::console_error!(
+            "{}",
+            serde_json::json!({
+                "event": "relay_container_shard_activation_campaign_expiry_materialization",
+                "status": "schema_probe_error",
+                "scope": "minute_cron",
+                "error": err.to_string(),
+            })
+        ),
+    }
     let terminal_outbox = container_terminal_outbox::container_terminal_outbox_runtime_config(&env);
     if terminal_outbox.enabled {
         match container_terminal_outbox::run_container_terminal_outbox(&env, &db, now).await {
@@ -2345,6 +2406,7 @@ mod tests {
             "/api/setup",
             "/api/platform/capabilities",
             "/api/platform/container/shards/activations",
+            "/api/platform/container/shards/activation-campaigns",
             "/api/platform/container/shards/readiness",
             "/api/platform/container/reconciliation/status",
             "/api/platform/container/reconciliations",

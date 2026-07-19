@@ -301,3 +301,34 @@ terminalize only exact ordinary HTTP 200 and treats interpreted errors as
 recovery. Migration 0052 and response protocol v3 remain local implementation
 work. No remote schema, Container, provider, financial, or traffic evidence is
 claimed; production remains **NO-GO**.
+
+## Release-Control Source Delta (2026-07-19)
+
+The current source comparison adds one deployment lesson to the execution-plane
+audit. cinaVibeSDK demonstrates Cloudflare-native Agent/DO/Container lifecycle
+composition, but its checked source does not provide a repository CI job that
+builds and executes the production Linux image, and its root edge does not bind
+the complete edge-to-controller-to-runtime release identity. The target must
+not inherit those evidence gaps.
+
+The Go source reinforces the boundary. A healthy process can still own
+unsettled `BillingSession` state, stream termination/usage state, task CAS work,
+refund batches, and request routing inputs. Therefore a native process gate is
+necessary for artifact correctness but cannot prove financial drain or safe
+VPS cutover.
+
+The Rust target now strengthens the source design as follows:
+
+| Concern | Source observation | Rust target contract |
+| --- | --- | --- |
+| Edge identity | No complete root-to-runtime provenance response | Root Version Metadata plus Controller version/gate digest in an admin-only capability response |
+| Image inputs | Mutable tags can identify the build recipe | Builder, runtime and test mock are pinned by registry digest; Cargo is locked |
+| Native executable | No production Linux process CI gate | Dedicated Linux/amd64 build and isolated process E2E workflow |
+| Retry ambiguity | Process tests alone do not constrain provider replay | 202 ambiguity must become `recovery_required`; provider dispatch count remains one |
+| Input integrity | Warm memory/disk is not authority | R2 bytes are rehashed; mismatch must stop before provider dispatch |
+| Shutdown/restart | Warm-instance success is insufficient | SIGTERM zero exit and same-image runtime-build stability are mandatory |
+
+These are release-control improvements, not execution enablement. Streaming
+usage persistence, durable financial terminal ownership, task/channel parity,
+remote Cloudflare lifecycle evidence, and Go/VPS process-state drain remain
+open. Production remains **NO-GO**.

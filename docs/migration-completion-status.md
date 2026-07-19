@@ -1676,3 +1676,38 @@ stable collector-v4 all-page control-plane inventory, sources-v3, P5 fault/load/
 evidence, five approvals, Go/VPS process drain, reverse synchronization, and a
 measured rollback remain absent. Go/VPS stays authoritative and production
 remains **NO-GO**.
+
+## 2026-07-19 Edge Version And Linux Release Gate Status
+
+### Implemented locally
+
+- Root, staging and production edge Workers now declare non-inherited
+  `CF_VERSION_METADATA` bindings.
+- The admin platform capability response exposes the edge Worker version ID and
+  the verified Controller version, all-false gate result and gate-inventory
+  SHA-256.
+- Container builder/runtime bases and the Linux test mock are digest-pinned.
+- A read-only, credential-free GitHub job builds `linux/amd64` and runs a real
+  isolated process gate. It validates image metadata, readiness/build identity,
+  one-attempt success, ambiguous no-retry, input-integrity failure, graceful
+  SIGTERM and same-image restart.
+- The offline contract/self-test is part of `bun run check` and grants hard
+  false remote, customer-traffic and production authority.
+
+### Verification boundary
+
+Local tests can prove configuration, parser, supply-chain pins and fail-closed
+test design. This Windows workspace has no Docker/Podman/WSL runtime, so it
+cannot claim that the Linux image was built or executed here. The dedicated CI
+job is the executable evidence producer; its successful candidate run must be
+retained before release review.
+
+### Still blocked
+
+There is no retained successful Linux candidate job in this local evidence, no
+SBOM/signature or image-to-runtime provenance packet, and no authenticated
+Cloudflare version/image/lifecycle readback. The exposed credential still must
+be revoked. Remote migration 0055, sealed N/N activation, P5 faults/load/cost/
+SLO/rollback/signatures, durable streaming/financial closure, and Go/VPS drain
+remain outstanding. Go/VPS stays authoritative and production remains
+**NO-GO**.

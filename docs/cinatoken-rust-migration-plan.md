@@ -16697,3 +16697,65 @@ needs the independent Go/VPS drain and reversible-write packet. No remote API,
 migration, deployment, Container wake, provider call, financial mutation, or
 traffic change occurred. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 22.255 Edge Version Provenance And Linux Container Release Gate (2026-07-19)
+
+### Source-audit decision
+
+The pinned cinaVibeSDK architecture uses Version Metadata on its stateful
+workers, but its root edge deployment did not provide an end-to-end release
+identity contract. The Go/VPS source also demonstrates why a process-local
+health response is not enough: streaming completion, billing ownership, task
+terminalization, and in-memory drain state must survive process and deployment
+boundaries. The Rust target therefore needs both an operator-visible edge
+version and a real native-process release gate before any Container can enter a
+staging evidence campaign.
+
+This increment closes that local release-control gap without enabling a
+Container, provider, financial, or traffic action. It does not supersede the
+remaining P0 settlement and streaming work.
+
+### Implemented contract
+
+- The root, staging, and production Worker configurations each declare their
+  own `CF_VERSION_METADATA` binding. The admin-only platform capability response
+  reports the validated edge version ID and the probed Controller version,
+  all-action-gates-false result, and action-gate inventory SHA-256.
+- The Container Dockerfile pins the Rust 1.78 builder and distroless non-root
+  runtime by immutable registry digest. `cargo build --locked`, the fixed
+  non-root user, port, and entrypoint remain mandatory.
+- `.github/workflows/container-runtime-linux.yml` is a credential-free,
+  read-only `ubuntu-24.04` gate. It pins `actions/checkout` to a full commit,
+  builds `linux/amd64`, and invokes the repository verifier against the built
+  image. It receives no Cloudflare or provider secret.
+- The verifier checks image OS/architecture, user, entrypoint and exposed port,
+  then runs the image on an internal Docker network with read-only filesystems,
+  dropped capabilities, `no-new-privileges`, memory/PID bounds and fixed
+  internal aliases. The mock image is digest-pinned as well.
+- The real process test proves health/readiness, a stable 64-hex runtime build
+  ID, health-probe handling, exactly one R2 read and provider attempt on success,
+  ambiguous 202 to `recovery_required` without retry, input hash mismatch before
+  provider dispatch, zero-exit SIGTERM, and same-image restart identity.
+- `check:container-runtime:linux-contract` is part of the local aggregate. It
+  validates the fail-closed contract without Docker or credentials.
+  `check:container-runtime:linux` is intentionally reserved for the real Linux
+  runner and is not silently replaced by a source-string test.
+
+### Evidence and promotion boundary
+
+| Evidence | Local/CI result | Promotion meaning |
+| --- | --- | --- |
+| Edge/Controller identity fields | Compile- and config-tested | Makes exact deployed versions observable; does not prove a deployment occurred |
+| Digest-pinned build inputs | Offline contract-tested | Prevents mutable base tags from defining the candidate; does not constitute SBOM/signature provenance |
+| Linux process gate | Executable only on the Linux CI runner | A successful job proves the checked commit's isolated native process behavior, not Cloudflare lifecycle behavior |
+| P5/production evidence | Not produced by this gate | Still requires remote image/version readback, runtime-to-image provenance, N/N campaign, faults, load/cost/SLO, rollback and signatures |
+
+The next release candidate must retain the Linux job result with the exact
+commit and image ID, then bind it to the Controller/edge version IDs and the P5
+subject. A passing local self-test or a workflow file alone is not evidence of
+that job. The complete local `bun run check` aggregate passed with exit code 0
+after this increment, including Worker 850/850, Controller 211/211, the Linux
+contract 5/5, workspace tests, Wrangler dry-runs and all configured wasm
+checks. This does not change the missing native Linux job evidence. The exposed
+credential must be revoked before any authenticated Cloudflare action. Go/VPS
+remains authoritative and production remains **NO-GO**.

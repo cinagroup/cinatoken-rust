@@ -7838,3 +7838,53 @@ token's exact permissions, apply/read back 0055, deploy the frozen candidate,
 complete and seal the N/N campaign, capture identical before/after inventory
 and all sources-v3 evidence, run P5 faults/load/cost/SLO/rollback, collect five
 signatures, and complete the Go/VPS drain. Production remains **NO-GO**.
+
+## Edge Version And Linux Container Release Gate (2026-07-19)
+
+Focused local verification for the release-control increment:
+
+```powershell
+bun test tests/container-runtime-linux-gate.test.mjs tests/container-controller-config.test.mjs
+# PASS: 18/18 tests, 267 expectations.
+
+bun run check:container-runtime:linux-contract
+# PASS: 5/5 tests, 36 expectations, followed by the Node offline self-test.
+# Report: contract v1 passed; base/action pins and credential-free workflow
+# passed; remote/customer/production authority all false.
+
+node --check tools/verify_container_runtime_linux.mjs
+node --check tests/fixtures/container-runtime-linux-mock.mjs
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+git diff --check
+# PASS.
+
+bun run check
+# PASS: complete repository aggregate with exit code 0, including the Linux
+# contract 5/5 (36 expectations), Controller 211/211 (1441 expectations),
+# portable protocol 176/176, Workerd runtime 45/45, deploy preflight 22/22
+# (93 expectations), DO lifecycle 48/48, frontend contracts 71/71, P5 evidence
+# 44/44 (55 expectations), foundation 24/24 (267 expectations), shard campaign
+# 13/13 (61 expectations), Worker Rust unit tests 850/850, workspace tests,
+# migration/config audits, Wrangler dry-runs, and all configured wasm checks.
+```
+
+The local self-test reads only tracked source/configuration. It neither invokes
+Docker nor reads an environment credential. It proves exact base-image and
+checkout pins, non-root entrypoint, credential-free workflow, internal-network
+confinement, fixed aliases, offline aggregate placement, and hard-false remote/
+traffic/cutover authority.
+
+The real command is deliberately separate:
+
+```powershell
+docker build --platform linux/amd64 --tag cinatoken-container-runtime:linux-gate --file crates/container-runtime/Dockerfile .
+node tools/verify_container_runtime_linux.mjs --image cinatoken-container-runtime:linux-gate --json
+```
+
+It is executed by `.github/workflows/container-runtime-linux.yml` on a Linux
+x64 runner. It was not run in this Windows workspace because no Docker, Podman
+or WSL engine is available. Therefore this section does not claim a successful
+native image build or process run. A retained green CI result for the exact
+candidate is still required, followed by Cloudflare image/version provenance,
+remote lifecycle/fault/P5 evidence and Go/VPS drain. Production remains
+**NO-GO**.

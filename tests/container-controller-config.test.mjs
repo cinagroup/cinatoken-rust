@@ -4,6 +4,9 @@ const rootConfig = Bun.TOML.parse(
   await Bun.file(new URL("../wrangler.toml", import.meta.url)).text(),
 );
 const packageJson = await Bun.file(new URL("../package.json", import.meta.url)).json();
+const platformGatewaySource = await Bun.file(
+  new URL("../crates/worker/src/platform_gateway.rs", import.meta.url),
+).text();
 const controllerSource = await Bun.file(
   new URL("../services/container-controller/src/index.ts", import.meta.url),
 ).text();
@@ -155,6 +158,21 @@ describe("isolated container controller configuration", () => {
     expect(rootConfig.containers).toBeUndefined();
     expect(packageJson.scripts["check:container-controller"]).toContain("container-controller");
     expect(packageJson.scripts.check).toContain("bun run check:container-controller");
+  });
+
+  test("edge and controller deployment identities are operator-visible", () => {
+    for (const edge of [rootConfig, rootConfig.env.staging, rootConfig.env.production]) {
+      expect(edge.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
+    }
+    expect(platformGatewaySource).toContain("WorkerVersionMetadata");
+    expect(platformGatewaySource).toContain(
+      '.get_binding::<WorkerVersionMetadata>("CF_VERSION_METADATA")',
+    );
+    expect(platformGatewaySource).toContain("edge_worker_version_id");
+    expect(platformGatewaySource).toContain("container_scheduler_controller_version_id");
+    expect(platformGatewaySource).toContain(
+      "container_scheduler_controller_action_gate_inventory_sha256",
+    );
   });
 
   test("operation recovery v1 is durable, rollback-readable, and double-gated", () => {

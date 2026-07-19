@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::{JsCast, JsValue};
 use worker::{
     D1Database, D1Type, Env, Headers, Request, RequestInit, Response, Result as WorkerResult,
+    WorkerVersionMetadata,
 };
 
 use crate::admin::{
@@ -361,6 +362,8 @@ impl WfpDispatchFailureKind {
 
 #[derive(Debug, Serialize)]
 struct PlatformCapabilities {
+    edge_worker_version_metadata_available: bool,
+    edge_worker_version_id: Option<String>,
     scheduling_gateway_compiled: bool,
     scheduling_gateway_active: bool,
     scheduling_gateway_owner_contract_version: u32,
@@ -423,6 +426,9 @@ struct PlatformCapabilities {
     container_scheduler_controller_enabled: bool,
     container_scheduler_controller_execution_enabled: bool,
     container_scheduler_controller_previous_secret_configured: bool,
+    container_scheduler_controller_version_id: Option<String>,
+    container_scheduler_controller_all_action_gates_false: bool,
+    container_scheduler_controller_action_gate_inventory_sha256: Option<String>,
     container_scheduler_shard_readiness_probe_compiled: bool,
     container_scheduler_shard_readiness_probe_enabled: bool,
     container_scheduler_shard_readiness_wake_enabled: bool,
@@ -1084,6 +1090,12 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(response);
     }
 
+    let edge_worker_version_id = env
+        .get_binding::<WorkerVersionMetadata>("CF_VERSION_METADATA")
+        .ok()
+        .map(|metadata| metadata.id())
+        .filter(|id| !id.is_empty() && id.len() <= 128);
+    let edge_worker_version_metadata_available = edge_worker_version_id.is_some();
     let d1_migration_status = load_d1_migration_status(&env).await;
     let d1_migration_ready = d1_migration_status.ready();
     let (
@@ -1298,6 +1310,13 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_controller_probe.execution_enabled;
     let container_scheduler_controller_previous_secret_configured =
         container_controller_probe.previous_secret_configured;
+    let container_scheduler_controller_version_id =
+        container_controller_probe.controller_version_id.clone();
+    let container_scheduler_controller_all_action_gates_false =
+        container_controller_probe.all_action_gates_false;
+    let container_scheduler_controller_action_gate_inventory_sha256 = container_controller_probe
+        .action_gate_inventory_sha256
+        .clone();
     let container_chat_canary_idempotency_secret_configured =
         container_chat_canary_current_idempotency_secret_configured
             || container_chat_canary_previous_idempotency_secret_configured;
@@ -1893,6 +1912,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let realtime_flat_billing_staging_verified = false;
     let realtime_flat_billing_cutover_ready = false;
     let capabilities = PlatformCapabilities {
+        edge_worker_version_metadata_available,
+        edge_worker_version_id,
         scheduling_gateway_compiled: true,
         scheduling_gateway_active: true,
         scheduling_gateway_owner_contract_version: SCHEDULING_GATEWAY_OWNER_CONTRACT_VERSION,
@@ -1958,6 +1979,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduler_controller_enabled,
         container_scheduler_controller_execution_enabled,
         container_scheduler_controller_previous_secret_configured,
+        container_scheduler_controller_version_id,
+        container_scheduler_controller_all_action_gates_false,
+        container_scheduler_controller_action_gate_inventory_sha256,
         container_scheduler_shard_readiness_probe_compiled,
         container_scheduler_shard_readiness_probe_enabled,
         container_scheduler_shard_readiness_wake_enabled,

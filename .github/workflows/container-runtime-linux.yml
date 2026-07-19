@@ -1,0 +1,54 @@
+name: container-runtime-linux
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/container-runtime-linux.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/container-runtime/**"
+      - "tests/container-runtime-linux-gate.test.mjs"
+      - "tests/fixtures/container-runtime-linux-mock.mjs"
+      - "tools/lib/bounded_subprocess.mjs"
+      - "tools/verify_container_runtime_linux.mjs"
+      - "package.json"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/container-runtime-linux.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/container-runtime/**"
+      - "tests/container-runtime-linux-gate.test.mjs"
+      - "tests/fixtures/container-runtime-linux-mock.mjs"
+      - "tools/lib/bounded_subprocess.mjs"
+      - "tools/verify_container_runtime_linux.mjs"
+      - "package.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-runtime-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-amd64-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out frozen source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Verify credential-free gate contract
+        run: node tools/verify_container_runtime_linux.mjs --self-test --json
+
+      - name: Build linux/amd64 runtime image
+        run: docker build --platform linux/amd64 --tag cinatoken-container-runtime:linux-gate --file crates/container-runtime/Dockerfile .
+
+      - name: Exercise isolated runtime process
+        run: node tools/verify_container_runtime_linux.mjs --image cinatoken-container-runtime:linux-gate --json

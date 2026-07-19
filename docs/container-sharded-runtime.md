@@ -1219,3 +1219,46 @@ Cloudflare namespace has no hidden object, that a sleeping Container is running,
 or that a runtime hash belongs to a specific image. Those claims remain on the
 control-plane inventory and runtime-to-image provenance planes. No remote
 activation evidence exists yet; production remains **NO-GO**.
+
+## Linux Process Gate And Edge Provenance (2026-07-19)
+
+The earlier statement that the same-version activation ceremony was absent is
+superseded by migration 0055, but neither that ceremony nor a source-only
+Dockerfile proves the native process. The release path now has three distinct
+identities:
+
+1. root edge Worker Version Metadata;
+2. Controller Version Metadata plus its canonical all-false action-gate digest;
+3. Container image identity plus the runtime executable SHA-256 returned by
+   `/readyz`.
+
+The admin capability endpoint exposes the first two identities without waking
+a DO or Container. The third is produced by a dedicated Linux release job. Its
+Dockerfile builder and distroless runtime are digest-pinned, and its checkout
+action is pinned to a full commit. The job builds `linux/amd64` and runs the
+image rather than treating `wrangler --dry-run` or Rust unit tests as a native
+process substitute.
+
+The process verifier creates an isolated internal Docker network. A
+digest-pinned Node mock owns only `r2-input.cinatoken.internal` and
+`provider-egress.cinatoken.internal`; neither the runtime nor mock receives a
+Cloudflare/provider credential or customer request. Both containers use
+read-only roots, dropped capabilities, `no-new-privileges`, bounded memory and
+PIDs, and loopback-only random host ports for the verifier.
+
+The mandatory scenarios are:
+
+- `/healthz` and `/readyz`, including execution enabled and a 64-hex build ID;
+- one health operation with no provider path;
+- one successful canary with one input read and one provider dispatch;
+- one accepted ambiguous outcome mapped to `recovery_required`, with no retry;
+- one same-length input corruption rejected before provider dispatch;
+- SIGTERM graceful exit code zero; and
+- same-image restart with the same runtime build ID.
+
+The offline contract test is in the repository-wide check and cannot authorize
+remote mutation, customer traffic, or cutover. The actual Linux job result must
+be retained and joined to Cloudflare deployment/image readback, SBOM/signature
+provenance, same-version N/N activation, remote lifecycle faults, and rollback
+evidence. Until that happens, the runtime remains a local candidate and
+production remains **NO-GO**.

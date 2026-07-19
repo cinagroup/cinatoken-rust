@@ -1150,3 +1150,19 @@ Runtime build identity is necessary but not sufficient: it proves which binary
 answered readiness, while the Cloudflare control plane and provenance artifact
 must prove which immutable image supplied that binary. Production remains
 **NO-GO** and Go/VPS remains authoritative.
+
+## 2026-07-19 Edge And Linux Release-Gate Matrix
+
+| Gate | Current local evidence | Production acceptance | Status |
+| --- | --- | --- | --- |
+| Edge deployment identity | Root/staging/production each bind Version Metadata; admin capability reports edge ID and exact verified Controller version/gate digest | Authenticated deployed readback joined to the frozen P5 subject | Local contract; remote blocked |
+| Container build inputs | Rust builder, distroless non-root runtime and Node mock are digest-pinned; Cargo build is locked | SBOM, vulnerability policy, signature and immutable image digest retained with the candidate | Local contract |
+| Linux/amd64 process | Credential-free GitHub job builds the real image and runs isolated health, success, ambiguity, hash-fault, SIGTERM and restart checks | Successful job for the exact candidate, retained image ID/log digest and independent review | Executable gate; current run not yet claimed |
+| Network/process confinement | Internal bridge, fixed aliases, read-only roots, dropped capabilities, no-new-privileges, loopback random ports and memory/PID bounds | Equivalent Cloudflare Container egress/service-binding proof plus runtime limits/readback | Local Docker contract |
+| Provider at-most-once canary | Local verifier requires one provider dispatch and no ambiguous retry | Real provider-native idempotency/lookup evidence and lifecycle fault matrix | Local synthetic only |
+| Release | No credential, remote API, deployment, Container wake, provider/financial action or traffic change is authorized | Rotated credentials, remote 0055/N/N/P5 packet, five signatures and complete Go/VPS drain | **NO-GO** |
+
+The Linux workflow is a required candidate gate, not a production approval
+workflow. A checked-in YAML file or passing offline self-test cannot be promoted
+to "Linux verified"; only the retained successful run for the frozen commit can
+do that. Go/VPS remains authoritative and production remains **NO-GO**.

@@ -47,6 +47,9 @@ run_worker_first = ["/api/*", "/v1/*"]
 [ai]
 binding = "AI"
 
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
 # Private, capability-scoped Worker-to-Worker path. The controller must be
 # deployed before this caller; no public controller URL is used.
 [[services]]
@@ -311,6 +314,9 @@ run_worker_first = ["/api/*", "/v1/*"]
 [env.staging.ai]
 binding = "AI"
 
+[env.staging.version_metadata]
+binding = "CF_VERSION_METADATA"
+
 [[env.staging.services]]
 binding = "CONTAINER_CONTROLLER"
 service = "cinatoken-container-controller-staging"
@@ -570,6 +576,9 @@ run_worker_first = ["/api/*", "/v1/*"]
 
 [env.production.ai]
 binding = "AI"
+
+[env.production.version_metadata]
+binding = "CF_VERSION_METADATA"
 
 [[env.production.services]]
 binding = "CONTAINER_CONTROLLER"

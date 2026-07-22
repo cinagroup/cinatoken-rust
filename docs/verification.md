@@ -7913,3 +7913,31 @@ standalone Linux contract is 5/5 with 42 expectations and reports
 production authority. These results fix the test design but do not convert the
 failed remote run into a pass. A new retained green run for the exact candidate
 is mandatory. Production remains **NO-GO**.
+
+## Linux Gate Native Green Closure (2026-07-22)
+
+The first isolation-fix candidate, [run 29884596667](https://github.com/cinagroup/cinatoken-rust/actions/runs/29884596667)
+for commit `a67afa164a644e3f66e12fc7d8e97e89a59c8a0f`, again passed checkout, the
+offline contract, and the real `linux/amd64` image build. Its process step then
+failed at `docker exec`. The retained log exposed a test-network mismatch: the
+runtime's fixed internal HTTP contracts use default port 80, while the mock
+still listened on port 9090 after host publication was removed.
+
+Commit `20908f8282876d08046d55967e42eddf00015934` aligned the mock with the
+production contract on internal port 80, explicitly set the mock network
+namespace's unprivileged-port threshold, retained the non-root user and dropped
+capabilities, and added bounded ASCII-only subprocess diagnostics. Exact
+[run 29885010523](https://github.com/cinagroup/cinatoken-rust/actions/runs/29885010523)
+then passed every `linux-amd64-e2e` step.
+
+The native report proves `amd64`, `nonroot:nonroot`, runtime build ID
+`dcda452174385d048e8b25f1f9cf0dcb762b0c02b90462022802d62829b1d824`,
+health/readiness, one-attempt provider success, ambiguous no-retry, input hash
+failure before provider dispatch, zero-exit SIGTERM, and stable same-image
+restart identity. It also reports `inNetworkProbe=true`,
+`hostPortsPublished=false`, and false remote/customer/production authority.
+
+This closes the native Linux process evidence gap for that exact candidate. It
+does not prove Cloudflare Container lifecycle, deployed image provenance,
+remote D1 migrations, paid streaming durability, P5 campaigns, traffic drain,
+or production readiness. Production remains **NO-GO**.

@@ -1741,3 +1741,38 @@ contract passes 5/5 with 42 expectations. A new exact-candidate GitHub run is
 still required to prove the native process path. This closure grants no
 Cloudflare, customer-traffic, financial, or production authority. Production
 remains **NO-GO**.
+
+## 2026-07-22 Native Linux Gate Green Evidence
+
+### Exact run history
+
+- Run `29884596667` at commit
+  `a67afa164a644e3f66e12fc7d8e97e89a59c8a0f` passed checkout, contract, and
+  image build, then exposed the mock port mismatch at `docker exec`.
+- Run `29885010523` at commit
+  `20908f8282876d08046d55967e42eddf00015934` passed the complete
+  `linux-amd64-e2e` job, including real image build and process execution.
+
+The green report proves the digest-pinned image is `amd64`, runs as
+`nonroot:nonroot`, has stable build ID
+`dcda452174385d048e8b25f1f9cf0dcb762b0c02b90462022802d62829b1d824`, and
+passes health, single-attempt success, ambiguity, input-integrity, SIGTERM, and
+same-image restart scenarios without host-published ports. No Cloudflare or
+provider credential was present.
+
+### Next production-critical slice
+
+Cross-repository audits of cinaVibeSDK, Go/VPS cinatoken, and the Rust target
+agree that ordinary paid HTTP SSE still lacks a durable owner between first
+client byte and persisted financial finalization. The next vertical slice is
+`Ordinary HTTP SSE Durable Terminal Handoff v1`: persist owner/attempt and the
+frozen billing snapshot before forwarding; use one instrumented stream; persist
+bounded terminal evidence/outbox before releasing the terminal event; and let a
+generation-fenced recovery owner close stale forwarding rows without provider
+resend.
+
+Container `stream:true` and all remote capability gates remain false. Remote
+migration 0055+, Cloudflare image/version/lifecycle readback, P5 fault/load/
+cost/SLO/rollback/signature evidence, exposed-credential rotation, and Go/VPS
+drain are still missing. Go/VPS remains authoritative and production remains
+**NO-GO**.

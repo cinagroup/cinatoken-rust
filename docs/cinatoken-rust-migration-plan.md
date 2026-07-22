@@ -16789,3 +16789,116 @@ contract passes 5/5 with 42 expectations and hard-false remote/customer/
 production authority. A new retained green exact-candidate run remains the
 promotion requirement. The exposed Cloudflare credential must still be
 revoked, Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## 22.257 Native Linux Gate Green Closure (2026-07-22)
+
+The next exact candidate, commit
+`a67afa164a644e3f66e12fc7d8e97e89a59c8a0f`, reached the in-network probe but
+failed GitHub run `29884596667` at `docker exec`. The production runtime client
+uses fixed default-port URLs for `r2-input.cinatoken.internal` and
+`provider-egress.cinatoken.internal`; the mock still listened on 9090 after
+host publication was removed. That mismatch was a gate defect, not a runtime
+protocol failure.
+
+Commit `20908f8282876d08046d55967e42eddf00015934` moved the mock to internal
+port 80, explicitly allowed the non-root Node process to bind that port inside
+its network namespace, and retained `--cap-drop ALL`, read-only root, bounded
+memory/PIDs, `no-new-privileges`, and the internal-only network. Docker failures
+now include bounded, printable diagnostics without printing command arguments
+or environment values.
+
+Exact GitHub run `29885010523` passed checkout, offline contract, real
+`linux/amd64` build, and every process scenario. Its report proves:
+
+- image architecture `amd64` and user `nonroot:nonroot`;
+- runtime build ID
+  `dcda452174385d048e8b25f1f9cf0dcb762b0c02b90462022802d62829b1d824`;
+- health/readiness and stable same-image restart identity;
+- exactly one R2 read and provider attempt on success;
+- ambiguous execution becomes `recovery_required` without resend;
+- input hash mismatch fails before provider dispatch; and
+- graceful SIGTERM exits zero with no host-published port.
+
+This closes the repository's native Linux process gate for the exact commit.
+It grants no Cloudflare deployment, Container lifecycle, customer traffic,
+financial, or cutover authority.
+
+## 22.258 Cross-Repository Streaming Ownership Audit (2026-07-22)
+
+The read-only audit used cinaVibeSDK commit
+`918e97480ee44e357abe99bf33c27259d6ac7ebd`, Go/VPS cinatoken commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703`, and Rust baseline
+`16fd13b63832562aaf6399fb426a871b829fcdff`. The cinaVibeSDK checkout was
+shallow, so these conclusions describe the inspected source, not an unverified
+remote head.
+
+### Design retained from cinaVibeSDK
+
+- Route at the edge, then hand execution to a stable named Durable Object.
+- Keep generation, lease, capacity, alarm, and recovery state in DO SQLite;
+  treat the Linux Container as replaceable execution capacity.
+- Preserve HTTP stream backpressure and return WebSocket upgrades directly
+  across layers that cannot represent an upgrade over RPC.
+- Keep D1 as business and financial truth, R2 as immutable large-object
+  evidence, and KV as non-authoritative configuration/cache.
+- Persist Version Metadata into operation, receipt, terminal, and deployment
+  evidence so mixed-version N/N-1 behavior can fail closed.
+
+The Rust Jump Hash plus explicit `ring_generation` design remains preferable to
+cinaVibeSDK's 32-bit modulo `many_to_one` strategy. Modulo remaps most tenants
+when shard count changes and has no generation fence, ownership transfer, or
+admission backpressure. Process metadata files, in-memory health intervals,
+best-effort deployment retries, one-shot 100 percent rollout, and post-deploy
+non-fatal migrations are also rejected as financial ownership mechanisms.
+
+### Failure windows carried forward from Go/VPS
+
+- Abnormal SSE termination, missing `[DONE]`, read errors, and client loss can
+  return `nil` and enter success settlement.
+- Provider requests are not bound to the inbound cancellation context, and the
+  default total timeout can be unbounded before headers.
+- Reserve, settle, and refund are multi-step read-then-write operations without
+  one generation-fenced financial transaction.
+- Refund ownership can live only in an async goroutine, and batch maps can drop
+  financial deltas permanently after a failed flush or process restart.
+- Usage is inferred from a final chunk or local estimate without a durable
+  provider receipt and unique terminal owner.
+
+The Rust non-streaming Container protocol and Realtime DO machinery solve
+adjacent pieces but do not close ordinary HTTP SSE. The current clone stream
+plus `waitUntil` can disappear before a finalization event reaches D1/Queue;
+later lease recovery cannot reconstruct lost terminal or usage evidence.
+
+### Next vertical slice: Ordinary HTTP SSE Durable Terminal Handoff v1
+
+1. Add migration `0056_relay_http_stream_terminal_handoffs.sql`. Before first
+   client byte, persist reservation identity, owner/attempt generation,
+   provider operation identity, frozen billing snapshot hash, forwarding
+   deadline, exact Worker version, and `forwarding` state.
+2. Replace cloned audit consumption with one instrumented forwarding stream.
+   Reuse the bounded SSE accumulator and classify `done`, clean EOF, upstream
+   error, client abort, idle timeout, and total timeout explicitly. Clean EOF is
+   not provider-confirmed success.
+3. Persist bounded checkpoint data only: event/byte counts, verified usage,
+   provider response identity, rolling digest, and termination reason. Never
+   persist prompt or response bodies in D1/DO storage.
+4. Persist the terminal finalization event and outbox under a generation-fenced
+   CAS before releasing the terminal SSE event or closing the client branch.
+   Queue delivery may retry; the financial terminal may occur exactly once.
+5. Let an alarm/reconciler claim stale `forwarding` rows. Complete from durable
+   evidence, or move to `recovery_required`; never resend an attempt that the
+   provider may have accepted and never re-read mutable pricing.
+6. Keep Container `stream:true` rejected and every streaming/capability gate
+   false. Container streaming requires a separate protocol v4/status v5/
+   financial terminal v3 stream-seal design.
+
+Acceptance requires fault injection before headers, after first byte, before
+and after usage, before terminal persistence, on Queue/D1 ambiguity, on client
+abort and idle timeout, and across Worker/DO restart. Every case must converge
+to one provider attempt, one explainable financial terminal or explicit
+`recovery_required`, no duplicate quota/request/audit mutation, no stranded
+reservation without a recovery owner, and no request/response body in durable
+metadata.
+
+The exposed Cloudflare credential must be revoked before any authenticated
+remote action. Go/VPS remains authoritative and production remains **NO-GO**.

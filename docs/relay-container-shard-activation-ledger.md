@@ -1,6 +1,6 @@
 # Relay Container Shard Activation Ledger
 
-Date: 2026-07-19
+Date: 2026-07-22
 
 Status: local, default-inert P5 evidence implementation with the 0055 one-time
 activation campaign implemented. No D1 migration was applied remotely, no
@@ -10,20 +10,22 @@ provider, financial, or production authority changed.
 
 ## Operative Baseline
 
-The operative D1 head is
-`0055_relay_container_shard_activation_campaigns.sql`, migration count 55. The local
-SQLite verifier currently reports:
+The current candidate D1 head is
+`0056_relay_http_stream_handoffs.sql`, migration count 56. The local SQLite
+verifier currently reports:
 
 ```text
-55 migrations
-62 tables
-771 incremental columns
-91 key indexes
+56 migrations
+64 tables
+814 incremental columns
+94 key indexes
 ```
 
-This 0055/55 and 62/771/91 baseline supersedes the historical 0054/54 and
-58/694/83 activation-ledger baseline. The earlier baseline remains useful P5
-history, but it is not a valid current schema readback.
+Migration 0055/55 and 62/771/91 remains the historical one-time campaign
+baseline and supersedes the earlier 0054/54 activation-only snapshot. A new P5
+candidate must retain the sealed 0055 campaign evidence while binding the
+0056/56 and 64/814/94 schema head; neither historical baseline is a valid
+current schema readback by itself.
 
 The evidence chain has five independently checked links:
 
@@ -82,7 +84,7 @@ python tools/verify_sqlite.py
 bun run check:d1:migration-config
 ```
 
-The 62/771/91 numbers above come from the first command on the current worktree,
+The 64/814/94 numbers above come from the first command on the current worktree,
 not from an estimate. They are local schema evidence only.
 
 ## Candidate Identity Chain
@@ -350,7 +352,7 @@ all other sources-v3 evidence.
 | Step | Required order | Evidence gate | Abort condition |
 | --- | --- | --- | --- |
 | S0 candidate freeze | Rotate the exposed credential, create least-privilege identities, and freeze commits, Worker versions, image, runtime build, provenance, SBOM, resources, and rollback artifacts | One canonical P5 candidate; every tracked action gate defaults false | Old credential, placeholder identity, or missing provenance |
-| S1 schema readers | Back up staging D1, prove old-writer/operation drain, apply and read back 0054 then 0055, then deploy provider-egress, Controller reader, and edge reader | Exact 0055/55 and 62/771/91 schema; immutable negatives; unchanged business fingerprint | Schema drift, incompatible writer, unexpected row, or provider/financial delta |
+| S1 schema readers | Back up staging D1, prove old-writer/operation drain, apply and read back 0054, 0055, then 0056, then deploy provider-egress, Controller reader, and edge reader | Exact 0056/56 and 64/814/94 schema plus sealed 0055 campaign semantics; immutable negatives; unchanged business fingerprint | Schema drift, incompatible writer, unexpected row, or provider/financial delta |
 | S2 runtime rollout | Roll the Container candidate at 10% and then 100% while activation recording remains false | Exact control-plane image, compatible readiness/runtime build, N/N-1 reader proof, zero customer traffic | Unknown image/build, incompatible readiness, or unexplained wake/effect |
 | S3 candidate recording | Create one root-authorized same-version campaign, retain its nonce only in the approved operator process, and issue exactly one signed readiness probe per logical shard | D1 claim precedes every DO lookup; exact completed replays are replay-only; campaign is `sealed_complete` with N/N claims, consumptions, receipts, and 0054 activations | Version/gate/candidate drift, second wake, ambiguous journal, missing/hash-mismatched replay, failed/expired/aborted seal, stale or execution-ready receipt |
 | S4 stability capture | Read the sealed campaign and activation snapshots before/after, plus action-gate, SBOM/provenance, R2, traffic, and Cloudflare inventory over one 300-7200 second window | Frozen high watermark, complete keyset traversal, identical campaign/receipt/entry digests, sources-v3 artifact digest, explicit Cloudflare all-pages proof | Cursor gap/repeat, campaign drift, receipt mismatch, source-time mismatch, non-false gate, or incomplete direct API readback |
@@ -435,8 +437,8 @@ git diff --check -- docs/relay-container-p5-evidence-contract.md `
 
 Current worktree results:
 
-- SQLite schema verifier: pass, 55 migrations and 62/771/91 schema baseline;
-- D1 migration/config audit: pass, contiguous 0001 through 0055;
+- SQLite schema verifier: pass, 56 migrations and 64/814/94 schema baseline;
+- D1 migration/config audit: pass, contiguous 0001 through 0056;
 - runtime readiness build-ID test: 1 pass;
 - Controller activation writer tests: 5 pass, including the exact 0054 schema
   through a real SQLite catalog;

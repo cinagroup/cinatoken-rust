@@ -40,9 +40,9 @@ Required local state:
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
   so Wrangler's local `workerd` can start.
 - `bun run check:d1:migration-config` passes.
-- `bun run verify:sqlite` reports 55 migrations, 62 required tables, 771
-  incremental columns, and 91 key indexes through
-  `0055_relay_container_shard_activation_campaigns.sql`.
+- `bun run verify:sqlite` reports 56 migrations, 64 required tables, 814
+  incremental columns, and 94 key indexes through
+  `0056_relay_http_stream_handoffs.sql`.
 - `bun run check:cf:billing-queue` passes.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
@@ -139,7 +139,7 @@ bun run check:cf:startup
 Pass criteria:
 
 - No test failures.
-- All three D1 binding tables use `migrations/d1`; migrations 0001-0055 are
+- All three D1 binding tables use `migrations/d1`; migrations 0001-0056 are
   contiguous; the local SQLite verifier finds all 62 required tables, 771
   incremental columns, and 91 key indexes.
 - No formatting or whitespace errors.
@@ -2372,3 +2372,65 @@ account/resource IDs. No authenticated run has yet satisfied this phase.
 Rollback preserves the campaign, claims, receipts, seal, 0054 activations, DO
 journal, image, and audit evidence. Go/VPS remains authoritative; production
 remains **NO-GO**.
+
+## Phase 4l: Ordinary HTTP SSE Durable Handoff
+
+This phase is blocked until the exposed credential is revoked and an approved
+replacement identity applies and reads back migration 0056. Use only isolated
+staging, synthetic tokens, and a provider account with an independent call
+counter. Do not send customer traffic.
+
+### Reader-first and drain-only proof
+
+1. Archive the pre-0056 backup, exact migration inventory, writer/operation
+   drain, and business fingerprint with all four SSE gates false.
+2. Apply 0056 and read back 56 migrations, 64 tables, 814 checked incremental
+   columns, 94 key indexes, both 0056 tables, three indexes, and eleven
+   triggers.
+3. Run the identity, usage-regression, event-replacement, terminal-without-
+   receipt, receipt-mutation/delete, and handoff-delete negative probes.
+4. Deploy the exact reader. Seed bounded synthetic handoff/outbox rows without
+   provider dispatch.
+5. Keep producer false; enable staging approval, outbox, and recovery only.
+   Prove atomic lease, bounded retry/dead-letter, exact apply receipt, and
+   receipt reconciliation. Return every gate to false and prove zero backlog.
+
+### Synthetic producer matrix
+
+Enable staging approval, outbox, recovery, then producer for one bounded cohort.
+For each case record reservation key hash, owner and attempt generation, Worker
+version, provider operation ID hash, provider call count, checkpoint sequence,
+usage, stream digest, terminal event ID/hash, outbox lease/attempt state,
+receipt, audit row, quota delta, request-count delta, request IDs, and traces.
+Never record a body, frame, prompt, response, credential, cookie, or raw account
+identifier.
+
+| Case | Injection | Required result |
+| --- | --- | --- |
+| H1 | Successful provider terminal | Event is durable before terminal chunk release; one provider call, audit, financial terminal, and receipt |
+| H2 | D1 insert failure before first client byte | Request fails closed; no client body; reservation has one recovery owner |
+| H3 | Read failure after first chunk | Generation-fenced recovery-required; no provider retry; monotonic checkpoint |
+| H4 | Oversized/unterminated SSE line | Bounded parser failure; partial usage ignored; frozen reserve policy applied |
+| H5 | Provider failed/incomplete terminal | Checkpoint plus provider-error recovery; no success settlement without approved policy |
+| H6 | EOF without terminal | Client stream error plus recovery-required; no clean-success classification |
+| H7 | Idle timeout | Recovery-required after bounded active-pull idle timeout; no resend |
+| H8 | Terminal D1 write ambiguity | Terminal chunk is not released without persisted event; exact row determines recovery |
+| H9 | Queue accepted, delivery mark lost | Redelivery remains idempotent; immutable event and one exact receipt |
+| H10 | Apply succeeds, Queue ack lost | Receipt reconciliation reaches terminal with no duplicate billing/audit/request effect |
+| H11 | Outbox retry exhaustion | Dead-letter state cannot replace event; alert and operator recovery evidence exist |
+| H12 | Client cancellation/stops pulling | Lease expiry and scheduled sweep converge; no stranded reservation or provider resend |
+| H13 | Worker restart and N/N-1 overlap | D1 state survives; stale generation/lease cannot mutate current work |
+| H14 | Producer-off rollback with backlog | No new handoffs; drain gates converge existing rows; Go/VPS remains authoritative |
+
+### Abort rules
+
+Abort and disable the producer immediately on duplicate provider calls,
+duplicate financial/audit/request effects, partial-usage settlement, event
+replacement, receipt mismatch, unbounded row age, body/secret persistence,
+schema/version drift, customer traffic, or inability to reconcile provider and
+D1 counters. Keep drain gates enabled only under incident ownership until the
+existing backlog is terminal or explicitly reviewed.
+
+Current local work does not supply these remote results. The provider-dispatch-
+to-handoff crash window and total stream deadline are still open design items.
+Production remains **NO-GO**.

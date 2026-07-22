@@ -16871,7 +16871,7 @@ later lease recovery cannot reconstruct lost terminal or usage evidence.
 
 ### Next vertical slice: Ordinary HTTP SSE Durable Terminal Handoff v1
 
-1. Add migration `0056_relay_http_stream_terminal_handoffs.sql`. Before first
+1. Add migration `0056_relay_http_stream_handoffs.sql`. Before first
    client byte, persist reservation identity, owner/attempt generation,
    provider operation identity, frozen billing snapshot hash, forwarding
    deadline, exact Worker version, and `forwarding` state.
@@ -16902,3 +16902,50 @@ metadata.
 
 The exposed Cloudflare credential must be revoked before any authenticated
 remote action. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.259 Ordinary HTTP SSE Durable Terminal Handoff v1 (2026-07-22)
+
+The preceding design is now implemented as a default-off local candidate.
+Migration `0056_relay_http_stream_handoffs.sql` advances the exact local D1
+head to 56 migrations, 64 tables, 814 checked incremental columns, and 94 key
+indexes. It adds a generation-fenced handoff table plus append-preserved exact
+finalization receipts. Identity, monotonic checkpoints and usage, lifecycle,
+immutable terminal evidence, receipt prerequisites, terminal immutability, and
+delete guards are enforced in D1.
+
+The paid SSE path now uses one instrumented stream. It creates a `forwarding`
+handoff before the first client byte, renews and binds the handoff lease to the
+matching billing reservation, incrementally hashes/parses every yielded chunk,
+and checkpoints at bounded chunk/byte/heartbeat thresholds. Provider-confirmed
+success builds the audit plus billing event, persists its exact ID/JSON/hash
+and final usage before releasing the terminal chunk, and leaves Queue delivery
+to a leased outbox. The financial terminal requires the exact append-preserved
+apply receipt; Queue acceptance or reservation state alone is insufficient.
+
+Recovery is generation-fenced and never re-dispatches the provider. Expired
+forwarding, failed/incomplete provider terminals, parser/read/idle failures,
+dead-lettered delivery, and ambiguous apply remain explicit
+`recovery_required` until exact durable evidence permits convergence. Stream
+parse failure ignores partial usage and freezes settlement at the approved
+pre-consumption for tiered and flat billing.
+
+The four tracked gates remain exact `false` in default, staging, and production:
+
+- `RELAY_HTTP_STREAM_DURABLE_HANDOFF_ENABLED`;
+- `RELAY_HTTP_STREAM_DURABLE_HANDOFF_STAGING_VERIFIED`;
+- `RELAY_HTTP_STREAM_OUTBOX_ENABLED`; and
+- `RELAY_HTTP_STREAM_RECOVERY_ENABLED`.
+
+Outbox/recovery can drain previously created rows while the producer remains
+off, but they still require the staging-verification latch. Producer admission
+requires all four gates, the billing Queue, Worker version metadata, the 0056
+schema, and a positive active reservation.
+
+The production design, fault matrix, rollout, and rollback sequence are in
+`docs/relay-http-stream-durable-handoff.md`. Important blockers remain: the
+provider-dispatch to handoff-insert crash window, cancellation owned only by
+lease expiry, no total stream deadline, no real Queue/D1/restart/version-skew
+fault packet, no remote 0056 apply/readback, no credential-rotation evidence,
+and no P5 or Go/VPS drain packet. Historical 0055 activation campaign evidence
+remains valid history but is not the current schema head. Go/VPS remains
+authoritative and production remains **NO-GO**.

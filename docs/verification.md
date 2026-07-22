@@ -7941,3 +7941,65 @@ This closes the native Linux process evidence gap for that exact candidate. It
 does not prove Cloudflare Container lifecycle, deployed image provenance,
 remote D1 migrations, paid streaming durability, P5 campaigns, traffic drain,
 or production readiness. Production remains **NO-GO**.
+
+## Ordinary HTTP SSE Durable Handoff Verification (2026-07-22)
+
+The local candidate adds migration 0056 and a real-D1 Workerd lifecycle case.
+The exact-set SQLite verifier must report 56 migrations, 64 tables, 814 checked
+incremental columns, and 94 key indexes. The migration test covers both 0056
+tables, three indexes, eleven triggers, monotonic usage, immutable event
+identity, exact receipt prerequisites, receipt immutability, and receipt-bound
+terminal state.
+
+The focused Workerd case executes this sequence against local D1:
+
+1. create `forwarding` with exact reservation, owner, and attempt generation;
+2. checkpoint usage and reject a usage regression;
+3. stage the immutable finalization event;
+4. claim one outbox lease atomically;
+5. dead-letter delivery and reject event replacement;
+6. settle the reservation and insert the matching audit finalization event;
+7. insert the exact append-preserved receipt;
+8. converge to `terminal` from recovery; and
+9. reject receipt deletion.
+
+Run the exact candidate gates:
+
+```powershell
+cargo fmt --all --check
+cargo test -p cinatoken-worker --lib
+cargo test --workspace --exclude cinatoken-worker
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+python tools/verify_sqlite.py
+npx.cmd --yes bun run check:d1:migration-config
+npx.cmd --yes bun run check:relay-http-stream-handoff:config
+npx.cmd --yes bun run check:do-lifecycle-runtime
+npx.cmd --yes bun run check:relay-container:p5-evidence
+npx.cmd --yes bun run check:relay-container:p5-foundation
+npx.cmd --yes bun run check
+git diff --check
+```
+
+The handoff config audit must prove all four exact-string gates are false in all
+tracked environments, producer prerequisites include Queue/schema/version and
+all drain capabilities, outbox/recovery are independent from producer but
+staging-latched, parser/finalization/error limits are 64 KiB/64 KiB/4 KiB,
+outbox claim uses `UPDATE ... RETURNING`, and terminal convergence uses a D1
+batch plus exact receipt.
+
+This implementation worktree passed the complete command set. Recorded results
+include Worker unit tests 856/856; the remaining Rust workspace and doc tests;
+Worker `wasm32-unknown-unknown` check; SQLite 56/64/814/94; D1 and handoff
+configuration audits; P5 verifier 44/44; foundation collector 24/24 plus
+self-test; Workerd lifecycle 49/49; formatting and diff checks; and the complete
+`bun run check` aggregate in 867.1 seconds. Existing Rust dead-code and generated
+Wasm shim warnings remain non-fatal and were not introduced as production
+evidence.
+
+These gates are local evidence only. Promotion still requires fault injection
+before headers, on client cancellation, on terminal D1 ambiguity, on Queue
+acknowledgement ambiguity, and across Worker restart/version skew; provider
+call/invoice and billing/audit/request counters; backlog-age alerts; cost/SLO;
+rollback; remote 0056 readback; P5 signatures; and Go/VPS drain. The current
+design also lacks a total stream deadline and retains a provider-dispatch-to-
+handoff crash window. Production remains **NO-GO**.

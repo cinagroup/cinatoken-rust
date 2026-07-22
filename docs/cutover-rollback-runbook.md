@@ -471,3 +471,42 @@ Only after stability window passes:
 - update `docs/production-readiness-matrices.md` rows to `Done` where evidence
   exists;
 - create a post-cutover audit summary.
+
+## Ordinary HTTP SSE Handoff Rollback Addendum
+
+Migration 0056 is expand-only and remains installed during rollback. Never
+delete handoff or finalization-receipt rows, down-migrate the tables, replace a
+staged event, or resend a provider operation whose acceptance is ambiguous.
+
+Trigger rollback for any duplicate provider/billing/audit/request effect,
+receipt mismatch, non-monotonic checkpoint, stale-generation mutation,
+unbounded forwarding/staged/leased age, body or secret persistence, provider
+invoice divergence, customer isolation failure, or inability to classify a
+row as exact terminal or reviewed `recovery_required`.
+
+1. Set `RELAY_HTTP_STREAM_DURABLE_HANDOFF_ENABLED=false` first and confirm no
+   new handoff row appears.
+2. Route the affected cohort to the still-hot Go/VPS authority. Do not retry an
+   ambiguous Rust provider operation through Go.
+3. Keep `RELAY_HTTP_STREAM_DURABLE_HANDOFF_STAGING_VERIFIED=true`,
+   `RELAY_HTTP_STREAM_OUTBOX_ENABLED=true`, and
+   `RELAY_HTTP_STREAM_RECOVERY_ENABLED=true` only while the incident owner
+   drains existing rows.
+4. Snapshot forwarding, terminal-staged, enqueued, recovery-required, due,
+   leased, dead-letter, receipt, and terminal counts/ages before and after each
+   drain interval.
+5. Reconcile each reservation generation against provider call/invoice data,
+   billing ledger, finalization event, receipt, audit log, quota delta, and
+   request-count delta.
+6. Keep ambiguous provider operations in recovery-required for explicit review;
+   recovery must never dispatch the provider.
+7. Disable outbox/recovery and the staging latch only after the approved
+   zero-backlog/zero-lease boundary and evidence-retention checks pass.
+8. Retain 0056, exact candidate artifacts, logs, traces, Queue/DLQ evidence,
+   provider reconciliation, and the rollback decision for the required period.
+
+A cancellation that stops stream polling may rely on lease expiry rather than
+an immediate callback, and the current candidate has no total stream deadline.
+Do not approve cutover until both behaviors and the provider-dispatch-to-
+handoff crash window have accepted production evidence. See
+`docs/relay-http-stream-durable-handoff.md`.

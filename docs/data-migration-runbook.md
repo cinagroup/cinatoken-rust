@@ -789,3 +789,49 @@ Retain 0038/0039 and deploy only a 0039-compatible Worker. Reconcile all
 provider and invoice before Go/VPS creates or polls overlapping work. Never
 drop the indexes/triggers, backfill guessed keys, reuse a caller key, or return
 to an old writer. Production remains **NO-GO**.
+
+## 0056 Ordinary HTTP SSE Handoff Migration Runbook
+
+0056 is an expand-only operational ownership migration, not a business-data
+import. It must be applied reader-first with all four HTTP stream handoff gates
+false. The current local exact-set target is 56 migrations, 64 tables, 814
+checked incremental columns, and 94 key indexes.
+
+### Preflight
+
+1. Revoke the exposed Cloudflare credential and use approved replacement
+   deploy/readback identities without placing values in arguments or evidence.
+2. Freeze target database, backup/Time Travel point, exact migration ledger,
+   active Worker versions, Queue consumers, scheduled handlers, provider call
+   watermark, business fingerprint, and rollback artifact.
+3. Prove every old writer and active paid SSE operation is drained. Confirm
+   producer, staging approval, outbox, and recovery flags are exact false.
+
+### Apply and read back
+
+1. Apply `0056_relay_http_stream_handoffs.sql` once. Do not hand-run statements
+   or edit the migration ledger.
+2. Read back both tables, three indexes, eleven triggers, exact SQL, migration
+   count/head, normalized schema digest, and unchanged business fingerprint.
+3. Run negative probes for identity mutation, usage regression, finalization
+   event replacement, terminal without exact receipt, receipt update/delete,
+   and handoff delete. Remove only synthetic nonterminal fixtures through the
+   pre-approved test database reset, never by bypassing production triggers.
+4. Deploy only a 0056-compatible reader while all gates remain false. Observe
+   beyond the maximum old isolate, Queue, cron, and deployment lifetime.
+
+### Drain-only and producer canary
+
+Use synthetic staging data only. Producer remains false while staging approval,
+outbox, and recovery prove lease/retry/dead-letter/receipt convergence. A later
+producer canary requires separate approval, no customer traffic, a provider
+call counter, and the complete fault matrix in
+`docs/relay-http-stream-durable-handoff.md`.
+
+### Rollback
+
+Disable producer first, route the cohort to hot Go/VPS, and keep approved drain
+gates on until every existing row is terminal or explicitly reviewed. Retain
+0056, handoff rows, receipts, audit events, Queue/DLQ evidence, and billing/
+provider reconciliation. Never down-migrate, delete receipts, replace a staged
+event, or resend an ambiguous provider operation. Production remains **NO-GO**.

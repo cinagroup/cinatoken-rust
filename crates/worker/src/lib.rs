@@ -47,6 +47,7 @@ mod relay_ai_gateway_policy;
 mod relay_billing_queue;
 mod relay_billing_reconcile;
 mod relay_billing_smoke;
+mod relay_http_stream_handoff;
 // Provider-independent task lifecycle persistence + CAS settlement guard (item
 // 4.2). Foundation ahead of the task orchestration that consumes it; the module
 // allows dead_code internally until then.
@@ -1626,6 +1627,23 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
     } else if !terminal_outbox.valid {
         worker::console_error!("container terminal outbox configuration is invalid");
     }
+    let http_stream_handoff =
+        relay_http_stream_handoff::relay_http_stream_handoff_runtime_config(&env);
+    if http_stream_handoff.outbox_enabled || http_stream_handoff.recovery_enabled {
+        match relay_http_stream_handoff::run_relay_http_stream_handoff_scheduled(&env, &db, now)
+            .await
+        {
+            Ok(summary) => match serde_json::to_string(&summary) {
+                Ok(summary) => worker::console_log!("relay HTTP stream handoff: {summary}"),
+                Err(_) => {
+                    worker::console_error!("relay HTTP stream handoff summary serialization failed")
+                }
+            },
+            Err(err) => worker::console_error!("relay HTTP stream handoff failed: {err}"),
+        }
+    } else if !http_stream_handoff.valid {
+        worker::console_error!("relay HTTP stream handoff configuration is invalid");
+    }
     if container_scheduler::container_operation_runtime_status(&env)
         .operation_reconciliation_enabled
     {
@@ -2026,6 +2044,33 @@ pub async fn queue(
                     .await
                 {
                     Ok(outcome) => {
+                        let observed_at = crate::admin::unix_timestamp();
+                        match relay_http_stream_handoff::observe_applied_finalization(
+                            &db,
+                            &event,
+                            observed_at,
+                        )
+                        .await
+                        {
+                            Ok(
+                                d1_repositories::RelayHttpStreamHandoffTransitionOutcome::Applied
+                                | d1_repositories::RelayHttpStreamHandoffTransitionOutcome::MatchingReplay
+                                | d1_repositories::RelayHttpStreamHandoffTransitionOutcome::NotFound,
+                            ) => {}
+                            Ok(handoff_outcome) => worker::console_error!(
+                                "BILLING_QUEUE: HTTP stream handoff for {} remains {:?}",
+                                event.event_id,
+                                handoff_outcome
+                            ),
+                            Err(err) => {
+                                worker::console_error!(
+                                    "BILLING_QUEUE: HTTP stream handoff completion for {} failed: {err}",
+                                    event.event_id
+                                );
+                                message.retry();
+                                continue;
+                            }
+                        }
                         let resolution = match outcome {
                             relay_billing_queue::RelayBillingFinalizationApplyOutcome::Applied => {
                                 "applied"
@@ -2038,7 +2083,7 @@ pub async fn queue(
                             &db,
                             &event.event_id,
                             resolution,
-                            crate::admin::unix_timestamp(),
+                            observed_at,
                         )
                         .await
                         {

@@ -262,6 +262,8 @@ REQUIRED_TABLES = [
     "task_poll_lease_control",
     "task_poll_family_cursors",
     "task_poll_recovery_events",
+    "relay_http_stream_handoffs",
+    "relay_http_stream_finalization_receipts",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1119,6 +1121,53 @@ REQUIRED_COLUMNS = {
         "operator_id",
         "created_at",
     },
+    "relay_http_stream_handoffs": {
+        "reservation_key",
+        "owner_generation",
+        "attempt_generation",
+        "channel_id",
+        "selected_group",
+        "expr_hash",
+        "provider_operation_id",
+        "worker_version_id",
+        "billing_snapshot_sha256",
+        "status",
+        "lease_expires_at",
+        "checkpoint_sequence",
+        "chunk_count",
+        "byte_count",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "cache_creation_tokens",
+        "provider_terminal_observed",
+        "rolling_sha256",
+        "terminal_kind",
+        "terminal_reason",
+        "finalization_event_json",
+        "finalization_event_id",
+        "finalization_event_sha256",
+        "outbox_status",
+        "delivery_generation",
+        "delivery_attempt_count",
+        "delivery_lease_expires_at",
+        "delivery_available_at",
+        "delivered_at",
+        "finalization_applied_at",
+        "last_error",
+        "terminal_at",
+        "recovery_required_at",
+        "created_at",
+        "updated_at",
+    },
+    "relay_http_stream_finalization_receipts": {
+        "reservation_key",
+        "owner_generation",
+        "finalization_event_id",
+        "finalization_event_sha256",
+        "applied_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -1271,6 +1320,11 @@ REQUIRED_INDEXES = {
         "idx_task_poll_recovery_events_entity": False,
         "idx_task_poll_recovery_events_revision": True,
     },
+    "relay_http_stream_handoffs": {
+        "idx_relay_http_stream_handoffs_stale_forwarding": False,
+        "idx_relay_http_stream_handoffs_pending_outbox": False,
+        "idx_relay_http_stream_handoffs_expired_outbox_lease": False,
+    },
 }
 
 
@@ -1330,6 +1384,7 @@ def main() -> int:
     relay_container_financial_terminal_v2_rollout_verified = False
     relay_container_shard_activation_rollout_verified = False
     relay_container_shard_activation_campaign_rollout_verified = False
+    relay_http_stream_handoff_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -1379,6 +1434,8 @@ def main() -> int:
         relay_container_shard_activation_rollout_verified = True
         verify_relay_container_shard_activation_campaign_rollout(schema_paths)
         relay_container_shard_activation_campaign_rollout_verified = True
+        verify_relay_http_stream_handoff_rollout(schema_paths)
+        relay_http_stream_handoff_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -1581,6 +1638,8 @@ def main() -> int:
         message += " + 0054 immutable shard activation ledger"
     if relay_container_shard_activation_campaign_rollout_verified:
         message += " + 0055 one-time shard activation campaigns"
+    if relay_http_stream_handoff_rollout_verified:
+        message += " + 0056 generation-fenced HTTP stream handoff/outbox"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -12841,7 +12900,7 @@ def verify_relay_container_provider_usage_binding_rollout(
     binding_index = schema_paths.index(binding_path)
     if binding_index == 0 or schema_paths[binding_index - 1] != receipt_path:
         raise SystemExit("0049 provider usage binding must immediately follow 0048")
-    if binding_index != len(schema_paths) - 7 or schema_paths[binding_index + 1].name != (
+    if binding_index != len(schema_paths) - 8 or schema_paths[binding_index + 1].name != (
         "0050_relay_container_atomic_admission.sql"
     ):
         raise SystemExit("0049 provider usage binding must immediately precede 0050")
@@ -13205,12 +13264,12 @@ def verify_relay_container_scheduled_terminalization_rollout(
     )
     if response_artifact_path is None:
         raise SystemExit("0051/0052 relay Container response migrations not found")
-    if len(schema_paths) != 55:
+    if len(schema_paths) != 56:
         raise SystemExit(
-            f"0051 scheduled terminalization compatibility requires exactly 55 D1 migrations, got {len(schema_paths)}"
+            f"0051 scheduled terminalization compatibility requires exactly 56 D1 migrations, got {len(schema_paths)}"
         )
     scheduled_index = schema_paths.index(scheduled_path)
-    if scheduled_index != len(schema_paths) - 5:
+    if scheduled_index != len(schema_paths) - 6:
         raise SystemExit("0051 scheduled terminalization must immediately precede 0052")
     if scheduled_index == 0 or schema_paths[scheduled_index - 1] != atomic_path:
         raise SystemExit("0051 scheduled terminalization must immediately follow 0050")
@@ -13277,12 +13336,12 @@ def verify_relay_container_response_artifacts_rollout(
     )
     if response_path is None or scheduled_path is None:
         raise SystemExit("0051/0052 relay Container response-artifact migrations not found")
-    if len(schema_paths) != 55:
+    if len(schema_paths) != 56:
         raise SystemExit(
-            f"0052 response artifacts require exactly 55 D1 migrations, got {len(schema_paths)}"
+            f"0052 response artifacts require exactly 56 D1 migrations, got {len(schema_paths)}"
         )
     response_index = schema_paths.index(response_path)
-    if response_index != len(schema_paths) - 4:
+    if response_index != len(schema_paths) - 5:
         raise SystemExit("0052 response artifacts must immediately precede 0053")
     if response_index == 0 or schema_paths[response_index - 1] != scheduled_path:
         raise SystemExit("0052 response artifacts must immediately follow 0051")
@@ -13580,13 +13639,13 @@ def verify_relay_container_financial_terminal_v2_rollout(
     )
     if v2_path is None or response_path is None or activation_path is None:
         raise SystemExit("0052/0053/0054 relay Container migrations not found")
-    if len(schema_paths) != 55:
+    if len(schema_paths) != 56:
         raise SystemExit(
-            "0053 financial terminal v2 requires exactly 55 D1 migrations, "
+            "0053 financial terminal v2 requires exactly 56 D1 migrations, "
             f"got {len(schema_paths)}"
         )
     v2_index = schema_paths.index(v2_path)
-    if v2_index != len(schema_paths) - 3:
+    if v2_index != len(schema_paths) - 4:
         raise SystemExit("0053 financial terminal v2 must immediately precede 0054")
     if v2_index == 0 or schema_paths[v2_index - 1] != response_path:
         raise SystemExit("0053 financial terminal v2 must immediately follow 0052")
@@ -13998,13 +14057,13 @@ def verify_relay_container_shard_activation_rollout(
     )
     if activation_path is None or v2_path is None:
         raise SystemExit("0053/0054 relay Container activation migrations not found")
-    if len(schema_paths) != 55:
+    if len(schema_paths) != 56:
         raise SystemExit(
-            "0054 shard activations require exactly 55 D1 migrations, "
+            "0054 shard activations require exactly 56 D1 migrations, "
             f"got {len(schema_paths)}"
         )
     activation_index = schema_paths.index(activation_path)
-    if activation_index != len(schema_paths) - 2:
+    if activation_index != len(schema_paths) - 3:
         raise SystemExit("0054 shard activations must immediately precede 0055")
     if activation_index == 0 or schema_paths[activation_index - 1] != v2_path:
         raise SystemExit("0054 shard activations must immediately follow 0053")
@@ -14420,14 +14479,14 @@ def verify_relay_container_shard_activation_campaign_rollout(
     )
     if campaign_path is None or activation_path is None:
         raise SystemExit("0054/0055 relay Container activation migrations not found")
-    if len(schema_paths) != 55:
+    if len(schema_paths) != 56:
         raise SystemExit(
-            "0055 activation campaigns require exactly 55 D1 migrations, "
+            "0055 activation campaigns require exactly 56 D1 migrations, "
             f"got {len(schema_paths)}"
         )
     campaign_index = schema_paths.index(campaign_path)
-    if campaign_index != len(schema_paths) - 1:
-        raise SystemExit("0055 activation campaigns must be the D1 migration head")
+    if campaign_index != len(schema_paths) - 2:
+        raise SystemExit("0055 activation campaigns must immediately precede 0056")
     if campaign_index == 0 or schema_paths[campaign_index - 1] != activation_path:
         raise SystemExit("0055 activation campaigns must immediately follow 0054")
 
@@ -15867,6 +15926,434 @@ def _verify_relay_container_shard_activation_campaign_runtime(
         raise SystemExit("0055 duplicate DDL attempt changed persistent schema")
 
 
+def verify_relay_http_stream_handoff_rollout(
+    schema_paths: list[Path],
+) -> None:
+    handoff_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0056_relay_http_stream_handoffs.sql"
+        ),
+        None,
+    )
+    campaign_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0055_relay_container_shard_activation_campaigns.sql"
+        ),
+        None,
+    )
+    if handoff_path is None or campaign_path is None:
+        raise SystemExit("0055/0056 HTTP stream handoff migrations not found")
+    if len(schema_paths) != 56:
+        raise SystemExit(
+            "0056 HTTP stream handoff requires exactly 56 D1 migrations, "
+            f"got {len(schema_paths)}"
+        )
+    handoff_index = schema_paths.index(handoff_path)
+    if handoff_index != len(schema_paths) - 1:
+        raise SystemExit("0056 HTTP stream handoff must be the D1 migration head")
+    if handoff_index == 0 or schema_paths[handoff_index - 1] != campaign_path:
+        raise SystemExit("0056 HTTP stream handoff must immediately follow 0055")
+
+    handoff_sql = handoff_path.read_text(encoding="utf-8")
+    if "if not exists" in handoff_sql.lower():
+        raise SystemExit("0056 critical HTTP stream handoff objects must fail duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_http_stream_handoffs",
+        "FOREIGN KEY (reservation_key)",
+        "REFERENCES relay_billing_reservations(reservation_key)",
+        "length(CAST(finalization_event_json AS BLOB)) <= 65536",
+        "idx_relay_http_stream_handoffs_stale_forwarding",
+        "idx_relay_http_stream_handoffs_pending_outbox",
+        "idx_relay_http_stream_handoffs_expired_outbox_lease",
+        "relay_http_stream_handoff_insert_guard",
+        "relay_http_stream_handoff_identity_guard",
+        "relay_http_stream_handoff_checkpoint_guard",
+        "relay_http_stream_handoff_finalization_evidence_guard",
+        "relay_http_stream_handoff_lifecycle_guard",
+        "relay_http_stream_handoff_financial_terminal_guard",
+        "relay_http_stream_handoff_terminal_guard",
+        "relay_http_stream_handoff_delete_guard",
+        "relay_http_stream_finalization_receipt_insert_guard",
+        "relay_http_stream_finalization_receipt_update_guard",
+        "relay_http_stream_finalization_receipt_delete_guard",
+    ):
+        if fragment not in handoff_sql:
+            raise SystemExit(f"0056 HTTP stream handoff rollout missing: {fragment}")
+
+    conn = sqlite3.connect(":memory:")
+    for path in schema_paths:
+        conn.executescript(path.read_text(encoding="utf-8"))
+
+    expected_columns = [
+        "reservation_key",
+        "owner_generation",
+        "attempt_generation",
+        "channel_id",
+        "selected_group",
+        "expr_hash",
+        "provider_operation_id",
+        "worker_version_id",
+        "billing_snapshot_sha256",
+        "status",
+        "lease_expires_at",
+        "checkpoint_sequence",
+        "chunk_count",
+        "byte_count",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "cache_creation_tokens",
+        "provider_terminal_observed",
+        "rolling_sha256",
+        "terminal_kind",
+        "terminal_reason",
+        "finalization_event_json",
+        "finalization_event_id",
+        "finalization_event_sha256",
+        "outbox_status",
+        "delivery_generation",
+        "delivery_attempt_count",
+        "delivery_lease_expires_at",
+        "delivery_available_at",
+        "delivered_at",
+        "finalization_applied_at",
+        "last_error",
+        "terminal_at",
+        "recovery_required_at",
+        "created_at",
+        "updated_at",
+    ]
+    actual_columns = [
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info('relay_http_stream_handoffs')"
+        ).fetchall()
+    ]
+    if actual_columns != expected_columns:
+        raise SystemExit(f"0056 HTTP stream handoff columns differ: {actual_columns}")
+    for forbidden in (
+        "request_body",
+        "response_body",
+        "sse_frame",
+        "response_text",
+        "authorization",
+    ):
+        if forbidden in actual_columns:
+            raise SystemExit(f"0056 persists forbidden stream body field: {forbidden}")
+
+    indexes = {
+        row[1]
+        for row in conn.execute(
+            "PRAGMA index_list('relay_http_stream_handoffs')"
+        ).fetchall()
+        if not row[1].startswith("sqlite_autoindex")
+    }
+    expected_indexes = {
+        "idx_relay_http_stream_handoffs_stale_forwarding",
+        "idx_relay_http_stream_handoffs_pending_outbox",
+        "idx_relay_http_stream_handoffs_expired_outbox_lease",
+    }
+    if indexes != expected_indexes:
+        raise SystemExit(f"0056 HTTP stream handoff indexes differ: {indexes}")
+
+    triggers = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+            "AND tbl_name = 'relay_http_stream_handoffs'"
+        ).fetchall()
+    }
+    expected_triggers = {
+        "relay_http_stream_handoff_insert_guard",
+        "relay_http_stream_handoff_identity_guard",
+        "relay_http_stream_handoff_checkpoint_guard",
+        "relay_http_stream_handoff_finalization_evidence_guard",
+        "relay_http_stream_handoff_lifecycle_guard",
+        "relay_http_stream_handoff_financial_terminal_guard",
+        "relay_http_stream_handoff_terminal_guard",
+        "relay_http_stream_handoff_delete_guard",
+    }
+    if triggers != expected_triggers:
+        raise SystemExit(f"0056 HTTP stream handoff triggers differ: {triggers}")
+    receipt_triggers = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+            "AND tbl_name = 'relay_http_stream_finalization_receipts'"
+        ).fetchall()
+    }
+    expected_receipt_triggers = {
+        "relay_http_stream_finalization_receipt_insert_guard",
+        "relay_http_stream_finalization_receipt_update_guard",
+        "relay_http_stream_finalization_receipt_delete_guard",
+    }
+    if receipt_triggers != expected_receipt_triggers:
+        raise SystemExit(
+            f"0056 HTTP stream receipt triggers differ: {receipt_triggers}"
+        )
+
+    now = max(1_800_000_000, int(time.time()))
+    reservation_key = "relayreserve-http-stream-0056"
+    expr_hash = "sha256:http-stream-0056"
+    provider_operation_id = hashlib.sha256(b"0056-provider-operation").hexdigest()
+    billing_snapshot_sha256 = hashlib.sha256(b"{}").hexdigest()
+    rolling_sha256 = hashlib.sha256(b"first-terminal-frame").hexdigest()
+    conn.execute(
+        """
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, token_id, model_name, endpoint_path,
+          request_id_hash, expr_hash, billing_kind, billing_snapshot_json,
+          candidate_group_count, reservation_strategy, pre_consumed_quota,
+          status, channel_id, selected_group, selected_at, owner_generation,
+          owner_deadline_at, created_at, updated_at, lease_expires_at
+        ) VALUES (
+          ?, 1, 0, 'gpt-0056', '/v1/chat/completions', 'request-sha256', ?,
+          'flat', '{}', 1, 'selected_group', 10, 'reserved', 42, 'default',
+          ?, 2, ?, ?, ?, ?
+        )
+        """,
+        (reservation_key, expr_hash, now, now + 300, now, now, now + 600),
+    )
+
+    handoff_insert = """
+        INSERT INTO relay_http_stream_handoffs (
+          reservation_key, owner_generation, attempt_generation, channel_id,
+          selected_group, expr_hash, provider_operation_id, worker_version_id,
+          billing_snapshot_sha256, lease_expires_at, created_at, updated_at
+        ) VALUES (?, ?, 1, 42, 'default', ?, ?, 'worker-0056', ?, ?, ?, ?)
+    """
+    try:
+        conn.execute(
+            handoff_insert,
+            (
+                reservation_key,
+                3,
+                expr_hash,
+                provider_operation_id,
+                billing_snapshot_sha256,
+                now + 600,
+                now,
+                now,
+            ),
+        )
+    except sqlite3.IntegrityError as error:
+        if "reservation identity mismatch" not in str(error):
+            raise SystemExit(f"0056 stale generation failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0056 accepted a stale reservation owner generation")
+
+    conn.execute(
+        handoff_insert,
+        (
+            reservation_key,
+            2,
+            expr_hash,
+            provider_operation_id,
+            billing_snapshot_sha256,
+            now + 600,
+            now,
+            now,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE relay_http_stream_handoffs
+        SET checkpoint_sequence = 1, chunk_count = 1, byte_count = 128,
+            prompt_tokens = 8, completion_tokens = 3, total_tokens = 11,
+            cached_tokens = 2, cache_creation_tokens = 0,
+            rolling_sha256 = ?, updated_at = ?
+        WHERE reservation_key = ?
+        """,
+        (rolling_sha256, now + 1, reservation_key),
+    )
+    try:
+        conn.execute(
+            "UPDATE relay_http_stream_handoffs SET byte_count = 127 WHERE reservation_key = ?",
+            (reservation_key,),
+        )
+    except sqlite3.IntegrityError as error:
+        if "checkpoint is not monotonic" not in str(error):
+            raise SystemExit(f"0056 checkpoint regression failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0056 accepted a regressing stream checkpoint")
+
+    event_id = f"relay-finalization-v1:{reservation_key}"
+    event = json.dumps(
+        {
+            "event_type": "cinatoken.relay_billing_finalization",
+            "schema_version": 2,
+            "event_id": event_id,
+            "reservation_key": reservation_key,
+            "owner_generation": 2,
+            "expr_hash": expr_hash,
+            "channel_id": 42,
+            "selected_group": "default",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    event_sha256 = hashlib.sha256(event.encode()).hexdigest()
+    conn.execute(
+        """
+        UPDATE relay_http_stream_handoffs
+        SET status = 'terminal_staged', provider_terminal_observed = 1,
+            terminal_kind = 'provider_done', terminal_reason = 'provider_done',
+            finalization_event_json = ?, finalization_event_id = ?,
+            finalization_event_sha256 = ?,
+            outbox_status = 'pending', delivery_available_at = ?,
+            terminal_at = ?, updated_at = ?
+        WHERE reservation_key = ?
+        """,
+        (
+            event,
+            event_id,
+            event_sha256,
+            now + 2,
+            now + 2,
+            now + 2,
+            reservation_key,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE relay_http_stream_handoffs
+        SET outbox_status = 'leased', delivery_generation = 1,
+            delivery_attempt_count = 1, delivery_lease_expires_at = ?,
+            updated_at = ?
+        WHERE reservation_key = ?
+        """,
+        (now + 34, now + 3, reservation_key),
+    )
+    conn.execute(
+        """
+        UPDATE relay_http_stream_handoffs
+        SET status = 'finalization_enqueued', outbox_status = 'delivered',
+            delivery_lease_expires_at = 0, delivered_at = ?, updated_at = ?
+        WHERE reservation_key = ?
+        """,
+        (now + 4, now + 4, reservation_key),
+    )
+    try:
+        conn.execute(
+            "INSERT INTO relay_http_stream_finalization_receipts "
+            "(reservation_key, owner_generation, finalization_event_id, "
+            "finalization_event_sha256, applied_at) VALUES (?, 2, ?, ?, ?)",
+            (reservation_key, event_id, event_sha256, now + 5),
+        )
+    except sqlite3.IntegrityError as error:
+        if "receipt identity mismatch" not in str(error):
+            raise SystemExit(
+                f"0056 premature receipt failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0056 accepted a receipt before billing application")
+    try:
+        conn.execute(
+            "UPDATE relay_http_stream_handoffs SET status = 'terminal', "
+            "finalization_applied_at = ?, updated_at = ? WHERE reservation_key = ?",
+            (now + 5, now + 5, reservation_key),
+        )
+    except sqlite3.IntegrityError as error:
+        if "receipt is missing" not in str(error):
+            raise SystemExit(
+                f"0056 premature terminal failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0056 accepted terminal without an apply receipt")
+    conn.execute(
+        "UPDATE relay_billing_reservations SET status = 'settled', "
+        "owner_generation = 3, final_quota = 10, "
+        "finalization_reason = 'usage_settlement', request_accounted = 1, "
+        "settled_at = ?, updated_at = ? WHERE reservation_key = ?",
+        (now + 5, now + 5, reservation_key),
+    )
+    conn.execute(
+        "INSERT INTO logs (created_at, billing_finalization_event_id) VALUES (?, ?)",
+        (now + 5, event_id),
+    )
+    conn.execute(
+        "INSERT INTO relay_http_stream_finalization_receipts "
+        "(reservation_key, owner_generation, finalization_event_id, "
+        "finalization_event_sha256, applied_at) VALUES (?, 2, ?, ?, ?)",
+        (reservation_key, event_id, event_sha256, now + 5),
+    )
+    conn.execute(
+        "UPDATE relay_http_stream_handoffs SET status = 'terminal', "
+        "finalization_applied_at = ?, updated_at = ? WHERE reservation_key = ?",
+        (now + 5, now + 5, reservation_key),
+    )
+    try:
+        conn.execute(
+            "UPDATE relay_http_stream_handoffs SET updated_at = updated_at + 1 "
+            "WHERE reservation_key = ?",
+            (reservation_key,),
+        )
+    except sqlite3.IntegrityError as error:
+        if "terminal state is immutable" not in str(error):
+            raise SystemExit(f"0056 terminal mutation failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0056 accepted mutation of a terminal handoff")
+    try:
+        conn.execute(
+            "DELETE FROM relay_http_stream_handoffs WHERE reservation_key = ?",
+            (reservation_key,),
+        )
+    except sqlite3.IntegrityError as error:
+        if "append-preserved" not in str(error):
+            raise SystemExit(f"0056 deletion failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0056 allowed deletion of durable stream evidence")
+    for action, expected_error in (
+        (
+            lambda: conn.execute(
+                "UPDATE relay_http_stream_finalization_receipts "
+                "SET applied_at = applied_at + 1 WHERE reservation_key = ?",
+                (reservation_key,),
+            ),
+            "receipts are immutable",
+        ),
+        (
+            lambda: conn.execute(
+                "DELETE FROM relay_http_stream_finalization_receipts "
+                "WHERE reservation_key = ?",
+                (reservation_key,),
+            ),
+            "receipts are append-preserved",
+        ),
+    ):
+        try:
+            action()
+        except sqlite3.IntegrityError as error:
+            if expected_error not in str(error):
+                raise SystemExit(
+                    f"0056 receipt immutability failed unexpectedly: {error}"
+                ) from error
+        else:
+            raise SystemExit("0056 allowed mutation of an apply receipt")
+
+    schema_before_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        conn.executescript(handoff_sql)
+    except sqlite3.Error as error:
+        if "already exists" not in str(error):
+            raise SystemExit(f"0056 duplicate DDL failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0056 critical HTTP stream handoff objects accepted duplicate DDL")
+    schema_after_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0056 duplicate DDL attempt changed persistent schema")
+    conn.close()
+
+
 def verify_relay_container_atomic_admission_rollout(
     schema_paths: list[Path],
 ) -> None:
@@ -15888,14 +16375,14 @@ def verify_relay_container_atomic_admission_rollout(
     )
     if atomic_path is None or binding_path is None:
         raise SystemExit("0049/0050 relay Container admission migrations not found")
-    if len(schema_paths) != 55:
+    if len(schema_paths) != 56:
         raise SystemExit(
-            f"0050 atomic admission compatibility requires exactly 55 D1 migrations, got {len(schema_paths)}"
+            f"0050 atomic admission compatibility requires exactly 56 D1 migrations, got {len(schema_paths)}"
         )
     atomic_index = schema_paths.index(atomic_path)
-    if atomic_index != len(schema_paths) - 6:
+    if atomic_index != len(schema_paths) - 7:
         raise SystemExit(
-            "0050 atomic admission must remain immediately before 0051 through 0055"
+            "0050 atomic admission must remain immediately before 0051 through 0056"
         )
     if atomic_index == 0 or schema_paths[atomic_index - 1] != binding_path:
         raise SystemExit("0050 atomic admission must immediately follow 0049")

@@ -36,6 +36,7 @@ pub(crate) const RELAY_BILLING_FINALIZATION_INCIDENT_MIGRATION: &str =
     "0025_relay_billing_finalization_incidents.sql";
 pub(crate) const RELAY_BILLING_OWNER_GENERATION_MIGRATION: &str =
     "0026_relay_billing_owner_generation.sql";
+pub(crate) const RELAY_HTTP_STREAM_HANDOFF_MIGRATION: &str = "0056_relay_http_stream_handoffs.sql";
 pub(crate) const RELAY_CONTAINER_OPERATION_MIGRATION: &str = "0040_relay_container_operations.sql";
 pub(crate) const RELAY_CONTAINER_OPERATION_LIFECYCLE_MIGRATION: &str =
     "0041_relay_container_operation_lifecycle_hardening.sql";
@@ -128,6 +129,11 @@ const RELAY_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const RELAY_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
 const RELAY_BILLING_ORPHAN_RETRY_MAX_SECONDS: i64 = 3_600;
 const RELAY_BILLING_SNAPSHOT_MAX_BYTES: usize = 32 * 1024;
+const RELAY_HTTP_STREAM_FINALIZATION_EVENT_MAX_BYTES: usize = 64 * 1024;
+const RELAY_HTTP_STREAM_HANDOFF_ERROR_MAX_BYTES: usize = 4 * 1024;
+const RELAY_HTTP_STREAM_HANDOFF_MAX_LIMIT: i64 = 64;
+const RELAY_HTTP_STREAM_OUTBOX_MIN_LEASE_SECONDS: i64 = 15;
+const RELAY_HTTP_STREAM_OUTBOX_MAX_LEASE_SECONDS: i64 = 60;
 const RELAY_FLAT_BILLING_CONTRACT_PREFIX: &str = "flat-v4:";
 const REALTIME_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const REALTIME_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
@@ -179,6 +185,124 @@ pub struct RelayBillingReservation {
     pub recovery_attempt_count: i64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayHttpStreamHandoffRecord<'a> {
+    pub reservation_key: &'a str,
+    pub owner_generation: i64,
+    pub attempt_generation: i64,
+    pub channel_id: i64,
+    pub selected_group: &'a str,
+    pub expr_hash: &'a str,
+    pub provider_operation_id: &'a str,
+    pub worker_version_id: &'a str,
+    pub billing_snapshot_sha256: &'a str,
+    pub created_at: i64,
+    pub lease_expires_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayHttpStreamHandoff {
+    pub reservation_key: String,
+    pub owner_generation: i64,
+    pub attempt_generation: i64,
+    pub channel_id: i64,
+    pub selected_group: String,
+    pub expr_hash: String,
+    pub provider_operation_id: String,
+    pub worker_version_id: String,
+    pub billing_snapshot_sha256: String,
+    pub status: String,
+    pub lease_expires_at: i64,
+    pub checkpoint_sequence: i64,
+    pub chunk_count: i64,
+    pub byte_count: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    pub cached_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub provider_terminal_observed: i64,
+    pub rolling_sha256: String,
+    pub terminal_kind: String,
+    pub terminal_reason: String,
+    pub finalization_event_json: String,
+    pub finalization_event_id: String,
+    pub finalization_event_sha256: String,
+    pub outbox_status: String,
+    pub delivery_generation: i64,
+    pub delivery_attempt_count: i64,
+    pub delivery_lease_expires_at: i64,
+    pub delivery_available_at: i64,
+    pub delivered_at: i64,
+    pub finalization_applied_at: i64,
+    pub last_error: String,
+    pub terminal_at: i64,
+    pub recovery_required_at: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayHttpStreamCheckpoint<'a> {
+    pub checkpoint_sequence: i64,
+    pub chunk_count: i64,
+    pub byte_count: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    pub cached_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub rolling_sha256: &'a str,
+    pub lease_expires_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayHttpStreamHandoffCreateOutcome {
+    Applied,
+    MatchingReplay,
+    ReservationNotFound,
+    StaleGeneration,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayHttpStreamHandoffTransitionOutcome {
+    Applied,
+    MatchingReplay,
+    NotFound,
+    StaleGeneration,
+    Terminal,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayHttpStreamOutboxCandidate {
+    pub reservation_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayHttpStreamOutboxLease {
+    pub reservation_key: String,
+    pub owner_generation: i64,
+    pub attempt_generation: i64,
+    pub delivery_generation: i64,
+    pub delivery_attempt_count: i64,
+    pub lease_expires_at: i64,
+    pub finalization_event_json: String,
+    pub finalization_event_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayHttpStreamOutboxClaimOutcome {
+    Applied(RelayHttpStreamOutboxLease),
+    NotFound,
+    NotDue,
+    AlreadyLeased,
+    Terminal,
+    Conflict,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -12917,6 +13041,1067 @@ fn relay_container_d1_integer(value: i64, field: &str) -> worker::Result<D1Type<
             "relay container operation {field} is outside the D1 integer contract"
         ))
     })
+}
+
+fn relay_http_stream_d1_integer(value: i64, field: &str) -> worker::Result<D1Type<'static>> {
+    i32::try_from(value).map(D1Type::Integer).map_err(|_| {
+        worker::Error::RustError(format!(
+            "relay HTTP stream handoff {field} is outside the D1 integer contract"
+        ))
+    })
+}
+
+fn validate_relay_http_stream_sha256(value: &str, field: &str) -> worker::Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(worker::Error::RustError(format!(
+            "relay HTTP stream handoff {field} is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_relay_http_stream_text(
+    value: &str,
+    field: &str,
+    maximum_bytes: usize,
+) -> worker::Result<()> {
+    if value.is_empty()
+        || value != value.trim()
+        || value.len() > maximum_bytes
+        || value.chars().any(char::is_control)
+    {
+        return Err(worker::Error::RustError(format!(
+            "relay HTTP stream handoff {field} is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_relay_http_stream_checkpoint(
+    checkpoint: &RelayHttpStreamCheckpoint<'_>,
+) -> worker::Result<()> {
+    validate_relay_http_stream_sha256(checkpoint.rolling_sha256, "rolling digest")?;
+    let values = [
+        checkpoint.checkpoint_sequence,
+        checkpoint.chunk_count,
+        checkpoint.byte_count,
+        checkpoint.prompt_tokens,
+        checkpoint.completion_tokens,
+        checkpoint.total_tokens,
+        checkpoint.cached_tokens,
+        checkpoint.cache_creation_tokens,
+        checkpoint.lease_expires_at,
+        checkpoint.updated_at,
+    ];
+    if checkpoint.checkpoint_sequence <= 0
+        || checkpoint.chunk_count <= 0
+        || checkpoint.byte_count <= 0
+        || checkpoint.lease_expires_at <= checkpoint.updated_at
+        || values
+            .iter()
+            .any(|value| *value < 0 || *value > i64::from(i32::MAX))
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream handoff checkpoint is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn relay_http_stream_handoff_identity_matches(
+    current: &RelayHttpStreamHandoff,
+    record: &RelayHttpStreamHandoffRecord<'_>,
+) -> bool {
+    current.reservation_key == record.reservation_key
+        && current.owner_generation == record.owner_generation
+        && current.attempt_generation == record.attempt_generation
+        && current.channel_id == record.channel_id
+        && current.selected_group == record.selected_group
+        && current.expr_hash == record.expr_hash
+        && current.provider_operation_id == record.provider_operation_id
+        && current.worker_version_id == record.worker_version_id
+        && current.billing_snapshot_sha256 == record.billing_snapshot_sha256
+        && current.created_at == record.created_at
+        && current.lease_expires_at >= record.lease_expires_at
+}
+
+fn relay_http_stream_checkpoint_matches(
+    current: &RelayHttpStreamHandoff,
+    checkpoint: &RelayHttpStreamCheckpoint<'_>,
+) -> bool {
+    current.checkpoint_sequence == checkpoint.checkpoint_sequence
+        && current.chunk_count == checkpoint.chunk_count
+        && current.byte_count == checkpoint.byte_count
+        && current.prompt_tokens == checkpoint.prompt_tokens
+        && current.completion_tokens == checkpoint.completion_tokens
+        && current.total_tokens == checkpoint.total_tokens
+        && current.cached_tokens == checkpoint.cached_tokens
+        && current.cache_creation_tokens == checkpoint.cache_creation_tokens
+        && current.rolling_sha256 == checkpoint.rolling_sha256
+        && current.lease_expires_at >= checkpoint.lease_expires_at
+        && current.updated_at >= checkpoint.updated_at
+}
+
+pub async fn relay_http_stream_handoff_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    let args = [D1Type::Text(RELAY_HTTP_STREAM_HANDOFF_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT CASE WHEN
+              EXISTS (SELECT 1 FROM d1_migrations WHERE name = ?1)
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'relay_http_stream_handoffs'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_http_stream_finalization_receipts'
+              )
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'index' AND name IN (
+                  'idx_relay_http_stream_handoffs_stale_forwarding',
+                  'idx_relay_http_stream_handoffs_pending_outbox',
+                  'idx_relay_http_stream_handoffs_expired_outbox_lease'
+                )
+              ) = 3
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'trigger' AND name IN (
+                  'relay_http_stream_handoff_insert_guard',
+                  'relay_http_stream_handoff_identity_guard',
+                  'relay_http_stream_handoff_checkpoint_guard',
+                  'relay_http_stream_handoff_finalization_evidence_guard',
+                  'relay_http_stream_handoff_lifecycle_guard',
+                  'relay_http_stream_handoff_financial_terminal_guard',
+                  'relay_http_stream_handoff_terminal_guard',
+                  'relay_http_stream_handoff_delete_guard',
+                  'relay_http_stream_finalization_receipt_insert_guard',
+                  'relay_http_stream_finalization_receipt_update_guard',
+                  'relay_http_stream_finalization_receipt_delete_guard'
+                )
+              ) = 11
+            THEN 1 ELSE 0 END AS count
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn relay_http_stream_handoff(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<Option<RelayHttpStreamHandoff>> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    let args = [D1Type::Text(reservation_key)];
+    db.prepare(
+        r#"
+        SELECT reservation_key, owner_generation, attempt_generation,
+               channel_id, selected_group, expr_hash, provider_operation_id,
+               worker_version_id, billing_snapshot_sha256, status,
+               lease_expires_at, checkpoint_sequence, chunk_count, byte_count,
+               prompt_tokens, completion_tokens, total_tokens, cached_tokens,
+               cache_creation_tokens, provider_terminal_observed,
+               rolling_sha256, terminal_kind, terminal_reason,
+               finalization_event_json, finalization_event_id,
+               finalization_event_sha256, outbox_status,
+               delivery_generation, delivery_attempt_count,
+               delivery_lease_expires_at, delivery_available_at, delivered_at,
+               finalization_applied_at, last_error, terminal_at,
+               recovery_required_at, created_at,
+               updated_at
+        FROM relay_http_stream_handoffs
+        WHERE reservation_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayHttpStreamHandoff>(None)
+    .await
+}
+
+pub async fn create_relay_http_stream_handoff(
+    db: &D1Database,
+    record: &RelayHttpStreamHandoffRecord<'_>,
+) -> worker::Result<RelayHttpStreamHandoffCreateOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(record.reservation_key, "key")?;
+    validate_relay_http_stream_text(record.selected_group, "selected group", 128)?;
+    validate_relay_http_stream_text(record.expr_hash, "expression hash", 96)?;
+    validate_relay_http_stream_sha256(record.provider_operation_id, "provider operation id")?;
+    validate_relay_http_stream_text(record.worker_version_id, "Worker version id", 128)?;
+    validate_relay_http_stream_sha256(record.billing_snapshot_sha256, "billing snapshot digest")?;
+    if record.owner_generation < 2
+        || record.attempt_generation <= 0
+        || record.channel_id <= 0
+        || record.created_at <= 0
+        || record.lease_expires_at <= record.created_at
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream handoff identity is invalid".to_string(),
+        ));
+    }
+    let args = [
+        D1Type::Text(reservation_key),
+        relay_http_stream_d1_integer(record.owner_generation, "owner generation")?,
+        relay_http_stream_d1_integer(record.attempt_generation, "attempt generation")?,
+        relay_http_stream_d1_integer(record.channel_id, "channel id")?,
+        D1Type::Text(record.selected_group),
+        D1Type::Text(record.expr_hash),
+        D1Type::Text(record.provider_operation_id),
+        D1Type::Text(record.worker_version_id),
+        D1Type::Text(record.billing_snapshot_sha256),
+        relay_http_stream_d1_integer(record.created_at, "creation time")?,
+        relay_http_stream_d1_integer(record.lease_expires_at, "lease expiry")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            INSERT INTO relay_http_stream_handoffs (
+              reservation_key, owner_generation, attempt_generation, channel_id,
+              selected_group, expr_hash, provider_operation_id,
+              worker_version_id, billing_snapshot_sha256, created_at, updated_at,
+              lease_expires_at
+            )
+            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11
+            FROM relay_billing_reservations AS reservation
+            WHERE reservation.reservation_key = ?1
+              AND reservation.status = 'reserved'
+              AND reservation.owner_generation = ?2
+              AND reservation.channel_id = ?4
+              AND reservation.selected_group = ?5
+              AND reservation.expr_hash = ?6
+              AND reservation.lease_expires_at >= ?11
+            ON CONFLICT(reservation_key) DO NOTHING
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayHttpStreamHandoffCreateOutcome::Applied);
+    }
+    if let Some(current) = relay_http_stream_handoff(db, reservation_key).await? {
+        return Ok(
+            if relay_http_stream_handoff_identity_matches(&current, record) {
+                RelayHttpStreamHandoffCreateOutcome::MatchingReplay
+            } else if current.owner_generation != record.owner_generation {
+                RelayHttpStreamHandoffCreateOutcome::StaleGeneration
+            } else {
+                RelayHttpStreamHandoffCreateOutcome::Conflict
+            },
+        );
+    }
+    let Some(reservation) = relay_billing_reservation(db, reservation_key).await? else {
+        return Ok(RelayHttpStreamHandoffCreateOutcome::ReservationNotFound);
+    };
+    Ok(if reservation.owner_generation != record.owner_generation {
+        RelayHttpStreamHandoffCreateOutcome::StaleGeneration
+    } else {
+        RelayHttpStreamHandoffCreateOutcome::Conflict
+    })
+}
+
+pub async fn checkpoint_relay_http_stream_handoff(
+    db: &D1Database,
+    reservation_key: &str,
+    owner_generation: i64,
+    attempt_generation: i64,
+    checkpoint: &RelayHttpStreamCheckpoint<'_>,
+) -> worker::Result<RelayHttpStreamHandoffTransitionOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    validate_relay_http_stream_checkpoint(checkpoint)?;
+    if owner_generation < 2 || attempt_generation <= 0 {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream handoff owner generation is invalid".to_string(),
+        ));
+    }
+    let args = [
+        D1Type::Text(reservation_key),
+        relay_http_stream_d1_integer(owner_generation, "owner generation")?,
+        relay_http_stream_d1_integer(attempt_generation, "attempt generation")?,
+        relay_http_stream_d1_integer(checkpoint.checkpoint_sequence, "checkpoint sequence")?,
+        relay_http_stream_d1_integer(checkpoint.chunk_count, "chunk count")?,
+        relay_http_stream_d1_integer(checkpoint.byte_count, "byte count")?,
+        relay_http_stream_d1_integer(checkpoint.prompt_tokens, "prompt tokens")?,
+        relay_http_stream_d1_integer(checkpoint.completion_tokens, "completion tokens")?,
+        relay_http_stream_d1_integer(checkpoint.total_tokens, "total tokens")?,
+        relay_http_stream_d1_integer(checkpoint.cached_tokens, "cached tokens")?,
+        relay_http_stream_d1_integer(checkpoint.cache_creation_tokens, "cache creation tokens")?,
+        D1Type::Text(checkpoint.rolling_sha256),
+        relay_http_stream_d1_integer(checkpoint.lease_expires_at, "lease expiry")?,
+        relay_http_stream_d1_integer(checkpoint.updated_at, "checkpoint time")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_handoffs
+            SET checkpoint_sequence = ?4, chunk_count = ?5, byte_count = ?6,
+                prompt_tokens = ?7, completion_tokens = ?8, total_tokens = ?9,
+                cached_tokens = ?10, cache_creation_tokens = ?11,
+                rolling_sha256 = ?12, lease_expires_at = ?13, updated_at = ?14
+            WHERE reservation_key = ?1 AND owner_generation = ?2
+              AND attempt_generation = ?3
+              AND status = 'forwarding'
+              AND checkpoint_sequence < ?4
+              AND chunk_count <= ?5 AND byte_count <= ?6
+              AND prompt_tokens <= ?7 AND completion_tokens <= ?8
+              AND total_tokens <= ?9 AND cached_tokens <= ?10
+              AND cache_creation_tokens <= ?11
+              AND lease_expires_at <= ?13 AND updated_at <= ?14
+              AND EXISTS (
+                SELECT 1 FROM relay_billing_reservations AS reservation
+                WHERE reservation.reservation_key = ?1
+                  AND reservation.status = 'reserved'
+                  AND reservation.owner_generation = ?2
+                  AND reservation.lease_expires_at >= ?13
+              )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::Applied);
+    }
+    let Some(current) = relay_http_stream_handoff(db, reservation_key).await? else {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::NotFound);
+    };
+    Ok(
+        if current.owner_generation != owner_generation
+            || current.attempt_generation != attempt_generation
+        {
+            RelayHttpStreamHandoffTransitionOutcome::StaleGeneration
+        } else if relay_http_stream_checkpoint_matches(&current, checkpoint) {
+            RelayHttpStreamHandoffTransitionOutcome::MatchingReplay
+        } else if current.status != "forwarding" {
+            RelayHttpStreamHandoffTransitionOutcome::Terminal
+        } else {
+            RelayHttpStreamHandoffTransitionOutcome::Conflict
+        },
+    )
+}
+
+fn validate_relay_http_stream_finalization_event(
+    event_json: &str,
+    event_sha256: &str,
+    reservation_key: &str,
+    owner_generation: i64,
+    channel_id: i64,
+    selected_group: &str,
+    expr_hash: &str,
+) -> worker::Result<String> {
+    if event_json.is_empty() || event_json.len() > RELAY_HTTP_STREAM_FINALIZATION_EVENT_MAX_BYTES {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream finalization event size is invalid".to_string(),
+        ));
+    }
+    validate_relay_http_stream_sha256(event_sha256, "finalization event digest")?;
+    let digest = format!("{:x}", Sha256::digest(event_json.as_bytes()));
+    if digest != event_sha256 {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream finalization event digest does not match".to_string(),
+        ));
+    }
+    let event: Value = serde_json::from_str(event_json).map_err(|_| {
+        worker::Error::RustError("relay HTTP stream finalization event JSON is invalid".to_string())
+    })?;
+    let expected_event_id = format!("relay-finalization-v1:{reservation_key}");
+    if event.get("event_type").and_then(Value::as_str)
+        != Some("cinatoken.relay_billing_finalization")
+        || event.get("event_id").and_then(Value::as_str) != Some(expected_event_id.as_str())
+        || event.get("reservation_key").and_then(Value::as_str) != Some(reservation_key)
+        || event.get("owner_generation").and_then(Value::as_i64) != Some(owner_generation)
+        || event.get("channel_id").and_then(Value::as_i64) != Some(channel_id)
+        || event.get("selected_group").and_then(Value::as_str) != Some(selected_group)
+        || event.get("expr_hash").and_then(Value::as_str) != Some(expr_hash)
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream finalization event identity conflicts".to_string(),
+        ));
+    }
+    Ok(expected_event_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn stage_relay_http_stream_finalization(
+    db: &D1Database,
+    reservation_key: &str,
+    owner_generation: i64,
+    attempt_generation: i64,
+    channel_id: i64,
+    selected_group: &str,
+    expr_hash: &str,
+    terminal_kind: &str,
+    terminal_reason: &str,
+    checkpoint: &RelayHttpStreamCheckpoint<'_>,
+    event_json: &str,
+    event_sha256: &str,
+    terminal_at: i64,
+) -> worker::Result<RelayHttpStreamHandoffTransitionOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    validate_relay_http_stream_text(selected_group, "selected group", 128)?;
+    validate_relay_http_stream_text(expr_hash, "expression hash", 96)?;
+    validate_relay_http_stream_text(terminal_reason, "terminal reason", 96)?;
+    validate_relay_http_stream_checkpoint(checkpoint)?;
+    if !matches!(terminal_kind, "provider_done" | "provider_error")
+        || owner_generation < 2
+        || attempt_generation <= 0
+        || channel_id <= 0
+        || terminal_at <= 0
+        || terminal_at < checkpoint.updated_at
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream finalization decision is invalid".to_string(),
+        ));
+    }
+    let event_id = validate_relay_http_stream_finalization_event(
+        event_json,
+        event_sha256,
+        reservation_key,
+        owner_generation,
+        channel_id,
+        selected_group,
+        expr_hash,
+    )?;
+    let args = [
+        D1Type::Text(reservation_key),
+        relay_http_stream_d1_integer(owner_generation, "owner generation")?,
+        relay_http_stream_d1_integer(attempt_generation, "attempt generation")?,
+        relay_http_stream_d1_integer(channel_id, "channel id")?,
+        D1Type::Text(selected_group),
+        D1Type::Text(expr_hash),
+        D1Type::Text(terminal_kind),
+        D1Type::Text(terminal_reason),
+        relay_http_stream_d1_integer(checkpoint.checkpoint_sequence, "checkpoint sequence")?,
+        relay_http_stream_d1_integer(checkpoint.chunk_count, "chunk count")?,
+        relay_http_stream_d1_integer(checkpoint.byte_count, "byte count")?,
+        relay_http_stream_d1_integer(checkpoint.prompt_tokens, "prompt tokens")?,
+        relay_http_stream_d1_integer(checkpoint.completion_tokens, "completion tokens")?,
+        relay_http_stream_d1_integer(checkpoint.total_tokens, "total tokens")?,
+        relay_http_stream_d1_integer(checkpoint.cached_tokens, "cached tokens")?,
+        relay_http_stream_d1_integer(checkpoint.cache_creation_tokens, "cache creation tokens")?,
+        D1Type::Text(checkpoint.rolling_sha256),
+        relay_http_stream_d1_integer(checkpoint.lease_expires_at, "lease expiry")?,
+        D1Type::Text(event_json),
+        D1Type::Text(&event_id),
+        D1Type::Text(event_sha256),
+        relay_http_stream_d1_integer(terminal_at, "terminal time")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_handoffs
+            SET status = 'terminal_staged', checkpoint_sequence = ?9,
+                chunk_count = ?10, byte_count = ?11, prompt_tokens = ?12,
+                completion_tokens = ?13, total_tokens = ?14, cached_tokens = ?15,
+                cache_creation_tokens = ?16, provider_terminal_observed = 1,
+                rolling_sha256 = ?17, lease_expires_at = ?18,
+                terminal_kind = ?7, terminal_reason = ?8,
+                finalization_event_json = ?19, finalization_event_id = ?20,
+                finalization_event_sha256 = ?21,
+                outbox_status = 'pending', delivery_available_at = ?22,
+                terminal_at = ?22, recovery_required_at = 0,
+                last_error = '', updated_at = ?22
+            WHERE reservation_key = ?1 AND owner_generation = ?2
+              AND attempt_generation = ?3
+              AND channel_id = ?4 AND selected_group = ?5 AND expr_hash = ?6
+              AND status IN ('forwarding', 'recovery_required')
+              AND finalization_event_sha256 = ''
+              AND checkpoint_sequence <= ?9 AND chunk_count <= ?10
+              AND byte_count <= ?11 AND prompt_tokens <= ?12
+              AND completion_tokens <= ?13 AND total_tokens <= ?14
+              AND cached_tokens <= ?15 AND cache_creation_tokens <= ?16
+              AND lease_expires_at <= ?18 AND updated_at <= ?22
+              AND EXISTS (
+                SELECT 1 FROM relay_billing_reservations AS reservation
+                WHERE reservation.reservation_key = ?1
+                  AND reservation.status = 'reserved'
+                  AND reservation.owner_generation = ?2
+                  AND reservation.channel_id = ?4
+                  AND reservation.selected_group = ?5
+                  AND reservation.expr_hash = ?6
+                  AND reservation.lease_expires_at >= ?18
+              )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::Applied);
+    }
+    let Some(current) = relay_http_stream_handoff(db, reservation_key).await? else {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::NotFound);
+    };
+    Ok(
+        if current.owner_generation != owner_generation
+            || current.attempt_generation != attempt_generation
+        {
+            RelayHttpStreamHandoffTransitionOutcome::StaleGeneration
+        } else if current.status == "terminal_staged"
+            && current.terminal_kind == terminal_kind
+            && current.terminal_reason == terminal_reason
+            && current.finalization_event_sha256 == event_sha256
+            && relay_http_stream_checkpoint_matches(&current, checkpoint)
+        {
+            RelayHttpStreamHandoffTransitionOutcome::MatchingReplay
+        } else if current.status == "terminal" {
+            RelayHttpStreamHandoffTransitionOutcome::Terminal
+        } else {
+            RelayHttpStreamHandoffTransitionOutcome::Conflict
+        },
+    )
+}
+
+pub async fn mark_relay_http_stream_recovery_required(
+    db: &D1Database,
+    reservation_key: &str,
+    owner_generation: i64,
+    attempt_generation: i64,
+    terminal_kind: &str,
+    terminal_reason: &str,
+    now: i64,
+) -> worker::Result<RelayHttpStreamHandoffTransitionOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    validate_relay_http_stream_text(terminal_reason, "recovery reason", 96)?;
+    if !matches!(
+        terminal_kind,
+        "eof_without_provider_terminal"
+            | "idle_timeout"
+            | "stream_read_error"
+            | "worker_termination"
+            | "provider_error"
+    ) || owner_generation < 2
+        || attempt_generation <= 0
+        || now <= 0
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream recovery decision is invalid".to_string(),
+        ));
+    }
+    let args = [
+        D1Type::Text(reservation_key),
+        relay_http_stream_d1_integer(owner_generation, "owner generation")?,
+        relay_http_stream_d1_integer(attempt_generation, "attempt generation")?,
+        D1Type::Text(terminal_kind),
+        D1Type::Text(terminal_reason),
+        relay_http_stream_d1_integer(now, "recovery time")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_handoffs
+            SET status = 'recovery_required', terminal_kind = ?4,
+                terminal_reason = ?5, recovery_required_at = ?6,
+                updated_at = MAX(updated_at, ?6)
+            WHERE reservation_key = ?1 AND owner_generation = ?2
+              AND attempt_generation = ?3
+              AND status = 'forwarding' AND outbox_status = 'none'
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::Applied);
+    }
+    let Some(current) = relay_http_stream_handoff(db, reservation_key).await? else {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::NotFound);
+    };
+    Ok(
+        if current.owner_generation != owner_generation
+            || current.attempt_generation != attempt_generation
+        {
+            RelayHttpStreamHandoffTransitionOutcome::StaleGeneration
+        } else if current.status == "recovery_required"
+            && current.terminal_kind == terminal_kind
+            && current.terminal_reason == terminal_reason
+        {
+            RelayHttpStreamHandoffTransitionOutcome::MatchingReplay
+        } else if current.status == "terminal" {
+            RelayHttpStreamHandoffTransitionOutcome::Terminal
+        } else {
+            RelayHttpStreamHandoffTransitionOutcome::Conflict
+        },
+    )
+}
+
+pub async fn relay_http_stream_outbox_due_candidates(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<Vec<RelayHttpStreamOutboxCandidate>> {
+    if now <= 0 {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream outbox candidate time is invalid".to_string(),
+        ));
+    }
+    let args = [
+        relay_http_stream_d1_integer(now, "outbox candidate time")?,
+        relay_http_stream_d1_integer(
+            limit.clamp(1, RELAY_HTTP_STREAM_HANDOFF_MAX_LIMIT),
+            "outbox candidate limit",
+        )?,
+    ];
+    db.prepare(
+        r#"
+        SELECT reservation_key
+        FROM relay_http_stream_handoffs
+        WHERE status = 'terminal_staged'
+          AND (
+            (outbox_status = 'pending' AND delivery_available_at <= ?1)
+            OR (outbox_status = 'leased' AND delivery_lease_expires_at <= ?1)
+          )
+        ORDER BY CASE outbox_status
+          WHEN 'pending' THEN delivery_available_at
+          ELSE delivery_lease_expires_at END ASC,
+          reservation_key ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RelayHttpStreamOutboxCandidate>()
+}
+
+pub async fn claim_relay_http_stream_outbox(
+    db: &D1Database,
+    reservation_key: &str,
+    now: i64,
+    lease_seconds: i64,
+) -> worker::Result<RelayHttpStreamOutboxClaimOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    if now <= 0
+        || !(RELAY_HTTP_STREAM_OUTBOX_MIN_LEASE_SECONDS
+            ..=RELAY_HTTP_STREAM_OUTBOX_MAX_LEASE_SECONDS)
+            .contains(&lease_seconds)
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream outbox lease policy is invalid".to_string(),
+        ));
+    }
+    let lease_expires_at = now.checked_add(lease_seconds).ok_or_else(|| {
+        worker::Error::RustError("relay HTTP stream outbox lease overflow".to_string())
+    })?;
+    let args = [
+        D1Type::Text(reservation_key),
+        relay_http_stream_d1_integer(now, "outbox claim time")?,
+        relay_http_stream_d1_integer(lease_expires_at, "outbox lease expiry")?,
+    ];
+    let claimed = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_handoffs
+            SET outbox_status = 'leased',
+                delivery_generation = delivery_generation + 1,
+                delivery_attempt_count = delivery_attempt_count + 1,
+                delivery_lease_expires_at = ?3, last_error = '',
+                updated_at = MAX(?2, updated_at + 1)
+            WHERE reservation_key = ?1 AND status = 'terminal_staged'
+              AND (
+                (outbox_status = 'pending' AND delivery_available_at <= ?2)
+                OR (outbox_status = 'leased' AND delivery_lease_expires_at <= ?2)
+              )
+              AND MAX(?2, updated_at + 1) < ?3
+            RETURNING reservation_key, owner_generation, attempt_generation,
+                      delivery_generation, delivery_attempt_count,
+                      delivery_lease_expires_at AS lease_expires_at,
+                      finalization_event_json, finalization_event_sha256
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<RelayHttpStreamOutboxLease>(None)
+        .await?;
+    if let Some(claimed) = claimed {
+        return Ok(RelayHttpStreamOutboxClaimOutcome::Applied(claimed));
+    }
+    let current = relay_http_stream_handoff(db, reservation_key).await?;
+    let Some(current) = current else {
+        return Ok(RelayHttpStreamOutboxClaimOutcome::NotFound);
+    };
+    Ok(match current.outbox_status.as_str() {
+        "leased" if current.delivery_lease_expires_at > now => {
+            RelayHttpStreamOutboxClaimOutcome::AlreadyLeased
+        }
+        "pending" if current.delivery_available_at > now => {
+            RelayHttpStreamOutboxClaimOutcome::NotDue
+        }
+        "delivered" | "dead_letter" => RelayHttpStreamOutboxClaimOutcome::Terminal,
+        _ => RelayHttpStreamOutboxClaimOutcome::Conflict,
+    })
+}
+
+pub async fn mark_relay_http_stream_outbox_delivered(
+    db: &D1Database,
+    lease: &RelayHttpStreamOutboxLease,
+    now: i64,
+) -> worker::Result<RelayHttpStreamHandoffTransitionOutcome> {
+    if now <= 0 || now > lease.lease_expires_at {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream outbox delivery time is invalid".to_string(),
+        ));
+    }
+    let args = [
+        D1Type::Text(&lease.reservation_key),
+        relay_http_stream_d1_integer(lease.owner_generation, "owner generation")?,
+        relay_http_stream_d1_integer(lease.attempt_generation, "attempt generation")?,
+        relay_http_stream_d1_integer(lease.delivery_generation, "delivery generation")?,
+        relay_http_stream_d1_integer(lease.lease_expires_at, "expected outbox lease expiry")?,
+        D1Type::Text(&lease.finalization_event_sha256),
+        relay_http_stream_d1_integer(now, "delivery time")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_handoffs
+            SET status = 'finalization_enqueued', outbox_status = 'delivered',
+                delivery_lease_expires_at = 0, delivered_at = ?7,
+                last_error = '', updated_at = ?7
+            WHERE reservation_key = ?1 AND owner_generation = ?2
+              AND attempt_generation = ?3
+              AND status = 'terminal_staged' AND outbox_status = 'leased'
+              AND delivery_generation = ?4 AND delivery_lease_expires_at = ?5
+              AND finalization_event_sha256 = ?6 AND ?7 <= ?5
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::Applied);
+    }
+    let Some(current) = relay_http_stream_handoff(db, &lease.reservation_key).await? else {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::NotFound);
+    };
+    Ok(
+        if current.owner_generation != lease.owner_generation
+            || current.attempt_generation != lease.attempt_generation
+        {
+            RelayHttpStreamHandoffTransitionOutcome::StaleGeneration
+        } else if matches!(
+            current.status.as_str(),
+            "finalization_enqueued" | "terminal"
+        ) && current.finalization_event_sha256 == lease.finalization_event_sha256
+        {
+            RelayHttpStreamHandoffTransitionOutcome::MatchingReplay
+        } else if matches!(
+            current.status.as_str(),
+            "finalization_enqueued" | "terminal" | "recovery_required"
+        ) {
+            RelayHttpStreamHandoffTransitionOutcome::Terminal
+        } else {
+            RelayHttpStreamHandoffTransitionOutcome::Conflict
+        },
+    )
+}
+
+pub async fn mark_relay_http_stream_finalization_applied(
+    db: &D1Database,
+    reservation_key: &str,
+    owner_generation: i64,
+    event_id: &str,
+    event_sha256: &str,
+    now: i64,
+) -> worker::Result<RelayHttpStreamHandoffTransitionOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    validate_relay_http_stream_text(event_id, "finalization event id", 192)?;
+    validate_relay_http_stream_sha256(event_sha256, "finalization event digest")?;
+    if owner_generation < 2 || now <= 0 {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream finalization acknowledgement is invalid".to_string(),
+        ));
+    }
+    let args = [
+        D1Type::Text(reservation_key),
+        relay_http_stream_d1_integer(owner_generation, "owner generation")?,
+        D1Type::Text(event_id),
+        D1Type::Text(event_sha256),
+        relay_http_stream_d1_integer(now, "finalization applied time")?,
+    ];
+    let insert_receipt = db
+        .prepare(
+            r#"
+            INSERT INTO relay_http_stream_finalization_receipts (
+              reservation_key, owner_generation, finalization_event_id,
+              finalization_event_sha256, applied_at
+            )
+            SELECT ?1, ?2, ?3, ?4, ?5
+            FROM relay_http_stream_handoffs AS handoff
+            WHERE handoff.reservation_key = ?1
+              AND handoff.owner_generation = ?2
+              AND handoff.finalization_event_id = ?3
+              AND handoff.finalization_event_sha256 = ?4
+              AND handoff.status IN (
+                'terminal_staged', 'finalization_enqueued',
+                'recovery_required', 'terminal'
+              )
+            ON CONFLICT(reservation_key) DO NOTHING
+            "#,
+        )
+        .bind_refs(&args)?;
+    let apply_receipt = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_handoffs
+            SET status = 'terminal', outbox_status = 'delivered',
+                delivery_generation = MAX(delivery_generation, 1),
+                delivery_attempt_count = MAX(delivery_attempt_count, 1),
+                delivery_lease_expires_at = 0,
+                delivery_available_at = MAX(delivery_available_at, ?5),
+                delivered_at = MAX(delivered_at, ?5),
+                finalization_applied_at = ?5, recovery_required_at = 0,
+                last_error = '', updated_at = MAX(updated_at, ?5)
+            WHERE reservation_key = ?1 AND owner_generation = ?2
+              AND status IN (
+                'terminal_staged', 'finalization_enqueued', 'recovery_required'
+              )
+              AND finalization_event_id = ?3
+              AND finalization_event_sha256 = ?4
+              AND EXISTS (
+                SELECT 1 FROM relay_http_stream_finalization_receipts AS receipt
+                WHERE receipt.reservation_key = ?1
+                  AND receipt.owner_generation = ?2
+                  AND receipt.finalization_event_id = ?3
+                  AND receipt.finalization_event_sha256 = ?4
+              )
+            "#,
+        )
+        .bind_refs(&args)?;
+    let results = db.batch(vec![insert_receipt, apply_receipt]).await?;
+    if results.len() == 2 && batch_changed(&results, 1)? {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::Applied);
+    }
+    let Some(current) = relay_http_stream_handoff(db, reservation_key).await? else {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::NotFound);
+    };
+    Ok(if current.owner_generation != owner_generation {
+        RelayHttpStreamHandoffTransitionOutcome::StaleGeneration
+    } else if current.status == "terminal"
+        && current.finalization_event_id == event_id
+        && current.finalization_event_sha256 == event_sha256
+    {
+        RelayHttpStreamHandoffTransitionOutcome::MatchingReplay
+    } else if current.status == "terminal" || current.status == "recovery_required" {
+        RelayHttpStreamHandoffTransitionOutcome::Terminal
+    } else {
+        RelayHttpStreamHandoffTransitionOutcome::Conflict
+    })
+}
+
+pub async fn reconcile_relay_http_stream_finalization_handoffs(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<usize> {
+    if now <= 0 {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream finalization reconciliation time is invalid".to_string(),
+        ));
+    }
+    let args = [
+        relay_http_stream_d1_integer(now, "finalization reconciliation time")?,
+        relay_http_stream_d1_integer(
+            limit.clamp(1, RELAY_HTTP_STREAM_HANDOFF_MAX_LIMIT),
+            "finalization reconciliation limit",
+        )?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_handoffs
+            SET status = 'terminal', outbox_status = 'delivered',
+                delivery_generation = MAX(delivery_generation, 1),
+                delivery_attempt_count = MAX(delivery_attempt_count, 1),
+                delivery_lease_expires_at = 0,
+                delivery_available_at = MAX(delivery_available_at, ?1),
+                delivered_at = MAX(delivered_at, ?1),
+                finalization_applied_at = receipt.applied_at,
+                recovery_required_at = 0, last_error = '',
+                updated_at = MAX(updated_at, ?1)
+            FROM relay_http_stream_finalization_receipts AS receipt
+            WHERE reservation_key IN (
+              SELECT handoff.reservation_key
+              FROM relay_http_stream_handoffs AS handoff
+              JOIN relay_http_stream_finalization_receipts AS candidate_receipt
+                ON candidate_receipt.reservation_key = handoff.reservation_key
+               AND candidate_receipt.owner_generation = handoff.owner_generation
+               AND candidate_receipt.finalization_event_id = handoff.finalization_event_id
+               AND candidate_receipt.finalization_event_sha256 =
+                   handoff.finalization_event_sha256
+              WHERE handoff.status IN (
+                'terminal_staged', 'finalization_enqueued', 'recovery_required'
+              )
+              ORDER BY handoff.delivered_at ASC, handoff.reservation_key ASC
+              LIMIT ?2
+            )
+              AND receipt.reservation_key = relay_http_stream_handoffs.reservation_key
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0))
+}
+
+pub async fn retry_relay_http_stream_outbox(
+    db: &D1Database,
+    lease: &RelayHttpStreamOutboxLease,
+    error: &str,
+    available_at: i64,
+    now: i64,
+) -> worker::Result<RelayHttpStreamHandoffTransitionOutcome> {
+    validate_relay_http_stream_text(
+        error,
+        "outbox retry error",
+        RELAY_HTTP_STREAM_HANDOFF_ERROR_MAX_BYTES,
+    )?;
+    if now <= 0 || now > lease.lease_expires_at || available_at <= now {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream outbox retry time is invalid".to_string(),
+        ));
+    }
+    relay_http_stream_outbox_failure_transition(db, lease, error, available_at, now, false).await
+}
+
+pub async fn dead_letter_relay_http_stream_outbox(
+    db: &D1Database,
+    lease: &RelayHttpStreamOutboxLease,
+    error: &str,
+    now: i64,
+) -> worker::Result<RelayHttpStreamHandoffTransitionOutcome> {
+    validate_relay_http_stream_text(
+        error,
+        "outbox dead-letter error",
+        RELAY_HTTP_STREAM_HANDOFF_ERROR_MAX_BYTES,
+    )?;
+    if now <= 0 || now > lease.lease_expires_at {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream outbox dead-letter time is invalid".to_string(),
+        ));
+    }
+    relay_http_stream_outbox_failure_transition(db, lease, error, now, now, true).await
+}
+
+async fn relay_http_stream_outbox_failure_transition(
+    db: &D1Database,
+    lease: &RelayHttpStreamOutboxLease,
+    error: &str,
+    available_at: i64,
+    now: i64,
+    dead_letter: bool,
+) -> worker::Result<RelayHttpStreamHandoffTransitionOutcome> {
+    let status = if dead_letter {
+        "recovery_required"
+    } else {
+        "terminal_staged"
+    };
+    let outbox_status = if dead_letter {
+        "dead_letter"
+    } else {
+        "pending"
+    };
+    let recovery_required_at = if dead_letter { now } else { 0 };
+    let args = [
+        D1Type::Text(&lease.reservation_key),
+        relay_http_stream_d1_integer(lease.owner_generation, "owner generation")?,
+        relay_http_stream_d1_integer(lease.attempt_generation, "attempt generation")?,
+        relay_http_stream_d1_integer(lease.delivery_generation, "delivery generation")?,
+        relay_http_stream_d1_integer(lease.lease_expires_at, "expected outbox lease expiry")?,
+        D1Type::Text(&lease.finalization_event_sha256),
+        D1Type::Text(status),
+        D1Type::Text(outbox_status),
+        D1Type::Text(error),
+        relay_http_stream_d1_integer(available_at, "outbox retry availability")?,
+        relay_http_stream_d1_integer(recovery_required_at, "outbox recovery time")?,
+        relay_http_stream_d1_integer(now, "outbox transition time")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_handoffs
+            SET status = ?7, outbox_status = ?8, last_error = ?9,
+                delivery_available_at = ?10, delivery_lease_expires_at = 0,
+                recovery_required_at = ?11, updated_at = ?12
+            WHERE reservation_key = ?1 AND owner_generation = ?2
+              AND attempt_generation = ?3
+              AND status = 'terminal_staged' AND outbox_status = 'leased'
+              AND delivery_generation = ?4 AND delivery_lease_expires_at = ?5
+              AND finalization_event_sha256 = ?6 AND ?12 <= ?5
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::Applied);
+    }
+    let Some(current) = relay_http_stream_handoff(db, &lease.reservation_key).await? else {
+        return Ok(RelayHttpStreamHandoffTransitionOutcome::NotFound);
+    };
+    Ok(
+        if current.owner_generation != lease.owner_generation
+            || current.attempt_generation != lease.attempt_generation
+        {
+            RelayHttpStreamHandoffTransitionOutcome::StaleGeneration
+        } else if current.status == status
+            && current.outbox_status == outbox_status
+            && current.last_error == error
+        {
+            RelayHttpStreamHandoffTransitionOutcome::MatchingReplay
+        } else if current.status == "terminal" || current.status == "recovery_required" {
+            RelayHttpStreamHandoffTransitionOutcome::Terminal
+        } else {
+            RelayHttpStreamHandoffTransitionOutcome::Conflict
+        },
+    )
+}
+
+pub async fn sweep_expired_relay_http_stream_handoffs(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<usize> {
+    if now <= 0 {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream handoff sweep time is invalid".to_string(),
+        ));
+    }
+    let args = [
+        relay_http_stream_d1_integer(now, "handoff sweep time")?,
+        relay_http_stream_d1_integer(
+            limit.clamp(1, RELAY_HTTP_STREAM_HANDOFF_MAX_LIMIT),
+            "handoff sweep limit",
+        )?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_handoffs
+            SET status = 'recovery_required',
+                terminal_kind = 'worker_termination',
+                terminal_reason = 'forwarding_lease_expired',
+                recovery_required_at = ?1, updated_at = MAX(updated_at, ?1)
+            WHERE reservation_key IN (
+              SELECT reservation_key
+              FROM relay_http_stream_handoffs
+              WHERE status = 'forwarding' AND lease_expires_at <= ?1
+              ORDER BY lease_expires_at ASC, reservation_key ASC
+              LIMIT ?2
+            )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0))
 }
 
 pub async fn bind_relay_billing_selected_attempt(
@@ -27508,5 +28693,46 @@ mod tests {
             .unwrap();
         let schema = &source[schema_start..schema_end];
         assert!(schema.contains("readiness_result_code,readiness_result_sha256,process_ready"));
+    }
+
+    #[test]
+    fn relay_http_stream_handoff_freezes_events_and_receipts_applied_finalization() {
+        let migration = include_str!("../../../migrations/d1/0056_relay_http_stream_handoffs.sql");
+        for fragment in [
+            "CREATE TABLE relay_http_stream_finalization_receipts",
+            "relay_http_stream_handoff_finalization_evidence_guard",
+            "relay_http_stream_handoff_financial_terminal_guard",
+            "relay_http_stream_finalization_receipt_insert_guard",
+            "relay HTTP stream finalization evidence is immutable",
+            "relay HTTP stream billing finalization receipt is missing",
+        ] {
+            assert!(
+                migration.contains(fragment),
+                "missing 0056 guard: {fragment}"
+            );
+        }
+
+        let source = include_str!("d1_repositories.rs");
+        let claim_start = source
+            .find("pub async fn claim_relay_http_stream_outbox")
+            .unwrap();
+        let claim_end = source[claim_start..]
+            .find("pub async fn mark_relay_http_stream_outbox_delivered")
+            .map(|offset| claim_start + offset)
+            .unwrap();
+        let claim = &source[claim_start..claim_end];
+        assert!(claim.contains("RETURNING reservation_key, owner_generation, attempt_generation"));
+        assert!(claim.contains("first::<RelayHttpStreamOutboxLease>"));
+
+        let applied_start = source
+            .find("pub async fn mark_relay_http_stream_finalization_applied")
+            .unwrap();
+        let applied_end = source[applied_start..]
+            .find("pub async fn reconcile_relay_http_stream_finalization_handoffs")
+            .map(|offset| applied_start + offset)
+            .unwrap();
+        let applied = &source[applied_start..applied_end];
+        assert!(applied.contains("relay_http_stream_finalization_receipts"));
+        assert!(applied.contains("db.batch(vec![insert_receipt, apply_receipt])"));
     }
 }

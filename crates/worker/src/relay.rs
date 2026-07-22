@@ -87,7 +87,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::{
     Context, D1Database, Delay, Env, Fetch, Headers, Method, Request, RequestInit, Response,
-    ResponseBody,
+    ResponseBody, WorkerVersionMetadata,
 };
 
 use crate::{affinity, json_with_status, set_cors_headers};
@@ -4056,6 +4056,7 @@ async fn relay_endpoint_with_auth(
         missing_usage_estimate_enabled: relay_billing_missing_usage_estimate_enabled(&env),
         usage_locally_estimated: false,
         non_stream_usage_parse_failed: false,
+        stream_usage_parse_failed: false,
         tts_response_usage: None,
         image_request,
         ali_image_usage: None,
@@ -10379,6 +10380,41 @@ struct StreamingUsageResolution {
     usage: UsageSummary,
     locally_estimated: bool,
     terminal_error: Option<String>,
+    provider_stream_complete: bool,
+    provider_stream_failed: bool,
+    bounds_exceeded: bool,
+}
+
+const RELAY_HTTP_STREAM_CHECKPOINT_CHUNKS: i64 = 16;
+const RELAY_HTTP_STREAM_CHECKPOINT_BYTES: i64 = 64 * 1024;
+const RELAY_HTTP_STREAM_IDLE_TIMEOUT_SECONDS: u64 = 120;
+
+struct DurableRelayStreamState {
+    stream: worker::ByteStream,
+    accumulator: Option<SseUsageAccumulator>,
+    rolling_digest: Sha256,
+    attempt_generation: i64,
+    checkpoint_sequence: i64,
+    chunk_count: i64,
+    byte_count: i64,
+    last_checkpoint_chunk_count: i64,
+    last_checkpoint_byte_count: i64,
+    terminal_staged: bool,
+    env: Env,
+    db: D1Database,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    provider: RelayProviderKind,
+    audit: RelayAuditContext,
+    upstream_status: u16,
+    upstream_request_id: Option<String>,
+    stream_lease: RelayBillingStreamLease,
+    expected_lease_expires_at: i64,
+    next_heartbeat_at: i64,
+    heartbeat_audit: RelayBillingStreamLeaseHeartbeatAudit,
 }
 
 async fn complete_streaming_relay_response(
@@ -10402,6 +10438,35 @@ async fn complete_streaming_relay_response(
         .flatten()
         .unwrap_or_else(|| "text/event-stream".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
+    let durable_handoff =
+        crate::relay_http_stream_handoff::relay_http_stream_handoff_runtime_config(&env);
+    let positive_reservation = audit
+        .billing_preflight
+        .as_ref()
+        .is_some_and(RelayBillingPreflight::reserve_applied);
+    if positive_reservation && durable_handoff.requested && !durable_handoff.handoff_enabled {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable handoff was requested without staging evidence".to_string(),
+        ));
+    }
+    if positive_reservation && durable_handoff.handoff_enabled {
+        return complete_durable_streaming_relay_response(
+            upstream,
+            env,
+            db,
+            auth,
+            channel,
+            model,
+            group,
+            endpoint_path,
+            provider,
+            audit,
+            status,
+            content_type,
+            upstream_request_id,
+        )
+        .await;
+    }
     let mut audit_response = match upstream.cloned() {
         Ok(response) => response,
         Err(err) => {
@@ -10482,6 +10547,15 @@ async fn complete_streaming_relay_response(
                 err
             );
         }
+        if resolution.bounds_exceeded || resolution.provider_stream_failed {
+            audit.stream_usage_parse_failed = true;
+            let reason = if resolution.provider_stream_failed {
+                "provider terminal reported failed or incomplete"
+            } else {
+                "usage evidence exceeded parser bounds"
+            };
+            worker::console_error!("streaming relay {reason}; settling only at the frozen reserve");
+        }
         audit.usage_locally_estimated = resolution.locally_estimated;
         audit.stream_lease_heartbeat = heartbeat_audit;
         if let Err(err) = record_relay_audit(
@@ -10507,6 +10581,626 @@ async fn complete_streaming_relay_response(
     finalize_relay_response(upstream, &content_type)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn complete_durable_streaming_relay_response(
+    mut upstream: Response,
+    env: Env,
+    db: D1Database,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    provider: RelayProviderKind,
+    audit: RelayAuditContext,
+    status: u16,
+    content_type: String,
+    upstream_request_id: Option<String>,
+) -> worker::Result<Response> {
+    let runtime = crate::relay_http_stream_handoff::relay_http_stream_handoff_runtime_config(&env);
+    if !crate::relay_http_stream_handoff::relay_http_stream_handoff_compiled()
+        || !runtime.handoff_enabled
+        || !runtime.outbox_enabled
+        || !runtime.recovery_enabled
+        || !relay_billing_finalization_queue_enabled(&env)
+        || env
+            .queue(crate::relay_billing_queue::BILLING_QUEUE_BINDING)
+            .is_err()
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable handoff prerequisites are incomplete".to_string(),
+        ));
+    }
+    if !crate::d1_repositories::relay_http_stream_handoff_schema_ready(&db).await? {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable handoff migration 0056 is unavailable".to_string(),
+        ));
+    }
+    let preflight = audit
+        .billing_preflight
+        .as_ref()
+        .filter(|preflight| preflight.reserve_applied())
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "relay HTTP stream durable handoff reservation is missing".to_string(),
+            )
+        })?;
+    let reservation_key = preflight
+        .reservation_key()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "relay HTTP stream durable handoff reservation key is missing".to_string(),
+            )
+        })?
+        .to_string();
+    let owner_generation = preflight.owner_generation().ok_or_else(|| {
+        worker::Error::RustError(
+            "relay HTTP stream durable handoff owner generation is missing".to_string(),
+        )
+    })?;
+    let selected_at = preflight.selected_at().ok_or_else(|| {
+        worker::Error::RustError(
+            "relay HTTP stream durable handoff selected time is missing".to_string(),
+        )
+    })?;
+    let initial_lease_expires_at = preflight.selected_lease_expires_at().ok_or_else(|| {
+        worker::Error::RustError("relay HTTP stream durable handoff lease is missing".to_string())
+    })?;
+    let reservation = crate::d1_repositories::relay_billing_reservation(&db, &reservation_key)
+        .await?
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "relay HTTP stream durable handoff reservation was not found".to_string(),
+            )
+        })?;
+    let billing_snapshot_sha256 = format!(
+        "{:x}",
+        Sha256::digest(reservation.billing_snapshot_json.as_bytes())
+    );
+    let worker_version_id = env
+        .get_binding::<WorkerVersionMetadata>("CF_VERSION_METADATA")
+        .ok()
+        .map(|metadata| metadata.id())
+        .filter(|id| !id.is_empty() && id.len() <= 128)
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "relay HTTP stream durable handoff Worker version metadata is unavailable"
+                    .to_string(),
+            )
+        })?;
+    let provider_operation_id = relay_http_stream_provider_operation_id(
+        &reservation_key,
+        owner_generation,
+        channel.id,
+        selected_at,
+        upstream_request_id.as_deref(),
+    );
+    let attempt_generation =
+        i64::try_from(audit.attempts.total.max(1)).unwrap_or(i64::from(i32::MAX));
+    let created_at = unix_timestamp();
+    let record = crate::d1_repositories::RelayHttpStreamHandoffRecord {
+        reservation_key: &reservation_key,
+        owner_generation,
+        attempt_generation,
+        channel_id: channel.id,
+        selected_group: &group,
+        expr_hash: preflight.contract_hash(),
+        provider_operation_id: &provider_operation_id,
+        worker_version_id: &worker_version_id,
+        billing_snapshot_sha256: &billing_snapshot_sha256,
+        created_at,
+        lease_expires_at: initial_lease_expires_at,
+    };
+    use crate::d1_repositories::RelayHttpStreamHandoffCreateOutcome as CreateOutcome;
+    match crate::d1_repositories::create_relay_http_stream_handoff(&db, &record).await? {
+        CreateOutcome::Applied => {}
+        outcome => {
+            return Err(worker::Error::RustError(format!(
+                "relay HTTP stream durable handoff creation was refused: {outcome:?}"
+            )))
+        }
+    }
+
+    let headers =
+        public_provider_response_headers(&upstream, provider_response_class_for_status(status));
+    let stream = match upstream.stream() {
+        Ok(stream) => stream,
+        Err(err) => {
+            let _ = crate::d1_repositories::mark_relay_http_stream_recovery_required(
+                &db,
+                &reservation_key,
+                owner_generation,
+                attempt_generation,
+                "stream_read_error",
+                "upstream_stream_initialization_failed",
+                unix_timestamp(),
+            )
+            .await;
+            return Err(err);
+        }
+    };
+    let heartbeat_seconds = relay_billing_stream_lease_heartbeat_interval_seconds(
+        relay_billing_stream_lease_heartbeat_seconds(&env),
+        &reservation_key,
+    );
+    let stream_lease = RelayBillingStreamLease {
+        reservation_key,
+        owner_generation,
+        channel_id: channel.id,
+        selected_group: group.clone(),
+        selected_at,
+        initial_lease_expires_at,
+        lease_seconds: relay_billing_reservation_lease_seconds(&env),
+        heartbeat_seconds,
+    };
+    let state = DurableRelayStreamState {
+        stream,
+        accumulator: Some(stream_usage_accumulator(provider, channel.channel_type)),
+        rolling_digest: Sha256::new(),
+        attempt_generation,
+        checkpoint_sequence: 0,
+        chunk_count: 0,
+        byte_count: 0,
+        last_checkpoint_chunk_count: 0,
+        last_checkpoint_byte_count: 0,
+        terminal_staged: false,
+        env,
+        db,
+        auth,
+        channel,
+        model,
+        group,
+        endpoint_path,
+        provider,
+        audit,
+        upstream_status: status,
+        upstream_request_id,
+        expected_lease_expires_at: initial_lease_expires_at,
+        next_heartbeat_at: created_at.saturating_add(heartbeat_seconds),
+        heartbeat_audit: RelayBillingStreamLeaseHeartbeatAudit::new(
+            heartbeat_seconds,
+            initial_lease_expires_at,
+        ),
+        stream_lease,
+    };
+    let body = futures_util::stream::try_unfold(state, durable_relay_stream_next);
+    let mut response = Response::from_stream(body)?
+        .with_status(status)
+        .with_headers(headers);
+    response.headers_mut().set("content-type", &content_type)?;
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+fn relay_http_stream_provider_operation_id(
+    reservation_key: &str,
+    owner_generation: i64,
+    channel_id: i64,
+    selected_at: i64,
+    upstream_request_id: Option<&str>,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"cinatoken/relay-http-stream/provider-operation/v1\0");
+    for field in [
+        reservation_key.to_string(),
+        owner_generation.to_string(),
+        channel_id.to_string(),
+        selected_at.to_string(),
+        upstream_request_id.unwrap_or_default().to_string(),
+    ] {
+        digest.update((field.len() as u64).to_be_bytes());
+        digest.update(field.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
+async fn durable_relay_stream_next(
+    mut state: DurableRelayStreamState,
+) -> worker::Result<Option<(Vec<u8>, DurableRelayStreamState)>> {
+    if state.terminal_staged {
+        return Ok(None);
+    }
+    let next_chunk = Box::pin(state.stream.next());
+    let idle_timeout = Box::pin(Delay::from(Duration::from_secs(
+        RELAY_HTTP_STREAM_IDLE_TIMEOUT_SECONDS,
+    )));
+    match select(next_chunk, idle_timeout).await {
+        Either::Left((Some(Ok(chunk)), _)) => {
+            durable_process_stream_chunk(&mut state, &chunk).await?;
+            Ok(Some((chunk, state)))
+        }
+        Either::Left((Some(Err(err)), _)) => {
+            durable_mark_stream_recovery(&state, "stream_read_error", "upstream_stream_read_error")
+                .await;
+            Err(err)
+        }
+        Either::Left((None, _)) => {
+            durable_mark_stream_recovery(
+                &state,
+                "eof_without_provider_terminal",
+                "eof_without_provider_terminal",
+            )
+            .await;
+            Err(worker::Error::RustError(
+                "upstream SSE stream ended without provider terminal evidence".to_string(),
+            ))
+        }
+        Either::Right((_, pending_chunk)) => {
+            drop(pending_chunk);
+            durable_mark_stream_recovery(&state, "idle_timeout", "stream_idle_timeout").await;
+            Err(worker::Error::RustError(
+                "upstream SSE stream exceeded the durable idle timeout".to_string(),
+            ))
+        }
+    }
+}
+
+async fn durable_process_stream_chunk(
+    state: &mut DurableRelayStreamState,
+    chunk: &[u8],
+) -> worker::Result<()> {
+    state.chunk_count = state.chunk_count.checked_add(1).ok_or_else(|| {
+        worker::Error::RustError("relay HTTP stream chunk count overflow".to_string())
+    })?;
+    state.byte_count = state
+        .byte_count
+        .checked_add(i64::try_from(chunk.len()).unwrap_or(i64::MAX))
+        .ok_or_else(|| {
+            worker::Error::RustError("relay HTTP stream byte count overflow".to_string())
+        })?;
+    if state.chunk_count > i64::from(i32::MAX) || state.byte_count > i64::from(i32::MAX) {
+        durable_mark_stream_recovery(state, "stream_read_error", "stream_counter_limit_exceeded")
+            .await;
+        return Err(worker::Error::RustError(
+            "relay HTTP stream counter limit exceeded".to_string(),
+        ));
+    }
+    state.rolling_digest.update(chunk);
+    let accumulator = state.accumulator.as_mut().ok_or_else(|| {
+        worker::Error::RustError("relay HTTP stream accumulator is unavailable".to_string())
+    })?;
+    accumulator.push_chunk(chunk);
+    let (_, provider_terminal, bounds_exceeded) = accumulator.checkpoint();
+    if bounds_exceeded {
+        durable_mark_stream_recovery(state, "stream_read_error", "stream_parser_bound_exceeded")
+            .await;
+        return Err(worker::Error::RustError(
+            "relay HTTP stream parser bound exceeded".to_string(),
+        ));
+    }
+    if provider_terminal {
+        if accumulator.provider_terminal_failed() {
+            durable_checkpoint_stream(state).await?;
+            durable_mark_stream_recovery(
+                state,
+                "provider_error",
+                "provider_terminal_error_requires_policy",
+            )
+            .await;
+            return Err(worker::Error::RustError(
+                "upstream SSE stream reported a failed terminal state".to_string(),
+            ));
+        }
+        durable_stage_stream_terminal(state).await?;
+        return Ok(());
+    }
+    let checkpoint_due = state
+        .chunk_count
+        .saturating_sub(state.last_checkpoint_chunk_count)
+        >= RELAY_HTTP_STREAM_CHECKPOINT_CHUNKS
+        || state
+            .byte_count
+            .saturating_sub(state.last_checkpoint_byte_count)
+            >= RELAY_HTTP_STREAM_CHECKPOINT_BYTES
+        || unix_timestamp() >= state.next_heartbeat_at;
+    if checkpoint_due {
+        durable_checkpoint_stream(state).await?;
+    }
+    Ok(())
+}
+
+async fn durable_renew_stream_lease(state: &mut DurableRelayStreamState) -> worker::Result<()> {
+    let now = unix_timestamp();
+    if now < state.next_heartbeat_at && now.saturating_add(1) < state.expected_lease_expires_at {
+        return Ok(());
+    }
+    state.heartbeat_audit.attempt_count = state.heartbeat_audit.attempt_count.saturating_add(1);
+    let requested_lease_expires_at = now.saturating_add(state.stream_lease.lease_seconds);
+    use crate::d1_repositories::RelayBillingLeaseRenewalOutcome as Outcome;
+    let renewal = crate::d1_repositories::renew_relay_billing_selected_attempt_lease(
+        &state.db,
+        &state.stream_lease.reservation_key,
+        state.stream_lease.owner_generation,
+        state.stream_lease.channel_id,
+        &state.stream_lease.selected_group,
+        state.stream_lease.selected_at,
+        state.expected_lease_expires_at,
+        now,
+        requested_lease_expires_at,
+    )
+    .await;
+    let renewal = match renewal {
+        Ok(renewal) => renewal,
+        Err(err) => {
+            state.heartbeat_audit.failure_count =
+                state.heartbeat_audit.failure_count.saturating_add(1);
+            durable_mark_stream_recovery(
+                state,
+                "stream_read_error",
+                "billing_lease_renewal_failed",
+            )
+            .await;
+            return Err(err);
+        }
+    };
+    match renewal {
+        Outcome::Applied => {
+            state.heartbeat_audit.renewed_count =
+                state.heartbeat_audit.renewed_count.saturating_add(1)
+        }
+        Outcome::MatchingRenewal => {
+            state.heartbeat_audit.matching_count =
+                state.heartbeat_audit.matching_count.saturating_add(1)
+        }
+        outcome => {
+            state.heartbeat_audit.stopped_reason = Some(match outcome {
+                Outcome::AlreadyFinalized => "already_finalized",
+                Outcome::StaleGeneration => "stale_generation",
+                Outcome::DeadlineExpired => "deadline_expired",
+                Outcome::Conflict => "identity_conflict",
+                Outcome::NotFound => "not_found",
+                Outcome::Applied | Outcome::MatchingRenewal => unreachable!(),
+            });
+            durable_mark_stream_recovery(
+                state,
+                "stream_read_error",
+                "billing_lease_renewal_refused",
+            )
+            .await;
+            return Err(worker::Error::RustError(format!(
+                "relay HTTP stream billing lease renewal was refused: {outcome:?}"
+            )));
+        }
+    }
+    state.expected_lease_expires_at = requested_lease_expires_at;
+    state.next_heartbeat_at = now.saturating_add(state.stream_lease.heartbeat_seconds);
+    state.heartbeat_audit.final_lease_expires_at = requested_lease_expires_at;
+    state.heartbeat_audit.last_renewed_at = Some(now);
+    Ok(())
+}
+
+fn durable_stream_checkpoint<'a>(
+    state: &'a DurableRelayStreamState,
+    usage: &UsageSummary,
+    sequence: i64,
+    now: i64,
+    rolling_sha256: &'a str,
+) -> crate::d1_repositories::RelayHttpStreamCheckpoint<'a> {
+    crate::d1_repositories::RelayHttpStreamCheckpoint {
+        checkpoint_sequence: sequence,
+        chunk_count: state.chunk_count,
+        byte_count: state.byte_count,
+        prompt_tokens: i64::from(usage.prompt_tokens.max(0)),
+        completion_tokens: i64::from(usage.completion_tokens.max(0)),
+        total_tokens: i64::from(usage.total_tokens.max(0)),
+        cached_tokens: i64::from(usage.cached_tokens.max(0)),
+        cache_creation_tokens: i64::from(usage.cache_creation_tokens.max(0)),
+        rolling_sha256,
+        lease_expires_at: state.expected_lease_expires_at,
+        updated_at: now,
+    }
+}
+
+async fn durable_checkpoint_stream(state: &mut DurableRelayStreamState) -> worker::Result<()> {
+    durable_renew_stream_lease(state).await?;
+    let (usage, _, bounds_exceeded) = state
+        .accumulator
+        .as_ref()
+        .ok_or_else(|| {
+            worker::Error::RustError("relay HTTP stream accumulator is unavailable".to_string())
+        })?
+        .checkpoint();
+    if bounds_exceeded {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream parser bound exceeded".to_string(),
+        ));
+    }
+    let sequence = state.checkpoint_sequence.saturating_add(1);
+    let rolling_sha256 = format!("{:x}", state.rolling_digest.clone().finalize());
+    let now = unix_timestamp();
+    let checkpoint = durable_stream_checkpoint(state, &usage, sequence, now, &rolling_sha256);
+    use crate::d1_repositories::RelayHttpStreamHandoffTransitionOutcome as Outcome;
+    let checkpoint_outcome = crate::d1_repositories::checkpoint_relay_http_stream_handoff(
+        &state.db,
+        &state.stream_lease.reservation_key,
+        state.stream_lease.owner_generation,
+        state.attempt_generation,
+        &checkpoint,
+    )
+    .await;
+    let checkpoint_outcome = match checkpoint_outcome {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            durable_mark_stream_recovery(state, "stream_read_error", "durable_checkpoint_failed")
+                .await;
+            return Err(err);
+        }
+    };
+    match checkpoint_outcome {
+        Outcome::Applied | Outcome::MatchingReplay => {
+            state.checkpoint_sequence = sequence;
+            state.last_checkpoint_chunk_count = state.chunk_count;
+            state.last_checkpoint_byte_count = state.byte_count;
+            Ok(())
+        }
+        outcome => {
+            durable_mark_stream_recovery(state, "stream_read_error", "durable_checkpoint_refused")
+                .await;
+            Err(worker::Error::RustError(format!(
+                "relay HTTP stream durable checkpoint was refused: {outcome:?}"
+            )))
+        }
+    }
+}
+
+async fn durable_stage_stream_terminal(state: &mut DurableRelayStreamState) -> worker::Result<()> {
+    durable_renew_stream_lease(state).await?;
+    let accumulator = state.accumulator.take().ok_or_else(|| {
+        worker::Error::RustError("relay HTTP stream accumulator is unavailable".to_string())
+    })?;
+    let resolution = resolve_durable_stream_usage(
+        accumulator,
+        state.provider,
+        &state.endpoint_path,
+        &state.model,
+        state.audit.estimated_prompt_tokens,
+        state.audit.missing_usage_estimate_enabled,
+    );
+    if !resolution.provider_stream_complete || resolution.bounds_exceeded {
+        durable_mark_stream_recovery(
+            state,
+            "stream_read_error",
+            "provider_terminal_evidence_invalid",
+        )
+        .await;
+        return Err(worker::Error::RustError(
+            "relay HTTP stream terminal evidence is invalid".to_string(),
+        ));
+    }
+    state.audit.usage_locally_estimated = resolution.locally_estimated;
+    state.heartbeat_audit.completion_reason = Some("provider_terminal_event");
+    state.audit.stream_lease_heartbeat = Some(state.heartbeat_audit.clone());
+    let mut finalization_event = None;
+    let audit_result = record_relay_audit_with_finalization_sink(
+        &state.env,
+        &state.db,
+        &state.auth,
+        &state.channel,
+        &state.model,
+        &state.group,
+        &state.endpoint_path,
+        state.upstream_status,
+        &resolution.usage,
+        &state.audit,
+        state.upstream_request_id.as_deref(),
+        true,
+        Some(&mut finalization_event),
+    )
+    .await;
+    if let Err(err) = audit_result {
+        durable_mark_stream_recovery(
+            state,
+            "stream_read_error",
+            "finalization_event_build_failed",
+        )
+        .await;
+        return Err(err);
+    }
+    let Some(finalization_event) = finalization_event else {
+        durable_mark_stream_recovery(state, "stream_read_error", "finalization_event_missing")
+            .await;
+        return Err(worker::Error::RustError(
+            "relay HTTP stream finalization event was not captured".to_string(),
+        ));
+    };
+    let event_json = match serde_json::to_string(&finalization_event) {
+        Ok(event_json) => event_json,
+        Err(err) => {
+            durable_mark_stream_recovery(
+                state,
+                "stream_read_error",
+                "finalization_event_serialization_failed",
+            )
+            .await;
+            return Err(err.into());
+        }
+    };
+    let event_sha256 = format!("{:x}", Sha256::digest(event_json.as_bytes()));
+    let sequence = state.checkpoint_sequence.saturating_add(1);
+    let rolling_sha256 = format!("{:x}", state.rolling_digest.clone().finalize());
+    let terminal_at = unix_timestamp();
+    let checkpoint = durable_stream_checkpoint(
+        state,
+        &resolution.usage,
+        sequence,
+        terminal_at,
+        &rolling_sha256,
+    );
+    use crate::d1_repositories::RelayHttpStreamHandoffTransitionOutcome as Outcome;
+    let stage_outcome = crate::d1_repositories::stage_relay_http_stream_finalization(
+        &state.db,
+        &state.stream_lease.reservation_key,
+        state.stream_lease.owner_generation,
+        state.attempt_generation,
+        state.stream_lease.channel_id,
+        &state.stream_lease.selected_group,
+        state
+            .audit
+            .billing_preflight
+            .as_ref()
+            .map(RelayBillingPreflight::contract_hash)
+            .unwrap_or_default(),
+        "provider_done",
+        "provider_terminal_event",
+        &checkpoint,
+        &event_json,
+        &event_sha256,
+        terminal_at,
+    )
+    .await;
+    let stage_outcome = match stage_outcome {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            durable_mark_stream_recovery(
+                state,
+                "stream_read_error",
+                "terminal_handoff_write_failed",
+            )
+            .await;
+            return Err(err);
+        }
+    };
+    match stage_outcome {
+        Outcome::Applied | Outcome::MatchingReplay => {
+            state.checkpoint_sequence = sequence;
+            state.terminal_staged = true;
+            Ok(())
+        }
+        outcome => {
+            durable_mark_stream_recovery(state, "stream_read_error", "terminal_handoff_refused")
+                .await;
+            Err(worker::Error::RustError(format!(
+                "relay HTTP stream terminal handoff was refused: {outcome:?}"
+            )))
+        }
+    }
+}
+
+async fn durable_mark_stream_recovery(
+    state: &DurableRelayStreamState,
+    terminal_kind: &str,
+    terminal_reason: &str,
+) {
+    match crate::d1_repositories::mark_relay_http_stream_recovery_required(
+        &state.db,
+        &state.stream_lease.reservation_key,
+        state.stream_lease.owner_generation,
+        state.attempt_generation,
+        terminal_kind,
+        terminal_reason,
+        unix_timestamp(),
+    )
+    .await
+    {
+        Ok(outcome) => {
+            worker::console_warn!("relay HTTP stream moved to recovery-required: {outcome:?}")
+        }
+        Err(err) => {
+            worker::console_error!("relay HTTP stream recovery-required transition failed: {err}")
+        }
+    }
+}
+
 async fn streaming_usage_summary(
     upstream: &mut Response,
     provider: RelayProviderKind,
@@ -10520,27 +11214,7 @@ async fn streaming_usage_summary(
     heartbeat_audit: Option<&mut RelayBillingStreamLeaseHeartbeatAudit>,
 ) -> worker::Result<StreamingUsageResolution> {
     let mut stream = upstream.stream()?;
-    let mut accumulator = match provider {
-        RelayProviderKind::AliOpenAi
-        | RelayProviderKind::BaiduV2OpenAi
-        | RelayProviderKind::OpenAiCompatible
-        | RelayProviderKind::DeepSeekOpenAi
-        | RelayProviderKind::MistralOpenAi
-        | RelayProviderKind::PerplexityOpenAi
-        | RelayProviderKind::SiliconFlowOpenAi
-        | RelayProviderKind::SubmodelOpenAi
-        | RelayProviderKind::TencentHunyuan
-        | RelayProviderKind::XaiOpenAi
-        | RelayProviderKind::VolcEngineOpenAi => {
-            SseUsageAccumulator::openai(usage_cache_field_policy(provider, channel_type))
-        }
-        RelayProviderKind::MoonshotOpenAi => SseUsageAccumulator::moonshot(),
-        RelayProviderKind::AliMessages
-        | RelayProviderKind::AnthropicMessages
-        | RelayProviderKind::DeepSeekMessages
-        | RelayProviderKind::MoonshotMessages => SseUsageAccumulator::anthropic(),
-        RelayProviderKind::GeminiNative => SseUsageAccumulator::gemini(),
-    };
+    let mut accumulator = stream_usage_accumulator(provider, channel_type);
 
     let mut heartbeat_audit = heartbeat_audit;
     let mut terminal_error = None;
@@ -10665,6 +11339,8 @@ async fn streaming_usage_summary(
         }
     }
 
+    let (_, _, bounds_exceeded) = accumulator.checkpoint();
+    let provider_stream_failed = accumulator.provider_terminal_failed();
     let (usage, response_text, tool_count, provider_stream_complete) =
         accumulator.into_parts_with_status();
     // Each supported wire shape now accumulates the response text needed for
@@ -10742,7 +11418,107 @@ async fn streaming_usage_summary(
         usage,
         locally_estimated,
         terminal_error,
+        provider_stream_complete,
+        provider_stream_failed,
+        bounds_exceeded,
     })
+}
+
+fn stream_usage_accumulator(provider: RelayProviderKind, channel_type: i32) -> SseUsageAccumulator {
+    match provider {
+        RelayProviderKind::AliOpenAi
+        | RelayProviderKind::BaiduV2OpenAi
+        | RelayProviderKind::OpenAiCompatible
+        | RelayProviderKind::DeepSeekOpenAi
+        | RelayProviderKind::MistralOpenAi
+        | RelayProviderKind::PerplexityOpenAi
+        | RelayProviderKind::SiliconFlowOpenAi
+        | RelayProviderKind::SubmodelOpenAi
+        | RelayProviderKind::TencentHunyuan
+        | RelayProviderKind::XaiOpenAi
+        | RelayProviderKind::VolcEngineOpenAi => {
+            SseUsageAccumulator::openai(usage_cache_field_policy(provider, channel_type))
+        }
+        RelayProviderKind::MoonshotOpenAi => SseUsageAccumulator::moonshot(),
+        RelayProviderKind::AliMessages
+        | RelayProviderKind::AnthropicMessages
+        | RelayProviderKind::DeepSeekMessages
+        | RelayProviderKind::MoonshotMessages => SseUsageAccumulator::anthropic(),
+        RelayProviderKind::GeminiNative => SseUsageAccumulator::gemini(),
+    }
+}
+
+fn resolve_durable_stream_usage(
+    accumulator: SseUsageAccumulator,
+    provider: RelayProviderKind,
+    endpoint_path: &str,
+    model: &str,
+    estimated_prompt_tokens: i64,
+    estimate_enabled: bool,
+) -> StreamingUsageResolution {
+    let (_, provider_stream_complete, bounds_exceeded) = accumulator.checkpoint();
+    let provider_stream_failed = accumulator.provider_terminal_failed();
+    let (usage, response_text, tool_count, _) = accumulator.into_parts_with_status();
+    let estimate_applicable = estimate_enabled
+        && matches!(
+            provider,
+            RelayProviderKind::AliOpenAi
+                | RelayProviderKind::BaiduV2OpenAi
+                | RelayProviderKind::OpenAiCompatible
+                | RelayProviderKind::DeepSeekOpenAi
+                | RelayProviderKind::MistralOpenAi
+                | RelayProviderKind::MoonshotOpenAi
+                | RelayProviderKind::PerplexityOpenAi
+                | RelayProviderKind::SiliconFlowOpenAi
+                | RelayProviderKind::SubmodelOpenAi
+                | RelayProviderKind::XaiOpenAi
+                | RelayProviderKind::VolcEngineOpenAi
+                | RelayProviderKind::AliMessages
+                | RelayProviderKind::AnthropicMessages
+                | RelayProviderKind::DeepSeekMessages
+                | RelayProviderKind::MoonshotMessages
+                | RelayProviderKind::GeminiNative
+        );
+    let (usage, locally_estimated) = match provider {
+        RelayProviderKind::AliMessages
+        | RelayProviderKind::AnthropicMessages
+        | RelayProviderKind::DeepSeekMessages
+        | RelayProviderKind::MoonshotMessages => resolve_native_provider_usage(
+            usage,
+            &response_text,
+            model,
+            estimated_prompt_tokens,
+            estimate_applicable,
+            usage.completion_tokens <= 0 || !provider_stream_complete,
+            false,
+        ),
+        RelayProviderKind::GeminiNative => resolve_native_provider_usage(
+            usage,
+            &response_text,
+            model,
+            estimated_prompt_tokens,
+            estimate_applicable,
+            usage.completion_tokens <= 0,
+            true,
+        ),
+        _ => resolve_stream_usage(
+            usage,
+            &response_text,
+            tool_count,
+            endpoint_path,
+            model,
+            estimated_prompt_tokens,
+            estimate_applicable,
+        ),
+    };
+    StreamingUsageResolution {
+        usage,
+        locally_estimated,
+        terminal_error: None,
+        provider_stream_complete,
+        provider_stream_failed,
+        bounds_exceeded,
+    }
 }
 
 /*
@@ -10886,6 +11662,10 @@ struct RelayAuditContext {
     /// pre-consumption instead of being misclassified as missing usage and
     /// refunded after the provider result was delivered.
     non_stream_usage_parse_failed: bool,
+    /// The client-visible stream exceeded a bounded usage parser limit after
+    /// response delivery began. Billing must ignore partial usage and settle
+    /// only at the already approved frozen reserve.
+    stream_usage_parse_failed: bool,
     /// Bounded, response-derived OpenAI-compatible TTS usage. This is local
     /// settlement evidence, not an upstream-reported token block.
     tts_response_usage: Option<TtsResponseUsageAudit>,
@@ -11135,18 +11915,61 @@ async fn record_relay_audit(
     upstream_request_id: Option<&str>,
     is_stream: bool,
 ) -> worker::Result<()> {
+    record_relay_audit_with_finalization_sink(
+        env,
+        db,
+        auth,
+        channel,
+        model,
+        group,
+        endpoint_path,
+        upstream_status,
+        usage,
+        audit,
+        upstream_request_id,
+        is_stream,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_relay_audit_with_finalization_sink(
+    env: &Env,
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+    channel: &RelayChannel,
+    model: &str,
+    group: &str,
+    endpoint_path: &str,
+    upstream_status: u16,
+    usage: &UsageSummary,
+    audit: &RelayAuditContext,
+    upstream_request_id: Option<&str>,
+    is_stream: bool,
+    mut finalization_sink: Option<
+        &mut Option<crate::relay_billing_queue::RelayBillingFinalizationEvent>,
+    >,
+) -> worker::Result<()> {
     let now = unix_timestamp();
 
     let use_time = now.saturating_sub(audit.started_at);
     let reported_usage_present =
         usage_summary_is_present(usage, audit.missing_usage_estimate_enabled);
+    let delivered_usage_parse_failed =
+        audit.non_stream_usage_parse_failed || audit.stream_usage_parse_failed;
+    let parse_failure_finalization_reason = if audit.stream_usage_parse_failed {
+        "stream_parse_fallback_settlement"
+    } else {
+        "non_stream_parse_fallback_settlement"
+    };
     // Image APIs commonly return a successful URL without token
     // usage. Treat that response as billable by request contract while keeping
     // the real zero-token vector for tiered expressions and fixed-price audit.
     let request_contract_usage =
         usage_less_request_contract_applies(endpoint_path, reported_usage_present);
     let usage_present = reported_usage_present || request_contract_usage;
-    let usage_source = if audit.non_stream_usage_parse_failed {
+    let usage_source = if delivered_usage_parse_failed {
         "unavailable_parse_failure"
     } else if let Some(tts) = &audit.tts_response_usage {
         tts.source
@@ -11232,8 +12055,13 @@ async fn record_relay_audit(
             }),
         );
     }
-    if audit.non_stream_usage_parse_failed {
-        set_json_bool(&mut other, "non_stream_usage_parse_failed", true);
+    if delivered_usage_parse_failed {
+        if audit.non_stream_usage_parse_failed {
+            set_json_bool(&mut other, "non_stream_usage_parse_failed", true);
+        }
+        if audit.stream_usage_parse_failed {
+            set_json_bool(&mut other, "stream_usage_parse_failed", true);
+        }
         let reservation_class = match audit.billing_preflight.as_ref() {
             Some(RelayBillingPreflight::Tiered(preflight))
                 if preflight.reserve_applied && preflight.pre_consumed_quota > 0 =>
@@ -11336,11 +12164,11 @@ async fn record_relay_audit(
             set_json_string(&mut other, "billing_ledger_outcome", "pending".to_string());
         }
         if upstream_status < 400
-            && audit.non_stream_usage_parse_failed
+            && delivered_usage_parse_failed
             && preflight.reserve_applied
             && preflight.pre_consumed_quota > 0
         {
-            let finalization_reason = "non_stream_parse_fallback_settlement";
+            let finalization_reason = parse_failure_finalization_reason;
             let fallback_settlement = if billing_queue_available {
                 PendingRelayBillingFinalization::settlement(
                     billing_preflight,
@@ -11654,12 +12482,11 @@ async fn record_relay_audit(
             set_json_string(&mut other, "billing_ledger_outcome", "pending".to_string());
         }
         let finalization = if upstream_status < 400
-            && audit.non_stream_usage_parse_failed
+            && delivered_usage_parse_failed
             && preflight.reserve_applied
             && preflight.pre_consumed_quota > 0
-            && preflight.snapshot.mode == FlatBillingMode::FixedPrice
         {
-            let reason = "non_stream_parse_fallback_settlement";
+            let reason = parse_failure_finalization_reason;
             stage_relay_billing_settlement(
                 env,
                 db,
@@ -11774,8 +12601,7 @@ async fn record_relay_audit(
             Ok(()) => {
                 billing_applied = upstream_status < 400
                     && (usage_present
-                        || (audit.non_stream_usage_parse_failed
-                            && preflight.pre_consumed_quota > 0));
+                        || (delivered_usage_parse_failed && preflight.pre_consumed_quota > 0));
                 billing_resolved = true;
                 request_count_owned_by_ledger = true;
                 set_json_bool(&mut other, "billing_pending", false);
@@ -11804,7 +12630,7 @@ async fn record_relay_audit(
         .billing_preflight
         .as_ref()
         .is_some_and(RelayBillingPreflight::reserve_applied);
-    if audit.non_stream_usage_parse_failed && upstream_status >= 400 && !billing_reservation {
+    if delivered_usage_parse_failed && upstream_status >= 400 && !billing_reservation {
         billing_resolved = true;
         set_json_bool(&mut other, "billing_pending", false);
         set_json_string(
@@ -11879,6 +12705,10 @@ async fn record_relay_audit(
     let event = AuditLogEvent::from_relay_audit(now, &content, &audit_log, LOG_TYPE_CONSUME);
     if let Some(pending) = pending_billing_finalization {
         let finalization_event = pending.into_event(now, event)?;
+        if let Some(sink) = finalization_sink.as_deref_mut() {
+            *sink = Some(finalization_event);
+            return Ok(());
+        }
         match env.queue(crate::relay_billing_queue::BILLING_QUEUE_BINDING) {
             Ok(queue) => match queue.send(&finalization_event).await {
                 Ok(()) => return Ok(()),
@@ -15254,6 +16084,70 @@ mod tests {
     use super::*;
     use cinatoken_billing::compute_flat_quota;
     use serde_json::json;
+
+    #[test]
+    fn relay_http_stream_provider_operation_id_is_deterministic_and_identity_bound() {
+        let operation_id = relay_http_stream_provider_operation_id(
+            "reservation-1",
+            7,
+            19,
+            1_700_000_000,
+            Some("upstream-request-1"),
+        );
+        assert_eq!(
+            operation_id,
+            "78d78d3fa4f5e854f181eb74cad1563af87028b3c465016c75b8050ad5886818"
+        );
+        assert_eq!(
+            operation_id,
+            relay_http_stream_provider_operation_id(
+                "reservation-1",
+                7,
+                19,
+                1_700_000_000,
+                Some("upstream-request-1"),
+            )
+        );
+        for distinct in [
+            relay_http_stream_provider_operation_id(
+                "reservation-2",
+                7,
+                19,
+                1_700_000_000,
+                Some("upstream-request-1"),
+            ),
+            relay_http_stream_provider_operation_id(
+                "reservation-1",
+                8,
+                19,
+                1_700_000_000,
+                Some("upstream-request-1"),
+            ),
+            relay_http_stream_provider_operation_id(
+                "reservation-1",
+                7,
+                20,
+                1_700_000_000,
+                Some("upstream-request-1"),
+            ),
+            relay_http_stream_provider_operation_id(
+                "reservation-1",
+                7,
+                19,
+                1_700_000_001,
+                Some("upstream-request-1"),
+            ),
+            relay_http_stream_provider_operation_id(
+                "reservation-1",
+                7,
+                19,
+                1_700_000_000,
+                Some("upstream-request-2"),
+            ),
+        ] {
+            assert_ne!(operation_id, distinct);
+        }
+    }
 
     #[test]
     fn provider_response_profiles_preserve_existing_usage_families() {

@@ -2731,3 +2731,31 @@ rotation, remote 0055 apply/readback, same-version deployment, a live N/N
 campaign, authenticated collector-v4 all-page Cloudflare inventory, provenance and traffic
 sources, P5 faults/load/cost/SLO, five approvals, and the Go/VPS drain and
 reverse-sync packet remain open. Production remains **NO-GO**.
+
+## 2026-07-22 Ordinary HTTP SSE Durable Terminal Handoff v1
+
+Phase 1 now includes a default-off durable owner for positive paid ordinary
+HTTP SSE. Migration 0056 advances the local exact-set baseline to 56
+migrations, 64 tables, 814 checked incremental columns, and 94 key indexes. It
+adds generation-fenced handoff state and append-preserved exact finalization
+receipts.
+
+The Worker uses one instrumented upstream stream, bounded incremental SSE
+parsing, monotonic usage/checkpoint counters and rolling digest, billing-lease-
+bound heartbeats, immutable staged event identity, an atomic leased outbox, and
+receipt-only financial terminal convergence. Recovery never calls the provider.
+Failed/incomplete provider terminals and any unproven stream end remain
+`recovery_required`. Stream parse failure settles only the frozen reserve and
+never partial usage.
+
+All four producer/staging/outbox/recovery flags remain false in default,
+staging, and production. Outbox/recovery can be independently enabled for an
+approved drain while the producer stays false, but both require the staging
+verification latch.
+
+Local implementation closes the isolate-clone terminal ownership gap only for
+the covered path. It does not prove the provider-dispatch-to-handoff window,
+immediate cancellation, a total stream deadline, real Queue/D1 ambiguity,
+restart/version skew, remote 0056, provider-family failed-terminal policy, P5,
+or Go/VPS drain. See `docs/relay-http-stream-durable-handoff.md`. Go/VPS remains
+authoritative and production remains **NO-GO**.

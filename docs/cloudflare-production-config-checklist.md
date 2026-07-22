@@ -1472,3 +1472,55 @@ authorize deployment, wake, provider/financial work, traffic, or cutover.
   Do not archive raw responses, cursors, account/resource IDs, or secrets.
 - No authenticated collector-v4 run has yet been archived. S4, P5, and
   production therefore remain **NO-GO**.
+
+## Migration 0056 HTTP SSE Handoff Checklist
+
+### Static configuration
+
+- Confirm `RELAY_HTTP_STREAM_DURABLE_HANDOFF_ENABLED`,
+  `RELAY_HTTP_STREAM_DURABLE_HANDOFF_STAGING_VERIFIED`,
+  `RELAY_HTTP_STREAM_OUTBOX_ENABLED`, and
+  `RELAY_HTTP_STREAM_RECOVERY_ENABLED` are present and exact `false` in
+  default, staging, and production configuration before schema application.
+- Confirm `BILLING_QUEUE` and its DLQ are environment-specific, have bounded
+  retry/retention settings, and are covered by alerts. Queue acceptance is not
+  financial-terminal evidence.
+- Confirm `CF_VERSION_METADATA` is present. A paid durable producer must fail
+  closed when exact Worker version metadata is unavailable.
+- Run `bun run check:relay-http-stream-handoff:config` and
+  `bun run check:d1:migration-config` against the exact candidate.
+
+### Reader-first schema expand
+
+- Revoke the exposed credential and use separate approved least-privilege
+  replacement identities. Never pass a credential through arguments, tracked
+  files, output, evidence, or tickets.
+- Back up isolated staging D1 and archive the exact migration inventory and
+  normalized business fingerprint.
+- Prove old-writer and active-operation drain, then apply
+  `0056_relay_http_stream_handoffs.sql` while all four gates remain false.
+- Read back the exact current head: 56 migrations, 64 tables, 814 checked
+  incremental columns, 94 key indexes, both 0056 tables, three handoff indexes,
+  and eleven 0056 triggers.
+- Prove rejection of identity mutation, usage/counter regression, event
+  replacement, terminal without exact receipt, receipt update/delete, and
+  handoff delete. Confirm no request/response body or secret-shaped field is
+  stored.
+
+### Gate order
+
+1. Deploy the exact reader/runtime with all four gates false.
+2. In isolated staging, enable only the staging approval, outbox, and recovery
+   gates for synthetic drain-only evidence.
+3. Return all gates false and reconcile the seeded backlog.
+4. For a separately approved no-customer canary, enable staging approval,
+   outbox, recovery, and producer in that order.
+5. On rollback, disable producer first. Keep outbox/recovery and staging
+   approval enabled until no forwarding, staged, due, or leased row remains.
+6. Disable drain gates only after billing, audit, receipt, provider-counter,
+   and backlog reconciliation is signed.
+
+Do not enable the producer while the provider-dispatch-to-handoff crash window,
+client-cancel/total-timeout evidence, real Queue/D1/restart fault matrix,
+provider failed-terminal policy, remote P5 packet, or Go/VPS drain is open.
+Migration 0056 is retained on rollback. Production remains **NO-GO**.

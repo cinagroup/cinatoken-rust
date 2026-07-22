@@ -576,7 +576,9 @@ pub fn usage_summary_from_gemini_sse_stream(body: &str) -> UsageSummary {
 pub struct SseUsageAccumulator {
     latest: UsageSummary,
     pending_line: Vec<u8>,
+    discard_until_newline: bool,
     data_lines: Vec<String>,
+    data_bytes: usize,
     mode: SseUsageMode,
     /// Accumulated streamed completion text (OpenAI mode only) — used to
     /// estimate usage when the upstream stream omits a `usage` block. Faithful
@@ -595,8 +597,15 @@ pub struct SseUsageAccumulator {
     /// Anthropic can end the HTTP body cleanly without `message_stop`, so EOF
     /// alone is not sufficient evidence that its final usage is complete.
     provider_stream_complete: bool,
+    provider_stream_failed: bool,
+    bounds_exceeded: bool,
     cache_field_policy: UsageCacheFieldPolicy,
 }
+
+const MAX_SSE_PENDING_LINE_BYTES: usize = 256 * 1024;
+const MAX_SSE_EVENT_BYTES: usize = 512 * 1024;
+const MAX_SSE_DATA_LINES: usize = 128;
+const MAX_STREAM_ESTIMATE_TEXT_BYTES: usize = 2 * 1024 * 1024;
 
 impl SseUsageAccumulator {
     pub fn openai(cache_field_policy: UsageCacheFieldPolicy) -> Self {
@@ -630,22 +639,60 @@ impl SseUsageAccumulator {
     }
 
     pub fn push_chunk(&mut self, chunk: &[u8]) {
-        self.pending_line.extend_from_slice(chunk);
-
-        while let Some(newline) = self.pending_line.iter().position(|byte| *byte == b'\n') {
-            let mut line = self.pending_line.drain(..=newline).collect::<Vec<_>>();
-            if line.last() == Some(&b'\n') {
-                line.pop();
+        let mut offset = 0;
+        while offset < chunk.len() {
+            if self.discard_until_newline {
+                let Some(newline) = chunk[offset..].iter().position(|byte| *byte == b'\n') else {
+                    self.bounds_exceeded = true;
+                    return;
+                };
+                self.discard_until_newline = false;
+                offset = offset.saturating_add(newline).saturating_add(1);
+                continue;
             }
+
+            let remaining = &chunk[offset..];
+            let newline = remaining.iter().position(|byte| *byte == b'\n');
+            let segment_len = newline.unwrap_or(remaining.len());
+            if self.pending_line.len().saturating_add(segment_len) > MAX_SSE_PENDING_LINE_BYTES {
+                self.bounds_exceeded = true;
+                self.pending_line.clear();
+                if let Some(newline) = newline {
+                    offset = offset.saturating_add(newline).saturating_add(1);
+                    continue;
+                }
+                self.discard_until_newline = true;
+                return;
+            }
+
+            self.pending_line
+                .extend_from_slice(&remaining[..segment_len]);
+            let Some(newline) = newline else {
+                return;
+            };
+            let mut line = std::mem::take(&mut self.pending_line);
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
             self.push_line(&line);
+            offset = offset.saturating_add(newline).saturating_add(1);
         }
     }
 
     pub fn finish(self) -> UsageSummary {
         self.into_parts().0
+    }
+
+    pub fn checkpoint(&self) -> (UsageSummary, bool, bool) {
+        (
+            self.latest,
+            self.provider_stream_complete,
+            self.bounds_exceeded,
+        )
+    }
+
+    pub fn provider_terminal_failed(&self) -> bool {
+        self.provider_stream_failed
     }
 
     /// Flush any buffered data and return the parsed usage together with the
@@ -688,13 +735,25 @@ impl SseUsageAccumulator {
         }
 
         if let Some(data) = line.strip_prefix("data:") {
-            self.data_lines.push(data.trim_start().to_string());
+            let data = data.trim_start();
+            if self.data_lines.len() >= MAX_SSE_DATA_LINES
+                || self.data_bytes.saturating_add(data.len()) > MAX_SSE_EVENT_BYTES
+            {
+                self.bounds_exceeded = true;
+                return;
+            }
+            self.data_bytes = self.data_bytes.saturating_add(data.len());
+            self.data_lines.push(data.to_string());
         }
     }
 
     fn flush_event(&mut self) {
         match self.mode {
             SseUsageMode::OpenAi => {
+                self.provider_stream_complete |=
+                    openai_data_lines_include_terminal(&self.data_lines);
+                self.provider_stream_failed |=
+                    openai_data_lines_include_failed_terminal(&self.data_lines);
                 if let Some(summary) = usage_summary_from_sse_data_lines(
                     &self.data_lines,
                     false,
@@ -725,6 +784,7 @@ impl SseUsageAccumulator {
                     accumulate_anthropic_stream_text(&self.data_lines, &mut self.response_text);
             }
             SseUsageMode::Moonshot => {
+                self.provider_stream_complete |= sse_data_lines_include_done(&self.data_lines);
                 if let Some(summary) = usage_summary_from_moonshot_sse_data_lines(&self.data_lines)
                 {
                     self.latest = merge_moonshot_stream_usage(self.latest, summary);
@@ -736,6 +796,8 @@ impl SseUsageAccumulator {
                 );
             }
             SseUsageMode::Gemini => {
+                self.provider_stream_complete |=
+                    gemini_data_lines_include_terminal(&self.data_lines);
                 self.gemini_generated_image_count = self
                     .gemini_generated_image_count
                     .saturating_add(gemini_generated_image_count(&self.data_lines))
@@ -746,8 +808,66 @@ impl SseUsageAccumulator {
                 accumulate_gemini_stream_text(&self.data_lines, &mut self.response_text);
             }
         }
+        if self.response_text.len() > MAX_STREAM_ESTIMATE_TEXT_BYTES {
+            self.bounds_exceeded = true;
+            let mut boundary = MAX_STREAM_ESTIMATE_TEXT_BYTES;
+            while !self.response_text.is_char_boundary(boundary) {
+                boundary = boundary.saturating_sub(1);
+            }
+            self.response_text.truncate(boundary);
+        }
         self.data_lines.clear();
+        self.data_bytes = 0;
     }
+}
+
+fn sse_data_lines_include_done(data_lines: &[String]) -> bool {
+    data_lines.iter().any(|line| line.trim() == "[DONE]")
+}
+
+fn openai_data_lines_include_terminal(data_lines: &[String]) -> bool {
+    if sse_data_lines_include_done(data_lines) {
+        return true;
+    }
+    let payload = data_lines.join("\n");
+    let Ok(value) = serde_json::from_str::<Value>(&payload) else {
+        return false;
+    };
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("response.completed" | "response.failed" | "response.incomplete")
+    )
+}
+
+fn openai_data_lines_include_failed_terminal(data_lines: &[String]) -> bool {
+    let payload = data_lines.join("\n");
+    let Ok(value) = serde_json::from_str::<Value>(&payload) else {
+        return false;
+    };
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("response.failed" | "response.incomplete")
+    )
+}
+
+fn gemini_data_lines_include_terminal(data_lines: &[String]) -> bool {
+    let payload = data_lines.join("\n");
+    let Ok(value) = serde_json::from_str::<Value>(&payload) else {
+        return false;
+    };
+    value
+        .get("candidates")
+        .and_then(Value::as_array)
+        .is_some_and(|candidates| {
+            candidates.iter().any(|candidate| {
+                candidate
+                    .get("finishReason")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reason| {
+                        !reason.is_empty() && reason != "FINISH_REASON_UNSPECIFIED"
+                    })
+            })
+        })
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -2736,6 +2856,65 @@ mod tests {
         let mut complete_stream = SseUsageAccumulator::anthropic();
         complete_stream.push_chunk(b"data: {\"type\":\"message_stop\"}\n\n");
         assert!(complete_stream.into_parts_with_status().3);
+    }
+
+    #[test]
+    fn openai_and_gemini_terminal_markers_are_observable_before_eof() {
+        let mut openai = SseUsageAccumulator::default();
+        openai.push_chunk(b"data: [DONE]\n\n");
+        assert!(openai.checkpoint().1);
+        assert!(!openai.checkpoint().2);
+
+        let mut responses = SseUsageAccumulator::default();
+        responses.push_chunk(b"data: {\"type\":\"response.completed\"}\n\n");
+        assert!(responses.checkpoint().1);
+        assert!(!responses.checkpoint().2);
+        assert!(!responses.provider_terminal_failed());
+
+        let mut failed = SseUsageAccumulator::default();
+        failed.push_chunk(b"data: {\"type\":\"response.failed\"}\n\n");
+        assert!(failed.checkpoint().1);
+        assert!(failed.provider_terminal_failed());
+
+        let mut gemini = SseUsageAccumulator::gemini();
+        gemini.push_chunk(
+            b"data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"done\"}]}}]}\n\n",
+        );
+        assert!(gemini.checkpoint().1);
+        assert!(!gemini.checkpoint().2);
+    }
+
+    #[test]
+    fn stream_parser_drops_oversized_lines_without_unbounded_buffering() {
+        let mut accumulator = SseUsageAccumulator::default();
+        accumulator.push_chunk(&vec![b'x'; MAX_SSE_PENDING_LINE_BYTES + 1]);
+        let (_, complete, bounds_exceeded) = accumulator.checkpoint();
+        assert!(!complete);
+        assert!(bounds_exceeded);
+        assert!(accumulator.pending_line.is_empty());
+        assert!(accumulator.discard_until_newline);
+
+        accumulator.push_chunk(b"discarded\ndata: [DONE]\n\n");
+        let (_, complete, bounds_exceeded) = accumulator.checkpoint();
+        assert!(complete);
+        assert!(bounds_exceeded);
+        assert!(accumulator.pending_line.is_empty());
+    }
+
+    #[test]
+    fn stream_parser_accepts_large_transport_chunks_made_of_bounded_lines() {
+        let mut chunk = Vec::with_capacity(MAX_SSE_PENDING_LINE_BYTES + 64 * 1024);
+        while chunk.len() <= MAX_SSE_PENDING_LINE_BYTES + 32 * 1024 {
+            chunk.extend_from_slice(b": heartbeat\n");
+        }
+        chunk.extend_from_slice(b"data: [DONE]\n\n");
+
+        let mut accumulator = SseUsageAccumulator::default();
+        accumulator.push_chunk(&chunk);
+        let (_, complete, bounds_exceeded) = accumulator.checkpoint();
+        assert!(complete);
+        assert!(!bounds_exceeded);
+        assert!(accumulator.pending_line.is_empty());
     }
 
     #[test]

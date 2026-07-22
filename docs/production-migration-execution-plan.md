@@ -389,8 +389,8 @@ environment and is not a Container cutover flag.
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence; authenticated resource and secret-name readback; disabled provider-egress, Controller, then edge reader deployment; remote 0001-0051 with every action gate false; drained 0052 followed by 0053, then default-off 0054 and 0055 apply/readback; `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 55/55 replay with 62 tables, 771 checked incremental columns, and 91 key indexes plus clean 0052/0053/0054/0055 pre/post audits are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence; authenticated resource and secret-name readback; disabled provider-egress, Controller, then edge reader deployment; remote 0001-0051 with every action gate false; drained 0052 followed by 0053, then default-off 0054, 0055, and 0056 apply/readback; `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 56/56 replay with 64 tables, 814 checked incremental columns, and 94 key indexes plus clean 0052/0053/0054/0055/0056 pre/post audits are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go, and Container operation/billing/quota/audit terminal state commits atomically | Golden fixtures, cross-ledger D1 batch rollback faults, exact replay, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -404,7 +404,7 @@ environment and is not a Container cutover flag.
 | Workstream | Current Status | Production Target | Next Evidence |
 | --- | --- | --- | --- |
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
-| Data migration | Partial: local exact-set SQLite replay passes 55/55 migrations, 62 tables, 771 checked incremental columns, and 91 key indexes; 0052 adds drained immutable provider/client response evidence, 0053 adds financial terminal v2, 0054 adds the immutable shard activation ledger, and 0055 adds one-time campaign authority while all tracked Controller action gates remain false; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated reader-first remote staging apply with all gates false; exact writer/version inventory; pre-0052 drain; ordered 0052, 0053, 0054, then 0055 backup/apply/readback/post-audit; immutable negative probes; unchanged business fingerprint; real source inventory; staging import report; rollback point |
+| Data migration | Partial: local exact-set SQLite replay passes 56/56 migrations, 64 tables, 814 checked incremental columns, and 94 key indexes; 0052 adds drained immutable provider/client response evidence, 0053 adds financial terminal v2, 0054 adds the immutable shard activation ledger, 0055 adds one-time campaign authority, and 0056 adds ordinary HTTP SSE handoff plus exact apply receipts while every new gate remains false; historical remote evidence is older | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated reader-first remote staging apply with all gates false; exact writer/version inventory; pre-0052 drain; ordered 0052 through 0056 backup/apply/readback/post-audit; immutable negative probes; unchanged business fingerprint; real source inventory; staging import report; rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
 | Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers plus bounded commit-watermark compaction and a 1.5 MB local JSON guard, but no deployed retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, deployed hot-token window/structured-clone/load/cost report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
@@ -2225,3 +2225,31 @@ No remote action occurred for this addendum. The exposed credential still
 requires rotation, remote 0055 is unapplied, no campaign has run, all-page
 Cloudflare inventory is unproven, and the P5/Go drain packets are absent.
 Production remains **NO-GO**.
+
+## 2026-07-22 Migration 0056 HTTP SSE Handoff Addendum
+
+Migration 0056 is an expand-only, default-inert schema change. It adds the
+ordinary HTTP SSE handoff state machine and append-preserved finalization
+receipts. It does not alter the historical 0055 one-time activation campaign;
+0055 remains the campaign evidence baseline while 0056 is the current schema
+head and therefore part of every new candidate identity and schema readback.
+
+| Phase | Required action | Pass evidence | Abort and retain |
+| --- | --- | --- | --- |
+| A security/candidate freeze | Revoke the exposed credential; freeze exact Worker, Queue, migration, rollback, Go/VPS, and provider-counter identities | Separate least-privilege deploy/readback identities; no secret in argv/files/output; all four SSE gates false | Old credential, identity drift, missing rollback, or any gate true |
+| B reader-first expand | Back up isolated staging D1; prove old writer and active-operation drain; apply 0056 with every gate false | Remote 0056/56 and 64/814/94; two tables, three indexes, eleven triggers; immutable/monotonic/receipt negatives; unchanged business fingerprint | Schema drift, incompatible writer, unexpected row, or financial/provider delta |
+| C reader and drain-only rehearsal | Deploy the exact reader; seed synthetic rows; enable staging approval plus outbox/recovery only | Producer remains off; exact leased delivery/retry/dead-letter/receipt reconciliation; zero provider calls | Producer row appears, mutable event, duplicate apply, stale lease mutation, or body/secret evidence |
+| D isolated producer canary | Enable staging approval, outbox, recovery, then producer for a tiny no-customer cohort | One provider operation, monotonic checkpoints, event persisted before terminal release, one audit/billing terminal/receipt | Any duplicate call/effect, unexplained recovery, missing receipt, partial-usage settlement, or traffic leak |
+| E fault and soak | Execute before-header, client-cancel, D1/Queue ambiguity, restart, N/N-1, idle, failed-terminal, and rollback campaigns | Every row reaches one terminal or reviewed recovery state; provider/D1/invoice counters reconcile; alert and cost/SLO budgets pass | Stranded reservation, retry dispatch, unknown terminal, data leak, unbounded age/cost, or rollback failure |
+| F promotion review | Bind all results to the existing P5 subject and independent owners | Security, migration, billing, SRE, and rollback approvals over one candidate | Missing/stale evidence or signature failure |
+
+Rollback disables the producer first and preserves staging approval plus
+outbox/recovery until forwarding, staged, due, and leased backlogs converge.
+Migration 0056 and its evidence are retained; rollback never down-migrates or
+deletes receipts. Go/VPS remains hot and authoritative.
+
+Current blockers are the provider-dispatch-to-handoff crash window, lease-only
+client-cancel recovery, missing total stream timeout, absent real Queue/D1 and
+restart/version-skew campaigns, remote 0056/readback, credential rotation, P5,
+and Go/VPS drain. See `docs/relay-http-stream-durable-handoff.md`. Production
+remains **NO-GO**.

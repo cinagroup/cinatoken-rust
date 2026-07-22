@@ -15,9 +15,10 @@ are ready for independent evidence assembly and owner review. The other eight
 P5 evidence kinds, the signed manifest, and all five independent approvals are
 still mandatory.
 
-Current local baseline: D1 head 0055/count 55, 62 tables, 771 incremental
-columns, and 91 key indexes. This supersedes the retained historical 0053/53
-foundation text. No live Cloudflare readback, migration application,
+Current local candidate baseline: D1 head 0056/count 56, 64 tables, 814
+incremental columns, and 94 key indexes. Migration 0055 remains the historical
+shard-activation campaign baseline, but a new candidate must bind 0056. No live
+Cloudflare readback, migration application,
 deployment, Durable Object/Container wake, or traffic change is claimed.
 
 ## Local Commands
@@ -96,7 +97,7 @@ The candidate remains pinned to:
   `918e97480ee44e357abe99bf33c27259d6ac7ebd`;
 - Container image digest, runtime executable build SHA-256, and a separate
   runtime-to-image provenance SHA-256;
-- migration `0055_relay_container_shard_activation_campaigns.sql`, count 55; and
+- migration `0056_relay_http_stream_handoffs.sql`, count 56; and
 - response/status/financial-terminal/terminal-ACK contracts 3/4/2/3.
 
 The earlier 0054/54 candidate was the pre-campaign activation baseline. It is
@@ -318,7 +319,8 @@ The evidence order is fixed:
 1. rotate the exposed credential and freeze commits, Worker versions, image,
    runtime build, provenance, SBOM, resources, migration, and rollback facts;
 2. with every tracked action gate at its default `false`, back up D1 and
-   apply/read back 0054 then 0055, proving the 0055/55 and 62/771/91 baseline;
+   apply/read back 0054, 0055, then 0056, proving the 0056/56 and 64/814/94
+   baseline while retaining the sealed 0055 campaign evidence;
 3. deploy provider-egress, Controller reader, then edge reader while activation
    recording remains false;
 4. roll the Container image at 10% and 100% and prove its image/runtime identity

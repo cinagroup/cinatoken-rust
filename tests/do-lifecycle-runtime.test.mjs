@@ -1262,6 +1262,166 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   }, 30_000);
 
+  it("enforces generation-fenced HTTP stream handoff and receipt convergence in D1", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await seedRealtimeBillingAccount();
+    const now = Math.floor(Date.now() / 1000);
+    const reservationKey = "relayreserve-runtime-http-stream-handoff";
+    const eventId = `relay-finalization-v1:${reservationKey}`;
+    const eventJson = JSON.stringify({
+      event_type: "cinatoken.relay_billing_finalization",
+      event_id: eventId,
+      reservation_key: reservationKey,
+      owner_generation: 2,
+      channel_id: 42,
+      selected_group: "default",
+      expr_hash: "sha256:runtime",
+    });
+    const eventSha256 = await sha256Hex(new TextEncoder().encode(eventJson));
+    const providerOperationId = await sha256Hex(
+      new TextEncoder().encode("runtime-http-stream-provider-operation"),
+    );
+    const billingSnapshotSha256 = await sha256Hex(
+      new TextEncoder().encode("{}"),
+    );
+    const rollingSha256 = await sha256Hex(
+      new TextEncoder().encode("runtime-http-stream-first-chunk"),
+    );
+
+    await seedRelayBillingReservation({
+      reservationKey,
+      leaseExpiresAt: now + 600,
+      bound: true,
+    });
+    await env.DB.prepare(
+      `INSERT INTO relay_http_stream_handoffs (
+        reservation_key, owner_generation, attempt_generation, channel_id,
+        selected_group, expr_hash, provider_operation_id, worker_version_id,
+        billing_snapshot_sha256, lease_expires_at, created_at, updated_at
+      ) VALUES (?1, 2, 1, 42, 'default', 'sha256:runtime', ?2,
+                'runtime-worker-0056', ?3, ?4, ?5, ?5)`,
+    )
+      .bind(
+        reservationKey,
+        providerOperationId,
+        billingSnapshotSha256,
+        now + 600,
+        now,
+      )
+      .run();
+    await env.DB.prepare(
+      `UPDATE relay_http_stream_handoffs
+       SET checkpoint_sequence = 1, chunk_count = 1, byte_count = 128,
+           prompt_tokens = 8, completion_tokens = 3, total_tokens = 11,
+           rolling_sha256 = ?2, updated_at = ?3
+       WHERE reservation_key = ?1`,
+    )
+      .bind(reservationKey, rollingSha256, now + 1)
+      .run();
+    await expect(
+      env.DB.prepare(
+        `UPDATE relay_http_stream_handoffs
+         SET checkpoint_sequence = 2, prompt_tokens = 7, updated_at = ?2
+         WHERE reservation_key = ?1`,
+      )
+        .bind(reservationKey, now + 2)
+        .run(),
+    ).rejects.toThrow(/checkpoint is not monotonic/);
+
+    await env.DB.prepare(
+      `UPDATE relay_http_stream_handoffs
+       SET status = 'terminal_staged', provider_terminal_observed = 1,
+           terminal_kind = 'provider_done', terminal_reason = 'provider_done',
+           finalization_event_json = ?2, finalization_event_id = ?3,
+           finalization_event_sha256 = ?4, outbox_status = 'pending',
+           delivery_available_at = ?5, terminal_at = ?5, updated_at = ?5
+       WHERE reservation_key = ?1`,
+    )
+      .bind(reservationKey, eventJson, eventId, eventSha256, now + 2)
+      .run();
+    await env.DB.prepare(
+      `UPDATE relay_http_stream_handoffs
+       SET outbox_status = 'leased', delivery_generation = 1,
+           delivery_attempt_count = 1, delivery_lease_expires_at = ?2,
+           updated_at = ?3 WHERE reservation_key = ?1`,
+    )
+      .bind(reservationKey, now + 33, now + 3)
+      .run();
+    await env.DB.prepare(
+      `UPDATE relay_http_stream_handoffs
+       SET status = 'recovery_required', outbox_status = 'dead_letter',
+           delivery_lease_expires_at = 0, recovery_required_at = ?2,
+           last_error = 'queue_send_ambiguous', updated_at = ?2
+       WHERE reservation_key = ?1`,
+    )
+      .bind(reservationKey, now + 4)
+      .run();
+    await expect(
+      env.DB.prepare(
+        `UPDATE relay_http_stream_handoffs
+         SET finalization_event_json = '{}', finalization_event_sha256 = ?2
+         WHERE reservation_key = ?1`,
+      )
+        .bind(reservationKey, "f".repeat(64))
+        .run(),
+    ).rejects.toThrow(/finalization evidence is immutable/);
+
+    await env.DB.prepare(
+      `UPDATE relay_billing_reservations
+       SET status = 'settled', owner_generation = 3, final_quota = 100,
+           finalization_reason = 'usage_settlement', request_accounted = 1,
+           settled_at = ?2, updated_at = ?2 WHERE reservation_key = ?1`,
+    )
+      .bind(reservationKey, now + 5)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO logs (created_at, billing_finalization_event_id) VALUES (?1, ?2)",
+    )
+      .bind(now + 5, eventId)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO relay_http_stream_finalization_receipts (
+         reservation_key, owner_generation, finalization_event_id,
+         finalization_event_sha256, applied_at
+       ) VALUES (?1, 2, ?2, ?3, ?4)`,
+    )
+      .bind(reservationKey, eventId, eventSha256, now + 5)
+      .run();
+    await env.DB.prepare(
+      `UPDATE relay_http_stream_handoffs
+       SET status = 'terminal', outbox_status = 'delivered',
+           delivery_lease_expires_at = 0, delivered_at = ?2,
+           finalization_applied_at = ?2, recovery_required_at = 0,
+           last_error = '', updated_at = ?2 WHERE reservation_key = ?1`,
+    )
+      .bind(reservationKey, now + 5)
+      .run();
+
+    await expect(
+      env.DB.prepare(
+        `SELECT status, outbox_status, finalization_event_id,
+                finalization_event_sha256, finalization_applied_at
+         FROM relay_http_stream_handoffs WHERE reservation_key = ?1`,
+      )
+        .bind(reservationKey)
+        .first(),
+    ).resolves.toMatchObject({
+      status: "terminal",
+      outbox_status: "delivered",
+      finalization_event_id: eventId,
+      finalization_event_sha256: eventSha256,
+      finalization_applied_at: now + 5,
+    });
+    await expect(
+      env.DB.prepare(
+        `DELETE FROM relay_http_stream_finalization_receipts
+         WHERE reservation_key = ?1`,
+      )
+        .bind(reservationKey)
+        .run(),
+    ).rejects.toThrow(/append-preserved/);
+  }, 30_000);
+
   it("reports HTTP pre-bind fencing and a fail-closed scheduled terminalizer", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const { cookie } = await setupAndLoginBillingRoot();
@@ -1277,11 +1437,11 @@ describe("Rust Durable Object lifecycle contracts", () => {
       success: true,
       data: {
         d1_migration_status_available: true,
-        d1_migration_applied_count: 55,
+        d1_migration_applied_count: 56,
         d1_migration_latest:
-          "0055_relay_container_shard_activation_campaigns.sql",
+          "0056_relay_http_stream_handoffs.sql",
         d1_expected_migration:
-          "0055_relay_container_shard_activation_campaigns.sql",
+          "0056_relay_http_stream_handoffs.sql",
         d1_expected_migration_applied: true,
         d1_migration_set_matches: true,
         d1_migration_ready: true,

@@ -865,3 +865,57 @@ Each workstream must maintain:
 10. Define load-test thresholds: auth/route overhead, stream first-byte overhead,
    error budget, billing-delta tolerance, and queue lag.
 11. Keep cutover evidence summaries redacted in `docs/verification.md`.
+
+## 2026-07-22 HTTP SSE Durable Handoff Audit Addendum
+
+### Audit verdict
+
+The 0056 candidate materially improves paid ordinary HTTP SSE ownership and is
+consistent with Workers constraints where code can prove them locally:
+
+- the request returns one lazily consumed stream instead of cloning the body;
+- parsing and persistence are bounded;
+- D1 is the durable source of terminal truth;
+- bindings are used from Worker code rather than Cloudflare REST;
+- identity and financial transitions are generation-fenced and idempotent;
+- Queue delivery is decoupled from financial-terminal truth by an exact apply
+  receipt;
+- tracked gates are fail-closed and default false;
+- drain capability can survive producer rollback; and
+- durable records exclude request/response bodies and secret material.
+
+The design is not yet production-approved. The following are release blockers,
+not deferred polish:
+
+| Severity | Finding | Required closure |
+| --- | --- | --- |
+| Critical | Provider dispatch occurs before response headers and handoff insertion; a crash can leave provider acceptance with reservation-only recovery | Move durable intent before dispatch, add provider-native lookup/idempotency, or obtain an explicit per-provider risk decision with call/invoice reconciliation and no automatic resend |
+| High | Client cancellation may stop stream polling without an immediate recovery callback | Prove cancellation in Workerd and Cloudflare; bound lease/recovery latency and alert on stale forwarding |
+| High | Only active-pull idle timeout exists; no total stream deadline | Add an approved total deadline that cannot outlive reservation and platform budgets; fault-test long trickle streams |
+| High | Failed/incomplete provider terminal is recoverable but has no approved financial policy | Define provider-family settle/refund/manual-review policy and reconcile against invoices |
+| High | Queue and D1 ambiguity are locally modeled but not proven on Cloudflare | Run accepted-send/lost-mark, applied/lost-ack, duplicate delivery, D1 fault, DLQ, restart, and version-skew campaigns |
+| High | No remote 0056/readback or P5 packet exists | Complete reader-first staging, schema negatives, provenance, load/cost/SLO, rollback, security and independent signatures |
+| Critical | The supplied Cloudflare credential is exposed | Revoke it, prove rotation, and use separate least-privilege deploy/readback identities through secret-safe workflows |
+| Critical | Go/VPS remains the financial and traffic authority without a completed drain packet | Preserve hot rollback and complete process-owned billing/batch/scheduler/reverse-sync reconciliation before cutover |
+
+### Best-practice acceptance criteria
+
+The producer gate may be considered for isolated synthetic staging only when:
+
+1. the exact candidate and rollback are frozen and credential rotation is
+   independently recorded;
+2. 0056 is applied reader-first with all gates false and exact 56/64/814/94
+   readback plus negative probes passes;
+3. old writers and in-flight paid streams are drained;
+4. drain-only outbox/recovery rehearsal passes with producer false;
+5. provider call counters, billing/audit/request effects, D1 receipts, Queue/
+   DLQ, logs and traces are observable and alertable; and
+6. the cohort has no customer traffic and a named incident/rollback owner.
+
+Customer or production traffic additionally requires the complete H1-H14 fault
+matrix, closure/acceptance of every blocker above, capacity/cost/SLO evidence,
+P5 signatures, reversible data state, and Go/VPS drain. Local tests or elapsed
+staging time cannot substitute for those artifacts.
+
+The detailed control is `docs/relay-http-stream-durable-handoff.md`. Production
+remains **NO-GO**.

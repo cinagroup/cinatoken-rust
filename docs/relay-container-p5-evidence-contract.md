@@ -5,12 +5,16 @@ Date: 2026-07-19
 Status: local, credential-free, campaign-aware evidence-verifier candidate. It authorizes no
 remote mutation, customer traffic, production cutover, or Go/VPS shutdown.
 
-Current baseline: migration head
-`0055_relay_container_shard_activation_campaigns.sql`, migration count 55, and the
-locally verified schema shape of 62 tables, 771 incremental columns, and 91
-key indexes. This 0055/55 baseline supersedes every historical 0054/54
-reference retained below. Nothing in this document claims that 0055 was
-applied, deployed, or read back from Cloudflare.
+Current candidate baseline: migration head
+`0056_relay_http_stream_handoffs.sql`, migration count 56, and the locally
+verified schema shape of 64 tables, 814 incremental columns, and 94 key
+indexes. This 0056/56 baseline supersedes current-candidate 0055/55 references
+retained below. Nothing in this document claims that 0056 was applied,
+deployed, or read back from Cloudflare.
+
+Migration 0055 remains the historical one-time shard-activation campaign
+evidence baseline. A current P5 candidate must include that campaign plus the
+0056 schema head; 0055 alone can no longer satisfy candidate/schema identity.
 
 Historical activation baseline, retained for continuity: 0054 ended at 54
 migrations with 58 tables, 694 incremental columns, and 83 key indexes. Those
@@ -237,7 +241,7 @@ All ten kinds are required exactly once and in contract order:
 | `candidate-freeze` | Exact commit/version/image/runtime-build/provenance/SBOM inventory, image signature and runtime-to-image provenance verified, zero unapproved critical/high vulnerabilities, every action gate false |
 | `remote-inventory` | Account digest, exact shared D1/KV/R2 identities, Controller/egress services, DO namespace/binding/class, candidate runtime build and image provenance, all shards accounted for, zero unknown writers/objects/customer traffic |
 | `reader-first-rollout` | Egress before Controller, Controller before edge, readers before writers, every shard on a compatible reader, no new response write, public `/internal` 404, N/N-1 or blue/green skew proof |
-| `schema-readback` | Remote 0055/55 and exact 62-table/771-column/91-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
+| `schema-readback` | Remote 0056/56 and exact 64-table/814-column/94-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
 | `lifecycle-fault-campaign` | Cold/warm start, DO eviction, Container sleep/restart/OOM, duplicate alarm, callback failure, malformed/future payload, N-1, and response loss; zero duplicate provider/financial effects |
 | `response-financial-fault-campaign` | Success, typed error, HTTP error, invalid body, and recovery; every D1 statement fault; response-class totals equal provider operations, one provider operation per send, settled plus refunded terminal conservation, zero request accounting on refund, exact client replay and classified R2 orphans |
 | `cross-layer-provenance` | Complete redacted edge/Controller/DO/Container/broker/provider/D1/R2/financial/audit/client tuple with no identity gap or payload/credential leak |
@@ -328,8 +332,8 @@ files, and every evidence and approval validity window must increase strictly.
    migration SQL, and rollback artifacts. Every tracked local, staging, and
    production action gate defaults to false.
 3. Back up staging D1, prove old-writer and operation drain, apply/read back
-   0054 then 0055 after the already ordered 0052/0053 reader chain, and verify the exact
-   0055/55 and 62/771/91 baseline with immutable negatives and unchanged
+   0054, 0055, then 0056 after the already ordered 0052/0053 reader chain, and verify the exact
+   0056/56 and 64/814/94 baseline with immutable negatives and unchanged
    business fingerprints.
 4. Upload a disabled provider-egress version, then a Controller reader, then an
    edge reader with the private Service Binding. Activation recording remains
@@ -420,8 +424,8 @@ requires `python tools/verify_sqlite.py` and
 `bun run check:relay-container:p5-shard-registry`; report their actual output
 and never infer a pass from this paragraph.
 
-On the current worktree, the focused 0055 checks pass the 55-migration
-62/771/91 SQLite verifier, 44 P5 verifier tests, 24 foundation collector tests
+On the current worktree, the focused candidate checks pass the 56-migration
+64/814/94 SQLite verifier, 44 P5 verifier tests, 24 foundation collector tests
 plus its offline self-test, 13 shard-registry/campaign collector tests, and 22 deploy-preflight
 tests. These are still local contract checks, not Cloudflare evidence.
 

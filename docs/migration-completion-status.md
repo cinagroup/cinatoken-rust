@@ -1,6 +1,6 @@
 # Migration Completion Status
 
-Date: 2026-07-19
+Date: 2026-07-22
 
 This is the short status page. The current requirement-level evidence audit is
 `docs/migration-progress-audit-2026-07-13.md`; the canonical Go route list is
@@ -35,11 +35,11 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 This re-audit keeps the overall migration goal open. Passing local gates proves
 implementation readiness only for the covered behavior.
 
-The current source-tree D1 head is migration 0055 with 55 contiguous migration
-files, 62 tables, 771 checked incremental columns, and 91 key indexes. Older
+The current source-tree D1 head is migration 0056 with 56 contiguous migration
+files, 64 tables, 814 checked incremental columns, and 94 key indexes. Older
 dated sections below retain their historical head/count snapshots. The
-0050-0055 admission, response, financial terminal, shard-activation, and
-one-time campaign paths
+0050-0056 admission, response, financial terminal, shard-activation,
+one-time campaign, and HTTP stream handoff paths
 are local candidate work, not remote schema evidence. Flat intent runtime and
 Container readiness do not imply pricing or traffic cutover readiness;
 `relay_flat_billing_go_parity_ready` and
@@ -1776,3 +1776,26 @@ migration 0055+, Cloudflare image/version/lifecycle readback, P5 fault/load/
 cost/SLO/rollback/signature evidence, exposed-credential rotation, and Go/VPS
 drain are still missing. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-22 Ordinary HTTP SSE Durable Handoff Status
+
+Migration 0056 and the default-off Worker candidate now provide a durable
+terminal boundary for positive paid ordinary HTTP SSE. The implementation
+freezes reservation/owner/attempt identity, Worker version and billing hashes,
+persists monotonic bounded stream checkpoints, stages immutable finalization
+event evidence before releasing the provider terminal chunk, leases Queue
+outbox work atomically, and permits financial-terminal convergence only after
+an exact append-preserved apply receipt.
+
+The request path rejects matching handoff replay. Recovery is generation-fenced
+and never re-dispatches the provider. Provider failed/incomplete terminals,
+read/parser/idle failures, lease loss, dead-letter, and uncertain terminal
+evidence remain explicit `recovery_required`. Partial usage is never used after
+a stream parse failure; settlement freezes at the approved pre-consumption.
+
+All four producer/staging/outbox/recovery flags remain false in every tracked
+environment. Local implementation and D1/Workerd contracts do not close the
+provider-dispatch-to-handoff crash window, immediate client cancellation,
+total stream deadline, or real Cloudflare Queue/D1/restart/version-skew fault
+evidence. Remote 0056, credential rotation, P5, and Go/VPS drain remain absent.
+See `docs/relay-http-stream-durable-handoff.md`. Production remains **NO-GO**.

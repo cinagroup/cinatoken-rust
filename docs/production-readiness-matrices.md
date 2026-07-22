@@ -1166,3 +1166,23 @@ The Linux workflow is a required candidate gate, not a production approval
 workflow. A checked-in YAML file or passing offline self-test cannot be promoted
 to "Linux verified"; only the retained successful run for the frozen commit can
 do that. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-22 Ordinary HTTP SSE Handoff Matrix
+
+The current local D1 candidate head is 0056/56 with 64 tables, 814 checked
+incremental columns, and 94 key indexes. Historical matrices above retain the
+counts of the candidate they audited; they are not current schema readback.
+
+| Gate | Current local evidence | Production acceptance | Status |
+| --- | --- | --- | --- |
+| Durable identity | 0056 freezes reservation, owner/attempt generation, channel/group, expression/snapshot hashes, provider operation, and Worker version | Remote reader-first 0056 readback plus old-writer/version compatibility | Local candidate, default-off |
+| Single stream | One instrumented stream incrementally hashes/parses before yielding; successful terminal is persisted before release | Real provider-family H1-H14 staging matrix including cancellation and restart | Local candidate |
+| Checkpoint and lease | Generation CAS, monotonic counters/usage, 16-chunk or 64 KiB checkpoints, reservation-bounded lease heartbeats | D1 fault/latency, long-stream, N/N-1, cost, and alert evidence | Local contract |
+| Financial terminal | Immutable 64 KiB event, atomic leased outbox, append-preserved exact apply receipt, receipt-only terminal | Queue ack ambiguity, duplicate delivery, DLQ replay, invoice/audit/request reconciliation | Local D1/Workerd contract |
+| Recovery | Explicit recovery-required, no provider resend, bounded scheduled scan/retry/dead-letter/reconcile | Backlog-age SLO, operator policy, failed-terminal review, total timeout, cancel proof | Partial; remote blocked |
+| Configuration | Producer/staging/outbox/recovery flags exact false in all tracked environments; drain can run with producer false only behind staging latch | Approved gate ceremony and disable-first rollback rehearsal | Fail-closed local config |
+| Known crash window | Handoff is inserted after provider response headers and before first client byte | Close or formally accept provider-dispatch-to-handoff ambiguity with provider call/idempotency evidence | **Blocked** |
+| Promotion | New runbook binds schema, faults, rollback, P5, and Go/VPS authority | Rotated credentials, remote 0056, complete P5 signatures and production drain | **NO-GO** |
+
+See `docs/relay-http-stream-durable-handoff.md` and Phase 4l of
+`docs/staging-smoke-runbook.md`. Go/VPS remains authoritative.

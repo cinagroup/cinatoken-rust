@@ -241,7 +241,7 @@ All ten kinds are required exactly once and in contract order:
 | `candidate-freeze` | Exact commit/version/image/runtime-build/provenance/SBOM inventory, image signature and runtime-to-image provenance verified, zero unapproved critical/high vulnerabilities, every action gate false |
 | `remote-inventory` | Account digest, exact shared D1/KV/R2 identities, Controller/egress services, DO namespace/binding/class, candidate runtime build and image provenance, all shards accounted for, zero unknown writers/objects/customer traffic |
 | `reader-first-rollout` | Egress before Controller, Controller before edge, readers before writers, every shard on a compatible reader, no new response write, public `/internal` 404, N/N-1 or blue/green skew proof |
-| `schema-readback` | Remote 0056/56 and exact 64-table/814-column/94-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
+| `schema-readback` | Remote 0057/57 and exact 65-table/841-column/96-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
 | `lifecycle-fault-campaign` | Cold/warm start, DO eviction, Container sleep/restart/OOM, duplicate alarm, callback failure, malformed/future payload, N-1, and response loss; zero duplicate provider/financial effects |
 | `response-financial-fault-campaign` | Success, typed error, HTTP error, invalid body, and recovery; every D1 statement fault; response-class totals equal provider operations, one provider operation per send, settled plus refunded terminal conservation, zero request accounting on refund, exact client replay and classified R2 orphans |
 | `cross-layer-provenance` | Complete redacted edge/Controller/DO/Container/broker/provider/D1/R2/financial/audit/client tuple with no identity gap or payload/credential leak |
@@ -424,10 +424,16 @@ requires `python tools/verify_sqlite.py` and
 `bun run check:relay-container:p5-shard-registry`; report their actual output
 and never infer a pass from this paragraph.
 
-On the current worktree, the focused candidate checks pass the 56-migration
-64/814/94 SQLite verifier, 44 P5 verifier tests, 24 foundation collector tests
+On the current worktree, the focused candidate checks pass the 57-migration
+65/841/96 SQLite verifier, 44 P5 verifier tests, 24 foundation collector tests
 plus its offline self-test, 13 shard-registry/campaign collector tests, and 22 deploy-preflight
 tests. These are still local contract checks, not Cloudflare evidence.
+
+The signed candidate and schema-readback facts now require exact migration head
+`0057_relay_http_stream_dispatch_intents.sql`, count 57, and 65/841/96 totals.
+Historical sealed 0055 activation evidence remains valid only when the current
+candidate also proves ordered 0056/0057 compatibility. A pre-0057 packet is
+rejected and cannot be relabeled as current evidence.
 
 Those fixtures are tests of the verifier, not Cloudflare evidence. No remote
 resource, credential, provider, financial row, deployment, or traffic state was

@@ -2759,3 +2759,31 @@ immediate cancellation, a total stream deadline, real Queue/D1 ambiguity,
 restart/version skew, remote 0056, provider-family failed-terminal policy, P5,
 or Go/VPS drain. See `docs/relay-http-stream-durable-handoff.md`. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-22 Ordinary HTTP SSE Pre-Dispatch Intent v1
+
+Migration 0057 supersedes only the current-head and crash-window statements in
+the preceding 0056 section. The 0056 handoff remains the response-after,
+before-first-client-byte terminal owner. The exact current baseline is 57
+migrations, 65 tables, 841 checked incremental columns, and 96 key indexes.
+
+Positive paid SSE now completes local request preparation before one atomic D1
+reservation-bind plus `prepared` insert. Only one successful
+`prepared -> dispatched` CAS grants authority to poll the provider future. The
+first version allows one attempt and disables post-dispatch channel retry,
+model fallback, and AI Gateway direct fallback. Transport ambiguity, the
+120-second response-header limit, and every non-200 status atomically move the
+0057 intent and billing reservation into `recovery_required` without provider
+resend or automatic refund.
+
+For HTTP 200, the 0056 handoff insert and 0057 `stream_bound` promotion are one
+SQLite transaction. A 900-second immutable hard stream deadline bounds lease
+renewal, and scheduled recovery sweeps expired pre-handoff intents. Local
+SQLite, Rust, P5 fixture, and Workerd CAS/promotion/recovery cases pass.
+
+Immediate client-disconnect recovery is still lease/scheduler-owned because
+incoming `Request.signal` is not connected to a durable watchdog. The default
+durable-disabled clone/tee path also retains slow-client backpressure risk.
+Remote 0057, real cancellation/restart/Queue/provider-invoice evidence, P5, and
+Go/VPS drain remain open. All four SSE gates stay exact false. Go/VPS remains
+authoritative and production remains **NO-GO**.

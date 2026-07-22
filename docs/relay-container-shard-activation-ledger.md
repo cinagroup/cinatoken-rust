@@ -437,8 +437,8 @@ git diff --check -- docs/relay-container-p5-evidence-contract.md `
 
 Current worktree results:
 
-- SQLite schema verifier: pass, 56 migrations and 64/814/94 schema baseline;
-- D1 migration/config audit: pass, contiguous 0001 through 0056;
+- SQLite schema verifier: pass, 57 migrations and 65/841/96 schema baseline;
+- D1 migration/config audit: pass, contiguous 0001 through 0057;
 - runtime readiness build-ID test: 1 pass;
 - Controller activation writer tests: 5 pass, including the exact 0054 schema
   through a real SQLite catalog;
@@ -449,6 +449,10 @@ Current worktree results:
 - shard-registry and campaign collector tests: 13 pass;
 - foundation collector tests: 24 pass plus offline self-test; and
 - P5 evidence verifier tests: 44 pass.
+
+The current schema overlay does not rewrite the sealed 0055 campaign. It adds
+0056/0057 to candidate identity and remote readback, and requires all HTTP SSE
+producer gates to remain false throughout activation-ledger collection.
 
 These commands test local contracts only. They cannot prove remote migration
 state, deployed Worker versions, Container image provenance, authenticated all-page

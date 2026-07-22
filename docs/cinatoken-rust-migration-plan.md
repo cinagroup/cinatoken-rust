@@ -16949,3 +16949,79 @@ fault packet, no remote 0056 apply/readback, no credential-rotation evidence,
 and no P5 or Go/VPS drain packet. Historical 0055 activation campaign evidence
 remains valid history but is not the current schema head. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.260 Ordinary HTTP SSE Persist-Before-Provider Closure (2026-07-22)
+
+Migration `0057_relay_http_stream_dispatch_intents.sql` is now the local D1
+head. Exact replay reports 57 migrations, 65 tables, 841 checked incremental
+columns, and 96 key indexes. It extends the 0056 response-after handoff without
+changing that historical migration: 0057 adds a pre-dispatch ledger, an
+immutable hard deadline on the 0056 handoff, and transactional guards joining
+dispatch, handoff, and billing ownership.
+
+### Safety boundary now implemented
+
+1. The Worker finishes every local body/model/header/route transform before
+   durable admission and derives a domain-separated provider operation ID from
+   the exact transformed request digest, reservation/channel/group identity,
+   attempt generation, endpoint, transport, and hard deadline.
+2. One D1 batch binds the reservation and inserts attempt generation one as
+   `prepared`. A separate `prepared -> dispatched` CAS is the only send
+   authority; only `Applied` may poll the provider future.
+3. The first production candidate permits one provider attempt. After dispatch,
+   channel retry, model fallback, and AI Gateway direct fallback are disabled.
+4. Response headers are bounded to 120 seconds and the stream has a 900-second
+   non-renewable hard deadline, capped by policy at 3600 seconds. Fetch error,
+   timeout, and every non-200 status enter conservative recovery without resend
+   or automatic refund.
+5. A 200 response is recorded as `response_received`. Inserting the exact 0056
+   handoff and promoting 0057 to `stream_bound` occur in one SQLite transaction
+   through guarded BEFORE/AFTER triggers, before any client body byte.
+6. Updating an intent to `recovery_required` atomically advances the matching
+   billing reservation generation and recovery owner. The scheduler sweeps
+   expired `prepared`, `dispatched`, and `response_received` intents without
+   calling the provider.
+
+This closes the previously documented provider-dispatch-to-handoff persistence
+window for the gated positive paid SSE path. It does not claim that the provider
+did or did not execute an ambiguous `dispatched` request; ambiguity remains a
+durable reconciliation case and never authorizes a second call.
+
+### Reader-first production sequence
+
+| Stage | Required action | Pass evidence | Abort condition |
+| --- | --- | --- | --- |
+| A freeze | Revoke the exposed credential; freeze commit, Worker version, Queue/DLQ, D1 target/backup, Go/VPS rollback, provider counter, schema/business digests | Separate least-privilege deploy/readback identities; all four SSE gates exact false | Any credential reuse, candidate drift, active old producer, or gate true |
+| B expand | Drain all 0056 producers and paid SSE operations; apply 0057 once | Remote 0057/57, 65/841/96; one table, two indexes, ten triggers, one guarded 0056 column; unchanged business fingerprint | Partial catalog, unexpected row, body/secret field, incompatible writer, provider/financial delta |
+| C readers | Deploy the exact N reader with producer false; retain N-1 only as a reader | Both versions serve non-SSE/read paths; N-1 cannot regain durable producer authority | Any 0056 insert without 0057 intent, schema drift, or hidden writer |
+| D drain rehearsal | Seed bounded synthetic rows; enable staging approval, outbox, and recovery only | Expired-intent recovery, 0056 drain, retry/dead-letter/receipt convergence, zero provider calls | Duplicate/missing generation, partial billing transition, nonzero provider calls |
+| E synthetic producer | Enable staging approval, outbox, recovery, then producer for a no-customer cohort | One CAS grant and provider call, atomic response/handoff bind, deadline evidence, one financial terminal or explicit recovery | Retry/fallback, partial promotion, duplicate effect, client byte before durable state |
+| F faults and rollback | Run delayed headers, CAS response loss, D1 statement ambiguity, all status classes, stream/parser/deadline/cancel, Queue/DLQ, restart and N/N-1 tests | Provider/invoice/D1/audit/request counters conserve; producer-off rollback drains with N worker and hot Go/VPS | Unknown ownership, stranded reservation, stale writer, unbounded backlog/latency/cost |
+| G promotion | Bind results to P5, security/privacy, cost/SLO/alerts, Go/VPS drain/reverse-sync, and independent signatures | One immutable candidate packet approved by migration, billing, security, SRE, rollback and product owners | Missing, stale, mixed-candidate, or unsigned evidence |
+
+Applying 0057 is expand-only but changes the legality of new 0056 inserts: an
+exact 0057 `response_received` row must already exist. Therefore rollback never
+re-enables an N-1 durable producer. New traffic returns to hot Go/VPS, while the
+N drain worker remains available until dispatch, handoff, outbox, receipt, and
+billing backlogs are terminal or explicitly reconciled. Migrations 0056/0057
+and all evidence are retained; no down migration is permitted.
+
+### Remaining production blockers
+
+- Incoming client abort is not yet connected to `Request.signal` and an
+  invocation-independent durable watchdog. A stopped downstream pull can only
+  converge through lease expiry and scheduled recovery.
+- The durable-disabled SSE path still uses `Response.clone()`/tee for audit
+  consumption, so slow-client backpressure and memory bounds need a separate
+  single-consumer implementation and real Workerd proof.
+- No remote 0057 apply/readback, delayed-header/cancel/restart/version-skew
+  fault campaign, Queue ambiguity packet, provider invoice reconciliation,
+  load/cost/SLO/alert evidence, or P5 signatures exist for this candidate.
+- The exposed Cloudflare credential must be proven revoked before any
+  authenticated action. This implementation did not use it.
+- Go/VPS remains authoritative until the complete four-protocol drain,
+  bidirectional reconciliation, canary, and measured rollback contract passes.
+
+Local SQLite, configuration, P5 fixture, Rust unit, Wasm build, and focused
+Workerd checks pass for this source state. They are implementation evidence,
+not deployment evidence. Production remains **NO-GO**.

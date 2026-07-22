@@ -794,8 +794,9 @@ to an old writer. Production remains **NO-GO**.
 
 0056 is an expand-only operational ownership migration, not a business-data
 import. It must be applied reader-first with all four HTTP stream handoff gates
-false. The current local exact-set target is 56 migrations, 64 tables, 814
-checked incremental columns, and 94 key indexes.
+false. Its historical checkpoint is 56 migrations, 64 tables, 814 checked
+incremental columns, and 94 key indexes; the 0057 runbook below defines the
+current target.
 
 ### Preflight
 
@@ -835,3 +836,59 @@ gates on until every existing row is terminal or explicitly reviewed. Retain
 0056, handoff rows, receipts, audit events, Queue/DLQ evidence, and billing/
 provider reconciliation. Never down-migrate, delete receipts, replace a staged
 event, or resend an ambiguous provider operation. Production remains **NO-GO**.
+
+## 0057 HTTP SSE Dispatch Intent Migration Runbook
+
+0057 is an expand-only ownership migration layered on 0056. It adds one table,
+two indexes, ten triggers, and `relay_http_stream_handoffs.dispatch_hard_deadline_at`.
+The exact target is 57 migrations, 65 tables, 841 checked incremental columns,
+and 96 key indexes.
+
+### Compatibility preflight
+
+1. Keep all four SSE gates exact false and drain every 0056 producer plus every
+   active paid SSE operation. N-1 may remain deployed only as a reader.
+2. Freeze the D1 target, Time Travel/backup point, migration ledger, business
+   fingerprint, Worker versions, Queue/DLQ, cron, provider-call watermark, and
+   hot Go/VPS rollback route.
+3. Stop if any active binary can create a 0056 handoff. After 0057, such an
+   insert requires a matching 0057 `response_received` row and old producer
+   code is deliberately incompatible.
+4. Revoke the exposed credential. Provision deploy and readback identities
+   through the approved secret workflow without argv, file, log, or evidence
+   disclosure.
+
+### Apply and exact readback
+
+1. Apply `0057_relay_http_stream_dispatch_intents.sql` once through the normal
+   ordered migration runner; never hand-edit `d1_migrations`.
+2. Read back migration head/count, normalized schema digest, one new table, two
+   new indexes, ten new triggers, and the nonnegative immutable handoff hard
+   deadline column. Verify the business fingerprint is unchanged.
+3. Prove invalid initial state, malformed digest/identity, identity/deadline
+   mutation, illegal lifecycle edge, unbound handoff insert, dispatch delete,
+   and partial recovery all fail.
+4. Prove a valid `prepared -> dispatched -> response_received` row plus exact
+   0056 insert becomes `stream_bound` atomically. Prove
+   `prepared|dispatched|response_received -> recovery_required` advances the
+   billing reservation to recovery with the next owner generation atomically.
+5. Deploy the N reader with all gates false and observe beyond the maximum old
+   Worker, Queue, cron, and deployment lifetime. Any unexpected intent/handoff,
+   provider call, or financial delta aborts the candidate.
+
+### Drain rehearsal and canary
+
+Seed only bounded synthetic staging rows. With producer false, enable staging
+approval plus recovery/outbox to prove expired-intent sweep and 0056 outbox/
+receipt drain, then restore all flags to false. A later no-customer producer
+canary must prove exactly one dispatch CAS grant and provider call, no
+retry/fallback, atomic 0056/0057 promotion before the first client byte,
+bounded headers/hard deadline, and one terminal or explicit recovery owner.
+
+### Rollback
+
+Disable producer first, route new traffic to Go/VPS, and retain the N drain
+worker until all 0057 intents, 0056 handoffs, outbox leases, receipts, billing
+reservations, and provider counters reconcile. Never re-enable an N-1 durable
+producer, down-migrate 0057, clear a dispatch row, rewrite a hard deadline, or
+resend an ambiguous provider operation. Production remains **NO-GO**.

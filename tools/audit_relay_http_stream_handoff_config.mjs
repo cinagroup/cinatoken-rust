@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [wrangler, runtime, repositories, relay, worker, migration] =
+const [wrangler, runtime, repositories, relay, worker, migration, dispatchMigration] =
   await Promise.all([
   readFile(path.join(repoRoot, "wrangler.toml"), "utf8"),
   readFile(
@@ -28,6 +28,15 @@ const [wrangler, runtime, repositories, relay, worker, migration] =
       "migrations",
       "d1",
       "0056_relay_http_stream_handoffs.sql",
+    ),
+    "utf8",
+  ),
+  readFile(
+    path.join(
+      repoRoot,
+      "migrations",
+      "d1",
+      "0057_relay_http_stream_dispatch_intents.sql",
     ),
     "utf8",
   ),
@@ -75,11 +84,23 @@ assert(
 );
 assert(
   relay.includes("complete_durable_streaming_relay_response") &&
+    relay.includes("prepare_relay_http_stream_dispatch_scope") &&
+    relay.includes("dispatch_relay_with_optional_http_stream_intent") &&
+    relay.includes("durable_stream_single_dispatch") &&
+    relay.includes("!durable_dispatch_enabled") &&
     relay.includes("create_relay_http_stream_handoff") &&
     relay.includes("futures_util::stream::try_unfold") &&
-    relay.includes("CreateOutcome::Applied => {}") &&
-    !relay.includes("CreateOutcome::Applied | CreateOutcome::MatchingReplay"),
-  "relay request path must use one instrumented stream and reject ambiguous replay",
+    relay.includes("CreateOutcome::Applied | CreateOutcome::MatchingReplay"),
+  "relay request path must persist before provider I/O, use one instrumented stream, and reject replay",
+);
+assert(
+  repositories.includes("admit_relay_http_stream_dispatch") &&
+    repositories.includes("db.batch(vec![bind, insert])") &&
+    repositories.includes("authorize_relay_http_stream_dispatch") &&
+    repositories.includes("mark_relay_http_stream_dispatch_response_received") &&
+    repositories.includes("mark_relay_http_stream_dispatch_recovery_required") &&
+    repositories.includes("sweep_expired_relay_http_stream_dispatch_intents"),
+  "repository must atomically bind dispatch admission and expose monotonic transitions",
 );
 assert(
   worker.includes("run_relay_http_stream_handoff_scheduled") &&
@@ -99,6 +120,23 @@ for (const fragment of [
   "finalization_enqueued",
 ]) {
   assert(migration.includes(fragment), `0056 migration is missing ${fragment}`);
+}
+for (const fragment of [
+  "CREATE TABLE relay_http_stream_dispatch_intents",
+  "idx_relay_http_stream_dispatch_intents_recovery",
+  "idx_relay_http_stream_dispatch_intents_active_lease",
+  "relay_http_stream_dispatch_intent_insert_guard",
+  "relay_http_stream_dispatch_intent_identity_guard",
+  "relay_http_stream_dispatch_intent_lifecycle_guard",
+  "relay_http_stream_dispatch_intent_stream_bound_guard",
+  "relay_http_stream_dispatch_intent_recovery_guard",
+  "relay_http_stream_dispatch_intent_recovery_apply",
+  "relay_http_stream_dispatch_intent_delete_guard",
+  "relay_http_stream_handoff_dispatch_deadline_guard",
+  "relay_http_stream_handoff_dispatch_intent_guard",
+  "relay_http_stream_handoff_dispatch_intent_bind",
+]) {
+  assert(dispatchMigration.includes(fragment), `0057 migration is missing ${fragment}`);
 }
 const finalizationBound = /length\(CAST\(finalization_event_json AS BLOB\)\)\s*<=\s*(\d+)/.exec(
   migration,
@@ -120,10 +158,24 @@ for (const forbidden of [
     `0056 migration must not persist ${forbidden}`,
   );
 }
+for (const forbidden of [
+  "request_body",
+  "response_body",
+  "authorization",
+  "credential",
+  "raw_header",
+  "sse_frame",
+]) {
+  assert(
+    !dispatchMigration.toLowerCase().includes(forbidden),
+    `0057 migration must not persist ${forbidden}`,
+  );
+}
 
 const report = {
   ok: true,
   migration: "0056_relay_http_stream_handoffs.sql",
+  dispatchMigration: "0057_relay_http_stream_dispatch_intents.sql",
   scopes: [...scopes.keys()].filter((scope) =>
     ["vars", "env.staging.vars", "env.production.vars"].includes(scope),
   ),
@@ -133,13 +185,15 @@ const report = {
   boundedLastErrorBytes: Number(errorBound[1]),
   durableBodiesStored: false,
   enqueueAndApplyTerminalsSeparated: true,
+  providerDispatchPersistedBeforeIo: true,
+  maximumDurableProviderDispatches: 1,
 };
 
 if (process.argv.includes("--json")) {
   console.log(JSON.stringify(report, null, 2));
 } else {
   console.log(
-    "relay HTTP stream handoff config ok: 4 authorities false in 3 scopes, 0056 bounded outbox wired",
+    "relay HTTP stream handoff config ok: 4 authorities false in 3 scopes, 0057 persist-before-provider dispatch wired",
   );
 }
 

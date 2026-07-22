@@ -2434,3 +2434,53 @@ existing backlog is terminal or explicitly reviewed.
 Current local work does not supply these remote results. The provider-dispatch-
 to-handoff crash window and total stream deadline are still open design items.
 Production remains **NO-GO**.
+
+## Phase 4m: HTTP SSE Pre-Dispatch Intent And Deadline
+
+Phase 4m overlays Phase 4l with migration 0057. Start only after the 0056
+producer is drained, all four SSE flags are false, the exposed credential is
+revoked, and a replacement staging identity has applied/read back exact head
+0057/57 with 65 tables, 841 checked incremental columns, and 96 key indexes.
+
+### Reader and drain gate
+
+1. Prove the 0057 table, two indexes, ten triggers, and handoff hard-deadline
+   column from catalog SQL and negative probes.
+2. Deploy N as the only drain-capable Worker. N-1 may serve read/non-SSE paths
+   but must have no durable producer authority.
+3. Seed bounded synthetic `prepared`, `dispatched`, and `response_received`
+   rows. With producer false, prove scheduled recovery advances each expired
+   intent and billing reservation atomically, with no provider call.
+4. Seed an exact response row and create its 0056 handoff. Prove 0057 becomes
+   `stream_bound` in the insert transaction and no replay grants a provider
+   send.
+5. Return every gate false and require zero unreviewed active rows before the
+   producer matrix.
+
+### Additional fault cases
+
+| Case | Injection | Required result |
+| --- | --- | --- |
+| H0 | Local transform/header/request construction fails | No 0057 row, no provider call, ordinary reservation recovery only |
+| H1a | D1 admission fails at each statement | Reservation bind and `prepared` row both commit or both roll back |
+| H1b | Two concurrent dispatch authorizations | Exactly one CAS reports `Applied`; provider counter is one |
+| H1c | CAS commits but its response is lost | Readback shows `dispatched`; no retry; atomic recovery owner |
+| H1d | Crash after `prepared`, before CAS | Expiry sweep recovers intent and billing; provider counter remains zero |
+| H1e | Crash after CAS around provider poll | Ambiguous recovery; no automatic refund and no second call |
+| H1f | Response headers delayed beyond 120 seconds | Typed timeout, provider abort where supported, atomic recovery, no fallback |
+| H1g | 3xx, 4xx, 429, or 5xx response | Status evidence retained; atomic recovery; no channel/model/direct fallback |
+| H2a | Fault before/after 0056 insert trigger | No partial handoff/promotion; zero client bytes; one recovery owner |
+| H2b | Exact response/handoff replay | Matching durable state is read only; no new stream owner or provider call |
+| H7a | Provider sends one chunk below each idle interval past 900 seconds | Hard deadline wins; terminal reason is `stream_total_deadline_exceeded` |
+| H12a | Client cancels or stops pulling | Scheduler eventually recovers; case remains non-promotable until immediate watchdog proof exists |
+| H13a | N-1 is restored after 0057 | It remains reader-only; old producer insert fails closed and traffic routes to Go/VPS |
+
+For every case reconcile provider call/invoice count, dispatch state, billing
+owner generation, 0056 handoff, Queue/outbox/receipt, audit/request counters,
+and client-byte ordering. Preserve only hashes, counters, timestamps, bounded
+error classes, and version/generation identity.
+
+Phase 4m cannot pass production review while incoming `Request.signal` lacks a
+durable cancellation watchdog or while the durable-disabled clone/tee path
+lacks slow-consumer memory/backpressure evidence. Local tests do not waive
+these remote blockers. Production remains **NO-GO**.

@@ -7,8 +7,9 @@ use worker::{D1Database, Env};
 use crate::d1_repositories::{
     claim_relay_http_stream_outbox, dead_letter_relay_http_stream_outbox,
     mark_relay_http_stream_finalization_applied, mark_relay_http_stream_outbox_delivered,
-    reconcile_relay_http_stream_finalization_handoffs, relay_http_stream_handoff_schema_ready,
-    relay_http_stream_outbox_due_candidates, retry_relay_http_stream_outbox,
+    reconcile_relay_http_stream_finalization_handoffs, relay_http_stream_dispatch_schema_ready,
+    relay_http_stream_handoff_schema_ready, relay_http_stream_outbox_due_candidates,
+    retry_relay_http_stream_outbox, sweep_expired_relay_http_stream_dispatch_intents,
     sweep_expired_relay_http_stream_handoffs, RelayHttpStreamHandoffTransitionOutcome,
     RelayHttpStreamOutboxClaimOutcome, RelayHttpStreamOutboxLease,
 };
@@ -50,6 +51,7 @@ pub struct RelayHttpStreamHandoffScheduledSummary {
     pub outbox_skipped: u32,
     pub outbox_conflicts: u32,
     pub outbox_failed: u32,
+    pub expired_dispatches_recovered: u32,
     pub expired_forwarding_recovered: u32,
     pub applied_finalizations_reconciled: u32,
 }
@@ -83,7 +85,9 @@ pub async fn run_relay_http_stream_handoff_scheduled(
             "relay HTTP stream scheduled recovery is not enabled with verified configuration",
         ));
     }
-    if !relay_http_stream_handoff_schema_ready(db).await? {
+    if !relay_http_stream_handoff_schema_ready(db).await?
+        || !relay_http_stream_dispatch_schema_ready(db).await?
+    {
         return Err(handoff_error(
             "relay HTTP stream handoff schema is unavailable",
         ));
@@ -93,6 +97,15 @@ pub async fn run_relay_http_stream_handoff_scheduled(
         run_outbox(env, db, now, &mut summary).await?;
     }
     if config.recovery_enabled {
+        summary.expired_dispatches_recovered = u32::try_from(
+            sweep_expired_relay_http_stream_dispatch_intents(
+                db,
+                now,
+                HTTP_STREAM_HANDOFF_SCAN_LIMIT,
+            )
+            .await?,
+        )
+        .unwrap_or(u32::MAX);
         summary.expired_forwarding_recovered = u32::try_from(
             sweep_expired_relay_http_stream_handoffs(db, now, HTTP_STREAM_HANDOFF_SCAN_LIMIT)
                 .await?,

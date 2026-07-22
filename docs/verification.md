@@ -8003,3 +8003,47 @@ call/invoice and billing/audit/request counters; backlog-age alerts; cost/SLO;
 rollback; remote 0056 readback; P5 signatures; and Go/VPS drain. The current
 design also lacks a total stream deadline and retains a provider-dispatch-to-
 handoff crash window. Production remains **NO-GO**.
+
+## Ordinary HTTP SSE Dispatch Intent Verification (2026-07-22)
+
+Migration 0057 is the current-head overlay for the preceding 0056 verification.
+The exact-set SQLite verifier must report 57 migrations, 65 tables, 841 checked
+incremental columns, and 96 key indexes. It additionally verifies the dispatch
+intent table, two indexes, ten triggers, the 0056 hard-deadline column, guarded
+state transitions, immutable identity/deadline evidence, and absence of body or
+credential fields.
+
+The focused Workerd sequence must prove:
+
+1. reservation binding and `prepared` insert are atomic;
+2. two concurrent authorization updates grant exactly one
+   `prepared -> dispatched` transition;
+3. a later authorization cannot regain send authority;
+4. dispatch recovery and billing recovery, including the owner-generation
+   increment, occur in one SQLite transaction;
+5. `response_received` plus exact 0056 insert promotes 0057 to `stream_bound`
+   in that insert transaction; and
+6. the existing checkpoint/outbox/receipt terminal sequence still converges.
+
+Run these focused commands before the full aggregate:
+
+```powershell
+python tools/verify_sqlite.py
+bun tools/audit_d1_migration_config.mjs --json
+bun tools/audit_relay_http_stream_handoff_config.mjs --json
+cargo test -p cinatoken-worker --lib relay_http_stream_dispatch
+bun run build:worker
+bunx vitest run --config vitest.do.config.mjs -t "HTTP stream"
+bun test tests/relay-container-p5-evidence.test.mjs tests/relay-container-p5-foundation-collector.test.mjs
+```
+
+The current source state passes SQLite 57/65/841/96, both configuration audits,
+Worker unit tests 858/858, the production Worker build, complete Workerd
+lifecycle 50/50, and the combined P5 evidence/foundation suite 68/68. The full
+`bun run check` aggregate, including workspace tests, formatting, Wrangler
+dry-runs and configured Wasm checks, passed in 878.4 seconds. Retained CI for
+the exact commit remains separate evidence.
+
+These tests do not prove immediate downstream cancellation recovery,
+`Request.signal`, slow-client backpressure on the durable-disabled clone path,
+or any remote D1/Queue/provider behavior. Production remains **NO-GO**.

@@ -2960,7 +2960,14 @@ async fn relay_endpoint_with_auth(
                 &model,
                 &endpoint.upstream_path,
                 request_id.as_deref(),
-                relay_billing_reservation_lease_seconds(&env),
+                relay_http_stream_reservation_lease_seconds(
+                    relay_billing_reservation_lease_seconds(&env),
+                    should_relay_stream
+                        && crate::relay_http_stream_handoff::relay_http_stream_handoff_runtime_config(
+                            &env,
+                        )
+                        .handoff_enabled,
+                ),
                 unix_timestamp(),
             )
             .await
@@ -3048,6 +3055,38 @@ async fn relay_endpoint_with_auth(
     if container_canary_plan.is_some() {
         return openai_error_response("container chat canary billing plan is unavailable", 503);
     }
+    let mut durable_dispatch_scope = match prepare_relay_http_stream_dispatch_scope(
+        &env,
+        &db,
+        billing_group_plan.as_ref(),
+        should_relay_stream,
+    )
+    .await
+    {
+        Ok(scope) => scope,
+        Err(error) => {
+            let cleanup = match billing_group_plan.as_ref() {
+                Some(plan) if plan.reserve_applied() => refund_relay_billing_group_plan(
+                    &env,
+                    context.as_ref(),
+                    &db,
+                    &auth,
+                    plan,
+                    "durable_dispatch_preflight_failed",
+                    unix_timestamp(),
+                )
+                .await
+                .err()
+                .map(|cleanup_error| format!("; cleanup failed: {cleanup_error}"))
+                .unwrap_or_default(),
+                _ => String::new(),
+            };
+            return openai_error_response(
+                format!("relay HTTP stream durable dispatch preflight failed: {error}{cleanup}"),
+                503,
+            );
+        }
+    };
     let mut billing_preflight: Option<RelayBillingPreflight> = None;
     let mut terminal_reserve_refund = if billing_group_plan
         .as_ref()
@@ -3064,6 +3103,7 @@ async fn relay_endpoint_with_auth(
     // (channel, selected group, upstream response). The group is the actual
     // serving group and selects the authoritative billing snapshot.
     let mut selected_attempt: Option<(RelayChannel, String, Response)> = None;
+    let mut selected_dispatch_intent: Option<RelayHttpStreamDispatchIdentity> = None;
 
     // Selection is planned up front (priority tier + weighted-random, shrinking
     // each group's pool, plus the auto cross-group walk). The loop forwards each
@@ -3072,6 +3112,7 @@ async fn relay_endpoint_with_auth(
     let inject_stream_options = stream_options_inject_enabled(&env);
     let keyword_ban_enabled = channel_keyword_ban_enabled(&env);
     let ai_gateway_runtime = RelayAiGatewayRuntime::from_env(&env);
+    let durable_dispatch_enabled = durable_dispatch_scope.is_some();
 
     for (attempt_index, plan) in attempt_plan.into_iter().enumerate() {
         let RelayAttemptPlan {
@@ -3214,16 +3255,29 @@ async fn relay_endpoint_with_auth(
                                     upstream_model,
                                 ) {
                                     Ok(Some(attempt)) => {
-                                        match forward_ai_gateway_rest(
-                                            &attempt,
-                                            runtime,
-                                            &upstream_body,
+                                        let request_sha256 =
+                                            relay_http_stream_json_request_sha256(&upstream_body)?;
+                                        match dispatch_relay_with_optional_http_stream_intent(
+                                            &db,
+                                            durable_dispatch_scope.as_mut(),
+                                            &channel,
+                                            &selected_group,
+                                            &endpoint.upstream_path,
+                                            "ai_gateway",
+                                            &request_sha256,
+                                            forward_ai_gateway_rest(
+                                                &attempt,
+                                                runtime,
+                                                &upstream_body,
+                                            ),
                                         )
                                         .await
                                         {
                                             Ok(response) => {
                                                 let status = response.status_code();
-                                                if should_ai_gateway_direct_fallback(status) {
+                                                if !durable_dispatch_enabled
+                                                    && should_ai_gateway_direct_fallback(status)
+                                                {
                                                     if let Some(direct_body) =
                                                         prepare_ai_gateway_direct_fallback_body(
                                                             &upstream_body,
@@ -3259,7 +3313,9 @@ async fn relay_endpoint_with_auth(
                                                 }
                                             }
                                             Err(err) => {
-                                                if let Some(direct_body) =
+                                                if durable_dispatch_enabled {
+                                                    Err(err)
+                                                } else if let Some(direct_body) =
                                                     prepare_ai_gateway_direct_fallback_body(
                                                         &upstream_body,
                                                         &attempt,
@@ -3299,14 +3355,35 @@ async fn relay_endpoint_with_auth(
                                             &endpoint.upstream_path,
                                         ) {
                                             Ok(direct_body) => {
-                                                forward_relay_request(
-                                                    &env,
-                                                    attempt_provider,
-                                                    &upstream_url,
-                                                    &upstream_key,
+                                                let direct_body =
+                                                    direct_body.as_ref().unwrap_or(&upstream_body);
+                                                let request_sha256 =
+                                                    relay_http_stream_json_request_sha256(
+                                                        direct_body,
+                                                    )?;
+                                                let transport_kind =
+                                                    if channel.wfp_worker().is_some() {
+                                                        "wfp_binding"
+                                                    } else {
+                                                        "direct_provider"
+                                                    };
+                                                dispatch_relay_with_optional_http_stream_intent(
+                                                    &db,
+                                                    durable_dispatch_scope.as_mut(),
                                                     &channel,
-                                                    direct_body.as_ref().unwrap_or(&upstream_body),
-                                                    &provider_headers,
+                                                    &selected_group,
+                                                    &endpoint.upstream_path,
+                                                    transport_kind,
+                                                    &request_sha256,
+                                                    forward_relay_request(
+                                                        &env,
+                                                        attempt_provider,
+                                                        &upstream_url,
+                                                        &upstream_key,
+                                                        &channel,
+                                                        direct_body,
+                                                        &provider_headers,
+                                                    ),
                                                 )
                                                 .await
                                             }
@@ -3331,14 +3408,32 @@ async fn relay_endpoint_with_auth(
                                     &endpoint.upstream_path,
                                 ) {
                                     Ok(direct_body) => {
-                                        forward_relay_request(
-                                            &env,
-                                            attempt_provider,
-                                            &upstream_url,
-                                            &upstream_key,
+                                        let direct_body =
+                                            direct_body.as_ref().unwrap_or(&upstream_body);
+                                        let request_sha256 =
+                                            relay_http_stream_json_request_sha256(direct_body)?;
+                                        let transport_kind = if channel.wfp_worker().is_some() {
+                                            "wfp_binding"
+                                        } else {
+                                            "direct_provider"
+                                        };
+                                        dispatch_relay_with_optional_http_stream_intent(
+                                            &db,
+                                            durable_dispatch_scope.as_mut(),
                                             &channel,
-                                            direct_body.as_ref().unwrap_or(&upstream_body),
-                                            &provider_headers,
+                                            &selected_group,
+                                            &endpoint.upstream_path,
+                                            transport_kind,
+                                            &request_sha256,
+                                            forward_relay_request(
+                                                &env,
+                                                attempt_provider,
+                                                &upstream_url,
+                                                &upstream_key,
+                                                &channel,
+                                                direct_body,
+                                                &provider_headers,
+                                            ),
                                         )
                                         .await
                                     }
@@ -3372,7 +3467,18 @@ async fn relay_endpoint_with_auth(
                             ali_sync_image_model_patterns.as_deref(),
                         ) {
                             Ok(body) => {
-                                forward_ali(&upstream_url, &upstream_key, &channel, &body).await
+                                let request_sha256 = relay_http_stream_json_request_sha256(&body)?;
+                                dispatch_relay_with_optional_http_stream_intent(
+                                    &db,
+                                    durable_dispatch_scope.as_mut(),
+                                    &channel,
+                                    &selected_group,
+                                    &endpoint.upstream_path,
+                                    "raw_provider",
+                                    &request_sha256,
+                                    forward_ali(&upstream_url, &upstream_key, &channel, &body),
+                                )
+                                .await
                             }
                             Err(err) => {
                                 forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
@@ -3380,19 +3486,31 @@ async fn relay_endpoint_with_auth(
                             }
                         }
                     } else {
-                        forward_raw_openai_compatible(
-                            &upstream_url,
-                            &upstream_key,
+                        let request_sha256 = relay_http_stream_request_sha256(bytes);
+                        dispatch_relay_with_optional_http_stream_intent(
+                            &db,
+                            durable_dispatch_scope.as_mut(),
                             &channel,
-                            bytes,
-                            content_type,
+                            &selected_group,
+                            &endpoint.upstream_path,
+                            "raw_provider",
+                            &request_sha256,
+                            forward_raw_openai_compatible(
+                                &upstream_url,
+                                &upstream_key,
+                                &channel,
+                                bytes,
+                                content_type,
+                            ),
                         )
                         .await
                     }
                 }
             }
         };
-        let forward_result = if let Some(plan) = billing_group_plan
+        let forward_result = if durable_dispatch_enabled {
+            Ok(forward.await)
+        } else if let Some(plan) = billing_group_plan
             .as_mut()
             .filter(|plan| plan.reserve_applied())
         {
@@ -3407,6 +3525,17 @@ async fn relay_endpoint_with_auth(
         } else {
             Ok(forward.await)
         };
+        if let Some(identity) = durable_dispatch_scope
+            .as_ref()
+            .and_then(|scope| scope.active.as_ref())
+        {
+            if let Some(plan) = billing_group_plan.as_mut() {
+                plan.apply_selected_dispatch_binding(
+                    identity.owner_generation,
+                    identity.lease_expires_at,
+                );
+            }
+        }
         let forward_result = match forward_result {
             Ok(result) => result,
             Err(err) => {
@@ -3452,6 +3581,15 @@ async fn relay_endpoint_with_auth(
                         &failure,
                     ));
                     last_failure = Some(failure);
+                    if let Some(identity) = durable_dispatch_scope
+                        .as_ref()
+                        .and_then(|scope| scope.active.as_ref())
+                        .filter(|identity| identity.response_received)
+                    {
+                        selected_dispatch_intent = Some(identity.clone());
+                        selected_attempt = Some((channel, selected_group, response));
+                        break;
+                    }
                     if attempt_index + 1 < attempt_count {
                         // About to retry and discard this response — inspect its
                         // error body for a disable keyword (Go ShouldDisableChannel
@@ -3468,6 +3606,11 @@ async fn relay_endpoint_with_auth(
                     selected_attempt = Some((channel, selected_group, response));
                     break;
                 }
+                selected_dispatch_intent = durable_dispatch_scope
+                    .as_ref()
+                    .and_then(|scope| scope.active.as_ref())
+                    .filter(|identity| identity.response_received)
+                    .cloned();
                 selected_attempt = Some((channel, selected_group, response));
                 break;
             }
@@ -3487,6 +3630,20 @@ async fn relay_endpoint_with_auth(
                     &failure,
                 ));
                 last_failure = Some(failure);
+                if durable_dispatch_scope
+                    .as_ref()
+                    .and_then(|scope| scope.active.as_ref())
+                    .is_some()
+                {
+                    worker::console_error!(
+                        "relay HTTP stream durable provider dispatch requires recovery: {}",
+                        err
+                    );
+                    return openai_error_response(
+                        "upstream dispatch outcome is ambiguous; recovery is required",
+                        503,
+                    );
+                }
                 continue;
             }
         }
@@ -3495,14 +3652,21 @@ async fn relay_endpoint_with_auth(
     if model_fallback_policy_veto && configured_fallback_model.is_some() {
         model_route_audit.fallback_skip_reason = Some("primary_policy_status_veto".to_string());
     }
-    let fallback_trigger = relay_model_fallback_trigger(
-        selected_attempt
-            .as_ref()
-            .map(|(_, _, response)| response.status_code()),
-        last_failure.as_ref().map(|failure| failure.kind),
-        selected_attempt.is_none(),
-        model_fallback_policy_veto,
-    );
+    if durable_dispatch_enabled && configured_fallback_model.is_some() {
+        model_route_audit.fallback_skip_reason = Some("durable_stream_single_dispatch".to_string());
+    }
+    let fallback_trigger = if durable_dispatch_enabled {
+        None
+    } else {
+        relay_model_fallback_trigger(
+            selected_attempt
+                .as_ref()
+                .map(|(_, _, response)| response.status_code()),
+            last_failure.as_ref().map(|failure| failure.kind),
+            selected_attempt.is_none(),
+            model_fallback_policy_veto,
+        )
+    };
 
     if let (Some(fallback_model), Some(trigger)) =
         (configured_fallback_model.as_deref(), fallback_trigger)
@@ -3979,22 +4143,41 @@ async fn relay_endpoint_with_auth(
         .as_mut()
         .filter(|preflight| preflight.reserve_applied())
     {
-        let selected_at = unix_timestamp();
-        let lease_seconds = relay_billing_reservation_lease_seconds(&env);
-        if let Err(err) = bind_relay_billing_selected_attempt(
-            &db,
-            preflight,
-            channel.id,
-            &selected_group,
-            selected_at,
-            lease_seconds,
-        )
-        .await
-        {
-            return openai_error_response(
-                format!("failed to bind selected relay billing attempt: {err}"),
-                500,
+        if let Some(identity) = selected_dispatch_intent.as_ref() {
+            if identity.channel_id != channel.id
+                || identity.selected_group != selected_group
+                || identity.expr_hash != preflight.contract_hash()
+                || !identity.response_received
+                || identity.recovery_required
+            {
+                return openai_error_response(
+                    "relay HTTP stream durable dispatch identity conflicts with selected attempt",
+                    500,
+                );
+            }
+            preflight.set_selected_attempt(
+                identity.owner_generation,
+                identity.selected_at,
+                identity.lease_expires_at,
             );
+        } else {
+            let selected_at = unix_timestamp();
+            let lease_seconds = relay_billing_reservation_lease_seconds(&env);
+            if let Err(err) = bind_relay_billing_selected_attempt(
+                &db,
+                preflight,
+                channel.id,
+                &selected_group,
+                selected_at,
+                lease_seconds,
+            )
+            .await
+            {
+                return openai_error_response(
+                    format!("failed to bind selected relay billing attempt: {err}"),
+                    500,
+                );
+            }
         }
     }
     if model_route_audit.wfp_worker.is_some() {
@@ -4062,6 +4245,7 @@ async fn relay_endpoint_with_auth(
         ali_image_usage: None,
         provider_usage_source: relay_provider_usage_source(selected_provider, channel.channel_type),
         stream_lease_heartbeat: None,
+        http_stream_dispatch: selected_dispatch_intent,
         affinity_key,
         affinity: affinity_audit,
         model_route: model_route_audit,
@@ -10387,7 +10571,439 @@ struct StreamingUsageResolution {
 
 const RELAY_HTTP_STREAM_CHECKPOINT_CHUNKS: i64 = 16;
 const RELAY_HTTP_STREAM_CHECKPOINT_BYTES: i64 = 64 * 1024;
+const RELAY_HTTP_STREAM_DISPATCH_TIMEOUT_SECONDS: u64 = 120;
 const RELAY_HTTP_STREAM_IDLE_TIMEOUT_SECONDS: u64 = 120;
+const RELAY_HTTP_STREAM_TOTAL_TIMEOUT_SECONDS: i64 = 900;
+
+fn relay_http_stream_reservation_lease_seconds(
+    configured_lease_seconds: i64,
+    durable_dispatch_enabled: bool,
+) -> i64 {
+    if durable_dispatch_enabled {
+        configured_lease_seconds.min(RELAY_HTTP_STREAM_TOTAL_TIMEOUT_SECONDS)
+    } else {
+        configured_lease_seconds
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RelayHttpStreamDispatchIdentity {
+    reservation_key: String,
+    owner_generation: i64,
+    attempt_generation: i64,
+    channel_id: i64,
+    selected_group: String,
+    expr_hash: String,
+    provider_operation_id: String,
+    worker_version_id: String,
+    billing_snapshot_sha256: String,
+    selected_at: i64,
+    lease_expires_at: i64,
+    hard_deadline_at: i64,
+    response_received: bool,
+    recovery_required: bool,
+}
+
+#[derive(Debug)]
+struct RelayHttpStreamDispatchScope {
+    reservation_key: String,
+    prebind_owner_generation: i64,
+    expr_hash: String,
+    worker_version_id: String,
+    billing_snapshot_sha256: String,
+    lease_seconds: i64,
+    total_timeout_seconds: i64,
+    active: Option<RelayHttpStreamDispatchIdentity>,
+}
+
+async fn prepare_relay_http_stream_dispatch_scope(
+    env: &Env,
+    db: &D1Database,
+    billing_group_plan: Option<&RelayBillingGroupPlan>,
+    should_relay_stream: bool,
+) -> worker::Result<Option<RelayHttpStreamDispatchScope>> {
+    let runtime = crate::relay_http_stream_handoff::relay_http_stream_handoff_runtime_config(env);
+    let positive_reservation =
+        should_relay_stream && billing_group_plan.is_some_and(|plan| plan.reserve_applied());
+    if !positive_reservation {
+        return Ok(None);
+    }
+    if runtime.requested && !runtime.handoff_enabled {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable handoff was requested without staging evidence".to_string(),
+        ));
+    }
+    if !runtime.handoff_enabled {
+        return Ok(None);
+    }
+    if !crate::relay_http_stream_handoff::relay_http_stream_handoff_compiled()
+        || !runtime.outbox_enabled
+        || !runtime.recovery_enabled
+        || !relay_billing_finalization_queue_enabled(env)
+        || env
+            .queue(crate::relay_billing_queue::BILLING_QUEUE_BINDING)
+            .is_err()
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable dispatch prerequisites are incomplete".to_string(),
+        ));
+    }
+    if !crate::d1_repositories::relay_http_stream_handoff_schema_ready(db).await?
+        || !crate::d1_repositories::relay_http_stream_dispatch_schema_ready(db).await?
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable dispatch migrations 0056/0057 are unavailable".to_string(),
+        ));
+    }
+    let plan = billing_group_plan.ok_or_else(|| {
+        worker::Error::RustError(
+            "relay HTTP stream durable dispatch billing plan is missing".to_string(),
+        )
+    })?;
+    let reservation_key = plan
+        .reservation_key()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "relay HTTP stream durable dispatch reservation key is missing".to_string(),
+            )
+        })?
+        .to_string();
+    let prebind_owner_generation = plan.owner_generation().ok_or_else(|| {
+        worker::Error::RustError(
+            "relay HTTP stream durable dispatch owner generation is missing".to_string(),
+        )
+    })?;
+    let reservation = crate::d1_repositories::relay_billing_reservation(db, &reservation_key)
+        .await?
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "relay HTTP stream durable dispatch reservation was not found".to_string(),
+            )
+        })?;
+    if reservation.status != "reserved"
+        || reservation.owner_generation != prebind_owner_generation
+        || reservation.channel_id != 0
+        || !reservation.selected_group.is_empty()
+        || reservation.selected_at != 0
+        || reservation.expr_hash != plan.contract_hash()
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable dispatch reservation is not prebound".to_string(),
+        ));
+    }
+    let billing_snapshot_sha256 = format!(
+        "{:x}",
+        Sha256::digest(reservation.billing_snapshot_json.as_bytes())
+    );
+    let expected_snapshot_sha256 = format!(
+        "{:x}",
+        Sha256::digest(plan.billing_snapshot_json().as_bytes())
+    );
+    if billing_snapshot_sha256 != expected_snapshot_sha256 {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable dispatch billing snapshot mismatch".to_string(),
+        ));
+    }
+    let worker_version_id = env
+        .get_binding::<WorkerVersionMetadata>("CF_VERSION_METADATA")
+        .ok()
+        .map(|metadata| metadata.id())
+        .filter(|id| !id.is_empty() && id.len() <= 128)
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "relay HTTP stream durable dispatch Worker version metadata is unavailable"
+                    .to_string(),
+            )
+        })?;
+    Ok(Some(RelayHttpStreamDispatchScope {
+        reservation_key,
+        prebind_owner_generation,
+        expr_hash: reservation.expr_hash,
+        worker_version_id,
+        billing_snapshot_sha256,
+        lease_seconds: relay_billing_reservation_lease_seconds(env),
+        total_timeout_seconds: RELAY_HTTP_STREAM_TOTAL_TIMEOUT_SECONDS,
+        active: None,
+    }))
+}
+
+fn relay_http_stream_dispatch_operation_id(
+    reservation_key: &str,
+    prebind_owner_generation: i64,
+    attempt_generation: i64,
+    channel_id: i64,
+    selected_group: &str,
+    endpoint_path: &str,
+    transport_kind: &str,
+    request_sha256: &str,
+    hard_deadline_at: i64,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"cinatoken:relay-http-stream-dispatch:v1");
+    for field in [
+        reservation_key.to_string(),
+        prebind_owner_generation.to_string(),
+        attempt_generation.to_string(),
+        channel_id.to_string(),
+        selected_group.to_string(),
+        endpoint_path.to_string(),
+        transport_kind.to_string(),
+        request_sha256.to_string(),
+        hard_deadline_at.to_string(),
+    ] {
+        digest.update((field.len() as u64).to_be_bytes());
+        digest.update(field.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn relay_http_stream_request_sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn relay_http_stream_json_request_sha256(value: &Value) -> worker::Result<String> {
+    serde_json::to_vec(value)
+        .map(|bytes| relay_http_stream_request_sha256(&bytes))
+        .map_err(|error| {
+            worker::Error::RustError(format!(
+                "failed to encode relay HTTP stream dispatch identity: {error}"
+            ))
+        })
+}
+
+fn relay_http_stream_upstream_request_id_sha256(response: &Response) -> String {
+    response_header(response, &["x-request-id", "cf-ray"])
+        .map(|value| format!("{:x}", Sha256::digest(value.as_bytes())))
+        .unwrap_or_default()
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_relay_with_optional_http_stream_intent<F>(
+    db: &D1Database,
+    scope: Option<&mut RelayHttpStreamDispatchScope>,
+    channel: &RelayChannel,
+    selected_group: &str,
+    endpoint_path: &str,
+    transport_kind: &str,
+    request_sha256: &str,
+    future: F,
+) -> worker::Result<Response>
+where
+    F: Future<Output = worker::Result<Response>>,
+{
+    let Some(scope) = scope else {
+        return future.await;
+    };
+    if scope.active.is_some() {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable dispatch authority was already consumed".to_string(),
+        ));
+    }
+    let attempt_generation = 1;
+    let selected_at = unix_timestamp();
+    let hard_deadline_at = selected_at.saturating_add(scope.total_timeout_seconds);
+    let requested_lease_expires_at = selected_at
+        .saturating_add(scope.lease_seconds)
+        .min(hard_deadline_at);
+    let provider_operation_id = relay_http_stream_dispatch_operation_id(
+        &scope.reservation_key,
+        scope.prebind_owner_generation,
+        attempt_generation,
+        channel.id,
+        selected_group,
+        endpoint_path,
+        transport_kind,
+        request_sha256,
+        hard_deadline_at,
+    );
+    let admission = crate::d1_repositories::RelayHttpStreamDispatchIntentRecord {
+        reservation_key: &scope.reservation_key,
+        expected_owner_generation: scope.prebind_owner_generation,
+        attempt_generation,
+        channel_id: channel.id,
+        selected_group,
+        expr_hash: &scope.expr_hash,
+        provider_operation_id: &provider_operation_id,
+        worker_version_id: &scope.worker_version_id,
+        billing_snapshot_sha256: &scope.billing_snapshot_sha256,
+        request_sha256,
+        endpoint_path,
+        transport_kind,
+        selected_at,
+        lease_expires_at: requested_lease_expires_at,
+        hard_deadline_at,
+    };
+    use crate::d1_repositories::RelayHttpStreamDispatchAdmissionOutcome as AdmissionOutcome;
+    let (owner_generation, lease_expires_at) =
+        match crate::d1_repositories::admit_relay_http_stream_dispatch(db, &admission).await? {
+            AdmissionOutcome::Applied {
+                owner_generation,
+                lease_expires_at,
+            } => (owner_generation, lease_expires_at),
+            outcome => {
+                return Err(worker::Error::RustError(format!(
+                    "relay HTTP stream durable dispatch admission was refused: {outcome:?}"
+                )))
+            }
+        };
+    scope.active = Some(RelayHttpStreamDispatchIdentity {
+        reservation_key: scope.reservation_key.clone(),
+        owner_generation,
+        attempt_generation,
+        channel_id: channel.id,
+        selected_group: selected_group.to_string(),
+        expr_hash: scope.expr_hash.clone(),
+        provider_operation_id,
+        worker_version_id: scope.worker_version_id.clone(),
+        billing_snapshot_sha256: scope.billing_snapshot_sha256.clone(),
+        selected_at,
+        lease_expires_at,
+        hard_deadline_at,
+        response_received: false,
+        recovery_required: false,
+    });
+    let identity = scope
+        .active
+        .as_ref()
+        .expect("dispatch identity is installed before provider I/O")
+        .clone();
+    use crate::d1_repositories::RelayHttpStreamDispatchAuthorizationOutcome as Authorization;
+    let dispatched_at = unix_timestamp();
+    match crate::d1_repositories::authorize_relay_http_stream_dispatch(
+        db,
+        &identity.reservation_key,
+        identity.owner_generation,
+        identity.attempt_generation,
+        dispatched_at,
+    )
+    .await?
+    {
+        Authorization::Applied => {}
+        outcome => {
+            let _ = crate::d1_repositories::mark_relay_http_stream_dispatch_recovery_required(
+                db,
+                &identity.reservation_key,
+                identity.owner_generation,
+                identity.attempt_generation,
+                "dispatch_authorization_uncertain",
+                dispatched_at,
+            )
+            .await;
+            if let Some(active) = scope.active.as_mut() {
+                active.recovery_required = true;
+            }
+            return Err(worker::Error::RustError(format!(
+                "relay HTTP stream durable dispatch authorization was refused: {outcome:?}"
+            )));
+        }
+    }
+    let remaining_dispatch_seconds = identity
+        .hard_deadline_at
+        .saturating_sub(dispatched_at)
+        .max(1);
+    let timeout_seconds = RELAY_HTTP_STREAM_DISPATCH_TIMEOUT_SECONDS.min(
+        u64::try_from(remaining_dispatch_seconds)
+            .unwrap_or(RELAY_HTTP_STREAM_DISPATCH_TIMEOUT_SECONDS),
+    );
+    let pending = Box::pin(future);
+    let timeout = Box::pin(Delay::from(Duration::from_secs(timeout_seconds)));
+    let result = match select(pending, timeout).await {
+        Either::Left((result, _)) => result,
+        Either::Right((_, _)) => Err(worker::Error::RustError(
+            "relay HTTP stream provider response header timeout".to_string(),
+        )),
+    };
+    match result {
+        Ok(response) => {
+            let response_status = response.status_code();
+            let upstream_request_id_sha256 =
+                relay_http_stream_upstream_request_id_sha256(&response);
+            let now = unix_timestamp();
+            use crate::d1_repositories::RelayHttpStreamDispatchTransitionOutcome as Transition;
+            match crate::d1_repositories::mark_relay_http_stream_dispatch_response_received(
+                db,
+                &identity.reservation_key,
+                identity.owner_generation,
+                identity.attempt_generation,
+                i64::from(response_status),
+                &upstream_request_id_sha256,
+                now,
+            )
+            .await
+            {
+                Ok(Transition::Applied | Transition::MatchingReplay) => {
+                    if let Some(active) = scope.active.as_mut() {
+                        active.response_received = true;
+                    }
+                    if response_status == 200 {
+                        Ok(response)
+                    } else {
+                        let recovery = crate::d1_repositories::mark_relay_http_stream_dispatch_recovery_required(
+                            db,
+                            &identity.reservation_key,
+                            identity.owner_generation,
+                            identity.attempt_generation,
+                            "provider_non_success_response",
+                            now,
+                        )
+                        .await;
+                        if let Some(active) = scope.active.as_mut() {
+                            active.recovery_required = true;
+                        }
+                        Err(worker::Error::RustError(format!(
+                            "relay HTTP stream provider returned status {response_status}; recovery is required: {recovery:?}"
+                        )))
+                    }
+                }
+                transition => {
+                    let _ =
+                        crate::d1_repositories::mark_relay_http_stream_dispatch_recovery_required(
+                            db,
+                            &identity.reservation_key,
+                            identity.owner_generation,
+                            identity.attempt_generation,
+                            "response_transition_uncertain",
+                            now,
+                        )
+                        .await;
+                    if let Some(active) = scope.active.as_mut() {
+                        active.recovery_required = true;
+                    }
+                    Err(worker::Error::RustError(format!(
+                        "relay HTTP stream response evidence is uncertain: {transition:?}"
+                    )))
+                }
+            }
+        }
+        Err(error) => {
+            let now = unix_timestamp();
+            let recovery =
+                crate::d1_repositories::mark_relay_http_stream_dispatch_recovery_required(
+                    db,
+                    &identity.reservation_key,
+                    identity.owner_generation,
+                    identity.attempt_generation,
+                    "provider_transport_uncertain",
+                    now,
+                )
+                .await;
+            if let Some(active) = scope.active.as_mut() {
+                active.recovery_required = true;
+            }
+            match recovery {
+                Ok(
+                    crate::d1_repositories::RelayHttpStreamDispatchTransitionOutcome::Applied
+                    | crate::d1_repositories::RelayHttpStreamDispatchTransitionOutcome::MatchingReplay,
+                ) => Err(worker::Error::RustError(format!(
+                    "relay HTTP stream provider dispatch is ambiguous and requires recovery: {error}"
+                ))),
+                outcome => Err(worker::Error::RustError(format!(
+                    "relay HTTP stream provider dispatch is ambiguous; recovery transition failed: {outcome:?}; provider error: {error}"
+                ))),
+            }
+        }
+    }
+}
 
 struct DurableRelayStreamState {
     stream: worker::ByteStream,
@@ -10413,6 +11029,7 @@ struct DurableRelayStreamState {
     upstream_request_id: Option<String>,
     stream_lease: RelayBillingStreamLease,
     expected_lease_expires_at: i64,
+    hard_deadline_at: i64,
     next_heartbeat_at: i64,
     heartbeat_audit: RelayBillingStreamLeaseHeartbeatAudit,
 }
@@ -10611,9 +11228,11 @@ async fn complete_durable_streaming_relay_response(
             "relay HTTP stream durable handoff prerequisites are incomplete".to_string(),
         ));
     }
-    if !crate::d1_repositories::relay_http_stream_handoff_schema_ready(&db).await? {
+    if !crate::d1_repositories::relay_http_stream_handoff_schema_ready(&db).await?
+        || !crate::d1_repositories::relay_http_stream_dispatch_schema_ready(&db).await?
+    {
         return Err(worker::Error::RustError(
-            "relay HTTP stream durable handoff migration 0056 is unavailable".to_string(),
+            "relay HTTP stream durable handoff migrations 0056/0057 are unavailable".to_string(),
         ));
     }
     let preflight = audit
@@ -10657,26 +11276,29 @@ async fn complete_durable_streaming_relay_response(
         "{:x}",
         Sha256::digest(reservation.billing_snapshot_json.as_bytes())
     );
-    let worker_version_id = env
-        .get_binding::<WorkerVersionMetadata>("CF_VERSION_METADATA")
-        .ok()
-        .map(|metadata| metadata.id())
-        .filter(|id| !id.is_empty() && id.len() <= 128)
-        .ok_or_else(|| {
-            worker::Error::RustError(
-                "relay HTTP stream durable handoff Worker version metadata is unavailable"
-                    .to_string(),
-            )
-        })?;
-    let provider_operation_id = relay_http_stream_provider_operation_id(
-        &reservation_key,
-        owner_generation,
-        channel.id,
-        selected_at,
-        upstream_request_id.as_deref(),
-    );
-    let attempt_generation =
-        i64::try_from(audit.attempts.total.max(1)).unwrap_or(i64::from(i32::MAX));
+    let dispatch = audit.http_stream_dispatch.clone().ok_or_else(|| {
+        worker::Error::RustError(
+            "relay HTTP stream durable handoff dispatch identity is missing".to_string(),
+        )
+    })?;
+    if !dispatch.response_received
+        || dispatch.recovery_required
+        || dispatch.reservation_key != reservation_key
+        || dispatch.owner_generation != owner_generation
+        || dispatch.channel_id != channel.id
+        || dispatch.selected_group != group
+        || dispatch.expr_hash != preflight.contract_hash()
+        || dispatch.billing_snapshot_sha256 != billing_snapshot_sha256
+        || dispatch.selected_at != selected_at
+        || dispatch.lease_expires_at != initial_lease_expires_at
+        || dispatch.hard_deadline_at < initial_lease_expires_at
+        || dispatch.hard_deadline_at <= unix_timestamp()
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable handoff dispatch identity conflicts".to_string(),
+        ));
+    }
+    let attempt_generation = dispatch.attempt_generation;
     let created_at = unix_timestamp();
     let record = crate::d1_repositories::RelayHttpStreamHandoffRecord {
         reservation_key: &reservation_key,
@@ -10685,20 +11307,59 @@ async fn complete_durable_streaming_relay_response(
         channel_id: channel.id,
         selected_group: &group,
         expr_hash: preflight.contract_hash(),
-        provider_operation_id: &provider_operation_id,
-        worker_version_id: &worker_version_id,
+        provider_operation_id: &dispatch.provider_operation_id,
+        worker_version_id: &dispatch.worker_version_id,
         billing_snapshot_sha256: &billing_snapshot_sha256,
+        dispatch_hard_deadline_at: dispatch.hard_deadline_at,
         created_at,
         lease_expires_at: initial_lease_expires_at,
     };
     use crate::d1_repositories::RelayHttpStreamHandoffCreateOutcome as CreateOutcome;
-    match crate::d1_repositories::create_relay_http_stream_handoff(&db, &record).await? {
-        CreateOutcome::Applied => {}
-        outcome => {
+    match crate::d1_repositories::create_relay_http_stream_handoff(&db, &record).await {
+        Ok(CreateOutcome::Applied | CreateOutcome::MatchingReplay) => {}
+        Ok(outcome) => {
+            let _ = crate::d1_repositories::mark_relay_http_stream_dispatch_recovery_required(
+                &db,
+                &reservation_key,
+                owner_generation,
+                attempt_generation,
+                "handoff_creation_refused",
+                unix_timestamp(),
+            )
+            .await;
             return Err(worker::Error::RustError(format!(
                 "relay HTTP stream durable handoff creation was refused: {outcome:?}"
-            )))
+            )));
         }
+        Err(error) => {
+            let _ = crate::d1_repositories::mark_relay_http_stream_dispatch_recovery_required(
+                &db,
+                &reservation_key,
+                owner_generation,
+                attempt_generation,
+                "handoff_creation_uncertain",
+                unix_timestamp(),
+            )
+            .await;
+            return Err(worker::Error::RustError(format!(
+                "relay HTTP stream durable handoff creation is uncertain: {error}"
+            )));
+        }
+    }
+    let dispatch_status = crate::d1_repositories::relay_http_stream_dispatch_intent(
+        &db,
+        &reservation_key,
+        attempt_generation,
+    )
+    .await?;
+    if !dispatch_status.is_some_and(|current| {
+        current.status == "stream_bound"
+            && current.owner_generation == owner_generation
+            && current.provider_operation_id == dispatch.provider_operation_id
+    }) {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream durable handoff atomic dispatch promotion is missing".to_string(),
+        ));
     }
 
     let headers =
@@ -10756,6 +11417,7 @@ async fn complete_durable_streaming_relay_response(
         upstream_status: status,
         upstream_request_id,
         expected_lease_expires_at: initial_lease_expires_at,
+        hard_deadline_at: dispatch.hard_deadline_at,
         next_heartbeat_at: created_at.saturating_add(heartbeat_seconds),
         heartbeat_audit: RelayBillingStreamLeaseHeartbeatAudit::new(
             heartbeat_seconds,
@@ -10772,38 +11434,31 @@ async fn complete_durable_streaming_relay_response(
     Ok(response)
 }
 
-fn relay_http_stream_provider_operation_id(
-    reservation_key: &str,
-    owner_generation: i64,
-    channel_id: i64,
-    selected_at: i64,
-    upstream_request_id: Option<&str>,
-) -> String {
-    let mut digest = Sha256::new();
-    digest.update(b"cinatoken/relay-http-stream/provider-operation/v1\0");
-    for field in [
-        reservation_key.to_string(),
-        owner_generation.to_string(),
-        channel_id.to_string(),
-        selected_at.to_string(),
-        upstream_request_id.unwrap_or_default().to_string(),
-    ] {
-        digest.update((field.len() as u64).to_be_bytes());
-        digest.update(field.as_bytes());
-    }
-    format!("{:x}", digest.finalize())
-}
-
 async fn durable_relay_stream_next(
     mut state: DurableRelayStreamState,
 ) -> worker::Result<Option<(Vec<u8>, DurableRelayStreamState)>> {
     if state.terminal_staged {
         return Ok(None);
     }
+    let now = unix_timestamp();
+    if now >= state.hard_deadline_at {
+        durable_mark_stream_recovery(
+            &state,
+            "worker_termination",
+            "stream_total_deadline_exceeded",
+        )
+        .await;
+        return Err(worker::Error::RustError(
+            "upstream SSE stream exceeded the durable total deadline".to_string(),
+        ));
+    }
+    let remaining_seconds = u64::try_from(state.hard_deadline_at.saturating_sub(now))
+        .unwrap_or(RELAY_HTTP_STREAM_IDLE_TIMEOUT_SECONDS)
+        .max(1);
+    let timeout_seconds = RELAY_HTTP_STREAM_IDLE_TIMEOUT_SECONDS.min(remaining_seconds);
+    let total_deadline_wins = remaining_seconds <= RELAY_HTTP_STREAM_IDLE_TIMEOUT_SECONDS;
     let next_chunk = Box::pin(state.stream.next());
-    let idle_timeout = Box::pin(Delay::from(Duration::from_secs(
-        RELAY_HTTP_STREAM_IDLE_TIMEOUT_SECONDS,
-    )));
+    let idle_timeout = Box::pin(Delay::from(Duration::from_secs(timeout_seconds)));
     match select(next_chunk, idle_timeout).await {
         Either::Left((Some(Ok(chunk)), _)) => {
             durable_process_stream_chunk(&mut state, &chunk).await?;
@@ -10827,10 +11482,22 @@ async fn durable_relay_stream_next(
         }
         Either::Right((_, pending_chunk)) => {
             drop(pending_chunk);
-            durable_mark_stream_recovery(&state, "idle_timeout", "stream_idle_timeout").await;
-            Err(worker::Error::RustError(
-                "upstream SSE stream exceeded the durable idle timeout".to_string(),
-            ))
+            if total_deadline_wins {
+                durable_mark_stream_recovery(
+                    &state,
+                    "worker_termination",
+                    "stream_total_deadline_exceeded",
+                )
+                .await;
+                Err(worker::Error::RustError(
+                    "upstream SSE stream exceeded the durable total deadline".to_string(),
+                ))
+            } else {
+                durable_mark_stream_recovery(&state, "idle_timeout", "stream_idle_timeout").await;
+                Err(worker::Error::RustError(
+                    "upstream SSE stream exceeded the durable idle timeout".to_string(),
+                ))
+            }
         }
     }
 }
@@ -10901,11 +11568,28 @@ async fn durable_process_stream_chunk(
 
 async fn durable_renew_stream_lease(state: &mut DurableRelayStreamState) -> worker::Result<()> {
     let now = unix_timestamp();
+    if now >= state.hard_deadline_at {
+        durable_mark_stream_recovery(
+            state,
+            "worker_termination",
+            "stream_total_deadline_exceeded",
+        )
+        .await;
+        return Err(worker::Error::RustError(
+            "relay HTTP stream total deadline expired before lease renewal".to_string(),
+        ));
+    }
     if now < state.next_heartbeat_at && now.saturating_add(1) < state.expected_lease_expires_at {
         return Ok(());
     }
     state.heartbeat_audit.attempt_count = state.heartbeat_audit.attempt_count.saturating_add(1);
-    let requested_lease_expires_at = now.saturating_add(state.stream_lease.lease_seconds);
+    let requested_lease_expires_at = now
+        .saturating_add(state.stream_lease.lease_seconds)
+        .min(state.hard_deadline_at);
+    if requested_lease_expires_at <= state.expected_lease_expires_at {
+        state.next_heartbeat_at = state.hard_deadline_at;
+        return Ok(());
+    }
     use crate::d1_repositories::RelayBillingLeaseRenewalOutcome as Outcome;
     let renewal = crate::d1_repositories::renew_relay_billing_selected_attempt_lease(
         &state.db,
@@ -11681,6 +12365,7 @@ struct RelayAuditContext {
     /// This is populated by the cloned stream branch and never contains the
     /// reservation key or account identity.
     stream_lease_heartbeat: Option<RelayBillingStreamLeaseHeartbeatAudit>,
+    http_stream_dispatch: Option<RelayHttpStreamDispatchIdentity>,
     /// Internal Durable Object key used only to record a preferred channel
     /// after final response interpretation. It is never serialized to audit.
     affinity_key: Option<String>,
@@ -13135,6 +13820,19 @@ impl RelayBillingGroupPlan {
         match self {
             Self::Tiered(plan) => plan.owner_lease_expires_at = Some(lease_expires_at),
             Self::Flat(plan) => plan.owner_lease_expires_at = Some(lease_expires_at),
+        }
+    }
+
+    fn apply_selected_dispatch_binding(&mut self, owner_generation: i64, lease_expires_at: i64) {
+        match self {
+            Self::Tiered(plan) => {
+                plan.owner_generation = Some(owner_generation);
+                plan.owner_lease_expires_at = Some(lease_expires_at);
+            }
+            Self::Flat(plan) => {
+                plan.owner_generation = Some(owner_generation);
+                plan.owner_lease_expires_at = Some(lease_expires_at);
+            }
         }
     }
 
@@ -16086,63 +16784,123 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn relay_http_stream_provider_operation_id_is_deterministic_and_identity_bound() {
-        let operation_id = relay_http_stream_provider_operation_id(
+    fn durable_http_stream_reservation_lease_fits_the_hard_deadline() {
+        assert_eq!(
+            relay_http_stream_reservation_lease_seconds(
+                RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS,
+                true,
+            ),
+            RELAY_HTTP_STREAM_TOTAL_TIMEOUT_SECONDS
+        );
+        assert_eq!(relay_http_stream_reservation_lease_seconds(600, true), 600);
+        assert_eq!(
+            relay_http_stream_reservation_lease_seconds(
+                RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS,
+                false,
+            ),
+            RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+        );
+    }
+
+    #[test]
+    fn relay_http_stream_dispatch_operation_id_is_deterministic_and_identity_bound() {
+        let request_sha256 = "a".repeat(64);
+        let operation_id = relay_http_stream_dispatch_operation_id(
             "reservation-1",
             7,
+            1,
             19,
-            1_700_000_000,
-            Some("upstream-request-1"),
+            "default",
+            "chat/completions",
+            "direct_provider",
+            &request_sha256,
+            1_700_000_900,
         );
         assert_eq!(
             operation_id,
-            "78d78d3fa4f5e854f181eb74cad1563af87028b3c465016c75b8050ad5886818"
+            "4bf69b9465dcee7b5cef1974c9c84e9452f87f6a18ea238c6877c26de1b72bf0"
         );
+        assert!(operation_id.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(
             operation_id,
-            relay_http_stream_provider_operation_id(
+            relay_http_stream_dispatch_operation_id(
                 "reservation-1",
                 7,
+                1,
                 19,
-                1_700_000_000,
-                Some("upstream-request-1"),
+                "default",
+                "chat/completions",
+                "direct_provider",
+                &request_sha256,
+                1_700_000_900,
             )
         );
         for distinct in [
-            relay_http_stream_provider_operation_id(
+            relay_http_stream_dispatch_operation_id(
                 "reservation-2",
                 7,
+                1,
                 19,
-                1_700_000_000,
-                Some("upstream-request-1"),
+                "default",
+                "chat/completions",
+                "direct_provider",
+                &request_sha256,
+                1_700_000_900,
             ),
-            relay_http_stream_provider_operation_id(
+            relay_http_stream_dispatch_operation_id(
                 "reservation-1",
                 8,
+                1,
                 19,
-                1_700_000_000,
-                Some("upstream-request-1"),
+                "default",
+                "chat/completions",
+                "direct_provider",
+                &request_sha256,
+                1_700_000_900,
             ),
-            relay_http_stream_provider_operation_id(
+            relay_http_stream_dispatch_operation_id(
                 "reservation-1",
                 7,
+                2,
+                19,
+                "default",
+                "chat/completions",
+                "direct_provider",
+                &request_sha256,
+                1_700_000_900,
+            ),
+            relay_http_stream_dispatch_operation_id(
+                "reservation-1",
+                7,
+                1,
                 20,
-                1_700_000_000,
-                Some("upstream-request-1"),
+                "default",
+                "chat/completions",
+                "direct_provider",
+                &request_sha256,
+                1_700_000_900,
             ),
-            relay_http_stream_provider_operation_id(
+            relay_http_stream_dispatch_operation_id(
                 "reservation-1",
                 7,
+                1,
                 19,
-                1_700_000_001,
-                Some("upstream-request-1"),
+                "vip",
+                "chat/completions",
+                "direct_provider",
+                &request_sha256,
+                1_700_000_900,
             ),
-            relay_http_stream_provider_operation_id(
+            relay_http_stream_dispatch_operation_id(
                 "reservation-1",
                 7,
+                1,
                 19,
-                1_700_000_000,
-                Some("upstream-request-2"),
+                "default",
+                "responses",
+                "ai_gateway",
+                &"b".repeat(64),
+                1_700_000_901,
             ),
         ] {
             assert_ne!(operation_id, distinct);

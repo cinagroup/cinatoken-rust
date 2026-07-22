@@ -35,11 +35,11 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 This re-audit keeps the overall migration goal open. Passing local gates proves
 implementation readiness only for the covered behavior.
 
-The current source-tree D1 head is migration 0056 with 56 contiguous migration
-files, 64 tables, 814 checked incremental columns, and 94 key indexes. Older
+The current source-tree D1 head is migration 0057 with 57 contiguous migration
+files, 65 tables, 841 checked incremental columns, and 96 key indexes. Older
 dated sections below retain their historical head/count snapshots. The
-0050-0056 admission, response, financial terminal, shard-activation,
-one-time campaign, and HTTP stream handoff paths
+0050-0057 admission, response, financial terminal, shard-activation,
+one-time campaign, HTTP stream handoff, and pre-dispatch intent paths
 are local candidate work, not remote schema evidence. Flat intent runtime and
 Container readiness do not imply pricing or traffic cutover readiness;
 `relay_flat_billing_go_parity_ready` and
@@ -1799,3 +1799,29 @@ provider-dispatch-to-handoff crash window, immediate client cancellation,
 total stream deadline, or real Cloudflare Queue/D1/restart/version-skew fault
 evidence. Remote 0056, credential rotation, P5, and Go/VPS drain remain absent.
 See `docs/relay-http-stream-durable-handoff.md`. Production remains **NO-GO**.
+
+## 2026-07-22 Ordinary HTTP SSE Dispatch Intent Status
+
+Migration 0057 is now the local current head at 57 migrations, 65 tables, 841
+checked incremental columns, and 96 key indexes. It closes the gated paid SSE
+provider-dispatch-to-handoff persistence window by adding an atomic
+reservation-bound `prepared` intent, a single send-authorizing dispatch CAS,
+conservative response/transport recovery, and transactional 0056
+`stream_bound` promotion before client bytes.
+
+The first candidate permits one provider attempt and disables retry/fallback
+after dispatch. Response headers are bounded to 120 seconds. A 900-second
+immutable hard deadline caps stream leases, and the scheduler recovers expired
+pre-handoff intents without provider resend. Dispatch recovery atomically
+advances the billing reservation recovery owner.
+
+Local SQLite 57/65/841/96, config audits, Worker 858/858, production Worker
+build, Workerd lifecycle 50/50, P5 fixture tests, and the complete 878.4-second
+repository aggregate pass. All four SSE gates remain false.
+
+The migration is not production-complete. Immediate client cancellation still
+lacks a `Request.signal`-driven durable watchdog, and the durable-disabled
+clone/tee path lacks slow-consumer backpressure proof. Remote 0057, Queue/D1/
+restart/version-skew/provider-invoice campaigns, P5, credential rotation, and
+Go/VPS drain/rollback evidence remain absent. Go/VPS stays authoritative and
+production remains **NO-GO**.

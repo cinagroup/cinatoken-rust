@@ -1292,23 +1292,79 @@ describe("Rust Durable Object lifecycle contracts", () => {
       reservationKey,
       leaseExpiresAt: now + 600,
       bound: true,
+      selectedAt: now,
     });
+    const requestSha256 = await sha256Hex(
+      new TextEncoder().encode('{"stream":true}'),
+    );
     await env.DB.prepare(
-      `INSERT INTO relay_http_stream_handoffs (
-        reservation_key, owner_generation, attempt_generation, channel_id,
-        selected_group, expr_hash, provider_operation_id, worker_version_id,
-        billing_snapshot_sha256, lease_expires_at, created_at, updated_at
-      ) VALUES (?1, 2, 1, 42, 'default', 'sha256:runtime', ?2,
-                'runtime-worker-0056', ?3, ?4, ?5, ?5)`,
+      `INSERT INTO relay_http_stream_dispatch_intents (
+        reservation_key, attempt_generation, prebind_owner_generation,
+        owner_generation, channel_id, selected_group, expr_hash,
+        provider_operation_id, worker_version_id, billing_snapshot_sha256,
+        request_sha256, endpoint_path, transport_kind, status, selected_at,
+        lease_expires_at, hard_deadline_at, created_at, updated_at
+      ) VALUES (?1, 1, 1, 2, 42, 'default', 'sha256:runtime', ?2,
+        'runtime-worker-0057', ?3, ?4, 'chat/completions', 'direct_provider',
+        'prepared', ?5, ?6, ?7, ?5, ?5)`,
     )
       .bind(
         reservationKey,
         providerOperationId,
         billingSnapshotSha256,
+        requestSha256,
+        now,
+        now + 600,
+        now + 900,
+      )
+      .run();
+    await env.DB.prepare(
+      `UPDATE relay_http_stream_dispatch_intents
+       SET status = 'dispatched', dispatched_at = ?2, updated_at = ?2
+       WHERE reservation_key = ?1`,
+    )
+      .bind(reservationKey, now)
+      .run();
+    await env.DB.prepare(
+      `UPDATE relay_http_stream_dispatch_intents
+       SET status = 'response_received', response_status = 200,
+           upstream_request_id_sha256 = ?2, response_received_at = ?3,
+           updated_at = ?3
+       WHERE reservation_key = ?1`,
+    )
+      .bind(
+        reservationKey,
+        await sha256Hex(new TextEncoder().encode("runtime-upstream-request")),
+        now,
+      )
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO relay_http_stream_handoffs (
+        reservation_key, owner_generation, attempt_generation, channel_id,
+        selected_group, expr_hash, provider_operation_id, worker_version_id,
+        billing_snapshot_sha256, dispatch_hard_deadline_at,
+        lease_expires_at, created_at, updated_at
+      ) VALUES (?1, 2, 1, 42, 'default', 'sha256:runtime', ?2,
+                'runtime-worker-0057', ?3, ?4, ?5, ?6, ?6)`,
+    )
+      .bind(
+        reservationKey,
+        providerOperationId,
+        billingSnapshotSha256,
+        now + 900,
         now + 600,
         now,
       )
       .run();
+    await expect(
+      env.DB.prepare(
+        `SELECT status, handoff_bound_at
+         FROM relay_http_stream_dispatch_intents
+         WHERE reservation_key = ?1`,
+      )
+        .bind(reservationKey)
+        .first(),
+    ).resolves.toMatchObject({ status: "stream_bound", handoff_bound_at: now });
     await env.DB.prepare(
       `UPDATE relay_http_stream_handoffs
        SET checkpoint_sequence = 1, chunk_count = 1, byte_count = 128,
@@ -1422,6 +1478,99 @@ describe("Rust Durable Object lifecycle contracts", () => {
     ).rejects.toThrow(/append-preserved/);
   }, 30_000);
 
+  it("grants one HTTP stream provider send and atomically fences ambiguous recovery", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await seedRealtimeBillingAccount();
+    const now = Math.floor(Date.now() / 1000);
+    const reservationKey = "relayreserve-runtime-http-stream-dispatch";
+    const providerOperationId = await sha256Hex(
+      new TextEncoder().encode("runtime-http-stream-dispatch-operation"),
+    );
+    const billingSnapshotSha256 = await sha256Hex(
+      new TextEncoder().encode("{}"),
+    );
+    const requestSha256 = await sha256Hex(
+      new TextEncoder().encode('{"stream":true}'),
+    );
+
+    await seedRelayBillingReservation({
+      reservationKey,
+      leaseExpiresAt: now + 600,
+      bound: true,
+      selectedAt: now,
+    });
+    await env.DB.prepare(
+      `INSERT INTO relay_http_stream_dispatch_intents (
+        reservation_key, attempt_generation, prebind_owner_generation,
+        owner_generation, channel_id, selected_group, expr_hash,
+        provider_operation_id, worker_version_id, billing_snapshot_sha256,
+        request_sha256, endpoint_path, transport_kind, status, selected_at,
+        lease_expires_at, hard_deadline_at, created_at, updated_at
+      ) VALUES (?1, 1, 1, 2, 42, 'default', 'sha256:runtime', ?2,
+        'runtime-worker-0057', ?3, ?4, 'chat/completions', 'direct_provider',
+        'prepared', ?5, ?6, ?7, ?5, ?5)`,
+    )
+      .bind(
+        reservationKey,
+        providerOperationId,
+        billingSnapshotSha256,
+        requestSha256,
+        now,
+        now + 600,
+        now + 900,
+      )
+      .run();
+
+    const authorize = () =>
+      env.DB.prepare(
+        `UPDATE relay_http_stream_dispatch_intents
+         SET status = 'dispatched', dispatched_at = ?2, updated_at = ?2
+         WHERE reservation_key = ?1 AND attempt_generation = 1
+           AND status = 'prepared'`,
+      )
+        .bind(reservationKey, now)
+        .run();
+    const authorizationResults = await Promise.all([authorize(), authorize()]);
+    expect(
+      authorizationResults.reduce(
+        (total, result) => total + Number(result.meta?.changes ?? 0),
+        0,
+      ),
+    ).toBe(1);
+
+    await env.DB.prepare(
+      `UPDATE relay_http_stream_dispatch_intents
+       SET status = 'recovery_required',
+           terminal_reason = 'provider_transport_uncertain',
+           recovery_required_at = ?2, updated_at = ?2
+       WHERE reservation_key = ?1 AND status = 'dispatched'`,
+    )
+      .bind(reservationKey, now + 1)
+      .run();
+    await expect(
+      env.DB.prepare(
+        `SELECT dispatch.status AS dispatch_status,
+                dispatch.terminal_reason,
+                reservation.status AS billing_status,
+                reservation.owner_generation,
+                reservation.finalization_reason
+         FROM relay_http_stream_dispatch_intents AS dispatch
+         JOIN relay_billing_reservations AS reservation
+           ON reservation.reservation_key = dispatch.reservation_key
+         WHERE dispatch.reservation_key = ?1`,
+      )
+        .bind(reservationKey)
+        .first(),
+    ).resolves.toMatchObject({
+      dispatch_status: "recovery_required",
+      terminal_reason: "provider_transport_uncertain",
+      billing_status: "recovery_required",
+      owner_generation: 3,
+      finalization_reason: "provider_transport_uncertain",
+    });
+    expect((await authorize()).meta?.changes ?? 0).toBe(0);
+  }, 30_000);
+
   it("reports HTTP pre-bind fencing and a fail-closed scheduled terminalizer", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const { cookie } = await setupAndLoginBillingRoot();
@@ -1437,11 +1586,11 @@ describe("Rust Durable Object lifecycle contracts", () => {
       success: true,
       data: {
         d1_migration_status_available: true,
-        d1_migration_applied_count: 56,
+        d1_migration_applied_count: 57,
         d1_migration_latest:
-          "0056_relay_http_stream_handoffs.sql",
+          "0057_relay_http_stream_dispatch_intents.sql",
         d1_expected_migration:
-          "0056_relay_http_stream_handoffs.sql",
+          "0057_relay_http_stream_dispatch_intents.sql",
         d1_expected_migration_applied: true,
         d1_migration_set_matches: true,
         d1_migration_ready: true,
@@ -5266,10 +5415,10 @@ async function seedRelayBillingReservation({
   reservationKey,
   leaseExpiresAt,
   bound = false,
+  selectedAt = bound ? 1 : 0,
 }) {
   const channelId = bound ? 42 : 0;
   const selectedGroup = bound ? "default" : "";
-  const selectedAt = bound ? 1 : 0;
   const ownerGeneration = bound ? 2 : 1;
   await env.DB.prepare(
     `INSERT INTO relay_billing_reservations (

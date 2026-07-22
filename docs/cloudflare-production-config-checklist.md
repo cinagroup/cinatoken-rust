@@ -1499,7 +1499,7 @@ authorize deployment, wake, provider/financial work, traffic, or cutover.
   normalized business fingerprint.
 - Prove old-writer and active-operation drain, then apply
   `0056_relay_http_stream_handoffs.sql` while all four gates remain false.
-- Read back the exact current head: 56 migrations, 64 tables, 814 checked
+- Read back the historical 0056 checkpoint: 56 migrations, 64 tables, 814 checked
   incremental columns, 94 key indexes, both 0056 tables, three handoff indexes,
   and eleven 0056 triggers.
 - Prove rejection of identity mutation, usage/counter regression, event
@@ -1520,7 +1520,54 @@ authorize deployment, wake, provider/financial work, traffic, or cutover.
 6. Disable drain gates only after billing, audit, receipt, provider-counter,
    and backlog reconciliation is signed.
 
-Do not enable the producer while the provider-dispatch-to-handoff crash window,
+Do not enable the 0056-only producer while the provider-dispatch-to-handoff crash window,
 client-cancel/total-timeout evidence, real Queue/D1/restart fault matrix,
 provider failed-terminal policy, remote P5 packet, or Go/VPS drain is open.
 Migration 0056 is retained on rollback. Production remains **NO-GO**.
+
+## Migration 0057 HTTP SSE Dispatch Intent Checklist
+
+This checklist supersedes the current-head, dispatch-window, and total-deadline
+items in the 0056 checklist. It does not relax any 0056 outbox, receipt, Queue,
+or gate requirement.
+
+### Schema and compatibility
+
+- Require exact current head 0057/57 with 65 tables, 841 checked incremental
+  columns, and 96 key indexes.
+- Require the 0057 table, two indexes, ten triggers, and the immutable 0056
+  hard-deadline column. Reject any request/response body, prompt, credential,
+  cookie, raw frame, or raw upstream request ID field.
+- Confirm every N-1 0056 producer is drained and disabled before apply. N-1 may
+  remain only as a reader and must never be re-enabled as a durable producer on
+  the 0057 schema.
+- Confirm the scheduled Worker can sweep expired `prepared`, `dispatched`, and
+  `response_received` rows while never invoking a provider.
+
+### Runtime authority
+
+- Provider I/O is allowed only after the atomic reservation-bind/`prepared`
+  admission and a unique successful `prepared -> dispatched` CAS.
+- Set no retry/fallback override that can create a second attempt after CAS.
+  Channel retry, model fallback, and AI Gateway direct fallback must be off for
+  the admitted durable attempt.
+- Require the 120-second response-header bound, 900-second hard stream deadline,
+  and 3600-second policy cap. Lease renewal must not extend the hard deadline.
+- Require every fetch ambiguity and non-200 status to atomically set dispatch
+  plus billing recovery; there is no automatic refund or provider resend.
+- Require 0056 insert and 0057 `stream_bound` promotion to be one transaction
+  before a client body byte is released.
+
+### Promotion blockers
+
+- Do not enable the producer until real Workerd/staging evidence covers CAS and
+  D1 response loss, delayed headers, non-200 families, promotion statement
+  faults, periodic chunks across the hard deadline, scheduler takeover,
+  Queue/DLQ ambiguity, restart, and N/N-1.
+- Immediate client cancellation remains blocked until incoming
+  `Request.signal` and a durable watchdog are implemented and fault-tested.
+- The durable-disabled clone/tee path remains blocked on slow-client
+  backpressure and memory-bound evidence.
+- Remote 0057 readback, provider invoice/call conservation, P5, Go/VPS drain,
+  rollback, security, SLO/cost, and approvals are mandatory. Production
+  remains **NO-GO**.

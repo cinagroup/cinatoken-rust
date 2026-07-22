@@ -1169,7 +1169,7 @@ do that. Go/VPS remains authoritative and production remains **NO-GO**.
 
 ## 2026-07-22 Ordinary HTTP SSE Handoff Matrix
 
-The current local D1 candidate head is 0056/56 with 64 tables, 814 checked
+The pre-0057 local D1 candidate head was 0056/56 with 64 tables, 814 checked
 incremental columns, and 94 key indexes. Historical matrices above retain the
 counts of the candidate they audited; they are not current schema readback.
 
@@ -1186,3 +1186,25 @@ counts of the candidate they audited; they are not current schema readback.
 
 See `docs/relay-http-stream-durable-handoff.md` and Phase 4l of
 `docs/staging-smoke-runbook.md`. Go/VPS remains authoritative.
+
+## 2026-07-22 HTTP SSE Dispatch Intent Superseding Matrix
+
+This matrix supersedes the current-head and known-crash-window rows above.
+Current local head is 0057/57 with 65 tables, 841 checked incremental columns,
+and 96 key indexes.
+
+| Gate | Current local evidence | Production acceptance | Status |
+| --- | --- | --- | --- |
+| Persist before provider | Atomic reservation bind plus `prepared`; only one successful dispatch CAS grants provider polling | Remote D1 statement/CAS response-loss faults with independent provider call counter | Local D1/Workerd contract |
+| One attempt | Attempt generation one; retry, model fallback and AI Gateway direct fallback disabled after dispatch | Provider-family route/status matrix proving one call under every ambiguity | Local code contract; remote blocked |
+| Response handoff | 200 response plus 0056 insert promotes 0057 to `stream_bound` in one SQLite transaction before client bytes | Real statement faults and zero-byte ordering evidence | Local SQLite/Workerd contract |
+| Dispatch recovery | Fetch error, 120-second header timeout, non-200 and expired intents atomically fence billing recovery | Real delayed headers, status families, provider invoices and scheduler takeover | Local contract; remote blocked |
+| Total deadline | Immutable 900-second hard deadline caps handoff lease and active-pull timeout; policy cap is 3600 seconds | Periodic-chunk, stopped-pull, restart and backlog-age evidence | Partial; scheduler path local only |
+| Cancellation | Lease/scheduler recovery exists | `Request.signal` plus durable watchdog, immediate cancel race tests, and Cloudflare edge proof | **Blocked** |
+| Backpressure | Gated durable path is one instrumented stream | Replace/prove durable-disabled clone/tee under slow clients with bounded memory | **Blocked** |
+| Compatibility/rollback | N-1 remains reader-only after 0057; N drain worker plus hot Go/VPS retained | Real N/N-1 read campaign and producer-off rollback with zero backlog | Planned; remote blocked |
+| Promotion | All four SSE gates remain false; local Rust 858/858, SQLite 57/65/841/96, Workerd 50/50 and full aggregate pass | Remote 0057, complete fault/invoice/SLO/cost/P5/security packet and Go/VPS drain | **NO-GO** |
+
+The closed persistence window does not convert an ambiguous dispatched request
+into a safe retry or refund. It makes the ambiguity durable and uniquely owned.
+Go/VPS remains authoritative.

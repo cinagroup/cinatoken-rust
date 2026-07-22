@@ -37,6 +37,8 @@ pub(crate) const RELAY_BILLING_FINALIZATION_INCIDENT_MIGRATION: &str =
 pub(crate) const RELAY_BILLING_OWNER_GENERATION_MIGRATION: &str =
     "0026_relay_billing_owner_generation.sql";
 pub(crate) const RELAY_HTTP_STREAM_HANDOFF_MIGRATION: &str = "0056_relay_http_stream_handoffs.sql";
+pub(crate) const RELAY_HTTP_STREAM_DISPATCH_INTENT_MIGRATION: &str =
+    "0057_relay_http_stream_dispatch_intents.sql";
 pub(crate) const RELAY_CONTAINER_OPERATION_MIGRATION: &str = "0040_relay_container_operations.sql";
 pub(crate) const RELAY_CONTAINER_OPERATION_LIFECYCLE_MIGRATION: &str =
     "0041_relay_container_operation_lifecycle_hardening.sql";
@@ -188,6 +190,93 @@ pub struct RelayBillingReservation {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct RelayHttpStreamDispatchIntentRecord<'a> {
+    pub reservation_key: &'a str,
+    pub expected_owner_generation: i64,
+    pub attempt_generation: i64,
+    pub channel_id: i64,
+    pub selected_group: &'a str,
+    pub expr_hash: &'a str,
+    pub provider_operation_id: &'a str,
+    pub worker_version_id: &'a str,
+    pub billing_snapshot_sha256: &'a str,
+    pub request_sha256: &'a str,
+    pub endpoint_path: &'a str,
+    pub transport_kind: &'a str,
+    pub selected_at: i64,
+    pub lease_expires_at: i64,
+    pub hard_deadline_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayHttpStreamDispatchIntent {
+    pub reservation_key: String,
+    pub attempt_generation: i64,
+    pub prebind_owner_generation: i64,
+    pub owner_generation: i64,
+    pub channel_id: i64,
+    pub selected_group: String,
+    pub expr_hash: String,
+    pub provider_operation_id: String,
+    pub worker_version_id: String,
+    pub billing_snapshot_sha256: String,
+    pub request_sha256: String,
+    pub endpoint_path: String,
+    pub transport_kind: String,
+    pub status: String,
+    pub selected_at: i64,
+    pub lease_expires_at: i64,
+    pub hard_deadline_at: i64,
+    pub dispatched_at: i64,
+    pub response_status: i64,
+    pub upstream_request_id_sha256: String,
+    pub response_received_at: i64,
+    pub handoff_bound_at: i64,
+    pub recovery_required_at: i64,
+    pub terminal_reason: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayHttpStreamDispatchAdmissionOutcome {
+    Applied {
+        owner_generation: i64,
+        lease_expires_at: i64,
+    },
+    MatchingReplay {
+        owner_generation: i64,
+        lease_expires_at: i64,
+    },
+    AlreadyFinalized,
+    DeadlineExpired,
+    StaleGeneration,
+    Conflict,
+    NotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayHttpStreamDispatchTransitionOutcome {
+    Applied,
+    MatchingReplay,
+    NotFound,
+    StaleGeneration,
+    Terminal,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayHttpStreamDispatchAuthorizationOutcome {
+    Applied,
+    AlreadyDispatched,
+    NotFound,
+    StaleGeneration,
+    DeadlineExpired,
+    Terminal,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct RelayHttpStreamHandoffRecord<'a> {
     pub reservation_key: &'a str,
     pub owner_generation: i64,
@@ -198,6 +287,7 @@ pub struct RelayHttpStreamHandoffRecord<'a> {
     pub provider_operation_id: &'a str,
     pub worker_version_id: &'a str,
     pub billing_snapshot_sha256: &'a str,
+    pub dispatch_hard_deadline_at: i64,
     pub created_at: i64,
     pub lease_expires_at: i64,
 }
@@ -213,6 +303,7 @@ pub struct RelayHttpStreamHandoff {
     pub provider_operation_id: String,
     pub worker_version_id: String,
     pub billing_snapshot_sha256: String,
+    pub dispatch_hard_deadline_at: i64,
     pub status: String,
     pub lease_expires_at: i64,
     pub checkpoint_sequence: i64,
@@ -13125,6 +13216,7 @@ fn relay_http_stream_handoff_identity_matches(
         && current.provider_operation_id == record.provider_operation_id
         && current.worker_version_id == record.worker_version_id
         && current.billing_snapshot_sha256 == record.billing_snapshot_sha256
+        && current.dispatch_hard_deadline_at == record.dispatch_hard_deadline_at
         && current.created_at == record.created_at
         && current.lease_expires_at >= record.lease_expires_at
 }
@@ -13144,6 +13236,499 @@ fn relay_http_stream_checkpoint_matches(
         && current.rolling_sha256 == checkpoint.rolling_sha256
         && current.lease_expires_at >= checkpoint.lease_expires_at
         && current.updated_at >= checkpoint.updated_at
+}
+
+fn validate_relay_http_stream_dispatch_record(
+    record: &RelayHttpStreamDispatchIntentRecord<'_>,
+) -> worker::Result<()> {
+    validate_relay_http_stream_text(record.reservation_key, "dispatch reservation key", 192)?;
+    validate_relay_http_stream_text(record.selected_group, "dispatch selected group", 128)?;
+    validate_relay_http_stream_text(record.expr_hash, "dispatch expression hash", 96)?;
+    validate_relay_http_stream_sha256(record.provider_operation_id, "provider operation id")?;
+    validate_relay_http_stream_text(record.worker_version_id, "dispatch Worker version id", 128)?;
+    validate_relay_http_stream_sha256(
+        record.billing_snapshot_sha256,
+        "dispatch billing snapshot digest",
+    )?;
+    validate_relay_http_stream_sha256(record.request_sha256, "dispatch request digest")?;
+    validate_relay_http_stream_text(record.endpoint_path, "dispatch endpoint path", 192)?;
+    if !matches!(
+        record.transport_kind,
+        "ai_gateway" | "direct_provider" | "wfp_binding" | "raw_provider"
+    ) || record.expected_owner_generation <= 0
+        || record.expected_owner_generation >= i64::from(i32::MAX)
+        || record.attempt_generation <= 0
+        || record.channel_id <= 0
+        || record.selected_at <= 0
+        || record.lease_expires_at <= record.selected_at
+        || record.hard_deadline_at < record.lease_expires_at
+        || record.hard_deadline_at > record.selected_at.saturating_add(3_600)
+    {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream dispatch identity is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn relay_http_stream_dispatch_identity_matches(
+    current: &RelayHttpStreamDispatchIntent,
+    record: &RelayHttpStreamDispatchIntentRecord<'_>,
+) -> bool {
+    current.reservation_key == record.reservation_key
+        && current.attempt_generation == record.attempt_generation
+        && current.prebind_owner_generation == record.expected_owner_generation
+        && current.owner_generation == record.expected_owner_generation.saturating_add(1)
+        && current.channel_id == record.channel_id
+        && current.selected_group == record.selected_group
+        && current.expr_hash == record.expr_hash
+        && current.provider_operation_id == record.provider_operation_id
+        && current.worker_version_id == record.worker_version_id
+        && current.billing_snapshot_sha256 == record.billing_snapshot_sha256
+        && current.request_sha256 == record.request_sha256
+        && current.endpoint_path == record.endpoint_path
+        && current.transport_kind == record.transport_kind
+        && current.selected_at == record.selected_at
+        && current.lease_expires_at >= record.lease_expires_at
+        && current.hard_deadline_at == record.hard_deadline_at
+}
+
+pub async fn relay_http_stream_dispatch_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    let args = [D1Type::Text(RELAY_HTTP_STREAM_DISPATCH_INTENT_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT CASE WHEN
+              EXISTS (SELECT 1 FROM d1_migrations WHERE name = ?1)
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_http_stream_dispatch_intents'
+              )
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'index' AND name IN (
+                  'idx_relay_http_stream_dispatch_intents_recovery',
+                  'idx_relay_http_stream_dispatch_intents_active_lease'
+                )
+              ) = 2
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'trigger' AND name IN (
+                  'relay_http_stream_dispatch_intent_insert_guard',
+                  'relay_http_stream_dispatch_intent_identity_guard',
+                  'relay_http_stream_dispatch_intent_lifecycle_guard',
+                  'relay_http_stream_dispatch_intent_stream_bound_guard',
+                  'relay_http_stream_dispatch_intent_recovery_guard',
+                  'relay_http_stream_dispatch_intent_recovery_apply',
+                  'relay_http_stream_dispatch_intent_delete_guard',
+                  'relay_http_stream_handoff_dispatch_deadline_guard',
+                  'relay_http_stream_handoff_dispatch_intent_guard',
+                  'relay_http_stream_handoff_dispatch_intent_bind'
+                )
+              ) = 10
+            THEN 1 ELSE 0 END AS count
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn relay_http_stream_dispatch_intent(
+    db: &D1Database,
+    reservation_key: &str,
+    attempt_generation: i64,
+) -> worker::Result<Option<RelayHttpStreamDispatchIntent>> {
+    let args = [
+        D1Type::Text(non_empty_relay_reservation_field(
+            reservation_key,
+            "dispatch reservation key",
+        )?),
+        relay_http_stream_d1_integer(attempt_generation, "dispatch attempt generation")?,
+    ];
+    db.prepare(
+        r#"
+        SELECT reservation_key, attempt_generation, prebind_owner_generation,
+               owner_generation, channel_id, selected_group, expr_hash,
+               provider_operation_id, worker_version_id,
+               billing_snapshot_sha256, request_sha256, endpoint_path,
+               transport_kind, status, selected_at, lease_expires_at,
+               hard_deadline_at, dispatched_at, response_status,
+               upstream_request_id_sha256,
+               response_received_at, handoff_bound_at, recovery_required_at,
+               terminal_reason, created_at, updated_at
+        FROM relay_http_stream_dispatch_intents
+        WHERE reservation_key = ?1 AND attempt_generation = ?2
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayHttpStreamDispatchIntent>(None)
+    .await
+}
+
+pub async fn admit_relay_http_stream_dispatch(
+    db: &D1Database,
+    record: &RelayHttpStreamDispatchIntentRecord<'_>,
+) -> worker::Result<RelayHttpStreamDispatchAdmissionOutcome> {
+    validate_relay_http_stream_dispatch_record(record)?;
+    if let Some(current) =
+        relay_http_stream_dispatch_intent(db, record.reservation_key, record.attempt_generation)
+            .await?
+    {
+        return if relay_http_stream_dispatch_identity_matches(&current, record) {
+            Ok(RelayHttpStreamDispatchAdmissionOutcome::MatchingReplay {
+                owner_generation: current.owner_generation,
+                lease_expires_at: current.lease_expires_at,
+            })
+        } else {
+            Ok(RelayHttpStreamDispatchAdmissionOutcome::Conflict)
+        };
+    }
+    let Some(reservation) = relay_billing_reservation(db, record.reservation_key).await? else {
+        return Ok(RelayHttpStreamDispatchAdmissionOutcome::NotFound);
+    };
+    if reservation.status != "reserved" {
+        return Ok(RelayHttpStreamDispatchAdmissionOutcome::AlreadyFinalized);
+    }
+    if reservation.owner_generation != record.expected_owner_generation {
+        return Ok(RelayHttpStreamDispatchAdmissionOutcome::StaleGeneration);
+    }
+    if reservation.owner_deadline_at <= 0 || record.selected_at > reservation.owner_deadline_at {
+        return Ok(RelayHttpStreamDispatchAdmissionOutcome::DeadlineExpired);
+    }
+    if reservation.channel_id != 0
+        || !reservation.selected_group.is_empty()
+        || reservation.selected_at != 0
+        || reservation.expr_hash != record.expr_hash
+    {
+        return Ok(RelayHttpStreamDispatchAdmissionOutcome::Conflict);
+    }
+    let lease_expires_at = reservation.lease_expires_at.max(record.lease_expires_at);
+    if lease_expires_at > record.hard_deadline_at {
+        return Ok(RelayHttpStreamDispatchAdmissionOutcome::Conflict);
+    }
+    let args = [
+        D1Type::Text(record.reservation_key),
+        relay_http_stream_d1_integer(
+            record.expected_owner_generation,
+            "dispatch prebind owner generation",
+        )?,
+        relay_http_stream_d1_integer(record.attempt_generation, "dispatch attempt generation")?,
+        relay_http_stream_d1_integer(record.channel_id, "dispatch channel id")?,
+        D1Type::Text(record.selected_group),
+        D1Type::Text(record.expr_hash),
+        D1Type::Text(record.provider_operation_id),
+        D1Type::Text(record.worker_version_id),
+        D1Type::Text(record.billing_snapshot_sha256),
+        D1Type::Text(record.request_sha256),
+        D1Type::Text(record.endpoint_path),
+        D1Type::Text(record.transport_kind),
+        relay_http_stream_d1_integer(record.selected_at, "dispatch selected time")?,
+        relay_http_stream_d1_integer(lease_expires_at, "dispatch lease expiry")?,
+        relay_http_stream_d1_integer(record.hard_deadline_at, "dispatch hard deadline")?,
+    ];
+    let bind = db
+        .prepare(
+            r#"
+            UPDATE relay_billing_reservations
+            SET owner_generation = owner_generation + 1,
+                channel_id = ?4, selected_group = ?5, selected_at = ?13,
+                lease_expires_at = ?14, updated_at = ?13
+            WHERE reservation_key = ?1 AND status = 'reserved'
+              AND owner_generation = ?2
+              AND owner_deadline_at > 0 AND ?13 <= owner_deadline_at
+              AND channel_id = 0 AND selected_group = '' AND selected_at = 0
+              AND expr_hash = ?6
+            "#,
+        )
+        .bind_refs(&args)?;
+    let insert = db
+        .prepare(
+            r#"
+            INSERT INTO relay_http_stream_dispatch_intents (
+              reservation_key, attempt_generation, prebind_owner_generation,
+              owner_generation, channel_id, selected_group, expr_hash,
+              provider_operation_id, worker_version_id,
+              billing_snapshot_sha256, request_sha256, endpoint_path,
+              transport_kind, status, selected_at, lease_expires_at, hard_deadline_at,
+              created_at, updated_at
+            ) VALUES (
+              ?1, ?3, ?2, ?2 + 1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+              ?12, 'prepared', ?13, ?14, ?15, ?13, ?13
+            )
+            "#,
+        )
+        .bind_refs(&args)?;
+    let results = match db.batch(vec![bind, insert]).await {
+        Ok(results) => results,
+        Err(error) => {
+            if let Some(current) = relay_http_stream_dispatch_intent(
+                db,
+                record.reservation_key,
+                record.attempt_generation,
+            )
+            .await?
+            {
+                return if relay_http_stream_dispatch_identity_matches(&current, record) {
+                    Ok(RelayHttpStreamDispatchAdmissionOutcome::MatchingReplay {
+                        owner_generation: current.owner_generation,
+                        lease_expires_at: current.lease_expires_at,
+                    })
+                } else {
+                    Ok(RelayHttpStreamDispatchAdmissionOutcome::Conflict)
+                };
+            }
+            let Some(current) = relay_billing_reservation(db, record.reservation_key).await? else {
+                return Ok(RelayHttpStreamDispatchAdmissionOutcome::NotFound);
+            };
+            if current.status != "reserved" {
+                return Ok(RelayHttpStreamDispatchAdmissionOutcome::AlreadyFinalized);
+            }
+            if current.owner_generation != record.expected_owner_generation {
+                return Ok(RelayHttpStreamDispatchAdmissionOutcome::StaleGeneration);
+            }
+            if current.owner_deadline_at <= 0 || record.selected_at > current.owner_deadline_at {
+                return Ok(RelayHttpStreamDispatchAdmissionOutcome::DeadlineExpired);
+            }
+            return Err(error);
+        }
+    };
+    if batch_changed(&results, 0)? && batch_changed(&results, 1)? {
+        Ok(RelayHttpStreamDispatchAdmissionOutcome::Applied {
+            owner_generation: record.expected_owner_generation.saturating_add(1),
+            lease_expires_at,
+        })
+    } else {
+        Err(worker::Error::RustError(
+            "relay HTTP stream dispatch admission batch returned an invalid result".to_string(),
+        ))
+    }
+}
+
+pub async fn authorize_relay_http_stream_dispatch(
+    db: &D1Database,
+    reservation_key: &str,
+    owner_generation: i64,
+    attempt_generation: i64,
+    dispatched_at: i64,
+) -> worker::Result<RelayHttpStreamDispatchAuthorizationOutcome> {
+    let args = [
+        D1Type::Text(non_empty_relay_reservation_field(
+            reservation_key,
+            "dispatch reservation key",
+        )?),
+        relay_http_stream_d1_integer(owner_generation, "dispatch owner generation")?,
+        relay_http_stream_d1_integer(attempt_generation, "dispatch attempt generation")?,
+        relay_http_stream_d1_integer(dispatched_at, "dispatch authorization time")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_dispatch_intents
+            SET status = 'dispatched', dispatched_at = ?4, updated_at = ?4
+            WHERE reservation_key = ?1 AND owner_generation = ?2
+              AND attempt_generation = ?3 AND status = 'prepared'
+              AND ?4 >= selected_at AND ?4 < lease_expires_at
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayHttpStreamDispatchAuthorizationOutcome::Applied);
+    }
+    let Some(current) =
+        relay_http_stream_dispatch_intent(db, reservation_key, attempt_generation).await?
+    else {
+        return Ok(RelayHttpStreamDispatchAuthorizationOutcome::NotFound);
+    };
+    if current.owner_generation != owner_generation {
+        Ok(RelayHttpStreamDispatchAuthorizationOutcome::StaleGeneration)
+    } else if current.status == "dispatched" && current.dispatched_at > 0 {
+        Ok(RelayHttpStreamDispatchAuthorizationOutcome::AlreadyDispatched)
+    } else if matches!(
+        current.status.as_str(),
+        "response_received" | "stream_bound" | "recovery_required"
+    ) {
+        Ok(RelayHttpStreamDispatchAuthorizationOutcome::Terminal)
+    } else if dispatched_at >= current.lease_expires_at {
+        Ok(RelayHttpStreamDispatchAuthorizationOutcome::DeadlineExpired)
+    } else {
+        Ok(RelayHttpStreamDispatchAuthorizationOutcome::Conflict)
+    }
+}
+
+pub async fn mark_relay_http_stream_dispatch_response_received(
+    db: &D1Database,
+    reservation_key: &str,
+    owner_generation: i64,
+    attempt_generation: i64,
+    response_status: i64,
+    upstream_request_id_sha256: &str,
+    now: i64,
+) -> worker::Result<RelayHttpStreamDispatchTransitionOutcome> {
+    if !(100..=599).contains(&response_status) {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream dispatch response status is invalid".to_string(),
+        ));
+    }
+    if !upstream_request_id_sha256.is_empty() {
+        validate_relay_http_stream_sha256(
+            upstream_request_id_sha256,
+            "dispatch upstream request id digest",
+        )?;
+    }
+    let args = [
+        D1Type::Text(non_empty_relay_reservation_field(
+            reservation_key,
+            "dispatch reservation key",
+        )?),
+        relay_http_stream_d1_integer(owner_generation, "dispatch owner generation")?,
+        relay_http_stream_d1_integer(attempt_generation, "dispatch attempt generation")?,
+        relay_http_stream_d1_integer(response_status, "dispatch response status")?,
+        D1Type::Text(upstream_request_id_sha256),
+        relay_http_stream_d1_integer(now, "dispatch response time")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_dispatch_intents
+            SET status = 'response_received', response_status = ?4,
+                upstream_request_id_sha256 = ?5, response_received_at = ?6,
+                updated_at = ?6
+            WHERE reservation_key = ?1 AND owner_generation = ?2
+              AND attempt_generation = ?3 AND status = 'dispatched'
+              AND ?6 >= dispatched_at
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayHttpStreamDispatchTransitionOutcome::Applied);
+    }
+    let Some(current) =
+        relay_http_stream_dispatch_intent(db, reservation_key, attempt_generation).await?
+    else {
+        return Ok(RelayHttpStreamDispatchTransitionOutcome::NotFound);
+    };
+    if current.owner_generation != owner_generation {
+        Ok(RelayHttpStreamDispatchTransitionOutcome::StaleGeneration)
+    } else if current.status == "response_received"
+        && current.response_status == response_status
+        && current.upstream_request_id_sha256 == upstream_request_id_sha256
+    {
+        Ok(RelayHttpStreamDispatchTransitionOutcome::MatchingReplay)
+    } else if matches!(
+        current.status.as_str(),
+        "stream_bound" | "recovery_required"
+    ) {
+        Ok(RelayHttpStreamDispatchTransitionOutcome::Terminal)
+    } else {
+        Ok(RelayHttpStreamDispatchTransitionOutcome::Conflict)
+    }
+}
+
+pub async fn mark_relay_http_stream_dispatch_recovery_required(
+    db: &D1Database,
+    reservation_key: &str,
+    owner_generation: i64,
+    attempt_generation: i64,
+    terminal_reason: &str,
+    now: i64,
+) -> worker::Result<RelayHttpStreamDispatchTransitionOutcome> {
+    validate_relay_http_stream_text(terminal_reason, "dispatch recovery reason", 96)?;
+    let args = [
+        D1Type::Text(non_empty_relay_reservation_field(
+            reservation_key,
+            "dispatch reservation key",
+        )?),
+        relay_http_stream_d1_integer(owner_generation, "dispatch owner generation")?,
+        relay_http_stream_d1_integer(attempt_generation, "dispatch attempt generation")?,
+        D1Type::Text(terminal_reason),
+        relay_http_stream_d1_integer(now, "dispatch recovery time")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_dispatch_intents
+            SET status = 'recovery_required', terminal_reason = ?4,
+                recovery_required_at = ?5, updated_at = ?5
+            WHERE reservation_key = ?1 AND owner_generation = ?2
+              AND attempt_generation = ?3
+              AND status IN ('prepared', 'dispatched', 'response_received')
+              AND ?5 >= selected_at
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RelayHttpStreamDispatchTransitionOutcome::Applied);
+    }
+    let Some(current) =
+        relay_http_stream_dispatch_intent(db, reservation_key, attempt_generation).await?
+    else {
+        return Ok(RelayHttpStreamDispatchTransitionOutcome::NotFound);
+    };
+    if current.owner_generation != owner_generation {
+        Ok(RelayHttpStreamDispatchTransitionOutcome::StaleGeneration)
+    } else if current.status == "recovery_required" && current.terminal_reason == terminal_reason {
+        Ok(RelayHttpStreamDispatchTransitionOutcome::MatchingReplay)
+    } else if current.status == "stream_bound" {
+        Ok(RelayHttpStreamDispatchTransitionOutcome::Terminal)
+    } else {
+        Ok(RelayHttpStreamDispatchTransitionOutcome::Conflict)
+    }
+}
+
+pub async fn sweep_expired_relay_http_stream_dispatch_intents(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<u64> {
+    let args = [
+        relay_http_stream_d1_integer(now, "dispatch sweep time")?,
+        relay_http_stream_d1_integer(
+            limit.clamp(1, RELAY_HTTP_STREAM_HANDOFF_MAX_LIMIT),
+            "dispatch sweep limit",
+        )?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_http_stream_dispatch_intents
+            SET status = 'recovery_required',
+                terminal_reason = 'provider_dispatch_lease_expired',
+                recovery_required_at = ?1, updated_at = ?1
+            WHERE (reservation_key, attempt_generation) IN (
+              SELECT dispatch.reservation_key, dispatch.attempt_generation
+              FROM relay_http_stream_dispatch_intents AS dispatch
+              JOIN relay_billing_reservations AS reservation
+                ON reservation.reservation_key = dispatch.reservation_key
+              WHERE dispatch.status IN ('prepared', 'dispatched', 'response_received')
+                AND dispatch.lease_expires_at <= ?1
+                AND reservation.status = 'reserved'
+                AND reservation.owner_generation = dispatch.owner_generation
+                AND reservation.channel_id = dispatch.channel_id
+                AND reservation.selected_group = dispatch.selected_group
+                AND reservation.selected_at = dispatch.selected_at
+              ORDER BY dispatch.lease_expires_at ASC,
+                       dispatch.reservation_key ASC,
+                       dispatch.attempt_generation ASC
+              LIMIT ?2
+            )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(
+        u64::try_from(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0))
+            .unwrap_or(u64::MAX),
+    )
 }
 
 pub async fn relay_http_stream_handoff_schema_ready(db: &D1Database) -> worker::Result<bool> {
@@ -13183,9 +13768,12 @@ pub async fn relay_http_stream_handoff_schema_ready(db: &D1Database) -> worker::
                   'relay_http_stream_handoff_delete_guard',
                   'relay_http_stream_finalization_receipt_insert_guard',
                   'relay_http_stream_finalization_receipt_update_guard',
-                  'relay_http_stream_finalization_receipt_delete_guard'
+                  'relay_http_stream_finalization_receipt_delete_guard',
+                  'relay_http_stream_handoff_dispatch_deadline_guard',
+                  'relay_http_stream_handoff_dispatch_intent_guard',
+                  'relay_http_stream_handoff_dispatch_intent_bind'
                 )
-              ) = 11
+              ) = 14
             THEN 1 ELSE 0 END AS count
             "#,
         )
@@ -13205,7 +13793,8 @@ pub async fn relay_http_stream_handoff(
         r#"
         SELECT reservation_key, owner_generation, attempt_generation,
                channel_id, selected_group, expr_hash, provider_operation_id,
-               worker_version_id, billing_snapshot_sha256, status,
+               worker_version_id, billing_snapshot_sha256,
+               dispatch_hard_deadline_at, status,
                lease_expires_at, checkpoint_sequence, chunk_count, byte_count,
                prompt_tokens, completion_tokens, total_tokens, cached_tokens,
                cache_creation_tokens, provider_terminal_observed,
@@ -13242,6 +13831,7 @@ pub async fn create_relay_http_stream_handoff(
         || record.channel_id <= 0
         || record.created_at <= 0
         || record.lease_expires_at <= record.created_at
+        || record.dispatch_hard_deadline_at < record.lease_expires_at
     {
         return Err(worker::Error::RustError(
             "relay HTTP stream handoff identity is invalid".to_string(),
@@ -13259,6 +13849,7 @@ pub async fn create_relay_http_stream_handoff(
         D1Type::Text(record.billing_snapshot_sha256),
         relay_http_stream_d1_integer(record.created_at, "creation time")?,
         relay_http_stream_d1_integer(record.lease_expires_at, "lease expiry")?,
+        relay_http_stream_d1_integer(record.dispatch_hard_deadline_at, "dispatch hard deadline")?,
     ];
     let result = db
         .prepare(
@@ -13266,10 +13857,10 @@ pub async fn create_relay_http_stream_handoff(
             INSERT INTO relay_http_stream_handoffs (
               reservation_key, owner_generation, attempt_generation, channel_id,
               selected_group, expr_hash, provider_operation_id,
-              worker_version_id, billing_snapshot_sha256, created_at, updated_at,
-              lease_expires_at
+              worker_version_id, billing_snapshot_sha256,
+              dispatch_hard_deadline_at, created_at, updated_at, lease_expires_at
             )
-            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11
+            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?12, ?10, ?10, ?11
             FROM relay_billing_reservations AS reservation
             WHERE reservation.reservation_key = ?1
               AND reservation.status = 'reserved'
@@ -28734,5 +29325,54 @@ mod tests {
         let applied = &source[applied_start..applied_end];
         assert!(applied.contains("relay_http_stream_finalization_receipts"));
         assert!(applied.contains("db.batch(vec![insert_receipt, apply_receipt])"));
+    }
+
+    #[test]
+    fn relay_http_stream_dispatch_persists_before_provider_and_binds_handoff() {
+        let migration =
+            include_str!("../../../migrations/d1/0057_relay_http_stream_dispatch_intents.sql");
+        for fragment in [
+            "CREATE TABLE relay_http_stream_dispatch_intents",
+            "relay_http_stream_dispatch_intent_insert_guard",
+            "relay_http_stream_dispatch_intent_identity_guard",
+            "relay_http_stream_dispatch_intent_lifecycle_guard",
+            "relay_http_stream_dispatch_intent_stream_bound_guard",
+            "relay_http_stream_dispatch_intent_recovery_guard",
+            "relay_http_stream_dispatch_intent_recovery_apply",
+            "relay_http_stream_dispatch_intent_delete_guard",
+            "relay_http_stream_handoff_dispatch_deadline_guard",
+            "relay_http_stream_handoff_dispatch_intent_guard",
+            "relay_http_stream_handoff_dispatch_intent_bind",
+        ] {
+            assert!(
+                migration.contains(fragment),
+                "missing 0057 guard: {fragment}"
+            );
+        }
+        for forbidden in [
+            "request_body",
+            "response_body",
+            "authorization",
+            "credential",
+            "raw_header",
+            "sse_frame",
+        ] {
+            assert!(!migration.to_ascii_lowercase().contains(forbidden));
+        }
+
+        let source = include_str!("d1_repositories.rs");
+        let admission_start = source
+            .find("pub async fn admit_relay_http_stream_dispatch")
+            .unwrap();
+        let admission_end = source[admission_start..]
+            .find("pub async fn mark_relay_http_stream_dispatch_response_received")
+            .map(|offset| admission_start + offset)
+            .unwrap();
+        let admission = &source[admission_start..admission_end];
+        assert!(admission.contains("db.batch(vec![bind, insert])"));
+        assert!(admission.contains("RelayHttpStreamDispatchAdmissionOutcome::Applied"));
+        assert!(admission.contains("MatchingReplay"));
+        assert!(source.contains("pub async fn authorize_relay_http_stream_dispatch"));
+        assert!(source.contains("sweep_expired_relay_http_stream_dispatch_intents"));
     }
 }

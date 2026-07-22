@@ -2253,3 +2253,29 @@ client-cancel recovery, missing total stream timeout, absent real Queue/D1 and
 restart/version-skew campaigns, remote 0056/readback, credential rotation, P5,
 and Go/VPS drain. See `docs/relay-http-stream-durable-handoff.md`. Production
 remains **NO-GO**.
+
+## 2026-07-22 Migration 0057 Dispatch Intent Addendum
+
+This addendum supersedes the current-head, dispatch-window, and total-deadline
+statements in the 0056 addendum. The 0056 terminal/outbox/receipt protocol is
+retained. Current head is 0057/57 with 65 tables, 841 checked incremental
+columns, and 96 key indexes.
+
+| Phase | Required action | Pass evidence | Abort and retain |
+| --- | --- | --- | --- |
+| A producer drain | Keep all SSE gates false; stop every old 0056 producer and paid SSE operation | Frozen provider watermark, zero active old operation, N-1 reader-only inventory | Any old producer can still insert a handoff |
+| B 0057 expand | Apply 0057 once after backup and fingerprint | One table, two indexes, ten triggers, hard-deadline column; atomic promotion/recovery negatives; unchanged business data | Partial schema, catalog drift, or hidden provider/financial effect |
+| C compatible readers | Deploy N with producer false; retain N-1 only for read/non-SSE traffic | N reads/sweeps 0057, N-1 reads expanded schema, no durable write | N-1 producer activation or unexplained row |
+| D drain-only | Seed expired intents and existing 0056 work; enable approved recovery/outbox only | Atomic billing recovery, no provider calls, exact receipt convergence, zero backlog | Partial owner transition, dispatch, duplicate terminal, or stale lease write |
+| E isolated producer | Enable staging, outbox, recovery, then producer | One `prepared -> dispatched` grant, one provider call, 200 atomic bind, 120-second header and 900-second hard-deadline evidence | Retry/fallback, client byte before bind, partial state, or unknown ownership |
+| F faults and rollback | Run CAS response loss, delayed/non-200 headers, D1 statement faults, stream/deadline/cancel, Queue/DLQ, restart and N/N-1 | Counters conserve and producer-off rollback drains through N while Go/VPS is hot | Resend, auto-refund ambiguity, stranded row, unbounded backlog, or rollback miss |
+
+Rollback cannot deploy N-1 as the durable SSE producer because 0057 guards new
+0056 inserts. It disables producer, returns new work to Go/VPS, and retains the
+N drain worker plus both migrations until every intent, handoff, reservation,
+outbox item, receipt, and provider operation is reconciled.
+
+Immediate `Request.signal` cancellation/watchdog proof and default-path
+clone/tee backpressure proof remain open, as do remote 0057, provider invoice,
+Queue/restart, P5, SLO/cost/security approval, and Go/VPS drain evidence.
+Production remains **NO-GO**.

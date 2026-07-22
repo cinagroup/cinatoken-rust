@@ -319,8 +319,9 @@ The evidence order is fixed:
 1. rotate the exposed credential and freeze commits, Worker versions, image,
    runtime build, provenance, SBOM, resources, migration, and rollback facts;
 2. with every tracked action gate at its default `false`, back up D1 and
-   apply/read back 0054, 0055, then 0056, proving the 0056/56 and 64/814/94
-   baseline while retaining the sealed 0055 campaign evidence;
+   apply/read back 0054, 0055, 0056, then 0057, proving the 0057/57 and
+   65/841/96 baseline while retaining the sealed 0055 campaign evidence and
+   keeping every HTTP SSE producer disabled;
 3. deploy provider-egress, Controller reader, then edge reader while activation
    recording remains false;
 4. roll the Container image at 10% and 100% and prove its image/runtime identity
@@ -346,6 +347,10 @@ foundation packet and P5 decision remain **NO-GO** even if local fixtures are
 complete. All tracked local/staging/production Controller action gates,
 including activation recording, remain default `false`; editing the static
 environment variable is not an approved workaround.
+
+After 0057, an N-1 Worker may participate only as a reader. Foundation capture
+must identify the N Worker that owns dispatch-intent recovery and prove that no
+old 0056 producer can insert a handoff without a matching 0057 response row.
 
 ## Fail-Closed Meaning
 

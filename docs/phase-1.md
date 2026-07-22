@@ -2853,3 +2853,25 @@ ambiguous provider operation.
 The local slow-consumer blocker is closed. Real Cloudflare HTTP/2, HTTP/3, and
 TCP client-disconnect propagation remains remote evidence. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-22 Cross-Language Container Shard Routing v1
+
+The native Container shard planner now has executable Rust/Bun parity evidence.
+A strict versioned fixture freezes HMAC-SHA256 domain separation, tenant-byte
+length encoding, unsigned Jump Consistent Hash arithmetic, canonical instance
+names, generation-fenced plans, and the 1024-shard maximum. Four test-only
+vectors produce 16 exact plans and eight `N -> N+1` transitions; unchanged
+owners remain stable and the one moved vector lands only on the appended shard.
+
+`bun run check:container-shard-routing-contract` runs four Bun tests plus a
+six-mutation self-test. The Worker unit suite reads the same fixture and
+recomputes every digest and `ShardPlan`, so a JavaScript-only or Rust-only drift
+cannot pass the repository aggregate.
+
+Production expansion remains a drained generation change: keep the routing
+secret fixed, disable Container admission, drain the old generation, deploy and
+activate Controller capacity for `N+1`, advance generation and count together,
+then deploy the edge and run remote distribution/lifecycle/capacity/billing
+evidence. Secret rotation cannot share that candidate. No remote resource,
+credential, provider, or traffic action occurred; production remains
+**NO-GO**.

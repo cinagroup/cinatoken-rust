@@ -755,7 +755,7 @@ remains **NO-GO**.
 
 | Gate | Current local state | Production acceptance | Status |
 | --- | --- | --- | --- |
-| Shard planner | Contract v1, opaque 32-byte key, Jump Consistent Hash, generation fence, stable names | Cross-language golden vectors and reviewed ring change procedure | Local only |
+| Shard planner | Contract v1, opaque 32-byte key, Jump Consistent Hash, generation fence, stable names, and a strict Rust/Bun contract with 4 vectors, 16 plans, 8 generation-fenced one-shard expansions, append-only movement, mutation rejection, and maximum-ring coverage | Remote distribution replay, drained old-generation transition, Controller-first N+1 activation, lifecycle/capacity evidence, and reviewed rollback | Local algorithm PASS; remote transition blocked |
 | Tracked config | Generation 1, eight shards, runtime/staging false in all environments | Exact deployed readback and immutable candidate evidence | Local only |
 | Routing privacy | Planner accepts only an opaque digest | Separate HMAC secret provisioned/rotated; no raw identity or digest in logs/status | Blocked |
 | Controller Worker | Isolated TypeScript source, generated Env types, no public route, private edge service binding config, signed status and targeted shard POST, strict keyring/ring verification, non-waking ledger inspection, separately gated wake, readiness dispatch replay/generation/CAS/cooldown, draining admission fence, explicit retention, and thirteen Workerd/SQLite scenarios pass locally | Controller-first deployment, authenticated status/ledger/live readback, actual `RelayShardContainer`/Docker lifecycle tests, secret rotation, remote SQLite, and N/N-1 evidence | Local only |

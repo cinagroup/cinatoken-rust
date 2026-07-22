@@ -1904,3 +1904,22 @@ The local clone/tee and bounded-provider-read blocker is complete. Real
 Cloudflare HTTP/2, HTTP/3, and TCP client-disconnect propagation remains remote
 evidence, alongside the existing D1/Queue/restart/invoice/SLO/security/P5 and
 Go/VPS drain gates. Production remains **NO-GO**.
+
+## 2026-07-22 Container Shard Routing Contract Status
+
+The previously open cross-language shard-planner item is now locally complete.
+One strict fixture is consumed by an independent Bun HMAC/Jump-Hash verifier
+and the Rust production planner. It covers four test-only secrets and tenant
+inputs, 16 exact plans, eight generation-fenced one-shard expansions, one move
+only to the appended shard, canonical instance names, mutation rejection, and
+the 1024-shard maximum. The aggregate gate now runs this contract before the
+tracked scheduler configuration tests.
+
+The result proves deterministic cross-language planning, not deployment. A
+production ring change still requires admission stop, complete old-generation
+drain, Controller-first N+1 activation, generation/count atomic change at the
+release level, remote distribution and capacity replay, lifecycle faults,
+billing/provider uniqueness, and rollback. Routing-secret rotation is a
+separate candidate and the exposed Cloudflare credential remains unusable
+until revocation is proven. Go/VPS stays authoritative and production remains
+**NO-GO**.

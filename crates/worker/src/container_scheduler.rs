@@ -365,6 +365,38 @@ fn runtime_value(env: &Env, name: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RoutingContractFixture {
+        schema_version: u32,
+        contract_version: u32,
+        algorithm: String,
+        domain_hex: String,
+        instance_prefix: String,
+        minimum_secret_bytes: usize,
+        maximum_shards: u16,
+        vectors: Vec<RoutingVectorFixture>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RoutingVectorFixture {
+        name: String,
+        secret_hex: String,
+        tenant_id: String,
+        routing_digest_sha256: String,
+        plans: Vec<RoutingPlanFixture>,
+    }
+
+    #[derive(Debug, Clone, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RoutingPlanFixture {
+        ring_generation: u64,
+        shard_count: u16,
+        shard_index: u16,
+        instance_name: String,
+    }
+
     #[test]
     fn tracked_ring_config_is_valid_and_bounded() {
         let status = parse_container_scheduler_runtime_status(Some("1"), Some("8"));
@@ -420,6 +452,90 @@ mod tests {
     }
 
     #[test]
+    fn production_planner_matches_versioned_cross_language_vectors() {
+        let fixture: RoutingContractFixture = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/container-shard-routing-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture.schema_version, 1);
+        assert_eq!(fixture.contract_version, CONTAINER_SHARD_CONTRACT_VERSION);
+        assert_eq!(fixture.algorithm, "hmac-sha256+jump-consistent-hash-v1");
+        assert_eq!(
+            decode_fixture_hex(&fixture.domain_hex),
+            CONTAINER_SHARD_ROUTING_DOMAIN
+        );
+        assert_eq!(fixture.instance_prefix, CONTAINER_SHARD_INSTANCE_PREFIX);
+        assert_eq!(
+            fixture.minimum_secret_bytes,
+            MIN_CONTAINER_SHARD_ROUTING_SECRET_BYTES
+        );
+        assert_eq!(fixture.maximum_shards, MAX_CONTAINER_SHARDS);
+
+        let mut adjacent_transitions = 0_u32;
+        let mut moved_to_new_shard = 0_u32;
+        let mut maximum_ring_covered = false;
+        for vector in fixture.vectors {
+            let secret = decode_fixture_hex(&vector.secret_hex);
+            assert!(
+                secret.len() >= fixture.minimum_secret_bytes,
+                "{}",
+                vector.name
+            );
+            let routing_key = container_shard_routing_key(&secret, &vector.tenant_id).unwrap();
+            assert_eq!(
+                encode_fixture_hex(routing_key.as_bytes()),
+                vector.routing_digest_sha256,
+                "{}",
+                vector.name
+            );
+
+            let mut plans = vector.plans;
+            plans.sort_by_key(|plan| plan.shard_count);
+            for expected in &plans {
+                let actual = plan_container_shard(
+                    ContainerSchedulerRuntimeStatus {
+                        configured: true,
+                        valid: true,
+                        ring_generation: expected.ring_generation,
+                        shard_count: expected.shard_count,
+                    },
+                    &secret,
+                    &vector.tenant_id,
+                )
+                .unwrap();
+                assert_eq!(actual.contract_version, fixture.contract_version);
+                assert_eq!(actual.ring_generation, expected.ring_generation);
+                assert_eq!(actual.shard_count, expected.shard_count);
+                assert_eq!(actual.shard_index, expected.shard_index, "{}", vector.name);
+                assert_eq!(
+                    actual.instance_name, expected.instance_name,
+                    "{}",
+                    vector.name
+                );
+                maximum_ring_covered |= expected.shard_count == fixture.maximum_shards;
+            }
+            for pair in plans.windows(2) {
+                let [previous, current] = pair else {
+                    unreachable!()
+                };
+                assert!(current.ring_generation > previous.ring_generation);
+                if current.shard_count != previous.shard_count + 1 {
+                    continue;
+                }
+                assert_eq!(current.ring_generation, previous.ring_generation + 1);
+                adjacent_transitions += 1;
+                if current.shard_index != previous.shard_index {
+                    assert_eq!(current.shard_index, previous.shard_count, "{}", vector.name);
+                    moved_to_new_shard += 1;
+                }
+            }
+        }
+        assert_eq!(adjacent_transitions, 8);
+        assert_eq!(moved_to_new_shard, 1);
+        assert!(maximum_ring_covered);
+    }
+
+    #[test]
     fn tenant_routing_rejects_weak_or_ambiguous_inputs() {
         let secret = b"0123456789abcdef0123456789abcdef";
         assert_eq!(
@@ -451,6 +567,22 @@ mod tests {
             ),
             Err("ring_misconfigured")
         );
+    }
+
+    fn decode_fixture_hex(value: &str) -> Vec<u8> {
+        assert_eq!(value.len() % 2, 0);
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let pair = std::str::from_utf8(pair).unwrap();
+                u8::from_str_radix(pair, 16).unwrap()
+            })
+            .collect()
+    }
+
+    fn encode_fixture_hex(value: &[u8]) -> String {
+        value.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     fn cutover_with_operation_runtime(operation_runtime: ContainerOperationRuntimeStatus) -> bool {

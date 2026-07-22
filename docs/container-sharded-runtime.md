@@ -410,7 +410,8 @@ capabilities may be exposed as booleans, never values.
 
 All gates are mandatory:
 
-1. planner contract and cross-language golden vectors;
+1. planner contract and versioned cross-language golden vectors (local PASS;
+   remote ring transition remains required);
 2. valid versioned ring in every environment;
 3. routing HMAC secret provisioned and rotated;
 4. controller service binding exists and has no public route;
@@ -481,6 +482,64 @@ staging/canary/cutover authorization. The local host has no Docker engine, so
 no image or real Container was started. See
 `docs/container-execution-plane-source-audit.md` for the cinaVibeSDK and Go
 cinatoken source-to-target contract.
+
+## 2026-07-22 Cross-Language Routing Contract v1
+
+The production Rust planner and an independent Bun implementation now consume
+the same strict, versioned fixture at
+`tests/fixtures/container-shard-routing-v1.json`. The contract freezes the
+domain-separated HMAC-SHA256 input, big-endian tenant-byte length, Jump
+Consistent Hash arithmetic with explicit unsigned 64-bit wrapping, maximum
+1024-shard ring, canonical instance naming, and generation-fenced plans. The
+fixture contains test-only secrets; no deployment secret or real tenant
+identity is present.
+
+Four vectors cover 16 exact plans, eight one-shard expansions, one observed
+move to the appended shard, stable owners for the other expansions, structured
+tenant identifiers, and the 1024-shard maximum. Every one-shard expansion also
+increments the ring generation exactly once. The Bun verifier rejects unknown
+fields, digest drift, duplicate vector identity, invalid tenant input, stale
+generation, out-of-ring indexes, noncanonical names, and movement to an
+existing shard. The Rust Worker test recomputes every HMAC and production
+`ShardPlan` from the same file.
+
+Run:
+
+```powershell
+bun run check:container-shard-routing-contract
+cargo test -p cinatoken-worker --lib production_planner_matches_versioned_cross_language_vectors
+```
+
+This adopts the useful cinaVibeSDK explicit named-instance pattern while
+rejecting its optional mutable-pool modulo allocator. It also follows the
+[Cloudflare Containers scaling and routing](https://developers.cloudflare.com/containers/platform-details/scaling-and-routing/)
+distinction between explicit IDs for stateful lifecycle control and `getRandom`
+for stateless balancing. The reference source remains pinned at `918e9748`; Go
+business authority remains pinned at `73652508`.
+
+### Ring expansion procedure
+
+Until a dual-generation Controller protocol is separately implemented and
+verified, an `N -> N+1` change is a drain transition, not a rolling percentage:
+
+1. freeze the routing secret, source commit, Controller/image versions, D1/R2
+   identities, provider counter, and Go/VPS rollback owner;
+2. disable new Container admission and drain every operation owned by the old
+   generation to terminal or explicit recovery;
+3. deploy the Controller capacity/readiness reader for `N+1`, activate and
+   verify all canonical shards, and keep execution disabled;
+4. advance ring generation and shard count together, never the count alone;
+5. deploy the edge reader, repeat the cross-language vectors and complete
+   remote tenant-distribution, max+1 capacity, lifecycle, billing, and provider
+   uniqueness evidence before canary admission; and
+6. rollback by disabling new admission first, draining the new generation,
+   then restoring the frozen edge/Controller pair. Never mix a changed routing
+   secret into the same ring transition.
+
+The vectors prove deterministic planning and the append-only movement property
+only. They do not prove remote Container placement, sleeping-object inventory,
+old-generation drain, secret rotation, distribution quality for real tenants,
+or lifecycle/cost behavior. Those remain production **NO-GO** gates.
 
 ## 2026-07-16 Targeted Readiness Contract
 

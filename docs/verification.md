@@ -8161,3 +8161,33 @@ The focused Workerd proof does not establish real Cloudflare HTTP/2, HTTP/3, or
 TCP client-disconnect propagation, intermediary cancellation, remote D1/Queue
 fault behavior, provider invoices, or production load/cost/SLO. Those remain
 remote acceptance gates. Production remains **NO-GO**.
+
+## Container Shard Routing Contract Verification (2026-07-22)
+
+Run:
+
+```powershell
+bun run check:container-shard-routing-contract
+cargo test -p cinatoken-worker --lib production_planner_matches_versioned_cross_language_vectors
+bun run check:container-scheduler-config
+```
+
+The contract must report schema/contract version 1, four vectors, 16 plans,
+eight adjacent expansion transitions, one move to a newly appended shard,
+maximum-ring coverage, and six rejected mutations. The report contains no
+secret, tenant identifier, or routing digest. Rust must recompute the same
+HMAC-SHA256 values and exact `ShardPlan` outputs from the fixture rather than
+checking copied constants in a separate test.
+
+Review the fixture and verifier together. Reject any candidate that changes the
+domain bytes, omits the big-endian tenant-byte length, uses signed or unbounded
+JavaScript arithmetic, accepts unknown fields, permits a stale generation,
+moves an owner to an existing shard during `N -> N+1`, exceeds 1024 shards, or
+derives a noncanonical instance name.
+
+This is local algorithm evidence. Remote acceptance still requires a fixed
+routing secret, zero old-generation active operations, Controller-first N+1
+activation, generation/count change in one frozen release, full shard registry
+readback, distribution and max+1 capacity replay, lifecycle/fault/load/cost,
+billing/provider uniqueness, and disable-first rollback. Do not rotate the
+routing secret in the same ring-transition candidate.

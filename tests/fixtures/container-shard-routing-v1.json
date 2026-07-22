@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "contract_version": 1,
+  "algorithm": "hmac-sha256+jump-consistent-hash-v1",
+  "domain_hex": "63696e61746f6b656e2d636f6e7461696e65722d73686172642d726f7574696e673a763100",
+  "instance_prefix": "cinatoken-relay-shard-v1",
+  "minimum_secret_bytes": 32,
+  "maximum_shards": 1024,
+  "vectors": [
+    {
+      "name": "ascending-secret",
+      "secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "tenant_id": "tenant-alpha",
+      "routing_digest_sha256": "770a90258ca575d7e5c587757da04a267bed8fb4e74df92ebeba68cb9350a786",
+      "plans": [
+        {
+          "ring_generation": 1,
+          "shard_count": 8,
+          "shard_index": 1,
+          "instance_name": "cinatoken-relay-shard-v1-0001"
+        },
+        {
+          "ring_generation": 2,
+          "shard_count": 9,
+          "shard_index": 1,
+          "instance_name": "cinatoken-relay-shard-v1-0001"
+        },
+        {
+          "ring_generation": 3,
+          "shard_count": 16,
+          "shard_index": 13,
+          "instance_name": "cinatoken-relay-shard-v1-0013"
+        },
+        {
+          "ring_generation": 4,
+          "shard_count": 17,
+          "shard_index": 13,
+          "instance_name": "cinatoken-relay-shard-v1-0013"
+        }
+      ]
+    },
+    {
+      "name": "descending-secret",
+      "secret_hex": "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0",
+      "tenant_id": "tenant-042",
+      "routing_digest_sha256": "b5cd070e1e48170d9135d4dd1c45605ee59716aee02b96d1ff6c8421bcf54f47",
+      "plans": [
+        {
+          "ring_generation": 7,
+          "shard_count": 8,
+          "shard_index": 1,
+          "instance_name": "cinatoken-relay-shard-v1-0001"
+        },
+        {
+          "ring_generation": 8,
+          "shard_count": 9,
+          "shard_index": 1,
+          "instance_name": "cinatoken-relay-shard-v1-0001"
+        },
+        {
+          "ring_generation": 9,
+          "shard_count": 32,
+          "shard_index": 1,
+          "instance_name": "cinatoken-relay-shard-v1-0001"
+        },
+        {
+          "ring_generation": 10,
+          "shard_count": 33,
+          "shard_index": 1,
+          "instance_name": "cinatoken-relay-shard-v1-0001"
+        }
+      ]
+    },
+    {
+      "name": "structured-tenant",
+      "secret_hex": "63696e61746f6b656e2d726f7574696e672d666978747572652d73656372657421",
+      "tenant_id": "org/acme:user-9001",
+      "routing_digest_sha256": "028079fc200593c8b88ac793de1b3113daea24b37b2fefe19045fecaba3b1dcf",
+      "plans": [
+        {
+          "ring_generation": 42,
+          "shard_count": 8,
+          "shard_index": 4,
+          "instance_name": "cinatoken-relay-shard-v1-0004"
+        },
+        {
+          "ring_generation": 43,
+          "shard_count": 9,
+          "shard_index": 4,
+          "instance_name": "cinatoken-relay-shard-v1-0004"
+        },
+        {
+          "ring_generation": 44,
+          "shard_count": 64,
+          "shard_index": 36,
+          "instance_name": "cinatoken-relay-shard-v1-0036"
+        },
+        {
+          "ring_generation": 45,
+          "shard_count": 65,
+          "shard_index": 64,
+          "instance_name": "cinatoken-relay-shard-v1-0064"
+        }
+      ]
+    },
+    {
+      "name": "maximum-ring",
+      "secret_hex": "0000000000000000000000000000000011111111111111111111111111111111",
+      "tenant_id": "tenant-max-stability",
+      "routing_digest_sha256": "c92381fc0a19e399d5473986181ec0968aabee26ca54def21dff10ffd3a4d035",
+      "plans": [
+        {
+          "ring_generation": 99,
+          "shard_count": 8,
+          "shard_index": 5,
+          "instance_name": "cinatoken-relay-shard-v1-0005"
+        },
+        {
+          "ring_generation": 100,
+          "shard_count": 9,
+          "shard_index": 5,
+          "instance_name": "cinatoken-relay-shard-v1-0005"
+        },
+        {
+          "ring_generation": 101,
+          "shard_count": 1023,
+          "shard_index": 193,
+          "instance_name": "cinatoken-relay-shard-v1-0193"
+        },
+        {
+          "ring_generation": 102,
+          "shard_count": 1024,
+          "shard_index": 193,
+          "instance_name": "cinatoken-relay-shard-v1-0193"
+        }
+      ]
+    }
+  ]
+}

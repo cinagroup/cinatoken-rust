@@ -17191,3 +17191,33 @@ Cloudflare client-disconnect propagation over HTTP/2, HTTP/3, and TCP, including
 Gateway/WFP chains, remains mandatory remote evidence together with the other
 0058, fault, invoice, SLO/cost, security, P5, and Go/VPS drain gates. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 22.263 Cross-Language Container Shard Routing Contract (2026-07-22)
+
+The multi-shard architecture now has a versioned routing artifact shared by the
+Rust production planner and an independent Bun verifier. It freezes the exact
+HMAC-SHA256 domain and tenant-byte framing, unsigned 64-bit Jump Consistent Hash
+steps, 1024-shard bound, canonical `cinatoken-relay-shard-v1-XXXX` identity,
+and ring generation. Four test-only vectors cover 16 plans, eight one-shard
+expansions, stable non-moving owners, one owner moving only to the appended
+shard, and the maximum ring. Six mutation cases prove digest, index, name,
+identity, movement, and generation drift fail closed.
+
+This applies the cinaVibeSDK explicit named DO/Container idea without copying
+its optional modulo allocator, mutable process caches, or identifier logging.
+The source pins are cinaVibeSDK `918e9748` and Go cinatoken `73652508`.
+Cloudflare's current Containers guidance also distinguishes explicit instance
+IDs for lifecycle-controlled stateful work from `getRandom` stateless
+balancing, matching this design.
+
+Until dual-generation Controller compatibility is implemented, ring expansion
+uses a drained rollout: freeze the secret and artifacts, stop new Container
+admission, drain the old generation, deploy and activate Controller capacity
+for `N+1`, advance generation and shard count together, deploy the edge last,
+then run remote distribution, capacity, lifecycle, financial, and rollback
+evidence. Secret rotation is always a separate frozen candidate.
+
+The local cross-language planning blocker is closed. Remote routing-secret
+provisioning/rotation, real-tenant distribution, old-generation drain,
+Controller/Container lifecycle, P5 evidence, and Go/VPS cutover remain open.
+No Cloudflare mutation occurred and production remains **NO-GO**.

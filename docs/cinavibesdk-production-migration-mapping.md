@@ -1247,3 +1247,33 @@ The exact wire and digest contract is frozen in
 `docs/container-provider-response-protocol-v3.md`. This is local design and
 implementation evidence only. Go/VPS remains authoritative, all response-v3
 writers remain disabled, and production remains **NO-GO**.
+
+## 2026-07-22 Cross-Language Shard Planner Mapping
+
+The current source pins remain cinaVibeSDK `918e9748` and Go cinatoken
+`73652508`. cinaVibeSDK demonstrates named Durable Object/Container ownership
+and explicit instance lookup, but its optional `many_to_one` allocator hashes a
+session with process-language integer arithmetic, applies modulo to a mutable
+pool size, and logs the session identifier. That is appropriate only as a
+non-financial sandbox allocation hint; it is not copied into relay authority.
+
+cinatoken-rust now freezes the stronger routing contract in
+`tests/fixtures/container-shard-routing-v1.json` and verifies it independently
+in Bun and in the Rust production planner. HMAC-SHA256 hides the tenant input,
+Jump Consistent Hash bounds remapping, canonical instance names prevent caller-
+selected DO identities, and every topology change carries a new ring
+generation. Four test-only vectors cover 16 plans, eight one-shard expansions,
+one move to the newly appended shard, and the 1024-shard maximum.
+
+The independent verifier emits only aggregate counts and booleans; it does not
+emit fixture secrets, tenant IDs, or routing digests. Production evidence must
+follow the stricter drain transition in `docs/container-sharded-runtime.md`:
+hold the routing secret fixed, disable admission, drain the old generation,
+activate and verify Controller capacity first, then change generation and shard
+count together, and route edge traffic last. Secret rotation and ring expansion
+must never be combined in one candidate.
+
+This closes the local cross-language algorithm gap, not remote routing privacy,
+secret provisioning/rotation, real-tenant distribution, Container placement,
+N/N-1 lifecycle, or billing/provider uniqueness. Production remains
+**NO-GO**.

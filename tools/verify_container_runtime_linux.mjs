@@ -97,12 +97,13 @@ export async function auditRepositoryContract() {
   requireCondition(
     mockFixture.includes("/v1/input") &&
       mockFixture.includes("/v1/provider-attempts/execute") &&
-      mockFixture.includes("input_hash_mismatch"),
-    "mock must expose the fixed internal HTTP contracts and fault mode",
+      mockFixture.includes("input_hash_mismatch") &&
+      mockFixture.includes('server.listen(80, "0.0.0.0")'),
+    "mock must expose the fixed internal HTTP contracts on port 80",
   );
   requireCondition(
     probeFixture.includes("http://runtime.cinatoken.internal:8080") &&
-      probeFixture.includes("http://127.0.0.1:9090") &&
+      probeFixture.includes('MOCK_BASE_URL = "http://127.0.0.1"') &&
       probeFixture.includes('probeMode === "restart"'),
     "probe must exercise the runtime entirely inside the isolated network",
   );
@@ -111,6 +112,7 @@ export async function auditRepositoryContract() {
       verifier.includes('"r2-input.cinatoken.internal"') &&
       verifier.includes('"provider-egress.cinatoken.internal"') &&
       verifier.includes('"runtime.cinatoken.internal"') &&
+      verifier.includes('"net.ipv4.ip_unprivileged_port_start=0"') &&
       verifier.includes('"exec"') &&
       ![
         ["--", "privileged"].join(""),
@@ -299,6 +301,8 @@ async function startMock({ name, network }) {
     "128m",
     "--pids-limit",
     "64",
+    "--sysctl",
+    "net.ipv4.ip_unprivileged_port_start=0",
     "--env",
     `MOCK_INPUT_BASE64=${INPUT.toString("base64")}`,
     "--env",
@@ -384,9 +388,27 @@ async function docker(args, { timeoutMs = 60_000 } = {}) {
     result.outputLimitExceeded ||
     result.invalidUtf8
   ) {
-    throw new Error(`docker ${args[0] ?? "command"} failed closed`);
+    throw new Error(
+      `docker ${args[0] ?? "command"} failed closed: ${formatSubprocessFailure(result)}`,
+    );
   }
   return result;
+}
+
+function formatSubprocessFailure(result) {
+  if (result.timedOut) return "timeout";
+  if (result.outputLimitExceeded) return "output limit exceeded";
+  if (result.invalidUtf8) return "invalid UTF-8 output";
+  if (result.terminationReason === "spawn-error") return "spawn error";
+  const output = [result.stderr, result.stdout]
+    .filter((value) => typeof value === "string" && value.length > 0)
+    .join("\n")
+    .replace(/[^\x20-\x7e\n]/g, "?")
+    .trim()
+    .slice(0, 4_096);
+  return output.length > 0
+    ? `exit ${result.exitCode}: ${output}`
+    : `exit ${result.exitCode}`;
 }
 
 async function dockerBestEffort(args) {

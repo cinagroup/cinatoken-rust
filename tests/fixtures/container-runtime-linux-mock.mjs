@@ -105,7 +105,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(9090, "0.0.0.0");
+server.listen(80, "0.0.0.0");
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => server.close(() => process.exit(0)));

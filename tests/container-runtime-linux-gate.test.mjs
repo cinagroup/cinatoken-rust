@@ -48,7 +48,7 @@ describe("linux container release gate", () => {
     expect(verifierSource).toContain('"runtime.cinatoken.internal"');
     expect(verifierSource).toContain('"exec"');
     expect(probeSource).toContain("http://runtime.cinatoken.internal:8080");
-    expect(probeSource).toContain("http://127.0.0.1:9090");
+    expect(probeSource).toContain('MOCK_BASE_URL = "http://127.0.0.1"');
     for (const fragment of [
       ["--", "privileged"].join(""),
       ["docker", ".sock"].join(""),

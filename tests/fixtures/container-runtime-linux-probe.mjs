@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-const MOCK_BASE_URL = "http://127.0.0.1:9090";
+const MOCK_BASE_URL = "http://127.0.0.1";
 const RUNTIME_BASE_URL = "http://runtime.cinatoken.internal:8080";
 const INPUT = Buffer.from(process.env.MOCK_INPUT_BASE64 ?? "", "base64");
 const INPUT_SHA256 = process.env.MOCK_INPUT_SHA256 ?? "";

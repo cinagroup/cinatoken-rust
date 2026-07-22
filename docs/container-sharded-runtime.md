@@ -1244,7 +1244,9 @@ digest-pinned Node mock owns only `r2-input.cinatoken.internal` and
 `provider-egress.cinatoken.internal`; neither the runtime nor mock receives a
 Cloudflare/provider credential or customer request. Both containers use
 read-only roots, dropped capabilities, `no-new-privileges`, bounded memory and
-PIDs, and loopback-only random host ports for the verifier.
+PIDs. No container port is published to the host. A read-only probe mounted in
+the mock container calls `runtime.cinatoken.internal` and the mock's loopback
+listener from inside the same `--internal` network.
 
 The mandatory scenarios are:
 

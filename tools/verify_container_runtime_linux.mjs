@@ -13,13 +13,14 @@ export const DISTROLESS_RUNTIME_IMAGE =
 export const NODE_MOCK_IMAGE =
   "node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3";
 export const CHECKOUT_ACTION =
-  "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5";
+  "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
 const DOCKERFILE = resolve(ROOT, "crates/container-runtime/Dockerfile");
 const WORKFLOW = resolve(ROOT, ".github/workflows/container-runtime-linux.yml");
 const MOCK_FIXTURE = resolve(ROOT, "tests/fixtures/container-runtime-linux-mock.mjs");
+const PROBE_FIXTURE = resolve(ROOT, "tests/fixtures/container-runtime-linux-probe.mjs");
 const PACKAGE_JSON = resolve(ROOT, "package.json");
 const VERIFIER = fileURLToPath(import.meta.url);
 const INPUT = Buffer.from(
@@ -56,13 +57,15 @@ export function parseArgs(argv) {
 }
 
 export async function auditRepositoryContract() {
-  const [dockerfile, workflow, mockFixture, packageJsonText, verifier] = await Promise.all([
-    readFile(DOCKERFILE, "utf8"),
-    readFile(WORKFLOW, "utf8"),
-    readFile(MOCK_FIXTURE, "utf8"),
-    readFile(PACKAGE_JSON, "utf8"),
-    readFile(VERIFIER, "utf8"),
-  ]);
+  const [dockerfile, workflow, mockFixture, probeFixture, packageJsonText, verifier] =
+    await Promise.all([
+      readFile(DOCKERFILE, "utf8"),
+      readFile(WORKFLOW, "utf8"),
+      readFile(MOCK_FIXTURE, "utf8"),
+      readFile(PROBE_FIXTURE, "utf8"),
+      readFile(PACKAGE_JSON, "utf8"),
+      readFile(VERIFIER, "utf8"),
+    ]);
   const packageJson = JSON.parse(packageJsonText);
   const fromLines = dockerfile.match(/^FROM .+$/gm) ?? [];
   requireCondition(
@@ -98,15 +101,24 @@ export async function auditRepositoryContract() {
     "mock must expose the fixed internal HTTP contracts and fault mode",
   );
   requireCondition(
+    probeFixture.includes("http://runtime.cinatoken.internal:8080") &&
+      probeFixture.includes("http://127.0.0.1:9090") &&
+      probeFixture.includes('probeMode === "restart"'),
+    "probe must exercise the runtime entirely inside the isolated network",
+  );
+  requireCondition(
     verifier.includes('"network", "create", "--internal"') &&
       verifier.includes('"r2-input.cinatoken.internal"') &&
       verifier.includes('"provider-egress.cinatoken.internal"') &&
+      verifier.includes('"runtime.cinatoken.internal"') &&
+      verifier.includes('"exec"') &&
       ![
         ["--", "privileged"].join(""),
         ["docker", ".sock"].join(""),
+        ["--", "publish"].join(""),
         ['"', ["ho", "st"].join(""), '"'].join(""),
       ].some((fragment) => verifier.includes(fragment)),
-    "real gate must use an internal network without privileged container access",
+    "real gate must use an in-network probe without host ports or privileged access",
   );
   requireCondition(
     packageJson.scripts["check:container-runtime:linux-contract"]?.includes("--self-test") &&
@@ -123,6 +135,8 @@ export async function auditRepositoryContract() {
     checkoutActionPinned: true,
     workflowCredentialFree: true,
     aggregateGateOffline: true,
+    inNetworkProbe: true,
+    hostPortsPublished: false,
     remoteMutationAuthorized: false,
     customerTrafficAuthorized: false,
     productionCutoverAuthorized: false,
@@ -188,66 +202,8 @@ export async function runLinuxGate(image) {
     await docker(["network", "create", "--internal", network]);
     networkCreated = true;
     await startMock({ name: mock, network });
-    const mockBaseUrl = await publishedBaseUrl(mock, "9090/tcp");
-    await waitForJson(`${mockBaseUrl}/control/state`, (value) => value.mode === "success");
-
     await startRuntime({ name: runtime, network, image });
-    const runtimeBaseUrl = await publishedBaseUrl(runtime, "8080/tcp");
-    const health = await waitForJson(
-      `${runtimeBaseUrl}/healthz`,
-      (value) => value.status === "ok",
-    );
-    const readiness = await waitForJson(
-      `${runtimeBaseUrl}/readyz`,
-      (value) =>
-        value.status === "ready" &&
-        value.execution_enabled === true &&
-        /^[a-f0-9]{64}$/.test(value.runtime_build_id),
-    );
-    requireCondition(health.status === "ok", "runtime health probe failed");
-
-    const probe = await postOperation(runtimeBaseUrl, "linux-health", "health_probe");
-    requireResponse(probe, 200, "completed");
-
-    await setMockMode(mockBaseUrl, "success");
-    const completed = await postOperation(
-      runtimeBaseUrl,
-      "linux-provider-success",
-      "chat_completions_canary",
-    );
-    requireResponse(completed, 200, "completed");
-    requireCondition(completed.body.result?.object_version === "version-linux-gate", "result missing");
-    let mockState = await getJson(`${mockBaseUrl}/control/state`);
-    requireCondition(
-      mockState.body.r2Calls === 1 && mockState.body.providerCalls === 1,
-      "success must perform exactly one R2 read and one provider attempt",
-    );
-
-    await setMockMode(mockBaseUrl, "ambiguous");
-    const ambiguous = await postOperation(
-      runtimeBaseUrl,
-      "linux-provider-ambiguous",
-      "chat_completions_canary",
-    );
-    requireResponse(ambiguous, 202, "recovery_required", "ambiguous_execution");
-    mockState = await getJson(`${mockBaseUrl}/control/state`);
-    requireCondition(
-      mockState.body.r2Calls === 2 && mockState.body.providerCalls === 2,
-      "ambiguous execution must not retry the provider",
-    );
-
-    await setMockMode(mockBaseUrl, "input_hash_mismatch");
-    const inputMismatch = await postOperation(
-      runtimeBaseUrl,
-      "linux-input-mismatch",
-      "chat_completions_canary",
-    );
-    requireResponse(inputMismatch, 503, "rejected", "provider_input_unavailable");
-    mockState = await getJson(`${mockBaseUrl}/control/state`);
-    requireCondition(
-      mockState.body.r2Calls === 3 && mockState.body.providerCalls === 2,
-      "input mismatch must fail before provider dispatch",
-    );
+    const primaryProbe = await runProbe(mock, "primary");
 
     await docker(["stop", "--time", "10", runtime], { timeoutMs: 30_000 });
     const stopped = await inspectContainer(runtime);
@@ -256,13 +212,13 @@ export async function runLinuxGate(image) {
     cleanupContainers.delete(runtime);
 
     await startRuntime({ name: restartedRuntime, network, image });
-    const restartedBaseUrl = await publishedBaseUrl(restartedRuntime, "8080/tcp");
-    const restartedReadiness = await waitForJson(
-      `${restartedBaseUrl}/readyz`,
-      (value) => value.status === "ready" && /^[a-f0-9]{64}$/.test(value.runtime_build_id),
+    const restartedProbe = await runProbe(
+      mock,
+      "restart",
+      primaryProbe.runtimeBuildId,
     );
     requireCondition(
-      restartedReadiness.runtime_build_id === readiness.runtime_build_id,
+      restartedProbe.runtimeBuildId === primaryProbe.runtimeBuildId,
       "same image restart must retain runtime build identity",
     );
 
@@ -272,13 +228,15 @@ export async function runLinuxGate(image) {
       image,
       imageArchitecture: inspection.Architecture,
       imageUser: inspection.Config.User,
-      runtimeBuildId: readiness.runtime_build_id,
+      runtimeBuildId: primaryProbe.runtimeBuildId,
       healthProbe: "passed",
       providerSuccessSingleAttempt: true,
       ambiguousExecutionNoRetry: true,
       inputHashMismatchFailClosed: true,
       gracefulSigtermExitZero: true,
       sameImageRestartIdentityStable: true,
+      inNetworkProbe: true,
+      hostPortsPublished: false,
       remoteMutationAuthorized: false,
       customerTrafficAuthorized: false,
       productionCutoverAuthorized: false,
@@ -341,14 +299,14 @@ async function startMock({ name, network }) {
     "128m",
     "--pids-limit",
     "64",
-    "--publish",
-    "127.0.0.1::9090",
     "--env",
     `MOCK_INPUT_BASE64=${INPUT.toString("base64")}`,
     "--env",
     `MOCK_INPUT_SHA256=${INPUT_SHA256}`,
     "--mount",
     `type=bind,src=${MOCK_FIXTURE},dst=/app/mock.mjs,readonly`,
+    "--mount",
+    `type=bind,src=${PROBE_FIXTURE},dst=/app/probe.mjs,readonly`,
     NODE_MOCK_IMAGE,
     "node",
     "/app/mock.mjs",
@@ -363,6 +321,8 @@ async function startRuntime({ name, network, image }) {
     name,
     "--network",
     network,
+    "--network-alias",
+    "runtime.cinatoken.internal",
     "--read-only",
     "--tmpfs",
     "/tmp:rw,noexec,nosuid,size=16m",
@@ -376,72 +336,30 @@ async function startRuntime({ name, network, image }) {
     "128",
     "--stop-timeout",
     "10",
-    "--publish",
-    "127.0.0.1::8080",
     "--env",
     "CINATOKEN_CONTAINER_PROVIDER_CLIENT_ENABLED=true",
     image,
   ]);
 }
 
-async function publishedBaseUrl(name, port) {
-  const result = await docker(["port", name, port]);
-  const match = result.stdout.trim().match(/^127\.0\.0\.1:(\d+)$/m);
-  requireCondition(match !== null, `container ${name} has no loopback published port`);
-  return `http://127.0.0.1:${match[1]}`;
-}
-
-async function setMockMode(baseUrl, mode) {
-  const result = await getJson(`${baseUrl}/control/mode`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ mode }),
-  });
-  requireCondition(result.status === 200 && result.body.mode === mode, "mock mode update failed");
-}
-
-async function postOperation(baseUrl, operationId, kind) {
-  return await getJson(`${baseUrl}/v1/operations`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-cinatoken-container-protocol": "1",
-    },
-    body: JSON.stringify(buildOperationEnvelope({ operationId, kind })),
-  });
-}
-
-function requireResponse(response, expectedStatus, expectedOutcome, expectedCode = null) {
-  requireCondition(response.status === expectedStatus, `unexpected HTTP status ${response.status}`);
-  requireCondition(response.body.status === expectedOutcome, "unexpected operation outcome");
-  if (expectedCode !== null) requireCondition(response.body.code === expectedCode, "unexpected code");
-}
-
-async function waitForJson(url, predicate) {
-  let lastError;
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    try {
-      const response = await getJson(url);
-      if (response.status === 200 && predicate(response.body)) return response.body;
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+async function runProbe(mockContainer, mode, expectedRuntimeBuildId = null) {
+  const args = ["exec", "--env", `PROBE_MODE=${mode}`];
+  if (expectedRuntimeBuildId !== null) {
+    args.push("--env", `EXPECTED_RUNTIME_BUILD_ID=${expectedRuntimeBuildId}`);
   }
-  throw new Error(`timed out waiting for ${url}: ${lastError?.message ?? "not ready"}`);
-}
-
-async function getJson(url, options = {}) {
-  const response = await fetch(url, { ...options, signal: AbortSignal.timeout(3_000) });
-  const text = await response.text();
-  requireCondition(text.length <= 64 * 1024, "HTTP response exceeds gate limit");
-  let body;
+  args.push(mockContainer, "node", "/app/probe.mjs");
+  const result = await docker(args, { timeoutMs: 30_000 });
+  let report;
   try {
-    body = JSON.parse(text);
+    report = JSON.parse(result.stdout);
   } catch {
-    throw new Error("HTTP response is not JSON");
+    throw new Error("in-network probe returned invalid JSON");
   }
-  return { status: response.status, body };
+  requireCondition(
+    report?.status === "passed" && /^[a-f0-9]{64}$/.test(report.runtimeBuildId),
+    "in-network probe report is incomplete",
+  );
+  return report;
 }
 
 async function dockerJson(args) {

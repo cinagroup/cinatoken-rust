@@ -16759,3 +16759,33 @@ contract 5/5, workspace tests, Wrangler dry-runs and all configured wasm
 checks. This does not change the missing native Linux job evidence. The exposed
 credential must be revoked before any authenticated Cloudflare action. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 22.256 Linux Gate First Remote Failure Closure (2026-07-19)
+
+The first real execution of the new Linux gate produced useful negative
+evidence. GitHub run `29675418915` checked out exact commit
+`16fd13b63832562aaf6399fb426a871b829fcdff`, passed the offline contract, and
+built the digest-pinned Linux/amd64 image. The process step failed before any
+scenario at host `docker port` discovery. The run is not accepted as a release
+pass.
+
+The corrected architecture preserves stronger isolation instead of weakening
+the network:
+
+- neither mock nor runtime publishes a host port;
+- the mock container mounts a separate read-only probe and invokes it with
+  `docker exec`;
+- the probe reaches the mock through container loopback and the runtime through
+  `runtime.cinatoken.internal` on the same `--internal` network;
+- runtime stop, exit-code inspection, removal and same-image restart remain
+  controlled by the host verifier; and
+- checkout advances to the immutable current v7 commit with credential
+  persistence disabled.
+
+The source contract rejects host publication, privileged access, Docker socket
+mounts, host networking, missing aliases and missing probe coverage. Focused
+local verification passes 18/18 with 273 expectations; the standalone Linux
+contract passes 5/5 with 42 expectations and hard-false remote/customer/
+production authority. A new retained green exact-candidate run remains the
+promotion requirement. The exposed Cloudflare credential must still be
+revoked, Go/VPS remains authoritative, and production remains **NO-GO**.

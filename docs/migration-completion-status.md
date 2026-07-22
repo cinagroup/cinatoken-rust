@@ -1711,3 +1711,33 @@ be revoked. Remote migration 0055, sealed N/N activation, P5 faults/load/cost/
 SLO/rollback/signatures, durable streaming/financial closure, and Go/VPS drain
 remain outstanding. Go/VPS stays authoritative and production remains
 **NO-GO**.
+
+## 2026-07-19 Linux Gate First Remote Failure Closure
+
+### Remote evidence
+
+GitHub run `29675418915` for exact commit
+`16fd13b63832562aaf6399fb426a871b829fcdff` built the pinned Linux/amd64 image
+successfully but failed before the first runtime scenario because host port
+discovery returned a non-zero result. It is explicitly a failed release gate,
+not partial success.
+
+### Implemented locally
+
+- Host port publication and `docker port` discovery are removed.
+- A read-only Node probe runs inside the digest-pinned mock container and uses
+  only the internal runtime alias plus mock loopback.
+- Runtime and mock remain on one `--internal` network with read-only roots,
+  dropped capabilities, `no-new-privileges`, and memory/PID limits.
+- `actions/checkout` advances to the full v7 commit and retains
+  `persist-credentials: false`.
+- Offline tests require the probe, internal alias, `docker exec`, and the
+  absence of any host publish argument.
+
+### Verification boundary
+
+Focused local verification passes 18/18 with 273 expectations and the Linux
+contract passes 5/5 with 42 expectations. A new exact-candidate GitHub run is
+still required to prove the native process path. This closure grants no
+Cloudflare, customer-traffic, financial, or production authority. Production
+remains **NO-GO**.

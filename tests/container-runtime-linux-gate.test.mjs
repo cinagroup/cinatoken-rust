@@ -18,6 +18,9 @@ const dockerfile = await Bun.file(
 const workflow = await Bun.file(
   new URL("../.github/workflows/container-runtime-linux.yml", import.meta.url),
 ).text();
+const probeSource = await Bun.file(
+  new URL("./fixtures/container-runtime-linux-probe.mjs", import.meta.url),
+).text();
 const verifierSource = await Bun.file(
   new URL("../tools/verify_container_runtime_linux.mjs", import.meta.url),
 ).text();
@@ -33,6 +36,7 @@ describe("linux container release gate", () => {
     expect(workflow).toContain("persist-credentials: false");
     expect(workflow).toContain("runs-on: ubuntu-24.04");
     expect(workflow).toContain("docker build --platform linux/amd64");
+    expect(workflow).toContain("tests/fixtures/container-runtime-linux-probe.mjs");
     expect(workflow).toContain(
       "node tools/verify_container_runtime_linux.mjs --image cinatoken-container-runtime:linux-gate --json",
     );
@@ -41,9 +45,14 @@ describe("linux container release gate", () => {
     expect(verifierSource).toContain('"network", "create", "--internal"');
     expect(verifierSource).toContain('"r2-input.cinatoken.internal"');
     expect(verifierSource).toContain('"provider-egress.cinatoken.internal"');
+    expect(verifierSource).toContain('"runtime.cinatoken.internal"');
+    expect(verifierSource).toContain('"exec"');
+    expect(probeSource).toContain("http://runtime.cinatoken.internal:8080");
+    expect(probeSource).toContain("http://127.0.0.1:9090");
     for (const fragment of [
       ["--", "privileged"].join(""),
       ["docker", ".sock"].join(""),
+      ["--", "publish"].join(""),
       ['"', ["ho", "st"].join(""), '"'].join(""),
     ]) {
       expect(verifierSource).not.toContain(fragment);
@@ -106,6 +115,8 @@ describe("linux container release gate", () => {
       checkoutActionPinned: true,
       workflowCredentialFree: true,
       aggregateGateOffline: true,
+      inNetworkProbe: true,
+      hostPortsPublished: false,
       remoteMutationAuthorized: false,
       customerTrafficAuthorized: false,
       productionCutoverAuthorized: false,

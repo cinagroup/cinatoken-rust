@@ -7845,10 +7845,10 @@ Focused local verification for the release-control increment:
 
 ```powershell
 bun test tests/container-runtime-linux-gate.test.mjs tests/container-controller-config.test.mjs
-# PASS: 18/18 tests, 267 expectations.
+# PASS: 18/18 tests, 273 expectations.
 
 bun run check:container-runtime:linux-contract
-# PASS: 5/5 tests, 36 expectations, followed by the Node offline self-test.
+# PASS: 5/5 tests, 42 expectations, followed by the Node offline self-test.
 # Report: contract v1 passed; base/action pins and credential-free workflow
 # passed; remote/customer/production authority all false.
 
@@ -7860,7 +7860,7 @@ git diff --check
 
 bun run check
 # PASS: complete repository aggregate with exit code 0, including the Linux
-# contract 5/5 (36 expectations), Controller 211/211 (1441 expectations),
+# contract 5/5 (42 expectations), Controller 211/211 (1441 expectations),
 # portable protocol 176/176, Workerd runtime 45/45, deploy preflight 22/22
 # (93 expectations), DO lifecycle 48/48, frontend contracts 71/71, P5 evidence
 # 44/44 (55 expectations), foundation 24/24 (267 expectations), shard campaign
@@ -7888,3 +7888,28 @@ native image build or process run. A retained green CI result for the exact
 candidate is still required, followed by Cloudflare image/version provenance,
 remote lifecycle/fault/P5 evidence and Go/VPS drain. Production remains
 **NO-GO**.
+
+## Linux Gate First Remote Failure And Isolation Fix (2026-07-19)
+
+The first exact-candidate GitHub run, [29675418915](https://github.com/cinagroup/cinatoken-rust/actions/runs/29675418915),
+is retained as failed evidence rather than counted as a release pass. Commit
+`16fd13b63832562aaf6399fb426a871b829fcdff` passed checkout, the credential-free
+contract, and the real `linux/amd64` image build. Its process step then failed
+at `docker port`; no runtime scenario completed.
+
+The replacement contract publishes no host port. The digest-pinned mock owns a
+mounted read-only probe and executes it with `docker exec` inside the same
+`--internal` network as the runtime. The probe reaches the mock only over its
+container loopback listener and reaches the runtime through the fixed
+`runtime.cinatoken.internal` alias. It still proves the complete health,
+success, ambiguity, input-integrity and restart sequence. The workflow also
+pins current `actions/checkout` v7 to full commit
+`9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0` and disables credential
+persistence.
+
+Focused local evidence after the fix is 18/18 tests with 273 expectations; the
+standalone Linux contract is 5/5 with 42 expectations and reports
+`inNetworkProbe=true`, `hostPortsPublished=false`, and false remote/customer/
+production authority. These results fix the test design but do not convert the
+failed remote run into a pass. A new retained green run for the exact candidate
+is mandatory. Production remains **NO-GO**.

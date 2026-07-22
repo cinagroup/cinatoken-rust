@@ -241,6 +241,41 @@ policy.
 | Client stops pulling or cancels | Incoming `Request.signal` appends 0058 evidence and atomically owns recovery; lease sweep remains the fallback if the bounded write cannot complete | Local reader-cancel/service-binding pass plus remote HTTP/2, HTTP/3, D1-fault, restart, and WFP evidence |
 | Worker restart | D1 state survives; outbox/recovery resume only under drain gates | Real restart/version-skew campaign |
 
+## Ordinary HTTP SSE Single-Forwarding Closure
+
+The durable-disabled ordinary HTTP SSE path now uses the same response-owned,
+pull-driven shape required by this handoff design. It no longer uses
+`Response::cloned()`, `Response.clone()`, or a tee to let audit work consume the
+provider body independently. Each downstream pull advances at most the bounded
+stream machinery needed to read, parse, account, and yield the next provider
+chunk. Provider terminal ownership is synchronously claimed and registered as a
+short-lived `waitUntil` finalization task before the terminal outcome is yielded,
+so response cancellation cannot drop that in-flight Queue/D1 work. A separate
+`Request.signal` listener and stream-drop fallback may claim ownership only while
+it is still pending, then register their own short finalization task. The lease
+heartbeat uses one cancelable timer and one short renewal task at a time; it
+cannot read or buffer the body and does not keep a response-lifetime `waitUntil`.
+
+The local Workerd slow-consumer fixture offers 256 provider chunks. After one
+client read and a 300 ms pause, the provider is incomplete and has been pulled
+no more than eight times. Releasing the provider terminal and draining the
+client advances the source by at most one additional pull, keeps total pulls
+below 256, and converges positive upstream usage through the billing Queue with
+`provider_terminal_event`. Source mutation audit separately rejects moving
+financial finalization back into the cancelable pull future. This closes the
+local clone/tee and bounded-provider-
+read blockers. It does not prove real Cloudflare HTTP/2, HTTP/3, or TCP
+disconnect propagation.
+
+Accepted patterns are one response-owned pull-driven stream, bounded
+incremental usage/digest state, synchronous provider-terminal registration as a
+short-lived `waitUntil` task, an event-triggered first-owner client-abort path, a
+non-consuming single-timer heartbeat, and frozen-reserve cancellation.
+Rejected patterns are response cloning/teeing, detached body consumption,
+unbounded eager buffering, partial-usage charging after ambiguous disconnect,
+automatic refund/resend, and treating a local reader cancel as remote network
+evidence.
+
 ## Rollout
 
 ### S0: Security And Candidate Freeze
@@ -283,6 +318,9 @@ policy.
 - Prove one provider operation, monotonic checkpoints, terminal-event-before-
   client-terminal ordering, one billing terminal, one audit event, and one
   receipt per reservation.
+- Hold a slow reader after its first chunk and prove bounded provider pulls and
+  memory before releasing the provider terminal; then prove upstream usage,
+  Queue settlement, and provider-terminal convergence.
 
 ### S4: Faults, Soak, Cost, And Rollback
 
@@ -310,11 +348,14 @@ alone cannot satisfy S5.
    provider operations.
 4. Reconcile every reservation, receipt, audit event, request counter, and
    provider call before disabling drain gates.
-5. Retain migrations 0056/0057/0058, all rows, receipts, logs, and candidate evidence.
+5. Do not restore response clone/tee as a rollback shortcut. If the exact
+   single-forwarding artifact cannot remain active, route new SSE traffic to
+   hot Go/VPS while the N drain worker owns existing durable rows.
+6. Retain migrations 0056/0057/0058, all rows, receipts, logs, and candidate evidence.
    Never down-migrate or delete handoff evidence during an incident.
-6. Do not re-enable an N-1 durable producer on the 0058 schema. A code rollback
+7. Do not re-enable an N-1 durable producer on the 0058 schema. A code rollback
    routes new traffic to Go/VPS while the N drain worker owns existing rows.
-7. Disable outbox/recovery only after the approved zero-backlog and retention
+8. Disable outbox/recovery only after the approved zero-backlog and retention
    checks pass.
 
 ## Local Verification
@@ -344,6 +385,13 @@ routes through an isolated gate-enabled Worker service binding, reads one real
 SSE chunk, cancels the response reader, observes the incoming `Request.signal`,
 and proves one provider call plus durable abort evidence with no settle/refund.
 
+The ordinary-path slow-consumer case additionally reads one chunk from a
+256-chunk pull-generated provider response, pauses for 300 ms, and observes at
+most eight provider pulls with no provider terminal. Controlled terminal
+release plus client drain advances at most one additional pull and converges
+upstream usage, billing Queue settlement, request accounting, and the
+`provider_terminal_event` completion reason.
+
 The complete local source checks pass Worker unit tests 858/858, all remaining
 Rust workspace tests, Worker Wasm build/check, SQLite 58/66/848/97, both
 configuration audits, P5 evidence/foundation 68/68, direct D1 abort-race tests,
@@ -357,8 +405,10 @@ production evidence.
   Workerd service binding and response-reader cancellation, but not on real
   Cloudflare HTTP/2, HTTP/3, client TCP loss, WFP chaining, isolate termination,
   or version-skew paths.
-- The default, durable-disabled SSE path still clones/tees the response for
-  audit consumption and needs a bounded single-consumer backpressure design.
+- The durable-disabled SSE clone/tee and bounded-provider-read blocker is
+  closed locally. Real edge disconnect propagation and transport-level
+  cancellation remain part of the remote HTTP/2, HTTP/3, TCP, Gateway, and WFP
+  campaign; local reader cancellation is not a substitute.
 - Real before-header, client-abort, D1 ambiguity, Queue acknowledgement
   ambiguity, restart, and version-skew campaigns are not archived.
 - Provider-family failed/incomplete terminal billing policy is not approved.

@@ -17011,9 +17011,10 @@ and all evidence are retained; no down migration is permitted.
 - Incoming client abort is not yet connected to `Request.signal` and an
   invocation-independent durable watchdog. A stopped downstream pull can only
   converge through lease expiry and scheduled recovery.
-- The durable-disabled SSE path still uses `Response.clone()`/tee for audit
-  consumption, so slow-client backpressure and memory bounds need a separate
-  single-consumer implementation and real Workerd proof.
+- At this 0057 checkpoint, the durable-disabled SSE path still used
+  `Response.clone()`/tee for audit consumption. Section 22.262 supersedes this
+  historical blocker with the single-forwarding implementation and Workerd
+  proof.
 - No remote 0057 apply/readback, delayed-header/cancel/restart/version-skew
   fault campaign, Queue ambiguity packet, provider invoice reconciliation,
   load/cost/SLO/alert evidence, or P5 signatures exist for this candidate.
@@ -17106,8 +17107,87 @@ never restored as a durable producer and ambiguous provider operations are
 never resent.
 
 Local implementation no longer has the immediate `Request.signal` watchdog
-gap. Production remains **NO-GO** pending real Cloudflare HTTP/2/HTTP/3/TCP and
-WFP cancellation, D1 failure/restart/version-skew, Queue/provider invoice,
+gap. At this 0058 checkpoint, the durable-disabled clone/tee path still needed
+bounded slow-consumer backpressure proof; section 22.262 supersedes that local
+blocker. Production remains **NO-GO** pending real Cloudflare HTTP/2/HTTP/3/TCP
+and WFP cancellation, D1 failure/restart/version-skew, Queue/provider invoice,
 load/SLO/cost/alert, remote 0058, P5 approval, credential revocation, and
-Go/VPS drain/reverse-sync/rollback evidence. The durable-disabled clone/tee
-path also still needs bounded slow-consumer backpressure proof.
+Go/VPS drain/reverse-sync/rollback evidence.
+
+## 22.262 Ordinary HTTP SSE Single-Forwarding Backpressure Closure (2026-07-22)
+
+The ordinary, durable-disabled HTTP SSE response now has one pull-driven Rust
+forwarding stream. The response body and bounded usage parser share that stream
+lifecycle; parsed provider/client terminal ownership is synchronously handed to
+bounded independent tasks for billing Queue/D1 convergence. A provider terminal
+claims ownership and registers a short-lived `waitUntil` task before its chunk is
+yielded; the `Request.signal` listener and stream Drop can claim only a
+still-pending owner.
+The relay no longer calls `Response::cloned()` and does not create a
+tee or a second response-body consumer for audit work. `Request.signal` and
+stream Drop register client finalization only after cancellation occurs. Lease
+heartbeat scheduling holds one cancelable timer and registers one short D1
+renewal task at a time; it cannot read, clone, buffer, or advance the provider
+body and never waits on the whole response through `waitUntil`.
+
+### Local Workerd evidence
+
+The focused Workerd case exposes a 256-chunk pull-generated provider stream,
+reads one client chunk, and then stops pulling for 300 ms. The provider remains
+nonterminal and records at most eight pulls rather than consuming the complete
+stream. After the controlled provider terminal is released and the client
+drains the response, provider pulls advance by at most one and remain below
+256. The same case proves positive final quota, one request accounting update,
+`usageSource=upstream`, no stream-usage parse failure,
+`finalizationTransport=billing_queue`, and
+`completion_reason=provider_terminal_event`.
+
+This is local runtime evidence that slow downstream demand bounds provider
+reads and that successful usage, Queue settlement, and provider-terminal state
+converge without a cloned audit consumer. It is not evidence that a real
+Cloudflare edge propagates HTTP/2, HTTP/3, or TCP disconnects through every
+direct, Gateway, or WFP hop. Source and static mutation audit prove that provider
+financial finalization is registered as independent `waitUntil` work rather than
+awaited by the cancelable response pull future; cancellation during that handoff
+still requires remote protocol/fault evidence.
+
+### Accepted and rejected patterns
+
+| Decision | Pattern | Reason |
+| --- | --- | --- |
+| Accept | One response-owned pull-driven stream reads one provider chunk, updates bounded incremental usage/digest state, and yields that chunk | Downstream demand remains the pacing authority |
+| Accept | The forwarding stream synchronously claims provider-terminal ownership and registers a short-lived `waitUntil` task before yielding the terminal outcome; `Request.signal` and stream Drop claim only a pending owner and then register client finalization | Client cancellation cannot cancel an already-registered provider financial terminal |
+| Accept | A single cancelable lease-heartbeat timer that registers only one short renewal task at a time, never consumes the body, and is disarmed by terminal/cancel ownership | Lease maintenance cannot bypass stream backpressure or keep a response-lifetime promise pending |
+| Accept | Client-abort fallback keeps the frozen reserve and uses first-owner finalization | Ambiguous delivery never becomes a partial-usage charge, automatic refund, or resend |
+| Reject | `Response::cloned()`, `Response.clone()`, tee, or any second body consumer for audit/billing | A fast hidden consumer defeats downstream backpressure and can grow buffering |
+| Reject | `waitUntil` body consumption, or financial work launched without deterministic first-owner fencing and synchronous task registration | Body pacing and financial ownership would diverge or become cancelable |
+| Reject | Eager full-body buffering or an unbounded channel between provider and client | Memory and provider-read bounds become traffic-dependent |
+| Reject | Treating local reader cancellation as proof of real edge/TCP propagation | Network and intermediary behavior requires remote protocol evidence |
+
+### Rollout and rollback
+
+1. Freeze the exact Worker artifact, Go/VPS rollback route, provider counter,
+   billing Queue, and D1 target. Keep all four durable SSE gates false.
+2. Deploy the exact reader/runtime to isolated staging and run slow-reader,
+   normal terminal, malformed usage, provider read-error, Queue retry, and
+   reader-cancel cases with bounded provider-pull, memory, latency, and
+   accounting evidence.
+3. Canary a bounded no-customer cohort through direct HTTP/2 and HTTP/3, then
+   the approved Gateway/WFP chains. Require one provider attempt and exact
+   provider/D1/Queue/audit/request-counter reconciliation.
+4. Expand only after disconnect, soak, load, cost, alert, and rollback evidence
+   is retained against the frozen candidate and independently reviewed.
+
+Rollback first routes new ordinary SSE traffic to hot Go/VPS authority. It
+then disables the Rust candidate while the exact N drain runtime retains
+outbox/recovery ownership for existing durable rows. Migrations 0056-0058,
+receipts, abort evidence, and reconciliation records remain in place. Rollback
+must not restore clone/tee as a fallback and must never resend an ambiguous
+provider operation; any prior Worker artifact is reader-only until all owned
+work is terminal or explicitly reconciled.
+
+The local clone/tee and slow-consumer implementation blocker is closed. Real
+Cloudflare client-disconnect propagation over HTTP/2, HTTP/3, and TCP, including
+Gateway/WFP chains, remains mandatory remote evidence together with the other
+0058, fault, invoice, SLO/cost, security, P5, and Go/VPS drain gates. Go/VPS
+remains authoritative and production remains **NO-GO**.

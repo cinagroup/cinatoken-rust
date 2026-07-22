@@ -1201,7 +1201,7 @@ and 96 key indexes.
 | Dispatch recovery | Fetch error, 120-second header timeout, non-200 and expired intents atomically fence billing recovery | Real delayed headers, status families, provider invoices and scheduler takeover | Local contract; remote blocked |
 | Total deadline | Immutable 900-second hard deadline caps handoff lease and active-pull timeout; policy cap is 3600 seconds | Periodic-chunk, stopped-pull, restart and backlog-age evidence | Partial; scheduler path local only |
 | Cancellation | Lease/scheduler recovery exists | `Request.signal` plus durable watchdog, immediate cancel race tests, and Cloudflare edge proof | **Blocked** |
-| Backpressure | Gated durable path is one instrumented stream | Replace/prove durable-disabled clone/tee under slow clients with bounded memory | **Blocked** |
+| Backpressure | At the 0057 checkpoint only the gated durable path was one instrumented stream | Superseded by the single-forwarding readiness overlay below | Historical blocker closed locally |
 | Compatibility/rollback | N-1 remains reader-only after 0057; N drain worker plus hot Go/VPS retained | Real N/N-1 read campaign and producer-off rollback with zero backlog | Planned; remote blocked |
 | Recorded 0057 promotion baseline | All four SSE gates remained false; local Rust 858/858, SQLite 57/65/841/96, Workerd 50/50 and full aggregate passed | Remote current-head complete fault/invoice/SLO/cost/P5/security packet and Go/VPS drain | **NO-GO** |
 
@@ -1227,3 +1227,19 @@ and 97 key indexes.
 0058 closes the local watchdog implementation gap only. It does not prove
 Cloudflare network disconnect behavior or convert an ambiguous provider send
 into a safe refund or retry. Go/VPS remains authoritative.
+
+## 2026-07-22 HTTP SSE Single-Forwarding Readiness Overlay
+
+| Control | Implemented local evidence | Required remote evidence | Decision |
+| --- | --- | --- | --- |
+| Single body owner | Ordinary durable-disabled SSE uses one response-owned Rust stream; no `Response::cloned()`/clone/tee audit consumer | Frozen-candidate source/config audit retained with deployed artifact identity | Local pass, remote artifact open |
+| Pull bound | Workerd 256-chunk fixture remains incomplete at no more than eight pulls after one client read plus 300 ms pause; controlled terminal release advances at most one pull and stays below 256 | Sustained slow-reader memory/pull/latency measurements over real provider families and edge protocols | Local pass, remote load open |
+| Financial terminal | Provider terminal synchronously claims ownership and registers a short-lived `waitUntil` task before its chunk is yielded; source mutation audit rejects pull-owned async finalization, while normal terminal drain converges positive upstream usage, no parse failure, one request accounting update, `billing_queue`, and `provider_terminal_event` | Cancellation during finalization, remote D1/Queue ambiguity, provider invoice, audit/request conservation and alert evidence | Local architecture pass, remote financial proof open |
+| Accepted pattern | One pull-driven stream, bounded incremental state, provider-terminal `waitUntil` task, event-triggered first-owner client listener/drop fallback, one cancelable heartbeat timer with short renewal tasks, frozen-reserve cancellation | Same invariants under direct, Gateway, and WFP routes | Approved local architecture |
+| Rejected pattern | Clone/tee, detached audit body reads, eager/unbounded buffering, partial-usage disconnect charge, automatic refund/resend, or local-cancel-as-network-proof | Release review must reject reintroduction in source or rollback artifacts | Required invariant |
+| Client disconnect | Local Workerd reader/request-signal cases exist, but do not establish edge transport propagation | Real Cloudflare HTTP/2, HTTP/3, TCP loss, direct/Gateway/WFP chains, restart/deploy and version skew | **Remote blocked** |
+| Rollout/rollback | Durable gates stay false; freeze candidate and Go/VPS fallback; canary slow-reader then protocol paths; rollback routes new SSE to Go/VPS while N drains and retains 0056-0058 evidence | Rehearsed measured RTO/RPO, zero unexplained backlog, no clone/tee fallback and no provider resend | Planned, remote open |
+| Promotion | Local clone/tee and bounded-provider-read blocker is closed | Complete remote disconnect/fault/invoice/load/cost/security/P5/Go drain packet | **NO-GO** |
+
+Local pull-driven behavior is sufficient to close the implementation blocker,
+not the production transport gate. Go/VPS remains authoritative.

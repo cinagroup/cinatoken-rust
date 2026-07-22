@@ -79,10 +79,10 @@ use js_sys::{Function, Object, Promise, Reflect};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap},
     future::Future,
-    rc::Rc,
+    rc::{Rc, Weak},
     time::Duration,
 };
 use url::Url;
@@ -11188,7 +11188,7 @@ struct DurableRelayStreamState {
 }
 
 async fn complete_streaming_relay_response(
-    mut upstream: Response,
+    upstream: Response,
     env: Env,
     db: D1Database,
     context: Context,
@@ -11240,30 +11240,6 @@ async fn complete_streaming_relay_response(
         )
         .await;
     }
-    let mut audit_response = match upstream.cloned() {
-        Ok(response) => response,
-        Err(err) => {
-            if let Some(preflight) = audit.billing_preflight.as_ref() {
-                if let Err(refund_err) = refund_relay_billing_preflight(
-                    &env,
-                    Some(&context),
-                    &db,
-                    &auth,
-                    preflight,
-                    "stream_clone_failed",
-                    crate::d1_repositories::RelayBillingRequestAccounting::Skip,
-                    unix_timestamp(),
-                )
-                .await
-                {
-                    return Err(worker::Error::RustError(format!(
-                        "failed to initialize streaming audit branch: {err}; billing reserve refund failed: {refund_err}"
-                    )));
-                }
-            }
-            return Err(err);
-        }
-    };
     let stream_lease = audit
         .billing_preflight
         .as_ref()
@@ -11285,73 +11261,799 @@ async fn complete_streaming_relay_response(
                 heartbeat_seconds,
             })
         });
+    complete_instrumented_streaming_relay_response(
+        upstream,
+        env,
+        db,
+        context,
+        request_abort_signal,
+        auth,
+        channel,
+        model,
+        group,
+        endpoint_path,
+        provider,
+        audit,
+        status,
+        content_type,
+        upstream_request_id,
+        stream_lease,
+    )
+    .await
+}
 
-    context.wait_until(async move {
-        let mut audit = audit;
-        let mut heartbeat_audit = stream_lease.as_ref().map(|lease| {
-            RelayBillingStreamLeaseHeartbeatAudit::new(
-                lease.heartbeat_seconds,
-                lease.initial_lease_expires_at,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstrumentedStreamFinalizationOwner {
+    Pending,
+    ProviderStream,
+    ClientAbort,
+}
+
+struct InstrumentedRelayFinalizationContext {
+    env: Env,
+    db: D1Database,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    upstream_status: u16,
+    upstream_request_id: Option<String>,
+    audit: RelayAuditContext,
+    lifecycle_disarm: Rc<RefCell<Option<Rc<InstrumentedStreamHeartbeatScheduler>>>>,
+    heartbeat_audit: Option<Rc<RefCell<RelayBillingStreamLeaseHeartbeatAudit>>>,
+}
+
+struct InstrumentedRelayStreamState {
+    stream: worker::ByteStream,
+    accumulator: Option<SseUsageAccumulator>,
+    model: String,
+    endpoint_path: String,
+    provider: RelayProviderKind,
+    audit: RelayAuditContext,
+    request_abort_signal: web_sys::AbortSignal,
+    finalization_owner: Rc<Cell<InstrumentedStreamFinalizationOwner>>,
+    finalization_armed: Rc<Cell<bool>>,
+    finalization_wait_until_context: Rc<Context>,
+    provider_finalization_context: Rc<InstrumentedRelayFinalizationContext>,
+    client_finalization_context: Rc<InstrumentedRelayFinalizationContext>,
+    _client_abort_listener: AbortSignalListener,
+}
+
+impl Drop for InstrumentedRelayStreamState {
+    fn drop(&mut self) {
+        dispatch_instrumented_client_finalization(
+            &self.finalization_owner,
+            &self.finalization_armed,
+            &self.finalization_wait_until_context,
+            &self.client_finalization_context,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_instrumented_streaming_relay_response(
+    mut upstream: Response,
+    env: Env,
+    db: D1Database,
+    context: Context,
+    request_abort_signal: web_sys::AbortSignal,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    provider: RelayProviderKind,
+    audit: RelayAuditContext,
+    status: u16,
+    content_type: String,
+    upstream_request_id: Option<String>,
+    stream_lease: Option<RelayBillingStreamLease>,
+) -> worker::Result<Response> {
+    let headers =
+        public_provider_response_headers(&upstream, provider_response_class_for_status(status));
+    let stream = match upstream.stream() {
+        Ok(stream) => stream,
+        Err(error) => {
+            refund_instrumented_stream_initialization(
+                &env,
+                &context,
+                &db,
+                &auth,
+                &audit,
+                "stream_initialization_failed",
             )
-        });
-        let resolution = match streaming_usage_summary(
-            &mut audit_response,
-            provider,
-            channel.channel_type,
-            &endpoint_path,
-            &model,
-            audit.estimated_prompt_tokens,
-            audit.missing_usage_estimate_enabled,
-            &db,
-            stream_lease.as_ref(),
-            heartbeat_audit.as_mut(),
+            .await?;
+            return Err(error);
+        }
+    };
+    let heartbeat_db = if stream_lease.is_some() {
+        Some(
+            instrumented_stream_db_handle_or_refund(
+                &env,
+                &context,
+                &db,
+                &auth,
+                &audit,
+                "stream_heartbeat_db_initialization_failed",
+            )
+            .await?,
         )
-        .await
-        {
-            Ok(resolved) => resolved,
-            Err(err) => {
-                worker::console_error!("failed to initialize streaming relay usage audit: {}", err);
-                StreamingUsageResolution::default()
-            }
-        };
-        if let Some(err) = resolution.terminal_error.as_deref() {
-            worker::console_error!(
-                "streaming relay usage audit recovered partial evidence after read error: {}",
-                err
-            );
+    } else {
+        None
+    };
+    let watchdog_db = instrumented_stream_db_handle_or_refund(
+        &env,
+        &context,
+        &db,
+        &auth,
+        &audit,
+        "stream_client_abort_db_initialization_failed",
+    )
+    .await?;
+    let provider_finalization_db = instrumented_stream_db_handle_or_refund(
+        &env,
+        &context,
+        &db,
+        &auth,
+        &audit,
+        "stream_provider_finalization_db_initialization_failed",
+    )
+    .await?;
+    let finalization_owner = Rc::new(Cell::new(InstrumentedStreamFinalizationOwner::Pending));
+    let finalization_armed = Rc::new(Cell::new(false));
+    let finalization_wait_until_context = Rc::new(Context::new(
+        <worker::worker_sys::Context as AsRef<JsValue>>::as_ref(context.as_ref())
+            .clone()
+            .unchecked_into(),
+    ));
+    let lifecycle_disarm = Rc::new(RefCell::new(None));
+    let heartbeat_audit = stream_lease.as_ref().map(|lease| {
+        Rc::new(RefCell::new(RelayBillingStreamLeaseHeartbeatAudit::new(
+            lease.heartbeat_seconds,
+            lease.initial_lease_expires_at,
+        )))
+    });
+    let provider_finalization_context = Rc::new(InstrumentedRelayFinalizationContext {
+        env: env.clone(),
+        db: provider_finalization_db,
+        auth: auth.clone(),
+        channel: channel.clone(),
+        model: model.clone(),
+        group: group.clone(),
+        endpoint_path: endpoint_path.clone(),
+        upstream_status: status,
+        upstream_request_id: upstream_request_id.clone(),
+        audit: audit.clone(),
+        lifecycle_disarm: Rc::clone(&lifecycle_disarm),
+        heartbeat_audit: heartbeat_audit.clone(),
+    });
+    let client_finalization_context = Rc::new(InstrumentedRelayFinalizationContext {
+        env: env.clone(),
+        db: watchdog_db,
+        auth: auth.clone(),
+        channel: channel.clone(),
+        model: model.clone(),
+        group: group.clone(),
+        endpoint_path: endpoint_path.clone(),
+        upstream_status: status,
+        upstream_request_id: upstream_request_id.clone(),
+        audit: audit.clone(),
+        lifecycle_disarm: Rc::clone(&lifecycle_disarm),
+        heartbeat_audit: heartbeat_audit.clone(),
+    });
+    let client_abort_listener = match instrumented_stream_client_abort_listener(
+        request_abort_signal.clone(),
+        Rc::clone(&finalization_owner),
+        Rc::clone(&finalization_armed),
+        Rc::clone(&finalization_wait_until_context),
+        Rc::clone(&client_finalization_context),
+    ) {
+        Ok(listener) => listener,
+        Err(error) => {
+            disarm_instrumented_stream_lifecycle(&lifecycle_disarm);
+            refund_instrumented_stream_initialization(
+                &env,
+                &context,
+                &db,
+                &auth,
+                &audit,
+                "stream_client_abort_listener_initialization_failed",
+            )
+            .await?;
+            return Err(worker::Error::RustError(format!(
+                "relay HTTP stream client-abort listener could not be armed: {error:?}"
+            )));
         }
-        if resolution.bounds_exceeded || resolution.provider_stream_failed {
-            audit.stream_usage_parse_failed = true;
-            let reason = if resolution.provider_stream_failed {
-                "provider terminal reported failed or incomplete"
-            } else {
-                "usage evidence exceeded parser bounds"
-            };
-            worker::console_error!("streaming relay {reason}; settling only at the frozen reserve");
+    };
+    let state = InstrumentedRelayStreamState {
+        stream,
+        accumulator: Some(stream_usage_accumulator(provider, channel.channel_type)),
+        model: model.clone(),
+        endpoint_path: endpoint_path.clone(),
+        provider,
+        audit: audit.clone(),
+        request_abort_signal: request_abort_signal.clone(),
+        finalization_owner: Rc::clone(&finalization_owner),
+        finalization_armed: Rc::clone(&finalization_armed),
+        finalization_wait_until_context: Rc::clone(&finalization_wait_until_context),
+        provider_finalization_context: Rc::clone(&provider_finalization_context),
+        client_finalization_context: Rc::clone(&client_finalization_context),
+        _client_abort_listener: client_abort_listener,
+    };
+    let body = futures_util::stream::try_unfold(state, instrumented_relay_stream_next);
+    let mut response = match Response::from_stream(body) {
+        Ok(response) => response.with_status(status).with_headers(headers),
+        Err(error) => {
+            disarm_instrumented_stream_lifecycle(&lifecycle_disarm);
+            refund_instrumented_stream_initialization(
+                &env,
+                &context,
+                &db,
+                &auth,
+                &audit,
+                "stream_response_initialization_failed",
+            )
+            .await?;
+            return Err(error);
         }
-        audit.usage_locally_estimated = resolution.locally_estimated;
-        audit.stream_lease_heartbeat = heartbeat_audit;
-        if let Err(err) = record_relay_audit(
+    };
+    if let Err(error) = response.headers_mut().set("content-type", &content_type) {
+        disarm_instrumented_stream_lifecycle(&lifecycle_disarm);
+        refund_instrumented_stream_initialization(
             &env,
+            &context,
             &db,
             &auth,
-            &channel,
-            &model,
-            &group,
-            &endpoint_path,
-            status,
-            &resolution.usage,
             &audit,
-            upstream_request_id.as_deref(),
+            "stream_response_header_failed",
+        )
+        .await?;
+        return Err(error);
+    }
+    if let Err(error) = set_cors_headers(&mut response) {
+        disarm_instrumented_stream_lifecycle(&lifecycle_disarm);
+        refund_instrumented_stream_initialization(
+            &env,
+            &context,
+            &db,
+            &auth,
+            &audit,
+            "stream_response_header_failed",
+        )
+        .await?;
+        return Err(error);
+    }
+
+    if let (Some(lease), Some(heartbeat_audit), Some(heartbeat_db)) =
+        (stream_lease, heartbeat_audit.clone(), heartbeat_db)
+    {
+        if let Err(error) = arm_instrumented_stream_lease_heartbeat(
+            Rc::clone(&finalization_wait_until_context),
+            heartbeat_db,
+            lease,
+            heartbeat_audit,
+            Rc::clone(&finalization_owner),
+        )
+        .map(|scheduler| {
+            lifecycle_disarm.borrow_mut().replace(scheduler);
+        }) {
+            disarm_instrumented_stream_lifecycle(&lifecycle_disarm);
+            refund_instrumented_stream_initialization(
+                &env,
+                &context,
+                &db,
+                &auth,
+                &audit,
+                "stream_heartbeat_arm_failed",
+            )
+            .await?;
+            return Err(worker::Error::RustError(format!(
+                "relay HTTP stream lease heartbeat could not be armed: {error:?}"
+            )));
+        }
+    }
+    finalization_armed.set(true);
+    if request_abort_signal.aborted() {
+        dispatch_instrumented_client_finalization(
+            &finalization_owner,
+            &finalization_armed,
+            &finalization_wait_until_context,
+            &client_finalization_context,
+        );
+    }
+    Ok(response)
+}
+
+async fn instrumented_stream_db_handle_or_refund(
+    env: &Env,
+    context: &Context,
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+    audit: &RelayAuditContext,
+    reason: &str,
+) -> worker::Result<D1Database> {
+    match env.d1("DB") {
+        Ok(db) => Ok(db),
+        Err(error) => {
+            refund_instrumented_stream_initialization(env, context, db, auth, audit, reason)
+                .await?;
+            Err(error)
+        }
+    }
+}
+
+async fn refund_instrumented_stream_initialization(
+    env: &Env,
+    context: &Context,
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+    audit: &RelayAuditContext,
+    reason: &str,
+) -> worker::Result<()> {
+    let Some(preflight) = audit.billing_preflight.as_ref() else {
+        return Ok(());
+    };
+    refund_relay_billing_preflight(
+        env,
+        Some(context),
+        db,
+        auth,
+        preflight,
+        reason,
+        crate::d1_repositories::RelayBillingRequestAccounting::Skip,
+        unix_timestamp(),
+    )
+    .await
+}
+
+// Keep response-lifetime ownership out of waitUntil: each timer creates only
+// one bounded renewal task and terminal ownership cancels the next timer.
+struct InstrumentedStreamHeartbeatScheduler {
+    context: Rc<Context>,
+    db: Rc<D1Database>,
+    lease: RelayBillingStreamLease,
+    heartbeat_audit: Rc<RefCell<RelayBillingStreamLeaseHeartbeatAudit>>,
+    finalization_owner: Rc<Cell<InstrumentedStreamFinalizationOwner>>,
+    expected_lease_expires_at: Cell<i64>,
+    delay_seconds: Cell<i64>,
+    timeout_id: Cell<Option<i32>>,
+    callback: RefCell<Option<Closure<dyn FnMut()>>>,
+}
+
+impl InstrumentedStreamHeartbeatScheduler {
+    fn schedule(&self, delay_seconds: i64) -> Result<(), JsValue> {
+        if self.finalization_owner.get() != InstrumentedStreamFinalizationOwner::Pending {
+            return Ok(());
+        }
+        if let Some(timeout_id) = self.timeout_id.take() {
+            let global: web_sys::WorkerGlobalScope = js_sys::global().unchecked_into();
+            global.clear_timeout_with_handle(timeout_id);
+        }
+        let callback = self.callback.borrow();
+        let callback = callback
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("stream heartbeat callback is unavailable"))?;
+        let timeout_millis = delay_seconds
+            .max(1)
+            .saturating_mul(1_000)
+            .min(i64::from(i32::MAX)) as i32;
+        let global: web_sys::WorkerGlobalScope = js_sys::global().unchecked_into();
+        let timeout_id = global.set_timeout_with_callback_and_timeout_and_arguments_0(
+            callback.as_ref().unchecked_ref::<Function>(),
+            timeout_millis,
+        )?;
+        self.timeout_id.set(Some(timeout_id));
+        Ok(())
+    }
+
+    fn tick(self: &Rc<Self>) {
+        self.timeout_id.set(None);
+        if self.finalization_owner.get() != InstrumentedStreamFinalizationOwner::Pending {
+            return;
+        }
+        let now = unix_timestamp();
+        let requested_lease_expires_at = now.saturating_add(self.lease.lease_seconds);
+        {
+            let mut audit = self.heartbeat_audit.borrow_mut();
+            audit.attempt_count = audit.attempt_count.saturating_add(1);
+        }
+        let context = Rc::clone(&self.context);
+        let db = Rc::clone(&self.db);
+        let lease = self.lease.clone();
+        let expected_lease_expires_at = self.expected_lease_expires_at.get();
+        let heartbeat_audit = Rc::clone(&self.heartbeat_audit);
+        let scheduler = Rc::downgrade(self);
+        context.wait_until(async move {
+            use crate::d1_repositories::RelayBillingLeaseRenewalOutcome as Outcome;
+            let outcome = crate::d1_repositories::renew_relay_billing_selected_attempt_lease(
+                &db,
+                &lease.reservation_key,
+                lease.owner_generation,
+                lease.channel_id,
+                &lease.selected_group,
+                lease.selected_at,
+                expected_lease_expires_at,
+                now,
+                requested_lease_expires_at,
+            )
+            .await;
+            let Some(scheduler) = Weak::upgrade(&scheduler) else {
+                return;
+            };
+            match outcome {
+                Ok(Outcome::Applied) => {
+                    let mut audit = heartbeat_audit.borrow_mut();
+                    audit.renewed_count = audit.renewed_count.saturating_add(1);
+                    audit.final_lease_expires_at = requested_lease_expires_at;
+                    audit.last_renewed_at = Some(now);
+                    scheduler
+                        .expected_lease_expires_at
+                        .set(requested_lease_expires_at);
+                    scheduler.delay_seconds.set(lease.heartbeat_seconds);
+                }
+                Ok(Outcome::MatchingRenewal) => {
+                    let mut audit = heartbeat_audit.borrow_mut();
+                    audit.matching_count = audit.matching_count.saturating_add(1);
+                    audit.final_lease_expires_at = requested_lease_expires_at;
+                    audit.last_renewed_at = Some(now);
+                    scheduler
+                        .expected_lease_expires_at
+                        .set(requested_lease_expires_at);
+                    scheduler.delay_seconds.set(lease.heartbeat_seconds);
+                }
+                Ok(outcome) => {
+                    heartbeat_audit.borrow_mut().stopped_reason = Some(match outcome {
+                        Outcome::AlreadyFinalized => "already_finalized",
+                        Outcome::StaleGeneration => "stale_generation",
+                        Outcome::DeadlineExpired => "deadline_expired",
+                        Outcome::Conflict => "identity_conflict",
+                        Outcome::NotFound => "not_found",
+                        Outcome::Applied | Outcome::MatchingRenewal => unreachable!(),
+                    });
+                    scheduler.stop();
+                    return;
+                }
+                Err(error) => {
+                    let mut audit = heartbeat_audit.borrow_mut();
+                    audit.failure_count = audit.failure_count.saturating_add(1);
+                    drop(audit);
+                    scheduler.delay_seconds.set(
+                        lease
+                            .heartbeat_seconds
+                            .min(RELAY_BILLING_STREAM_LEASE_HEARTBEAT_RETRY_MAX_SECONDS),
+                    );
+                    worker::console_warn!(
+                        "relay billing stream lease heartbeat failed; stream remains active: {error}"
+                    );
+                }
+            }
+            if scheduler.finalization_owner.get()
+                == InstrumentedStreamFinalizationOwner::Pending
+            {
+                if let Err(error) = scheduler.schedule(scheduler.delay_seconds.get()) {
+                    heartbeat_audit.borrow_mut().stopped_reason = Some("timer_schedule_failed");
+                    worker::console_error!(
+                        "relay billing stream lease heartbeat timer could not be scheduled: {error:?}"
+                    );
+                }
+            }
+        });
+    }
+
+    fn stop(&self) {
+        if let Some(timeout_id) = self.timeout_id.take() {
+            let global: web_sys::WorkerGlobalScope = js_sys::global().unchecked_into();
+            global.clear_timeout_with_handle(timeout_id);
+        }
+        self.callback.borrow_mut().take();
+    }
+}
+
+impl Drop for InstrumentedStreamHeartbeatScheduler {
+    fn drop(&mut self) {
+        if let Some(timeout_id) = self.timeout_id.take() {
+            let global: web_sys::WorkerGlobalScope = js_sys::global().unchecked_into();
+            global.clear_timeout_with_handle(timeout_id);
+        }
+    }
+}
+
+fn arm_instrumented_stream_lease_heartbeat(
+    context: Rc<Context>,
+    db: D1Database,
+    lease: RelayBillingStreamLease,
+    heartbeat_audit: Rc<RefCell<RelayBillingStreamLeaseHeartbeatAudit>>,
+    finalization_owner: Rc<Cell<InstrumentedStreamFinalizationOwner>>,
+) -> Result<Rc<InstrumentedStreamHeartbeatScheduler>, JsValue> {
+    let initial_delay_seconds = lease.heartbeat_seconds;
+    let initial_lease_expires_at = lease.initial_lease_expires_at;
+    let scheduler = Rc::new(InstrumentedStreamHeartbeatScheduler {
+        context,
+        db: Rc::new(db),
+        lease,
+        heartbeat_audit,
+        finalization_owner,
+        expected_lease_expires_at: Cell::new(initial_lease_expires_at),
+        delay_seconds: Cell::new(initial_delay_seconds),
+        timeout_id: Cell::new(None),
+        callback: RefCell::new(None),
+    });
+    let weak_scheduler = Rc::downgrade(&scheduler);
+    let callback = Closure::wrap(Box::new(move || {
+        if let Some(scheduler) = Weak::upgrade(&weak_scheduler) {
+            scheduler.tick();
+        }
+    }) as Box<dyn FnMut()>);
+    scheduler.callback.borrow_mut().replace(callback);
+    scheduler.schedule(initial_delay_seconds)?;
+    Ok(scheduler)
+}
+
+fn instrumented_stream_client_abort_listener(
+    request_signal: web_sys::AbortSignal,
+    finalization_owner: Rc<Cell<InstrumentedStreamFinalizationOwner>>,
+    finalization_armed: Rc<Cell<bool>>,
+    finalization_wait_until_context: Rc<Context>,
+    finalization: Rc<InstrumentedRelayFinalizationContext>,
+) -> Result<AbortSignalListener, JsValue> {
+    let callback_signal = request_signal.clone();
+    let callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+        dispatch_instrumented_client_finalization(
+            &finalization_owner,
+            &finalization_armed,
+            &finalization_wait_until_context,
+            &finalization,
+        );
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    request_signal.add_event_listener_with_callback("abort", callback.as_ref().unchecked_ref())?;
+    let listener = AbortSignalListener {
+        signal: callback_signal,
+        _callback: callback,
+    };
+    Ok(listener)
+}
+
+fn dispatch_instrumented_client_finalization(
+    finalization_owner: &Rc<Cell<InstrumentedStreamFinalizationOwner>>,
+    finalization_armed: &Rc<Cell<bool>>,
+    finalization_wait_until_context: &Rc<Context>,
+    finalization: &Rc<InstrumentedRelayFinalizationContext>,
+) {
+    if !finalization_armed.get()
+        || finalization_owner.get() != InstrumentedStreamFinalizationOwner::Pending
+    {
+        return;
+    }
+    finalization_owner.set(InstrumentedStreamFinalizationOwner::ClientAbort);
+    let usage = UsageSummary::default();
+    let mut audit = finalization.audit.clone();
+    audit.stream_usage_parse_failed = true;
+    if let Some(heartbeat_audit) = finalization.heartbeat_audit.as_ref() {
+        let mut heartbeat = heartbeat_audit.borrow().clone();
+        heartbeat.completion_reason = Some("client_disconnected");
+        heartbeat.usage_recovered_after_error = false;
+        audit.stream_lease_heartbeat = Some(heartbeat);
+    }
+    let finalization = Rc::clone(finalization);
+    finalization_wait_until_context.wait_until(async move {
+        record_instrumented_stream_finalization_with_retry(
+            &finalization.env,
+            &finalization.db,
+            &finalization.auth,
+            &finalization.channel,
+            &finalization.model,
+            &finalization.group,
+            &finalization.endpoint_path,
+            finalization.upstream_status,
+            &usage,
+            &audit,
+            finalization.upstream_request_id.as_deref(),
+            "client_disconnected",
+        )
+        .await;
+        disarm_instrumented_stream_lifecycle(&finalization.lifecycle_disarm);
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_instrumented_stream_finalization_with_retry(
+    env: &Env,
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+    channel: &RelayChannel,
+    model: &str,
+    group: &str,
+    endpoint_path: &str,
+    upstream_status: u16,
+    usage: &UsageSummary,
+    audit: &RelayAuditContext,
+    upstream_request_id: Option<&str>,
+    completion_reason: &str,
+) {
+    let maximum_attempts = if audit
+        .billing_preflight
+        .as_ref()
+        .and_then(RelayBillingPreflight::reservation_key)
+        .is_some()
+    {
+        3_u64
+    } else {
+        1_u64
+    };
+    for attempt in 1..=maximum_attempts {
+        match record_relay_audit(
+            env,
+            db,
+            auth,
+            channel,
+            model,
+            group,
+            endpoint_path,
+            upstream_status,
+            usage,
+            audit,
+            upstream_request_id,
             true,
         )
         .await
         {
-            worker::console_error!("failed to record streaming relay audit: {}", err);
+            Ok(()) => return,
+            Err(error) if attempt < maximum_attempts => {
+                worker::console_warn!(
+                    "relay HTTP stream independent {completion_reason} finalization attempt {attempt}/{maximum_attempts} failed; retrying Queue/D1 handoff: {error}"
+                );
+                Delay::from(Duration::from_millis(50 * attempt)).await;
+            }
+            Err(error) => {
+                worker::console_error!(
+                    "relay HTTP stream independent {completion_reason} finalization failed after {attempt} attempt(s); durable reservation recovery remains required: {error}"
+                );
+            }
         }
-    });
+    }
+}
 
-    finalize_relay_response(upstream, &content_type)
+async fn instrumented_relay_stream_next(
+    mut state: InstrumentedRelayStreamState,
+) -> worker::Result<Option<(Vec<u8>, InstrumentedRelayStreamState)>> {
+    if state.finalization_owner.get() == InstrumentedStreamFinalizationOwner::ClientAbort {
+        return Ok(None);
+    }
+    match state.stream.next().await {
+        Some(Ok(chunk)) => {
+            if state.request_abort_signal.aborted() {
+                dispatch_instrumented_stream_client_abort(&mut state)?;
+                return Ok(None);
+            }
+            let Some(accumulator) = state.accumulator.as_mut() else {
+                return Ok(Some((chunk, state)));
+            };
+            accumulator.push_chunk(&chunk);
+            let (_, provider_terminal, bounds_exceeded) = accumulator.checkpoint();
+            if bounds_exceeded || accumulator.provider_terminal_failed() {
+                state.audit.stream_usage_parse_failed = true;
+            }
+            if provider_terminal {
+                dispatch_instrumented_provider_finalization(
+                    &mut state,
+                    "provider_terminal_event",
+                    None,
+                )?;
+            }
+            Ok(Some((chunk, state)))
+        }
+        Some(Err(error)) => {
+            let error_text = error.to_string();
+            if state.request_abort_signal.aborted() {
+                dispatch_instrumented_stream_client_abort(&mut state)?;
+            } else {
+                dispatch_instrumented_provider_finalization(
+                    &mut state,
+                    "stream_error",
+                    Some(&error_text),
+                )?;
+            }
+            Err(error)
+        }
+        None => {
+            if state.request_abort_signal.aborted() {
+                dispatch_instrumented_stream_client_abort(&mut state)?;
+            } else {
+                dispatch_instrumented_provider_finalization(&mut state, "stream_completed", None)?;
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn dispatch_instrumented_stream_client_abort(
+    state: &mut InstrumentedRelayStreamState,
+) -> worker::Result<()> {
+    state.accumulator.take();
+    dispatch_instrumented_client_finalization(
+        &state.finalization_owner,
+        &state.finalization_armed,
+        &state.finalization_wait_until_context,
+        &state.client_finalization_context,
+    );
+    Ok(())
+}
+
+fn dispatch_instrumented_provider_finalization(
+    state: &mut InstrumentedRelayStreamState,
+    completion_reason: &'static str,
+    terminal_error: Option<&str>,
+) -> worker::Result<()> {
+    if state.finalization_owner.get() != InstrumentedStreamFinalizationOwner::Pending {
+        return Ok(());
+    }
+    let accumulator = state.accumulator.take().ok_or_else(|| {
+        worker::Error::RustError("instrumented relay stream accumulator is unavailable".to_string())
+    })?;
+    let mut resolution = resolve_durable_stream_usage(
+        accumulator,
+        state.provider,
+        &state.endpoint_path,
+        &state.model,
+        state.audit.estimated_prompt_tokens,
+        state.audit.missing_usage_estimate_enabled,
+    );
+    resolution.terminal_error = terminal_error.map(ToString::to_string);
+    let usage_recovered_after_error = terminal_error.is_some()
+        && cinatoken_tokenizer::valid_usage(
+            i64::from(resolution.usage.prompt_tokens),
+            i64::from(resolution.usage.completion_tokens),
+        );
+    if resolution.bounds_exceeded
+        || resolution.provider_stream_failed
+        || (terminal_error.is_some() && !usage_recovered_after_error)
+    {
+        state.audit.stream_usage_parse_failed = true;
+    }
+    state.audit.usage_locally_estimated = resolution.locally_estimated;
+    state
+        .finalization_owner
+        .set(InstrumentedStreamFinalizationOwner::ProviderStream);
+
+    let finalization = Rc::clone(&state.provider_finalization_context);
+    let mut audit = state.audit.clone();
+    let usage = resolution.usage;
+    state
+        .finalization_wait_until_context
+        .wait_until(async move {
+            if let Some(heartbeat_audit) = finalization.heartbeat_audit.as_ref() {
+                let mut heartbeat = heartbeat_audit.borrow().clone();
+                heartbeat.completion_reason = Some(completion_reason);
+                heartbeat.usage_recovered_after_error = usage_recovered_after_error;
+                audit.stream_lease_heartbeat = Some(heartbeat);
+            }
+            record_instrumented_stream_finalization_with_retry(
+                &finalization.env,
+                &finalization.db,
+                &finalization.auth,
+                &finalization.channel,
+                &finalization.model,
+                &finalization.group,
+                &finalization.endpoint_path,
+                finalization.upstream_status,
+                &usage,
+                &audit,
+                finalization.upstream_request_id.as_deref(),
+                completion_reason,
+            )
+            .await;
+            disarm_instrumented_stream_lifecycle(&finalization.lifecycle_disarm);
+        });
+    Ok(())
+}
+
+fn disarm_instrumented_stream_lifecycle(
+    lifecycle_disarm: &Rc<RefCell<Option<Rc<InstrumentedStreamHeartbeatScheduler>>>>,
+) {
+    if let Some(scheduler) = lifecycle_disarm.borrow_mut().take() {
+        scheduler.stop();
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -12143,229 +12845,6 @@ async fn durable_mark_stream_recovery(
             "relay HTTP stream recovery readback failed before watchdog disarm: {error}"
         ),
     }
-}
-
-async fn streaming_usage_summary(
-    upstream: &mut Response,
-    provider: RelayProviderKind,
-    channel_type: i32,
-    endpoint_path: &str,
-    model: &str,
-    estimated_prompt_tokens: i64,
-    estimate_enabled: bool,
-    db: &D1Database,
-    stream_lease: Option<&RelayBillingStreamLease>,
-    heartbeat_audit: Option<&mut RelayBillingStreamLeaseHeartbeatAudit>,
-) -> worker::Result<StreamingUsageResolution> {
-    let mut stream = upstream.stream()?;
-    let mut accumulator = stream_usage_accumulator(provider, channel_type);
-
-    let mut heartbeat_audit = heartbeat_audit;
-    let mut terminal_error = None;
-    let mut heartbeat_active = stream_lease.is_some();
-    let mut expected_lease_expires_at = stream_lease
-        .map(|lease| lease.initial_lease_expires_at)
-        .unwrap_or_default();
-    let mut next_heartbeat_at = stream_lease
-        .map(|lease| unix_timestamp().saturating_add(lease.heartbeat_seconds))
-        .unwrap_or_default();
-    loop {
-        if let Some(lease) = stream_lease.filter(|_| heartbeat_active) {
-            let now = unix_timestamp();
-            if now >= next_heartbeat_at {
-                if let Some(audit) = heartbeat_audit.as_deref_mut() {
-                    audit.attempt_count = audit.attempt_count.saturating_add(1);
-                }
-                use crate::d1_repositories::RelayBillingLeaseRenewalOutcome as Outcome;
-                let requested_lease_expires_at = now.saturating_add(lease.lease_seconds);
-                let mut next_delay_seconds = lease.heartbeat_seconds;
-                match crate::d1_repositories::renew_relay_billing_selected_attempt_lease(
-                    db,
-                    &lease.reservation_key,
-                    lease.owner_generation,
-                    lease.channel_id,
-                    &lease.selected_group,
-                    lease.selected_at,
-                    expected_lease_expires_at,
-                    now,
-                    requested_lease_expires_at,
-                )
-                .await
-                {
-                    Ok(Outcome::Applied) => {
-                        expected_lease_expires_at = requested_lease_expires_at;
-                        if let Some(audit) = heartbeat_audit.as_deref_mut() {
-                            audit.renewed_count = audit.renewed_count.saturating_add(1);
-                            audit.final_lease_expires_at = requested_lease_expires_at;
-                            audit.last_renewed_at = Some(now);
-                        }
-                    }
-                    Ok(Outcome::MatchingRenewal) => {
-                        expected_lease_expires_at = requested_lease_expires_at;
-                        if let Some(audit) = heartbeat_audit.as_deref_mut() {
-                            audit.matching_count = audit.matching_count.saturating_add(1);
-                            audit.final_lease_expires_at = requested_lease_expires_at;
-                            audit.last_renewed_at = Some(now);
-                        }
-                    }
-                    Ok(outcome) => {
-                        heartbeat_active = false;
-                        let reason = match outcome {
-                            Outcome::AlreadyFinalized => "already_finalized",
-                            Outcome::StaleGeneration => "stale_generation",
-                            Outcome::DeadlineExpired => "deadline_expired",
-                            Outcome::Conflict => "identity_conflict",
-                            Outcome::NotFound => "not_found",
-                            Outcome::Applied | Outcome::MatchingRenewal => unreachable!(),
-                        };
-                        if let Some(audit) = heartbeat_audit.as_deref_mut() {
-                            audit.stopped_reason = Some(reason);
-                        }
-                        worker::console_warn!(
-                            "relay billing stream lease heartbeat stopped: {reason}"
-                        );
-                    }
-                    Err(err) => {
-                        next_delay_seconds = lease
-                            .heartbeat_seconds
-                            .min(RELAY_BILLING_STREAM_LEASE_HEARTBEAT_RETRY_MAX_SECONDS);
-                        if let Some(audit) = heartbeat_audit.as_deref_mut() {
-                            audit.failure_count = audit.failure_count.saturating_add(1);
-                        }
-                        worker::console_warn!(
-                            "relay billing stream lease heartbeat failed; stream remains active: {err}"
-                        );
-                    }
-                }
-                next_heartbeat_at = now.saturating_add(next_delay_seconds);
-            }
-        }
-
-        if heartbeat_active {
-            let wait_seconds = next_heartbeat_at.saturating_sub(unix_timestamp()).max(1);
-            let next_chunk = Box::pin(stream.next());
-            let heartbeat = Box::pin(Delay::from(Duration::from_secs(
-                u64::try_from(wait_seconds).unwrap_or(1),
-            )));
-            match select(next_chunk, heartbeat).await {
-                Either::Left((Some(chunk), _)) => match chunk {
-                    Ok(chunk) => accumulator.push_chunk(&chunk),
-                    Err(err) => {
-                        if let Some(audit) = heartbeat_audit.as_deref_mut() {
-                            audit.completion_reason = Some("stream_error");
-                        }
-                        terminal_error = Some(err.to_string());
-                        break;
-                    }
-                },
-                Either::Left((None, _)) => break,
-                Either::Right((_, pending_chunk)) => {
-                    drop(pending_chunk);
-                }
-            }
-        } else {
-            match stream.next().await {
-                Some(Ok(chunk)) => accumulator.push_chunk(&chunk),
-                Some(Err(err)) => {
-                    if let Some(audit) = heartbeat_audit.as_deref_mut() {
-                        audit.completion_reason = Some("stream_error");
-                    }
-                    terminal_error = Some(err.to_string());
-                    break;
-                }
-                None => break,
-            }
-        }
-    }
-    if terminal_error.is_none() {
-        if let Some(audit) = heartbeat_audit.as_deref_mut() {
-            audit.completion_reason = Some("stream_completed");
-        }
-    }
-
-    let (_, _, bounds_exceeded) = accumulator.checkpoint();
-    let provider_stream_failed = accumulator.provider_terminal_failed();
-    let (usage, response_text, tool_count, provider_stream_complete) =
-        accumulator.into_parts_with_status();
-    // Each supported wire shape now accumulates the response text needed for
-    // Go's partial/missing usage fallback.
-    let estimate_applicable = estimate_enabled
-        && matches!(
-            provider,
-            RelayProviderKind::AliOpenAi
-                | RelayProviderKind::BaiduV2OpenAi
-                | RelayProviderKind::OpenAiCompatible
-                | RelayProviderKind::DeepSeekOpenAi
-                | RelayProviderKind::MistralOpenAi
-                | RelayProviderKind::MoonshotOpenAi
-                | RelayProviderKind::PerplexityOpenAi
-                | RelayProviderKind::SiliconFlowOpenAi
-                | RelayProviderKind::SubmodelOpenAi
-                | RelayProviderKind::XaiOpenAi
-                | RelayProviderKind::VolcEngineOpenAi
-                | RelayProviderKind::AliMessages
-                | RelayProviderKind::AnthropicMessages
-                | RelayProviderKind::DeepSeekMessages
-                | RelayProviderKind::MoonshotMessages
-                | RelayProviderKind::GeminiNative
-        );
-    let (usage, locally_estimated) = match provider {
-        RelayProviderKind::AliMessages
-        | RelayProviderKind::AnthropicMessages
-        | RelayProviderKind::DeepSeekMessages
-        | RelayProviderKind::MoonshotMessages => resolve_native_provider_usage(
-            usage,
-            &response_text,
-            model,
-            estimated_prompt_tokens,
-            estimate_applicable,
-            usage.completion_tokens <= 0 || !provider_stream_complete,
-            false,
-        ),
-        RelayProviderKind::GeminiNative => resolve_native_provider_usage(
-            usage,
-            &response_text,
-            model,
-            estimated_prompt_tokens,
-            estimate_applicable,
-            usage.completion_tokens <= 0,
-            true,
-        ),
-        _ => resolve_stream_usage(
-            usage,
-            &response_text,
-            tool_count,
-            endpoint_path,
-            model,
-            estimated_prompt_tokens,
-            estimate_applicable,
-        ),
-    };
-    let usage_recovered_after_error = terminal_error.is_some()
-        && cinatoken_tokenizer::valid_usage(
-            usage.prompt_tokens as i64,
-            usage.completion_tokens as i64,
-        );
-    if let Some(audit) = heartbeat_audit.as_deref_mut() {
-        audit.usage_recovered_after_error = usage_recovered_after_error;
-    }
-    if locally_estimated {
-        worker::console_log!(
-            "relay stream usage missing; locally estimated usage for {} (prompt={}, completion={}, tools={})",
-            model,
-            usage.prompt_tokens,
-            usage.completion_tokens,
-            tool_count
-        );
-    }
-    Ok(StreamingUsageResolution {
-        usage,
-        locally_estimated,
-        terminal_error,
-        provider_stream_complete,
-        provider_stream_failed,
-        bounds_exceeded,
-    })
 }
 
 fn stream_usage_accumulator(provider: RelayProviderKind, channel_type: i32) -> SseUsageAccumulator {

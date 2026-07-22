@@ -1707,8 +1707,10 @@ Worker service binding: one chunk is read, the reader is cancelled, one
 provider call and one abort event are observed, billing stays reserved, 0057
 stays stream-bound, and request accounting stays zero. All production gates
 remain false. Remote HTTP/2/HTTP/3/WFP cancellation, D1/restart/Queue/invoice,
-P5, Go/VPS drain, credential revocation, SLO/cost, and default-path clone/tee
-backpressure evidence remain open. Production remains **NO-GO**.
+P5, Go/VPS drain, credential revocation, and SLO/cost evidence remain open. At
+this 0058 checkpoint the default-path clone/tee backpressure proof was also
+open; the single-forwarding closure recorded below supersedes that local
+blocker. Production remains **NO-GO**.
 
 ## 2026-07-16 Phase 1 Container Financial Terminal Expand Gate
 
@@ -2804,9 +2806,50 @@ renewal, and scheduled recovery sweeps expired pre-handoff intents. Local
 SQLite, Rust, P5 fixture, and Workerd CAS/promotion/recovery cases pass.
 
 At the 0057 increment, immediate client-disconnect recovery was still lease/
-scheduler-owned. The 0058 section below closes that local implementation gap.
-The default durable-disabled clone/tee path still retains slow-client
-backpressure risk. Remote current-head cancellation/restart/Queue/provider-
-invoice evidence, P5, and
-Go/VPS drain remain open. All four SSE gates stay exact false. Go/VPS remains
+scheduler-owned. The 0058 section in this document closes that local
+implementation gap.
+At the 0057 increment the default durable-disabled clone/tee path still retained
+slow-client backpressure risk; the closure below supersedes that historical
+state. Remote current-head cancellation/restart/Queue/provider-invoice
+evidence, P5, and Go/VPS drain remain open. All four SSE gates stay exact false.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-22 Ordinary HTTP SSE Single-Forwarding Backpressure Closure
+
+Ordinary durable-disabled HTTP SSE now returns one response-owned, pull-driven
+Rust stream. Bounded usage parsing advances inside that stream. Provider terminal
+ownership is claimed and registered as a short-lived `waitUntil` task before the
+terminal chunk is yielded; the `Request.signal` listener and stream Drop can
+claim only while ownership remains pending. No `Response::cloned()`/clone/tee body consumer
+remains. `Request.signal` and stream Drop register client finalization only when
+cancellation occurs. The lease heartbeat uses one cancelable timer and one short
+renewal task at a time; it cannot read or buffer the provider body or keep a
+response-lifetime `waitUntil` pending.
+
+Local Workerd proves the bound with a 256-chunk pull-generated provider: after
+one client chunk and a 300 ms pause, the provider is incomplete and has at most
+eight pulls. Controlled provider-terminal release and client drain add at most
+one pull, remain below 256, and finish with positive upstream usage, no parse
+failure, one request accounting update, billing Queue settlement, and
+`provider_terminal_event` convergence. Static mutation audit rejects restoring
+pull-owned async financial finalization.
+
+Accepted patterns are one pull-driven forwarding stream, bounded incremental
+state, synchronous provider-terminal `waitUntil` registration, a separate
+first-owner client-abort listener/drop fallback, single-timer heartbeat, and
+frozen-reserve cancellation. Clone/tee,
+detached audit body reads,
+pull-owned async financial finalization, unbounded buffering,
+partial-usage charging after ambiguous disconnect, and automatic refund/resend
+are rejected.
+
+Rollout keeps durable SSE gates false, freezes the exact candidate and Go/VPS
+fallback, proves slow-reader and terminal accounting in isolated staging, then
+collects direct/Gateway/WFP HTTP/2 and HTTP/3 disconnect evidence before any
+promotion. Rollback routes new SSE traffic to hot Go/VPS, retains migrations
+0056-0058 and the N drain owner, and never restores clone/tee or resends an
+ambiguous provider operation.
+
+The local slow-consumer blocker is closed. Real Cloudflare HTTP/2, HTTP/3, and
+TCP client-disconnect propagation remains remote evidence. Go/VPS remains
 authoritative and production remains **NO-GO**.

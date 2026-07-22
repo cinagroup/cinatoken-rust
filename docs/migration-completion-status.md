@@ -1820,10 +1820,11 @@ build, Workerd lifecycle 50/50, P5 fixture tests, and the complete 878.4-second
 repository aggregate pass. All four SSE gates remain false.
 
 At the 0057 increment, immediate client cancellation still lacked a
-`Request.signal`-driven durable watchdog. The durable-disabled
-clone/tee path lacks slow-consumer backpressure proof. Remote current-head Queue/D1/
-restart/version-skew/provider-invoice campaigns, P5, credential rotation, and
-Go/VPS drain/rollback evidence remain absent. Go/VPS stays authoritative and
+`Request.signal`-driven durable watchdog, and the durable-disabled clone/tee
+path lacked slow-consumer backpressure proof. The 0058 and single-forwarding
+sections below supersede both local gaps. Remote current-head Queue/D1/restart/
+version-skew/provider-invoice campaigns, P5, credential rotation, and Go/VPS
+drain/rollback evidence remain absent. Go/VPS stays authoritative and
 production remains **NO-GO**.
 
 ## 2026-07-22 Migration 0058 Client-Abort Status
@@ -1859,6 +1860,47 @@ the complete `bun run check` aggregate in 845.2 seconds.
 Not complete: real Cloudflare HTTP/2/HTTP/3/TCP/WFP cancellation, D1
 write/response loss, isolate restart/deploy/version skew, Queue ambiguity,
 provider invoice reconciliation, remote 0058 apply/readback, load/SLO/cost and
-alerts, P5 signatures, credential revocation proof, default-path clone/tee
-backpressure, and Go/VPS drain/reverse sync/rollback. All four SSE gates remain
+alerts, P5 signatures, credential revocation proof, and Go/VPS drain/reverse
+sync/rollback. The clone/tee backpressure item was open at this checkpoint and
+is superseded by the single-forwarding status below. All four SSE gates remain
 false. Go/VPS stays authoritative and production remains **NO-GO**.
+
+## 2026-07-22 Ordinary HTTP SSE Single-Forwarding Status
+
+The ordinary durable-disabled HTTP SSE path now has one response-owned,
+pull-driven forwarding stream. It no longer uses `Response::cloned()`, clone,
+or tee for audit/billing consumption. Usage accumulation remains in that stream;
+provider terminal ownership is synchronously claimed and registered as a
+short-lived `waitUntil` task before the terminal chunk is yielded. A separate
+`Request.signal` listener and stream-drop fallback claim only a pending owner and
+then register client finalization. The bounded lease heartbeat uses one
+cancelable timer and one short renewal task at a time; it does not consume the
+provider body or hold a response-lifetime `waitUntil`.
+
+The focused local Workerd case reads one chunk from a 256-chunk provider and
+pauses for 300 ms. The provider remains incomplete with no more than eight
+pulls. After controlled terminal release and client drain, source pulls advance
+by at most one and stay below 256; billing settles with positive upstream usage,
+no parse failure, one request accounting update, Queue transport, and
+`provider_terminal_event` convergence. Static mutation audit separately rejects
+pull-owned async financial finalization.
+
+Accepted: one pull-driven response stream, bounded incremental state,
+synchronous provider-terminal `waitUntil` registration, a separate first-owner
+client-abort listener/drop fallback, a single-timer heartbeat, and frozen-reserve
+cancellation.
+Rejected: clone/tee, detached body consumption, unbounded prefetch/buffering,
+partial-usage charging after ambiguous disconnect, automatic refund/resend, or
+promoting local reader cancellation as edge-network proof.
+
+Rollout freezes the candidate and hot Go/VPS fallback, keeps durable SSE gates
+false, runs isolated slow-reader/terminal/fault canaries, and requires retained
+HTTP/2, HTTP/3, direct/Gateway/WFP reconciliation before promotion. Rollback
+routes new SSE traffic to Go/VPS and keeps the exact N drain owner plus
+migrations/evidence; it does not restore clone/tee or resend ambiguous provider
+work.
+
+The local clone/tee and bounded-provider-read blocker is complete. Real
+Cloudflare HTTP/2, HTTP/3, and TCP client-disconnect propagation remains remote
+evidence, alongside the existing D1/Queue/restart/invoice/SLO/security/P5 and
+Go/VPS drain gates. Production remains **NO-GO**.

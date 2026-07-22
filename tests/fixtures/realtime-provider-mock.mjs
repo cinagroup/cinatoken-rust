@@ -12,18 +12,22 @@ const pcmAudioModel = "gpt-runtime-tts-pcm";
 const oversizedAudioModel = "gpt-runtime-tts-oversized";
 const openRouterCostModel = "gpt-4.1";
 const cohereConsumedLimitModel = "rerank-runtime-cohere-consumed-limit";
+const slowConsumerModel = "gpt-runtime-slow-consumer";
+const slowConsumerChunkCount = 256;
 
 export class MockRealtimeProvider extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/__mock/reset" && request.method === "POST") {
       this.releaseRelayStream?.();
+      this.slowConsumerState = null;
       await this.ctx.storage.deleteAll();
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/__mock/state" && request.method === "GET") {
       return Response.json(
-        (await this.ctx.storage.get("state")) ?? { count: 0 },
+        this.slowConsumerState ??
+          (await this.ctx.storage.get("state")) ?? { count: 0 },
       );
     }
     if (
@@ -40,7 +44,10 @@ export class MockRealtimeProvider extends DurableObject {
         return new Response("Relay stream already active", { status: 409 });
       }
       const requestBody = await request.json().catch(() => ({}));
-      if (requestBody.model === openRouterCostModel && requestBody.stream !== true) {
+      if (
+        requestBody.model === openRouterCostModel &&
+        requestBody.stream !== true
+      ) {
         const previous = (await this.ctx.storage.get("state")) ?? { count: 0 };
         await this.ctx.storage.put("state", {
           count: previous.count + 1,
@@ -108,6 +115,91 @@ export class MockRealtimeProvider extends DurableObject {
         return new Response(body, {
           headers: responseHeaders,
         });
+      }
+      if (requestBody.model === slowConsumerModel) {
+        const previous = (await this.ctx.storage.get("state")) ?? { count: 0 };
+        const state = {
+          count: previous.count + 1,
+          method: request.method,
+          path: url.pathname,
+          authorizationPresent: request.headers.has("authorization"),
+          slowConsumer: true,
+          slowPullCount: 0,
+          slowChunkCount: slowConsumerChunkCount,
+          slowCompleted: false,
+          slowCancelled: false,
+        };
+        this.slowConsumerState = state;
+        await this.ctx.storage.put("state", state);
+        const encoder = new TextEncoder();
+        const provider = this;
+        let pullCount = 0;
+        let closed = false;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              const release = () => {
+                if (closed) return false;
+                closed = true;
+                controller.enqueue(
+                  encoder.encode(
+                    'data: {"id":"chatcmpl-runtime-slow","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}\n\n',
+                  ),
+                );
+                controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+                controller.close();
+                provider.releaseRelayStream = null;
+                provider.slowConsumerState = {
+                  ...(provider.slowConsumerState ?? state),
+                  slowCompleted: true,
+                };
+                return true;
+              };
+              provider.releaseRelayStream = release;
+            },
+            pull(controller) {
+              if (closed) return;
+              pullCount += 1;
+              const current = provider.slowConsumerState ?? state;
+              if (pullCount <= slowConsumerChunkCount) {
+                controller.enqueue(
+                  encoder.encode(
+                    `data: {"id":"chatcmpl-runtime-slow","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"${pullCount.toString().padStart(4, "0")}"}}]}\n\n`,
+                  ),
+                );
+                provider.slowConsumerState = {
+                  ...current,
+                  slowPullCount: pullCount,
+                };
+                return;
+              }
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"id":"chatcmpl-runtime-slow","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}\n\n',
+                ),
+              );
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              controller.close();
+              closed = true;
+              provider.releaseRelayStream = null;
+              provider.slowConsumerState = {
+                ...current,
+                slowPullCount: pullCount,
+                slowCompleted: true,
+              };
+            },
+            cancel() {
+              closed = true;
+              provider.releaseRelayStream = null;
+              const current = provider.slowConsumerState ?? state;
+              provider.slowConsumerState = {
+                ...current,
+                slowCancelled: true,
+              };
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
       }
       const failAfterFirstChunk =
         requestBody.model === "gpt-runtime-stream-error";

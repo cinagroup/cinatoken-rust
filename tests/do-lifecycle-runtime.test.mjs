@@ -33,6 +33,8 @@ const relayStreamErrorModel = "gpt-runtime-stream-error";
 const relayStreamErrorToken = "sk-runtime-stream-error-billing";
 const relayStreamUsageErrorModel = "gpt-runtime-stream-usage-error";
 const relayStreamUsageErrorToken = "sk-runtime-stream-usage-error-billing";
+const relaySlowConsumerModel = "gpt-runtime-slow-consumer";
+const relaySlowConsumerToken = "sk-runtime-slow-consumer-billing";
 const relayNonStreamAuditLimitModel = "gpt-runtime-non-stream-audit-limit";
 const relayNonStreamAuditLimitToken = "sk-runtime-non-stream-audit-limit";
 const relayZeroReserveModel = "gpt-runtime-zero-reserve";
@@ -1946,7 +1948,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
       { headers: { authorization: "Bearer sk-task-status-other-token" } },
     );
     expect(otherTokenResponse.status).toBe(404);
-    expect(otherTokenResponse.headers.get("cache-control")).toContain("no-store");
+    expect(otherTokenResponse.headers.get("cache-control")).toContain(
+      "no-store",
+    );
 
     const invalidTokenResponse = await SELF.fetch(
       `https://cinatoken.test/api/task/submissions/${submissionId}`,
@@ -2415,10 +2419,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     const anonymousList = await SELF.fetch(listUrl);
     expect(anonymousList.status).toBe(401);
     expect(anonymousList.headers.get("cache-control")).toBe("no-store");
-    for (const invalidQuery of [
-      "?status=unknown",
-      "?limit=1&limit=2",
-    ]) {
+    for (const invalidQuery of ["?status=unknown", "?limit=1&limit=2"]) {
       const invalidList = await SELF.fetch(
         `https://cinatoken.test/api/platform/container/reconciliations${invalidQuery}`,
         { headers: { cookie } },
@@ -2682,7 +2683,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
       },
     });
     expect(applied.data.resolution_reference).toMatch(/^[a-f0-9]{64}$/u);
-    expect(applied.data.scheduled_at).toBeGreaterThan(deadLetterState.updated_at);
+    expect(applied.data.scheduled_at).toBeGreaterThan(
+      deadLetterState.updated_at,
+    );
 
     const duplicateResponse = await SELF.fetch(applyUrl, {
       method: "POST",
@@ -2915,8 +2918,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     const referencedBody = encoder.encode("inventory-referenced");
     const referencedSha256 = await sha256Hex(referencedBody);
     const referencedOperationId = "relaycontainer-runtime-observer-inventory";
-    const referencedKey =
-      `container-inputs/v1/${referencedOperationId}/2/${referencedSha256}`;
+    const referencedKey = `container-inputs/v1/${referencedOperationId}/2/${referencedSha256}`;
     const referencedObject = await putContainerInventoryObject({
       key: referencedKey,
       body: referencedBody,
@@ -2937,8 +2939,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     const orphanOperationId = "aaa-inventory-orphan";
     const orphanBody = encoder.encode("inventory-orphan");
     const orphanSha256 = await sha256Hex(orphanBody);
-    const orphanKey =
-      `container-inputs/v1/${orphanOperationId}/2/${orphanSha256}`;
+    const orphanKey = `container-inputs/v1/${orphanOperationId}/2/${orphanSha256}`;
     const orphanObject = await putContainerInventoryObject({
       key: orphanKey,
       body: orphanBody,
@@ -2954,8 +2955,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     const divergentOperationId = "bbb-inventory-divergent";
     const divergentBody = encoder.encode("inventory-divergent");
     const divergentSha256 = await sha256Hex(divergentBody);
-    const divergentKey =
-      `container-inputs/v1/${divergentOperationId}/2/${divergentSha256}`;
+    const divergentKey = `container-inputs/v1/${divergentOperationId}/2/${divergentSha256}`;
     const divergentObject = await putContainerInventoryObject({
       key: divergentKey,
       body: divergentBody,
@@ -2985,8 +2985,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
 
     const resultBody = encoder.encode("active-result");
     const resultSha256 = await sha256Hex(resultBody);
-    const resultKey =
-      `container-results/v1/${active.operationId}/2/${resultSha256}`;
+    const resultKey = `container-results/v1/${active.operationId}/2/${resultSha256}`;
     await putContainerInventoryObject({
       key: resultKey,
       body: resultBody,
@@ -3008,8 +3007,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
 
     const invalidBody = encoder.encode("invalid-client-response");
     const invalidSha256 = await sha256Hex(invalidBody);
-    const invalidKey =
-      `container-client-responses/v1/zzz-invalid/1/${invalidSha256}`;
+    const invalidKey = `container-client-responses/v1/zzz-invalid/1/${invalidSha256}`;
     await putContainerInventoryObject({
       key: invalidKey,
       body: invalidBody,
@@ -3142,9 +3140,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
       },
     });
     expect(status.data.lanes).toHaveLength(3);
-    expect(status.data.lanes.every((lane) => lane.owner_present === false)).toBe(
-      true,
-    );
+    expect(
+      status.data.lanes.every((lane) => lane.owner_present === false),
+    ).toBe(true);
     expect(
       status.data.lanes.find((lane) => lane.lane === "result"),
     ).toMatchObject({
@@ -4271,7 +4269,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(settled.log.adminHeartbeat).toMatchObject({
       failure_count: 0,
       stopped_reason: null,
-      completion_reason: "stream_completed",
+      completion_reason: "provider_terminal_event",
       usage_recovered_after_error: false,
     });
     expect(settled.log.usageSource).toBe("upstream");
@@ -4367,6 +4365,109 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   }, 30_000);
 
+  it("keeps ordinary HTTP SSE provider reads bounded by client backpressure", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relaySlowConsumerModel,
+      token: relaySlowConsumerToken,
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    try {
+      const response = await SELF.fetch(
+        "https://cinatoken.test/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${relaySlowConsumerToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: relaySlowConsumerModel,
+            stream: true,
+            stream_options: { include_usage: true },
+            messages: [{ role: "user", content: "runtime slow consumer" }],
+            max_completion_tokens: 256,
+          }),
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain(
+        "text/event-stream",
+      );
+      const reader = response.body.getReader();
+      const first = await reader.read();
+      expect(first.done).toBe(false);
+      expect(new TextDecoder().decode(first.value)).toContain(
+        "chatcmpl-runtime-slow",
+      );
+
+      const reserved = await waitForRelayBillingReservation(
+        relaySlowConsumerModel,
+      );
+      await delay(300);
+      const bounded = await providerState();
+      expect(bounded).toMatchObject({
+        count: 1,
+        slowConsumer: true,
+        slowChunkCount: 256,
+        slowCompleted: false,
+      });
+      expect(bounded.slowPullCount).toBeGreaterThan(0);
+      expect(bounded.slowPullCount).toBeLessThanOrEqual(8);
+
+      const release = await env.REALTIME_PROVIDER_MOCK.fetch(
+        "https://realtime-provider-mock/__mock/release-relay-stream",
+        { method: "POST" },
+      );
+      expect(release.status).toBe(204);
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+      }
+      reader.releaseLock();
+      const settled = await waitForRelaySettlement(
+        reserved.reservation.reservation_key,
+      );
+      expect(settled.reservation).toMatchObject({
+        status: "settled",
+        request_accounted: 1,
+      });
+      expect(settled.reservation.final_quota).toBeGreaterThan(0);
+      expect(settled.user).toMatchObject({
+        quota: account.userQuota - settled.reservation.final_quota,
+        used_quota: settled.reservation.final_quota,
+        request_count: 1,
+      });
+      expect(settled.log).toMatchObject({
+        usageSource: "upstream",
+        streamUsageParseFailed: false,
+        finalizationTransport: "billing_queue",
+        adminHeartbeat: { completion_reason: "provider_terminal_event" },
+      });
+      await delay(300);
+      const afterRelease = await providerState();
+      expect(afterRelease).toMatchObject({
+        slowCompleted: true,
+      });
+      expect(afterRelease.slowPullCount).toBeGreaterThanOrEqual(
+        bounded.slowPullCount,
+      );
+      expect(afterRelease.slowPullCount).toBeLessThanOrEqual(
+        bounded.slowPullCount + 1,
+      );
+      expect(afterRelease.slowPullCount).toBeLessThan(256);
+    } finally {
+      await env.REALTIME_PROVIDER_MOCK.fetch(
+        "https://realtime-provider-mock/__mock/reset",
+        { method: "POST" },
+      );
+    }
+  }, 30_000);
+
   it("persists a durable HTTP SSE client abort through the incoming Request.signal", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const account = await seedStreamingRelayBillingGateway();
@@ -4430,7 +4531,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(aborted.abort.provider_operation_id).toBe(
       aborted.handoff.provider_operation_id,
     );
-    expect(aborted.abort.worker_version_id).toBe(aborted.handoff.worker_version_id);
+    expect(aborted.abort.worker_version_id).toBe(
+      aborted.handoff.worker_version_id,
+    );
     expect(aborted.reservation).toMatchObject({
       status: "reserved",
       owner_generation: 2,
@@ -5551,7 +5654,9 @@ async function seedContainerInventoryInputOperation({
   );
   const providerOperationId = `provider-${operationId}`;
   if (providerOperationId.length > 128) {
-    throw new Error("Container inventory provider operation fixture is too long");
+    throw new Error(
+      "Container inventory provider operation fixture is too long",
+    );
   }
   await env.DB.prepare(
     `INSERT INTO relay_container_operations (
@@ -5656,9 +5761,7 @@ async function seedBoundRelayHttpStreamHandoff({
   const encoder = new TextEncoder();
   const providerOperationId = await sha256Hex(encoder.encode(providerSeed));
   const billingSnapshotSha256 = await sha256Hex(encoder.encode("{}"));
-  const requestSha256 = await sha256Hex(
-    encoder.encode('{"stream":true}'),
-  );
+  const requestSha256 = await sha256Hex(encoder.encode('{"stream":true}'));
   await seedRelayBillingReservation({
     reservationKey,
     leaseExpiresAt: now + 600,
@@ -6119,7 +6222,9 @@ async function waitForRelayHttpStreamClientAbort(reservationKey) {
       )
         .bind(reservationKey)
         .first(),
-      env.DB.prepare("SELECT quota, request_count FROM users WHERE id = 1").first(),
+      env.DB.prepare(
+        "SELECT quota, request_count FROM users WHERE id = 1",
+      ).first(),
     ]);
     state = { handoff, abort, reservation, dispatch, user };
     if (handoff?.status === "recovery_required" && abort) return state;
@@ -6306,8 +6411,8 @@ async function waitForRelaySettlement(reservationKey) {
   while (Date.now() < deadline) {
     const [reservation, user, token, channel, log] = await Promise.all([
       env.DB.prepare(
-        `SELECT status, request_accounted, final_quota, lease_expires_at,
-                owner_generation
+        `SELECT status, request_accounted, final_quota, finalization_reason,
+                lease_expires_at, owner_generation
          FROM relay_billing_reservations
          WHERE reservation_key = ?1`,
       )
@@ -6330,12 +6435,14 @@ async function waitForRelaySettlement(reservationKey) {
     ]);
     let adminHeartbeat = null;
     let usageSource = null;
+    let streamUsageParseFailed = false;
     let finalizationTransport = null;
     let finalizationEventId = log?.billing_finalization_event_id ?? null;
     if (typeof log?.other === "string" && log.other.length > 0) {
       const other = JSON.parse(log.other);
       adminHeartbeat = other?.admin_info?.relay_billing_stream_lease_heartbeat;
       usageSource = other?.usage_source ?? null;
+      streamUsageParseFailed = other?.stream_usage_parse_failed === true;
       finalizationTransport = other?.billing_finalization_transport ?? null;
     }
     state = {
@@ -6346,6 +6453,7 @@ async function waitForRelaySettlement(reservationKey) {
       log: {
         adminHeartbeat,
         usageSource,
+        streamUsageParseFailed,
         finalizationTransport,
         finalizationEventId,
       },

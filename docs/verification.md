@@ -8044,9 +8044,11 @@ lifecycle 50/50, and the combined P5 evidence/foundation suite 68/68. The full
 dry-runs and configured Wasm checks, passed in 878.4 seconds. Retained CI for
 the exact commit remains separate evidence.
 
-These tests do not prove immediate downstream cancellation recovery,
-`Request.signal`, slow-client backpressure on the durable-disabled clone path,
-or any remote D1/Queue/provider behavior. Production remains **NO-GO**.
+At the 0057 checkpoint these tests did not prove immediate downstream
+cancellation recovery, `Request.signal`, or slow-client backpressure on the
+durable-disabled clone path. The 0058 and single-forwarding sections below
+supersede those local gaps. They still do not prove remote D1/Queue/provider
+behavior. Production remains **NO-GO**.
 
 ## Ordinary HTTP SSE Client-Abort Watchdog Verification (2026-07-22)
 
@@ -8093,3 +8095,69 @@ The exact source worktree also passes Worker 858/858, the remaining Rust
 workspace, P5 evidence/foundation 68/68, complete Workerd lifecycle 52/52,
 Wrangler dry-runs, Web/Bun checks, formatting, and all configured wasm targets
 through `bun run check` in 845.2 seconds.
+
+## Ordinary HTTP SSE Single-Forwarding Backpressure Verification (2026-07-22)
+
+The current ordinary durable-disabled HTTP SSE response is one pull-driven Rust
+forwarding stream. Source inspection must find
+`complete_instrumented_streaming_relay_response`,
+`instrumented_relay_stream_next`,
+`dispatch_instrumented_provider_finalization`, the client-abort/finalization
+watcher, the bounded finalization retry helper, and the lease heartbeat, and must
+find no `Response::cloned()`/clone/tee response-body audit consumer. Provider
+terminal work must be registered as a short `waitUntil` before its chunk is
+yielded. The `Request.signal` listener and stream Drop may register client
+finalization only after cancellation occurs. Heartbeat code must use one
+cancelable timer and short renewal tasks, never a response-lifetime `waitUntil`,
+and cannot read or buffer the body.
+
+Run the focused local runtime case:
+
+```powershell
+bun run build:worker
+bunx vitest run --config vitest.do.config.mjs -t "keeps ordinary HTTP SSE provider reads bounded"
+```
+
+The case must prove all of the following against local Workerd:
+
+1. a 256-chunk pull-generated provider returns one client chunk;
+2. after a 300 ms client pause the provider is incomplete and pull count is
+   greater than zero but no more than eight;
+3. controlled provider-terminal release plus client drain advances pull count
+   by at most one and keeps it below 256;
+4. the billing reservation settles with positive final quota and one request
+   accounting update;
+5. audit metadata reports `usageSource=upstream`,
+   `streamUsageParseFailed=false`, and
+   `finalizationTransport=billing_queue`; and
+6. terminal metadata reports `completion_reason=provider_terminal_event`.
+
+This is acceptance evidence for bounded provider reads, upstream usage, Queue
+settlement, and provider-terminal convergence without clone/tee. Accepted
+implementation patterns are one response-owned pull-driven stream, bounded
+incremental state, synchronous provider-terminal registration as a short-lived
+`waitUntil` task, an event-triggered first-owner client listener/drop fallback, a
+single-timer heartbeat, and frozen-reserve cancellation. Rejected patterns are response cloning/teeing,
+detached body consumption, pull-owned async financial finalization, eager or unbounded
+buffering, partial-usage charging after ambiguous disconnect, automatic
+refund/resend, and treating a local reader cancellation as edge-network proof.
+
+The static self-test must also reject
+`async fn finalize_instrumented_relay_stream(...)` inside the response pull
+scope and require `dispatch_instrumented_provider_finalization`, its short-lived
+`waitUntil` task, the event-triggered client-abort path, and the timer-based
+heartbeat without a response-lifetime promise. This is source-level cancellation
+isolation evidence; runtime cancellation during finalization remains a remote
+acceptance case.
+
+Rollout verification freezes the exact Worker artifact and hot Go/VPS fallback,
+keeps all durable SSE gates false, then repeats slow-reader, normal terminal,
+usage-error, Queue retry, and reader-cancel cases in isolated staging before
+direct/Gateway/WFP HTTP/2 and HTTP/3 canaries. Rollback must route new SSE to
+Go/VPS first, retain migrations 0056-0058 and the N drain owner, reconcile all
+owned work, and never restore clone/tee or resend an ambiguous provider call.
+
+The focused Workerd proof does not establish real Cloudflare HTTP/2, HTTP/3, or
+TCP client-disconnect propagation, intermediary cancellation, remote D1/Queue
+fault behavior, provider invoices, or production load/cost/SLO. Those remain
+remote acceptance gates. Production remains **NO-GO**.

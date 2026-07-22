@@ -30,7 +30,7 @@ export default defineConfig({
       main: "./tests/fixtures/do-runtime-worker.mjs",
       miniflare: {
         compatibilityDate: "2026-07-13",
-        compatibilityFlags: ["nodejs_compat"],
+        compatibilityFlags: ["nodejs_compat", "enable_request_signal"],
         modulesRules: compiledWasmModules,
         bindings: {
           WFP_RELAY_AUTHORITY_SECRET: authoritySecret,
@@ -108,6 +108,7 @@ export default defineConfig({
           WFP_OUTBOUND_WRONG_CONTEXT: "wfp-outbound-wrong-context",
           WFP_PROVIDER_MOCK: "wfp-provider-mock",
           REALTIME_PROVIDER_MOCK: "realtime-provider-mock",
+          DURABLE_RELAY_RUNTIME: "durable-relay-runtime",
           CONTAINER_CONTROLLER: "container-terminal-ack-mock",
         },
         durableObjects: {
@@ -244,6 +245,30 @@ export default defineConfig({
             durableObjects: {
               MOCK_REALTIME_PROVIDER: "MockRealtimeProvider",
             },
+          },
+          {
+            name: "durable-relay-runtime",
+            scriptPath: "./tests/fixtures/do-runtime-worker.mjs",
+            modules: true,
+            modulesRules: auxiliaryModuleRules,
+            compatibilityDate: "2026-07-13",
+            compatibilityFlags: ["nodejs_compat", "enable_request_signal"],
+            bindings: {
+              RELAY_BILLING_RESERVATION_LEASE_SECONDS: "300",
+              RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS: "5",
+              RELAY_BILLING_FINALIZATION_QUEUE_ENABLED: "true",
+              RELAY_MISSING_USAGE_ESTIMATE_ENABLED: "true",
+              RELAY_HTTP_STREAM_DURABLE_HANDOFF_ENABLED: "true",
+              RELAY_HTTP_STREAM_DURABLE_HANDOFF_STAGING_VERIFIED: "true",
+              RELAY_HTTP_STREAM_OUTBOX_ENABLED: "true",
+              RELAY_HTTP_STREAM_RECOVERY_ENABLED: "true",
+            },
+            d1Databases: { DB: "do-runtime-test" },
+            queueProducers: {
+              BILLING_QUEUE: "cinatoken-rust-billing-finalization-runtime",
+            },
+            versionMetadata: "CF_VERSION_METADATA",
+            outboundService: "realtime-provider-mock",
           },
           {
             name: "container-terminal-ack-mock",

@@ -1688,6 +1688,28 @@ audit/outbox, followed by exact R2 client-response replay and the deterministic
 Linux canary. No public route or production flag is enabled; Go/VPS remains
 authoritative and production remains **NO-GO**.
 
+## 2026-07-22 Ordinary HTTP SSE Client-Abort Watchdog v1
+
+Migration 0058 is the current local head at 58 migrations, 66 tables, 848
+checked incremental columns, and 97 key indexes. `enable_request_signal` is
+tracked for the Worker, and positive durable SSE now requires 0056/0057/0058
+readiness before provider I/O.
+
+The request path synchronously arms a bounded abort listener before returning
+the stream. Reader cancellation appends exact operation identity and atomically
+changes a matching forwarding handoff to
+`recovery_required/client_disconnected`; it does not settle, refund, or resend.
+The first durable decision wins a provider-terminal/client-abort race, and
+watchdog disarm follows durable readback rather than process-memory inference.
+
+Local Workerd proves the real Rust route through a gate-enabled candidate
+Worker service binding: one chunk is read, the reader is cancelled, one
+provider call and one abort event are observed, billing stays reserved, 0057
+stays stream-bound, and request accounting stays zero. All production gates
+remain false. Remote HTTP/2/HTTP/3/WFP cancellation, D1/restart/Queue/invoice,
+P5, Go/VPS drain, credential revocation, SLO/cost, and default-path clone/tee
+backpressure evidence remain open. Production remains **NO-GO**.
+
 ## 2026-07-16 Phase 1 Container Financial Terminal Expand Gate
 
 Migration 0042 is a default-inert expansion. New operation writers freeze a
@@ -2764,7 +2786,7 @@ authoritative and production remains **NO-GO**.
 
 Migration 0057 supersedes only the current-head and crash-window statements in
 the preceding 0056 section. The 0056 handoff remains the response-after,
-before-first-client-byte terminal owner. The exact current baseline is 57
+before-first-client-byte terminal owner. The exact 0057 increment baseline is 57
 migrations, 65 tables, 841 checked incremental columns, and 96 key indexes.
 
 Positive paid SSE now completes local request preparation before one atomic D1
@@ -2781,9 +2803,10 @@ SQLite transaction. A 900-second immutable hard stream deadline bounds lease
 renewal, and scheduled recovery sweeps expired pre-handoff intents. Local
 SQLite, Rust, P5 fixture, and Workerd CAS/promotion/recovery cases pass.
 
-Immediate client-disconnect recovery is still lease/scheduler-owned because
-incoming `Request.signal` is not connected to a durable watchdog. The default
-durable-disabled clone/tee path also retains slow-client backpressure risk.
-Remote 0057, real cancellation/restart/Queue/provider-invoice evidence, P5, and
+At the 0057 increment, immediate client-disconnect recovery was still lease/
+scheduler-owned. The 0058 section below closes that local implementation gap.
+The default durable-disabled clone/tee path still retains slow-client
+backpressure risk. Remote current-head cancellation/restart/Queue/provider-
+invoice evidence, P5, and
 Go/VPS drain remain open. All four SSE gates stay exact false. Go/VPS remains
 authoritative and production remains **NO-GO**.

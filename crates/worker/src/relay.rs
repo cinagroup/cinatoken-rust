@@ -70,6 +70,7 @@ use cinatoken_wfp_authority::{
     sign_authority, verify_authority, AuthorityExpectation, AuthorityInput, AUTHORITY_SECRET_ENV,
     OUTBOUND_POLICY_PROFILE,
 };
+use futures_channel::oneshot;
 use futures_util::{
     future::{select, Either},
     StreamExt,
@@ -78,16 +79,18 @@ use js_sys::{Function, Object, Promise, Reflect};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashMap},
     future::Future,
+    rc::Rc,
     time::Duration,
 };
 use url::Url;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::{closure::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::{
-    Context, D1Database, Delay, Env, Fetch, Headers, Method, Request, RequestInit, Response,
-    ResponseBody, WorkerVersionMetadata,
+    AbortController, Context, D1Database, Delay, Env, Fetch, Headers, Method, Request, RequestInit,
+    Response, ResponseBody, WorkerVersionMetadata,
 };
 
 use crate::{affinity, json_with_status, set_cors_headers};
@@ -2420,6 +2423,7 @@ async fn relay_endpoint_with_auth(
     auth_mode: RelayAuthMode,
 ) -> worker::Result<Response> {
     let started_at = unix_timestamp();
+    let request_abort_signal = req.inner().signal();
     let client_ip = client_ip(&req);
     let request_id = request_id(&req);
     let idempotency_key = request_header(&req, "idempotency-key");
@@ -4262,6 +4266,7 @@ async fn relay_endpoint_with_auth(
             env.clone(),
             db,
             context,
+            request_abort_signal,
             auth,
             channel,
             served_model,
@@ -10650,9 +10655,11 @@ async fn prepare_relay_http_stream_dispatch_scope(
     }
     if !crate::d1_repositories::relay_http_stream_handoff_schema_ready(db).await?
         || !crate::d1_repositories::relay_http_stream_dispatch_schema_ready(db).await?
+        || !crate::d1_repositories::relay_http_stream_client_abort_schema_ready(db).await?
     {
         return Err(worker::Error::RustError(
-            "relay HTTP stream durable dispatch migrations 0056/0057 are unavailable".to_string(),
+            "relay HTTP stream durable dispatch migrations 0056/0057/0058 are unavailable"
+                .to_string(),
         ));
     }
     let plan = billing_group_plan.ok_or_else(|| {
@@ -11005,6 +11012,151 @@ where
     }
 }
 
+struct AbortSignalListener {
+    signal: web_sys::AbortSignal,
+    _callback: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+impl Drop for AbortSignalListener {
+    fn drop(&mut self) {
+        let _ = self
+            .signal
+            .remove_event_listener_with_callback("abort", self._callback.as_ref().unchecked_ref());
+    }
+}
+
+struct AbortSignalWaiter {
+    receiver: oneshot::Receiver<()>,
+    _listener: Option<AbortSignalListener>,
+}
+
+impl AbortSignalWaiter {
+    fn new(signal: web_sys::AbortSignal) -> Result<Self, JsValue> {
+        let (sender, receiver) = oneshot::channel();
+        let sender = Rc::new(RefCell::new(Some(sender)));
+        let listener = if signal.aborted() {
+            if let Some(sender) = sender.borrow_mut().take() {
+                let _ = sender.send(());
+            }
+            None
+        } else {
+            let callback_sender = Rc::clone(&sender);
+            let callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                if let Some(sender) = callback_sender.borrow_mut().take() {
+                    let _ = sender.send(());
+                }
+            }) as Box<dyn FnMut(web_sys::Event)>);
+            signal.add_event_listener_with_callback("abort", callback.as_ref().unchecked_ref())?;
+            let listener = AbortSignalListener {
+                signal: signal.clone(),
+                _callback: callback,
+            };
+            if signal.aborted() {
+                if let Some(sender) = sender.borrow_mut().take() {
+                    let _ = sender.send(());
+                }
+            }
+            Some(listener)
+        };
+        Ok(Self {
+            receiver,
+            _listener: listener,
+        })
+    }
+
+    async fn wait(self) -> Result<(), JsValue> {
+        self.receiver
+            .await
+            .map_err(|_| JsValue::from_str("abort listener was cancelled"))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn arm_relay_http_stream_client_abort_watchdog(
+    context: &Context,
+    request_signal: web_sys::AbortSignal,
+    disarm_signal: worker::AbortSignal,
+    db: D1Database,
+    reservation_key: String,
+    owner_generation: i64,
+    attempt_generation: i64,
+    provider_operation_id: String,
+    worker_version_id: String,
+) -> Result<(), JsValue> {
+    let request_abort = AbortSignalWaiter::new(request_signal)?;
+    let disarm = AbortSignalWaiter::new((*disarm_signal).clone())?;
+    context.wait_until(async move {
+        let request_abort = Box::pin(request_abort.wait());
+        let disarm = Box::pin(disarm.wait());
+        match select(request_abort, disarm).await {
+            Either::Left((Ok(()), _)) => {
+                let observed_at = unix_timestamp();
+                let record = crate::d1_repositories::RelayHttpStreamClientAbortRecord {
+                    reservation_key: &reservation_key,
+                    owner_generation,
+                    attempt_generation,
+                    provider_operation_id: &provider_operation_id,
+                    worker_version_id: &worker_version_id,
+                    observed_at,
+                };
+                use crate::d1_repositories::RelayHttpStreamClientAbortOutcome as Outcome;
+                for attempt in 0..3_u64 {
+                    match crate::d1_repositories::record_relay_http_stream_client_abort(
+                        &db, &record,
+                    )
+                    .await
+                    {
+                        Ok(Outcome::RecoveryRequired | Outcome::MatchingReplay) => {
+                            worker::console_warn!(
+                                "relay HTTP stream client disconnect was durably recorded"
+                            );
+                            return;
+                        }
+                        Ok(Outcome::ProviderTerminalWon) => {
+                            worker::console_warn!(
+                                "relay HTTP stream client disconnect followed a durable provider terminal"
+                            );
+                            return;
+                        }
+                        Ok(Outcome::ExistingRecovery) => {
+                            worker::console_warn!(
+                                "relay HTTP stream client disconnect followed an existing recovery decision"
+                            );
+                            return;
+                        }
+                        Ok(Outcome::Conflict) => {
+                            worker::console_error!(
+                                "relay HTTP stream client disconnect evidence conflicted"
+                            );
+                            return;
+                        }
+                        Err(error) if attempt < 2 => {
+                            worker::console_warn!(
+                                "relay HTTP stream client disconnect persistence retry {}: {error}",
+                                attempt + 1
+                            );
+                            Delay::from(Duration::from_millis(50_u64 << attempt)).await;
+                        }
+                        Err(error) => {
+                            worker::console_error!(
+                                "relay HTTP stream client disconnect persistence failed: {error}"
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+            Either::Left((Err(error), _)) => {
+                worker::console_error!(
+                    "relay HTTP stream client disconnect listener failed: {error:?}"
+                );
+            }
+            Either::Right(_) => {}
+        }
+    });
+    Ok(())
+}
+
 struct DurableRelayStreamState {
     stream: worker::ByteStream,
     accumulator: Option<SseUsageAccumulator>,
@@ -11032,6 +11184,7 @@ struct DurableRelayStreamState {
     hard_deadline_at: i64,
     next_heartbeat_at: i64,
     heartbeat_audit: RelayBillingStreamLeaseHeartbeatAudit,
+    client_abort_watchdog_disarm: Option<AbortController>,
 }
 
 async fn complete_streaming_relay_response(
@@ -11039,6 +11192,7 @@ async fn complete_streaming_relay_response(
     env: Env,
     db: D1Database,
     context: Context,
+    request_abort_signal: web_sys::AbortSignal,
     auth: AuthenticatedToken,
     channel: RelayChannel,
     model: String,
@@ -11071,6 +11225,8 @@ async fn complete_streaming_relay_response(
             upstream,
             env,
             db,
+            context,
+            request_abort_signal,
             auth,
             channel,
             model,
@@ -11203,6 +11359,8 @@ async fn complete_durable_streaming_relay_response(
     mut upstream: Response,
     env: Env,
     db: D1Database,
+    context: Context,
+    request_abort_signal: web_sys::AbortSignal,
     auth: AuthenticatedToken,
     channel: RelayChannel,
     model: String,
@@ -11230,9 +11388,11 @@ async fn complete_durable_streaming_relay_response(
     }
     if !crate::d1_repositories::relay_http_stream_handoff_schema_ready(&db).await?
         || !crate::d1_repositories::relay_http_stream_dispatch_schema_ready(&db).await?
+        || !crate::d1_repositories::relay_http_stream_client_abort_schema_ready(&db).await?
     {
         return Err(worker::Error::RustError(
-            "relay HTTP stream durable handoff migrations 0056/0057 are unavailable".to_string(),
+            "relay HTTP stream durable handoff migrations 0056/0057/0058 are unavailable"
+                .to_string(),
         ));
     }
     let preflight = audit
@@ -11394,6 +11554,13 @@ async fn complete_durable_streaming_relay_response(
         lease_seconds: relay_billing_reservation_lease_seconds(&env),
         heartbeat_seconds,
     };
+    let client_abort_watchdog_disarm = AbortController::default();
+    let client_abort_watchdog_disarm_signal = client_abort_watchdog_disarm.signal();
+    let client_abort_watchdog_db = env.d1("DB")?;
+    let client_abort_arm_recovery_db = env.d1("DB")?;
+    let watchdog_reservation_key = stream_lease.reservation_key.clone();
+    let watchdog_provider_operation_id = dispatch.provider_operation_id.clone();
+    let watchdog_worker_version_id = dispatch.worker_version_id.clone();
     let state = DurableRelayStreamState {
         stream,
         accumulator: Some(stream_usage_accumulator(provider, channel.channel_type)),
@@ -11424,13 +11591,76 @@ async fn complete_durable_streaming_relay_response(
             initial_lease_expires_at,
         ),
         stream_lease,
+        client_abort_watchdog_disarm: Some(client_abort_watchdog_disarm),
     };
     let body = futures_util::stream::try_unfold(state, durable_relay_stream_next);
-    let mut response = Response::from_stream(body)?
-        .with_status(status)
-        .with_headers(headers);
-    response.headers_mut().set("content-type", &content_type)?;
-    set_cors_headers(&mut response)?;
+    let mut response = match Response::from_stream(body) {
+        Ok(response) => response.with_status(status).with_headers(headers),
+        Err(error) => {
+            let _ = crate::d1_repositories::mark_relay_http_stream_recovery_required(
+                &client_abort_watchdog_db,
+                &watchdog_reservation_key,
+                owner_generation,
+                attempt_generation,
+                "worker_termination",
+                "stream_response_initialization_failed",
+                unix_timestamp(),
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = response.headers_mut().set("content-type", &content_type) {
+        let _ = crate::d1_repositories::mark_relay_http_stream_recovery_required(
+            &client_abort_watchdog_db,
+            &watchdog_reservation_key,
+            owner_generation,
+            attempt_generation,
+            "worker_termination",
+            "stream_response_header_failed",
+            unix_timestamp(),
+        )
+        .await;
+        return Err(error);
+    }
+    if let Err(error) = set_cors_headers(&mut response) {
+        let _ = crate::d1_repositories::mark_relay_http_stream_recovery_required(
+            &client_abort_watchdog_db,
+            &watchdog_reservation_key,
+            owner_generation,
+            attempt_generation,
+            "worker_termination",
+            "stream_response_header_failed",
+            unix_timestamp(),
+        )
+        .await;
+        return Err(error);
+    }
+    if let Err(error) = arm_relay_http_stream_client_abort_watchdog(
+        &context,
+        request_abort_signal,
+        client_abort_watchdog_disarm_signal,
+        client_abort_watchdog_db,
+        watchdog_reservation_key.clone(),
+        owner_generation,
+        attempt_generation,
+        watchdog_provider_operation_id,
+        watchdog_worker_version_id,
+    ) {
+        let recovery = crate::d1_repositories::mark_relay_http_stream_recovery_required(
+            &client_abort_arm_recovery_db,
+            &watchdog_reservation_key,
+            owner_generation,
+            attempt_generation,
+            "worker_termination",
+            "client_abort_watchdog_arm_failed",
+            unix_timestamp(),
+        )
+        .await;
+        return Err(worker::Error::RustError(format!(
+            "relay HTTP stream client-abort watchdog could not be armed: {error:?}; recovery: {recovery:?}"
+        )));
+    }
     Ok(response)
 }
 
@@ -11443,7 +11673,7 @@ async fn durable_relay_stream_next(
     let now = unix_timestamp();
     if now >= state.hard_deadline_at {
         durable_mark_stream_recovery(
-            &state,
+            &mut state,
             "worker_termination",
             "stream_total_deadline_exceeded",
         )
@@ -11465,13 +11695,17 @@ async fn durable_relay_stream_next(
             Ok(Some((chunk, state)))
         }
         Either::Left((Some(Err(err)), _)) => {
-            durable_mark_stream_recovery(&state, "stream_read_error", "upstream_stream_read_error")
-                .await;
+            durable_mark_stream_recovery(
+                &mut state,
+                "stream_read_error",
+                "upstream_stream_read_error",
+            )
+            .await;
             Err(err)
         }
         Either::Left((None, _)) => {
             durable_mark_stream_recovery(
-                &state,
+                &mut state,
                 "eof_without_provider_terminal",
                 "eof_without_provider_terminal",
             )
@@ -11484,7 +11718,7 @@ async fn durable_relay_stream_next(
             drop(pending_chunk);
             if total_deadline_wins {
                 durable_mark_stream_recovery(
-                    &state,
+                    &mut state,
                     "worker_termination",
                     "stream_total_deadline_exceeded",
                 )
@@ -11493,7 +11727,8 @@ async fn durable_relay_stream_next(
                     "upstream SSE stream exceeded the durable total deadline".to_string(),
                 ))
             } else {
-                durable_mark_stream_recovery(&state, "idle_timeout", "stream_idle_timeout").await;
+                durable_mark_stream_recovery(&mut state, "idle_timeout", "stream_idle_timeout")
+                    .await;
                 Err(worker::Error::RustError(
                     "upstream SSE stream exceeded the durable idle timeout".to_string(),
                 ))
@@ -11848,6 +12083,9 @@ async fn durable_stage_stream_terminal(state: &mut DurableRelayStreamState) -> w
         Outcome::Applied | Outcome::MatchingReplay => {
             state.checkpoint_sequence = sequence;
             state.terminal_staged = true;
+            if let Some(controller) = state.client_abort_watchdog_disarm.take() {
+                controller.abort();
+            }
             Ok(())
         }
         outcome => {
@@ -11861,7 +12099,7 @@ async fn durable_stage_stream_terminal(state: &mut DurableRelayStreamState) -> w
 }
 
 async fn durable_mark_stream_recovery(
-    state: &DurableRelayStreamState,
+    state: &mut DurableRelayStreamState,
     terminal_kind: &str,
     terminal_reason: &str,
 ) {
@@ -11882,6 +12120,28 @@ async fn durable_mark_stream_recovery(
         Err(err) => {
             worker::console_error!("relay HTTP stream recovery-required transition failed: {err}")
         }
+    }
+    match crate::d1_repositories::relay_http_stream_handoff(
+        &state.db,
+        &state.stream_lease.reservation_key,
+    )
+    .await
+    {
+        Ok(Some(current))
+            if current.owner_generation == state.stream_lease.owner_generation
+                && current.attempt_generation == state.attempt_generation
+                && current.status != "forwarding" =>
+        {
+            if let Some(controller) = state.client_abort_watchdog_disarm.take() {
+                controller.abort();
+            }
+        }
+        Ok(_) => worker::console_error!(
+            "relay HTTP stream recovery readback did not prove a durable non-forwarding state"
+        ),
+        Err(error) => worker::console_error!(
+            "relay HTTP stream recovery readback failed before watchdog disarm: {error}"
+        ),
     }
 }
 

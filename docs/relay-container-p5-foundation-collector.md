@@ -319,8 +319,8 @@ The evidence order is fixed:
 1. rotate the exposed credential and freeze commits, Worker versions, image,
    runtime build, provenance, SBOM, resources, migration, and rollback facts;
 2. with every tracked action gate at its default `false`, back up D1 and
-   apply/read back 0054, 0055, 0056, then 0057, proving the 0057/57 and
-   65/841/96 baseline while retaining the sealed 0055 campaign evidence and
+   apply/read back 0054, 0055, 0056, 0057, then 0058, proving the 0058/58 and
+   66/848/97 baseline while retaining the sealed 0055 campaign evidence and
    keeping every HTTP SSE producer disabled;
 3. deploy provider-egress, Controller reader, then edge reader while activation
    recording remains false;
@@ -348,9 +348,10 @@ complete. All tracked local/staging/production Controller action gates,
 including activation recording, remain default `false`; editing the static
 environment variable is not an approved workaround.
 
-After 0057, an N-1 Worker may participate only as a reader. Foundation capture
+After 0058, an N-1 Worker may participate only as a reader. Foundation capture
 must identify the N Worker that owns dispatch-intent recovery and prove that no
-old 0056 producer can insert a handoff without a matching 0057 response row.
+old producer can create a durable handoff without matching 0057 dispatch and
+0058 client-abort ownership support.
 
 ## Fail-Closed Meaning
 
@@ -368,3 +369,14 @@ duplicate, drift, credential-reflection, timeout/envelope, and streamed-size
 boundaries; they are not authenticated Cloudflare evidence. No authenticated
 readback was run in this implementation increment, no remote resource changed,
 and foundation, P5, and production remain **NO-GO**.
+
+## 0058 Foundation Readback Overlay
+
+Ordered foundation capture now applies and reads back 0054, 0055, 0056, 0057,
+then 0058. Candidate-freeze and schema-readback facts must both report head
+0058/58 and 66/848/97, include the exact abort table/index/five triggers/seven
+columns and `enable_request_signal`, and prove every SSE authority remains
+false during collection. N-1 is reader-only; N is the sole possible drain
+owner. Any 0057 head, unexpected abort row, provider call, financial delta,
+partial pagination, or candidate drift fails closed. No authenticated remote
+capture occurred; foundation and P5 remain **NO-GO**.

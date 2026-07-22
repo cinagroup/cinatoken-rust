@@ -1190,7 +1190,7 @@ See `docs/relay-http-stream-durable-handoff.md` and Phase 4l of
 ## 2026-07-22 HTTP SSE Dispatch Intent Superseding Matrix
 
 This matrix supersedes the current-head and known-crash-window rows above.
-Current local head is 0057/57 with 65 tables, 841 checked incremental columns,
+The 0057 increment baseline was 0057/57 with 65 tables, 841 checked incremental columns,
 and 96 key indexes.
 
 | Gate | Current local evidence | Production acceptance | Status |
@@ -1203,8 +1203,27 @@ and 96 key indexes.
 | Cancellation | Lease/scheduler recovery exists | `Request.signal` plus durable watchdog, immediate cancel race tests, and Cloudflare edge proof | **Blocked** |
 | Backpressure | Gated durable path is one instrumented stream | Replace/prove durable-disabled clone/tee under slow clients with bounded memory | **Blocked** |
 | Compatibility/rollback | N-1 remains reader-only after 0057; N drain worker plus hot Go/VPS retained | Real N/N-1 read campaign and producer-off rollback with zero backlog | Planned; remote blocked |
-| Promotion | All four SSE gates remain false; local Rust 858/858, SQLite 57/65/841/96, Workerd 50/50 and full aggregate pass | Remote 0057, complete fault/invoice/SLO/cost/P5/security packet and Go/VPS drain | **NO-GO** |
+| Recorded 0057 promotion baseline | All four SSE gates remained false; local Rust 858/858, SQLite 57/65/841/96, Workerd 50/50 and full aggregate passed | Remote current-head complete fault/invoice/SLO/cost/P5/security packet and Go/VPS drain | **NO-GO** |
 
 The closed persistence window does not convert an ambiguous dispatched request
 into a safe retry or refund. It makes the ambiguity durable and uniquely owned.
 Go/VPS remains authoritative.
+
+## 2026-07-22 HTTP SSE Client-Abort Readiness Overlay
+
+Current local head is 0058/58 with 66 tables, 848 checked incremental columns,
+and 97 key indexes.
+
+| Control | Implemented local evidence | Required remote evidence | Decision |
+| --- | --- | --- | --- |
+| Pre-send schema fence | Positive durable SSE checks 0056/0057/0058 before provider I/O; Workerd exposed the former 0057 D1 binding defect with provider count zero and the exact-parameter fix passes | D1 write/response-loss injection and zero-call proof on the deployed N version | Local pass, remote open |
+| Incoming disconnect | `enable_request_signal`; synchronous listener arm; response-reader cancellation through a Worker service binding appends one exact abort event | Real HTTP/2, HTTP/3, TCP loss, direct/Gateway/WFP chains, isolate restart/deploy and version skew | Local pass, remote open |
+| Financial safety | Abort moves only handoff ownership; billing stays reserved, dispatch stays stream-bound, request count stays zero; no refund/resend | Provider invoice, D1, Queue, audit and request-count conservation over every fault | Local pass, remote open |
+| Race safety | SQL and Workerd prove abort-first cannot be overwritten and terminal-first remains terminal; evidence is immutable | Real concurrent timing campaign with D1 ambiguity and scheduler overlap | Local pass, remote open |
+| Privacy | Seven exact fields; no body/header/frame/credential/IP/free-form reason | Remote catalog/readback, logs, retention and privacy approval | Local pass, remote open |
+| Compatibility/rollback | All gates false; N-1 reader-only; migrations retained; N drain plus hot Go/VPS plan | N/N-1 campaign, reverse sync, measured RTO/RPO and zero backlog | Planned, remote open |
+| Promotion | Rust 858/858, workspace, SQLite 58/66/848/97, P5 68/68, Workerd 52/52, wasm and full 845.2-second aggregate pass | Retained CI, remote 0058, complete fault/invoice/SLO/cost/P5/security/Go drain packet | **NO-GO** |
+
+0058 closes the local watchdog implementation gap only. It does not prove
+Cloudflare network disconnect behavior or convert an ambiguous provider send
+into a safe refund or retry. Go/VPS remains authoritative.

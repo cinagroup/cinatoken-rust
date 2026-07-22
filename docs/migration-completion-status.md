@@ -35,11 +35,11 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 This re-audit keeps the overall migration goal open. Passing local gates proves
 implementation readiness only for the covered behavior.
 
-The current source-tree D1 head is migration 0057 with 57 contiguous migration
-files, 65 tables, 841 checked incremental columns, and 96 key indexes. Older
+The current source-tree D1 head is migration 0058 with 58 contiguous migration
+files, 66 tables, 848 checked incremental columns, and 97 key indexes. Older
 dated sections below retain their historical head/count snapshots. The
-0050-0057 admission, response, financial terminal, shard-activation,
-one-time campaign, HTTP stream handoff, and pre-dispatch intent paths
+0050-0058 admission, response, financial terminal, shard-activation,
+one-time campaign, HTTP stream handoff, pre-dispatch intent, and client-abort paths
 are local candidate work, not remote schema evidence. Flat intent runtime and
 Container readiness do not imply pricing or traffic cutover readiness;
 `relay_flat_billing_go_parity_ready` and
@@ -1802,7 +1802,7 @@ See `docs/relay-http-stream-durable-handoff.md`. Production remains **NO-GO**.
 
 ## 2026-07-22 Ordinary HTTP SSE Dispatch Intent Status
 
-Migration 0057 is now the local current head at 57 migrations, 65 tables, 841
+Migration 0057 was the local head for that increment at 57 migrations, 65 tables, 841
 checked incremental columns, and 96 key indexes. It closes the gated paid SSE
 provider-dispatch-to-handoff persistence window by adding an atomic
 reservation-bound `prepared` intent, a single send-authorizing dispatch CAS,
@@ -1815,13 +1815,50 @@ immutable hard deadline caps stream leases, and the scheduler recovers expired
 pre-handoff intents without provider resend. Dispatch recovery atomically
 advances the billing reservation recovery owner.
 
-Local SQLite 57/65/841/96, config audits, Worker 858/858, production Worker
+The recorded 0057 local SQLite 57/65/841/96, config audits, Worker 858/858, production Worker
 build, Workerd lifecycle 50/50, P5 fixture tests, and the complete 878.4-second
 repository aggregate pass. All four SSE gates remain false.
 
-The migration is not production-complete. Immediate client cancellation still
-lacks a `Request.signal`-driven durable watchdog, and the durable-disabled
-clone/tee path lacks slow-consumer backpressure proof. Remote 0057, Queue/D1/
+At the 0057 increment, immediate client cancellation still lacked a
+`Request.signal`-driven durable watchdog. The durable-disabled
+clone/tee path lacks slow-consumer backpressure proof. Remote current-head Queue/D1/
 restart/version-skew/provider-invoice campaigns, P5, credential rotation, and
 Go/VPS drain/rollback evidence remain absent. Go/VPS stays authoritative and
 production remains **NO-GO**.
+
+## 2026-07-22 Migration 0058 Client-Abort Status
+
+The current source-tree D1 head is now 0058 with 58 contiguous migrations, 66
+tables, 848 checked incremental columns, and 97 key indexes. Historical 0057
+counts remain valid only for their recorded increment and are not the current
+candidate baseline.
+
+Implemented locally:
+
+- incoming `Request.signal` compatibility and capture before body consumption;
+- 0058 readiness before provider I/O;
+- synchronous abort-listener arm before response return;
+- append-only exact abort evidence and atomic
+  `forwarding -> recovery_required/client_disconnected`;
+- first-durable-decision-wins provider-terminal/abort races;
+- bounded D1 retry, no automatic refund/resend, and durable-readback disarm;
+- direct SQLite/Workerd D1 race coverage; and
+- an end-to-end gate-enabled Rust Worker service-binding test that reads one
+  SSE chunk, cancels the reader, observes one provider call, preserves billing
+  pre-consumption, and records zero request accounting.
+
+The end-to-end test also discovered a 0057 D1 parameter-binding mismatch before
+provider I/O; admission UPDATE and INSERT now bind exact independent arrays in
+the same atomic batch. This is a real runtime correction, not only a schema
+test update.
+
+The exact source worktree passes Worker 858/858, all remaining Rust workspace
+tests, SQLite 58/66/848/97, P5 68/68, Workerd 52/52, configured wasm checks and
+the complete `bun run check` aggregate in 845.2 seconds.
+
+Not complete: real Cloudflare HTTP/2/HTTP/3/TCP/WFP cancellation, D1
+write/response loss, isolate restart/deploy/version skew, Queue ambiguity,
+provider invoice reconciliation, remote 0058 apply/readback, load/SLO/cost and
+alerts, P5 signatures, credential revocation proof, default-path clone/tee
+backpressure, and Go/VPS drain/reverse sync/rollback. All four SSE gates remain
+false. Go/VPS stays authoritative and production remains **NO-GO**.

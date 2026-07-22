@@ -265,6 +265,7 @@ REQUIRED_TABLES = [
     "relay_http_stream_dispatch_intents",
     "relay_http_stream_handoffs",
     "relay_http_stream_finalization_receipts",
+    "relay_http_stream_client_abort_events",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1191,6 +1192,15 @@ REQUIRED_COLUMNS = {
         "created_at",
         "updated_at",
     },
+    "relay_http_stream_client_abort_events": {
+        "reservation_key",
+        "owner_generation",
+        "attempt_generation",
+        "provider_operation_id",
+        "worker_version_id",
+        "signal_contract_version",
+        "observed_at",
+    },
     "relay_http_stream_finalization_receipts": {
         "reservation_key",
         "owner_generation",
@@ -1359,6 +1369,9 @@ REQUIRED_INDEXES = {
         "idx_relay_http_stream_dispatch_intents_recovery": False,
         "idx_relay_http_stream_dispatch_intents_active_lease": False,
     },
+    "relay_http_stream_client_abort_events": {
+        "idx_relay_http_stream_client_abort_events_observed": False,
+    },
 }
 
 
@@ -1420,6 +1433,7 @@ def main() -> int:
     relay_container_shard_activation_campaign_rollout_verified = False
     relay_http_stream_handoff_rollout_verified = False
     relay_http_stream_dispatch_rollout_verified = False
+    relay_http_stream_client_abort_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -1473,6 +1487,8 @@ def main() -> int:
         relay_http_stream_handoff_rollout_verified = True
         verify_relay_http_stream_dispatch_rollout(schema_paths)
         relay_http_stream_dispatch_rollout_verified = True
+        verify_relay_http_stream_client_abort_rollout(schema_paths)
+        relay_http_stream_client_abort_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -1679,6 +1695,8 @@ def main() -> int:
         message += " + 0056 generation-fenced HTTP stream handoff/outbox"
     if relay_http_stream_dispatch_rollout_verified:
         message += " + 0057 persist-before-provider HTTP stream dispatch"
+    if relay_http_stream_client_abort_rollout_verified:
+        message += " + 0058 Request.signal durable client-abort watchdog"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -12939,7 +12957,7 @@ def verify_relay_container_provider_usage_binding_rollout(
     binding_index = schema_paths.index(binding_path)
     if binding_index == 0 or schema_paths[binding_index - 1] != receipt_path:
         raise SystemExit("0049 provider usage binding must immediately follow 0048")
-    if binding_index != len(schema_paths) - 9 or schema_paths[binding_index + 1].name != (
+    if binding_index != len(schema_paths) - 10 or schema_paths[binding_index + 1].name != (
         "0050_relay_container_atomic_admission.sql"
     ):
         raise SystemExit("0049 provider usage binding must immediately precede 0050")
@@ -13303,12 +13321,12 @@ def verify_relay_container_scheduled_terminalization_rollout(
     )
     if response_artifact_path is None:
         raise SystemExit("0051/0052 relay Container response migrations not found")
-    if len(schema_paths) != 57:
+    if len(schema_paths) != 58:
         raise SystemExit(
-            f"0051 scheduled terminalization compatibility requires the 57-migration current chain, got {len(schema_paths)}"
+            f"0051 scheduled terminalization compatibility requires the 58-migration current chain, got {len(schema_paths)}"
         )
     scheduled_index = schema_paths.index(scheduled_path)
-    if scheduled_index != len(schema_paths) - 7:
+    if scheduled_index != len(schema_paths) - 8:
         raise SystemExit("0051 scheduled terminalization must immediately precede 0052")
     if scheduled_index == 0 or schema_paths[scheduled_index - 1] != atomic_path:
         raise SystemExit("0051 scheduled terminalization must immediately follow 0050")
@@ -13375,12 +13393,12 @@ def verify_relay_container_response_artifacts_rollout(
     )
     if response_path is None or scheduled_path is None:
         raise SystemExit("0051/0052 relay Container response-artifact migrations not found")
-    if len(schema_paths) != 57:
+    if len(schema_paths) != 58:
         raise SystemExit(
-            f"0052 response artifacts require the 57-migration current chain, got {len(schema_paths)}"
+            f"0052 response artifacts require the 58-migration current chain, got {len(schema_paths)}"
         )
     response_index = schema_paths.index(response_path)
-    if response_index != len(schema_paths) - 6:
+    if response_index != len(schema_paths) - 7:
         raise SystemExit("0052 response artifacts must immediately precede 0053")
     if response_index == 0 or schema_paths[response_index - 1] != scheduled_path:
         raise SystemExit("0052 response artifacts must immediately follow 0051")
@@ -13678,13 +13696,13 @@ def verify_relay_container_financial_terminal_v2_rollout(
     )
     if v2_path is None or response_path is None or activation_path is None:
         raise SystemExit("0052/0053/0054 relay Container migrations not found")
-    if len(schema_paths) != 57:
+    if len(schema_paths) != 58:
         raise SystemExit(
-            "0053 financial terminal v2 requires the 57-migration current chain, "
+            "0053 financial terminal v2 requires the 58-migration current chain, "
             f"got {len(schema_paths)}"
         )
     v2_index = schema_paths.index(v2_path)
-    if v2_index != len(schema_paths) - 5:
+    if v2_index != len(schema_paths) - 6:
         raise SystemExit("0053 financial terminal v2 must immediately precede 0054")
     if v2_index == 0 or schema_paths[v2_index - 1] != response_path:
         raise SystemExit("0053 financial terminal v2 must immediately follow 0052")
@@ -14096,13 +14114,13 @@ def verify_relay_container_shard_activation_rollout(
     )
     if activation_path is None or v2_path is None:
         raise SystemExit("0053/0054 relay Container activation migrations not found")
-    if len(schema_paths) != 57:
+    if len(schema_paths) != 58:
         raise SystemExit(
-            "0054 shard activations require the 57-migration current chain, "
+            "0054 shard activations require the 58-migration current chain, "
             f"got {len(schema_paths)}"
         )
     activation_index = schema_paths.index(activation_path)
-    if activation_index != len(schema_paths) - 4:
+    if activation_index != len(schema_paths) - 5:
         raise SystemExit("0054 shard activations must immediately precede 0055")
     if activation_index == 0 or schema_paths[activation_index - 1] != v2_path:
         raise SystemExit("0054 shard activations must immediately follow 0053")
@@ -14518,13 +14536,13 @@ def verify_relay_container_shard_activation_campaign_rollout(
     )
     if campaign_path is None or activation_path is None:
         raise SystemExit("0054/0055 relay Container activation migrations not found")
-    if len(schema_paths) != 57:
+    if len(schema_paths) != 58:
         raise SystemExit(
-            "0055 activation campaigns require the 57-migration current chain, "
+            "0055 activation campaigns require the 58-migration current chain, "
             f"got {len(schema_paths)}"
         )
     campaign_index = schema_paths.index(campaign_path)
-    if campaign_index != len(schema_paths) - 3:
+    if campaign_index != len(schema_paths) - 4:
         raise SystemExit("0055 activation campaigns must immediately precede 0056")
     if campaign_index == 0 or schema_paths[campaign_index - 1] != activation_path:
         raise SystemExit("0055 activation campaigns must immediately follow 0054")
@@ -15986,14 +16004,14 @@ def verify_relay_http_stream_handoff_rollout(
     )
     if handoff_path is None or campaign_path is None:
         raise SystemExit("0055/0056 HTTP stream handoff migrations not found")
-    if len(schema_paths) != 57:
+    if len(schema_paths) != 58:
         raise SystemExit(
-            "0056 HTTP stream handoff requires the 57-migration current chain, "
+            "0056 HTTP stream handoff requires the 58-migration current chain, "
             f"got {len(schema_paths)}"
         )
     handoff_index = schema_paths.index(handoff_path)
-    if handoff_index != len(schema_paths) - 2:
-        raise SystemExit("0056 HTTP stream handoff must immediately precede current head")
+    if handoff_index != len(schema_paths) - 3:
+        raise SystemExit("0056 HTTP stream handoff must immediately precede 0057")
     if handoff_index == 0 or schema_paths[handoff_index - 1] != campaign_path:
         raise SystemExit("0056 HTTP stream handoff must immediately follow 0055")
 
@@ -16412,18 +16430,28 @@ def verify_relay_http_stream_dispatch_rollout(
         ),
         None,
     )
-    if dispatch_path is None or handoff_path is None:
-        raise SystemExit("0056/0057 HTTP stream dispatch migrations not found")
-    if len(schema_paths) != 57:
+    abort_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0058_relay_http_stream_client_abort_watchdogs.sql"
+        ),
+        None,
+    )
+    if dispatch_path is None or handoff_path is None or abort_path is None:
+        raise SystemExit("0056/0057/0058 HTTP stream migrations not found")
+    if len(schema_paths) != 58:
         raise SystemExit(
-            "0057 HTTP stream dispatch requires exactly 57 D1 migrations, "
+            "0057 HTTP stream dispatch requires exactly 58 D1 migrations, "
             f"got {len(schema_paths)}"
         )
     dispatch_index = schema_paths.index(dispatch_path)
-    if dispatch_index != len(schema_paths) - 1:
-        raise SystemExit("0057 HTTP stream dispatch must be the D1 migration head")
+    if dispatch_index != len(schema_paths) - 2:
+        raise SystemExit("0057 HTTP stream dispatch must immediately precede 0058")
     if dispatch_index == 0 or schema_paths[dispatch_index - 1] != handoff_path:
         raise SystemExit("0057 HTTP stream dispatch must immediately follow 0056")
+    if schema_paths[dispatch_index + 1] != abort_path:
+        raise SystemExit("0058 client-abort watchdog must immediately follow 0057")
 
     dispatch_sql = dispatch_path.read_text(encoding="utf-8")
     if "if not exists" in dispatch_sql.lower():
@@ -16754,6 +16782,308 @@ def verify_relay_http_stream_dispatch_rollout(
     conn.close()
 
 
+def verify_relay_http_stream_client_abort_rollout(
+    schema_paths: list[Path],
+) -> None:
+    abort_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0058_relay_http_stream_client_abort_watchdogs.sql"
+        ),
+        None,
+    )
+    dispatch_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0057_relay_http_stream_dispatch_intents.sql"
+        ),
+        None,
+    )
+    if abort_path is None or dispatch_path is None:
+        raise SystemExit("0057/0058 HTTP stream client-abort migrations not found")
+    if len(schema_paths) != 58:
+        raise SystemExit(
+            "0058 HTTP stream client-abort watchdog requires exactly 58 D1 migrations, "
+            f"got {len(schema_paths)}"
+        )
+    abort_index = schema_paths.index(abort_path)
+    if abort_index != len(schema_paths) - 1:
+        raise SystemExit("0058 HTTP stream client-abort watchdog must be the D1 head")
+    if abort_index == 0 or schema_paths[abort_index - 1] != dispatch_path:
+        raise SystemExit("0058 HTTP stream client-abort watchdog must follow 0057")
+
+    abort_sql = abort_path.read_text(encoding="utf-8")
+    if "if not exists" in abort_sql.lower():
+        raise SystemExit("0058 critical client-abort objects must fail duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_http_stream_client_abort_events",
+        "idx_relay_http_stream_client_abort_events_observed",
+        "relay_http_stream_client_abort_event_insert_guard",
+        "relay_http_stream_client_abort_event_apply",
+        "relay_http_stream_client_abort_terminal_guard",
+        "relay_http_stream_client_abort_event_update_guard",
+        "relay_http_stream_client_abort_event_delete_guard",
+        "terminal_kind = 'worker_termination'",
+        "terminal_reason = 'client_disconnected'",
+        "handoff.status IN (",
+        "'terminal_staged', 'finalization_enqueued', 'terminal'",
+    ):
+        if fragment not in abort_sql:
+            raise SystemExit(f"0058 HTTP stream client-abort rollout missing: {fragment}")
+
+    conn = sqlite3.connect(":memory:")
+    for path in schema_paths:
+        conn.executescript(path.read_text(encoding="utf-8"))
+
+    expected_columns = [
+        "reservation_key",
+        "owner_generation",
+        "attempt_generation",
+        "provider_operation_id",
+        "worker_version_id",
+        "signal_contract_version",
+        "observed_at",
+    ]
+    actual_columns = [
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info('relay_http_stream_client_abort_events')"
+        ).fetchall()
+    ]
+    if actual_columns != expected_columns:
+        raise SystemExit(f"0058 client-abort columns differ: {actual_columns}")
+    for forbidden in (
+        "request_body",
+        "response_body",
+        "authorization",
+        "credential",
+        "raw_header",
+        "sse_frame",
+        "abort_reason",
+    ):
+        if forbidden in actual_columns:
+            raise SystemExit(f"0058 persists forbidden client-abort field: {forbidden}")
+
+    now = max(1_800_000_000, int(time.time()))
+    expr_hash = "sha256:http-stream-client-abort-0058"
+    snapshot_sha256 = hashlib.sha256(b"{}").hexdigest()
+    request_sha256 = hashlib.sha256(b'{"stream":true}').hexdigest()
+
+    def seed_handoff(reservation_key: str, provider_operation_id: str) -> None:
+        worker_version_id = "worker-0058"
+        conn.execute(
+            """
+            INSERT INTO relay_billing_reservations (
+              reservation_key, user_id, token_id, model_name, endpoint_path,
+              request_id_hash, expr_hash, billing_kind, billing_snapshot_json,
+              candidate_group_count, reservation_strategy, pre_consumed_quota,
+              status, channel_id, selected_group, selected_at, owner_generation,
+              owner_deadline_at, created_at, updated_at, lease_expires_at
+            ) VALUES (
+              ?, 1, 0, 'gpt-0058', '/v1/chat/completions', 'request-sha256', ?,
+              'flat', '{}', 1, 'selected_group', 10, 'reserved', 42, 'default',
+              ?, 2, ?, ?, ?, ?
+            )
+            """,
+            (reservation_key, expr_hash, now, now + 600, now, now, now + 600),
+        )
+        conn.execute(
+            """
+            INSERT INTO relay_http_stream_dispatch_intents (
+              reservation_key, attempt_generation, prebind_owner_generation,
+              owner_generation, channel_id, selected_group, expr_hash,
+              provider_operation_id, worker_version_id,
+              billing_snapshot_sha256, request_sha256, endpoint_path,
+              transport_kind, status, selected_at, lease_expires_at,
+              hard_deadline_at, created_at, updated_at
+            ) VALUES (?, 1, 1, 2, 42, 'default', ?, ?, ?, ?, ?,
+              'chat/completions', 'direct_provider', 'prepared', ?, ?, ?, ?, ?)
+            """,
+            (
+                reservation_key,
+                expr_hash,
+                provider_operation_id,
+                worker_version_id,
+                snapshot_sha256,
+                request_sha256,
+                now,
+                now + 600,
+                now + 900,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE relay_http_stream_dispatch_intents
+            SET status = 'dispatched', dispatched_at = ?, updated_at = ?
+            WHERE reservation_key = ? AND attempt_generation = 1
+            """,
+            (now, now, reservation_key),
+        )
+        conn.execute(
+            """
+            UPDATE relay_http_stream_dispatch_intents
+            SET status = 'response_received', response_status = 200,
+                upstream_request_id_sha256 = ?, response_received_at = ?,
+                updated_at = ?
+            WHERE reservation_key = ? AND attempt_generation = 1
+            """,
+            (hashlib.sha256(reservation_key.encode()).hexdigest(), now + 1, now + 1, reservation_key),
+        )
+        conn.execute(
+            """
+            INSERT INTO relay_http_stream_handoffs (
+              reservation_key, owner_generation, attempt_generation, channel_id,
+              selected_group, expr_hash, provider_operation_id, worker_version_id,
+              billing_snapshot_sha256, dispatch_hard_deadline_at,
+              lease_expires_at, created_at, updated_at
+            ) VALUES (?, 2, 1, 42, 'default', ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                reservation_key,
+                expr_hash,
+                provider_operation_id,
+                worker_version_id,
+                snapshot_sha256,
+                now + 900,
+                now + 600,
+                now + 2,
+                now + 2,
+            ),
+        )
+
+    recovery_key = "relayreserve-http-stream-client-abort-0058"
+    recovery_operation_id = hashlib.sha256(b"0058-client-abort").hexdigest()
+    seed_handoff(recovery_key, recovery_operation_id)
+    conn.execute(
+        """
+        INSERT INTO relay_http_stream_client_abort_events (
+          reservation_key, owner_generation, attempt_generation,
+          provider_operation_id, worker_version_id,
+          signal_contract_version, observed_at
+        ) VALUES (?, 2, 1, ?, 'worker-0058', 1, ?)
+        """,
+        (recovery_key, recovery_operation_id, now + 3),
+    )
+    recovered = conn.execute(
+        """
+        SELECT handoff.status, handoff.terminal_kind, handoff.terminal_reason,
+               handoff.recovery_required_at, reservation.status,
+               reservation.owner_generation, dispatch.status
+        FROM relay_http_stream_handoffs AS handoff
+        JOIN relay_billing_reservations AS reservation
+          ON reservation.reservation_key = handoff.reservation_key
+        JOIN relay_http_stream_dispatch_intents AS dispatch
+          ON dispatch.reservation_key = handoff.reservation_key
+        WHERE handoff.reservation_key = ?
+        """,
+        (recovery_key,),
+    ).fetchone()
+    if recovered != (
+        "recovery_required",
+        "worker_termination",
+        "client_disconnected",
+        now + 3,
+        "reserved",
+        2,
+        "stream_bound",
+    ):
+        raise SystemExit(f"0058 client abort did not preserve recovery ownership: {recovered}")
+    try:
+        conn.execute(
+            """
+            UPDATE relay_http_stream_handoffs
+            SET status = 'terminal_staged', provider_terminal_observed = 1,
+                terminal_kind = 'provider_done', terminal_reason = 'provider_done',
+                finalization_event_json = '{}',
+                finalization_event_id = 'abort-first-event-0058',
+                finalization_event_sha256 = ?, outbox_status = 'pending',
+                delivery_available_at = ?, terminal_at = ?,
+                recovery_required_at = 0, updated_at = ?
+            WHERE reservation_key = ?
+            """,
+            ("b" * 64, now + 4, now + 4, now + 4, recovery_key),
+        )
+    except sqlite3.IntegrityError as error:
+        if "client abort decision is terminal" not in str(error):
+            raise SystemExit(f"0058 abort-first terminal race failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0058 allowed provider terminal to overwrite an earlier client abort")
+
+    terminal_key = "relayreserve-http-stream-client-abort-terminal-0058"
+    terminal_operation_id = hashlib.sha256(b"0058-provider-terminal").hexdigest()
+    seed_handoff(terminal_key, terminal_operation_id)
+    conn.execute(
+        """
+        UPDATE relay_http_stream_handoffs
+        SET status = 'terminal_staged', provider_terminal_observed = 1,
+            terminal_kind = 'provider_done', terminal_reason = 'provider_done',
+            finalization_event_json = '{}', finalization_event_id = 'event-0058',
+            finalization_event_sha256 = ?, outbox_status = 'pending',
+            delivery_available_at = ?, terminal_at = ?, updated_at = ?
+        WHERE reservation_key = ?
+        """,
+        ("a" * 64, now + 3, now + 3, now + 3, terminal_key),
+    )
+    conn.execute(
+        """
+        INSERT INTO relay_http_stream_client_abort_events (
+          reservation_key, owner_generation, attempt_generation,
+          provider_operation_id, worker_version_id,
+          signal_contract_version, observed_at
+        ) VALUES (?, 2, 1, ?, 'worker-0058', 1, ?)
+        """,
+        (terminal_key, terminal_operation_id, now + 4),
+    )
+    terminal_won = conn.execute(
+        """
+        SELECT status, terminal_kind, terminal_reason, recovery_required_at
+        FROM relay_http_stream_handoffs WHERE reservation_key = ?
+        """,
+        (terminal_key,),
+    ).fetchone()
+    if terminal_won != ("terminal_staged", "provider_done", "provider_done", 0):
+        raise SystemExit(f"0058 client abort overwrote provider terminal: {terminal_won}")
+
+    for statement, expected in (
+        (
+            "UPDATE relay_http_stream_client_abort_events SET observed_at = observed_at + 1 WHERE reservation_key = ?",
+            "immutable",
+        ),
+        (
+            "DELETE FROM relay_http_stream_client_abort_events WHERE reservation_key = ?",
+            "append-preserved",
+        ),
+    ):
+        try:
+            conn.execute(statement, (recovery_key,))
+        except sqlite3.IntegrityError as error:
+            if expected not in str(error):
+                raise SystemExit(f"0058 evidence guard failed unexpectedly: {error}") from error
+        else:
+            raise SystemExit("0058 allowed mutation of client-abort evidence")
+
+    schema_before_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        conn.executescript(abort_sql)
+    except sqlite3.Error as error:
+        if "already exists" not in str(error):
+            raise SystemExit(f"0058 duplicate DDL failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0058 critical client-abort objects accepted duplicate DDL")
+    schema_after_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0058 duplicate DDL attempt changed persistent schema")
+    conn.close()
+
+
 def verify_relay_container_atomic_admission_rollout(
     schema_paths: list[Path],
 ) -> None:
@@ -16775,12 +17105,12 @@ def verify_relay_container_atomic_admission_rollout(
     )
     if atomic_path is None or binding_path is None:
         raise SystemExit("0049/0050 relay Container admission migrations not found")
-    if len(schema_paths) != 57:
+    if len(schema_paths) != 58:
         raise SystemExit(
-            f"0050 atomic admission compatibility requires the 57-migration current chain, got {len(schema_paths)}"
+            f"0050 atomic admission compatibility requires the 58-migration current chain, got {len(schema_paths)}"
         )
     atomic_index = schema_paths.index(atomic_path)
-    if atomic_index != len(schema_paths) - 8:
+    if atomic_index != len(schema_paths) - 9:
         raise SystemExit(
             "0050 atomic admission must remain immediately before 0051 through 0056"
         )

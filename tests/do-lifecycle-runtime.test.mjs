@@ -1571,6 +1571,136 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect((await authorize()).meta?.changes ?? 0).toBe(0);
   }, 30_000);
 
+  it("atomically records HTTP stream client aborts without overwriting provider terminals", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await seedRealtimeBillingAccount();
+    const now = Math.floor(Date.now() / 1000);
+    const recovery = await seedBoundRelayHttpStreamHandoff({
+      reservationKey: "relayreserve-runtime-http-stream-client-abort",
+      providerSeed: "runtime-http-stream-client-abort",
+      now,
+    });
+
+    await env.DB.prepare(
+      `INSERT INTO relay_http_stream_client_abort_events (
+         reservation_key, owner_generation, attempt_generation,
+         provider_operation_id, worker_version_id,
+         signal_contract_version, observed_at
+       ) VALUES (?1, 2, 1, ?2, 'runtime-worker-0058', 1, ?3)`,
+    )
+      .bind(recovery.reservationKey, recovery.providerOperationId, now + 3)
+      .run();
+    await expect(
+      env.DB.prepare(
+        `SELECT handoff.status, handoff.terminal_kind, handoff.terminal_reason,
+                handoff.recovery_required_at, reservation.status AS billing_status,
+                reservation.owner_generation, dispatch.status AS dispatch_status,
+                abort.signal_contract_version, abort.observed_at
+         FROM relay_http_stream_handoffs AS handoff
+         JOIN relay_billing_reservations AS reservation
+           ON reservation.reservation_key = handoff.reservation_key
+         JOIN relay_http_stream_dispatch_intents AS dispatch
+           ON dispatch.reservation_key = handoff.reservation_key
+         JOIN relay_http_stream_client_abort_events AS abort
+           ON abort.reservation_key = handoff.reservation_key
+         WHERE handoff.reservation_key = ?1`,
+      )
+        .bind(recovery.reservationKey)
+        .first(),
+    ).resolves.toMatchObject({
+      status: "recovery_required",
+      terminal_kind: "worker_termination",
+      terminal_reason: "client_disconnected",
+      recovery_required_at: now + 3,
+      billing_status: "reserved",
+      owner_generation: 2,
+      dispatch_status: "stream_bound",
+      signal_contract_version: 1,
+      observed_at: now + 3,
+    });
+    await expect(
+      env.DB.prepare(
+        `UPDATE relay_http_stream_handoffs
+         SET status = 'terminal_staged', provider_terminal_observed = 1,
+             terminal_kind = 'provider_done', terminal_reason = 'provider_done',
+             finalization_event_json = '{}',
+             finalization_event_id = 'abort-first-event-0058',
+             finalization_event_sha256 = ?2, outbox_status = 'pending',
+             delivery_available_at = ?3, terminal_at = ?3,
+             recovery_required_at = 0, updated_at = ?3
+         WHERE reservation_key = ?1`,
+      )
+        .bind(recovery.reservationKey, "b".repeat(64), now + 4)
+        .run(),
+    ).rejects.toThrow(/client abort decision is terminal/);
+
+    const terminal = await seedBoundRelayHttpStreamHandoff({
+      reservationKey: "relayreserve-runtime-http-stream-client-abort-terminal",
+      providerSeed: "runtime-http-stream-client-abort-terminal",
+      now,
+    });
+    const eventId = `relay-finalization-v1:${terminal.reservationKey}`;
+    const eventJson = JSON.stringify({
+      event_type: "cinatoken.relay_billing_finalization",
+      event_id: eventId,
+      reservation_key: terminal.reservationKey,
+      owner_generation: 2,
+      channel_id: 42,
+      selected_group: "default",
+      expr_hash: "sha256:runtime",
+    });
+    const eventSha256 = await sha256Hex(new TextEncoder().encode(eventJson));
+    await env.DB.prepare(
+      `UPDATE relay_http_stream_handoffs
+       SET status = 'terminal_staged', provider_terminal_observed = 1,
+           terminal_kind = 'provider_done', terminal_reason = 'provider_done',
+           finalization_event_json = ?2, finalization_event_id = ?3,
+           finalization_event_sha256 = ?4, outbox_status = 'pending',
+           delivery_available_at = ?5, terminal_at = ?5, updated_at = ?5
+       WHERE reservation_key = ?1`,
+    )
+      .bind(terminal.reservationKey, eventJson, eventId, eventSha256, now + 3)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO relay_http_stream_client_abort_events (
+         reservation_key, owner_generation, attempt_generation,
+         provider_operation_id, worker_version_id,
+         signal_contract_version, observed_at
+       ) VALUES (?1, 2, 1, ?2, 'runtime-worker-0058', 1, ?3)`,
+    )
+      .bind(terminal.reservationKey, terminal.providerOperationId, now + 4)
+      .run();
+    await expect(
+      env.DB.prepare(
+        `SELECT status, terminal_kind, terminal_reason, recovery_required_at
+         FROM relay_http_stream_handoffs WHERE reservation_key = ?1`,
+      )
+        .bind(terminal.reservationKey)
+        .first(),
+    ).resolves.toMatchObject({
+      status: "terminal_staged",
+      terminal_kind: "provider_done",
+      terminal_reason: "provider_done",
+      recovery_required_at: 0,
+    });
+    await expect(
+      env.DB.prepare(
+        `UPDATE relay_http_stream_client_abort_events
+         SET observed_at = observed_at + 1 WHERE reservation_key = ?1`,
+      )
+        .bind(recovery.reservationKey)
+        .run(),
+    ).rejects.toThrow(/immutable/);
+    await expect(
+      env.DB.prepare(
+        `DELETE FROM relay_http_stream_client_abort_events
+         WHERE reservation_key = ?1`,
+      )
+        .bind(recovery.reservationKey)
+        .run(),
+    ).rejects.toThrow(/append-preserved/);
+  }, 30_000);
+
   it("reports HTTP pre-bind fencing and a fail-closed scheduled terminalizer", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const { cookie } = await setupAndLoginBillingRoot();
@@ -1586,11 +1716,11 @@ describe("Rust Durable Object lifecycle contracts", () => {
       success: true,
       data: {
         d1_migration_status_available: true,
-        d1_migration_applied_count: 57,
+        d1_migration_applied_count: 58,
         d1_migration_latest:
-          "0057_relay_http_stream_dispatch_intents.sql",
+          "0058_relay_http_stream_client_abort_watchdogs.sql",
         d1_expected_migration:
-          "0057_relay_http_stream_dispatch_intents.sql",
+          "0058_relay_http_stream_client_abort_watchdogs.sql",
         d1_expected_migration_applied: true,
         d1_migration_set_matches: true,
         d1_migration_ready: true,
@@ -4237,6 +4367,83 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   }, 30_000);
 
+  it("persists a durable HTTP SSE client abort through the incoming Request.signal", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway();
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const response = await env.DURABLE_RELAY_RUNTIME.fetch(
+      "https://cinatoken.test/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${relayStreamToken}`,
+          "content-type": "application/json",
+          "x-request-id": "runtime-durable-client-abort",
+        },
+        body: JSON.stringify({
+          model: relayStreamModel,
+          stream: true,
+          stream_options: { include_usage: true },
+          messages: [{ role: "user", content: "runtime durable cancellation" }],
+          max_completion_tokens: 20,
+        }),
+      },
+    );
+    if (response.status !== 200) {
+      const [body, provider] = await Promise.all([
+        response.text(),
+        providerState(),
+      ]);
+      throw new Error(
+        `durable relay candidate returned ${response.status}: ${body}; provider=${JSON.stringify(provider)}`,
+      );
+    }
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    expect(new TextDecoder().decode(first.value)).toContain("chatcmpl-runtime");
+
+    const reserved = await waitForRelayBillingReservation(relayStreamModel);
+    await reader.cancel("runtime client disconnected");
+    const aborted = await waitForRelayHttpStreamClientAbort(
+      reserved.reservation.reservation_key,
+    );
+
+    expect(aborted.handoff).toMatchObject({
+      status: "recovery_required",
+      terminal_kind: "worker_termination",
+      terminal_reason: "client_disconnected",
+      owner_generation: 2,
+      attempt_generation: 1,
+    });
+    expect(aborted.abort).toMatchObject({
+      reservation_key: reserved.reservation.reservation_key,
+      owner_generation: 2,
+      attempt_generation: 1,
+      signal_contract_version: 1,
+    });
+    expect(aborted.abort.provider_operation_id).toBe(
+      aborted.handoff.provider_operation_id,
+    );
+    expect(aborted.abort.worker_version_id).toBe(aborted.handoff.worker_version_id);
+    expect(aborted.reservation).toMatchObject({
+      status: "reserved",
+      owner_generation: 2,
+      request_accounted: 0,
+    });
+    expect(aborted.dispatch).toMatchObject({ status: "stream_bound" });
+    expect(aborted.user).toMatchObject({
+      quota: account.userQuota - aborted.reservation.pre_consumed_quota,
+      request_count: 0,
+    });
+    await expect(providerState()).resolves.toMatchObject({ count: 1 });
+  }, 30_000);
+
   it("settles partial HTTP SSE usage exactly once after a stream read error", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const account = await seedStreamingRelayBillingGateway({
@@ -5441,6 +5648,85 @@ async function seedRelayBillingReservation({
     .run();
 }
 
+async function seedBoundRelayHttpStreamHandoff({
+  reservationKey,
+  providerSeed,
+  now,
+}) {
+  const encoder = new TextEncoder();
+  const providerOperationId = await sha256Hex(encoder.encode(providerSeed));
+  const billingSnapshotSha256 = await sha256Hex(encoder.encode("{}"));
+  const requestSha256 = await sha256Hex(
+    encoder.encode('{"stream":true}'),
+  );
+  await seedRelayBillingReservation({
+    reservationKey,
+    leaseExpiresAt: now + 600,
+    bound: true,
+    selectedAt: now,
+  });
+  await env.DB.prepare(
+    `INSERT INTO relay_http_stream_dispatch_intents (
+       reservation_key, attempt_generation, prebind_owner_generation,
+       owner_generation, channel_id, selected_group, expr_hash,
+       provider_operation_id, worker_version_id, billing_snapshot_sha256,
+       request_sha256, endpoint_path, transport_kind, status, selected_at,
+       lease_expires_at, hard_deadline_at, created_at, updated_at
+     ) VALUES (?1, 1, 1, 2, 42, 'default', 'sha256:runtime', ?2,
+       'runtime-worker-0058', ?3, ?4, 'chat/completions', 'direct_provider',
+       'prepared', ?5, ?6, ?7, ?5, ?5)`,
+  )
+    .bind(
+      reservationKey,
+      providerOperationId,
+      billingSnapshotSha256,
+      requestSha256,
+      now,
+      now + 600,
+      now + 900,
+    )
+    .run();
+  await env.DB.prepare(
+    `UPDATE relay_http_stream_dispatch_intents
+     SET status = 'dispatched', dispatched_at = ?2, updated_at = ?2
+     WHERE reservation_key = ?1`,
+  )
+    .bind(reservationKey, now)
+    .run();
+  await env.DB.prepare(
+    `UPDATE relay_http_stream_dispatch_intents
+     SET status = 'response_received', response_status = 200,
+         upstream_request_id_sha256 = ?2, response_received_at = ?3,
+         updated_at = ?3
+     WHERE reservation_key = ?1`,
+  )
+    .bind(
+      reservationKey,
+      await sha256Hex(encoder.encode(`upstream:${providerSeed}`)),
+      now + 1,
+    )
+    .run();
+  await env.DB.prepare(
+    `INSERT INTO relay_http_stream_handoffs (
+       reservation_key, owner_generation, attempt_generation, channel_id,
+       selected_group, expr_hash, provider_operation_id, worker_version_id,
+       billing_snapshot_sha256, dispatch_hard_deadline_at,
+       lease_expires_at, created_at, updated_at
+     ) VALUES (?1, 2, 1, 42, 'default', 'sha256:runtime', ?2,
+       'runtime-worker-0058', ?3, ?4, ?5, ?6, ?6)`,
+  )
+    .bind(
+      reservationKey,
+      providerOperationId,
+      billingSnapshotSha256,
+      now + 900,
+      now + 600,
+      now + 2,
+    )
+    .run();
+  return { reservationKey, providerOperationId };
+}
+
 async function seedContainerTerminalOutboxAccount() {
   const now = Math.floor(Date.now() / 1000);
   await env.DB.batch([
@@ -5799,6 +6085,49 @@ async function waitForRelayBillingReservation(modelName) {
     await delay(10);
   }
   throw new Error(`relay reservation was not bound: ${JSON.stringify(state)}`);
+}
+
+async function waitForRelayHttpStreamClientAbort(reservationKey) {
+  const deadline = Date.now() + 5_000;
+  let state;
+  while (Date.now() < deadline) {
+    const [handoff, abort, reservation, dispatch, user] = await Promise.all([
+      env.DB.prepare(
+        `SELECT status, terminal_kind, terminal_reason, owner_generation,
+                attempt_generation, provider_operation_id, worker_version_id
+         FROM relay_http_stream_handoffs WHERE reservation_key = ?1`,
+      )
+        .bind(reservationKey)
+        .first(),
+      env.DB.prepare(
+        `SELECT reservation_key, owner_generation, attempt_generation,
+                provider_operation_id, worker_version_id,
+                signal_contract_version, observed_at
+         FROM relay_http_stream_client_abort_events WHERE reservation_key = ?1`,
+      )
+        .bind(reservationKey)
+        .first(),
+      env.DB.prepare(
+        `SELECT status, owner_generation, pre_consumed_quota, request_accounted
+         FROM relay_billing_reservations WHERE reservation_key = ?1`,
+      )
+        .bind(reservationKey)
+        .first(),
+      env.DB.prepare(
+        `SELECT status FROM relay_http_stream_dispatch_intents
+         WHERE reservation_key = ?1`,
+      )
+        .bind(reservationKey)
+        .first(),
+      env.DB.prepare("SELECT quota, request_count FROM users WHERE id = 1").first(),
+    ]);
+    state = { handoff, abort, reservation, dispatch, user };
+    if (handoff?.status === "recovery_required" && abort) return state;
+    await delay(10);
+  }
+  throw new Error(
+    `relay HTTP stream client abort was not persisted: ${JSON.stringify(state)}`,
+  );
 }
 
 async function waitForRelayTerminalByModel(modelName, expectedStatus) {

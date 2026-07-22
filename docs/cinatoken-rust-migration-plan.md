@@ -16952,8 +16952,8 @@ authoritative and production remains **NO-GO**.
 
 ## 22.260 Ordinary HTTP SSE Persist-Before-Provider Closure (2026-07-22)
 
-Migration `0057_relay_http_stream_dispatch_intents.sql` is now the local D1
-head. Exact replay reports 57 migrations, 65 tables, 841 checked incremental
+Migration `0057_relay_http_stream_dispatch_intents.sql` was the local D1 head
+for this increment. Exact replay reports 57 migrations, 65 tables, 841 checked incremental
 columns, and 96 key indexes. It extends the 0056 response-after handoff without
 changing that historical migration: 0057 adds a pre-dispatch ledger, an
 immutable hard deadline on the 0056 handoff, and transactional guards joining
@@ -17025,3 +17025,89 @@ and all evidence are retained; no down migration is permitted.
 Local SQLite, configuration, P5 fixture, Rust unit, Wasm build, and focused
 Workerd checks pass for this source state. They are implementation evidence,
 not deployment evidence. Production remains **NO-GO**.
+
+## 22.261 Request.signal Durable Client-Abort Closure (2026-07-22)
+
+Migration `0058_relay_http_stream_client_abort_watchdogs.sql` is now the local
+D1 head. Exact replay reports 58 migrations, 66 tables, 848 checked
+incremental columns, and 97 key indexes. It adds one append-preserved
+seven-column abort-evidence table, one observation index, and five triggers.
+All four HTTP SSE authorities remain exact `false` in default, staging, and
+production; no remote Cloudflare action was performed.
+
+### Source architecture audit
+
+The Go source was audited at commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703` after reading the protected billing
+expression contract. The migration preserves one pre-consumption, immutable
+billing snapshots, no partial-usage settlement, and no automatic refund or
+provider resend after an ambiguous send. The source still demonstrates why
+request-context cancellation alone is insufficient: provider calls and
+settlement can outlive or race the downstream connection.
+
+The `cinaVibeSDK` source was fully hydrated from its former shallow checkout
+and audited at commit `918e97480ee44e357abe99bf33c27259d6ac7ebd`.
+Deterministic `idFromName`/`getByName` routing and direct stream forwarding are
+adopted for the future multi-shard DO/Container boundary. Modulo routing over
+a mutable shard count, process-memory timers/abort maps, non-awaited durable
+writes, unbounded generated-stream enqueue, and `Promise.race` without durable
+ownership are explicitly rejected for financial relay authority.
+
+### Implemented safety contract
+
+1. `enable_request_signal` is set for tracked Worker configurations and local
+   Workerd. The relay captures the incoming signal before consuming the body.
+2. Positive durable SSE requires 0056, 0057, and 0058 readiness before provider
+   I/O. This prevents an old schema from creating an unowned paid call.
+3. The abort listener is installed synchronously before the response is
+   returned. Listener installation failure records recovery before any body is
+   exposed.
+4. Client cancellation appends exact reservation, owner generation, attempt
+   generation, provider operation, Worker version, signal-contract version,
+   and observation time. No body, header, credential, frame, IP, or free-form
+   reason is persisted.
+5. The insert trigger atomically changes a matching `forwarding` handoff to
+   `recovery_required/worker_termination/client_disconnected`. The reservation
+   remains reserved and the dispatch remains `stream_bound`; recovery decides
+   settlement later and never resends.
+6. The first durable decision wins. Abort-first blocks later terminal staging;
+   provider-terminal-first remains unchanged when abort evidence arrives.
+7. The watchdog retries D1 at 50/100 ms for at most three attempts inside the
+   current invocation. Provider terminal and recovery disarm it only after
+   durable readback proves the matching handoff is no longer forwarding.
+8. The Workerd regression uses an isolated gate-enabled candidate Worker,
+   version metadata, shared D1, Queue binding, provider service, and incoming
+   service binding. It reads one real SSE chunk, cancels the response reader,
+   and proves one provider call, one abort event, recovery ownership, retained
+   pre-consumption, and zero request accounting.
+
+The runtime test also found and fixed a 0057 D1 API defect: admission bound 15
+values to a reservation UPDATE that used fewer parameters. UPDATE and INSERT
+now have exact independent parameter arrays while remaining one D1 batch. The
+failure was caught before provider I/O and the provider counter remained zero.
+
+### Production rollout and rollback overlay
+
+| Stage | Required action | Pass evidence | Abort condition |
+| --- | --- | --- | --- |
+| A security freeze | Prove the exposed credential revoked; freeze N/N-1 versions, D1/Queue, provider watermark, Go/VPS route and rollback owner | Separate least-privilege deploy/readback identities; no secret in argv, files, logs or evidence | Credential reuse, candidate drift, unknown writer, or any SSE gate true |
+| B writer drain | Stop every 0056/0057 producer and paid SSE operation | Zero old writer and active operation; unchanged provider/financial watermark | Any binary can write a pre-0058 durable stream |
+| C expand | Back up D1; apply 0058 once after 0056/0057 | Remote 0058/58 and 66/848/97; exact table/index/five triggers/seven columns; unchanged business fingerprint | Partial catalog, forbidden field, trigger drift, provider or financial delta |
+| D reader/drain | Deploy N with producer false; keep N-1 reader-only; exercise synthetic drain | Both readers tolerate schema; outbox/recovery converge without provider calls | N-1 producer, unexplained abort row, duplicate terminal or stale mutation |
+| E isolated canary | Enable staging approval, outbox, recovery, then producer for a bounded no-customer cohort | HTTP/2 and HTTP/3 disconnect, service-binding/WFP disconnect, first-wins races and exact accounting all reconcile | Missing signal, lost evidence, retry/refund, double effect, body leak or unknown ownership |
+| F fault/soak | Inject D1 request/response loss, isolate restart/deploy, Queue ambiguity and version skew; measure SLO/cost | Bounded backlog and writes; one provider attempt; one terminal or reviewed recovery; invoice/D1/audit/request conservation | Unbounded age/cost, stranded reservation, duplicate call/effect or rollback miss |
+| G review | Bind 0058 results to P5, security/privacy, billing, SRE, migration, rollback and Go/VPS drain packets | One immutable signed candidate eligible for production review | Missing, stale, mixed-candidate or unsigned evidence |
+
+Rollback disables the producer first, routes new traffic to hot Go/VPS, and
+keeps the exact N drain Worker with approval/outbox/recovery enabled until all
+0057 intents, 0056 handoffs, 0058 abort events, receipts, billing rows and
+provider counters reconcile. Migrations and evidence are retained; N-1 is
+never restored as a durable producer and ambiguous provider operations are
+never resent.
+
+Local implementation no longer has the immediate `Request.signal` watchdog
+gap. Production remains **NO-GO** pending real Cloudflare HTTP/2/HTTP/3/TCP and
+WFP cancellation, D1 failure/restart/version-skew, Queue/provider invoice,
+load/SLO/cost/alert, remote 0058, P5 approval, credential revocation, and
+Go/VPS drain/reverse-sync/rollback evidence. The durable-disabled clone/tee
+path also still needs bounded slow-consumer backpressure proof.

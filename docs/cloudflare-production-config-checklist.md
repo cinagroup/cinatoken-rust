@@ -1533,7 +1533,7 @@ or gate requirement.
 
 ### Schema and compatibility
 
-- Require exact current head 0057/57 with 65 tables, 841 checked incremental
+- For the historical 0057 increment, require head 0057/57 with 65 tables, 841 checked incremental
   columns, and 96 key indexes.
 - Require the 0057 table, two indexes, ten triggers, and the immutable 0056
   hard-deadline column. Reject any request/response body, prompt, credential,
@@ -1564,10 +1564,46 @@ or gate requirement.
   D1 response loss, delayed headers, non-200 families, promotion statement
   faults, periodic chunks across the hard deadline, scheduler takeover,
   Queue/DLQ ambiguity, restart, and N/N-1.
-- Immediate client cancellation remains blocked until incoming
-  `Request.signal` and a durable watchdog are implemented and fault-tested.
+- At the 0057 increment, immediate client cancellation remained blocked. The
+  0058 checklist below closes the local implementation gap but still requires
+  remote fault evidence.
 - The durable-disabled clone/tee path remains blocked on slow-client
   backpressure and memory-bound evidence.
-- Remote 0057 readback, provider invoice/call conservation, P5, Go/VPS drain,
+- Remote current-head readback, provider invoice/call conservation, P5, Go/VPS drain,
   rollback, security, SLO/cost, and approvals are mandatory. Production
   remains **NO-GO**.
+
+## Migration 0058 HTTP SSE Client-Abort Checklist
+
+### Schema and compatibility
+
+- Require exact head 0058/58 and 66 tables, 848 checked incremental columns,
+  and 97 key indexes.
+- Require the exact seven-column abort table, one observation index, and five
+  triggers. Reject bodies, prompts, response data, raw frames/headers,
+  credentials, IPs, cookies, and free-form abort reasons.
+- Require `enable_request_signal` on N and prove 0058 schema readiness is
+  checked before provider I/O. N-1 remains reader-only after expand.
+
+### Runtime and evidence
+
+- Require the abort listener to be installed synchronously before returning a
+  streaming response. Arm failure must persist recovery before exposing body.
+- Require one append-only event and one atomic forwarding-to-recovery decision.
+  There is no provider resend, automatic refund, or mutable pricing read.
+- Require first-durable-decision-wins races in both directions and durable
+  readback before watchdog disarm.
+- Archive real HTTP/2 and HTTP/3 cancellation, TCP loss, WFP/service-binding,
+  D1 write/response loss, isolate restart/deploy, version-skew, and scheduler
+  fallback results with provider/invoice/D1/audit/request reconciliation.
+
+### Gate and rollback
+
+- Keep all four tracked gates false during 0058 expand and reader rollout.
+- Canary order remains staging approval, outbox, recovery, then producer.
+- Rollback disables producer first, routes new traffic to Go/VPS, and keeps N
+  draining. Retain 0056/0057/0058 and every evidence row; never restore N-1 as
+  producer or resend an ambiguous operation.
+- Remote readback, P5, credential revocation, security/privacy, SLO/cost,
+  billing/SRE/migration/rollback approvals and Go/VPS drain remain mandatory.
+  Production remains **NO-GO**.

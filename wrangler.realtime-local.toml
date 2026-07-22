@@ -7,7 +7,7 @@ main = "crates/worker/build/worker/shim.mjs"
 # 2026-06-24. Staging/production retain 2026-07-11 in wrangler.toml and must be
 # verified separately on Cloudflare's deployed runtime.
 compatibility_date = "2026-06-24"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "enable_request_signal"]
 
 [[ratelimits]]
 name = "RELAY_TOKEN_RATE_LIMITER"

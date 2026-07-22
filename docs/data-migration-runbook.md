@@ -892,3 +892,47 @@ worker until all 0057 intents, 0056 handoffs, outbox leases, receipts, billing
 reservations, and provider counters reconcile. Never re-enable an N-1 durable
 producer, down-migrate 0057, clear a dispatch row, rewrite a hard deadline, or
 resend an ambiguous provider operation. Production remains **NO-GO**.
+
+## 0058 HTTP SSE Client-Abort Watchdog Migration Runbook
+
+0058 is an expand-only evidence migration layered on 0056/0057. The exact
+target is 58 migrations, 66 tables, 848 checked incremental columns, and 97
+key indexes. It adds one table, one index, five triggers, and no business-data
+column.
+
+### Compatibility preflight
+
+1. Keep all four SSE gates false. Drain every old durable SSE producer and
+   active paid SSE operation; N-1 may remain only as a reader.
+2. Freeze the D1 backup/Time Travel point, normalized catalog and business
+   fingerprint, N/N-1 Worker versions, Queue/DLQ, cron, provider watermark,
+   hot Go/VPS route, and rollback owner.
+3. Require N to carry `enable_request_signal` and to check 0058 before provider
+   I/O. Stop if any active producer can create a 0056 handoff without 0058.
+4. Prove the exposed credential revoked and use separately approved
+   least-privilege deploy/readback identities without secret-bearing argv,
+   files, logs, or evidence.
+
+### Apply and exact readback
+
+1. Apply `0058_relay_http_stream_client_abort_watchdogs.sql` once through the
+   ordered migration runner; never hand-edit `d1_migrations`.
+2. Read back head/count 0058/58, 66/848/97 totals, the exact seven columns, one
+   index, five triggers, normalized schema digest, and unchanged business
+   fingerprint.
+3. Reject partial schema, duplicate DDL, invalid handoff identity, stale owner
+   or attempt, mutable/delete evidence, body/header/frame/credential fields,
+   and any provider or financial side effect during expand.
+4. Prove abort-first atomically yields `recovery_required/client_disconnected`
+   and blocks provider terminal overwrite. Prove terminal-first remains staged
+   or terminal when the append-only abort event arrives.
+5. Deploy N as reader/drain owner with producer false and observe beyond the
+   maximum N-1, Queue, cron, and deployment lifetime before any canary.
+
+### Rollback
+
+Disable producer first and retain N for drain. Route new traffic to hot Go/VPS;
+retain 0056/0057/0058, every abort event, handoff, receipt, billing row, audit
+and provider counter. Never down-migrate, delete or rewrite abort evidence,
+re-enable an N-1 producer, refund an ambiguous reservation automatically, or
+resend its provider operation. Production remains **NO-GO**.

@@ -2484,3 +2484,33 @@ Phase 4m cannot pass production review while incoming `Request.signal` lacks a
 durable cancellation watchdog or while the durable-disabled clone/tee path
 lacks slow-consumer memory/backpressure evidence. Local tests do not waive
 these remote blockers. Production remains **NO-GO**.
+
+## Phase 4n: HTTP SSE Client-Abort Watchdog
+
+Start only after the 0057 producer is drained, all four SSE gates are false,
+the exposed credential is proven revoked, and isolated staging reads back
+0058/58 with 66 tables, 848 checked incremental columns, and 97 key indexes.
+
+1. Prove the exact abort table/index/five triggers/seven columns and unchanged
+   business fingerprint. Confirm N checks 0058 before provider I/O.
+2. Deploy N with `enable_request_signal` and producer false. Prove N-1 is
+   reader-only and cannot create a durable stream.
+3. Run synthetic abort-first and provider-terminal-first races. Verify immutable
+   abort evidence and first-durable-decision-wins without provider resend or
+   automatic refund.
+4. Enable staging approval, outbox, recovery, then producer for a bounded
+   no-customer cohort. Repeat response-reader cancellation over HTTP/2,
+   HTTP/3, abrupt TCP close, direct outbound, AI Gateway, and WFP binding.
+5. For every case reconcile one provider operation, 0057/0056/0058 identity,
+   billing pre-consumption, Queue/outbox/receipt, audit/request count, provider
+   invoice, and client-byte ordering.
+6. Inject D1 write and response loss, isolate restart/deploy, N/N-1 version
+   skew, and scheduler overlap. Every case must reach one terminal or an
+   explicitly owned recovery state within the approved SLO.
+7. Disable producer first, drain with N, return all gates false, and prove zero
+   unreviewed active/staged/leased/recovery backlog before closing the run.
+
+Abort on a missing signal, duplicate call/effect, automatic refund/resend,
+terminal overwrite, mutable evidence, body/secret persistence, unknown owner,
+unbounded backlog, or failed rollback. Local Workerd is prerequisite evidence,
+not a waiver for this remote matrix. Production remains **NO-GO**.

@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [wrangler, runtime, repositories, relay, worker, migration, dispatchMigration] =
+const [wrangler, runtime, repositories, relay, worker, migration, dispatchMigration, abortMigration] =
   await Promise.all([
   readFile(path.join(repoRoot, "wrangler.toml"), "utf8"),
   readFile(
@@ -40,7 +40,23 @@ const [wrangler, runtime, repositories, relay, worker, migration, dispatchMigrat
     ),
     "utf8",
   ),
+  readFile(
+    path.join(
+      repoRoot,
+      "migrations",
+      "d1",
+      "0058_relay_http_stream_client_abort_watchdogs.sql",
+    ),
+    "utf8",
+  ),
   ]);
+
+assert(
+  /compatibility_flags\s*=\s*\[[^\]]*"enable_request_signal"[^\]]*\]/.test(
+    wrangler,
+  ),
+  "wrangler.toml must enable the incoming Request.signal compatibility flag",
+);
 
 const flags = [
   "RELAY_HTTP_STREAM_DURABLE_HANDOFF_ENABLED",
@@ -87,11 +103,25 @@ assert(
     relay.includes("prepare_relay_http_stream_dispatch_scope") &&
     relay.includes("dispatch_relay_with_optional_http_stream_intent") &&
     relay.includes("durable_stream_single_dispatch") &&
+    relay.includes("durable dispatch migrations 0056/0057/0058 are unavailable") &&
     relay.includes("!durable_dispatch_enabled") &&
     relay.includes("create_relay_http_stream_handoff") &&
     relay.includes("futures_util::stream::try_unfold") &&
     relay.includes("CreateOutcome::Applied | CreateOutcome::MatchingReplay"),
   "relay request path must persist before provider I/O, use one instrumented stream, and reject replay",
+);
+assert(
+    relay.includes("request_abort_signal = req.inner().signal()") &&
+    relay.includes("arm_relay_http_stream_client_abort_watchdog") &&
+    relay.includes("AbortSignalWaiter::new(request_signal)") &&
+    relay.includes(") -> Result<(), JsValue>") &&
+    relay.includes("client_abort_watchdog_disarm") &&
+    relay.includes("recovery readback failed before watchdog disarm") &&
+    repositories.includes("record_relay_http_stream_client_abort") &&
+    repositories.includes("relay_http_stream_client_abort_schema_ready") &&
+    repositories.includes("NOT EXISTS (") &&
+    repositories.includes("relay_http_stream_client_abort_events AS abort"),
+  "relay request path must synchronously arm, durably persist, fence terminal staging, and disarm the client-abort watchdog",
 );
 assert(
   repositories.includes("admit_relay_http_stream_dispatch") &&
@@ -138,6 +168,19 @@ for (const fragment of [
 ]) {
   assert(dispatchMigration.includes(fragment), `0057 migration is missing ${fragment}`);
 }
+for (const fragment of [
+  "CREATE TABLE relay_http_stream_client_abort_events",
+  "idx_relay_http_stream_client_abort_events_observed",
+  "relay_http_stream_client_abort_event_insert_guard",
+  "relay_http_stream_client_abort_event_apply",
+  "relay_http_stream_client_abort_terminal_guard",
+  "relay_http_stream_client_abort_event_update_guard",
+  "relay_http_stream_client_abort_event_delete_guard",
+  "terminal_reason = 'client_disconnected'",
+  "handoff.status IN (",
+]) {
+  assert(abortMigration.includes(fragment), `0058 migration is missing ${fragment}`);
+}
 const finalizationBound = /length\(CAST\(finalization_event_json AS BLOB\)\)\s*<=\s*(\d+)/.exec(
   migration,
 );
@@ -165,6 +208,20 @@ for (const forbidden of [
   "credential",
   "raw_header",
   "sse_frame",
+  "abort_reason",
+]) {
+  assert(
+    !abortMigration.toLowerCase().includes(forbidden),
+    `0058 migration must not persist ${forbidden}`,
+  );
+}
+for (const forbidden of [
+  "request_body",
+  "response_body",
+  "authorization",
+  "credential",
+  "raw_header",
+  "sse_frame",
 ]) {
   assert(
     !dispatchMigration.toLowerCase().includes(forbidden),
@@ -176,6 +233,7 @@ const report = {
   ok: true,
   migration: "0056_relay_http_stream_handoffs.sql",
   dispatchMigration: "0057_relay_http_stream_dispatch_intents.sql",
+  abortMigration: "0058_relay_http_stream_client_abort_watchdogs.sql",
   scopes: [...scopes.keys()].filter((scope) =>
     ["vars", "env.staging.vars", "env.production.vars"].includes(scope),
   ),
@@ -187,13 +245,16 @@ const report = {
   enqueueAndApplyTerminalsSeparated: true,
   providerDispatchPersistedBeforeIo: true,
   maximumDurableProviderDispatches: 1,
+  requestSignalEnabled: true,
+  clientAbortEvidenceAppendPreserved: true,
+  firstDurableDecisionWinsAbortRace: true,
 };
 
 if (process.argv.includes("--json")) {
   console.log(JSON.stringify(report, null, 2));
 } else {
   console.log(
-    "relay HTTP stream handoff config ok: 4 authorities false in 3 scopes, 0057 persist-before-provider dispatch wired",
+    "relay HTTP stream handoff config ok: 4 authorities false in 3 scopes, 0057 persist-before-provider dispatch and 0058 client-abort watchdog wired",
   );
 }
 

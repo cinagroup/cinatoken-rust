@@ -241,7 +241,7 @@ All ten kinds are required exactly once and in contract order:
 | `candidate-freeze` | Exact commit/version/image/runtime-build/provenance/SBOM inventory, image signature and runtime-to-image provenance verified, zero unapproved critical/high vulnerabilities, every action gate false |
 | `remote-inventory` | Account digest, exact shared D1/KV/R2 identities, Controller/egress services, DO namespace/binding/class, candidate runtime build and image provenance, all shards accounted for, zero unknown writers/objects/customer traffic |
 | `reader-first-rollout` | Egress before Controller, Controller before edge, readers before writers, every shard on a compatible reader, no new response write, public `/internal` 404, N/N-1 or blue/green skew proof |
-| `schema-readback` | Remote 0057/57 and exact 65-table/841-column/96-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
+| `schema-readback` | Remote 0058/58 and exact 66-table/848-column/97-index baseline, normalized schema digest, exact client-abort catalog, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
 | `lifecycle-fault-campaign` | Cold/warm start, DO eviction, Container sleep/restart/OOM, duplicate alarm, callback failure, malformed/future payload, N-1, and response loss; zero duplicate provider/financial effects |
 | `response-financial-fault-campaign` | Success, typed error, HTTP error, invalid body, and recovery; every D1 statement fault; response-class totals equal provider operations, one provider operation per send, settled plus refunded terminal conservation, zero request accounting on refund, exact client replay and classified R2 orphans |
 | `cross-layer-provenance` | Complete redacted edge/Controller/DO/Container/broker/provider/D1/R2/financial/audit/client tuple with no identity gap or payload/credential leak |
@@ -424,17 +424,32 @@ requires `python tools/verify_sqlite.py` and
 `bun run check:relay-container:p5-shard-registry`; report their actual output
 and never infer a pass from this paragraph.
 
-On the current worktree, the focused candidate checks pass the 57-migration
-65/841/96 SQLite verifier, 44 P5 verifier tests, 24 foundation collector tests
+On the current worktree, the focused candidate checks pass the 58-migration
+66/848/97 SQLite verifier, 44 P5 verifier tests, 24 foundation collector tests
 plus its offline self-test, 13 shard-registry/campaign collector tests, and 22 deploy-preflight
 tests. These are still local contract checks, not Cloudflare evidence.
 
 The signed candidate and schema-readback facts now require exact migration head
-`0057_relay_http_stream_dispatch_intents.sql`, count 57, and 65/841/96 totals.
+`0058_relay_http_stream_client_abort_watchdogs.sql`, count 58, and 66/848/97 totals.
 Historical sealed 0055 activation evidence remains valid only when the current
-candidate also proves ordered 0056/0057 compatibility. A pre-0057 packet is
+candidate also proves ordered 0056/0057/0058 compatibility. A pre-0058 packet is
 rejected and cannot be relabeled as current evidence.
 
 Those fixtures are tests of the verifier, not Cloudflare evidence. No remote
 resource, credential, provider, financial row, deployment, or traffic state was
 changed. Production remains **NO-GO**.
+
+## 0058 Candidate Identity Overlay
+
+Every new P5 packet must bind migration head
+`0058_relay_http_stream_client_abort_watchdogs.sql`, count 58, and exact
+66-table/848-column/97-index totals. A 0057 packet is historical and cannot be
+relabeled as the current candidate.
+
+Schema readback must include the exact seven-column abort table, observation
+index, five triggers, normalized schema digest, `enable_request_signal`
+compatibility, all four SSE gates false, and zero unexpected abort/provider/
+financial effect during the observation window. The remote fault packet must
+add HTTP/2, HTTP/3, TCP and WFP cancellation plus first-wins race, D1 ambiguity,
+restart/version-skew, invoice and rollback evidence. Local fixture acceptance
+does not authorize traffic. Production remains **NO-GO**.

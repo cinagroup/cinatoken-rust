@@ -1,4 +1,4 @@
-# Ordinary HTTP SSE Durable Terminal Handoff v1 With 0057 Dispatch Intent
+# Ordinary HTTP SSE Durable Terminal Handoff v1 With 0058 Client-Abort Watchdog
 
 Date: 2026-07-22
 
@@ -35,6 +35,8 @@ contracts.
 | Relay dispatch path | Prepare the exact transformed request, atomically bind the reservation to one `prepared` intent, grant one provider send by CAS, and conservatively recover every ambiguous outcome |
 | `relay_http_stream_dispatch_intents` | Freeze pre-dispatch identity and deadlines; prove `prepared -> dispatched -> response_received -> stream_bound` or atomically fence billing into `recovery_required` |
 | Relay response path | Atomically create the 0056 handoff and promote the matching 0057 response before the first client byte, then expose one instrumented upstream stream |
+| Incoming request watchdog | Synchronously arm the `Request.signal` listener before returning the response; persist a first-wins client-abort decision without refund or resend |
+| `relay_http_stream_client_abort_events` | Append-preserve the exact reservation/owner/attempt/provider-operation/Worker-version identity and signal observation time |
 | SSE accumulator | Incrementally inspect bounded lines, classify provider terminal success/failure, and retain only normalized usage counters |
 | `relay_http_stream_handoffs` | Freeze identity, owner and attempt generation, checkpoint counters/digest, terminal evidence, outbox lease, and recovery state |
 | `relay_http_stream_finalization_receipts` | Append-preserved proof that the exact finalization event was applied to the exact reservation generation |
@@ -42,10 +44,12 @@ contracts.
 | Scheduled Worker | Sweep expired dispatch intents and forwarding leases, lease due outbox work, retry with a bounded backoff, dead-letter without changing event identity, and reconcile exact receipts |
 
 Migration `0056_relay_http_stream_handoffs.sql` remains the response-after
-handoff contract. Migration `0057_relay_http_stream_dispatch_intents.sql` is
-the current source-tree D1 head and closes the provider-dispatch-to-handoff
-crash window. Local exact-set replay reports 57 migrations, 65 tables, 841
-checked incremental columns, and 96 key indexes.
+handoff contract. Migration `0057_relay_http_stream_dispatch_intents.sql`
+closes the provider-dispatch-to-handoff crash window. Migration
+`0058_relay_http_stream_client_abort_watchdogs.sql` is the current source-tree
+D1 head and closes the local immediate downstream-cancellation ownership gap.
+Local exact-set replay reports 58 migrations, 66 tables, 848 checked
+incremental columns, and 97 key indexes.
 
 ## Runtime Gates
 
@@ -60,7 +64,7 @@ default, staging, and production Wrangler environments.
 | `RELAY_HTTP_STREAM_RECOVERY_ENABLED` | Allows lease-expiry sweep and receipt reconciliation |
 
 Producer admission requires all four gates, the billing Queue binding, Worker
-version metadata, migration 0057 readiness, and an active positive billing
+version metadata, migrations 0056/0057/0058 readiness, and an active positive billing
 reservation. A requested producer with missing staging approval fails closed.
 
 Outbox and recovery are deliberately independent from the producer gate. After
@@ -81,6 +85,7 @@ stateDiagram-v2
     response_received --> recovery_required: non-200 or promotion failure
     stream_bound --> forwarding: exact 0056 handoff owns body
     forwarding --> forwarding: monotonic checkpoint and lease
+    forwarding --> recovery_required: first durable client-abort decision
     forwarding --> terminal_staged: provider success terminal and event persisted
     forwarding --> recovery_required: read, parser, lease, idle, or persistence failure
     terminal_staged --> finalization_enqueued: outbox Queue send accepted
@@ -129,7 +134,11 @@ The handoff persists only:
 The finalization event is capped at 64 KiB and outbox errors at 4 KiB. Request
 bodies, prompts, response bodies, raw SSE frames, provider credentials, client
 credentials, Cloudflare credentials, cookies, and raw account/resource IDs are
-forbidden from all three operational tables and evidence.
+forbidden from the operational tables and evidence.
+
+The 0058 abort table stores no body, header, frame, credential, free-form abort
+reason, or client network identity. Its seven fields bind only the existing
+durable operation identity, signal contract version, and observation time.
 
 ## Invariants
 
@@ -162,13 +171,17 @@ forbidden from all three operational tables and evidence.
    mutable pricing.
 13. Stream usage parse failure ignores partial usage and settles only at the
     already approved frozen reserve for both tiered and flat billing modes.
+14. The first durable decision wins the provider-terminal/client-abort race.
+    An abort recorded while `forwarding` makes `recovery_required/
+    client_disconnected` terminal for that handoff; an already staged provider
+    terminal is never overwritten by a later abort event.
 
 ## Request Path
 
 1. Complete authentication, channel selection, billing pre-consumption, and
    every fallible local request transform before provider I/O.
 2. For a positive paid stream, require the complete durable gate set, billing
-   Queue, Worker version metadata, and 0057 schema before any send.
+   Queue, Worker version metadata, and 0056/0057/0058 schema before any send.
 3. Freeze the exact transformed request SHA-256, transport/route identity,
    120-second response-header limit, and 900-second hard stream deadline. The
    configured hard cap is 3600 seconds. When this durable path is enabled, the
@@ -185,7 +198,9 @@ forbidden from all three operational tables and evidence.
    trigger changes `response_received -> stream_bound` in the same transaction
    before any client body byte can be released.
 8. Return a response backed by one instrumented stream. Every chunk is hashed
-   and parsed once before being yielded to the client.
+   and parsed once before being yielded to the client. Before returning the
+   response, synchronously install an incoming `Request.signal` listener and
+   schedule its bounded D1 watchdog with `waitUntil()`.
 9. Checkpoint after 16 chunks, 64 KiB, or a lease-heartbeat boundary. Renew the
    billing lease first and cap the handoff lease at the hard deadline.
 10. On provider-confirmed successful terminal, create the audit plus billing
@@ -194,6 +209,11 @@ forbidden from all three operational tables and evidence.
 11. The scheduled outbox sends the persisted event. The Queue consumer applies
    existing idempotent billing logic, writes the audit event and exact receipt,
    and transitions the handoff to `terminal`.
+12. On client disconnect, append the exact 0058 event and atomically change a
+    matching `forwarding` handoff to `recovery_required/client_disconnected`.
+    Retry the D1 write at most three times in the current invocation; never
+    resend or refund. Provider terminal or recovery paths disarm only after
+    durable state proves the stream is no longer `forwarding`.
 
 A provider `response.failed` or `response.incomplete` terminal is not treated
 as billable success. It checkpoints what was observed, moves to
@@ -218,7 +238,7 @@ policy.
 | Queue send accepted but local mark fails | Event can redeliver; immutable event and receipt make apply idempotent | Real Queue acknowledgement ambiguity drill |
 | Queue retries exhausted | Delivery is dead-lettered without event replacement; row remains recoverable | Alert, operator replay, and retention drill |
 | Apply succeeds but response/ack is lost | Exact receipt reconciliation transitions to terminal | Queue redelivery plus D1 receipt proof |
-| Client stops pulling or cancels | Stream future may stop polling; lease expiry and sweep own eventual recovery | Cancellation-specific Workerd and staging evidence |
+| Client stops pulling or cancels | Incoming `Request.signal` appends 0058 evidence and atomically owns recovery; lease sweep remains the fallback if the bounded write cannot complete | Local reader-cancel/service-binding pass plus remote HTTP/2, HTTP/3, D1-fault, restart, and WFP evidence |
 | Worker restart | D1 state survives; outbox/recovery resume only under drain gates | Real restart/version-skew campaign |
 
 ## Rollout
@@ -238,10 +258,10 @@ policy.
 - Back up isolated staging D1 and prove old-writer plus active-operation drain.
 - Prove every 0056 producer is disabled before applying 0057. An N-1 reader may
   remain, but an N-1 producer cannot create a handoff after the new guard exists.
-- Apply ordered migrations through 0057.
-- Read back 57 migrations, 65 tables, 841 checked incremental columns, 96 key
-  indexes, all 0056 objects, the 0057 table, two indexes, ten triggers, and the
-  immutable handoff hard-deadline column.
+- Apply ordered migrations through 0058.
+- Read back 58 migrations, 66 tables, 848 checked incremental columns, 97 key
+  indexes, all 0056 objects, the 0057 table/two indexes/ten triggers, and the
+  0058 table/index/five triggers/seven exact columns.
 - Run immutable identity, monotonic usage, event replacement, receipt
   prerequisite, receipt mutation/delete, terminal prerequisite, dispatch CAS,
   atomic promotion/recovery, deadline, and business-fingerprint negatives.
@@ -290,9 +310,9 @@ alone cannot satisfy S5.
    provider operations.
 4. Reconcile every reservation, receipt, audit event, request counter, and
    provider call before disabling drain gates.
-5. Retain migrations 0056/0057, all rows, receipts, logs, and candidate evidence.
+5. Retain migrations 0056/0057/0058, all rows, receipts, logs, and candidate evidence.
    Never down-migrate or delete handoff evidence during an incident.
-6. Do not re-enable an N-1 durable producer on the 0057 schema. A code rollback
+6. Do not re-enable an N-1 durable producer on the 0058 schema. A code rollback
    routes new traffic to Go/VPS while the N drain worker owns existing rows.
 7. Disable outbox/recovery only after the approved zero-backlog and retention
    checks pass.
@@ -319,27 +339,30 @@ The focused Workerd cases execute concurrent dispatch authorization with
 exactly one successful CAS, dispatch-to-recovery with atomic billing fencing,
 response-to-handoff atomic promotion, forwarding checkpoints, usage-regression
 rejection, terminal staging, outbox leasing, receipt-bound convergence, and
-receipt-delete rejection against real local D1.
+receipt-delete rejection against real local D1. The 0058 case additionally
+routes through an isolated gate-enabled Worker service binding, reads one real
+SSE chunk, cancels the response reader, observes the incoming `Request.signal`,
+and proves one provider call plus durable abort evidence with no settle/refund.
 
-The complete local worktree passes Worker unit tests 858/858, Worker Wasm
-build/check, SQLite 57/65/841/96, both config audits, P5 plus foundation 68/68,
-the complete Workerd lifecycle 50/50, and `bun run check` in 878.4 seconds.
+The complete local source checks pass Worker unit tests 858/858, all remaining
+Rust workspace tests, Worker Wasm build/check, SQLite 58/66/848/97, both
+configuration audits, P5 evidence/foundation 68/68, direct D1 abort-race tests,
+the complete Workerd lifecycle 52/52, and `bun run check` in 845.2 seconds.
 These results bind local source behavior only and do not replace staging or
 production evidence.
 
 ## Open Production Blockers
 
-- Client cancellation is recovered by lease expiry, not an immediate cancel
-  callback proven across Workerd and Cloudflare.
-- Incoming `Request.signal` is not enabled or connected to a durable watchdog;
-  a stopped client pull therefore relies on scheduler takeover, not immediate
-  cancellation recovery.
+- Incoming `Request.signal` and the durable watchdog are proven locally through
+  Workerd service binding and response-reader cancellation, but not on real
+  Cloudflare HTTP/2, HTTP/3, client TCP loss, WFP chaining, isolate termination,
+  or version-skew paths.
 - The default, durable-disabled SSE path still clones/tees the response for
   audit consumption and needs a bounded single-consumer backpressure design.
 - Real before-header, client-abort, D1 ambiguity, Queue acknowledgement
   ambiguity, restart, and version-skew campaigns are not archived.
 - Provider-family failed/incomplete terminal billing policy is not approved.
-- Remote migration 0057 apply/readback and all P5 evidence are absent.
+- Remote migration 0058 apply/readback and all P5 evidence are absent.
 - The exposed credential has not been proven revoked/rotated in this task.
 - Go/VPS drain, reverse synchronization, canary, and rollback evidence are
   absent.

@@ -33,6 +33,7 @@ cinatoken-tokenizer = { path = "../tokenizer" }
 cinatoken-wfp-authority = { path = "../wfp-authority" }
 console_error_panic_hook = "0.1"
 futures-util = { version = "0.3", default-features = false }
+futures-channel = "0.3"
 hmac.workspace = true
 js-sys = "0.3"
 regex.workspace = true
@@ -46,7 +47,7 @@ sha2.workspace = true
 url.workspace = true
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = "0.3"
+web-sys = { version = "0.3", features = ["AbortSignal", "Event", "EventTarget"] }
 worker = { workspace = true, features = ["d1", "queue"] }
 worker-sys = "0.5"
 

@@ -8037,7 +8037,7 @@ bunx vitest run --config vitest.do.config.mjs -t "HTTP stream"
 bun test tests/relay-container-p5-evidence.test.mjs tests/relay-container-p5-foundation-collector.test.mjs
 ```
 
-The current source state passes SQLite 57/65/841/96, both configuration audits,
+The recorded 0057 source state passed SQLite 57/65/841/96, both configuration audits,
 Worker unit tests 858/858, the production Worker build, complete Workerd
 lifecycle 50/50, and the combined P5 evidence/foundation suite 68/68. The full
 `bun run check` aggregate, including workspace tests, formatting, Wrangler
@@ -8047,3 +8047,49 @@ the exact commit remains separate evidence.
 These tests do not prove immediate downstream cancellation recovery,
 `Request.signal`, slow-client backpressure on the durable-disabled clone path,
 or any remote D1/Queue/provider behavior. Production remains **NO-GO**.
+
+## Ordinary HTTP SSE Client-Abort Watchdog Verification (2026-07-22)
+
+Migration 0058 supersedes only the current-head and immediate-cancellation
+statements above. The exact-set verifier must report 58 migrations, 66 tables,
+848 checked incremental columns, and 97 key indexes. It verifies the exact
+seven-column abort table, one index, five triggers, first-durable-decision race,
+append preservation, duplicate-DDL failure, and forbidden-field absence.
+
+The focused Workerd scenario must use the real Rust Worker with
+`enable_request_signal`, version metadata, D1, Queue, provider outbound, and a
+service binding. It must read one SSE chunk and cancel the response reader,
+then prove:
+
+1. one and only one provider call occurred;
+2. one exact 0058 event was appended;
+3. 0056 became `recovery_required/client_disconnected` for owner generation 2
+   and attempt generation 1;
+4. 0057 remained `stream_bound` and billing remained reserved with the frozen
+   pre-consumption;
+5. user request count stayed zero and no settle/refund was emitted; and
+6. provider-terminal-first and abort-first races preserve the first durable
+   decision.
+
+Run:
+
+```powershell
+python tools/verify_sqlite.py
+bun tools/audit_d1_migration_config.mjs --json
+bun tools/audit_relay_http_stream_handoff_config.mjs --json
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run build:worker
+bunx vitest run --config vitest.do.config.mjs -t "client abort"
+bun run check:do-lifecycle-runtime
+bun run check
+```
+
+The focused reader-cancel/service-binding test and direct D1 race test pass
+locally. They do not prove real Cloudflare HTTP/2, HTTP/3, TCP loss, WFP chain,
+D1 response loss, isolate restart/deploy, Queue ambiguity, provider invoice,
+or production latency/cost. Production remains **NO-GO**.
+
+The exact source worktree also passes Worker 858/858, the remaining Rust
+workspace, P5 evidence/foundation 68/68, complete Workerd lifecycle 52/52,
+Wrangler dry-runs, Web/Bun checks, formatting, and all configured wasm targets
+through `bun run check` in 845.2 seconds.

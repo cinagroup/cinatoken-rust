@@ -533,6 +533,7 @@ dependencies = [
  "cinatoken-tokenizer",
  "cinatoken-wfp-authority",
  "console_error_panic_hook",
+ "futures-channel",
  "futures-util",
  "getrandom",
  "hmac",

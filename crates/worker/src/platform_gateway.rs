@@ -193,7 +193,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0057_relay_http_stream_dispatch_intents.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0058_relay_http_stream_client_abort_watchdogs.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -288,6 +288,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0055_relay_container_shard_activation_campaigns.sql",
     "0056_relay_http_stream_handoffs.sql",
     "0057_relay_http_stream_dispatch_intents.sql",
+    "0058_relay_http_stream_client_abort_watchdogs.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -5212,10 +5213,10 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0057_relay_http_stream_dispatch_intents.sql"
+            "0058_relay_http_stream_client_abort_watchdogs.sql"
         );
         assert_eq!(
-            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 8..],
+            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 9..],
             &[
                 "0050_relay_container_atomic_admission.sql",
                 "0051_relay_container_scheduled_terminalization.sql",
@@ -5225,6 +5226,7 @@ mod tests {
                 "0055_relay_container_shard_activation_campaigns.sql",
                 "0056_relay_http_stream_handoffs.sql",
                 "0057_relay_http_stream_dispatch_intents.sql",
+                "0058_relay_http_stream_client_abort_watchdogs.sql",
             ]
         );
         assert!(

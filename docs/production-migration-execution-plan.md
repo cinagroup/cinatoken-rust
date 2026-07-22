@@ -2258,7 +2258,7 @@ remains **NO-GO**.
 
 This addendum supersedes the current-head, dispatch-window, and total-deadline
 statements in the 0056 addendum. The 0056 terminal/outbox/receipt protocol is
-retained. Current head is 0057/57 with 65 tables, 841 checked incremental
+retained. The 0057 increment baseline was 0057/57 with 65 tables, 841 checked incremental
 columns, and 96 key indexes.
 
 | Phase | Required action | Pass evidence | Abort and retain |
@@ -2275,7 +2275,37 @@ Rollback cannot deploy N-1 as the durable SSE producer because 0057 guards new
 N drain worker plus both migrations until every intent, handoff, reservation,
 outbox item, receipt, and provider operation is reconciled.
 
-Immediate `Request.signal` cancellation/watchdog proof and default-path
-clone/tee backpressure proof remain open, as do remote 0057, provider invoice,
+At the 0057 increment, immediate `Request.signal` cancellation/watchdog proof
+and default-path clone/tee backpressure proof remained open, as did remote 0057, provider invoice,
 Queue/restart, P5, SLO/cost/security approval, and Go/VPS drain evidence.
 Production remains **NO-GO**.
+
+## 2026-07-22 Migration 0058 Client-Abort Watchdog Addendum
+
+This addendum supersedes the current-head and immediate-cancellation gaps in
+the 0057 addendum. Current local head is 0058/58 with 66 tables, 848 checked
+incremental columns, and 97 key indexes. The 0056 handoff and 0057 dispatch
+intent remain immutable prerequisites.
+
+| Phase | Required action | Pass evidence | Abort and retain |
+| --- | --- | --- | --- |
+| A security/candidate freeze | Prove exposed credential revoked; freeze N/N-1, D1 backup, Queue/DLQ, provider watermark, Go/VPS and rollback | Separate least-privilege identities; all four SSE gates false; no secret in argv/files/logs/evidence | Credential reuse, candidate drift, unknown writer, gate true or missing rollback |
+| B old-writer drain | Stop all pre-0058 durable SSE producers and active paid streams | Zero old producer/operation; stable provider and financial watermark | Any binary can create an unowned handoff |
+| C 0058 expand | Apply 0058 once after backup/fingerprint | Remote 0058/58, 66/848/97; exact table/index/five triggers/seven columns; unchanged business data | Partial schema, forbidden field, catalog drift or side effect |
+| D reader/drain | Deploy N with producer false and N-1 reader-only; exercise synthetic rows | N checks 0058 before send; abort/terminal races converge; zero provider call during drain | N-1 write, mutable evidence, partial recovery or unexpected call |
+| E isolated producer | Enable staging, outbox, recovery, then producer | Direct/Gateway/WFP HTTP/2/HTTP/3 disconnects produce one call, one abort decision and exact accounting | Lost signal/evidence, retry/refund, duplicate effect, body leak or unknown owner |
+| F fault/soak/rollback | Inject D1 response loss, restart/deploy, version skew, Queue ambiguity and scheduler overlap; then producer-off rollback | Bounded SLO/cost/backlog; invoice/D1/audit/request conservation; N drains to zero; Go/VPS resumes within RTO/RPO | Stranded/duplicate state, unbounded cost/age, rollback data loss or unsafe Go target |
+| G promotion | Bind remote 0058 packet to P5, security/privacy, billing, SRE, migration, rollback and Go/VPS approvals | One immutable signed candidate eligible for review | Missing/stale/mixed/unsigned evidence |
+
+Rollback never down-migrates. Disable producer first, route new traffic to hot
+Go/VPS, and retain N with staging/outbox/recovery until all 0057 intents, 0056
+handoffs, 0058 abort events, outbox leases, receipts, billing rows and provider
+counters are terminal or explicitly reconciled. Never restore N-1 producer
+authority, automatically refund an ambiguous reservation, or resend its
+provider operation.
+
+Local Workerd now proves reader cancellation through incoming
+`Request.signal` over a service binding. Production remains **NO-GO** pending
+the real Cloudflare fault matrix, remote 0058 readback, provider invoice,
+Queue/restart/version-skew, P5, SLO/cost/security approvals, credential
+revocation, default-path backpressure, and Go/VPS drain/reverse-sync evidence.

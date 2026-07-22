@@ -39,6 +39,8 @@ pub(crate) const RELAY_BILLING_OWNER_GENERATION_MIGRATION: &str =
 pub(crate) const RELAY_HTTP_STREAM_HANDOFF_MIGRATION: &str = "0056_relay_http_stream_handoffs.sql";
 pub(crate) const RELAY_HTTP_STREAM_DISPATCH_INTENT_MIGRATION: &str =
     "0057_relay_http_stream_dispatch_intents.sql";
+pub(crate) const RELAY_HTTP_STREAM_CLIENT_ABORT_MIGRATION: &str =
+    "0058_relay_http_stream_client_abort_watchdogs.sql";
 pub(crate) const RELAY_CONTAINER_OPERATION_MIGRATION: &str = "0040_relay_container_operations.sql";
 pub(crate) const RELAY_CONTAINER_OPERATION_LIFECYCLE_MIGRATION: &str =
     "0041_relay_container_operation_lifecycle_hardening.sql";
@@ -366,6 +368,36 @@ pub enum RelayHttpStreamHandoffTransitionOutcome {
     NotFound,
     StaleGeneration,
     Terminal,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayHttpStreamClientAbortRecord<'a> {
+    pub reservation_key: &'a str,
+    pub owner_generation: i64,
+    pub attempt_generation: i64,
+    pub provider_operation_id: &'a str,
+    pub worker_version_id: &'a str,
+    pub observed_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayHttpStreamClientAbortEvent {
+    pub reservation_key: String,
+    pub owner_generation: i64,
+    pub attempt_generation: i64,
+    pub provider_operation_id: String,
+    pub worker_version_id: String,
+    pub signal_contract_version: i64,
+    pub observed_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayHttpStreamClientAbortOutcome {
+    RecoveryRequired,
+    ProviderTerminalWon,
+    ExistingRecovery,
+    MatchingReplay,
     Conflict,
 }
 
@@ -13409,7 +13441,19 @@ pub async fn admit_relay_http_stream_dispatch(
     if lease_expires_at > record.hard_deadline_at {
         return Ok(RelayHttpStreamDispatchAdmissionOutcome::Conflict);
     }
-    let args = [
+    let bind_args = [
+        D1Type::Text(record.reservation_key),
+        relay_http_stream_d1_integer(
+            record.expected_owner_generation,
+            "dispatch prebind owner generation",
+        )?,
+        relay_http_stream_d1_integer(record.channel_id, "dispatch channel id")?,
+        D1Type::Text(record.selected_group),
+        D1Type::Text(record.expr_hash),
+        relay_http_stream_d1_integer(record.selected_at, "dispatch selected time")?,
+        relay_http_stream_d1_integer(lease_expires_at, "dispatch lease expiry")?,
+    ];
+    let insert_args = [
         D1Type::Text(record.reservation_key),
         relay_http_stream_d1_integer(
             record.expected_owner_generation,
@@ -13434,16 +13478,16 @@ pub async fn admit_relay_http_stream_dispatch(
             r#"
             UPDATE relay_billing_reservations
             SET owner_generation = owner_generation + 1,
-                channel_id = ?4, selected_group = ?5, selected_at = ?13,
-                lease_expires_at = ?14, updated_at = ?13
+                channel_id = ?3, selected_group = ?4, selected_at = ?6,
+                lease_expires_at = ?7, updated_at = ?6
             WHERE reservation_key = ?1 AND status = 'reserved'
               AND owner_generation = ?2
-              AND owner_deadline_at > 0 AND ?13 <= owner_deadline_at
+              AND owner_deadline_at > 0 AND ?6 <= owner_deadline_at
               AND channel_id = 0 AND selected_group = '' AND selected_at = 0
-              AND expr_hash = ?6
+              AND expr_hash = ?5
             "#,
         )
-        .bind_refs(&args)?;
+        .bind_refs(&bind_args)?;
     let insert = db
         .prepare(
             r#"
@@ -13460,7 +13504,7 @@ pub async fn admit_relay_http_stream_dispatch(
             )
             "#,
         )
-        .bind_refs(&args)?;
+        .bind_refs(&insert_args)?;
     let results = match db.batch(vec![bind, insert]).await {
         Ok(results) => results,
         Err(error) => {
@@ -13781,6 +13825,145 @@ pub async fn relay_http_stream_handoff_schema_ready(db: &D1Database) -> worker::
         .first::<CountRow>(None)
         .await?;
     Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn relay_http_stream_client_abort_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    let args = [D1Type::Text(RELAY_HTTP_STREAM_CLIENT_ABORT_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT CASE WHEN
+              EXISTS (SELECT 1 FROM d1_migrations WHERE name = ?1)
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'relay_http_stream_client_abort_events'
+              )
+              AND EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index'
+                  AND name = 'idx_relay_http_stream_client_abort_events_observed'
+              )
+              AND (
+                SELECT COUNT(1) FROM sqlite_master
+                WHERE type = 'trigger' AND name IN (
+                  'relay_http_stream_client_abort_event_insert_guard',
+                  'relay_http_stream_client_abort_event_apply',
+                  'relay_http_stream_client_abort_terminal_guard',
+                  'relay_http_stream_client_abort_event_update_guard',
+                  'relay_http_stream_client_abort_event_delete_guard'
+                )
+              ) = 5
+              AND (
+                SELECT COUNT(1)
+                FROM pragma_table_info('relay_http_stream_client_abort_events')
+                WHERE name IN (
+                  'reservation_key', 'owner_generation', 'attempt_generation',
+                  'provider_operation_id', 'worker_version_id',
+                  'signal_contract_version', 'observed_at'
+                )
+              ) = 7
+            THEN 1 ELSE 0 END AS count
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 1))
+}
+
+pub async fn record_relay_http_stream_client_abort(
+    db: &D1Database,
+    record: &RelayHttpStreamClientAbortRecord<'_>,
+) -> worker::Result<RelayHttpStreamClientAbortOutcome> {
+    let reservation_key =
+        non_empty_relay_reservation_field(record.reservation_key, "client abort key")?;
+    validate_relay_http_stream_sha256(
+        record.provider_operation_id,
+        "client abort provider operation id",
+    )?;
+    validate_relay_http_stream_text(
+        record.worker_version_id,
+        "client abort Worker version id",
+        128,
+    )?;
+    if record.owner_generation < 2 || record.attempt_generation <= 0 || record.observed_at <= 0 {
+        return Err(worker::Error::RustError(
+            "relay HTTP stream client abort identity is invalid".to_string(),
+        ));
+    }
+    let args = [
+        D1Type::Text(reservation_key),
+        relay_http_stream_d1_integer(record.owner_generation, "client abort owner generation")?,
+        relay_http_stream_d1_integer(record.attempt_generation, "client abort attempt generation")?,
+        D1Type::Text(record.provider_operation_id),
+        D1Type::Text(record.worker_version_id),
+        relay_http_stream_d1_integer(record.observed_at, "client abort observed time")?,
+    ];
+    let result = db
+        .prepare(
+            r#"
+            INSERT INTO relay_http_stream_client_abort_events (
+              reservation_key, owner_generation, attempt_generation,
+              provider_operation_id, worker_version_id,
+              signal_contract_version, observed_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)
+            ON CONFLICT(reservation_key) DO NOTHING
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        let Some(handoff) = relay_http_stream_handoff(db, reservation_key).await? else {
+            return Ok(RelayHttpStreamClientAbortOutcome::Conflict);
+        };
+        return Ok(match handoff.status.as_str() {
+            "recovery_required" if handoff.terminal_reason == "client_disconnected" => {
+                RelayHttpStreamClientAbortOutcome::RecoveryRequired
+            }
+            "recovery_required" => RelayHttpStreamClientAbortOutcome::ExistingRecovery,
+            "terminal_staged" | "finalization_enqueued" | "terminal" => {
+                RelayHttpStreamClientAbortOutcome::ProviderTerminalWon
+            }
+            _ => RelayHttpStreamClientAbortOutcome::Conflict,
+        });
+    }
+    let current = relay_http_stream_client_abort_event(db, reservation_key).await?;
+    Ok(
+        if current.is_some_and(|current| {
+            current.owner_generation == record.owner_generation
+                && current.attempt_generation == record.attempt_generation
+                && current.provider_operation_id == record.provider_operation_id
+                && current.worker_version_id == record.worker_version_id
+                && current.signal_contract_version == 1
+                && current.observed_at == record.observed_at
+        }) {
+            RelayHttpStreamClientAbortOutcome::MatchingReplay
+        } else {
+            RelayHttpStreamClientAbortOutcome::Conflict
+        },
+    )
+}
+
+async fn relay_http_stream_client_abort_event(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<Option<RelayHttpStreamClientAbortEvent>> {
+    let args = [D1Type::Text(reservation_key)];
+    db.prepare(
+        r#"
+        SELECT reservation_key, owner_generation, attempt_generation,
+               provider_operation_id, worker_version_id,
+               signal_contract_version, observed_at
+        FROM relay_http_stream_client_abort_events
+        WHERE reservation_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayHttpStreamClientAbortEvent>(None)
+    .await
 }
 
 pub async fn relay_http_stream_handoff(
@@ -14104,6 +14287,12 @@ pub async fn stage_relay_http_stream_finalization(
               AND attempt_generation = ?3
               AND channel_id = ?4 AND selected_group = ?5 AND expr_hash = ?6
               AND status IN ('forwarding', 'recovery_required')
+              AND NOT EXISTS (
+                SELECT 1 FROM relay_http_stream_client_abort_events AS abort
+                WHERE abort.reservation_key = ?1
+                  AND abort.owner_generation = ?2
+                  AND abort.attempt_generation = ?3
+              )
               AND finalization_event_sha256 = ''
               AND checkpoint_sequence <= ?9 AND chunk_count <= ?10
               AND byte_count <= ?11 AND prompt_tokens <= ?12

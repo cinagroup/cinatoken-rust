@@ -1340,6 +1340,64 @@ post-transition status/lifecycle/cutoff/accounting/SLO/rollback evidence. Those
 outputs require a new independently reviewed P5-B/production packet. Production
 remains **NO-GO**.
 
+## Adjacent Ring Staging Mutation Authorization
+
+The review packet above is not a deploy token. Before any nonzero transition
+overlay may reach Cloudflare staging, prepare the independent contracts:
+
+```text
+cinatoken-relay-container-ring-transition-authorization-manifest-v1
+cinatoken-relay-container-ring-transition-authorization-trust-policy-v1
+cinatoken-relay-container-ring-transition-authorization-evidence-v1
+```
+
+Run `bun run plan:relay-container:ring-transition:authorization` to inspect the
+offline contract. Its trust policy must be external to the authorization bundle
+and cryptographically distinct from the transition review policy. Security,
+operations, release, and rollback must use four ordered, distinct Ed25519 keys,
+and none may reuse a transition-review key. The decision lasts 60-600 seconds
+and expires before transition admission.
+
+The signed packet must bind the exact transition manifest/subject/policy/plan/
+candidate digests, Controller and Edge service/version/deployment-set
+identities, transition-overlay digests, a unique authorization ID, a distinct
+execution nonce, Controller-first order, and five actual canonical artifacts:
+
+- fresh, stable Controller/Edge deployment and active-version readback with a
+  5-120 second observation window and at most 30 seconds of capture lag;
+- exposed-credential revocation plus distinct least-privilege read/deploy
+  credential identities;
+- two-person live operator ceremony without break-glass;
+- an unclaimed D1 unique-insert/TTL claim authority;
+- Go/VPS rollback and forward-repair readiness.
+
+The deployment-set collector first verifies the account-owned token identity,
+then performs eight deployment/version reads: nine bounded GET requests and zero
+retries in total. Always run its `--dry-run` mode first. Live mode must use the
+dedicated replacement read token only from
+`CINATOKEN_RING_TRANSITION_READ_TOKEN`; token arguments are forbidden. It also
+requires account, revocation-evidence, and read-token-identity environment
+values plus four explicit confirmations. The verified token ID hash must equal
+the configured identity and the signed credential-scope artifact. Never use the
+exposed credential.
+
+The offline verifier confirms the signed scope but deliberately returns
+`remoteMutationAuthorized=false`: its two policy paths are caller inputs, not an
+immutable runner trust root. The future runner must first match both policy
+digests against deployment-pinned configuration, then atomically claim the
+nonce, repeat T1, write Controller once, prove Controller, repeat Edge T1, write
+Edge once, and prove Edge. The Cloudflare API path is treated as
+application-level `read-verify-write-read` optimistic concurrency; do not claim
+a native atomic CAS. A lost mutation response is classified by authenticated
+readback and is never blindly retried.
+
+If Controller succeeds and Edge fails, retain the dual-ring Controller, permit
+the exact old Edge to remain, keep Go/VPS as traffic/scheduler authority, and
+repair forward. Controller generation rollback, cleanup, deletion, version
+upload, binding/resource/secret changes, customer/provider traffic, and
+production remain unauthorized. The repository has no deployed claim service
+or mutation runner yet, so production remains **NO-GO**.
+
 ## Container Shared Storage Binding Checklist
 
 The Container Controller requires three least-privilege bindings: `DB` for the

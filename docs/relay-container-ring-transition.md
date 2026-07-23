@@ -166,9 +166,14 @@ fingerprints so a later reviewer can identify the exact trust anchor.
 The ordinary Controller deploy preflight continues to require all four
 previous-ring variables to be `0`. A valid transition result does not call,
 replace, satisfy, or bypass that gate and never edits tracked Wrangler config.
-A future mutation-capable transition runner requires a separate contract,
-revoked-credential proof, authenticated remote identity readback, and an
-operator ceremony. Local, staging, and production tracked defaults remain zero.
+The separate staging mutation-authorization contract is defined in
+`docs/relay-container-ring-transition-authorization.md`. It re-verifies this
+review, binds revoked-credential proof, authenticated deployment-set readback,
+an operator ceremony, and a single-use claim requirement. Its offline verifier
+keeps `remoteMutationAuthorized=false` because the policy paths are caller
+inputs. The repository still has no deployment-pinned trust roots, mutation
+runner, or deployed claim authority. Local, staging, and production tracked
+defaults remain zero.
 
 ## Admission State Machine
 
@@ -195,11 +200,13 @@ transition, the original `ring_generation_in_flight` drained fence remains.
 
 ## Production Expansion Runbook
 
-This is a future mutation ceremony, not an action granted by the offline
-decision. Steps 4-8 remain blocked until a separate mutation authorization
-verifies credential revocation, remote identities, operator presence, and the
-same manifest/plan/policy digests. In this section, "approved" means that later
-authorization, never merely `eligible-for-...-review`.
+This is a future mutation ceremony, not an action granted by the review
+decision. Steps 4-8 remain blocked until the separate short-lived mutation
+authorization verifies credential revocation, remote deployment sets, operator
+presence, and the same manifest/plan/policy digests, and a future runner matches
+both policy digests against immutable configuration before atomically claiming
+its nonce. In this section, "approved" means that complete anchored
+authorization and claim, never merely `eligible-for-...-review`.
 
 1. **Security and candidate freeze.** Prove the exposed credential revoked;
    freeze edge and Controller versions, runtime image/build/provenance, D1/KV/R2

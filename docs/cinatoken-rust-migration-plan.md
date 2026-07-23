@@ -17326,3 +17326,105 @@ old/new overlap and cutoff replay, provider/billing conservation, load/SLO/cost,
 fault and rollback campaigns, post-transition P5-B evidence, and a separate
 Go/VPS cutover decision. No credential or Cloudflare state was read or changed;
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.266 Staging Ring Transition Mutation Authorization (2026-07-23)
+
+Three independent architecture audits converged on the same next P0 after
+section 22.265: deployment and scheduling authority must remain single-writer
+while two ring generations overlap. cinaVibeSDK's useful official pattern is a
+stable edge-addressed DO coordination identity with an isolated ephemeral
+Container; durable state rebuilds lifecycle after eviction. Its process-local
+health interval and open-ended retry are not suitable for paid relay
+side-effects. The Go source's process-level master flag and in-process
+`sync.Once`/atomic scheduler guards likewise do not provide a distributed
+deployment lease.
+
+The repository now has a distinct staging mutation-authorization contract:
+
+```text
+cinatoken-relay-container-ring-transition-authorization-manifest-v1
+cinatoken-relay-container-ring-transition-authorization-trust-policy-v1
+cinatoken-relay-container-ring-transition-authorization-evidence-v1
+cinatoken-relay-container-ring-transition-authorization-approval-v1
+```
+
+It re-verifies the original transition bundle rather than accepting a callback
+or caller-supplied result. The signed subject binds transition manifest,
+subject, review-policy, plan, and candidate digests; exact old/new Controller
+and Edge deployment identities; exact transition-overlay digests; a unique
+authorization ID and execution nonce; Controller-first order; one execution;
+and `read-verify-write-read` optimistic concurrency. The authorization policy
+is external and distinct from the review policy. Security, operations, release,
+and rollback sign in a new domain with four ordered, cryptographically distinct
+Ed25519 keys whose fingerprints must also be disjoint from all review keys.
+
+Authorization is staging-only, valid for 60-600 seconds, and expires before the
+transition admission start. Five bounded canonical artifacts prove:
+
+1. fresh stable Controller/Edge deployment sets sampled over 5-120 seconds with
+   at most 30 seconds of capture lag, one active old version at 100 percent,
+   full version-detail digests, and the verified read-token ID hash;
+2. exposed-credential revocation and distinct least-privilege read/deploy
+   credential identities without token values;
+3. two or more distinct live operators, recording/session digests, no
+   break-glass, and an abort owner;
+4. an unclaimed, TTL-bound D1 unique-insert authorization claim;
+5. retained Go/VPS traffic/scheduler authority, dual-ring Controller drain, old
+   Edge partial-success tolerance, no generation rollback, and forward repair.
+
+The offline verifier confirms that the packet's four signers approved only the
+exact Controller and Edge staging Worker deployment writes. Because both trust
+policies are caller-selected inputs, it keeps
+`trustedPolicyAnchorVerified=false`, `remoteMutationAuthorized=false`, and
+`workerDeploymentMutationAuthorized=false`. Version upload, Container rollout,
+D1/KV/R2/binding/secret mutation, deployment deletion, cleanup,
+provider/customer traffic, production, generation rollback, and Go/VPS shutdown
+remain false. The verifier does not read credentials, access the network, write
+files, launch subprocesses, perform a mutation, or emit an executable command.
+
+The new deployment-set collector closes the readback-shape gap against the
+repository-locked Wrangler 4.110.0 bundle and embedded Cloudflare SDK 5.2.0. It
+uses the account-token verify endpoint plus current Workers scripts endpoints
+for deployments and active versions. It first proves the account-owned token ID
+hash, then reads Controller and Edge twice: exactly nine bounded GET requests
+and zero retries. Each body is streamed under a 2 MiB ceiling and redirects are
+rejected. The active deployment digest canonically binds service, deployment
+ID, percentage strategy, and sorted version traffic. The complete version-detail
+result gets a separate stable digest so same-version detail drift also fails;
+non-versioned script settings remain a separate runner precondition. Both
+timestamps are captured after their real snapshots complete, and an interval
+shorter than the requested window fails closed.
+
+Dry-run proves service, request-count, transition, nonce, and redaction planning
+without reading credentials or using the network. Live collection accepts no
+token argument and reads only a dedicated replacement read token plus account,
+revocation-evidence, and token-identity environment variables after four
+explicit staging/replacement/revocation/no-mutation confirmations. No live mode
+was run in this increment.
+
+This is application-level optimistic concurrency, not Cloudflare native atomic
+CAS. The future runner must pin both trust-policy digests outside caller
+control, atomically claim the D1 nonce, repeat T1, submit each mutation once,
+classify a lost response by authenticated readback, and abort on any drift. If
+Controller succeeds and Edge fails, it must retain the dual-ring Controller,
+leave the exact old Edge in place, return new traffic to Go/VPS, forbid
+generation rollback, and repair forward under a new packet.
+
+Local evidence now covers 29 focused review/authorization/collector/CLI cases:
+actual canonical files, transition rebinding, deployment and safety drift,
+signature/key/policy separation including cross-stage key isolation, time and
+readback-freshness bounds, stable API normalization, version-detail drift,
+HTTP failure with zero retry, credential-minimal CLI execution, and
+deterministic dry-run/describe output. The top-level release gate also runs both
+review and authorization descriptions.
+
+The next P0 is deployment-pinned transition/authorization trust roots plus the
+D1-backed single-use claim authority and mutation runner, including concurrent
+claim, stale T1, Controller response-loss, Controller success/Edge failure,
+repeated execution, post-readback, and durable redacted step-evidence tests. A
+four-layer Workerd scenario must then exercise old/new Edge, shared named DO,
+Container wake, KV configuration, D1 admission, R2 result, cutoff replay, and
+exact financial conservation.
+
+No exposed credential was used and no Cloudflare state was read or changed.
+Go/VPS remains traffic and scheduler authority. Production remains **NO-GO**.

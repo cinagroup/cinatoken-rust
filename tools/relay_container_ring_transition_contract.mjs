@@ -56,6 +56,7 @@ const MAX_CLOCK_SKEW_SECONDS = 300;
 const MAX_DECISION_LIFETIME_SECONDS = 24 * 60 * 60;
 const MIN_RING_TRANSITION_WINDOW_SECONDS = 30;
 const MAX_CUTOFF_SAFETY_MARGIN_SECONDS = 60;
+const STAGING_EDGE_SERVICE_NAME = "cinatoken-rust-api-staging";
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const keyIdPattern = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -88,12 +89,12 @@ async function verifyRingTransitionManifest({
     throw new Error("[time] verifier now must be a valid Date");
   }
 
-  const manifestFile = await readCanonicalJson(
+  const manifestFile = await readCanonicalJsonEvidence(
     manifestPath,
     "ring transition manifest",
     MAX_MANIFEST_BYTES,
   );
-  const policyFile = await readCanonicalJson(
+  const policyFile = await readCanonicalJsonEvidence(
     trustPolicyPath,
     "ring transition trust policy",
     MAX_POLICY_BYTES,
@@ -205,10 +206,16 @@ async function verifyRingTransitionManifest({
     environment: "staging",
     repository: candidate.repository,
     commitSha: candidate.commitSha,
+    manifestDigestSha256: sha256Hex(manifestFile.bytes),
     candidateDigestSha256,
     subjectDigestSha256,
     policyId: policy.policyId,
     policyDigestSha256: sha256Hex(policyFile.bytes),
+    serviceIdentities: {
+      edgeWorker: STAGING_EDGE_SERVICE_NAME,
+      controllerWorker: candidate.controllerServiceName,
+      providerEgressWorker: candidate.providerEgressServiceName,
+    },
     approvalRoles,
     approvalKeys,
     prerequisiteEvidence: {
@@ -648,7 +655,7 @@ async function readAndValidateArtifacts({
     if (!requestedRealPath || !isWithin(manifestRoot, requestedRealPath)) {
       throw new Error(`[artifact] ${record.kind} path escaped the manifest bundle`);
     }
-    const file = await readCanonicalJson(
+    const file = await readCanonicalJsonEvidence(
       requested,
       `${record.kind} evidence`,
       MAX_EVIDENCE_BYTES,
@@ -1285,7 +1292,7 @@ function buildReviewOnlyPlan(candidate, transition, previousRingBaseline) {
   };
 }
 
-async function readCanonicalJson(file, label, maxBytes) {
+export async function readCanonicalJsonEvidence(file, label, maxBytes) {
   if (typeof file !== "string" || file.length === 0) {
     throw new Error(`[input] ${label} path is required`);
   }

@@ -2919,3 +2919,46 @@ propagation, lifecycle/fault, overlap/cutoff/replay, accounting, SLO/cost,
 post-transition P5-B, real replacement-credential revocation, and Go/VPS cutover
 evidence remain open. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-23 Staging Ring Transition Mutation Authorization
+
+Phase 1 now separates review from mutation with a second canonical signed
+contract. It re-runs the complete transition verifier, binds the transition
+manifest/subject/review-policy/plan/candidate digests, and verifies signatures
+over only the exact Controller-first then Edge staging deployment pair. The
+signed decision lasts 60-600 seconds, expires before admission, uses a distinct
+external trust policy, and requires security, operations, release, and rollback
+signatures from four Ed25519 keys that are distinct from one another and from
+every transition-review key.
+
+Five actual canonical artifacts bind fresh stable Controller/Edge deployment
+sets and active-version settings, revoked exposed credentials and separate least-
+privilege read/deploy identities, a two-person live operator ceremony, an
+unclaimed expiring D1 unique claim, and Go/VPS forward-safe rollback. The output
+requires an atomic remote claim plus T1, Controller post-write, Edge pre-write,
+and Edge post-write readbacks. It explicitly states that Cloudflare native
+atomic CAS is not claimed. Because both policy paths are caller inputs, the
+offline result keeps `trustedPolicyAnchorVerified=false` and
+`remoteMutationAuthorized=false`; a runner must pin both policy digests outside
+caller control.
+
+The companion read-only collector normalizes the locked Wrangler 4.110.0 /
+Cloudflare SDK 5.2.0 token-verify, deployments, and versions API shapes. It
+proves the account-owned read-token ID, then samples Controller and Edge twice
+through eight more GET requests. All nine response bodies are streamed under a
+2 MiB bound with redirects disabled and no retry. It hashes the active
+deployment and full version-detail response and rejects deployment, allocation,
+or version-detail drift. Non-versioned script settings remain a separate runner
+precondition. Dry-run reads no credential; live mode accepts only a dedicated
+replacement read token from a named environment variable and requires explicit
+revocation/no-mutation confirmations.
+
+`bun run check:relay-container:ring-transition` now covers 29 focused
+review/authorization/collector/CLI cases. This closes the local authorization
+and readback-shape gap only. The deployment-pinned trust roots, D1 claim
+authority, and mutation runner do not yet exist, and no Cloudflare request or
+mutation was performed. Remote
+revocation/permission proof, claim races, response-loss classification,
+post-deployment readbacks, four-layer Workerd/remote overlap, accounting,
+fault/load/SLO/cost, P5-B, and Go/VPS cutover remain open. Production remains
+**NO-GO**.

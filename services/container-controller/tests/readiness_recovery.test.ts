@@ -7,7 +7,12 @@ import {
   type ReadinessProbeJournalCompletion,
   type ReadinessProbeWakePermit,
 } from "../src/ledger";
-import type { OperationShard } from "../src/protocol";
+import type {
+  ConfiguredRingTransition,
+  OperationEnvelope,
+  OperationRingAdmission,
+  OperationShard,
+} from "../src/protocol";
 
 const shard: OperationShard = {
   contract_version: 1,
@@ -445,6 +450,177 @@ describe("Durable Object readiness at-most-once journal v6", () => {
     }
   });
 });
+
+describe("Durable Object adjacent ring transition", () => {
+  test("advances current readiness while previous-ring work remains active", () => {
+    const fixture = ledgerFixture();
+    try {
+      const previous = operationEnvelope("op-previous-1", 7, 8, 1);
+      expect(
+        fixture.ledger.claimOperation(
+          previous,
+          ringAdmission("previous_admit", true),
+          "1".repeat(64),
+          "dispatch-previous-1",
+          ledgerPolicy,
+          1_900_000_000,
+        ),
+      ).toEqual({ kind: "new" });
+
+      const currentShard = operationEnvelope("unused", 8, 16, 2).shard;
+      fixture.ledger.initializeShardForReadiness(
+        currentShard,
+        1_900_000_001,
+        ringTransition(true),
+      );
+      expect(
+        fixture.sqlite
+          .query(
+            `SELECT ring_generation, shard_count
+               FROM cinatoken_shard_state WHERE singleton = 1`,
+          )
+          .get(),
+      ).toEqual({ ring_generation: 8, shard_count: 16 });
+
+      const laterPrevious = operationEnvelope("op-previous-2", 7, 8, 3);
+      expect(
+        fixture.ledger.claimOperation(
+          laterPrevious,
+          ringAdmission("previous_admit", true),
+          "2".repeat(64),
+          "dispatch-previous-2",
+          ledgerPolicy,
+          1_900_000_002,
+        ),
+      ).toEqual({ kind: "new" });
+    } finally {
+      fixture.sqlite.close();
+    }
+  });
+
+  test("keeps the drained fence when no adjacent transition is supplied", () => {
+    const fixture = ledgerFixture();
+    try {
+      fixture.ledger.claimOperation(
+        operationEnvelope("op-drained-previous", 7, 8, 1),
+        { role: "current", transition: null },
+        "3".repeat(64),
+        "dispatch-drained-previous",
+        ledgerPolicy,
+        1_900_000_000,
+      );
+      expect(() =>
+        fixture.ledger.claimOperation(
+          operationEnvelope("op-drained-current", 8, 16, 2),
+          { role: "current", transition: null },
+          "4".repeat(64),
+          "dispatch-drained-current",
+          ledgerPolicy,
+          1_900_000_001,
+        ),
+      ).toThrow("ring_generation_in_flight");
+    } finally {
+      fixture.sqlite.close();
+    }
+  });
+
+  test("allows exact previous-ring replay after cutoff but rejects a new claim", () => {
+    const fixture = ledgerFixture();
+    try {
+      const operation = operationEnvelope("op-cutoff-existing", 7, 8, 1);
+      const digest = "5".repeat(64);
+      fixture.ledger.claimOperation(
+        operation,
+        ringAdmission("previous_admit", true),
+        digest,
+        "dispatch-cutoff-existing",
+        ledgerPolicy,
+        1_900_000_000,
+      );
+      expect(
+        fixture.ledger.claimOperation(
+          operation,
+          ringAdmission("previous_replay_only", false),
+          digest,
+          "dispatch-cutoff-existing",
+          ledgerPolicy,
+          1_900_000_010,
+        ),
+      ).toMatchObject({ kind: "existing" });
+      expect(() =>
+        fixture.ledger.claimOperation(
+          operationEnvelope("op-cutoff-new", 7, 8, 2),
+          ringAdmission("previous_replay_only", false),
+          "6".repeat(64),
+          "dispatch-cutoff-new",
+          ledgerPolicy,
+          1_900_000_010,
+        ),
+      ).toThrow("previous_ring_admission_closed");
+    } finally {
+      fixture.sqlite.close();
+    }
+  });
+});
+
+const ledgerPolicy = {
+  maxInFlight: 8,
+  dispatchRetentionSeconds: 600,
+  terminalRetentionSeconds: 3600,
+  maxTerminalOperations: 100,
+  globalTerminalCompactionEnabled: false,
+};
+
+function ringTransition(admissionOpen: boolean): ConfiguredRingTransition {
+  return {
+    current_ring_generation: 8,
+    current_shard_count: 16,
+    previous_ring_generation: 7,
+    previous_shard_count: 8,
+    admission_started_at: 1_900_000_000,
+    admission_until: 1_900_000_300,
+    admission_open: admissionOpen,
+  };
+}
+
+function ringAdmission(
+  role: OperationRingAdmission["role"],
+  admissionOpen: boolean,
+): OperationRingAdmission {
+  return { role, transition: ringTransition(admissionOpen) };
+}
+
+function operationEnvelope(
+  operationId: string,
+  ringGeneration: number,
+  shardCount: number,
+  ownerGeneration: number,
+): OperationEnvelope {
+  return {
+    protocol_version: 1,
+    operation_id: operationId,
+    operation_kind: "health_probe",
+    owner_generation: ownerGeneration,
+    owner_lease_expires_at: 1_900_000_300,
+    execution_deadline_at: 1_900_000_120,
+    provider_operation_id: `provider-${operationId}`,
+    admission_sha256: "a".repeat(64),
+    input: {
+      mode: "inline",
+      sha256: "b".repeat(64),
+      size: 0,
+      content_type: "application/json",
+    },
+    shard: {
+      contract_version: 1,
+      ring_generation: ringGeneration,
+      shard_count: shardCount,
+      shard_index: 3,
+      instance_name: "cinatoken-relay-shard-v1-0003",
+    },
+    trace_id: `trace-${operationId}`,
+  };
+}
 
 async function beginProbe(
   ledger: RelayShardLedger,

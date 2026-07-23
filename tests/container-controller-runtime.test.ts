@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   ProtocolError,
+  type ConfiguredRingTransition,
   type OperationEnvelope,
+  type OperationRingAdmission,
   type OperationStatusQuery,
   type TerminalAckRequest,
   type TerminalAckRequestV2,
@@ -3308,6 +3310,87 @@ describe("RelayShardLedger in Workerd", () => {
     await expect(stub.readinessSnapshot(newShard, BASE_NOW + 5)).resolves.toMatchObject({
       initialized: true,
       lifecycle_state: "draining",
+    });
+  });
+
+  it("overlaps adjacent rings and keeps previous-ring replay-only across eviction", async () => {
+    const stub = ledgerStub("adjacent-ring-overlap");
+    const policy = { ...ledgerPolicy(), maxInFlight: 3 };
+    const transition: ConfiguredRingTransition = {
+      current_ring_generation: 2,
+      current_shard_count: 16,
+      previous_ring_generation: 1,
+      previous_shard_count: 8,
+      admission_started_at: BASE_NOW,
+      admission_until: BASE_NOW + 300,
+      admission_open: true,
+    };
+    const admission = (
+      role: OperationRingAdmission["role"],
+      admissionOpen: boolean,
+    ): OperationRingAdmission => ({
+      role,
+      transition: { ...transition, admission_open: admissionOpen },
+    });
+    const previous = operationEnvelope("ring-overlap-previous");
+    const current = operationEnvelope("ring-overlap-current", {
+      owner_generation: 2,
+      shard: {
+        ...previous.shard,
+        ring_generation: 2,
+        shard_count: 16,
+      },
+    });
+
+    await expect(
+      stub.claimWithRingAdmission(
+        previous,
+        admission("previous_admit", true),
+        sha256("1"),
+        "dispatch-ring-overlap-previous",
+        policy,
+        BASE_NOW,
+      ),
+    ).resolves.toEqual({ kind: "new" });
+    await stub.initializeReadinessWithRingTransition(
+      current.shard,
+      BASE_NOW + 1,
+      transition,
+    );
+    await expect(
+      stub.claimWithRingAdmission(
+        current,
+        admission("current", true),
+        sha256("2"),
+        "dispatch-ring-overlap-current",
+        policy,
+        BASE_NOW + 2,
+      ),
+    ).resolves.toEqual({ kind: "new" });
+
+    await evictDurableObject(stub);
+    await expect(
+      stub.claimWithRingAdmission(
+        previous,
+        admission("previous_replay_only", false),
+        sha256("1"),
+        "dispatch-ring-overlap-previous",
+        policy,
+        BASE_NOW + 301,
+      ),
+    ).resolves.toMatchObject({ kind: "existing" });
+    await expect(
+      stub.claimWithRingAdmissionOutcome(
+        operationEnvelope("ring-overlap-closed"),
+        admission("previous_replay_only", false),
+        sha256("3"),
+        "dispatch-ring-overlap-closed",
+        policy,
+        BASE_NOW + 301,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "previous_ring_admission_closed", status: 409 },
     });
   });
 

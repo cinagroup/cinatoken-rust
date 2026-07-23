@@ -22,7 +22,9 @@ import {
 } from "../../services/container-controller/src/ledger";
 import {
   ProtocolError,
+  type ConfiguredRingTransition,
   type OperationEnvelope,
+  type OperationRingAdmission,
   type OperationShard,
 } from "../../services/container-controller/src/protocol";
 import type { RelayShardAlarmIntentV1 } from "../../services/container-controller/src/relay_shard_durable_state";
@@ -79,7 +81,60 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
     policy: RelayShardLedgerPolicy,
     now: number,
   ): Promise<ClaimResult> {
-    return this.ledger.claimOperation(envelope, envelopeSha256, dispatchId, policy, now);
+    return this.ledger.claimOperation(
+      envelope,
+      { role: "current", transition: null },
+      envelopeSha256,
+      dispatchId,
+      policy,
+      now,
+    );
+  }
+
+  async claimWithRingAdmission(
+    envelope: OperationEnvelope,
+    ringAdmission: OperationRingAdmission,
+    envelopeSha256: string,
+    dispatchId: string,
+    policy: RelayShardLedgerPolicy,
+    now: number,
+  ): Promise<ClaimResult> {
+    return this.ledger.claimOperation(
+      envelope,
+      ringAdmission,
+      envelopeSha256,
+      dispatchId,
+      policy,
+      now,
+    );
+  }
+
+  async claimWithRingAdmissionOutcome(
+    envelope: OperationEnvelope,
+    ringAdmission: OperationRingAdmission,
+    envelopeSha256: string,
+    dispatchId: string,
+    policy: RelayShardLedgerPolicy,
+    now: number,
+  ): Promise<ClaimOutcome> {
+    try {
+      return {
+        ok: true,
+        result: this.ledger.claimOperation(
+          envelope,
+          ringAdmission,
+          envelopeSha256,
+          dispatchId,
+          policy,
+          now,
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      throw error;
+    }
   }
 
   async claimWithRecoveryIntent(
@@ -91,6 +146,7 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
   ): Promise<ClaimResult> {
     return this.ledger.claimOperation(
       envelope,
+      { role: "current", transition: null },
       envelopeSha256,
       dispatchId,
       policy,
@@ -157,7 +213,14 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
     try {
       return {
         ok: true,
-        result: this.ledger.claimOperation(envelope, envelopeSha256, dispatchId, policy, now),
+        result: this.ledger.claimOperation(
+          envelope,
+          { role: "current", transition: null },
+          envelopeSha256,
+          dispatchId,
+          policy,
+          now,
+        ),
       };
     } catch (error) {
       if (error instanceof ProtocolError) {
@@ -361,6 +424,14 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
 
   async initializeReadiness(shard: OperationShard, now: number): Promise<void> {
     this.ledger.initializeShardForReadiness(shard, now);
+  }
+
+  async initializeReadinessWithRingTransition(
+    shard: OperationShard,
+    now: number,
+    ringTransition: ConfiguredRingTransition,
+  ): Promise<void> {
+    this.ledger.initializeShardForReadiness(shard, now, ringTransition);
   }
 
   async initializeReadinessOutcome(

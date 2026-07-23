@@ -17221,3 +17221,39 @@ The local cross-language planning blocker is closed. Remote routing-secret
 provisioning/rotation, real-tenant distribution, old-generation drain,
 Controller/Container lifecycle, P5 evidence, and Go/VPS cutover remain open.
 No Cloudflare mutation occurred and production remains **NO-GO**.
+
+## 22.264 Adjacent Container Ring Transition (2026-07-23)
+
+The Controller now implements the next production expansion contract from
+section 22.263. Four default-zero variables describe one adjacent, expand-only
+`G/N -> G+1/M` transition and an immutable old-ring admission window of at most
+900 seconds. Partial settings, non-adjacent generations, same-size or smaller
+rings, and overlong windows fail closed. The private status response exposes
+configured/valid/open state and exact non-secret ring timestamps; the Rust edge
+strictly parses and validates the extended response.
+
+During the window, old and current operations may overlap on the same named
+Durable Object. The singleton shard state advances to the current ring while
+each operation retains its exact persisted fence. After cutoff, an old-ring
+request bypasses global D1 admission and DO SQLite returns an existing result
+only for an exact operation/dispatch replay; a new claim fails with
+`previous_ring_admission_closed` before Container or provider I/O. Historical
+status, recovery, and terminal ACK paths continue to drain after cutoff.
+Without the exact transition policy, the original
+`ring_generation_in_flight` rule remains unchanged.
+
+Tracked Controller configs and ordinary deploy preflight require all four
+values to remain `0`. The production runbook is frozen in
+`docs/relay-container-ring-transition.md`: security/candidate freeze, capacity
+and activation evidence, bounded Controller-first window, edge switch with a
+cutoff safety margin, old/new canary, immutable cutoff, complete old-ring drain,
+then zero-value cleanup. Generation rollback is forbidden after any DO advances;
+the universal traffic rollback returns new requests to hot Go/VPS while the
+exact dual-generation Controller remains the drain owner and repair proceeds
+forward at the new generation.
+
+Focused protocol, ledger, config, preflight, TypeScript, and Rust status tests
+pass locally. Remote propagation, Container lifecycle/fault, real-tenant
+distribution, provider/billing conservation, load/SLO/cost/alert, signed P5,
+credential revocation, and Go/VPS rollback evidence remain open. No Cloudflare
+mutation occurred and production remains **NO-GO**.

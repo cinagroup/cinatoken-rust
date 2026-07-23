@@ -5,6 +5,7 @@ import {
   CONTROLLER_DEPLOY_ENVIRONMENTS,
   REQUIRED_CONTROLLER_SECRET,
   REQUIRED_DISABLED_CONTROLLER_VARS,
+  REQUIRED_DISABLED_RING_TRANSITION_VARS,
   REQUIRED_PROVIDER_EGRESS_SECRET,
   buildWranglerSecretInventoryCommands,
   parseCliArguments,
@@ -31,6 +32,9 @@ function validConfig(environment) {
       ENVIRONMENT: environment,
       ...Object.fromEntries(
         REQUIRED_DISABLED_CONTROLLER_VARS.map((name) => [name, "false"]),
+      ),
+      ...Object.fromEntries(
+        REQUIRED_DISABLED_RING_TRANSITION_VARS.map((name) => [name, "0"]),
       ),
       CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID: "",
     },

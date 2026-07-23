@@ -70,6 +70,10 @@ const env: AuthorityEnvironment = {
   CONTAINER_PROTOCOL_VERSION: "1",
   CONTAINER_RING_GENERATION: "1",
   CONTAINER_SHARD_COUNT: "8",
+  CONTAINER_PREVIOUS_RING_GENERATION: "0",
+  CONTAINER_PREVIOUS_SHARD_COUNT: "0",
+  CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT: "0",
+  CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL: "0",
 };
 
 function envelope(): OperationEnvelope {
@@ -474,6 +478,76 @@ describe("container controller private protocol", () => {
     expect(verified.envelope.operation_id).toBe("op-test-1");
     expect(verified.envelope.shard.instance_name).toBe("cinatoken-relay-shard-v1-0003");
     expect(verified.claims.dispatch_id).toBe("dispatch-test-1");
+    expect(verified.ring_admission).toEqual({ role: "current", transition: null });
+  });
+
+  test("bounds previous-ring admission and keeps exact replay routing after cutoff", async () => {
+    const transitionEnv: AuthorityEnvironment = {
+      ...env,
+      CONTAINER_RING_GENERATION: "2",
+      CONTAINER_SHARD_COUNT: "16",
+      CONTAINER_PREVIOUS_RING_GENERATION: "1",
+      CONTAINER_PREVIOUS_SHARD_COUNT: "8",
+      CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT: String(now - 1),
+      CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL: String(now + 5),
+    };
+    const admitted = await verifyOperationRequest(
+      await signedRequest(),
+      transitionEnv,
+      now + 1,
+    );
+    expect(admitted.ring_admission.role).toBe("previous_admit");
+    expect(admitted.ring_admission.transition).toMatchObject({
+      current_ring_generation: 2,
+      current_shard_count: 16,
+      previous_ring_generation: 1,
+      previous_shard_count: 8,
+      admission_open: true,
+    });
+
+    const replayOnly = await verifyOperationRequest(
+      await signedRequest(),
+      transitionEnv,
+      now + 6,
+    );
+    expect(replayOnly.ring_admission).toMatchObject({
+      role: "previous_replay_only",
+      transition: { admission_open: false },
+    });
+
+    const current = envelope();
+    current.shard = {
+      ...current.shard,
+      ring_generation: 2,
+      shard_count: 16,
+    };
+    await expect(
+      verifyOperationRequest(await signedRequest(current), transitionEnv, now + 6),
+    ).resolves.toMatchObject({ ring_admission: { role: "current" } });
+  });
+
+  test("fails closed on partial, non-adjacent, and overlong ring transitions", async () => {
+    const baseTransition = {
+      ...env,
+      CONTAINER_RING_GENERATION: "2",
+      CONTAINER_SHARD_COUNT: "16",
+      CONTAINER_PREVIOUS_RING_GENERATION: "1",
+      CONTAINER_PREVIOUS_SHARD_COUNT: "8",
+      CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT: String(now),
+      CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL: String(now + 60),
+    } satisfies AuthorityEnvironment;
+    for (const invalidEnv of [
+      { ...baseTransition, CONTAINER_PREVIOUS_SHARD_COUNT: "0" },
+      { ...baseTransition, CONTAINER_PREVIOUS_RING_GENERATION: "7" },
+      {
+        ...baseTransition,
+        CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL: String(now + 15 * 60 + 1),
+      },
+    ]) {
+      await expect(
+        verifyOperationRequest(await signedRequest(), invalidEnv, now + 1),
+      ).rejects.toMatchObject({ code: "ring_transition_misconfigured", status: 503 });
+    }
   });
 
   test("verifies a signed status query without applying the operation deadline", async () => {

@@ -620,6 +620,13 @@ struct ControllerStatusPayload {
     protocol_version: u32,
     ring_generation: u64,
     shard_count: u16,
+    ring_transition_configured: bool,
+    ring_transition_valid: bool,
+    previous_ring_generation: Option<u64>,
+    previous_shard_count: Option<u16>,
+    previous_ring_admission_started_at: Option<u64>,
+    previous_ring_admission_until: Option<u64>,
+    previous_ring_admission_open: bool,
     controller_version_id: String,
     shard_activation_write_enabled: bool,
     shard_activation_candidate_build_configured: bool,
@@ -2554,9 +2561,41 @@ fn status_matches(
     payload.protocol_version == authority.protocol_version
         && payload.ring_generation == runtime.ring_generation
         && payload.shard_count == runtime.shard_count
+        && valid_ring_transition_status(payload)
         && valid_controller_version_id(&payload.controller_version_id)
         && valid_sha256(&payload.action_gate_inventory_sha256)
         && payload.authority_current_secret_configured
+}
+
+fn valid_ring_transition_status(payload: &ControllerStatusPayload) -> bool {
+    if !payload.ring_transition_valid {
+        return false;
+    }
+    if !payload.ring_transition_configured {
+        return payload.previous_ring_generation.is_none()
+            && payload.previous_shard_count.is_none()
+            && payload.previous_ring_admission_started_at.is_none()
+            && payload.previous_ring_admission_until.is_none()
+            && !payload.previous_ring_admission_open;
+    }
+    let (
+        Some(previous_generation),
+        Some(previous_shard_count),
+        Some(admission_started_at),
+        Some(admission_until),
+    ) = (
+        payload.previous_ring_generation,
+        payload.previous_shard_count,
+        payload.previous_ring_admission_started_at,
+        payload.previous_ring_admission_until,
+    )
+    else {
+        return false;
+    };
+    previous_generation.checked_add(1) == Some(payload.ring_generation)
+        && previous_shard_count < payload.shard_count
+        && admission_started_at < admission_until
+        && admission_until - admission_started_at <= 15 * 60
 }
 
 fn valid_controller_version_id(value: &str) -> bool {
@@ -2689,6 +2728,13 @@ mod tests {
             protocol_version: 1,
             ring_generation: 7,
             shard_count: 16,
+            ring_transition_configured: false,
+            ring_transition_valid: true,
+            previous_ring_generation: None,
+            previous_shard_count: None,
+            previous_ring_admission_started_at: None,
+            previous_ring_admission_until: None,
+            previous_ring_admission_open: false,
             controller_version_id: "controller-version-test".to_string(),
             shard_activation_write_enabled: false,
             shard_activation_candidate_build_configured: false,
@@ -2702,6 +2748,16 @@ mod tests {
         assert!(!status_matches(&payload, &authority, runtime));
         payload.shard_count = 16;
         payload.authority_current_secret_configured = false;
+        assert!(!status_matches(&payload, &authority, runtime));
+        payload.authority_current_secret_configured = true;
+        payload.ring_transition_configured = true;
+        payload.previous_ring_generation = Some(6);
+        payload.previous_shard_count = Some(8);
+        payload.previous_ring_admission_started_at = Some(1_800_000_000);
+        payload.previous_ring_admission_until = Some(1_800_000_300);
+        payload.previous_ring_admission_open = true;
+        assert!(status_matches(&payload, &authority, runtime));
+        payload.previous_ring_generation = Some(5);
         assert!(!status_matches(&payload, &authority, runtime));
     }
 

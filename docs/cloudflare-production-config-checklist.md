@@ -1220,6 +1220,10 @@ Controller configs:
 | `CONTAINER_MAX_IN_FLIGHT_PER_SHARD` | `2` | Integer 1..64; max+1 Workerd admission must return retryable capacity without persisting a poisoned rejection |
 | `CONTAINER_TERMINAL_RETENTION_SECONDS` | `604800` | At least the 600-second dispatch replay window; old terminal history is age-pruned |
 | `CONTAINER_MAX_TERMINAL_OPERATIONS` | `10000` | Positive bounded history target; protected replay rows use ledger backpressure instead of unsafe eviction |
+| `CONTAINER_PREVIOUS_RING_GENERATION` | `0` | Disabled unless a signed adjacent `G -> G+1` expansion manifest is active |
+| `CONTAINER_PREVIOUS_SHARD_COUNT` | `0` | Disabled unless the manifest proves strict expansion `N -> M`, `M>N` |
+| `CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT` | `0` | Absolute Unix seconds; all four transition values must be zero or valid together |
+| `CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL` | `0` | Absolute Unix seconds; window must be positive and no longer than 900 seconds |
 | `CONTAINER_READINESS_PROBE_ENABLED` | `false` | Controller-side gate for both readiness modes; edge enablement alone is insufficient |
 | `CONTAINER_READINESS_WAKE_ENABLED` | `false` | Controller-side cold-start authority; must be enabled only for an isolated canary |
 

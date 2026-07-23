@@ -50,6 +50,12 @@ export const REQUIRED_DISABLED_CONTROLLER_VARS = Object.freeze([
   "CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED",
   "CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED",
 ]);
+export const REQUIRED_DISABLED_RING_TRANSITION_VARS = Object.freeze([
+  "CONTAINER_PREVIOUS_RING_GENERATION",
+  "CONTAINER_PREVIOUS_SHARD_COUNT",
+  "CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT",
+  "CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL",
+]);
 
 const D1_DATABASE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -150,6 +156,9 @@ export function validateControllerConfig(config, environment) {
   );
   for (const name of REQUIRED_DISABLED_CONTROLLER_VARS) {
     requireEqual(config.vars[name], "false", `${environment} ${name}`);
+  }
+  for (const name of REQUIRED_DISABLED_RING_TRANSITION_VARS) {
+    requireEqual(config.vars[name], "0", `${environment} ${name}`);
   }
   for (const [name, value] of Object.entries(config.vars)) {
     if (/(?:_ENABLED|_VERIFIED)$/.test(name) && value !== "false") {

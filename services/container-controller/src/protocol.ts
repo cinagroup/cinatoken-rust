@@ -26,6 +26,7 @@ export const MAX_OPERATION_STATUS_BODY_BYTES = 4 * 1024;
 export const MAX_TERMINAL_ACK_BODY_BYTES = 4 * 1024;
 export const MAX_READINESS_BODY_BYTES = 4 * 1024;
 export const MAX_EXECUTION_WINDOW_SECONDS = 300;
+export const MAX_PREVIOUS_RING_ADMISSION_WINDOW_SECONDS = 15 * 60;
 export const MAX_STORAGE_OBJECT_VERSION_BYTES = 128;
 const MAX_TOKEN_BYTES = 4096;
 const MAX_JSON_SEGMENT_BYTES = 2048;
@@ -47,6 +48,10 @@ export interface AuthorityEnvironment {
   CONTAINER_PROTOCOL_VERSION: string;
   CONTAINER_RING_GENERATION: string;
   CONTAINER_SHARD_COUNT: string;
+  CONTAINER_PREVIOUS_RING_GENERATION: string;
+  CONTAINER_PREVIOUS_SHARD_COUNT: string;
+  CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT: string;
+  CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL: string;
 }
 
 export interface AuthorityHeader {
@@ -103,6 +108,32 @@ export interface VerifiedOperation {
   envelope: OperationEnvelope;
   claims: AuthorityClaims;
   body: Uint8Array;
+  ring_admission: OperationRingAdmission;
+}
+
+export interface ConfiguredRingTransition {
+  current_ring_generation: number;
+  current_shard_count: number;
+  previous_ring_generation: number;
+  previous_shard_count: number;
+  admission_started_at: number;
+  admission_until: number;
+  admission_open: boolean;
+}
+
+export type OperationRingAdmission = {
+  role: "current" | "previous_admit" | "previous_replay_only";
+  transition: ConfiguredRingTransition | null;
+};
+
+export interface RingTransitionStatus {
+  configured: boolean;
+  valid: boolean;
+  admission_open: boolean;
+  previous_ring_generation: number | null;
+  previous_shard_count: number | null;
+  admission_started_at: number | null;
+  admission_until: number | null;
 }
 
 export interface OperationStatusQuery {
@@ -254,7 +285,8 @@ export async function verifyOperationRequest(
   if (envelope.protocol_version !== claims.protocol_version) {
     throw new ProtocolError("protocol_mismatch", 426);
   }
-  return { envelope, claims, body };
+  const ringAdmission = operationRingAdmission(envelope.shard, env, now);
+  return { envelope, claims, body, ring_admission: ringAdmission };
 }
 
 export async function verifyOperationStatusRequest(
@@ -601,7 +633,13 @@ export function parseOperationEnvelope(
   body: Uint8Array,
   env: Pick<
     AuthorityEnvironment,
-    "CONTAINER_PROTOCOL_VERSION" | "CONTAINER_RING_GENERATION" | "CONTAINER_SHARD_COUNT"
+    | "CONTAINER_PROTOCOL_VERSION"
+    | "CONTAINER_RING_GENERATION"
+    | "CONTAINER_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_GENERATION"
+    | "CONTAINER_PREVIOUS_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL"
   >,
   now: number,
 ): OperationEnvelope {
@@ -686,21 +724,10 @@ export function parseOperationEnvelope(
     trace_id: readString(value, "trace_id", 1, 128, ID),
   };
   const expectedProtocol = parseConfiguredInteger(env.CONTAINER_PROTOCOL_VERSION, 1, 255);
-  const expectedGeneration = parseConfiguredInteger(env.CONTAINER_RING_GENERATION, 1, MAX_SAFE_INTEGER);
-  const expectedShardCount = parseConfiguredInteger(env.CONTAINER_SHARD_COUNT, 1, 1024);
-  const expectedName = `cinatoken-relay-shard-v1-${shard.shard_index.toString().padStart(4, "0")}`;
   if (protocolVersion !== expectedProtocol) {
     throw new ProtocolError("unsupported_protocol", 426);
   }
-  if (
-    shard.contract_version !== 1 ||
-    shard.ring_generation !== expectedGeneration ||
-    shard.shard_count !== expectedShardCount ||
-    shard.shard_index >= shard.shard_count ||
-    shard.instance_name !== expectedName
-  ) {
-    throw new ProtocolError("stale_shard_fence", 409);
-  }
+  operationRingAdmission(shard, env, now);
   if (
     executionDeadlineAt <= now ||
     executionDeadlineAt > ownerLeaseExpiresAt ||
@@ -709,6 +736,184 @@ export function parseOperationEnvelope(
     throw new ProtocolError("invalid_operation_deadline", 409);
   }
   return envelope;
+}
+
+export function inspectRingTransition(
+  env: Pick<
+    AuthorityEnvironment,
+    | "CONTAINER_RING_GENERATION"
+    | "CONTAINER_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_GENERATION"
+    | "CONTAINER_PREVIOUS_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL"
+  >,
+  now: number,
+): RingTransitionStatus {
+  const rawPrevious = [
+    env.CONTAINER_PREVIOUS_RING_GENERATION,
+    env.CONTAINER_PREVIOUS_SHARD_COUNT,
+    env.CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT,
+    env.CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL,
+  ];
+  const configured = rawPrevious.some((value) => value !== "0");
+  if (!configured) {
+    return {
+      configured: false,
+      valid: rawPrevious.every((value) => value === "0"),
+      admission_open: false,
+      previous_ring_generation: null,
+      previous_shard_count: null,
+      admission_started_at: null,
+      admission_until: null,
+    };
+  }
+
+  const currentGeneration = configuredIntegerOrNull(
+    env.CONTAINER_RING_GENERATION,
+    1,
+    MAX_SAFE_INTEGER,
+  );
+  const currentShardCount = configuredIntegerOrNull(env.CONTAINER_SHARD_COUNT, 1, 1024);
+  const previousGeneration = configuredIntegerOrNull(
+    env.CONTAINER_PREVIOUS_RING_GENERATION,
+    1,
+    MAX_SAFE_INTEGER,
+  );
+  const previousShardCount = configuredIntegerOrNull(
+    env.CONTAINER_PREVIOUS_SHARD_COUNT,
+    1,
+    1024,
+  );
+  const admissionStartedAt = configuredIntegerOrNull(
+    env.CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT,
+    1,
+    MAX_SAFE_INTEGER,
+  );
+  const admissionUntil = configuredIntegerOrNull(
+    env.CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL,
+    1,
+    MAX_SAFE_INTEGER,
+  );
+  const valid =
+    Number.isSafeInteger(now) &&
+    now >= 1 &&
+    currentGeneration !== null &&
+    currentShardCount !== null &&
+    previousGeneration !== null &&
+    previousShardCount !== null &&
+    admissionStartedAt !== null &&
+    admissionUntil !== null &&
+    previousGeneration + 1 === currentGeneration &&
+    previousShardCount < currentShardCount &&
+    admissionStartedAt < admissionUntil &&
+    admissionUntil - admissionStartedAt <= MAX_PREVIOUS_RING_ADMISSION_WINDOW_SECONDS;
+  return {
+    configured: true,
+    valid,
+    admission_open:
+      valid &&
+      admissionStartedAt !== null &&
+      admissionUntil !== null &&
+      now >= admissionStartedAt &&
+      now < admissionUntil,
+    previous_ring_generation: previousGeneration,
+    previous_shard_count: previousShardCount,
+    admission_started_at: admissionStartedAt,
+    admission_until: admissionUntil,
+  };
+}
+
+export function configuredRingTransition(
+  env: Pick<
+    AuthorityEnvironment,
+    | "CONTAINER_RING_GENERATION"
+    | "CONTAINER_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_GENERATION"
+    | "CONTAINER_PREVIOUS_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL"
+  >,
+  now: number,
+): ConfiguredRingTransition | null {
+  const status = inspectRingTransition(env, now);
+  if (!status.valid) throw new ProtocolError("ring_transition_misconfigured", 503);
+  if (!status.configured) return null;
+  const {
+    previous_ring_generation: previousRingGeneration,
+    previous_shard_count: previousShardCount,
+    admission_started_at: admissionStartedAt,
+    admission_until: admissionUntil,
+  } = status;
+  if (
+    previousRingGeneration === null ||
+    previousShardCount === null ||
+    admissionStartedAt === null ||
+    admissionUntil === null
+  ) {
+    throw new ProtocolError("ring_transition_misconfigured", 503);
+  }
+  return {
+    current_ring_generation: parseConfiguredInteger(
+      env.CONTAINER_RING_GENERATION,
+      1,
+      MAX_SAFE_INTEGER,
+    ),
+    current_shard_count: parseConfiguredInteger(env.CONTAINER_SHARD_COUNT, 1, 1024),
+    previous_ring_generation: previousRingGeneration,
+    previous_shard_count: previousShardCount,
+    admission_started_at: admissionStartedAt,
+    admission_until: admissionUntil,
+    admission_open: status.admission_open,
+  };
+}
+
+export function operationRingAdmission(
+  shard: OperationShard,
+  env: Pick<
+    AuthorityEnvironment,
+    | "CONTAINER_RING_GENERATION"
+    | "CONTAINER_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_GENERATION"
+    | "CONTAINER_PREVIOUS_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL"
+  >,
+  now: number,
+): OperationRingAdmission {
+  const currentGeneration = parseConfiguredInteger(
+    env.CONTAINER_RING_GENERATION,
+    1,
+    MAX_SAFE_INTEGER,
+  );
+  const currentShardCount = parseConfiguredInteger(env.CONTAINER_SHARD_COUNT, 1, 1024);
+  const expectedName =
+    `cinatoken-relay-shard-v1-${shard.shard_index.toString().padStart(4, "0")}`;
+  if (
+    shard.contract_version !== 1 ||
+    shard.shard_index >= shard.shard_count ||
+    shard.instance_name !== expectedName
+  ) {
+    throw new ProtocolError("stale_shard_fence", 409);
+  }
+  const transition = configuredRingTransition(env, now);
+  if (
+    shard.ring_generation === currentGeneration &&
+    shard.shard_count === currentShardCount
+  ) {
+    return { role: "current", transition };
+  }
+  if (
+    transition !== null &&
+    shard.ring_generation === transition.previous_ring_generation &&
+    shard.shard_count === transition.previous_shard_count
+  ) {
+    return {
+      role: transition.admission_open ? "previous_admit" : "previous_replay_only",
+      transition,
+    };
+  }
+  throw new ProtocolError("stale_shard_fence", 409);
 }
 
 export function parseOperationStatusQuery(body: Uint8Array): OperationStatusQuery {
@@ -1219,7 +1424,13 @@ export function parseReadinessProbe(
   body: Uint8Array,
   env: Pick<
     AuthorityEnvironment,
-    "CONTAINER_PROTOCOL_VERSION" | "CONTAINER_RING_GENERATION" | "CONTAINER_SHARD_COUNT"
+    | "CONTAINER_PROTOCOL_VERSION"
+    | "CONTAINER_RING_GENERATION"
+    | "CONTAINER_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_GENERATION"
+    | "CONTAINER_PREVIOUS_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL"
   >,
 ): ShardReadinessProbe {
   const code = "invalid_readiness_probe";
@@ -1280,7 +1491,13 @@ function validateShardFence(
   shard: OperationShard,
   env: Pick<
     AuthorityEnvironment,
-    "CONTAINER_PROTOCOL_VERSION" | "CONTAINER_RING_GENERATION" | "CONTAINER_SHARD_COUNT"
+    | "CONTAINER_PROTOCOL_VERSION"
+    | "CONTAINER_RING_GENERATION"
+    | "CONTAINER_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_GENERATION"
+    | "CONTAINER_PREVIOUS_SHARD_COUNT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT"
+    | "CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL"
   >,
 ): void {
   const expectedProtocol = parseConfiguredInteger(env.CONTAINER_PROTOCOL_VERSION, 1, 255);
@@ -1291,6 +1508,7 @@ function validateShardFence(
   );
   const expectedShardCount = parseConfiguredInteger(env.CONTAINER_SHARD_COUNT, 1, 1024);
   const expectedName = `cinatoken-relay-shard-v1-${shard.shard_index.toString().padStart(4, "0")}`;
+  configuredRingTransition(env, Math.floor(Date.now() / 1000));
   if (protocolVersion !== expectedProtocol) {
     throw new ProtocolError("unsupported_protocol", 426);
   }
@@ -1554,6 +1772,12 @@ function parseConfiguredInteger(value: string, min: number, max: number): number
     throw new ProtocolError("controller_misconfigured", 503);
   }
   return parsed;
+}
+
+function configuredIntegerOrNull(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : null;
 }
 
 function copyArrayBuffer(bytes: Uint8Array): ArrayBuffer {

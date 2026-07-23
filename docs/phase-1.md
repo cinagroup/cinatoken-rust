@@ -2868,10 +2868,16 @@ six-mutation self-test. The Worker unit suite reads the same fixture and
 recomputes every digest and `ShardPlan`, so a JavaScript-only or Rust-only drift
 cannot pass the repository aggregate.
 
-Production expansion remains a drained generation change: keep the routing
-secret fixed, disable Container admission, drain the old generation, deploy and
-activate Controller capacity for `N+1`, advance generation and count together,
-then deploy the edge and run remote distribution/lifecycle/capacity/billing
-evidence. Secret rotation cannot share that candidate. No remote resource,
-credential, provider, or traffic action occurred; production remains
+The adjacent dual-generation Controller contract now supersedes the mandatory
+drained expansion. A configured `G/N -> G+1/M` transition (`M>N`) accepts old
+ring operations only inside an absolute window of at most 900 seconds. After
+cutoff, DO SQLite allows only exact existing-operation replay; status, recovery,
+and terminal ACK continue to drain by their persisted historical fence. Current
+readiness may advance a shared shard while old work remains active, but the old
+`ring_generation_in_flight` fence still applies without the exact transition.
+
+All four previous-ring values remain `0` in tracked configs and ordinary deploy
+preflight. The production order, forward-only rollback, and required remote
+evidence are defined in `docs/relay-container-ring-transition.md`. No remote
+resource, credential, provider, or traffic action occurred; production remains
 **NO-GO**.

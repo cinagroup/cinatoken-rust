@@ -46,6 +46,8 @@ import {
   type ShardReadinessProbe,
   type TerminalAckRequest,
   type TerminalAckRequestV3,
+  configuredRingTransition,
+  inspectRingTransition,
   verifyOperationRequest,
   verifyReadinessRequest,
   verifyStatusRequest,
@@ -148,6 +150,10 @@ interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
   CONTAINER_MAX_IN_FLIGHT_PER_SHARD: string;
   CONTAINER_TERMINAL_RETENTION_SECONDS: string;
   CONTAINER_MAX_TERMINAL_OPERATIONS: string;
+  CONTAINER_PREVIOUS_RING_GENERATION: string;
+  CONTAINER_PREVIOUS_SHARD_COUNT: string;
+  CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT: string;
+  CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL: string;
   CONTAINER_AUTHORITY_CURRENT_SECRET: string;
   CONTAINER_AUTHORITY_PREVIOUS_SECRET?: string;
 }
@@ -749,7 +755,12 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         };
       }
 
-      this.ledger.initializeShardForReadiness(probe.shard, Math.floor(startedAtMs / 1000));
+      const now = Math.floor(startedAtMs / 1000);
+      this.ledger.initializeShardForReadiness(
+        probe.shard,
+        now,
+        configuredRingTransition(this.env, now),
+      );
       const replay = this.ledger.recoverReadinessProbe(probe.shard, probeId, startedAtMs);
       if (replay !== null) {
         const containerState: ContainerStateSnapshot | null =
@@ -860,6 +871,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
       this.ledger.initializeShardForReadiness(
         probe.shard,
         Math.floor(startedAtMs / 1_000),
+        configuredRingTransition(this.env, Math.floor(startedAtMs / 1_000)),
       );
       const journal = replayOnly
         ? await this.ledger.replayReadinessProbeJournal(
@@ -1002,7 +1014,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
       if (executionEnabled && !operationRecoveryIntentWriterEnabled(this.env)) {
         throw new ProtocolError("operation_recovery_intent_v1_disabled", 503);
       }
-      if (executionEnabled) {
+      if (executionEnabled && verified.ring_admission.role !== "previous_replay_only") {
         if (this.env.CONTAINER_STORAGE_D1_READ_ENABLED !== "true") {
           throw new ProtocolError("admission_gateway_disabled", 503);
         }
@@ -1014,6 +1026,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
       }
       const claim = this.ledger.claimOperation(
         verified.envelope,
+        verified.ring_admission,
         verified.claims.body_sha256,
         verified.claims.dispatch_id,
         controllerLedgerPolicy(this.env),
@@ -1600,6 +1613,10 @@ const handler: ExportedHandler<ControllerEnv> = {
       if (path === INTERNAL_STATUS_PATH) {
         await verifyStatusRequest(request, env);
         const actionGates = await campaignActionGateInventory(env);
+        const ringTransition = inspectRingTransition(
+          env,
+          Math.floor(Date.now() / 1000),
+        );
         return new Response(
           JSON.stringify({
             controller_enabled: env.CONTAINER_CONTROLLER_ENABLED === "true",
@@ -1607,6 +1624,13 @@ const handler: ExportedHandler<ControllerEnv> = {
             protocol_version: Number(env.CONTAINER_PROTOCOL_VERSION),
             ring_generation: Number(env.CONTAINER_RING_GENERATION),
             shard_count: Number(env.CONTAINER_SHARD_COUNT),
+            ring_transition_configured: ringTransition.configured,
+            ring_transition_valid: ringTransition.valid,
+            previous_ring_generation: ringTransition.previous_ring_generation,
+            previous_shard_count: ringTransition.previous_shard_count,
+            previous_ring_admission_started_at: ringTransition.admission_started_at,
+            previous_ring_admission_until: ringTransition.admission_until,
+            previous_ring_admission_open: ringTransition.admission_open,
             controller_version_id: env.CF_VERSION_METADATA.id,
             shard_activation_write_enabled:
               env[SHARD_ACTIVATION_WRITE_ENABLED_ENV] === "true",

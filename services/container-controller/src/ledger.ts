@@ -1,10 +1,13 @@
 import {
+  MAX_PREVIOUS_RING_ADMISSION_WINDOW_SECONDS,
   MAX_STORAGE_OBJECT_VERSION_BYTES,
   ProtocolError,
   validateTerminalAckRequest,
   validateTerminalAckV3Request,
   validateOperationStatusQuery,
+  type ConfiguredRingTransition,
   type OperationEnvelope,
+  type OperationRingAdmission,
   type OperationShard,
   type OperationStatusQuery,
   type TerminalAckRequest,
@@ -2944,6 +2947,7 @@ export class RelayShardLedger {
 
   claimOperation(
     envelope: OperationEnvelope,
+    ringAdmission: OperationRingAdmission,
     envelopeSha256: string,
     dispatchId: string,
     policy: RelayShardLedgerPolicy,
@@ -2952,6 +2956,7 @@ export class RelayShardLedger {
   ): ClaimResult {
     this.ensureSchema();
     validatePolicy(policy);
+    validateOperationRingAdmission(envelope, ringAdmission);
     return this.storage.transactionSync(() => {
       this.runMaintenance(policy, now);
       const dispatch = firstRow<DispatchRow>(
@@ -2997,7 +3002,11 @@ export class RelayShardLedger {
         throw new ProtocolError("shard_draining", 503);
       }
 
-      this.assertAndAdvanceShardFence(envelope, now);
+      if (ringAdmission.role === "previous_replay_only") {
+        throw new ProtocolError("previous_ring_admission_closed", 409);
+      }
+
+      this.assertAndAdvanceShardFence(envelope, now, ringAdmission.transition);
       const inFlight =
         firstRow<{ count: number }>(
           this.storage.sql.exec<{ count: number }>(
@@ -3607,12 +3616,17 @@ export class RelayShardLedger {
     );
   }
 
-  initializeShardForReadiness(shard: OperationShard, now: number): void {
+  initializeShardForReadiness(
+    shard: OperationShard,
+    now: number,
+    ringTransition: ConfiguredRingTransition | null = null,
+  ): void {
     this.ensureSchema();
+    validateConfiguredRingTransition(ringTransition);
     this.storage.transactionSync(() => {
       const state = this.readShardStateRow();
       if (state !== null) {
-        this.assertAndAdvanceReadinessFence(state, shard, now);
+        this.assertAndAdvanceReadinessFence(state, shard, now, ringTransition);
         return;
       }
       this.storage.sql.exec(
@@ -5338,7 +5352,11 @@ export class RelayShardLedger {
     );
   }
 
-  private assertAndAdvanceShardFence(envelope: OperationEnvelope, now: number): void {
+  private assertAndAdvanceShardFence(
+    envelope: OperationEnvelope,
+    now: number,
+    ringTransition: ConfiguredRingTransition | null,
+  ): void {
     const state = this.readShardStateRow();
     if (state === null) {
       this.storage.sql.exec(
@@ -5359,13 +5377,21 @@ export class RelayShardLedger {
       state.instance_name !== envelope.shard.instance_name ||
       state.contract_version !== envelope.shard.contract_version ||
       state.shard_index !== envelope.shard.shard_index ||
-      state.ring_generation > envelope.shard.ring_generation ||
       (state.ring_generation === envelope.shard.ring_generation &&
         state.shard_count !== envelope.shard.shard_count)
     ) {
       throw new ProtocolError("stale_shard_fence", 409);
     }
     if (state.ring_generation === envelope.shard.ring_generation) return;
+    if (ringTransitionAllowsOverlap(state, envelope.shard, ringTransition)) {
+      if (envelope.shard.ring_generation === ringTransition?.current_ring_generation) {
+        this.updateShardRing(envelope.shard, now);
+      }
+      return;
+    }
+    if (state.ring_generation > envelope.shard.ring_generation) {
+      throw new ProtocolError("stale_shard_fence", 409);
+    }
 
     const activeBeforeFence =
       firstRow<{ count: number }>(
@@ -5377,31 +5403,33 @@ export class RelayShardLedger {
     if (activeBeforeFence > 0) {
       throw new ProtocolError("ring_generation_in_flight", 409);
     }
-    this.storage.sql.exec(
-      `UPDATE cinatoken_shard_state
-          SET ring_generation = ?1, shard_count = ?2, updated_at = ?3
-        WHERE singleton = 1`,
-      envelope.shard.ring_generation,
-      envelope.shard.shard_count,
-      now,
-    );
+    this.updateShardRing(envelope.shard, now);
   }
 
   private assertAndAdvanceReadinessFence(
     state: ShardStateRow,
     shard: OperationShard,
     now: number,
+    ringTransition: ConfiguredRingTransition | null,
   ): void {
     if (
       state.instance_name !== shard.instance_name ||
       state.contract_version !== shard.contract_version ||
       state.shard_index !== shard.shard_index ||
-      state.ring_generation > shard.ring_generation ||
       (state.ring_generation === shard.ring_generation && state.shard_count !== shard.shard_count)
     ) {
       throw new ProtocolError("stale_shard_fence", 409);
     }
     if (state.ring_generation === shard.ring_generation) return;
+    if (ringTransitionAllowsOverlap(state, shard, ringTransition)) {
+      if (shard.ring_generation === ringTransition?.current_ring_generation) {
+        this.updateShardRing(shard, now);
+      }
+      return;
+    }
+    if (state.ring_generation > shard.ring_generation) {
+      throw new ProtocolError("stale_shard_fence", 409);
+    }
     const active =
       firstRow<{ count: number }>(
         this.storage.sql.exec<{ count: number }>(
@@ -5410,6 +5438,10 @@ export class RelayShardLedger {
         ),
       )?.count ?? 0;
     if (active > 0) throw new ProtocolError("ring_generation_in_flight", 409);
+    this.updateShardRing(shard, now);
+  }
+
+  private updateShardRing(shard: OperationShard, now: number): void {
     this.storage.sql.exec(
       `UPDATE cinatoken_shard_state
           SET ring_generation = ?1, shard_count = ?2, updated_at = ?3
@@ -7430,6 +7462,91 @@ function validatePolicy(policy: RelayShardLedgerPolicy): void {
   ) {
     throw new ProtocolError("controller_misconfigured", 503);
   }
+}
+
+function validateOperationRingAdmission(
+  envelope: OperationEnvelope,
+  admission: OperationRingAdmission,
+): void {
+  if (
+    admission === null ||
+    typeof admission !== "object" ||
+    !["current", "previous_admit", "previous_replay_only"].includes(admission.role)
+  ) {
+    throw new ProtocolError("invalid_ring_admission", 400);
+  }
+  validateConfiguredRingTransition(admission.transition);
+  if (admission.transition === null) {
+    if (admission.role !== "current") {
+      throw new ProtocolError("invalid_ring_admission", 400);
+    }
+    return;
+  }
+  const transition = admission.transition;
+  const matchesCurrent =
+    envelope.shard.ring_generation === transition.current_ring_generation &&
+    envelope.shard.shard_count === transition.current_shard_count;
+  const matchesPrevious =
+    envelope.shard.ring_generation === transition.previous_ring_generation &&
+    envelope.shard.shard_count === transition.previous_shard_count;
+  if (
+    (admission.role === "current" && !matchesCurrent) ||
+    (admission.role === "previous_admit" &&
+      (!matchesPrevious || !transition.admission_open)) ||
+    (admission.role === "previous_replay_only" &&
+      (!matchesPrevious || transition.admission_open))
+  ) {
+    throw new ProtocolError("invalid_ring_admission", 400);
+  }
+}
+
+function validateConfiguredRingTransition(
+  transition: ConfiguredRingTransition | null,
+): void {
+  if (transition === null) return;
+  if (
+    !Number.isSafeInteger(transition.current_ring_generation) ||
+    transition.current_ring_generation < 2 ||
+    !Number.isSafeInteger(transition.current_shard_count) ||
+    transition.current_shard_count < 2 ||
+    transition.current_shard_count > 1024 ||
+    !Number.isSafeInteger(transition.previous_ring_generation) ||
+    transition.previous_ring_generation < 1 ||
+    transition.previous_ring_generation + 1 !== transition.current_ring_generation ||
+    !Number.isSafeInteger(transition.previous_shard_count) ||
+    transition.previous_shard_count < 1 ||
+    transition.previous_shard_count >= transition.current_shard_count ||
+    !Number.isSafeInteger(transition.admission_started_at) ||
+    transition.admission_started_at < 1 ||
+    !Number.isSafeInteger(transition.admission_until) ||
+    transition.admission_until <= transition.admission_started_at ||
+    transition.admission_until - transition.admission_started_at >
+      MAX_PREVIOUS_RING_ADMISSION_WINDOW_SECONDS ||
+    typeof transition.admission_open !== "boolean"
+  ) {
+    throw new ProtocolError("invalid_ring_transition", 400);
+  }
+}
+
+function ringTransitionAllowsOverlap(
+  state: ShardStateRow,
+  shard: OperationShard,
+  transition: ConfiguredRingTransition | null,
+): boolean {
+  if (transition === null) return false;
+  const stateIsCurrent =
+    state.ring_generation === transition.current_ring_generation &&
+    state.shard_count === transition.current_shard_count;
+  const stateIsPrevious =
+    state.ring_generation === transition.previous_ring_generation &&
+    state.shard_count === transition.previous_shard_count;
+  const shardIsCurrent =
+    shard.ring_generation === transition.current_ring_generation &&
+    shard.shard_count === transition.current_shard_count;
+  const shardIsPrevious =
+    shard.ring_generation === transition.previous_ring_generation &&
+    shard.shard_count === transition.previous_shard_count;
+  return (stateIsCurrent && shardIsPrevious) || (stateIsPrevious && shardIsCurrent);
 }
 
 function firstRow<T>(cursor: Iterable<T>): T | null {

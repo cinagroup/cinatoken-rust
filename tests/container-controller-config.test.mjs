@@ -102,6 +102,10 @@ describe("isolated container controller configuration", () => {
       expect(config.vars.CONTAINER_MAX_PROVIDER_ATTEMPTS).toBe("1");
       expect(Number(config.vars.CONTAINER_TERMINAL_RETENTION_SECONDS)).toBeGreaterThanOrEqual(600);
       expect(Number(config.vars.CONTAINER_MAX_TERMINAL_OPERATIONS)).toBeGreaterThan(0);
+      expect(config.vars.CONTAINER_PREVIOUS_RING_GENERATION).toBe("0");
+      expect(config.vars.CONTAINER_PREVIOUS_SHARD_COUNT).toBe("0");
+      expect(config.vars.CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT).toBe("0");
+      expect(config.vars.CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL).toBe("0");
       expect(config.vars.CONTAINER_AUTHORITY_CURRENT_SECRET).toBeUndefined();
       expect(config.vars.CONTAINER_AUTHORITY_PREVIOUS_SECRET).toBeUndefined();
       expect(config.d1_databases).toHaveLength(1);

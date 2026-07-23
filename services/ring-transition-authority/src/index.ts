@@ -35,6 +35,7 @@ interface AuthorityEnv extends AuthoritySecurityEnv {
 
 const CLAIM_ID_PATH =
   /^\/internal\/v1\/ring-transition\/claims\/([0-9a-f]{64})$/;
+const PREFLIGHT_PATH = "/internal/v1/ring-transition/preflight";
 const STEP_PATH =
   /^\/internal\/v1\/ring-transition\/claims\/([0-9a-f]{64})\/steps$/;
 const EXPIRY_PATH =
@@ -71,6 +72,16 @@ export default {
           ? await requireEmptyBody(request)
           : await readBoundedJson(request);
       const authentication = await verifyHmacRequest(request, body, env);
+
+      if (route.kind === "preflight") {
+        return jsonResponse(200, {
+          result: "authority_ready",
+          requestId: authentication.requestId,
+          credentialIdSha256: authentication.credentialIdSha256,
+          permitSpkiSha256: env.RING_TRANSITION_PERMIT_SPKI_SHA256,
+          authorityVersionId: env.CF_VERSION_METADATA.id,
+        });
+      }
 
       if (route.kind === "claim_create") {
         const claim = await parseClaimRequest(
@@ -165,6 +176,7 @@ export default {
 } satisfies ExportedHandler<AuthorityEnv>;
 
 type Route =
+  | { kind: "preflight" }
   | { kind: "claim_create" }
   | {
       kind: "claim_read";
@@ -177,6 +189,10 @@ type Route =
 
 function matchRoute(request: Request): Route {
   const url = new URL(request.url);
+  if (request.method === "GET" && url.pathname === PREFLIGHT_PATH) {
+    if (url.search.length !== 0) throw new ProtocolError("invalid_query", 400);
+    return { kind: "preflight" };
+  }
   if (request.method === "POST" && url.pathname === CLAIMS_PATH) {
     if (url.search.length !== 0) throw new ProtocolError("invalid_query", 400);
     return { kind: "claim_create" };

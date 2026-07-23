@@ -15,6 +15,7 @@ members = [
   "crates/payments",
   "crates/providers",
   "crates/relay",
+  "crates/ring-transition-runner",
   "crates/session",
   "crates/sharding",
   "crates/ssrf",

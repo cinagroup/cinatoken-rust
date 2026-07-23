@@ -8289,7 +8289,7 @@ The local Authority verification aggregate currently passes:
 ```text
 Wrangler types: up to date
 Wrangler local dry-run: PASS
-Authority unit tests: 21 PASS
+Authority unit tests: 22 PASS
 Workerd/D1 runtime tests: 2 PASS
 configuration and deploy-preflight tests: 22 PASS
 full repository `bun run check`: PASS (2026-07-23)
@@ -8330,3 +8330,54 @@ three-domain-table control D1 catalog.
 
 No remote verification or Cloudflare change is claimed by this section.
 Production remains **NO-GO**, and Go/VPS remains authoritative.
+
+## Immutable Runner And Native Transport Verification (2026-07-23)
+
+This overlay verifies the current local runner/transport increment. Run:
+
+```powershell
+bun test --timeout 30000 `
+  tests/relay-container-ring-transition-execution.test.mjs `
+  tests/relay-container-ring-transition-transport.test.mjs
+cargo test -p cinatoken-ring-transition-runner
+bun run check:ring-transition-authority
+bun run check:ring-transition-runner
+bun run check:relay-container:ring-transition
+cargo fmt --all --check
+bun run check
+```
+
+The focused contract target is 25 Bun tests: 14 claim/execution tests and 11
+native-transport tests. The transport cases cover fixed secret handles,
+pairwise-distinct credentials, raw-account binding, token-ID verification,
+Authority HMAC compatibility, Authority version/permit-SPKI pinning, exact
+request/body/header allowlists, bounded bodies, rejected and ambiguous status
+families, atomic all-credential verification, response loss and zero POST
+retry. A source guard rejects ambient
+`process.env`, console logging, high-level unbounded response readers,
+Wrangler, child processes and multiple fetch call sites.
+
+The Rust package target is six tests across library, binary and CLI
+integration suites. They prove the checked-in release is deterministic and
+disabled, every enabled identity requires all release/Authority pins, only two
+fixed commands are accepted, the staging Authority origin is exact rather than
+caller-selected, runtime trust/secret poisoning does not alter description,
+and execution/override arguments fail before credentials or network.
+
+The Authority aggregate additionally verifies the read-only preflight route.
+It must require an empty authenticated request, use no D1 operation or write
+gate, and return the exact request ID, credential hash, permit SPKI and Worker
+Version Metadata ID. The configuration gate remains restricted to the control
+D1 and Version Metadata with every write flag false.
+
+Passing local commands do not publish the required DSSE-signed reproducible
+release and do not implement the Rust resumable orchestrator. They do not
+prove token revocation, Access, remote D1, route, deployed version, stable
+Cloudflare readback, customer traffic, billing conservation, P5-B or Go/VPS
+drain. No remote action is claimed; production remains **NO-GO**.
+
+The final repository aggregate passed on 2026-07-23 in 637.8 seconds. It
+included the six runner tests, 54 ring-transition contract tests, 22 Authority
+unit tests, two Authority Workerd tests, 22 Authority configuration/preflight
+tests, the Rust workspace, all configured wasm32 builds, D1 migration/schema
+gates, Worker dry-runs, frontend checks, and the existing fault suites.

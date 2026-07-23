@@ -1286,3 +1286,22 @@ required tables, 909 checked incremental columns, and 101 key indexes.
 The integrated 69-table workspace catalog is not the remote control D1 catalog.
 Go/VPS remains traffic and scheduler authority, every write gate remains
 planned false, and production remains **NO-GO**.
+
+## 2026-07-23 Immutable Runner And Native Transport Matrix
+
+This matrix supersedes the local Authority/runner/transport implementation
+rows above. It does not change any remote or production decision.
+
+| Control | Current local evidence | Required staging/production evidence | Decision |
+| --- | --- | --- | --- |
+| Compiled trust root | Standalone Rust launcher accepts only `--describe|--execute`; checked-in release is disabled; argv/env/path poisoning cannot inject trust or enable execution | Strict signed release manifest, independent DSSE key, clean source archive, two reproducible builds and digest-installed artifact | Local foundation; release absent |
+| Authority identity | Trust pins exact origin/version, HMAC issuer/audience/key ID and permit issuer/key ID/SPKI; read-only preflight returns those authenticated identities without D1 | Deployed Version Metadata/readback, Access enforcement, rotation and wrong-version/SPKI/credential fault evidence | Local pass; remote absent |
+| Credential separation | Four fixed handles; raw account binds to trust; read/deploy token verification and HMAC preflight; three pairwise-distinct credential IDs | Revocation proof for exposed credential and authoritative least-privilege token scope/ID inventory | Local pass; credential gate blocked |
+| Native transport | Fixed HTTPS origin/path/service allowlists, redirects off, bounded streamed JSON, exact headers/body digest, no shell/SDK/Wrangler, one fetch call site, no POST retry | Remote timeout/reset/truncation/status/readback campaign against frozen candidate | Local pass; remote open |
+| Outcome safety | Validated 4xx rejected; 408/425/429/5xx, loss, invalid/truncated success and Authority outcome-unknown ambiguous; neither resends | D1 trace plus deployment history proving one mutation and stable exact readback under every injected fault | Local pass; remote open |
+| Resumable execution | D1 contract prevents retry from inflight and binds post-readback to persisted intent | Rust orchestrator, crash injection at every network/evidence boundary, two stable reads and immutable receipt | **P0 implementation open** |
+| Release provenance | Embedded schema reserves commit/tree/archive/locks/package/toolchain/modules/build/bundle/reproducibility/evidence/policy/key/Authority fields | Populated strict manifest, no unknown fields, valid issue/expiry, key separation and independent review | **P0 implementation open** |
+| Promotion | Focused local tests cover fail-closed launcher, preflight, transport, claim ordering and ambiguity | Revocation, isolated staging control plane, full Edge/DO/Container/KV/D1/R2 faults, P5-B, SLO/cost/security/rollback/Go drain approvals | **NO-GO** |
+
+The JavaScript transport remains a testable reference boundary, not a
+production trust root or live CLI. Go/VPS remains authoritative.

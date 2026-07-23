@@ -406,6 +406,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cinatoken-ring-transition-runner"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cinatoken-session"
 version = "0.1.0"
 dependencies = [

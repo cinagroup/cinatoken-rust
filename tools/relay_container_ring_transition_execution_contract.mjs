@@ -36,6 +36,13 @@ export const DEPLOYMENT_PINNED_RING_TRANSITION_TRUST = deepFreeze({
   environment: "staging",
   cloudflareApiOrigin: CLOUDFLARE_API_ORIGIN,
   claimAuthorityOrigin: null,
+  claimAuthorityVersionId: null,
+  claimAuthorityIssuer: null,
+  claimAuthorityAudience: null,
+  claimAuthorityHmacKeyId: null,
+  claimPermitIssuer: null,
+  claimPermitKeyId: null,
+  claimPermitSpkiSha256: null,
   accountIdSha256: null,
   ledgerIdentitySha256: null,
   transitionPolicySha256: null,
@@ -78,6 +85,8 @@ export function describeRingTransitionMutationRunner() {
       "seal-redacted-receipt",
     ],
     mutationTransport: "native-bounded-fetch-zero-retry",
+    nativeTransportImplemented: true,
+    immutableReleaseArtifactPublished: false,
     ambiguousMutationResponsePolicy:
       "never-retry-classify-by-authenticated-stable-readback",
     remoteMutationAuthorized: false,
@@ -112,6 +121,40 @@ export function validatePublishedRingTransitionTrust(
     "[trust] Cloudflare API origin",
   );
   requireHttpsOrigin(trust.claimAuthorityOrigin, "[trust] claim authority origin");
+  requireToken(
+    trust.claimAuthorityVersionId,
+    versionIdPattern,
+    "[trust] claim authority version",
+  );
+  requireToken(
+    trust.claimAuthorityIssuer,
+    /^[a-z0-9][a-z0-9._:-]{0,127}$/,
+    "[trust] claim authority issuer",
+  );
+  requireToken(
+    trust.claimAuthorityAudience,
+    /^[a-z0-9][a-z0-9._:-]{0,127}$/,
+    "[trust] claim authority audience",
+  );
+  requireToken(
+    trust.claimAuthorityHmacKeyId,
+    /^[a-z0-9][a-z0-9._-]{0,63}$/,
+    "[trust] claim authority HMAC key ID",
+  );
+  requireToken(
+    trust.claimPermitIssuer,
+    /^[a-z0-9][a-z0-9._:-]{0,127}$/,
+    "[trust] claim permit issuer",
+  );
+  requireToken(
+    trust.claimPermitKeyId,
+    /^[a-z0-9][a-z0-9._-]{0,63}$/,
+    "[trust] claim permit key ID",
+  );
+  requireSha256(
+    trust.claimPermitSpkiSha256,
+    "[trust] claim permit SPKI fingerprint",
+  );
   for (const field of [
     "accountIdSha256",
     "ledgerIdentitySha256",
@@ -390,6 +433,16 @@ export function buildClaimAuthorityRequest({
   const trust = validatePublishedRingTransitionTrust(anchors);
   validateExecutionClaim(claim);
   validateSignedClaimPermit(permit, claim);
+  requireExact(
+    permit.issuer,
+    trust.claimPermitIssuer,
+    "[permit] pinned issuer",
+  );
+  requireExact(
+    permit.keyId,
+    trust.claimPermitKeyId,
+    "[permit] pinned key ID",
+  );
   requireAuthorityToken(authorityToken);
   const body = {
     schemaVersion: 1,

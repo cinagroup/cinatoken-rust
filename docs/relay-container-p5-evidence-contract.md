@@ -530,3 +530,43 @@ No Authority Worker, control D1, Access policy, route, secret, key, migration,
 deployment, customer traffic, provider call, or financial state is claimed as
 remotely created or changed. The checked-in write gates remain required false,
 Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## Immutable Runner Release Evidence Overlay
+
+Before any `ring-transition-control-plane-v1` item can authorize a staging
+mutation campaign, it must reference a separate
+`ring-transition-runner-release-v1` item. The latter is create-new and binds:
+
+1. exact clean Git commit and tree plus source-archive digest;
+2. `Cargo.lock`, `bun.lock`, and `package.json` digests;
+3. Rust/LLVM/linker/Bun/Workerd versions, compilation target, arguments and a
+   fixed build-environment allowlist;
+4. sorted source/module inventory with relative path, byte count and SHA-256;
+5. compiled launcher, final installed bundle and two-isolated-build digests;
+6. strict embedded trust-config digest including account, ledger, services,
+   versions, policies, approval keys, Authority origin/version, HMAC identity,
+   permit identity/SPKI and separate credential identity hashes;
+7. exact unit, Workerd, fault, configuration, security and no-secret test
+   evidence against the same artifact digest;
+8. release policy digest, issue/expiry times and independent Ed25519 release
+   public-key SPKI fingerprint; and
+9. canonical DSSE envelope/signature with no unknown or caller-selected
+   manifest fields.
+
+The release key must be distinct from transition, authorization, permit,
+Authority-HMAC, read and deployment credentials. The verifier rejects dirty
+or path-escaping inventory, an expired/future signature, differing repeated
+builds, unknown fields, missing pins, environment/argv overrides, a mutable
+checkout artifact, or an artifact not installed by its verified digest.
+
+Execution evidence is a separate hash-chained receipt. It records only hashes
+and allowlisted identities for credential preflight, claim/readback, each
+persisted intent, one Controller POST, stable Controller reads, one Edge POST,
+stable Edge reads and final claim state. Raw account/token/HMAC/private key,
+authorization headers, Access material, bodies, SQL errors and unrestricted
+Cloudflare metadata are forbidden. A lost/invalid/truncated POST response is
+recorded as ambiguous and never authorizes resend.
+
+The checked-in launcher merely reserves this schema and remains disabled. No
+signed release item or execution receipt exists, so P5 remains incomplete and
+production remains **NO-GO**.

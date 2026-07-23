@@ -2380,3 +2380,29 @@ This addendum is a local production plan only. No control D1, Authority Worker,
 Access policy, route, secret, permit key, migration, deployment, provider call,
 customer traffic, or financial state was changed remotely. Production remains
 **NO-GO**, and Go/VPS remains authoritative.
+
+## 2026-07-23 Immutable Runner And Native Transport Addendum
+
+This addendum replaces the local implementation status in phases C-D of the
+0060 addendum. The Authority, compiled launcher, and native transport now exist
+locally, but remain deliberately disconnected from a live execution command.
+
+| Phase | Required action | Pass evidence | Abort and retain |
+| --- | --- | --- | --- |
+| H Authority preflight freeze | Freeze exact Authority origin/version, HMAC issuer/audience/key ID and permit issuer/key ID/SPKI; call the read-only preflight before claim traffic | Authenticated response echoes request ID, credential hash, permit SPKI and Version Metadata ID; no D1 operation or write gate | Version/SPKI/identity drift, body accepted, D1 access, alternate path, redirect or unbounded response |
+| I credential transport freeze | Load only account/read/HMAC/deploy fixed handles; verify read and deploy token identities against the exact account; prove all three credential IDs differ | Raw account hash matches build-time pin; exact token IDs and HMAC preflight match; descriptors and receipts contain no raw secret | Ambient env enumeration, shared credential, broad token, secret logging, caller URL/service or identity mismatch |
+| J immutable release build | Build the Rust launcher from a clean source archive twice; create canonical manifest, module inventory, evidence and policy; sign DSSE with an independent Ed25519 release key | Commit/tree/locks/toolchain/target/env/modules/artifact/two-build/Authority pins match and signature is current; installed by digest outside checkout | Dirty tree, unknown field, mutable artifact, differing build, expired signature, release key reused for claim/deploy/approval |
+| K resumable orchestration | On every start verify release and exact claim; persist Controller intent, POST once, read twice; then repeat for Edge; append immutable evidence | Crash at every boundary converges to one claim and at most one POST per service; inflight restart is readback-only; receipt hash chain seals | Any second POST, skipped state, result inferred from HTTP success, mutable evidence, target drift or backward generation |
+| L staging ceremony | After exposed-token revocation proof and independent review, provision isolated control D1/Authority/Access with all gates false; apply/read back 0059/0060 and run synthetic fault matrix | Exact resource/version/route/policy/catalog and zero business/provider/financial/customer delta retained against one signed candidate | Missing revocation, mixed candidate, unknown endpoint, customer traffic, unexplained delta or inability to disable |
+
+The native transport permits no POST retry. Validated 4xx is terminal rejected
+evidence; timeout/reset/truncation/invalid success body, 408/425/429/5xx and
+Authority outcome-unknown are ambiguous and schedule exact authenticated
+readback only. Cloudflare deployment success still requires the reviewed
+target at 100 percent in two stable observations.
+
+The checked-in Rust launcher remains `enabled=false`; its `--execute` path
+fails before credential or network use. This closes the mutable script as
+trust-root design gap, but not signed release provenance or orchestration.
+There was no remote action in this increment. Production remains **NO-GO** and
+Go/VPS remains hot authority.

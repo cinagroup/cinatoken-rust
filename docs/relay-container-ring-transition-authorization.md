@@ -367,10 +367,11 @@ exists. It is therefore not eligible for staging deployment or P5 evidence.
 The exact machine endpoints are:
 
 ```text
+GET  /internal/v1/ring-transition/preflight
 POST /internal/v1/ring-transition/claims
 GET  /internal/v1/ring-transition/claims/{authorization_id_sha256}
 POST /internal/v1/ring-transition/claims/{authorization_id_sha256}/steps
-POST /internal/v1/ring-transition/claims/{authorization_id_sha256}/expiry
+POST /internal/v1/ring-transition/claims/{authorization_id_sha256}/expire
 ```
 
 Every request passes Cloudflare Access Service Auth and an application HMAC
@@ -399,3 +400,34 @@ No Authority Worker, control D1, Access policy, HMAC secret, permit key, route,
 migration, or deployment has been created remotely. Exposed-credential
 revocation evidence and every remote staging fault/readback gate remain open.
 Production remains **NO-GO**.
+
+## Immutable Runner And Transport Overlay
+
+The local Authority now implements the five exact endpoints above. Preflight
+is deliberately read-only: it authenticates the request, requires an empty
+body, performs no D1 operation, and returns only `authority_ready`, request ID,
+authenticated credential hash, deployment-pinned permit SPKI fingerprint, and
+Version Metadata ID. The runner pins all returned identities before it may
+send a claim request.
+
+The portable native transport separates four runtime handles: raw account ID,
+Cloudflare read token, Authority HMAC secret, and Cloudflare deployment token.
+The three credential identities must be pairwise distinct. Read/deploy tokens
+are verified against the exact account before use; the claim credential is
+verified through preflight. The HMAC binds issuer, audience, key ID,
+credential, request ID, method, normalized path, canonical-body digest and
+time. Redirects, arbitrary origins/services, ambient environment scanning,
+shells, SDK retries and `force` are absent.
+
+The production trust root is the compiled Rust launcher, not the JavaScript
+reference module. Its checked-in release is disabled and runtime inputs cannot
+replace its embedded identity. An enabled artifact remains prohibited until a
+clean two-build digest, strict canonical manifest, source/module inventory,
+test evidence, release policy and independent DSSE Ed25519 signature are
+verified and the artifact is installed by digest outside the checkout.
+
+After release verification, the missing Rust orchestrator must resume solely
+from the exact Authority claim. A persisted inflight mutation may perform
+stable readback but can never schedule a second POST under the same
+authorization. No signed enabled release or live orchestration exists yet;
+production remains **NO-GO**.

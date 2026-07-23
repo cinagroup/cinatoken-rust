@@ -25,6 +25,20 @@ afterEach(async () => {
 
 describe("ring transition Authority Workerd runtime", () => {
   it("creates, exactly replays, reads, and advances a signed D1 claim", async () => {
+    const preflight = await authorityFetch(
+      "GET",
+      "/internal/v1/ring-transition/preflight",
+      { requestId: "authority-preflight-1" },
+    );
+    expect(preflight.status).toBe(200);
+    expect(await preflight.json()).toMatchObject({
+      result: "authority_ready",
+      requestId: "authority-preflight-1",
+      credentialIdSha256,
+      permitSpkiSha256:
+        "471850d2dcfe546734941e2d44fde594cb3e4445900da72536ac9683f6be5d10",
+    });
+
     const claim = await claimFixture();
     const permit = await signedPermit(claim);
     const createBody = canonicalJson({

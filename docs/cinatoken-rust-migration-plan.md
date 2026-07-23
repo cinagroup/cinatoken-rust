@@ -17637,3 +17637,68 @@ default-disabled deployment, authentication and replay fault campaigns,
 immutable runner proof, the full Edge -> sharded DO -> Linux Container ->
 KV/D1/R2 campaign, P5-B, and Go/VPS drain remain open. Go/VPS remains traffic
 and scheduler authority, and production remains **NO-GO**.
+
+## 22.269 Immutable Runner And Native Transport Overlay (2026-07-23)
+
+This overlay supersedes the remaining local runner/transport statements in
+sections 22.267-22.268. It does not authorize staging or production mutation.
+The current local implementation now contains three additional fail-closed
+boundaries:
+
+1. `crates/ring-transition-runner` is a compiled Rust launcher with only
+   `--describe` and `--execute`. Its checked-in release is disabled and its
+   trust identity cannot be replaced through argv, environment, a mutable
+   checkout, or a caller-selected file.
+2. `relay_container_ring_transition_native_transport.mjs` is the portable,
+   fault-injectable reference transport. It reads four fixed handles only:
+   account ID, read token, claim-HMAC secret, and deployment token. Raw secret
+   values are not enumerable or included in receipts.
+3. the Authority exposes a fifth, read-only
+   `GET /internal/v1/ring-transition/preflight` route. It verifies the
+   application HMAC and returns only the authenticated credential hash,
+   permit-SPKI fingerprint, and exact Authority Worker version needed to bind
+   later claim traffic. It does not require a write gate or touch D1.
+
+The runner trust digest now pins the Authority origin, Worker version, HMAC
+issuer/audience/key ID, permit issuer/key ID/SPKI fingerprint, account,
+services, versions, policies, approval keys, ledger, and release evidence. The
+transport verifies the read and deploy token identities against the exact
+Cloudflare account before use, verifies the HMAC identity through preflight,
+uses fixed HTTPS origin/path/service allowlists, disables redirects, streams
+bounded JSON, and has one underlying fetch call site. It never invokes a
+shell, Wrangler, the Cloudflare SDK, caller-selected URLs, or automatic POST
+retry.
+
+Transport classification is intentionally asymmetric. A validated 4xx is
+`rejected`; 408, 425, 429, any 5xx, timeout, reset, truncation, oversized body,
+invalid success JSON, or Authority `outcome_unknown=true` is `ambiguous`.
+Neither class is resent. Only exact authenticated readback may classify a
+persisted mutation intent, and an inflight intent is permanently readback-only
+under the same authorization.
+
+### Remaining P0 release and orchestration gates
+
+The compiled launcher is a foundation, not an enabled immutable release. The
+next implementation must complete these gates in order:
+
+1. produce a create-new canonical release manifest and DSSE Ed25519 signature
+   with an independent release key;
+2. bind clean commit/tree, source archive, lockfiles, package metadata,
+   toolchain/target/environment allowlist, sorted module inventory, final
+   artifact digest, and two-build reproducibility digest;
+3. bind the exact Authority version/SPKI and all test/fault/security evidence,
+   then install the launcher by digest outside the writable checkout;
+4. implement the Rust-owned resumable state machine: claim once, read the
+   exact claim on every start, persist intent before one POST, perform two
+   stable authenticated readbacks, append evidence, and seal a create-new
+   hash-chained redacted receipt;
+5. inject crashes before and after every network/D1/evidence boundary and prove
+   restart from either inflight state performs readback only; and
+6. only after exposed-credential revocation evidence and independent review,
+   provision the isolated staging control plane with every write gate false.
+
+The current launcher does not call the reference transport, no signed enabled
+release exists, and no remote Cloudflare resource or mutation was created.
+See `docs/relay-container-ring-transition-runner.md` for the artifact and
+execution contract. Go/VPS remains authoritative and production remains
+**NO-GO**.

@@ -1,5 +1,15 @@
 import { describe, expect, test } from "vitest";
 import worker from "../src/index";
+import {
+  createHmacTokenForTest,
+  sha256Hex,
+  type AuthorityTokenClaims,
+} from "../src/protocol";
+import {
+  CURRENT_CREDENTIAL,
+  CURRENT_SECRET,
+  securityEnv,
+} from "./fixtures";
 
 const disabledEnv = {
   ENVIRONMENT: "staging",
@@ -65,5 +75,55 @@ describe("HTTP boundary", () => {
       {} as ExecutionContext,
     );
     expect(unknown.status).toBe(404);
+  });
+
+  test("authenticates a read-only preflight without touching D1 or write gates", async () => {
+    const path = "/internal/v1/ring-transition/preflight";
+    const now = Math.floor(Date.now() / 1000);
+    const claims: AuthorityTokenClaims = {
+      issuer: "runner-staging",
+      audience: "authority-staging",
+      credential_id_sha256: CURRENT_CREDENTIAL,
+      request_id: "preflight-request-1",
+      method: "GET",
+      path_and_query: path,
+      body_sha256: await sha256Hex(new Uint8Array()),
+      issued_at: now,
+      expires_at: now + 30,
+    };
+    const token = await createHmacTokenForTest(
+      CURRENT_SECRET,
+      "current-v1",
+      claims,
+    );
+    const response = await worker.fetch(
+      new Request(`https://authority.example${path}`, {
+        headers: { "x-cinatoken-ring-authority": token },
+      }),
+      {
+        ...securityEnv({
+          RING_TRANSITION_PERMIT_SPKI_SHA256: "f".repeat(64),
+        }),
+        ENVIRONMENT: "staging",
+        RING_TRANSITION_AUTHORITY_ENABLED: "true",
+        RING_TRANSITION_CLAIM_WRITE_ENABLED: "false",
+        RING_TRANSITION_STEP_WRITE_ENABLED: "false",
+        RING_TRANSITION_EXPIRY_WRITE_ENABLED: "false",
+        CF_VERSION_METADATA: {
+          id: "authority-version-001",
+          tag: "",
+          timestamp: "",
+        },
+      } as never,
+      {} as ExecutionContext,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      result: "authority_ready",
+      requestId: "preflight-request-1",
+      credentialIdSha256: CURRENT_CREDENTIAL,
+      permitSpkiSha256: "f".repeat(64),
+      authorityVersionId: "authority-version-001",
+    });
   });
 });

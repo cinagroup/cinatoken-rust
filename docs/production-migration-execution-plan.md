@@ -2454,3 +2454,52 @@ append, then prove lifetime POST count at most one per service.
 No remote Cloudflare operation, credential read, release signing, artifact
 installation, customer traffic, provider call, or financial mutation occurred.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-23 Rust Resumable Orchestrator Core Addendum
+
+This addendum supersedes only the statement above that the Rust capability and
+snapshot reducer are entirely open. The new library is offline and
+non-authorizing; phases J-L still require an enabled immutable release, live
+bounded clients and retained remote evidence.
+
+| Phase | Required action | Pass evidence | Abort and retain |
+| --- | --- | --- | --- |
+| K0 snapshot reconstruction | Read bounded strict Authority claim/state/steps/expiry bytes and reconstruct one continuous versioned history | Claim/state/final timestamps bind; every version occurs exactly once; canonical claim/step/expiry digests match; duplicate/unknown/mixed query results fail | Any gap, duplicate, digest/actor/status/time mismatch, oversized body or unknown field |
+| K1 pure resume decision | Derive only read, intent append, inflight observation, Authority wait or receipt seal from verified state and current time | Controller/Edge inflight remains readback-only before and after expiry; terminal states cannot prepare intent; no reducer branch returns deployment POST | A restored, replayed, expired or terminal snapshot can schedule a write |
+| K2 fresh intent append | Consume a typed prepared intent into one request-ID-bound append attempt; accept only exact `step_appended` | Response binds request ID, authorization, claim, state/status, step digest and Authority version; `step_replayed` mints no permit | Generic/reusable response bytes, replay, ambiguity or drift can mint a permit |
+| K3 single transport join | Consume the typed permit and exact canonical request digest at the sole Rust deployment POST call site | Lifetime deployment history contains at most one POST per service; pinned account/service/target/body match | Descriptor-only send, clone/serialization, force, retry/fallback, caller URL or second POST |
+| K4 stable result proof | On accepted or ambiguous response, perform two authenticated exact target reads under signed timing bounds and append one terminal/recovery step | Same target/deployment set/version details twice; post-readback request digest matches persisted intent | HTTP success alone advances state, pair is too close/old, reads drift, or ambiguity is resent |
+| K5 receipt and restart | Append create-new hash-chained digest-only evidence and restart after every durable/network boundary | One continuous receipt chain binds release, Authority version, claim, steps, reads and final state; every inflight restart reads only | Mutable/overwritten receipt, secret/body leak, missing predecessor, skipped observation or write after restart |
+| K6 signed artifact campaign | Verify fixed sidecars/current executable, then run concurrent/crash/fault matrix with the exact digest-installed artifact | Two isolated builds match, independent DSSE passes, release/module closure includes orchestrator, complete fault packet is retained | Writable/unpinned executable, unsigned/mixed candidate, missing crash point or non-reproducible build |
+
+### Required fault points
+
+The campaign must kill or isolate the runner at least:
+
+1. before and after fixed-sidecar/current-executable verification;
+2. before and after each credential identity proof;
+3. before claim POST, after claim response loss and after exact claim readback;
+4. before Authority intent append, after append commit/response loss, and after
+   fresh append confirmation;
+5. immediately before the deployment POST, during upload, after headers, after
+   response loss and before the first readback;
+6. before, between and after both stable readbacks;
+7. before and after each post-readback Authority append; and
+8. before and after each local receipt append and final seal.
+
+Run each point for Controller and Edge, with two concurrent runner processes,
+Authority 4xx/5xx/timeout/truncation, D1 outcome-unknown, Cloudflare
+408/425/429/5xx/reset/invalid JSON, clock-boundary expiry and target drift.
+The invariant is lifetime count, not per-process count: no restart or second
+process may create a second deployment POST for one service under one
+authorization.
+
+### Rollout consequence
+
+This core advances local readiness from "state machine absent" to "pure
+decision and capability boundary implemented." It does not advance phase L.
+The Rust HTTP/credential/release/receipt integration, signed stable-read timing
+policy, real fault campaign, exposed-credential revocation, isolated control
+D1/Authority/Access resources, four-layer old/new ring overlap, P5-B and
+Go/VPS drain remain mandatory. No remote action occurred; production remains
+**NO-GO**.

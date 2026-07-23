@@ -17805,3 +17805,118 @@ full crash/restart matrix before any remote mutation review.
 No credential or remote API was used. The launcher and Authority write gates
 remain disabled, Go/VPS remains authoritative, and production remains
 **NO-GO**.
+
+## 22.272 Rust Resumable Orchestrator Core Overlay (2026-07-23)
+
+This overlay supersedes the statement in section 22.271 that the Rust reducer
+and typed fresh-intent capability are wholly unimplemented. It closes only the
+pure, offline orchestration core. It does not enable `--execute`, read a
+credential, call the Authority, call Cloudflare, sign or install a release, or
+authorize staging.
+
+### Implemented local boundary
+
+`crates/ring-transition-runner/src/orchestrator.rs` now provides:
+
+1. bounded strict parsing of Authority snapshots and append responses,
+   including unknown-field and recursive duplicate-field rejection;
+2. cross-language canonical JSON/SHA-256 compatible with the existing
+   JavaScript claim and step fixtures;
+3. reconstruction of claim, ordered step and expiry-event digests;
+4. claim/state identity, timestamp, state-version, actor, transition,
+   transport-outcome and final-state validation;
+5. pre-expiry enforcement for every non-inflight step, while allowing an
+   already-sent inflight mutation to be classified by post-expiry readback;
+6. detection of gaps, duplicates and mixed sequential-query versions across
+   claim, state, step and expiry results;
+7. exact post-readback linkage to the immediately preceding persisted
+   Controller or Edge request digest;
+8. a pure reducer with read/append/observe/wait/seal decisions and no remote
+   deployment-write decision;
+9. typed Controller and Edge intent preparation from only the corresponding
+   legal pre-inflight state;
+10. a non-cloneable Authority append attempt bound to one request ID;
+11. a private, non-cloneable, non-serializable fresh permit produced only by
+    an exact `step_appended` response, never `step_replayed`; and
+12. a second consuming bind from that permit to the exact canonical deployment
+    request digest, pinned service/target and still-live claim expiry.
+
+The Rust orchestrator source is now part of the 17-file clean-commit release
+module closure. An otherwise valid signed packet cannot omit the code that
+decides whether a deployment write is structurally possible.
+
+### Restart and write-authority invariant
+
+| Observed condition | Pure Rust decision | Write capability |
+| --- | --- | --- |
+| `claimed` before expiry | Read and verify T1 | None |
+| `t1_verified` before expiry | Prepare and append Controller intent | None until exact fresh append |
+| fresh Controller `step_appended` in the same process | Consume attempt into Controller permit | One typed request-digest bind |
+| Controller `step_replayed` or process restart | Observe Controller | None |
+| `controller_verified` before expiry | Read old Edge | None |
+| `edge_prechecked` before expiry | Prepare and append Edge intent | None until exact fresh append |
+| fresh Edge `step_appended` in the same process | Consume attempt into Edge permit | One typed request-digest bind |
+| Edge `step_replayed` or process restart | Observe Edge | None |
+| pre-mutation authorization expiry | Wait for Authority expiry transition | None |
+| post-Controller pre-Edge expiry | Wait for Authority recovery transition | None |
+| any inflight state after expiry | Observe exact target | None |
+| completed/recovery/aborted/expired | Seal receipt | None |
+
+The reducer never emits `Deploy`. A future transport may accept only
+`AuthorizedMutation<ControllerMutation|EdgeMutation>` at its sole POST call
+site. A serializable step, valid request descriptor, persisted inflight row,
+replayed append response, or restored process state is insufficient.
+
+### Next P0 implementation sequence
+
+1. **Release verifier in Rust:** parse the fixed packet/policy siblings, verify
+   canonical DSSE Ed25519, compiled policy/key/origin pins, current executable
+   digest and publication receipt before environment or network access.
+2. **Coherent Authority client:** use fixed origin/path/HMAC policy, bounded
+   bodies and no redirects; obtain one transaction/version-consistent snapshot
+   or reject drift. Authority writes may use exact primary readback for outcome
+   classification but never a second semantic mutation.
+3. **Read credential and stable observations:** verify account/token identity,
+   read exact Controller/Edge deployments and version details twice under
+   signed minimum-gap and maximum-pair-age bounds, and compare canonical
+   deployment-set digests.
+4. **Single POST join:** consume `AuthorizedMutation<S>` at the only deployment
+   fetch call site. No generic URL, service, version, body, force, retry,
+   fallback or caller-provided Authorization input is allowed.
+5. **Evidence and receipt:** append each bounded digest-only observation to the
+   Authority and a local create-new hash chain. Seal final state, release
+   identity, Authority version, claim, step/evidence digests, request-ID
+   digests and prior receipt hash without raw secrets or bodies.
+6. **Crash/restart matrix:** terminate before/after each release, credential,
+   claim, append, POST, read and receipt boundary; run two concurrent
+   executors; inject Authority/D1/Cloudflare timeout, reset, truncation,
+   duplicate response and process restart; prove one claim owner and at most
+   one lifetime POST per service.
+7. **Release and staging ceremony:** perform two isolated reproducible builds,
+   independent signature and digest installation; only after credential
+   revocation evidence and independent review may the isolated control plane
+   be created with every write gate false.
+
+### Acceptance and abort criteria
+
+A local implementation passes this stage only when every snapshot/history
+mutation test, both Controller/Edge capability tests, cross-language digest
+fixtures, release-module closure tests and no-secret/static source checks pass.
+Remote staging later passes only when the exact signed artifact, Authority
+ledger and Cloudflare deployment history independently demonstrate:
+
+- one claim owner and no skipped or rewritten state;
+- zero deployment POST from replay, restart, expiry, drift or invalid input;
+- at most one Controller POST and one Edge POST for the authorization;
+- two stable exact-target observations after accepted or ambiguous transport;
+- one immutable terminal/recovery classification and complete receipt chain;
+- zero customer, provider, billing, application-D1 or Go/VPS authority delta.
+
+Any mixed snapshot, unverified release, missing revocation, duplicate POST,
+target drift, receipt gap, unexplained control-plane change or nonzero business
+delta aborts the ceremony. Retain evidence, keep the Rust gates disabled, keep
+Go/VPS hot, and repair forward with a new candidate and authorization.
+
+No remote Cloudflare operation or credential read occurred in this overlay.
+The checked-in launcher and all Authority write gates remain disabled, Go/VPS
+remains authoritative, and production remains **NO-GO**.

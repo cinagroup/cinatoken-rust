@@ -8358,12 +8358,17 @@ single-use permits and zero POST retry. A source guard rejects ambient
 `process.env`, console logging, high-level unbounded response readers,
 Wrangler, child processes and multiple fetch call sites.
 
-The Rust package target is six tests across library, binary and CLI
-integration suites. They prove the checked-in release is deterministic and
-disabled, every enabled identity requires all release/Authority pins, only two
-fixed commands are accepted, the staging Authority origin is exact rather than
-caller-selected, runtime trust/secret poisoning does not alter description,
-and execution/override arguments fail before credentials or network.
+The Rust package target is now 16 tests: 13 library, one binary and two CLI
+integration tests. The original launcher cases still prove the checked-in
+release is deterministic and disabled, every enabled identity requires all
+release/Authority pins, only two fixed commands are accepted, the staging
+Authority origin is exact rather than caller-selected, runtime trust/secret
+poisoning does not alter description, and execution/override arguments fail
+before credentials or network. The new library cases prove strict Authority
+snapshot/history reconstruction, cross-language canonical digests,
+readback-only inflight resumption, Authority-owned expiry, exact fresh append
+versus replay, request-digest binding, and complete Controller/Edge typed
+capability flow.
 
 The Authority aggregate additionally verifies the read-only preflight route.
 It must require an empty authenticated request, use no D1 operation or write
@@ -8372,16 +8377,18 @@ Version Metadata ID. The configuration gate remains restricted to the control
 D1 and Version Metadata with every write flag false.
 
 Passing local commands do not publish the required DSSE-signed reproducible
-release and do not implement the Rust resumable orchestrator. They do not
-prove token revocation, Access, remote D1, route, deployed version, stable
-Cloudflare readback, customer traffic, billing conservation, P5-B or Go/VPS
-drain. No remote action is claimed; production remains **NO-GO**.
+release or implement the Rust release/credential/HTTP/stable-read/receipt
+integration around the pure orchestrator. They do not prove token revocation,
+Access, remote D1, route, deployed version, stable Cloudflare readback,
+customer traffic, billing conservation, P5-B or Go/VPS drain. No remote action
+is claimed; production remains **NO-GO**.
 
-The final repository aggregate passed on 2026-07-23 in 637.7 seconds. It
-included the six runner tests, 58 ring-transition contract tests, 22 Authority
-unit tests, two Authority Workerd tests, 22 Authority configuration/preflight
-tests, the Rust workspace, all configured wasm32 builds, D1 migration/schema
-gates, Worker dry-runs, frontend checks, and the existing fault suites.
+The current final repository aggregate passed on 2026-07-23 in 656.6 seconds.
+It included the 16 runner tests, 16 detached release/source tests, 58
+ring-transition contract tests, 22 Authority unit tests, two Authority Workerd
+tests, 22 Authority configuration/preflight tests, the Rust workspace, all
+configured wasm32 builds, D1 migration/schema gates, Worker dry-runs, frontend
+checks, and the existing fault suites.
 
 ## Detached Runner Release Verification (2026-07-23)
 
@@ -8402,8 +8409,8 @@ The release addition contributes 16 Bun tests:
   untracked change rejection, missing-module rejection, CLI collection and
   caller-override rejection.
 
-The Rust launcher still contributes six tests and now describes a fixed
-detached `releaseTrust` rather than embedding its own future artifact digest.
+The Rust package contributes 16 tests and describes a fixed detached
+`releaseTrust` rather than embedding its own future artifact digest.
 The focused gate also runs both CLIs in describe mode. No test reads a real
 release/transition credential, calls a network service, signs with a production
 key, writes outside its temporary fixture, installs an artifact, enables
@@ -8411,7 +8418,7 @@ execution or changes Cloudflare.
 
 These tests validate the packet and source foundations only. Two isolated real
 builds, a retained DSSE signature, compiled non-null pins, Rust-side sidecar and
-self-digest verification, publication receipt, resumable orchestrator,
+self-digest verification, publication receipt, live orchestrator integration,
 credential revocation and remote staging evidence remain open. Production
 remains **NO-GO**.
 
@@ -8431,6 +8438,22 @@ The native-transport subset now proves:
   and
 - timeout-like and response-loss results remain ambiguous and never retry.
 
-These are JavaScript reference-transport tests. They do not prove a Rust
-capability type, process-restart behavior, persisted hash-chain receipt,
-stable-read timing, remote deployment history, or any enabled release.
+The JavaScript reference-transport cases now have a Rust structural
+counterpart. Rust tests additionally prove:
+
+- mixed claim/state/step/expiry versions, gaps, duplicate JSON fields and
+  oversized snapshots fail closed;
+- restored Controller and Edge inflight snapshots choose observation only;
+- a non-cloneable request-ID-bound append attempt yields a typed permit only
+  for exact `step_appended`, while `step_replayed` yields none;
+- request-digest drift or claim expiry spends no write authority; and
+- a complete Controller-to-Edge history reaches receipt sealing while each
+  phase remains type-separated.
+
+Run `cargo test -p cinatoken-ring-transition-runner` directly or use the
+combined `bun run check:ring-transition-runner`. The combined gate currently
+executes 16 Rust tests and 16 Bun release/source tests.
+
+These tests do not prove the future Rust HTTP call site consumes the type,
+process crash behavior around a real network send, persisted hash-chain
+receipt, stable-read timing, remote deployment history or an enabled release.

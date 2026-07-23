@@ -442,8 +442,56 @@ digest, and persisted request digest. A mismatch fails before `fetch`. This
 closes the reference transport's arbitrary-valid-version gap, but does not
 replace the required Rust implementation or remote fault proof.
 
-After release verification, the missing Rust orchestrator must resume solely
-from the exact Authority claim. A persisted inflight mutation may perform
-stable readback but can never schedule a second POST under the same
+After release verification, the Rust orchestrator integration must resume
+solely from the exact Authority claim. A persisted inflight mutation may
+perform stable readback but can never schedule a second POST under the same
 authorization. No signed enabled release or live orchestration exists yet;
+production remains **NO-GO**.
+
+## Rust Orchestrator Core Overlay
+
+The offline Rust orchestration core exists; release verification, credential
+loading, HTTP clients, stable-read timing, receipt persistence and live
+orchestration remain open.
+
+The Rust parser accepts only a bounded, strict Authority snapshot. It rebuilds
+the claim and complete step/expiry history rather than trusting independently
+queried `state` as a decision oracle. Every state version must occur exactly
+once, each transition must match the 0060 protocol, execution steps must use
+the claim owner, expiry must use a different Authority actor, post-readback
+must repeat the preceding intent request digest, and reconstructed final
+status/time must match the state row.
+
+The pure reducer has no deployment-write result. It selects a new intent append
+only from `t1_verified` or `edge_prechecked`; either inflight state always
+selects observation, including after expiry. Pre-mutation expiry waits for the
+Authority to record `expired`; post-Controller pre-Edge expiry waits for
+Authority-owned `recovery_required`.
+
+Write authority is represented by consumed types:
+
+```text
+VerifiedSnapshot
+  -> PreparedMutationIntent<S>
+  -> AuthorityAppendAttempt<S>
+  -> FreshIntentPermit<S>
+  -> AuthorizedMutation<S>
+```
+
+`AuthorityAppendAttempt<S>` binds one request ID and is not cloneable. Only an
+exact `step_appended` response consumes it into `FreshIntentPermit<S>`;
+`step_replayed` does not. The permit is private, non-cloneable,
+non-serializable and consumed when the exact canonical request digest is
+bound. Claim expiry is carried through the type chain and rechecked at the
+final bind; the resulting authorized value retains the deadline for a second
+check immediately before network I/O. Controller and Edge are distinct sealed
+phase types, so a Controller permit cannot authorize an Edge target or state
+version.
+
+The future Rust deployment client must accept only
+`AuthorizedMutation<S>` at its sole POST call site. This rule is not yet
+integrated or remotely proven. A signed release, current-executable
+verification, bounded Authority/Cloudflare clients, two timed stable reads,
+hash-chained receipt and full crash/restart campaign remain required. The
+checked-in launcher is still disabled, no remote operation occurred, and
 production remains **NO-GO**.

@@ -72,6 +72,7 @@ describe("Relay Container ring-transition runner release contract", () => {
       "crates/ring-transition-runner/Cargo.toml",
       "crates/ring-transition-runner/src/lib.rs",
       "crates/ring-transition-runner/src/main.rs",
+      "crates/ring-transition-runner/src/orchestrator.rs",
       "crates/ring-transition-runner/tests/cli.rs",
       "package.json",
       "tests/relay-container-ring-transition-release-source.test.mjs",
@@ -127,7 +128,7 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.moduleCount).toBe(16);
+    expect(result.moduleCount).toBe(17);
   });
 
   test("CLI verifies consistency without claiming compiled trust or installation", async () => {
@@ -403,6 +404,10 @@ async function releaseFixture({
     [
       "crates/ring-transition-runner/src/main.rs",
       "runner-main-fixture",
+    ],
+    [
+      "crates/ring-transition-runner/src/orchestrator.rs",
+      "runner-orchestrator-fixture",
     ],
     [
       "crates/ring-transition-runner/tests/cli.rs",

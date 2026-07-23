@@ -79,7 +79,7 @@ describe("ring-transition runner release source collector", () => {
     expect(first.moduleInventory.files.map((record) => record.path)).toEqual(
       [...first.moduleInventory.files.map((record) => record.path)].sort(),
     );
-    expect(first.moduleCount).toBe(16);
+    expect(first.moduleCount).toBe(17);
   });
 
   test("rejects tracked changes and untracked files before reading a candidate", async () => {
@@ -176,6 +176,10 @@ async function fixtureRepository({ omit = null } = {}) {
     [
       "crates/ring-transition-runner/src/main.rs",
       "fn main() {}\n",
+    ],
+    [
+      "crates/ring-transition-runner/src/orchestrator.rs",
+      "pub fn orchestrator_fixture() {}\n",
     ],
     [
       "crates/ring-transition-runner/tests/cli.rs",

@@ -2987,3 +2987,33 @@ Worker, live read/claim/deploy transports, immutable enabled runner artifact,
 credential revocation, remote 0059, fault campaign, P5-B, Go/VPS drain, and
 production decision remain open. No Cloudflare request or mutation occurred.
 Production remains **NO-GO**.
+
+## 2026-07-23 Rust Ring Transition Resumption Core
+
+The Rust runner now contains a pure resumable orchestration library aligned to
+the current 0060 Authority protocol. It strictly parses one bounded
+claim/state/step/expiry snapshot, rejects unknown and duplicate fields,
+recomputes canonical cross-language digests, reconstructs every state version,
+and rejects mixed sequential-query results. Execution steps remain claim-owner
+bound; expiry remains Authority-owned; post-readback evidence must repeat the
+immediately preceding persisted request digest.
+
+The reducer cannot return a deployment action. It returns reads, intent
+appends, inflight observations, Authority expiry/recovery waits or terminal
+receipt sealing. Controller and Edge inflight states are readback-only even
+after expiry.
+
+A new mutation uses sealed Controller/Edge phase types. The prepared intent is
+consumed into a non-cloneable, request-ID-bound Authority append attempt. Only
+an exact fresh `step_appended` result consumes that attempt into a private
+non-cloneable/non-serializable permit; replay does not. Binding the exact
+canonical deployment request digest consumes the permit again. The
+orchestrator source is now mandatory in the 17-file detached-release module
+closure.
+
+This closes the local pure reducer and capability gap only. Rust fixed-sidecar
+verification, credential/Authority/Cloudflare clients, sole-POST type join,
+timed stable double readback, create-new hash-chained receipt, two-build signed
+release, crash matrix, exposed-credential revocation and every remote staging
+or production gate remain open. Go/VPS remains authoritative and production
+remains **NO-GO**.

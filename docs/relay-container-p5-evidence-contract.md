@@ -584,3 +584,45 @@ not issued for `step_replayed`, ambiguity, or restart recovery. The body must
 bind the full authorization ID, state version, semantic intent digest, exact
 service, and exact target before network I/O. Evidence that merely shows a
 valid request shape or a persisted inflight row is insufficient.
+
+## Rust Orchestrator Evidence Overlay
+
+The local Rust runner now implements the pure snapshot and fresh-capability
+boundary. This changes the required P5 evidence from "Rust implementation
+absent" to "Rust integration and remote proof absent."
+
+The `ring-transition-runner-release-v1` module inventory must contain
+`crates/ring-transition-runner/src/orchestrator.rs` with its exact committed
+byte length and SHA-256. The execution receipt must bind that release item and
+add:
+
+1. Authority snapshot byte digest, response byte count, Authority Worker
+   version and the reconstructed final state version;
+2. canonical claim digest plus ordered step/expiry digests, with no missing or
+   duplicated version;
+3. the reducer decision before every network boundary;
+4. append request-ID digest and whether Authority returned fresh append,
+   exact replay, conflict or outcome-unknown;
+5. the persisted intent digest and exact canonical Cloudflare request digest
+   consumed by the typed permit;
+6. stable-read observation digests, timestamps, minimum gap, maximum pair age,
+   deployment set, active version and version-detail digest;
+7. process/restart generation and crash-point ID without serializing a permit;
+8. deployment history readback proving lifetime POST count zero or one for the
+   corresponding service; and
+9. prior-receipt digest and final create-new receipt digest.
+
+Raw snapshots need not be retained in P5 when they include provider-managed
+metadata beyond the allowlist; retained evidence may be canonical digest-only
+projections. The verifier must nevertheless recompute or independently attest
+every digest from access-controlled source evidence. Raw credentials, HMAC,
+private keys, Authorization/Access headers, deployment bodies, unrestricted
+Cloudflare responses, SQL errors and customer/provider payloads remain
+forbidden.
+
+Local unit tests prove structure only: strict parsing, mixed-history rejection,
+readback-only inflight resumption, fresh-versus-replayed append, request-digest
+consumption and full Controller/Edge history. P5 remains incomplete until the
+signed artifact's sole HTTP call site consumes the Rust authorized type and
+remote Authority/D1/deployment history plus the crash matrix proves at most one
+POST per service. Production remains **NO-GO**.

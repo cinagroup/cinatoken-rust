@@ -220,23 +220,97 @@ The production launcher verifies compiled pins, fixed sidecars, DSSE,
 manifest, current executable and publication receipt before reading the four
 runtime handles.
 
-## Remaining execution state machine
+## Rust resumable core
 
-The next code boundary is the Rust-owned resumable orchestrator:
+`crates/ring-transition-runner/src/orchestrator.rs` now owns the first
+production-language state-machine boundary. It remains a pure, offline library:
+it has no credential, clock, filesystem, HTTP, D1, Cloudflare SDK, subprocess,
+or remote mutation capability.
 
-1. verify the fixed policy/packet, DSSE, current executable, signed transition,
-   authorization and permit;
-2. verify all three credentials and claim once;
-3. read the exact claim on every start and derive the only legal next action;
-4. persist Controller intent before one deployment POST;
-5. perform two stable authenticated readbacks and append verified or recovery
-   evidence;
-6. repeat the same intent/one-POST/readback sequence for Edge; and
-7. seal a create-new, hash-chained redacted receipt.
+The module parses one bounded Authority snapshot with strict structs,
+unknown-field rejection and recursive duplicate-key detection. It recomputes
+the canonical claim, step and expiry SHA-256 values using the same ASCII-key
+ordering and JavaScript-safe integer domain as the Authority contracts. It
+then proves:
 
-Crash injection is required at every network and evidence boundary. Restart
-from either inflight state is readback-only and can never schedule another
-deployment POST under the same authorization.
+- claim/state identity and timestamp binding;
+- a continuous state-version history across step and expiry rows;
+- exact `from_status -> to_status` and step-shape legality;
+- claim-owner execution steps and a distinct Authority expiry actor;
+- pre-mutation/read-only steps occur before claim expiry, while only an
+  already-inflight Controller/Edge post-readback may be recorded afterward;
+- post-readback request digests equal the immediately preceding mutation
+  intent; and
+- the final state, version, update time and terminal time agree with the
+  reconstructed history.
+
+This closes a sequential-query failure mode: independently valid claim, state,
+step and expiry query results cannot be assembled into a mixed-version
+snapshot and treated as one execution state.
+
+The reducer returns only:
+
+```text
+ReadT1
+AppendControllerIntent
+ObserveController
+ReadEdgePrevious
+AppendEdgeIntent
+ObserveEdge
+AwaitAuthorityExpiry
+AwaitAuthorityRecovery
+SealReceipt
+```
+
+There is deliberately no `Deploy` decision. A restored
+`controller_inflight` or `edge_inflight` snapshot always returns an observation
+decision, including after authorization expiry.
+
+For a new mutation, the library creates a typed
+`PreparedMutationIntent<ControllerMutation|EdgeMutation>`. Beginning an
+Authority append consumes that intent and binds a request ID in a non-cloneable
+`AuthorityAppendAttempt<S>`. Only an exact, bounded, duplicate-free
+`step_appended` response with matching request ID, authorization, claim,
+Authority version, target status, state version and step digest consumes the
+attempt into `FreshIntentPermit<S>`. `step_replayed` returns no permit. The
+permit is private, non-cloneable and non-serializable; binding the exact
+canonical Cloudflare request digest consumes it again into
+`AuthorizedMutation<S>`. The claim expiry travels through the capability chain;
+the final bind rejects `now >= expires_at`, and the authorized value retains
+the deadline for the future sole POST call site to recheck immediately before
+network I/O.
+
+The new module is included in both required release-module inventories. A
+signed runner packet that omits or changes the Rust orchestrator therefore
+cannot satisfy the release verifier.
+
+## Remaining execution boundary
+
+The pure core is not a live executor. The next code boundaries are:
+
+1. implement Rust fixed-sidecar policy/DSSE/current-executable verification and
+   create-new publication receipt verification;
+2. load only the fixed credential handles after release verification, prove
+   read/claim/deploy identity separation and complete exactly one claim;
+3. build a bounded Authority client that obtains a transactionally coherent
+   snapshot or detects query-version drift, then feeds only verified bytes to
+   the reducer;
+4. implement authenticated Controller/Edge deployment readers with a
+   signed-policy timing window for two stable observations;
+5. join `AuthorizedMutation<S>` directly to the sole deployment POST call site
+   so no request can be sent from a restored snapshot or reusable descriptor;
+6. append immutable readback outcomes and seal a create-new, hash-chained,
+   redacted execution receipt; and
+7. inject process death before and after release verification, claim, every
+   Authority append/readback, the one deployment POST, each stable read and
+   each receipt append.
+
+Acceptance requires lifetime Cloudflare deployment history of at most one POST
+per service and exact target proof after every ambiguous response. A crash
+before the Authority confirms a fresh intent may retry only the Authority
+append and receives replay/no permit if the original write committed. A crash
+after fresh intent confirmation but before/during/after deployment cannot
+recreate the in-memory permit; restart is readback-only.
 
 ## Local verification
 

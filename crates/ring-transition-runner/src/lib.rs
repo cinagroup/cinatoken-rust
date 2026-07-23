@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::fmt;
 
+pub mod orchestrator;
+
 pub const RELEASE_TRUST_CONTRACT: &str =
     "cinatoken-relay-container-ring-transition-runner-release-trust-v1";
 pub const EXECUTION_CONTRACT: &str =

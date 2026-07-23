@@ -1334,3 +1334,26 @@ release. Go/VPS remains authoritative.
 | One-write structure | Permit is same-process, consumed before validation/network, and cannot be reused; one permit yields at most one POST | Crash/restart/response-loss campaign and deployment history proving lifetime count at most one per service | Local unit pass; remote open |
 | Resumption | Replayed/restored inflight state cannot mint a permit and therefore remains readback-only | Rust reducer, stable double-read timing policy, hash-chained receipt and fault matrix | **P0 implementation open** |
 | Promotion | Launcher/write gates remain disabled and no remote call occurred | Detached signed release, revocation, isolated staging, P5-B and independent approvals | **NO-GO** |
+
+## 2026-07-23 Rust Resumable Orchestrator Core Matrix
+
+This matrix supersedes the local resumption and Rust-capability rows immediately
+above. It does not change the remote or production decision.
+
+| Control | Current local evidence | Required staging/production evidence | Decision |
+| --- | --- | --- | --- |
+| Snapshot strictness | Rust bounded parser rejects unknown/duplicate fields and recomputes canonical claim, step and expiry digests | Bounded authenticated Authority client plus retained malformed/truncated/oversized response campaign | Local core pass; client open |
+| Sequential-query consistency | Continuous version reconstruction binds claim/state/steps/expiry, final status/update/terminal time and actor separation | Transaction/version-consistent remote snapshot or repeatable drift-detection trace against deployed Authority | Local core pass; remote open |
+| Pure resume reducer | Verified states produce only read, append-intent, observe, Authority-wait or seal decisions; no `Deploy` variant exists | Instrumented exact artifact proves every restored inflight state performs only readback | Local core pass |
+| Fresh append capability | Non-cloneable request-ID-bound append attempt is consumed; only exact `step_appended` returns a private non-cloneable/non-serializable typed permit; replay returns none | Authority/D1 trace proves fresh winner versus replay under concurrent and lost-response faults | Local core pass; remote open |
+| Request/service binding | Consuming permit binds exact canonical request digest and pinned Controller/Edge service/target into typed authorized mutation | Sole Rust POST call site accepts only this type and remote drift negatives perform zero POST | Core type pass; transport join open |
+| Controller/Edge parity | Full six-step successful history, Controller and Edge permit phases, Edge inflight resumption and completed seal are covered | Real Controller-first then Edge deployment/readback campaign from signed artifact | Local unit pass; remote open |
+| Release closure | Orchestrator source is mandatory in both clean-commit and signed-packet module inventories; closure now has 17 paths | Two isolated builds and independent DSSE packet over the exact committed candidate | Local closure pass; release open |
+| Stable readback | Reducer selects observation but has no timer/HTTP implementation | Signed minimum gap/maximum age, exact deployment+version reads twice and response-loss/drift campaign | **P0 integration open** |
+| Receipt/restart | Terminal reducer selects seal; permit cannot survive serialization/restart | Create-new hash chain plus crash at every network/Authority/receipt boundary and lifetime POST count at most one per service | **P0 integration open** |
+| Promotion | Checked-in launcher and Authority write gates remain disabled; no credential or remote API was used | Revocation, Rust release/client/receipt integration, isolated staging, four-layer faults, P5-B, rollback and Go/VPS approvals | **NO-GO** |
+
+The local core removes a class of accidental write scheduling; it is not proof
+that the future HTTP call site consumes the capability correctly or that
+Cloudflare observed only one write. Go/VPS remains traffic and scheduler
+authority.

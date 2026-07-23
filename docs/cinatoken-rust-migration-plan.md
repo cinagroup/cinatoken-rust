@@ -17841,7 +17841,8 @@ authorize staging.
 12. a second consuming bind from that permit to the exact canonical deployment
     request digest, pinned service/target and still-live claim expiry.
 
-The Rust orchestrator source is now part of the 17-file clean-commit release
+The Rust orchestrator and release-verifier sources are now part of the 18-file
+clean-commit release
 module closure. An otherwise valid signed packet cannot omit the code that
 decides whether a deployment write is structurally possible.
 
@@ -17920,3 +17921,90 @@ Go/VPS hot, and repair forward with a new candidate and authorization.
 No remote Cloudflare operation or credential read occurred in this overlay.
 The checked-in launcher and all Authority write gates remain disabled, Go/VPS
 remains authoritative, and production remains **NO-GO**.
+
+## 22.273 Rust Detached Release Verifier Overlay (2026-07-23)
+
+This overlay supersedes section 22.272's first P0 item and the section 22.270
+statement that Rust-side packet/current-executable verification is absent. It
+does not supersede the requirement for a real independently signed release,
+non-null reviewed build pins, digest installation, publication receipt, or
+remote evidence.
+
+### Implemented fail-closed chain
+
+`--execute` now follows this fixed order:
+
+1. validate that the compiled release trust is enabled and contains the exact
+   policy SHA-256, release-key SPKI SHA-256 and staging Authority origin;
+2. obtain a whole-second system time only after compiled trust succeeds;
+3. resolve the current executable and only the fixed packet/policy siblings;
+4. perform bounded stable regular-file reads with canonical-parent and
+   same-file identity checks;
+5. strictly parse canonical policy, packet, manifest and module inventory
+   bytes, rejecting unknown fields and recursive duplicate keys;
+6. verify policy/key/origin pins, policy/release validity, key-role separation,
+   one Ed25519 DSSE signature and the standard PAE bytes;
+7. verify source, lock, package, 18-path transitive module closure, repeated
+   build, evidence, Authority, artifact name/length/digest identities; and
+8. require the signed Windows/MSVC or Linux/musl target to match the launcher's
+   compile-time x86_64 architecture/OS/ABI.
+
+The checked-in trust remains `enabled=false` with null pins. It therefore exits
+at step 1 and cannot be enabled by argv, environment, a writable sidecar, a
+renamed executable, or a caller-selected path. Credential loading and network
+transport remain unreachable.
+
+### Cross-language contract and dependency controls
+
+The Rust verifier and JavaScript release contract share the same canonical
+schemas, 18 required paths, DSSE payload type, time bounds and path rules.
+Independent deterministic fixtures bind the Ed25519 SPKI, policy, inventory,
+manifest, packet and signature bytes. Negative tests cover non-canonical and
+duplicate JSON, pin/key/signature/time drift, permit-key inventory omission,
+module/path/build/Authority/evidence drift, artifact replacement, missing
+sidecars, and a valid foreign-platform artifact.
+
+`ed25519-dalek` is pinned to `2.1.1`; it and its `curve25519-dalek` dependency
+declare Rust 1.60 minimums, below the workspace Rust 1.78 MSRV. The verifier
+parses the one exact Ed25519 SPKI DER prefix itself instead of enabling the
+general PKCS#8 feature. The lock also retains Edition-2021/MSRV-compatible
+`base64ct 1.6.0` and `zeroize 1.8.1`; newer Edition-2024 releases are not valid
+for the Rust 1.78 release builder. The runtime verifier performs no HTTP,
+subprocess, environment-variable enumeration, credential read, shell command,
+file write, signing, installation or remote mutation.
+
+### Remaining production gates
+
+| Gate | Required evidence | Abort condition |
+| --- | --- | --- |
+| Real compiled trust | Independently reviewed non-null policy/key/origin pins built from one frozen candidate | Null/placeholder pin, runtime override, key-role overlap or unreviewed origin |
+| Reproducible release | Two separately extracted clean-archive builds produce identical bytes with retained toolchain/environment/test evidence | Dirty input, differing bytes, missing module/evidence or mutable checkout artifact |
+| Independent signing | Offline release owner signs the exact canonical manifest; policy and signature remain current and independently verified | Shared permit/approval/deploy key, future/expired policy, ambiguous owner or packet drift |
+| Atomic installation | JS pre-install verification rejects symlink/hardlink candidates on Windows and Unix; installer creates one digest-addressed immutable generation | In-place overwrite, mixed packet/policy/executable, path escape, writable active generation |
+| Publication receipt | Create-new receipt binds policy, packet, executable, installer identity, destination generation and predecessor/current pointers | Missing receipt, overwrite, receipt/artifact digest drift or non-atomic activation |
+| Runtime integration | Credentials are read only after this verifier; sole Rust POST consumes `AuthorizedMutation<S>`; stable reads and hash-chain receipt complete | Credential before verification, generic send path, retry, restored permit, receipt gap |
+| Staging acceptance | Exact installed digest passes concurrent crash/fault campaign and deployment history proves at most one POST per service | Duplicate POST, target drift, unexplained control/business delta or missing revocation proof |
+
+Windows hardlink count is deliberately not claimed by safe Rust file metadata;
+the existing JavaScript installer verifier remains mandatory for that
+pre-activation check. Unix runtime verification rejects `nlink != 1`; every
+platform also rejects symlinks, non-regular files, identity replacement and
+canonical-parent drift.
+
+### Updated P0 sequence
+
+1. add create-new publication-receipt validation and atomic digest-generation
+   installation;
+2. implement the bounded coherent Authority client and fixed credential
+   identity proofs after release authorization;
+3. join the typed mutation capability directly to the sole Rust deployment
+   POST and add policy-timed stable double readback;
+4. append and seal the create-new digest-only execution receipt;
+5. run two-process crash/restart/response-loss/clock/target-drift campaigns
+   against one independently signed installed artifact; and
+6. only after credential revocation and independent evidence review, consider
+   isolated staging resource creation with every write gate false.
+
+No production key, credential, Cloudflare API, remote resource, customer
+traffic, provider operation, billing state or Go/VPS authority changed in this
+overlay. Production remains **NO-GO**.

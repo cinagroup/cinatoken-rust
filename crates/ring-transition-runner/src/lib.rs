@@ -1,7 +1,9 @@
 use serde::Serialize;
 use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod orchestrator;
+pub mod release;
 
 pub const RELEASE_TRUST_CONTRACT: &str =
     "cinatoken-relay-container-ring-transition-runner-release-trust-v1";
@@ -140,8 +142,36 @@ pub fn describe() -> RunnerDescription {
     }
 }
 
-pub fn authorize_execution() -> Result<(), ReleaseValidationError> {
-    EmbeddedReleaseTrust::checked_in().validate_for_execution()
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecutionAuthorizationError {
+    ReleaseTrust(ReleaseValidationError),
+    ClockUnavailable,
+    ReleaseVerification(release::ReleaseVerificationError),
+}
+
+impl fmt::Display for ExecutionAuthorizationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReleaseTrust(error) => error.fmt(formatter),
+            Self::ClockUnavailable => formatter.write_str("runner clock is unavailable"),
+            Self::ReleaseVerification(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ExecutionAuthorizationError {}
+
+pub fn authorize_execution() -> Result<release::VerifiedRelease, ExecutionAuthorizationError> {
+    let trust = EmbeddedReleaseTrust::checked_in();
+    trust
+        .validate_for_execution()
+        .map_err(ExecutionAuthorizationError::ReleaseTrust)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ExecutionAuthorizationError::ClockUnavailable)?
+        .as_secs();
+    release::verify_current_release(&trust, now)
+        .map_err(ExecutionAuthorizationError::ReleaseVerification)
 }
 
 #[cfg(test)]
@@ -154,7 +184,12 @@ mod tests {
         assert!(!describe().release_published);
         assert!(!describe().credentials_read);
         assert!(!describe().network_requests_performed);
-        assert_eq!(authorize_execution(), Err(ReleaseValidationError::Disabled));
+        assert_eq!(
+            authorize_execution(),
+            Err(ExecutionAuthorizationError::ReleaseTrust(
+                ReleaseValidationError::Disabled
+            ))
+        );
     }
 
     #[test]

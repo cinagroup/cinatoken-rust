@@ -66,8 +66,40 @@ The compiled trust root reserves only non-circular anchors:
 
 Commit/tree/archive/lock/module/build/evidence/Authority-version/permit-SPKI
 identities live in the DSSE-signed manifest. A production launcher will verify
-the fixed policy and packet against the compiled anchors, then hash its current
-executable and compare it to the signed artifact identity.
+the fixed policy and packet against the compiled anchors, hash its current
+executable, compare it to the signed artifact identity, and require the signed
+target triple to match the launcher's compile-time architecture/OS/ABI.
+
+### Rust detached-release verifier
+
+`crates/ring-transition-runner/src/release.rs` now owns the production-language
+release-verification boundary. `--execute` validates the checked-in trust
+configuration before reading the clock, current executable, sidecars,
+credentials, or network. Because the checked-in pins remain disabled/null,
+the repository build still fails at that first gate.
+
+For an enabled release build, the verifier reads only the current executable
+and the two fixed sibling names. It then enforces:
+
+- bounded, canonical, duplicate-free policy, packet, manifest, and module
+  inventory JSON with exact fields;
+- exact compiled policy digest, release-key SPKI digest, and Authority origin;
+- one Ed25519 signature over standard DSSE PAE and whole-second bounded
+  policy/release validity windows;
+- a sorted key-separation inventory that contains the manifest permit key and
+  excludes release/permit key reuse;
+- the complete 18-path transitive module closure, portable paths, module
+  counts/bytes/digests, Git/lock/package identities, and two-build equality;
+- exact evidence, Authority version, executable name, byte length, signed
+  digest, and current executable bytes; and
+- a Windows/MSVC or Linux/musl target that matches the launcher's compile-time
+  x86_64 architecture/OS/ABI at installation-time verification.
+
+Stable file reads reject symlinks, non-regular or empty files, path movement,
+parent escape, replacement between metadata/read checks, and Unix hardlinks.
+The JavaScript pre-install verifier additionally rejects Windows hardlinks.
+That Windows link-count check and a create-new publication receipt remain
+installation-ceremony controls rather than claims made by the Rust verifier.
 
 ### Detached release packet
 
@@ -216,9 +248,10 @@ The signed manifest includes the executable digest but not its own envelope or
 distribution-package digest. A separate publication receipt hashes the policy,
 packet and executable after signing; this avoids a second self-reference.
 The final artifact must be installed by digest outside the source checkout.
-The production launcher verifies compiled pins, fixed sidecars, DSSE,
-manifest, current executable and publication receipt before reading the four
-runtime handles.
+The launcher now verifies compiled pins, fixed sidecars, DSSE, manifest,
+current executable and compile target before reading the four runtime handles.
+The future installer must verify and retain the separate publication receipt
+before making those three files executable/visible as one installed release.
 
 ## Rust resumable core
 
@@ -288,8 +321,8 @@ cannot satisfy the release verifier.
 
 The pure core is not a live executor. The next code boundaries are:
 
-1. implement Rust fixed-sidecar policy/DSSE/current-executable verification and
-   create-new publication receipt verification;
+1. implement create-new publication-receipt verification and atomic
+   digest-addressed installation around the completed Rust sidecar verifier;
 2. load only the fixed credential handles after release verification, prove
    read/claim/deploy identity separation and complete exactly one claim;
 3. build a bounded Authority client that obtains a transactionally coherent

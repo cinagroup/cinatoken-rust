@@ -572,9 +572,11 @@ The local offline verifier now enforces this canonical packet and detached
 DSSE shape, and the clean-source collector derives commit/tree/archive/module
 identities from committed Git objects. These are contract foundations, not a
 release item: there is still no independently signed packet, isolated
-two-build result, non-null compiled pin, Rust-side fixed-sidecar verification,
-installed executable, publication receipt, or execution receipt. P5 remains
-incomplete and production remains **NO-GO**.
+two-build result, non-null compiled pin, installed executable, publication
+receipt, or execution receipt. Rust-side fixed-sidecar, pin, DSSE,
+current-executable and host-target verification now exists locally, but no
+real release has satisfied it. P5 remains incomplete and production remains
+**NO-GO**.
 
 Every execution receipt must additionally prove that each Cloudflare POST was
 enabled by a fresh same-process capability derived from an exact Authority
@@ -626,3 +628,35 @@ consumption and full Controller/Edge history. P5 remains incomplete until the
 signed artifact's sole HTTP call site consumes the Rust authorized type and
 remote Authority/D1/deployment history plus the crash matrix proves at most one
 POST per service. Production remains **NO-GO**.
+
+## Rust Release Verification Evidence Overlay
+
+The release item must now retain enough data for an independent verifier to
+replay every Rust authorization decision:
+
+1. exact compiled enabled flag, fixed sidecar names, policy digest, release-key
+   SPKI digest and Authority origin extracted from the installed executable;
+2. raw canonical policy and packet byte digests plus bounded byte lengths;
+3. independently recomputed DSSE PAE digest, signature result, key ID and SPKI
+   digest without retaining a private key;
+4. all 18 module records and their canonical inventory digest, including
+   `orchestrator.rs` and `release.rs`;
+5. signed target triple, launcher compile-time architecture/OS/ABI, executable
+   file name, byte length and independently read back SHA-256;
+6. pre-install symlink/hardlink/regular-file/canonical-parent results and the
+   immutable destination generation identity;
+7. verifier version, whole-second verification time, policy/release windows
+   and result before any credential handle is opened; and
+8. create-new publication-receipt identity linking policy, packet, executable,
+   installer and activated generation.
+
+The evidence must show the disabled/null checked-in build fails before clock
+and file reads, while the real release build succeeds only for the reviewed
+pins and exact compile target. A pure fixture or JavaScript consistency result
+is not evidence that the installed Rust executable authorized itself.
+
+Windows hardlink rejection is a mandatory pre-install evidence item because
+the safe Rust runtime path does not claim NTFS link-count inspection. Unix
+runtime evidence additionally requires link count one. Any missing receipt,
+mixed generation, mutable active file, sidecar replacement, platform mismatch
+or credential access before release success makes the release item invalid.

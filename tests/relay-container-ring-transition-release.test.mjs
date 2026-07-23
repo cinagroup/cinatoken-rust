@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  createPrivateKey,
+  createPublicKey,
   generateKeyPairSync,
   sign as signBytes,
 } from "node:crypto";
@@ -73,6 +75,7 @@ describe("Relay Container ring-transition runner release contract", () => {
       "crates/ring-transition-runner/src/lib.rs",
       "crates/ring-transition-runner/src/main.rs",
       "crates/ring-transition-runner/src/orchestrator.rs",
+      "crates/ring-transition-runner/src/release.rs",
       "crates/ring-transition-runner/tests/cli.rs",
       "package.json",
       "tests/relay-container-ring-transition-release-source.test.mjs",
@@ -128,7 +131,24 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.moduleCount).toBe(17);
+    expect(result.moduleCount).toBe(18);
+  });
+
+  test("matches the deterministic Rust DSSE release vector", () => {
+    expect(deterministicRustReleaseVector()).toEqual({
+      spkiSha256:
+        "324be2dea8bc44461b0233e51fa48902ed6b1cc671e7739af2551e0bfe68f54e",
+      policySha256:
+        "9b12c3dd50812180f2122311480876bd6508a81618082c615ca52d4701ec3856",
+      inventorySha256:
+        "686c6dedb4686bed7e33290ec3ce087e07c581c70eff35222f32581062009370",
+      manifestSha256:
+        "01d1f22f04245c8e467421e43aa25b5dbd4b5166fdf29819f518e01af455dda3",
+      packetSha256:
+        "48c0f232106474c489109982de470737c69c63acee984f68d373e486819885bc",
+      signatureBase64:
+        "xd572FoAEqiTiFWTL9nFgUc9CYvbyIPJyD8ehNXUEvF9He5Zq7yt54H994eQ/lk1pRNfepK97z9vqwMRP39MCQ==",
+    });
   });
 
   test("CLI verifies consistency without claiming compiled trust or installation", async () => {
@@ -236,6 +256,13 @@ describe("Relay Container ring-transition runner release contract", () => {
       },
     });
     await expectReleaseFailure(expired, /validity window is inactive/);
+
+    const unboundPermit = await releaseFixture({
+      manifestMutator: (manifest) => {
+        manifest.trust.permitSpkiSha256 = "4".repeat(64);
+      },
+    });
+    await expectReleaseFailure(unboundPermit, /permit key.*separation inventory/);
   });
 
   test("rejects path escape, unsorted inventory, and required-module omission", async () => {
@@ -352,6 +379,153 @@ describe("Relay Container ring-transition runner release contract", () => {
   });
 });
 
+function deterministicRustReleaseVector() {
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([
+      Buffer.from("302e020100300506032b657004220420", "hex"),
+      Buffer.alloc(32, 7),
+    ]),
+    format: "der",
+    type: "pkcs8",
+  });
+  const spki = createPublicKey(privateKey).export({
+    format: "der",
+    type: "spki",
+  });
+  const spkiSha256 = sha256Hex(spki);
+  const policy = {
+    schemaVersion: 1,
+    contract: RING_TRANSITION_RUNNER_RELEASE_POLICY_CONTRACT,
+    environment: "staging",
+    payloadType: RING_TRANSITION_RUNNER_DSSE_PAYLOAD_TYPE,
+    keyId: "release-test-v1",
+    releaseKeySpkiBase64url: spki.toString("base64url"),
+    releaseKeySpkiSha256: spkiSha256,
+    validFrom: "2026-07-22T00:00:00.000Z",
+    validUntil: "2026-07-24T00:00:00.000Z",
+    maximumReleaseLifetimeSeconds: 86_400,
+    forbiddenKeySpkiSha256: [
+      "1".repeat(64),
+      "2".repeat(64),
+      "8".repeat(64),
+    ],
+  };
+  const policyBytes = Buffer.from(canonicalJson(policy), "utf8");
+  const policySha256 = sha256Hex(policyBytes);
+  const moduleInventory = {
+    schemaVersion: 1,
+    contract: RING_TRANSITION_RUNNER_MODULE_INVENTORY_CONTRACT,
+    files: describeRingTransitionRunnerReleaseContract().requiredModulePaths.map(
+      (modulePath) => {
+        const contents = Buffer.from(`fixture:${modulePath}`, "utf8");
+        return {
+          path: modulePath,
+          byteLength: contents.length,
+          sha256: sha256Hex(contents),
+        };
+      },
+    ),
+  };
+  const inventoryBytes = Buffer.from(canonicalJson(moduleInventory), "utf8");
+  const inventorySha256 = sha256Hex(inventoryBytes);
+  const inventoryFileByPath = new Map(
+    moduleInventory.files.map((record) => [record.path, record]),
+  );
+  const artifactBytes = Buffer.from(
+    "cinatoken-ring-transition-runner-rust-release-fixture",
+    "utf8",
+  );
+  const artifactSha256 = sha256Hex(artifactBytes);
+  const manifest = {
+    schemaVersion: 1,
+    contract: RING_TRANSITION_RUNNER_RELEASE_MANIFEST_CONTRACT,
+    environment: "staging",
+    issuedAt: "2026-07-23T00:00:00.000Z",
+    expiresAt: "2026-07-23T12:00:00.000Z",
+    sourceDateEpoch: 1_784_764_800,
+    source: {
+      commitSha: "1".repeat(40),
+      gitTreeSha: "2".repeat(40),
+      sourceArchiveSha256: "4".repeat(64),
+      cargoLockSha256: inventoryFileByPath.get("Cargo.lock").sha256,
+      bunLockSha256: inventoryFileByPath.get("bun.lock").sha256,
+      packageJsonSha256: inventoryFileByPath.get("package.json").sha256,
+      moduleInventorySha256: inventorySha256,
+      moduleCount: moduleInventory.files.length,
+      moduleBytes: moduleInventory.files.reduce(
+        (total, record) => total + record.byteLength,
+        0,
+      ),
+    },
+    build: {
+      targetTriple: "x86_64-pc-windows-msvc",
+      profile: "release",
+      rustcVersion: "rustc test fixture",
+      cargoVersion: "cargo test fixture",
+      bunVersion: "bun test fixture",
+      buildArgumentsSha256: "5".repeat(64),
+      buildEnvironmentAllowlistSha256: "6".repeat(64),
+      runnerBuildSha256: artifactSha256,
+      firstBuildSha256: artifactSha256,
+      secondBuildSha256: artifactSha256,
+      reproducibleBuildSha256: artifactSha256,
+      twoBuildsIdentical: true,
+    },
+    trust: {
+      trustConfigSha256: "7".repeat(64),
+      releasePolicySha256: policySha256,
+      releaseKeySpkiSha256: spkiSha256,
+      authorityOrigin:
+        "https://ring-transition-authority-staging.cinatoken.com",
+      authorityVersionId: "authority-version-001",
+      permitSpkiSha256: "8".repeat(64),
+    },
+    evidence: {
+      testEvidenceSha256: "9".repeat(64),
+      faultEvidenceSha256: "a".repeat(64),
+      securityEvidenceSha256: "b".repeat(64),
+      noSecretEvidenceSha256: "c".repeat(64),
+    },
+    artifact: {
+      fileName: "cinatoken-ring-transition-runner.exe",
+      byteLength: artifactBytes.length,
+      sha256: artifactSha256,
+    },
+  };
+  const manifestBytes = Buffer.from(canonicalJson(manifest), "utf8");
+  const signature = signBytes(
+    null,
+    dssePreAuthenticationEncoding(
+      RING_TRANSITION_RUNNER_DSSE_PAYLOAD_TYPE,
+      manifestBytes,
+    ),
+    privateKey,
+  );
+  const packet = {
+    schemaVersion: 1,
+    contract: RING_TRANSITION_RUNNER_RELEASE_PACKET_CONTRACT,
+    envelope: {
+      payloadType: RING_TRANSITION_RUNNER_DSSE_PAYLOAD_TYPE,
+      payload: manifestBytes.toString("base64"),
+      signatures: [
+        {
+          keyid: policy.keyId,
+          sig: signature.toString("base64"),
+        },
+      ],
+    },
+    moduleInventory,
+  };
+  return {
+    spkiSha256,
+    policySha256,
+    inventorySha256,
+    manifestSha256: sha256Hex(manifestBytes),
+    packetSha256: sha256Hex(Buffer.from(canonicalJson(packet), "utf8")),
+    signatureBase64: signature.toString("base64"),
+  };
+}
+
 async function releaseFixture({
   policyMutator,
   inventoryMutator,
@@ -379,7 +553,7 @@ async function releaseFixture({
     forbiddenKeySpkiSha256: [
       "1".repeat(64),
       "2".repeat(64),
-      "3".repeat(64),
+      "7".repeat(64),
     ],
   };
   policyMutator?.(policy);
@@ -408,6 +582,10 @@ async function releaseFixture({
     [
       "crates/ring-transition-runner/src/orchestrator.rs",
       "runner-orchestrator-fixture",
+    ],
+    [
+      "crates/ring-transition-runner/src/release.rs",
+      "runner-release-fixture",
     ],
     [
       "crates/ring-transition-runner/tests/cli.rs",

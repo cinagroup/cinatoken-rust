@@ -2425,8 +2425,9 @@ signature/policy windows, key separation inventory, clean commit-object input,
 portable module closure, repeated-build digest equality, artifact
 TOCTOU/symlink/hardlink defenses, and no runtime authority. This is not a real
 release ceremony: two isolated builds, retained evidence, an independent
-signature, compiled non-null pins, Rust-side sidecar/current-executable
-verification, digest installation, and publication receipt remain open.
+signature, compiled non-null pins, digest installation, and publication
+receipt remain open. Rust-side sidecar/current-executable verification is now
+implemented by the later release-authorization addendum.
 
 The JavaScript reference deployment transport now has a structural one-write
 boundary:
@@ -2503,3 +2504,38 @@ policy, real fault campaign, exposed-credential revocation, isolated control
 D1/Authority/Access resources, four-layer old/new ring overlap, P5-B and
 Go/VPS drain remain mandatory. No remote action occurred; production remains
 **NO-GO**.
+
+## 2026-07-23 Rust Release Authorization Addendum
+
+This addendum advances only the local phase-J runtime verifier. The checked-in
+launcher remains disabled, and phases K-L remain blocked.
+
+| Phase | Required action | Current evidence | Remaining pass evidence | Abort and retain |
+| --- | --- | --- | --- | --- |
+| J0 compiled root | Validate fixed enabled flag, policy/key/origin pins before clock, filesystem, credential or network access | Implemented in Rust; checked-in null pins fail first | One reviewed release build with non-null immutable pins | Runtime override, placeholder pin, alternate origin/path |
+| J1 sidecar verification | Read current executable plus fixed policy/packet siblings; verify canonical exact schemas, one Ed25519 DSSE signature and bounded time windows | Rust unit/cross-language vectors pass | Independent packet/key review from frozen release workspace | Unknown/duplicate field, invalid PAE/signature, future/expired policy or packet |
+| J2 provenance closure | Verify 18 required modules, Git/locks/package, two-build/evidence/Authority identities and permit-key separation | Rust and JavaScript closure/tamper tests pass | Two separately extracted real builds and retained evidence | Missing/transitive module drift, key reuse, build/evidence/Authority mismatch |
+| J3 installed artifact | Verify stable regular current-executable bytes, signed name/length/digest and compile target | Rust rejects symlink/replacement/parent/Unix-hardlink/foreign-target drift; JS rejects Windows hardlinks pre-install | Atomic digest-addressed generation outside checkout | Mixed sidecars, in-place overwrite, writable active generation, path/link drift |
+| J4 publication receipt | Bind final policy, packet, executable and activated generation after signing | Contract planned only | Create-new signed/approved receipt plus independently read back installed digests | Missing/overwritten receipt, digest drift, ambiguous activation |
+| K execution join | Read fixed credential handles only after J0-J4; sole POST consumes typed fresh permit | Rust release and pure capability cores are separate and fail closed | Bounded Authority/read/deploy clients, stable reads, execution receipt and crash campaign | Credential before release, generic/retry send, restored permit or duplicate POST |
+
+Required release-campaign order:
+
+1. freeze one clean commit and review the 18-path module inventory;
+2. build twice from separate archive extractions under the pinned Rust 1.78
+   toolchain and fixed environment;
+3. run complete local/fault/security/no-secret gates against both identical
+   executables;
+4. generate the external policy and DSSE packet with an independent release
+   key, then independently verify all bytes;
+5. compile the reviewed non-null policy/key/origin pins into the final launcher
+   and repeat the two-build comparison;
+6. pre-install link/path checks, install one create-new digest generation, and
+   seal/read back the publication receipt; and
+7. run the disabled-write staging preflight before any consideration of
+   credentials or remote mutation.
+
+The release packet alone never authorizes installation, customer traffic or a
+Cloudflare write. Missing credential-revocation evidence, any mismatch between
+the reviewed and installed generation, or any unexplained business/provider
+delta keeps Go/VPS authoritative and production **NO-GO**.

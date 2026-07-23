@@ -47,6 +47,7 @@ const REQUIRED_MODULE_PATHS = Object.freeze([
   "crates/ring-transition-runner/src/lib.rs",
   "crates/ring-transition-runner/src/main.rs",
   "crates/ring-transition-runner/src/orchestrator.rs",
+  "crates/ring-transition-runner/src/release.rs",
   "crates/ring-transition-runner/tests/cli.rs",
   "package.json",
   "tests/relay-container-ring-transition-release-source.test.mjs",
@@ -599,6 +600,14 @@ function validateTrust(value, policy, policySha256) {
     policy.releaseKeySpkiSha256,
     "[manifest] release key SPKI fingerprint",
   );
+  if (
+    trust.permitSpkiSha256 === policy.releaseKeySpkiSha256 ||
+    !policy.forbiddenKeySpkiSha256.includes(trust.permitSpkiSha256)
+  ) {
+    throw new Error(
+      "[manifest] permit key must be present in the release-key separation inventory",
+    );
+  }
   requireExact(
     trust.authorityOrigin,
     STAGING_AUTHORITY_ORIGIN,

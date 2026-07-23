@@ -1312,7 +1312,7 @@ This matrix supersedes the compiled-trust and release-provenance rows above.
 
 | Control | Current local evidence | Required staging/production evidence | Decision |
 | --- | --- | --- | --- |
-| Non-circular trust root | Rust embeds fixed sidecar names plus policy/key/origin pins only; artifact identity is detached and signed after build | Production build with reviewed non-null pins; runtime verifies fixed sidecars and current executable | Local design pass; Rust verifier open |
+| Non-circular trust root | Rust embeds fixed sidecar names plus policy/key/origin pins only; artifact identity is detached and signed after build; local runtime verification is implemented | Production build with reviewed non-null pins and exact installed bytes | Local verifier pass; real release open |
 | Canonical packet | Exact manifest/policy/packet/inventory schemas, standard DSSE PAE, one Ed25519 signature, whole-second validity and no unknown fields | Independent release policy/key ceremony and retained real packet | Local contract pass |
 | Source identity | Clean-tree collector uses commit objects, full commit/tree/archive/lock/module SHA-256; mutable checkout, untracked files, submodules and missing closure fail | Run against the committed candidate in an isolated release workspace | Local collector pass; current worktree intentionally dirty |
 | Key separation | External policy key fingerprint plus at least three sorted forbidden asymmetric-key fingerprints; key/policy pins can be independently checked | Owner inventory proving release key distinct from transition, authorization and permit keys; HMAC/read/deploy credentials separately inventoried | Local negative tests; ceremony open |
@@ -1348,7 +1348,7 @@ above. It does not change the remote or production decision.
 | Fresh append capability | Non-cloneable request-ID-bound append attempt is consumed; only exact `step_appended` returns a private non-cloneable/non-serializable typed permit; replay returns none | Authority/D1 trace proves fresh winner versus replay under concurrent and lost-response faults | Local core pass; remote open |
 | Request/service binding | Consuming permit binds exact canonical request digest and pinned Controller/Edge service/target into typed authorized mutation | Sole Rust POST call site accepts only this type and remote drift negatives perform zero POST | Core type pass; transport join open |
 | Controller/Edge parity | Full six-step successful history, Controller and Edge permit phases, Edge inflight resumption and completed seal are covered | Real Controller-first then Edge deployment/readback campaign from signed artifact | Local unit pass; remote open |
-| Release closure | Orchestrator source is mandatory in both clean-commit and signed-packet module inventories; closure now has 17 paths | Two isolated builds and independent DSSE packet over the exact committed candidate | Local closure pass; release open |
+| Release closure | Orchestrator and release-verifier sources are mandatory in both clean-commit and signed-packet module inventories; closure now has 18 paths | Two isolated builds and independent DSSE packet over the exact committed candidate | Local closure pass; release open |
 | Stable readback | Reducer selects observation but has no timer/HTTP implementation | Signed minimum gap/maximum age, exact deployment+version reads twice and response-loss/drift campaign | **P0 integration open** |
 | Receipt/restart | Terminal reducer selects seal; permit cannot survive serialization/restart | Create-new hash chain plus crash at every network/Authority/receipt boundary and lifetime POST count at most one per service | **P0 integration open** |
 | Promotion | Checked-in launcher and Authority write gates remain disabled; no credential or remote API was used | Revocation, Rust release/client/receipt integration, isolated staging, four-layer faults, P5-B, rollback and Go/VPS approvals | **NO-GO** |
@@ -1357,3 +1357,23 @@ The local core removes a class of accidental write scheduling; it is not proof
 that the future HTTP call site consumes the capability correctly or that
 Cloudflare observed only one write. Go/VPS remains traffic and scheduler
 authority.
+
+## 2026-07-23 Rust Detached Release Verifier Matrix
+
+This matrix supersedes the local-status cells for non-circular trust,
+authorization boundary, release closure and Rust release verification above.
+
+| Control | Current local evidence | Required staging/production evidence | Decision |
+| --- | --- | --- | --- |
+| Trust-first ordering | `--execute` validates checked-in compiled trust before clock, current executable, sidecars, credentials or network; disabled/null pins fail immediately | Reviewed build with exact non-null policy/key/origin pins and independent binary inspection | Local pass; real pins absent |
+| Canonical signed policy | Rust rejects unknown/duplicate/non-canonical policy/packet/manifest/inventory, verifies exact policy/key pins, one Ed25519 DSSE PAE and bounded whole-second windows | Independent release owner, retained policy/signature ceremony and rotation/revocation inventory | Local verifier pass; ceremony open |
+| Key-role binding | Manifest permit SPKI must differ from release SPKI and occur in the signed sorted separation inventory | Owner evidence covers transition, authorization, permit, release, HMAC, read and deploy identities | Local positive/negative pass; owner inventory open |
+| Provenance closure | Exact 18-path inventory binds Rust orchestrator and release verifier plus Git/tree/archive/locks/package/build/evidence/Authority identities | Clean frozen commit, two separately extracted builds and retained evidence for the exact installed digest | Local cross-language pass; real builds open |
+| Current artifact | Fixed sibling names, bounded stable same-file reads, signed executable name/length/digest and x86_64 Windows/MSVC or Linux/musl host match | JS pre-install Windows/Unix link checks, immutable digest generation and independent installed-byte readback | Rust pass except Windows runtime link count; installer open |
+| Dependency/MSRV | Exact `ed25519-dalek 2.1.1`, strict fixed Ed25519 SPKI parsing, and locked Edition-2021 `base64ct 1.6.0`/`zeroize 1.8.1`; declared Rust minimums are 1.60 | Reproducible release under the pinned Rust 1.78 builder and locked dependency audit | Resolver/MSRV metadata pass; release build open |
+| Publication receipt | Detached shape avoids executable self-hash and reserves a later policy+packet+executable receipt | Create-new receipt binds installer, generation, all three file digests and activation pointer | **P0 implementation open** |
+| Execution integration | Verified release identity is returned, but live credentials/HTTP remain disconnected; checked-in launcher cannot execute | Credential proofs after verification, sole typed POST, stable reads, hash-chain receipt and crash matrix | **P0 integration open** |
+| Promotion | No production key/signature/install/credential/remote action exists | Revocation, isolated staging control plane, exact-artifact fault history, P5-B, rollback and Go/VPS approvals | **NO-GO** |
+
+A valid local packet is evidence of consistency, not permission to install or
+mutate. Go/VPS remains authoritative.

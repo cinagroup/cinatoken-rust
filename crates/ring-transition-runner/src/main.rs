@@ -13,7 +13,7 @@ fn main() {
             }
         },
         Ok(Command::Execute) => match authorize_execution() {
-            Ok(()) => {
+            Ok(_) => {
                 eprintln!("ring transition execution transport is not linked into this release");
                 1
             }

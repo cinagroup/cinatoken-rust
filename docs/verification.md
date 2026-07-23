@@ -8358,7 +8358,7 @@ single-use permits and zero POST retry. A source guard rejects ambient
 `process.env`, console logging, high-level unbounded response readers,
 Wrangler, child processes and multiple fetch call sites.
 
-The Rust package target is now 16 tests: 13 library, one binary and two CLI
+The Rust package target is now 23 tests: 20 library, one binary and two CLI
 integration tests. The original launcher cases still prove the checked-in
 release is deterministic and disabled, every enabled identity requires all
 release/Authority pins, only two fixed commands are accepted, the staging
@@ -8383,8 +8383,9 @@ Access, remote D1, route, deployed version, stable Cloudflare readback,
 customer traffic, billing conservation, P5-B or Go/VPS drain. No remote action
 is claimed; production remains **NO-GO**.
 
-The current final repository aggregate passed on 2026-07-23 in 656.6 seconds.
-It included the 16 runner tests, 16 detached release/source tests, 58
+The current final repository aggregate passed on 2026-07-23 in approximately
+1,211 seconds after the dependency-lock rebuild. It included the 23 runner
+tests, 17 detached release/source tests, 58
 ring-transition contract tests, 22 Authority unit tests, two Authority Workerd
 tests, 22 Authority configuration/preflight tests, the Rust workspace, all
 configured wasm32 builds, D1 migration/schema gates, Worker dry-runs, frontend
@@ -8398,9 +8399,10 @@ Run the local release gate:
 bun run check:ring-transition-runner
 ```
 
-The release addition contributes 16 Bun tests:
+The release addition contributes 17 Bun tests:
 
-- ten packet tests cover canonical DSSE PAE, Ed25519 verification, external
+- eleven packet tests cover canonical DSSE PAE, an independently generated
+  deterministic Rust/JavaScript vector, Ed25519 verification, external
   policy/key pins, exact schema, time bounds, key separation, required module
   closure, build reproducibility claims, Authority/evidence drift, artifact
   replacement, hardlinks, CLI isolation and non-authorization;
@@ -8409,18 +8411,18 @@ The release addition contributes 16 Bun tests:
   untracked change rejection, missing-module rejection, CLI collection and
   caller-override rejection.
 
-The Rust package contributes 16 tests and describes a fixed detached
+The Rust package contributes 23 tests and describes a fixed detached
 `releaseTrust` rather than embedding its own future artifact digest.
 The focused gate also runs both CLIs in describe mode. No test reads a real
 release/transition credential, calls a network service, signs with a production
 key, writes outside its temporary fixture, installs an artifact, enables
 execution or changes Cloudflare.
 
-These tests validate the packet and source foundations only. Two isolated real
-builds, a retained DSSE signature, compiled non-null pins, Rust-side sidecar and
-self-digest verification, publication receipt, live orchestrator integration,
-credential revocation and remote staging evidence remain open. Production
-remains **NO-GO**.
+These tests validate packet/source foundations and the Rust runtime verifier,
+but do not publish a release. Two isolated real builds, a retained independent
+DSSE signature, compiled non-null pins, atomic digest installation,
+publication receipt, live orchestrator integration, credential revocation and
+remote staging evidence remain open. Production remains **NO-GO**.
 
 ## Fresh Mutation Intent Verification (2026-07-23)
 
@@ -8452,8 +8454,55 @@ counterpart. Rust tests additionally prove:
 
 Run `cargo test -p cinatoken-ring-transition-runner` directly or use the
 combined `bun run check:ring-transition-runner`. The combined gate currently
-executes 16 Rust tests and 16 Bun release/source tests.
+executes 23 Rust tests and 17 Bun release/source tests.
 
 These tests do not prove the future Rust HTTP call site consumes the type,
 process crash behavior around a real network send, persisted hash-chain
 receipt, stable-read timing, remote deployment history or an enabled release.
+
+## Rust Detached Release Runtime Verification (2026-07-23)
+
+The runner package now adds seven release-verifier library cases. Together
+with the orchestrator and launcher tests, the package result is:
+
+```text
+20 library tests: PASS
+1 binary test: PASS
+2 CLI integration tests: PASS
+17 Bun packet/source tests: PASS
+strict runner Clippy: PASS
+```
+
+The verifier cases prove:
+
+- checked-in disabled trust exits before current-executable or sidecar reads;
+- deterministic Rust and independently generated JavaScript vectors agree on
+  SPKI, policy, inventory, manifest, packet and DSSE signature identities;
+- canonical exact-schema policy/packet/manifest/inventory parsing rejects
+  duplicate or unknown fields;
+- compiled pins, policy/release windows, signature, permit-key separation,
+  module closure, build/evidence/Authority and artifact identities fail closed
+  under drift;
+- fixed sibling reads reject missing/non-regular/moved files and Unix
+  hardlinks, while the JavaScript installer gate rejects Windows hardlinks;
+  and
+- a fully signed foreign-platform artifact is rejected at installed-runtime
+  verification even though it remains valid for offline packet inspection.
+
+The lock pins `ed25519-dalek` to `2.1.1`. Its declared Rust 1.60 MSRV and the
+declared Rust 1.60 MSRV of `curve25519-dalek 4.1.3` remain below this
+workspace's Rust 1.78 requirement. The verifier does not enable PKCS#8; it
+accepts only the fixed Ed25519 SPKI DER shape. The workspace lock also keeps
+`base64ct 1.6.0` and `zeroize 1.8.1`, both Edition 2021/Rust 1.60, because
+their newer Edition 2024 releases cannot be parsed by Cargo 1.78.
+
+An explicit local `cargo +1.78.0-x86_64-pc-windows-msvc ... --locked` attempt
+now resolves these manifests successfully, but this host cannot complete the
+MSVC build because Visual Studio C++ Build Tools/SDK are absent and the only
+`link.exe` on `PATH` is a non-MSVC utility. This is an environment limitation,
+not recorded as an MSRV build pass; the isolated release builder must still
+complete the locked Rust 1.78 compile and tests.
+
+These are local fail-closed checks. They do not provide a production key,
+signature, non-null compiled pins, isolated repeated builds, publication
+receipt, installed generation, credential revocation or remote evidence.

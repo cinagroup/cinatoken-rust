@@ -3008,12 +3008,31 @@ consumed into a non-cloneable, request-ID-bound Authority append attempt. Only
 an exact fresh `step_appended` result consumes that attempt into a private
 non-cloneable/non-serializable permit; replay does not. Binding the exact
 canonical deployment request digest consumes the permit again. The
-orchestrator source is now mandatory in the 17-file detached-release module
-closure.
+orchestrator and release-verifier sources are now mandatory in the 18-file
+detached-release module closure.
 
-This closes the local pure reducer and capability gap only. Rust fixed-sidecar
-verification, credential/Authority/Cloudflare clients, sole-POST type join,
+This closes the local pure reducer and capability gap. Rust fixed-sidecar,
+compiled-pin, DSSE, current-executable and host-target verification are also
+implemented; credential/Authority/Cloudflare clients, sole-POST type join,
 timed stable double readback, create-new hash-chained receipt, two-build signed
 release, crash matrix, exposed-credential revocation and every remote staging
 or production gate remain open. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-23 Rust Detached Release Verification
+
+The compiled launcher now owns the release authorization boundary before any
+credential or network access. An enabled build accepts only its current
+executable and the two fixed sibling sidecars, then requires canonical,
+duplicate-free exact-schema JSON; compiled policy/key/origin pins; one
+Ed25519 DSSE signature; bounded validity; permit/release key separation; the
+complete 18-path source closure; reproducible-build/evidence/Authority
+identities; the current artifact bytes; and a target matching the launcher's
+compile-time x86_64 architecture/OS/ABI.
+
+The checked-in build remains disabled with null pins and exits before reading
+the clock, filesystem, credentials or network. The remaining P0 release work
+is a real two-build artifact, independent signature, reviewed non-null pins,
+Windows/Unix pre-install link checks, atomic digest-addressed installation and
+a create-new publication receipt. Live Rust clients, stable readback,
+execution receipt, crash campaign and all remote gates remain open.

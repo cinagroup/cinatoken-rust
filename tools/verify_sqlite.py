@@ -268,6 +268,7 @@ REQUIRED_TABLES = [
     "relay_http_stream_client_abort_events",
     "relay_container_ring_transition_claims",
     "relay_container_ring_transition_steps",
+    "relay_container_ring_transition_expiry_events",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1264,6 +1265,18 @@ REQUIRED_COLUMNS = {
         "failure_class",
         "step_digest_sha256",
         "recorded_at",
+        "transport_outcome",
+    },
+    "relay_container_ring_transition_expiry_events": {
+        "authorization_id_sha256",
+        "state_version",
+        "from_status",
+        "to_status",
+        "authority_actor_id_sha256",
+        "evidence_sha256",
+        "expiry_event_digest_sha256",
+        "failure_class",
+        "recorded_at",
     },
 }
 
@@ -1435,6 +1448,9 @@ REQUIRED_INDEXES = {
     },
     "relay_container_ring_transition_steps": {
         "idx_relay_container_ring_transition_steps_recorded": False,
+    },
+    "relay_container_ring_transition_expiry_events": {
+        "idx_relay_container_ring_transition_expiry_recorded": False,
     },
 }
 
@@ -1765,7 +1781,7 @@ def main() -> int:
     if relay_http_stream_client_abort_rollout_verified:
         message += " + 0058 Request.signal durable client-abort watchdog"
     if relay_container_ring_transition_claim_rollout_verified:
-        message += " + 0059 single-use ring transition claim ledger"
+        message += " + 0059/0060 ring transition claim authority hardening"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -18599,13 +18615,24 @@ def verify_relay_container_ring_transition_claim_rollout(
         ),
         None,
     )
-    if claim_path is None or abort_path is None:
-        raise SystemExit("0058/0059 ring transition claim migrations not found")
+    authority_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0060_relay_container_ring_transition_authority.sql"
+        ),
+        None,
+    )
+    if claim_path is None or abort_path is None or authority_path is None:
+        raise SystemExit("0058/0059/0060 ring transition authority migrations not found")
     claim_index = schema_paths.index(claim_path)
-    if claim_index != len(schema_paths) - 1:
-        raise SystemExit("0059 ring transition claim ledger must be the D1 head")
     if claim_index == 0 or schema_paths[claim_index - 1] != abort_path:
         raise SystemExit("0059 ring transition claim ledger must follow 0058")
+    authority_index = schema_paths.index(authority_path)
+    if authority_index != len(schema_paths) - 1:
+        raise SystemExit("0060 ring transition authority hardening must be the D1 head")
+    if authority_index == 0 or schema_paths[authority_index - 1] != claim_path:
+        raise SystemExit("0060 ring transition authority hardening must follow 0059")
 
     claim_sql = claim_path.read_text(encoding="utf-8")
     if "if not exists" in claim_sql.lower():
@@ -18629,6 +18656,29 @@ def verify_relay_container_ring_transition_claim_rollout(
     ):
         if fragment not in claim_sql:
             raise SystemExit(f"0059 ring transition claim rollout missing: {fragment}")
+
+    authority_sql = authority_path.read_text(encoding="utf-8")
+    if "if not exists" in authority_sql.lower():
+        raise SystemExit("0060 critical authority objects must fail duplicate DDL")
+    for fragment in (
+        "migration_0060_ring_transition_authority_drain_guard",
+        "CHECK (active_count = 0)",
+        "ADD COLUMN transport_outcome",
+        "CREATE TABLE relay_container_ring_transition_expiry_events",
+        "idx_relay_container_ring_transition_expiry_recorded",
+        "controller post-readback does not match persisted mutation intent",
+        "edge post-readback does not match persisted mutation intent",
+        "relay_container_ring_transition_expiry_insert_guard",
+        "relay_container_ring_transition_expiry_apply",
+        "relay_container_ring_transition_expiry_update_guard",
+        "relay_container_ring_transition_expiry_delete_guard",
+        "NEW.failure_class = 'authorization_expired'",
+        "NEW.to_status = 'recovery_required'",
+    ):
+        if fragment not in authority_sql:
+            raise SystemExit(
+                f"0060 ring transition authority rollout missing: {fragment}"
+            )
 
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -18697,6 +18747,23 @@ def verify_relay_container_ring_transition_claim_rollout(
           :expires_at, unixepoch(), NULL
         )
     """
+    guard_conn = sqlite3.connect(":memory:")
+    guard_conn.execute("PRAGMA foreign_keys = ON")
+    for path in schema_paths[: claim_index + 1]:
+        guard_conn.executescript(path.read_text(encoding="utf-8"))
+    guard_conn.execute(claim_insert, claim_values)
+    try:
+        guard_conn.executescript(authority_sql)
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise SystemExit("0060 accepted authority enforcement with an active 0059 claim")
+    if "transport_outcome" in table_columns(
+        guard_conn, "relay_container_ring_transition_steps"
+    ):
+        raise SystemExit("0060 changed schema before its active-claim drain guard")
+    guard_conn.close()
+
     conn.execute(claim_insert, claim_values)
     try:
         conn.execute(claim_insert, claim_values)
@@ -18711,8 +18778,8 @@ def verify_relay_container_ring_transition_claim_rollout(
           from_status, to_status, actor_execution_id_sha256,
           mutation_request_sha256, cloudflare_request_id_sha256,
           deployment_set_sha256, evidence_sha256, failure_class,
-          step_digest_sha256, recorded_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+          step_digest_sha256, recorded_at, transport_outcome
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), ?)
     """
     conn.execute(
         step_insert,
@@ -18729,6 +18796,7 @@ def verify_relay_container_ring_transition_claim_rollout(
             "8" * 64,
             "",
             "9" * 64,
+            "not_applicable",
         ),
     )
     try:
@@ -18739,7 +18807,7 @@ def verify_relay_container_ring_transition_claim_rollout(
             (claim_values["authorization_id"],),
         )
     except sqlite3.IntegrityError as error:
-        if "matching step evidence" not in str(error):
+        if "matching authority evidence" not in str(error):
             raise SystemExit(
                 f"0059 unjournaled state advance failed unexpectedly: {error}"
             ) from error
@@ -18760,8 +18828,61 @@ def verify_relay_container_ring_transition_claim_rollout(
             "b" * 64,
             "",
             "c" * 64,
+            "not_applicable",
         ),
     )
+    try:
+        conn.execute(
+            step_insert,
+            (
+                claim_values["authorization_id"],
+                3,
+                "controller_post_readback",
+                "controller_inflight",
+                "controller_verified",
+                claim_values["claim_owner"],
+                "0" * 64,
+                None,
+                "d" * 64,
+                "e" * 64,
+                "",
+                "1" * 64,
+                "success",
+            ),
+        )
+    except sqlite3.IntegrityError as error:
+        if "persisted mutation intent" not in str(error):
+            raise SystemExit(
+                f"0060 mismatched intent rejection failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0060 accepted a post-readback for a different mutation intent")
+    try:
+        conn.execute(
+            step_insert,
+            (
+                claim_values["authorization_id"],
+                3,
+                "controller_post_readback",
+                "controller_inflight",
+                "controller_verified",
+                claim_values["claim_owner"],
+                "a" * 64,
+                None,
+                "d" * 64,
+                "e" * 64,
+                "",
+                "2" * 64,
+                "rejected",
+            ),
+        )
+    except sqlite3.IntegrityError as error:
+        if "lifecycle evidence" not in str(error):
+            raise SystemExit(
+                f"0060 rejected-transport guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0060 accepted a rejected transport as controller verified")
     conn.execute(
         step_insert,
         (
@@ -18777,6 +18898,7 @@ def verify_relay_container_ring_transition_claim_rollout(
             "e" * 64,
             "transport_response_lost",
             "f" * 64,
+            "ambiguous",
         ),
     )
     state = conn.execute(
@@ -18791,7 +18913,7 @@ def verify_relay_container_ring_transition_claim_rollout(
         or state[1] != 3
         or state[2] is None
     ):
-        raise SystemExit(f"0059 did not seal ambiguous mutation recovery: {state}")
+        raise SystemExit(f"0060 did not seal ambiguous mutation recovery: {state}")
     try:
         conn.execute(
             "UPDATE relay_container_ring_transition_steps "

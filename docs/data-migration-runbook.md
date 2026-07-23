@@ -981,3 +981,99 @@ and steps are audit evidence and are never down-migrated, deleted, rewritten,
 or reused. If a mutation was attempted, preserve the dual-ring Controller and
 Go/VPS traffic authority, classify by authenticated readback, and repair
 forward under a new authorization. Production remains **NO-GO**.
+
+## 0060 Ring Transition Authority Migration Runbook
+
+0060 is the current local authority-ledger head layered on 0059. The integrated
+workspace verification target is 60 migrations, 69 required tables, 909
+checked incremental columns, and 101 key indexes. It adds
+`relay_container_ring_transition_expiry_events`, one expiry index, and
+`relay_container_ring_transition_steps.transport_outcome`, and it replaces the
+claim-update and step-insert guards.
+
+0060 is not rolling-writer compatible. Disable every 0059 writer and prove
+zero claims remain in `claimed`, `t1_verified`, `controller_inflight`,
+`controller_verified`, `edge_prechecked`, or `edge_inflight` before apply. Its
+temporary drain guard aborts the migration if that invariant is false.
+
+### Storage isolation preflight
+
+1. Do not bind the Authority Worker to the shared application staging D1.
+2. Provisioning, when separately authorized, targets only
+   `cinatoken-ring-control-staging`.
+3. Besides provider-managed migration metadata, the control D1 allowlist is
+   exactly the 0059 claim table, 0059 step table, and 0060 expiry-event table.
+4. Freeze source digests for 0059 and 0060, the dedicated control-schema
+   migration lineage, normalized expected catalog, database identity hash,
+   region/jurisdiction, backup/Time Travel point, restore owner, retention
+   policy, and zero-row baseline.
+5. Keep Authority, claim, step, expiry, ring, provider, financial, traffic, and
+   customer gates false. Go/VPS remains traffic and scheduler authority.
+6. Stop if exposed-credential revocation evidence is absent, any replacement
+   credential is broad, a production Authority config exists, or a route can
+   bypass Access.
+
+The current local Authority Worker configuration names dedicated
+`cinatoken-ring-control-staging`, and static audit rejects the shared
+application database name. Treat the placeholder database ID, placeholder
+trust identities, false write gates, and absent authenticated remote resource
+packet as hard preflight failures. Do not deploy it or reinterpret the local
+name as proof that the control plane has been provisioned.
+
+The repository's `0060/60, 69/909/101` total is integrated local schema
+evidence. The dedicated control D1 has a separate migration count and exactly
+three domain tables; never substitute one catalog assertion for the other.
+
+### Control-schema apply and readback
+
+1. Apply the reviewed control-schema lineage sourced from 0059 and 0060 once
+   through the dedicated migration runner. Never replay the complete
+   application migration chain into the control D1 and never hand-edit its
+   migration ledger.
+2. Read back the exact database ID hash, migration source digests, normalized
+   schema, three-table allowlist, claim/step/expiry columns, indexes, triggers,
+   foreign keys, checks, and zero-row baseline.
+3. Prove expiry evidence uses D1 time and an authority actor distinct from the
+   claim owner. Before mutation, `claimed|t1_verified -> expired`; after
+   mutation, `controller_verified|edge_prechecked -> recovery_required`.
+   Inflight claims remain readback-only.
+4. Prove each post-readback mutation digest equals the immediately preceding
+   intent digest.
+5. Prove `transport_outcome=rejected` can only produce
+   `recovery_required/http_rejected`, while `success|ambiguous` require
+   state-appropriate authenticated readback evidence.
+6. Run immutable update/delete, early-expiry, owner-as-authority, state jump,
+   wrong version, wrong digest, rejected-as-success, duplicate insert,
+   concurrent claim, response-loss, and exact-readback negatives. Every failed
+   probe must leave the full control catalog fingerprint unchanged.
+
+### Authority Worker staging sequence
+
+1. Build a staging-only Worker with only the control D1 and Version Metadata
+   bindings, `workers_dev=false`, `preview_urls=false`, no production config,
+   and all write gates false.
+2. Inventory the one Access-protected staging hostname and prove there is no
+   workers.dev, preview, alternate custom domain, or route bypass.
+3. Configure Access Service Auth, application HMAC, and deployment-pinned
+   Ed25519 permit verification as independent controls. Provision secrets only
+   through the approved in-memory/stdin workflow; do not place them in argv,
+   files, logs, evidence, or tracked configuration.
+4. Deploying this disabled reader is a separate remote approval. After deploy,
+   read back version, bindings, compatibility settings, routes, gates and
+   schema before considering any write-gate ceremony.
+5. Enable at most one staging write gate in a bounded no-customer campaign,
+   archive exact before/after evidence, then restore it to false. Claim, step,
+   and expiry gates require separate approvals.
+
+### Rollback and retention
+
+Disable every Authority write gate first, then remove the Access identity from
+the allow policy while retaining read-only incident access. Do not delete the
+control D1, down-migrate, rewrite a claim/step/expiry event, reuse a permit, or
+classify an ambiguous mutation as not applied. Retain the disabled Worker,
+schema, backup, logs, route inventory, and exact readback evidence through the
+review horizon. Forward repair requires a new authorization and permit.
+
+No control D1, migration, Worker, Access policy, route, credential, permit key,
+deployment, provider call, financial state, customer traffic, or production
+resource has been changed remotely. Production remains **NO-GO**.

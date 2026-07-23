@@ -437,8 +437,8 @@ git diff --check -- docs/relay-container-p5-evidence-contract.md `
 
 Current worktree results:
 
-- SQLite schema verifier: pass, 59 migrations and 68/899/100 schema baseline;
-- D1 migration/config audit: pass, contiguous 0001 through 0059;
+- SQLite schema verifier: pass, 60 migrations and 69/909/101 schema baseline;
+- D1 migration/config audit: pass, contiguous 0001 through 0060;
 - runtime readiness build-ID test: 1 pass;
 - Controller activation writer tests: 5 pass, including the exact 0054 schema
   through a real SQLite catalog;
@@ -451,7 +451,7 @@ Current worktree results:
 - P5 evidence verifier tests: 44 pass.
 
 The current schema overlay does not rewrite the sealed 0055 campaign. It adds
-0056/0057/0058/0059 to candidate identity and remote readback, and requires all
+0056/0057/0058/0059/0060 to candidate identity and remote readback, and requires all
 HTTP SSE producer gates plus the ring mutation runner to remain false
 throughout activation-ledger collection.
 
@@ -473,4 +473,16 @@ requires all HTTP SSE gates false, the ring mutation runner and claim authority
 disabled, `enable_request_signal` present on N, N-1 reader-only, and zero
 unexpected claim/step/abort/provider/financial effect. Local schema and
 collector checks are not remote activation evidence. Production remains
+**NO-GO**.
+
+## 0060 Current-Head Overlay
+
+The current integrated application schema is 60 migrations, 69 required
+tables, 909 checked incremental columns, 101 key indexes, and head
+`0060_relay_container_ring_transition_authority.sql`. Migration 0060 adds
+ring-transition expiry-authority evidence and step transport enforcement; it
+does not rewrite the sealed 0055 activation campaign. Activation evidence must
+bind the 0060 candidate while separately proving that the Authority Worker uses
+an isolated `cinatoken-ring-control-staging` D1, not the shared application D1.
+No remote migration or deployment is claimed, and production remains
 **NO-GO**.

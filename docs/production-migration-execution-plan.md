@@ -2336,3 +2336,47 @@ The local repository currently implements only B's schema and the fail-closed
 contract portions of A/D/E/F. The private authority, live transport, immutable
 enabled artifact, revocation, and all remote phases remain open. Production
 remains **NO-GO**.
+
+## 2026-07-23 Migration 0060 Authority Isolation Addendum
+
+This addendum supersedes only the current-head and current claim-authority
+statements in the 0059 addendum. The 0059 claim identity and ordered-step
+history remain the immutable baseline. Current local workspace head/count is
+`0060/60`, with 69 required tables, 909 checked incremental columns, and 101 key
+indexes.
+
+| Phase | Required action | Pass evidence | Abort and retain |
+| --- | --- | --- | --- |
+| A local 0060 schema freeze | Freeze the exact 0059/0060 file digests, disable every 0059 writer, prove zero active transition claims, then apply the incompatible migration; keep every ring, provider, financial and traffic gate false | Drain guard passes; local `0060/60`, `69/909/101`; one expiry table, one expiry index, `transport_outcome`, recreated claim/step guards, immutable expiry evidence | Any old writer or active claim, partial catalog, changed business data, early expiry, post-mutation ordinary expiry, digest mismatch accepted, or rejected transport accepted as success |
+| B independent control D1 design | Define `cinatoken-ring-control-staging` with only claim, step and expiry domain tables plus provider migration metadata; keep it separate from application D1 | Reviewed control-schema lineage pinned to 0059/0060 digests, exact catalog allowlist, backup/Time Travel, restore plan, retention and access-owner inventory | Shared application D1 binding, unrelated table, missing source provenance, broad token, or no restore owner |
+| C default-disabled Authority Worker | Build a staging-only Worker bound only to the control D1 and Version Metadata; set `workers_dev=false`, `preview_urls=false`; publish no production config; keep authority/claim/step/expiry write gates false | Config audit proves exactly two bindings, no alternate public endpoint, no production config and every write gate false | KV/R2/DO/Container/Queue/service/application-D1 binding, public preview, route bypass, or any true write gate |
+| D layered authentication | Put the staging hostname behind Access Service Auth; verify application HMAC over method/path/time/request/body/credential identity; verify a short-lived Ed25519 permit over the canonical claim and authorization | Missing, stale, future, replayed, wrong-path, wrong-body, wrong-credential, wrong-key, altered-target and altered-policy requests all fail before D1 write | Caller assertion treated as proof, caller-selected actor, secret/body/header logging, Cookie/CORS authority, or redirect |
+| E exact ledger protocol | Create/read a claim, append an owner step, and append an authority expiry event only through fixed prepared statements and exact readback | Concurrent single winner; exact replay only; independent expiry actor; pre-mutation `expired`; post-mutation `recovery_required`; matching intent digest; `rejected -> recovery_required/http_rejected` | UPSERT/replace/ignore, arbitrary SQL, claim-owner expiry authority, skipped state, replay ambiguity, second mutation, or leaked row/error |
+| F remote staging acceptance | After credential revocation evidence and independent review, create the isolated resources with all gates false, apply/read back the control schema, then run no-customer fault campaigns | Authenticated resource/version/route/Access/D1 readback, unchanged application D1/business fingerprint, redacted logs, zero provider/financial/traffic effect | Any missing revocation proof, unexpected remote write, mixed candidate, customer traffic, unexplained row, or inability to disable immediately |
+| G promotion decision | Bind the retained remote packet to immutable runner, P5-B, security/privacy, SLO/cost/alerts, rollback, reverse-sync and Go/VPS drain approvals | One fresh exact-candidate packet reviewed by independent owners | Missing/stale/mixed evidence, production config present, Go/VPS not hot, or any control/write gate open |
+
+Expiry handling is authority-driven, not runner impersonation. D1 time decides
+expiry. `claimed` and `t1_verified` may become `expired`; after a successful
+Controller mutation, `controller_verified` and `edge_prechecked` may only
+become `recovery_required`. Inflight states remain bound to authenticated
+readback. Controller and Edge post-readback evidence must repeat the exact
+persisted mutation-intent digest. `transport_outcome=rejected` is legal only
+with `to_status=recovery_required` and `failure_class=http_rejected`.
+
+The integrated repository total `0060/60, 69/909/101` and the isolated control
+D1 catalog are separate evidence facts. The latter must prove exactly the three
+domain tables and its own migration metadata; it must not claim the integrated
+69-table total.
+
+The current local Authority Worker configuration correctly names the dedicated
+`cinatoken-ring-control-staging` database and the config audit rejects the
+shared application database name. It is still not deployable: the database ID
+and trust identities are placeholders, every write gate is false, and the
+authenticated remote D1, route, Access, secret-rotation, and revocation packet
+is absent. Phase C cannot start until those independent resources and evidence
+are reviewed.
+
+This addendum is a local production plan only. No control D1, Authority Worker,
+Access policy, route, secret, permit key, migration, deployment, provider call,
+customer traffic, or financial state was changed remotely. Production remains
+**NO-GO**, and Go/VPS remains authoritative.

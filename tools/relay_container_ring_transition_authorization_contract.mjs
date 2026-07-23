@@ -275,6 +275,7 @@ export async function verifyRingTransitionMutationAuthorization({
       migrationHead: claimReadiness.migrationHead,
       claimTable: claimReadiness.claimTable,
       stepTable: claimReadiness.stepTable,
+      expiryTable: claimReadiness.expiryTable,
       claimCredentialIdSha256:
         claimReadiness.claimCredentialIdSha256,
       remoteClaimPerformed: false,
@@ -990,6 +991,7 @@ function validateClaimReadiness(item, subject) {
       "migrationHead",
       "claimTable",
       "stepTable",
+      "expiryTable",
       "claimCredentialIdSha256",
       "state",
       "atomicUniqueInsertRequired",
@@ -1016,7 +1018,7 @@ function validateClaimReadiness(item, subject) {
   );
   requireExact(
     facts.migrationHead,
-    "0059_relay_container_ring_transition_claims.sql",
+    "0060_relay_container_ring_transition_authority.sql",
     "[claim] migration head",
   );
   requireExact(
@@ -1028,6 +1030,11 @@ function validateClaimReadiness(item, subject) {
     facts.stepTable,
     "relay_container_ring_transition_steps",
     "[claim] step table",
+  );
+  requireExact(
+    facts.expiryTable,
+    "relay_container_ring_transition_expiry_events",
+    "[claim] expiry table",
   );
   requireSha256(
     facts.claimCredentialIdSha256,

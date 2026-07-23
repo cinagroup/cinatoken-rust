@@ -1,5 +1,6 @@
 /target/
 /node_modules/
+/services/*/node_modules/
 /dist/
 /build/
 /crates/*/build/

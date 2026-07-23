@@ -6,9 +6,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const wranglerPath = path.join(repoRoot, "wrangler.toml");
 const localD1WranglerPath = path.join(repoRoot, "wrangler.d1-local.toml");
 const migrationsDir = path.join(repoRoot, "migrations", "d1");
-const expectedMigrationCount = 59;
+const expectedMigrationCount = 60;
 const expectedMigrationHead =
-  "0059_relay_container_ring_transition_claims.sql";
+  "0060_relay_container_ring_transition_authority.sql";
 const platformGatewayPath = path.join(
   repoRoot,
   "crates",

@@ -1,0 +1,7 @@
+// Fixed test-only Ed25519 material. It is not a deployment credential.
+export const TEST_PERMIT_SPKI_BASE64URL =
+  "MCowBQYDK2VwAyEA9v8JyOln6PrPndR6_8lAUrEWIsD7_CP777cXWBor8C8";
+export const TEST_PERMIT_SPKI_SHA256 =
+  "471850d2dcfe546734941e2d44fde594cb3e4445900da72536ac9683f6be5d10";
+export const TEST_PERMIT_PKCS8_BASE64URL =
+  "MC4CAQAwBQYDK2VwBCIEIM79XI3U3zwizihw3d_2C1BkrjVK11rROOfxqGj5nW5v";

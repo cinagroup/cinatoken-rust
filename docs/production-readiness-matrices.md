@@ -1262,3 +1262,27 @@ incremental columns, and 100 key indexes.
 
 No local success result turns `remoteMutationAuthorized` true. Go/VPS remains
 traffic and scheduler authority.
+
+## 2026-07-23 Ring Transition Authority Current-Head Matrix
+
+This matrix supersedes only current-head and current authority rows in the
+0059 matrix. Historical candidate totals remain attached to their recorded
+increments. Current local integrated D1 head/count is `0060/60`, with 69
+required tables, 909 checked incremental columns, and 101 key indexes.
+
+| Control | Current local evidence | Required staging/production evidence | Decision |
+| --- | --- | --- | --- |
+| 0060 schema | Old-writer/active-claim drain guard, expiry-event table/index, `transport_outcome`, claim update guard and step insert guard are present in the current local migration | Authenticated proof that all 0059 writers are disabled and active claims are zero, then isolated control-D1 apply/readback, normalized catalog and unchanged application-D1 fingerprint | Local schema candidate; remote open |
+| Expiry authority | D1 requires an authority actor distinct from claim owner; `claimed|t1_verified -> expired`; `controller_verified|edge_prechecked -> recovery_required`; inflight remains readback-only | Expiry race, clock boundary, restart, response-loss and immutable evidence campaign against deployed staging | Local D1 contract; remote open |
+| Intent binding | Controller and Edge post-readback mutation digests must equal the immediately preceding persisted intent | One-write response-loss and stable authenticated readback faults with exact D1/version traces | Local D1 contract; remote open |
+| Transport outcome | Explicit `not_applicable|success|ambiguous|rejected`; rejected can only be `recovery_required/http_rejected` | HTTP status/truncation/timeout/reset matrix proving no rejected or ambiguous request is resent or promoted without target proof | Local D1 contract; remote open |
+| Control database isolation | Target is `cinatoken-ring-control-staging`, with only claim, step and expiry domain tables plus provider migration metadata | Separate database identity, source-digest-pinned schema lineage, backup/Time Travel, restore, retention, owner and exact allowlist evidence | Planned; resource absent |
+| Worker least privilege | Local candidate has only dedicated `cinatoken-ring-control-staging` D1 plus Version Metadata and no application D1/KV/R2/DO/Container/Queue/service/outbound authority; its database ID and trust identities remain placeholders and every write gate is false | Independently provision the named D1; archive authenticated deployed binding, route, Access, key-rotation and revocation inventory from the exact frozen version | Local config passes isolation audit; remote absent |
+| Layered authentication | Planned Access Service Auth plus method/path/time/request/body/credential-bound HMAC plus claim-bound Ed25519 permit | Missing/stale/replay/drift/key-rotation negatives, server-derived actor/credential identity and redacted logs | Planned; remote open |
+| Fail-closed config | Required `workers_dev=false`, `preview_urls=false`, no production config, authority/claim/step/expiry write gates false | Authenticated remote config readback and alternate-endpoint inventory before and after every ceremony | Planned; no remote config |
+| Candidate identity | Integrated local candidate binds 0060/60 and 69/909/101; isolated control packet separately binds its three-table catalog and 0059/0060 source digests | One fresh immutable packet with no mixed integrated/control totals | Local documentation; remote packet absent |
+| Promotion | No remote resource, route, secret, migration, deployment, provider/financial effect or customer traffic is claimed | Revocation, remote fault/load/SLO/cost/security/P5-B/rollback/reverse-sync/Go drain packet and independent approvals | **NO-GO** |
+
+The integrated 69-table workspace catalog is not the remote control D1 catalog.
+Go/VPS remains traffic and scheduler authority, every write gate remains
+planned false, and production remains **NO-GO**.

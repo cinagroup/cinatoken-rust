@@ -452,7 +452,7 @@ describe("Relay Container adjacent ring transition mutation authorization", () =
       ]).size,
     ).toBe(3);
     expect(result.claimAuthority.migrationHead).toBe(
-      "0059_relay_container_ring_transition_claims.sql",
+      "0060_relay_container_ring_transition_authority.sql",
     );
     expect(result.claimAuthority.remoteClaimPerformed).toBe(false);
     for (const name of [
@@ -1644,9 +1644,10 @@ function authorizationArtifactFactsFixture(
         ledgerIdentitySha256: "c".repeat(64),
         claimAuthorityOriginSha256: "1".repeat(64),
         migrationHead:
-          "0059_relay_container_ring_transition_claims.sql",
+          "0060_relay_container_ring_transition_authority.sql",
         claimTable: "relay_container_ring_transition_claims",
         stepTable: "relay_container_ring_transition_steps",
+        expiryTable: "relay_container_ring_transition_expiry_events",
         claimCredentialIdSha256: "f".repeat(64),
         state: "unclaimed",
         atomicUniqueInsertRequired: true,
@@ -1798,8 +1799,8 @@ function candidateFixture() {
     containerClass: "RelayShardContainer",
     ringGeneration: 2,
     shardCount: 12,
-    migrationHead: "0059_relay_container_ring_transition_claims.sql",
-    migrationCount: 59,
+    migrationHead: "0060_relay_container_ring_transition_authority.sql",
+    migrationCount: 60,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,

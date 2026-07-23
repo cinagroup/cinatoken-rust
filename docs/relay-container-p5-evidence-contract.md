@@ -455,3 +455,78 @@ window. The remote fault packet must add claim races, response-loss readback,
 HTTP/2, HTTP/3, TCP and WFP cancellation, D1 ambiguity, restart/version-skew,
 invoice and rollback evidence. Local fixture acceptance does not authorize
 traffic. Production remains **NO-GO**.
+
+## 0060 Candidate And Authority Isolation Overlay
+
+This overlay supersedes only the current candidate identity in the 0059
+overlay. Historical sealed evidence remains historical. Every new integrated
+workspace P5 candidate must bind current head/count `0060/60`:
+
+```text
+migration head: 0060_relay_container_ring_transition_authority.sql
+migration count: 60
+required tables: 69
+checked incremental columns: 909
+key indexes: 101
+```
+
+The schema evidence must bind the exact 0059 and 0060 file digests, the
+expiry-event table and index, `transport_outcome`, recreated claim/step guards,
+normalized schema digest, and negative results proving:
+
+- the temporary drain guard rejects any old 0059 writer or active transition
+  claim before the incompatible migration is applied;
+- expiry authority is a server-derived actor distinct from the claim owner;
+- pre-mutation expiry becomes `expired`;
+- post-mutation expiry becomes `recovery_required`;
+- inflight mutation ownership remains readback-only;
+- post-readback mutation digest equals the immediately preceding intent; and
+- `transport_outcome=rejected` can only be
+  `recovery_required/http_rejected`.
+
+### Separate control-plane evidence
+
+The P5 packet must not present the integrated `69/909/101` total as evidence for
+the dedicated control D1. A separate
+`ring-transition-control-plane-v1` evidence item must bind:
+
+1. `cinatoken-ring-control-staging` database identity hash, jurisdiction,
+   migration-lineage digest, 0059/0060 source digests, normalized catalog
+   digest, backup/Time Travel point, restore rehearsal, retention and owners;
+2. exactly the claim, step and expiry domain tables, plus only
+   provider-managed migration metadata, with no unrelated application table;
+3. the frozen Authority Worker version and source/config/provenance digests;
+4. exactly one D1 binding to the control database plus Version Metadata, and
+   absence of application D1, KV, R2, Durable Object, Container, Queue,
+   service, AI, browser and arbitrary outbound authority;
+5. `workers_dev=false`, `preview_urls=false`, no production configuration, and
+   authority/claim/step/expiry write gates false;
+6. the Access application/policy identity and route inventory proving no
+   workers.dev, preview, alternate domain or route bypass;
+7. application-HMAC key ID and policy digest without secret material, including
+   method/path/time/request/body/credential binding and replay-window results;
+8. Ed25519 permit policy/public-key fingerprints and claim-binding test results,
+   without private key or permit reuse;
+9. server-derived credential and expiry-actor identity, exact
+   create/read/step/expiry results, concurrency and response-loss readback
+   evidence; and
+10. before/after zero customer, provider, financial, traffic and shared
+   application-D1 delta.
+
+The current local Authority Worker configuration names
+`cinatoken-ring-control-staging`, and the retained config audit proves the
+shared application database name is absent. It remains ineligible for a
+`ring-transition-control-plane-v1` evidence item because its database ID and
+trust identities are placeholders, every write gate is false, and no
+authenticated remote database, route, Access, key-rotation, or revocation
+packet exists.
+
+The evidence item is incomplete if it contains a secret, raw authorization
+header, Access secret, HMAC value, private key, raw request body, SQL error, or
+unredacted D1 metadata. Local fixtures and schema replay remain
+`not-remote-proven`.
+
+No Authority Worker, control D1, Access policy, route, secret, key, migration,
+deployment, customer traffic, provider call, or financial state is claimed as
+remotely created or changed. The checked-in write gates remain required false,
+Go/VPS remains authoritative, and production remains **NO-GO**.

@@ -9,6 +9,16 @@ export const RING_TRANSITION_EXECUTION_STEP_CONTRACT =
   "cinatoken-relay-container-ring-transition-execution-step-v1";
 export const RING_TRANSITION_RUNNER_TRUST_CONTRACT =
   "cinatoken-relay-container-ring-transition-runner-trust-v1";
+export const RING_TRANSITION_CLAIM_REQUEST_CONTRACT =
+  "cinatoken-ring-transition-claim-request-v1";
+export const RING_TRANSITION_CLAIM_PERMIT_CONTRACT =
+  "cinatoken-ring-transition-claim-permit-v1";
+export const RING_TRANSITION_CLAIM_PERMIT_DOMAIN =
+  "cinatoken-ring-transition-claim-permit-v1\n";
+export const RING_TRANSITION_EXPIRY_EVENT_CONTRACT =
+  "cinatoken-relay-container-ring-transition-expiry-event-v1";
+export const RING_TRANSITION_AUTHORITY_HEADER =
+  "x-cinatoken-ring-authority";
 export const RING_TRANSITION_CLAIM_AUTHORITY_PATH =
   "/internal/v1/ring-transition/claims";
 export const CLOUDFLARE_API_ORIGIN = "https://api.cloudflare.com";
@@ -311,21 +321,177 @@ export function buildRingTransitionExecutionClaim({
   };
 }
 
-export function buildClaimAuthorityRequest({ anchors, claim }) {
-  const trust = validatePublishedRingTransitionTrust(anchors);
-  requireExact(
-    claim.contract,
-    RING_TRANSITION_EXECUTION_CLAIM_CONTRACT,
-    "[claim] contract",
+export function buildRingTransitionClaimPermitSubject({
+  claim,
+  issuer,
+  keyId,
+  issuedAt,
+  expiresAt,
+}) {
+  validateExecutionClaim(claim);
+  requireToken(issuer, /^[a-z0-9][a-z0-9._:-]{0,127}$/, "[permit] issuer");
+  requireToken(keyId, /^[a-z0-9][a-z0-9._-]{0,63}$/, "[permit] key ID");
+  requireInteger(issuedAt, 1, Number.MAX_SAFE_INTEGER, "[permit] issuedAt");
+  requireInteger(expiresAt, 1, Number.MAX_SAFE_INTEGER, "[permit] expiresAt");
+  if (
+    issuedAt < claim.generatedAt ||
+    expiresAt <= issuedAt ||
+    expiresAt - issuedAt > 60 ||
+    expiresAt > claim.expiresAt
+  ) {
+    throw new Error("[permit] validity window is invalid");
+  }
+  return {
+    schemaVersion: 1,
+    contract: RING_TRANSITION_CLAIM_PERMIT_CONTRACT,
+    issuer,
+    keyId,
+    authorizationIdSha256: claim.authorizationIdSha256,
+    claimDigestSha256: claim.claimDigestSha256,
+    claimOwnerSha256: claim.claimOwnerSha256,
+    ledgerIdentitySha256: claim.ledgerIdentitySha256,
+    claimCredentialIdSha256: claim.claimCredentialIdSha256,
+    issuedAt,
+    expiresAt,
+  };
+}
+
+export function ringTransitionClaimPermitMessage(subject) {
+  const permit = requireObject(subject, "[permit] subject");
+  exactKeys(
+    permit,
+    [
+      "schemaVersion",
+      "contract",
+      "issuer",
+      "keyId",
+      "authorizationIdSha256",
+      "claimDigestSha256",
+      "claimOwnerSha256",
+      "ledgerIdentitySha256",
+      "claimCredentialIdSha256",
+      "issuedAt",
+      "expiresAt",
+    ],
+    "[permit] subject",
   );
+  return Buffer.from(
+    `${RING_TRANSITION_CLAIM_PERMIT_DOMAIN}${canonicalJson(permit)}`,
+    "utf8",
+  );
+}
+
+export function buildClaimAuthorityRequest({
+  anchors,
+  claim,
+  permit,
+  authorityToken,
+}) {
+  const trust = validatePublishedRingTransitionTrust(anchors);
+  validateExecutionClaim(claim);
+  validateSignedClaimPermit(permit, claim);
+  requireAuthorityToken(authorityToken);
+  const body = {
+    schemaVersion: 1,
+    contract: RING_TRANSITION_CLAIM_REQUEST_CONTRACT,
+    claim,
+    permit,
+  };
   return {
     method: "POST",
     url: `${trust.claimAuthorityOrigin}${RING_TRANSITION_CLAIM_AUTHORITY_PATH}`,
     headers: {
       accept: "application/json",
       "content-type": "application/json",
+      [RING_TRANSITION_AUTHORITY_HEADER]: authorityToken,
     },
-    body: canonicalJson(claim),
+    body: canonicalJson(body),
+    retry: false,
+    timeoutMilliseconds: 10_000,
+    maximumResponseBytes: 256 * 1024,
+  };
+}
+
+export function buildClaimAuthorityReadRequest({
+  anchors,
+  authorizationIdSha256,
+  claimDigestSha256,
+  claimOwnerSha256,
+  authorityToken,
+}) {
+  const trust = validatePublishedRingTransitionTrust(anchors);
+  requireSha256(authorizationIdSha256, "[claim read] authorization ID");
+  requireSha256(claimDigestSha256, "[claim read] claim digest");
+  requireSha256(claimOwnerSha256, "[claim read] claim owner");
+  requireAuthorityToken(authorityToken);
+  const query = new URLSearchParams({
+    claimDigestSha256,
+    claimOwnerSha256,
+  });
+  return {
+    method: "GET",
+    url:
+      `${trust.claimAuthorityOrigin}${RING_TRANSITION_CLAIM_AUTHORITY_PATH}/` +
+      `${authorizationIdSha256}?${query.toString()}`,
+    headers: {
+      accept: "application/json",
+      [RING_TRANSITION_AUTHORITY_HEADER]: authorityToken,
+    },
+    body: null,
+    retry: false,
+    timeoutMilliseconds: 10_000,
+    maximumResponseBytes: 256 * 1024,
+  };
+}
+
+export function buildClaimAuthorityStepRequest({
+  anchors,
+  authorizationIdSha256,
+  step,
+  authorityToken,
+}) {
+  const trust = validatePublishedRingTransitionTrust(anchors);
+  requireSha256(authorizationIdSha256, "[step] authorization ID");
+  validateExecutionStep(step);
+  requireAuthorityToken(authorityToken);
+  return {
+    method: "POST",
+    url:
+      `${trust.claimAuthorityOrigin}${RING_TRANSITION_CLAIM_AUTHORITY_PATH}/` +
+      `${authorizationIdSha256}/steps`,
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      [RING_TRANSITION_AUTHORITY_HEADER]: authorityToken,
+    },
+    body: canonicalJson(step),
+    retry: false,
+    timeoutMilliseconds: 10_000,
+    maximumResponseBytes: 256 * 1024,
+  };
+}
+
+export function buildClaimAuthorityExpiryRequest({
+  anchors,
+  authorizationIdSha256,
+  expiryEvent,
+  authorityToken,
+}) {
+  const trust = validatePublishedRingTransitionTrust(anchors);
+  requireSha256(authorizationIdSha256, "[expiry] authorization ID");
+  validateExpiryEvent(expiryEvent);
+  requireAuthorityToken(authorityToken);
+  return {
+    method: "POST",
+    url:
+      `${trust.claimAuthorityOrigin}${RING_TRANSITION_CLAIM_AUTHORITY_PATH}/` +
+      `${authorizationIdSha256}/expire`,
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      [RING_TRANSITION_AUTHORITY_HEADER]: authorityToken,
+    },
+    body: canonicalJson(expiryEvent),
     retry: false,
     timeoutMilliseconds: 10_000,
     maximumResponseBytes: 256 * 1024,
@@ -398,7 +564,7 @@ export function classifyDeploymentMutationAttempt({
     throw new Error("[mutation] exactly two authenticated readbacks are required");
   }
   const normalized = readbacks.map((item, index) =>
-    normalizeTargetReadback(item, targetVersionId, expectedAnnotation, index),
+    normalizeTargetReadback(item, targetVersionId, index),
   );
   const stable =
     canonicalJson(normalized[0]) === canonicalJson(normalized[1]);
@@ -406,7 +572,8 @@ export function classifyDeploymentMutationAttempt({
     stable &&
     normalized[0].activeVersions.length === 1 &&
     normalized[0].activeVersions[0].versionId === targetVersionId &&
-    normalized[0].activeVersions[0].percentage === 100;
+    normalized[0].activeVersions[0].percentage === 100 &&
+    normalized[0].mutationAnnotation === expectedAnnotation;
   if (targetConfirmed && transportOutcome === "success") {
     return {
       classification: "confirmed-applied",
@@ -480,7 +647,6 @@ function normalizeServiceClaim(value, label) {
 function normalizeTargetReadback(
   value,
   targetVersionId,
-  expectedAnnotation,
   index,
 ) {
   const readback = requireObject(value, `[mutation] readback ${index + 1}`);
@@ -499,11 +665,13 @@ function normalizeTargetReadback(
     ),
     percentage: version.percentage,
   }));
-  requireExact(
-    readback.mutationAnnotation,
-    expectedAnnotation,
-    `[mutation] readback ${index + 1} annotation`,
-  );
+  if (
+    typeof readback.mutationAnnotation !== "string" ||
+    readback.mutationAnnotation.length > 256 ||
+    /[\u0000-\u001f\u007f]/.test(readback.mutationAnnotation)
+  ) {
+    throw new Error(`[mutation] readback ${index + 1} annotation is invalid`);
+  }
   for (const version of activeVersions) {
     if (
       !Number.isInteger(version.percentage) ||
@@ -628,6 +796,402 @@ function requireSha256(value, label) {
 function requireToken(value, pattern, label) {
   if (typeof value !== "string" || !pattern.test(value)) {
     throw new Error(`${label} is invalid`);
+  }
+  return value;
+}
+
+function requireInteger(value, minimum, maximum, label) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
+}
+
+function validateExecutionClaim(value) {
+  const claim = requireObject(value, "[claim] execution claim");
+  exactKeys(
+    claim,
+    [
+      "schemaVersion",
+      "contract",
+      "claimAuthority",
+      "claimScope",
+      "environment",
+      "authorizationIdSha256",
+      "executionNonceSha256",
+      "authorizationManifestSha256",
+      "authorizationSubjectSha256",
+      "authorizationPolicySha256",
+      "transitionManifestSha256",
+      "transitionSubjectSha256",
+      "transitionPolicySha256",
+      "transitionPlanSha256",
+      "candidateSha256",
+      "executionPlanSha256",
+      "accountIdSha256",
+      "ledgerIdentitySha256",
+      "readCredentialIdSha256",
+      "claimCredentialIdSha256",
+      "deployCredentialIdSha256",
+      "controller",
+      "edge",
+      "runnerBuildSha256",
+      "runnerTrustConfigSha256",
+      "claimOwnerSha256",
+      "generatedAt",
+      "expiresAt",
+      "claimDigestSha256",
+    ],
+    "[claim] execution claim",
+  );
+  requireExact(claim.schemaVersion, 1, "[claim] schema version");
+  requireExact(
+    claim.contract,
+    RING_TRANSITION_EXECUTION_CLAIM_CONTRACT,
+    "[claim] contract",
+  );
+  requireExact(claim.claimAuthority, "d1-unique-claim-v1", "[claim] authority");
+  requireExact(
+    claim.claimScope,
+    "staging-worker-ring-transition",
+    "[claim] scope",
+  );
+  requireExact(claim.environment, "staging", "[claim] environment");
+  for (const field of [
+    "authorizationIdSha256",
+    "executionNonceSha256",
+    "authorizationManifestSha256",
+    "authorizationSubjectSha256",
+    "authorizationPolicySha256",
+    "transitionManifestSha256",
+    "transitionSubjectSha256",
+    "transitionPolicySha256",
+    "transitionPlanSha256",
+    "candidateSha256",
+    "executionPlanSha256",
+    "accountIdSha256",
+    "ledgerIdentitySha256",
+    "readCredentialIdSha256",
+    "claimCredentialIdSha256",
+    "deployCredentialIdSha256",
+    "runnerBuildSha256",
+    "runnerTrustConfigSha256",
+    "claimOwnerSha256",
+    "claimDigestSha256",
+  ]) {
+    requireSha256(claim[field], `[claim] ${field}`);
+  }
+  if (
+    claim.authorizationIdSha256 === claim.executionNonceSha256 ||
+    new Set([
+      claim.readCredentialIdSha256,
+      claim.claimCredentialIdSha256,
+      claim.deployCredentialIdSha256,
+    ]).size !== 3
+  ) {
+    throw new Error("[claim] identity separation is invalid");
+  }
+  for (const [label, service] of [
+    ["controller", claim.controller],
+    ["edge", claim.edge],
+  ]) {
+    exactKeys(
+      requireObject(service, `[claim] ${label}`),
+      [
+        "serviceName",
+        "previousVersionId",
+        "previousDeploymentSetSha256",
+        "targetVersionId",
+      ],
+      `[claim] ${label}`,
+    );
+    requireToken(service.serviceName, serviceNamePattern, `[claim] ${label} service`);
+    requireToken(
+      service.previousVersionId,
+      versionIdPattern,
+      `[claim] ${label} previous version`,
+    );
+    requireSha256(
+      service.previousDeploymentSetSha256,
+      `[claim] ${label} previous deployment set`,
+    );
+    requireToken(
+      service.targetVersionId,
+      versionIdPattern,
+      `[claim] ${label} target version`,
+    );
+    if (service.previousVersionId === service.targetVersionId) {
+      throw new Error(`[claim] ${label} target version is unchanged`);
+    }
+  }
+  requireInteger(
+    claim.generatedAt,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    "[claim] generatedAt",
+  );
+  requireInteger(
+    claim.expiresAt,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    "[claim] expiresAt",
+  );
+  if (
+    claim.expiresAt <= claim.generatedAt ||
+    claim.expiresAt - claim.generatedAt > 600
+  ) {
+    throw new Error("[claim] validity window is invalid");
+  }
+  const digestInput = { ...claim };
+  delete digestInput.claimDigestSha256;
+  requireExact(
+    claim.claimDigestSha256,
+    digestCanonical(digestInput),
+    "[claim] digest",
+  );
+  return claim;
+}
+
+function validateSignedClaimPermit(value, claim) {
+  const permit = requireObject(value, "[permit] signed permit");
+  exactKeys(
+    permit,
+    [
+      "schemaVersion",
+      "contract",
+      "issuer",
+      "keyId",
+      "authorizationIdSha256",
+      "claimDigestSha256",
+      "claimOwnerSha256",
+      "ledgerIdentitySha256",
+      "claimCredentialIdSha256",
+      "issuedAt",
+      "expiresAt",
+      "signatureBase64url",
+    ],
+    "[permit] signed permit",
+  );
+  const subject = { ...permit };
+  delete subject.signatureBase64url;
+  ringTransitionClaimPermitMessage(subject);
+  requireExact(permit.schemaVersion, 1, "[permit] schema version");
+  requireExact(
+    permit.contract,
+    RING_TRANSITION_CLAIM_PERMIT_CONTRACT,
+    "[permit] contract",
+  );
+  requireToken(
+    permit.issuer,
+    /^[a-z0-9][a-z0-9._:-]{0,127}$/,
+    "[permit] issuer",
+  );
+  requireToken(
+    permit.keyId,
+    /^[a-z0-9][a-z0-9._-]{0,63}$/,
+    "[permit] key ID",
+  );
+  for (const [field, expected] of [
+    ["authorizationIdSha256", claim.authorizationIdSha256],
+    ["claimDigestSha256", claim.claimDigestSha256],
+    ["claimOwnerSha256", claim.claimOwnerSha256],
+    ["ledgerIdentitySha256", claim.ledgerIdentitySha256],
+    ["claimCredentialIdSha256", claim.claimCredentialIdSha256],
+  ]) {
+    requireSha256(permit[field], `[permit] ${field}`);
+    requireExact(permit[field], expected, `[permit] ${field}`);
+  }
+  requireInteger(permit.issuedAt, 1, Number.MAX_SAFE_INTEGER, "[permit] issuedAt");
+  requireInteger(permit.expiresAt, 1, Number.MAX_SAFE_INTEGER, "[permit] expiresAt");
+  if (
+    permit.issuedAt < claim.generatedAt ||
+    permit.expiresAt <= permit.issuedAt ||
+    permit.expiresAt - permit.issuedAt > 60 ||
+    permit.expiresAt > claim.expiresAt
+  ) {
+    throw new Error("[permit] validity window is invalid");
+  }
+  requireToken(
+    permit.signatureBase64url,
+    /^[A-Za-z0-9_-]{86}$/,
+    "[permit] signature",
+  );
+  return permit;
+}
+
+function validateExecutionStep(value) {
+  const step = requireObject(value, "[step] execution step");
+  exactKeys(
+    step,
+    [
+      "schemaVersion",
+      "contract",
+      "ledgerIdentitySha256",
+      "claimDigestSha256",
+      "stateVersion",
+      "stepCode",
+      "fromStatus",
+      "toStatus",
+      "mutationRequestSha256",
+      "cloudflareRequestIdSha256",
+      "deploymentSetSha256",
+      "evidenceSha256",
+      "failureClass",
+      "transportOutcome",
+      "stepDigestSha256",
+    ],
+    "[step] execution step",
+  );
+  requireExact(step.schemaVersion, 1, "[step] schema version");
+  requireExact(
+    step.contract,
+    RING_TRANSITION_EXECUTION_STEP_CONTRACT,
+    "[step] contract",
+  );
+  requireSha256(step.ledgerIdentitySha256, "[step] ledger identity");
+  requireSha256(step.claimDigestSha256, "[step] claim digest");
+  requireInteger(step.stateVersion, 1, 6, "[step] state version");
+  requireOneOf(
+    step.stepCode,
+    [
+      "t1_readback",
+      "controller_mutation_intent",
+      "controller_post_readback",
+      "edge_pre_readback",
+      "edge_mutation_intent",
+      "edge_post_readback",
+      "terminal",
+    ],
+    "[step] code",
+  );
+  for (const field of ["fromStatus", "toStatus"]) {
+    requireOneOf(
+      step[field],
+      [
+        "claimed",
+        "t1_verified",
+        "controller_inflight",
+        "controller_verified",
+        "edge_prechecked",
+        "edge_inflight",
+        "completed",
+        "recovery_required",
+        "aborted",
+        "expired",
+      ],
+      `[step] ${field}`,
+    );
+  }
+  for (const field of [
+    "mutationRequestSha256",
+    "cloudflareRequestIdSha256",
+    "deploymentSetSha256",
+  ]) {
+    if (step[field] !== null) requireSha256(step[field], `[step] ${field}`);
+  }
+  requireSha256(step.evidenceSha256, "[step] evidence");
+  requireOneOf(
+    step.failureClass,
+    [
+      "",
+      "authorization_expired",
+      "operator_abort",
+      "transport_response_lost",
+      "http_rejected",
+      "readback_drift",
+      "target_not_stable",
+    ],
+    "[step] failure class",
+  );
+  requireOneOf(
+    step.transportOutcome,
+    ["not_applicable", "success", "ambiguous", "rejected"],
+    "[step] transport outcome",
+  );
+  requireSha256(step.stepDigestSha256, "[step] digest");
+  const digestInput = { ...step };
+  delete digestInput.stepDigestSha256;
+  requireExact(
+    step.stepDigestSha256,
+    digestCanonical(digestInput),
+    "[step] digest",
+  );
+  return step;
+}
+
+function validateExpiryEvent(value) {
+  const event = requireObject(value, "[expiry] event");
+  exactKeys(
+    event,
+    [
+      "schemaVersion",
+      "contract",
+      "ledgerIdentitySha256",
+      "claimDigestSha256",
+      "stateVersion",
+      "fromStatus",
+      "toStatus",
+      "evidenceSha256",
+      "expiryEventDigestSha256",
+      "failureClass",
+    ],
+    "[expiry] event",
+  );
+  requireExact(event.schemaVersion, 1, "[expiry] schema version");
+  requireExact(
+    event.contract,
+    RING_TRANSITION_EXPIRY_EVENT_CONTRACT,
+    "[expiry] contract",
+  );
+  requireSha256(event.ledgerIdentitySha256, "[expiry] ledger identity");
+  requireSha256(event.claimDigestSha256, "[expiry] claim digest");
+  requireInteger(event.stateVersion, 1, 6, "[expiry] state version");
+  requireOneOf(
+    event.fromStatus,
+    ["claimed", "t1_verified", "controller_verified", "edge_prechecked"],
+    "[expiry] from status",
+  );
+  requireOneOf(
+    event.toStatus,
+    ["expired", "recovery_required"],
+    "[expiry] to status",
+  );
+  requireSha256(event.evidenceSha256, "[expiry] evidence");
+  requireExact(
+    event.failureClass,
+    "authorization_expired",
+    "[expiry] failure class",
+  );
+  requireSha256(event.expiryEventDigestSha256, "[expiry] digest");
+  const digestInput = { ...event };
+  delete digestInput.expiryEventDigestSha256;
+  requireExact(
+    event.expiryEventDigestSha256,
+    digestCanonical(digestInput),
+    "[expiry] digest",
+  );
+  return event;
+}
+
+function requireOneOf(value, allowed, label) {
+  if (!allowed.includes(value)) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
+}
+
+function requireAuthorityToken(value) {
+  if (
+    typeof value !== "string" ||
+    value.length < 32 ||
+    value.length > 4096 ||
+    /[^A-Za-z0-9._-]/.test(value)
+  ) {
+    throw new Error("[authority] token is invalid");
   }
   return value;
 }

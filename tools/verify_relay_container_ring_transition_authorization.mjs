@@ -111,7 +111,7 @@ function describeContract() {
       canonicalEvidenceArtifactsRequired: true,
       distinctReadClaimDeployCredentialsRequired: true,
       claimLedgerMigration:
-        "0059_relay_container_ring_transition_claims.sql",
+        "0060_relay_container_ring_transition_authority.sql",
       atomicSingleUseRemoteClaimRequired: true,
       authenticatedT1ReadbackRequired: true,
       controllerFirstRequired: true,

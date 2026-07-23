@@ -48,9 +48,11 @@ handoff contract. Migration `0057_relay_http_stream_dispatch_intents.sql`
 closes the provider-dispatch-to-handoff crash window. Migration
 `0058_relay_http_stream_client_abort_watchdogs.sql` remains the SSE
 downstream-cancellation ownership head. It was the source-tree D1 head at the
-58-migration/66-table/848-column/97-index checkpoint. The current global D1
-head is 0059/59 with 68 required tables, 899 checked incremental columns, and
-100 key indexes; 0059 does not change this SSE protocol.
+58-migration/66-table/848-column/97-index checkpoint. The following 0059
+checkpoint was 59/68/899/100. The current global D1 head is
+`0060_relay_container_ring_transition_authority.sql`: 60 migrations, 69
+required tables, 909 checked incremental columns, and 101 key indexes.
+Migrations 0059/0060 do not change this SSE protocol.
 
 ## Runtime Gates
 

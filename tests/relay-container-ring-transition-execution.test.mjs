@@ -18,9 +18,16 @@ import {
 import {
   DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
   RING_TRANSITION_EXECUTION_CLAIM_CONTRACT,
+  RING_TRANSITION_AUTHORITY_HEADER,
+  RING_TRANSITION_EXECUTION_STEP_CONTRACT,
+  RING_TRANSITION_EXPIRY_EVENT_CONTRACT,
+  buildClaimAuthorityExpiryRequest,
   buildClaimAuthorityRequest,
+  buildClaimAuthorityReadRequest,
+  buildClaimAuthorityStepRequest,
   buildCloudflareDeploymentMutationRequest,
   buildRingTransitionExecutionClaim,
+  buildRingTransitionClaimPermitSubject,
   classifyDeploymentMutationAttempt,
   describeRingTransitionMutationRunner,
   nextRingTransitionRunnerAction,
@@ -28,23 +35,32 @@ import {
   validatePublishedRingTransitionTrust,
 } from "../tools/relay_container_ring_transition_execution_contract.mjs";
 import {
+  canonicalJson,
   sha256Hex,
 } from "../tools/relay_container_p5_evidence_contract.mjs";
 
-const migrationPath = path.resolve(
+const migration0059Path = path.resolve(
   import.meta.dir,
   "../migrations/d1/0059_relay_container_ring_transition_claims.sql",
+);
+const migration0060Path = path.resolve(
+  import.meta.dir,
+  "../migrations/d1/0060_relay_container_ring_transition_authority.sql",
 );
 const runnerPath = path.resolve(
   import.meta.dir,
   "../tools/run_relay_container_ring_transition_mutation.mjs",
 );
 const accountId = "0123456789abcdef0123456789abcdef";
-let migrationSql;
+let migration0059Sql;
+let migration0060Sql;
 let tempRoot;
 
 beforeAll(async () => {
-  migrationSql = await readFile(migrationPath, "utf8");
+  [migration0059Sql, migration0060Sql] = await Promise.all([
+    readFile(migration0059Path, "utf8"),
+    readFile(migration0060Path, "utf8"),
+  ]);
   tempRoot = await mkdtemp(path.join(os.tmpdir(), "cinatoken-ring-execution-"));
 });
 
@@ -53,6 +69,38 @@ afterAll(async () => {
 });
 
 describe("Relay Container ring transition D1 claim ledger", () => {
+  test("refuses authority enforcement while a 0059 claim is active", () => {
+    const db = new Database(":memory:", { strict: true });
+    db.exec("PRAGMA foreign_keys = ON");
+    db.exec(migration0059Sql);
+    insertClaim(db);
+    expect(
+      migration0060Sql.indexOf(
+        "migration_0060_ring_transition_authority_drain_guard",
+      ),
+    ).toBeLessThan(migration0060Sql.indexOf("ADD COLUMN transport_outcome"));
+    db.exec(
+      `CREATE TABLE migration_0060_ring_transition_authority_drain_guard (
+         active_count INTEGER NOT NULL CHECK (active_count = 0)
+       )`,
+    );
+    expect(() =>
+      db
+        .query(
+          `INSERT INTO migration_0060_ring_transition_authority_drain_guard
+             (active_count)
+           SELECT COUNT(*)
+           FROM relay_container_ring_transition_claims
+           WHERE status IN (
+             'claimed', 't1_verified', 'controller_inflight',
+             'controller_verified', 'edge_prechecked', 'edge_inflight'
+           )`,
+        )
+        .run(),
+    ).toThrow();
+    db.close();
+  });
+
   test("claims once and advances only through persisted ordered evidence", () => {
     const db = createLedger();
     const claim = insertClaim(db);
@@ -74,7 +122,7 @@ describe("Relay Container ring transition D1 claim ledger", () => {
            WHERE authorization_id_sha256 = ?1`,
         )
         .run(claim.authorizationIdSha256),
-    ).toThrow(/matching step evidence/);
+    ).toThrow(/matching authority evidence/);
     insertStep(
       db,
       claim,
@@ -215,6 +263,7 @@ describe("Relay Container ring transition D1 claim ledger", () => {
         mutationRequestSha256: "2".repeat(64),
         deploymentSetSha256: "3".repeat(64),
         failureClass: "transport_response_lost",
+        transportOutcome: "ambiguous",
       },
     );
     expect(readState(db, claim.authorizationIdSha256)[0]).toBe(
@@ -231,6 +280,138 @@ describe("Relay Container ring transition D1 claim ledger", () => {
         { mutationRequestSha256: "2".repeat(64) },
       ),
     ).toThrow();
+    db.close();
+  });
+
+  test("binds post-readback to the persisted mutation intent", () => {
+    const db = createLedger();
+    const claim = insertClaim(db);
+    insertStep(db, claim, 1, "t1_readback", "claimed", "t1_verified", {
+      deploymentSetSha256: "1".repeat(64),
+    });
+    insertStep(
+      db,
+      claim,
+      2,
+      "controller_mutation_intent",
+      "t1_verified",
+      "controller_inflight",
+      { mutationRequestSha256: "2".repeat(64) },
+    );
+    expect(() =>
+      insertStep(
+        db,
+        claim,
+        3,
+        "controller_post_readback",
+        "controller_inflight",
+        "controller_verified",
+        {
+          mutationRequestSha256: "3".repeat(64),
+          deploymentSetSha256: "4".repeat(64),
+          transportOutcome: "success",
+        },
+      ),
+    ).toThrow(/persisted mutation intent/);
+    expect(readState(db, claim.authorizationIdSha256)).toEqual([
+      "controller_inflight",
+      2,
+      null,
+    ]);
+    db.close();
+  });
+
+  test("never records a rejected transport as a verified mutation", () => {
+    const db = createLedger();
+    const claim = insertClaim(db);
+    insertStep(db, claim, 1, "t1_readback", "claimed", "t1_verified", {
+      deploymentSetSha256: "1".repeat(64),
+    });
+    insertStep(
+      db,
+      claim,
+      2,
+      "controller_mutation_intent",
+      "t1_verified",
+      "controller_inflight",
+      { mutationRequestSha256: "2".repeat(64) },
+    );
+    expect(() =>
+      insertStep(
+        db,
+        claim,
+        3,
+        "controller_post_readback",
+        "controller_inflight",
+        "controller_verified",
+        {
+          mutationRequestSha256: "2".repeat(64),
+          deploymentSetSha256: "3".repeat(64),
+          transportOutcome: "rejected",
+        },
+      ),
+    ).toThrow(/lifecycle evidence/);
+    insertStep(
+      db,
+      claim,
+      3,
+      "controller_post_readback",
+      "controller_inflight",
+      "recovery_required",
+      {
+        mutationRequestSha256: "2".repeat(64),
+        deploymentSetSha256: "3".repeat(64),
+        failureClass: "http_rejected",
+        transportOutcome: "rejected",
+      },
+    );
+    expect(readState(db, claim.authorizationIdSha256)[0]).toBe(
+      "recovery_required",
+    );
+    db.close();
+  });
+
+  test("rejects early expiry and lets a distinct authority release stale pre-mutation scope", () => {
+    const earlyDb = createLedger();
+    const earlyClaim = insertClaim(earlyDb);
+    expect(() =>
+      insertExpiryEvent(earlyDb, earlyClaim, 1, "claimed", "expired"),
+    ).toThrow(/expired active claim/);
+    earlyDb.close();
+
+    const { db, claim } = createExpiredLedger("claimed");
+    insertExpiryEvent(db, claim, 1, "claimed", "expired");
+    expect(readState(db, claim.authorizationIdSha256)[0]).toBe("expired");
+    expect(() =>
+      db
+        .query(
+          "UPDATE relay_container_ring_transition_expiry_events SET evidence_sha256 = ?1",
+        )
+        .run("f".repeat(64)),
+    ).toThrow(/immutable/);
+    expect(() =>
+      insertClaim(db, {
+        ...claim,
+        authorizationIdSha256: "a".repeat(64),
+        executionNonceSha256: "b".repeat(64),
+        claimDigestSha256: "c".repeat(64),
+      }),
+    ).not.toThrow();
+    db.close();
+  });
+
+  test("seals an expired post-mutation claim as recovery-required", () => {
+    const { db, claim } = createExpiredLedger("controller_verified");
+    insertExpiryEvent(
+      db,
+      claim,
+      4,
+      "controller_verified",
+      "recovery_required",
+    );
+    expect(readState(db, claim.authorizationIdSha256)[0]).toBe(
+      "recovery_required",
+    );
     db.close();
   });
 });
@@ -270,15 +451,116 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
       ]).size,
     ).toBe(3);
 
-    const claimRequest = buildClaimAuthorityRequest({ anchors, claim });
+    const permit = {
+      ...buildRingTransitionClaimPermitSubject({
+        claim,
+        issuer: "cinatoken-ring-permit-staging",
+        keyId: "permit-v1",
+        issuedAt: claim.generatedAt + 1,
+        expiresAt: claim.generatedAt + 60,
+      }),
+      signatureBase64url: "A".repeat(86),
+    };
+    const authorityToken = "authority-token.".padEnd(64, "a");
+    const claimRequest = buildClaimAuthorityRequest({
+      anchors,
+      claim,
+      permit,
+      authorityToken,
+    });
     expect(claimRequest.url).toBe(
       "https://ring-claim.staging.example.com/internal/v1/ring-transition/claims",
     );
     expect(claimRequest.retry).toBe(false);
     expect(claimRequest.body).not.toContain("poison-must-not-be-read");
-    expect(Object.keys(JSON.parse(claimRequest.body))).not.toContain(
-      "credentialValue",
+    expect(JSON.parse(claimRequest.body)).toEqual({
+      claim,
+      contract: "cinatoken-ring-transition-claim-request-v1",
+      permit,
+      schemaVersion: 1,
+    });
+    expect(claimRequest.headers[RING_TRANSITION_AUTHORITY_HEADER]).toBe(
+      authorityToken,
     );
+    const readRequest = buildClaimAuthorityReadRequest({
+      anchors,
+      authorizationIdSha256: claim.authorizationIdSha256,
+      claimDigestSha256: claim.claimDigestSha256,
+      claimOwnerSha256: claim.claimOwnerSha256,
+      authorityToken,
+    });
+    expect(readRequest.method).toBe("GET");
+    expect(readRequest.retry).toBe(false);
+    expect(readRequest.url).toContain(
+      `/${claim.authorizationIdSha256}?claimDigestSha256=`,
+    );
+    const unsignedStep = {
+      schemaVersion: 1,
+      contract: RING_TRANSITION_EXECUTION_STEP_CONTRACT,
+      ledgerIdentitySha256: claim.ledgerIdentitySha256,
+      claimDigestSha256: claim.claimDigestSha256,
+      stateVersion: 1,
+      stepCode: "t1_readback",
+      fromStatus: "claimed",
+      toStatus: "t1_verified",
+      mutationRequestSha256: null,
+      cloudflareRequestIdSha256: null,
+      deploymentSetSha256: "d".repeat(64),
+      evidenceSha256: "e".repeat(64),
+      failureClass: "",
+      transportOutcome: "not_applicable",
+    };
+    const step = {
+      ...unsignedStep,
+      stepDigestSha256: sha256Hex(
+        Buffer.from(canonicalJson(unsignedStep), "utf8"),
+      ),
+    };
+    const stepRequest = buildClaimAuthorityStepRequest({
+      anchors,
+      authorizationIdSha256: claim.authorizationIdSha256,
+      step,
+      authorityToken,
+    });
+    expect(stepRequest.url).toEndWith(
+      `/${claim.authorizationIdSha256}/steps`,
+    );
+    expect(stepRequest.retry).toBe(false);
+    const unsignedExpiry = {
+      schemaVersion: 1,
+      contract: RING_TRANSITION_EXPIRY_EVENT_CONTRACT,
+      ledgerIdentitySha256: claim.ledgerIdentitySha256,
+      claimDigestSha256: claim.claimDigestSha256,
+      stateVersion: 1,
+      fromStatus: "claimed",
+      toStatus: "expired",
+      evidenceSha256: "f".repeat(64),
+      failureClass: "authorization_expired",
+    };
+    const expiryEvent = {
+      ...unsignedExpiry,
+      expiryEventDigestSha256: sha256Hex(
+        Buffer.from(canonicalJson(unsignedExpiry), "utf8"),
+      ),
+    };
+    const expiryRequest = buildClaimAuthorityExpiryRequest({
+      anchors,
+      authorizationIdSha256: claim.authorizationIdSha256,
+      expiryEvent,
+      authorityToken,
+    });
+    expect(expiryRequest.url).toEndWith(
+      `/${claim.authorizationIdSha256}/expire`,
+    );
+    expect(expiryRequest.retry).toBe(false);
+    expect(() =>
+      buildClaimAuthorityRequest({
+        anchors,
+        claim,
+        permit: { ...permit, claimDigestSha256: "f".repeat(64) },
+        authorityToken,
+      }),
+    ).toThrow(/claimDigestSha256 mismatch/);
 
     const mutation = buildCloudflareDeploymentMutationRequest({
       anchors,
@@ -371,7 +653,7 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
     expect(unresolved.terminalState).toBe("recovery_required");
     expect(unresolved.retryMutation).toBe(false);
     expect(unresolved.forwardRepairRequired).toBe(true);
-    expect(() =>
+    expect(
       classifyDeploymentMutationAttempt({
         transportOutcome: "ambiguous",
         targetVersionId: target,
@@ -381,7 +663,12 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
           { ...appliedReadback, mutationAnnotation: "unrelated deployment" },
         ],
       }),
-    ).toThrow(/annotation/);
+    ).toEqual({
+      classification: "recovery-required-target-not-confirmed",
+      terminalState: "recovery_required",
+      retryMutation: false,
+      forwardRepairRequired: true,
+    });
   });
 
   test("state actions never schedule a second write while mutation is inflight", () => {
@@ -440,8 +727,57 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
 function createLedger() {
   const db = new Database(":memory:", { strict: true });
   db.exec("PRAGMA foreign_keys = ON");
-  db.exec(migrationSql);
+  db.exec(migration0059Sql);
+  db.exec(migration0060Sql);
   return db;
+}
+
+function createExpiredLedger(targetStatus) {
+  const db = createLedger();
+  const claim = insertClaim(db);
+  if (targetStatus === "controller_verified") {
+    insertStep(db, claim, 1, "t1_readback", "claimed", "t1_verified", {
+      deploymentSetSha256: "1".repeat(64),
+    });
+    insertStep(
+      db,
+      claim,
+      2,
+      "controller_mutation_intent",
+      "t1_verified",
+      "controller_inflight",
+      { mutationRequestSha256: "2".repeat(64) },
+    );
+    insertStep(
+      db,
+      claim,
+      3,
+      "controller_post_readback",
+      "controller_inflight",
+      "controller_verified",
+      {
+        mutationRequestSha256: "2".repeat(64),
+        deploymentSetSha256: "3".repeat(64),
+        transportOutcome: "success",
+      },
+    );
+  }
+  const claimUpdateTriggerSql = db
+    .query(
+      `SELECT sql
+       FROM sqlite_master
+       WHERE type = 'trigger'
+         AND name = 'relay_container_ring_transition_claim_update_guard'`,
+    )
+    .values()[0][0];
+  db.exec("DROP TRIGGER relay_container_ring_transition_claim_update_guard");
+  db.query(
+    `UPDATE relay_container_ring_transition_claims
+     SET expires_at = unixepoch() - 1
+     WHERE authorization_id_sha256 = ?1`,
+  ).run(claim.authorizationIdSha256);
+  db.exec(claimUpdateTriggerSql);
+  return { db, claim };
 }
 
 function insertClaim(db, overrides = {}) {
@@ -551,6 +887,11 @@ function insertStep(
     cloudflareRequestIdSha256 = null,
     deploymentSetSha256 = null,
     failureClass = "",
+    transportOutcome =
+      stepCode === "controller_post_readback" ||
+      stepCode === "edge_post_readback"
+        ? "success"
+        : "not_applicable",
   },
 ) {
   db.query(
@@ -559,9 +900,9 @@ function insertStep(
        from_status, to_status, actor_execution_id_sha256,
        mutation_request_sha256, cloudflare_request_id_sha256,
        deployment_set_sha256, evidence_sha256, failure_class,
-       step_digest_sha256, recorded_at
+       step_digest_sha256, recorded_at, transport_outcome
      ) VALUES (
-       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, unixepoch()
+       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, unixepoch(), ?13
      )`,
   ).run(
     claim.authorizationIdSha256,
@@ -576,6 +917,33 @@ function insertStep(
     sha256Hex(Buffer.from(`evidence-${stateVersion}`, "utf8")),
     failureClass,
     sha256Hex(Buffer.from(`step-${stateVersion}`, "utf8")),
+    transportOutcome,
+  );
+}
+
+function insertExpiryEvent(
+  db,
+  claim,
+  stateVersion,
+  fromStatus,
+  toStatus,
+) {
+  db.query(
+    `INSERT INTO relay_container_ring_transition_expiry_events (
+       authorization_id_sha256, state_version, from_status, to_status,
+       authority_actor_id_sha256, evidence_sha256,
+       expiry_event_digest_sha256, failure_class, recorded_at
+     ) VALUES (
+       ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'authorization_expired', unixepoch()
+     )`,
+  ).run(
+    claim.authorizationIdSha256,
+    stateVersion,
+    fromStatus,
+    toStatus,
+    "7".repeat(64),
+    sha256Hex(Buffer.from(`expiry-evidence-${stateVersion}`, "utf8")),
+    sha256Hex(Buffer.from(`expiry-event-${stateVersion}`, "utf8")),
   );
 }
 

@@ -1,0 +1,40 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cinatoken-ring-transition-authority-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-23",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "vars": {
+    "ENVIRONMENT": "local",
+    "RING_TRANSITION_AUTHORITY_ENABLED": "false",
+    "RING_TRANSITION_CLAIM_WRITE_ENABLED": "false",
+    "RING_TRANSITION_STEP_WRITE_ENABLED": "false",
+    "RING_TRANSITION_EXPIRY_WRITE_ENABLED": "false",
+    "RING_TRANSITION_AUTHORITY_ISSUER": "cinatoken-ring-runner-local",
+    "RING_TRANSITION_AUTHORITY_AUDIENCE": "cinatoken-ring-transition-authority-local",
+    "RING_TRANSITION_HMAC_CURRENT_KID": "",
+    "RING_TRANSITION_HMAC_CURRENT_CREDENTIAL_ID_SHA256": "",
+    "RING_TRANSITION_HMAC_PREVIOUS_KID": "",
+    "RING_TRANSITION_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256": "",
+    "RING_TRANSITION_PERMIT_ISSUER": "cinatoken-ring-permit-issuer-local",
+    "RING_TRANSITION_PERMIT_KEY_ID": "",
+    "RING_TRANSITION_PERMIT_SPKI_SHA256": "",
+    "RING_TRANSITION_AUTHORITY_ACTOR_ID_SHA256": ""
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cinatoken-ring-control-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

@@ -17549,3 +17549,91 @@ service, live mutation transport, immutable enabled runner artifact, credential
 revocation, remote 0059, staging fault matrix, customer traffic, production
 cutover, and Go/VPS shutdown remain open. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.268 Ring Transition Authority Current-Head Overlay (2026-07-23)
+
+This overlay supersedes only current-head and current ring-transition authority
+statements in section 22.267. It does not rewrite the historical 0059 baseline
+or any earlier migration evidence. The current local workspace D1 head is
+`0060_relay_container_ring_transition_authority.sql`, with migration head/count
+`0060/60`, 69 required tables, 909 checked incremental columns, and 101 key
+indexes.
+
+Migration 0060 closes the following ledger gaps without granting remote
+mutation authority:
+
+0. its temporary drain guard refuses to apply until every 0059 writer is
+   disabled and no claim remains in an active transition state; this is an
+   incompatible writer fence, not a rolling-upgrade migration;
+1. expiry is recorded by a dedicated authority actor that must be distinct from
+   the execution claim owner;
+2. an expired pre-mutation claim in `claimed` or `t1_verified` becomes
+   `expired`;
+3. an expired post-mutation claim in `controller_verified` or
+   `edge_prechecked` becomes `recovery_required`, never ordinary `expired`;
+4. an inflight claim remains readback-only and cannot be expired into a state
+   that permits another Cloudflare mutation;
+5. Controller and Edge post-readback steps must carry the exact
+   `mutation_request_sha256` persisted by the immediately preceding mutation
+   intent; and
+6. every step records `transport_outcome` as `not_applicable`, `success`,
+   `ambiguous`, or `rejected`. A rejected transport can only terminate as
+   `recovery_required` with `failure_class=http_rejected`; it can never produce
+   `controller_verified` or `completed`.
+
+### Isolated staging control plane
+
+The production target is not the shared application D1. Provision a dedicated
+staging database named `cinatoken-ring-control-staging`. Apart from its
+provider-managed migration metadata, its application catalog contains only:
+
+- `relay_container_ring_transition_claims`;
+- `relay_container_ring_transition_steps`; and
+- `relay_container_ring_transition_expiry_events`.
+
+The control database must have its own backup/Time Travel point, normalized
+schema digest, migration ledger, access inventory, retention policy, and
+restore rehearsal. Its migration lineage must pin the reviewed source digests
+of repository migrations 0059 and 0060. The integrated workspace total
+`0060/60, 69/909/101` is the current repository validation baseline; it must
+not be misreported as the three-table control database's remote catalog.
+
+The current local Authority Worker configuration names the dedicated
+`cinatoken-ring-control-staging` database and rejects the shared application
+database name during static audit. It remains ineligible for staging
+deployment because the database ID and trust identities are placeholders,
+every write gate is false, and no authenticated remote D1, route, Access,
+key-rotation, or revocation packet exists. Those are blocking preflight
+requirements, not operator overrides.
+
+The dedicated staging Authority Worker has exactly one D1 binding to
+`cinatoken-ring-control-staging` plus Version Metadata. It has no KV, R2,
+Durable Object, Container, Queue, service, Hyperdrive, AI, browser, or
+application-D1 binding, and it does not call arbitrary URLs. Its tracked
+configuration requires `workers_dev=false`, `preview_urls=false`, no
+production configuration, and all write gates false:
+
+```text
+RING_TRANSITION_AUTHORITY_ENABLED=false
+RING_TRANSITION_CLAIM_WRITE_ENABLED=false
+RING_TRANSITION_STEP_WRITE_ENABLED=false
+RING_TRANSITION_EXPIRY_WRITE_ENABLED=false
+```
+
+The staging custom hostname is protected by Cloudflare Access Service Auth and
+an application HMAC. The HMAC binds the method, normalized path, timestamp,
+request ID, authenticated credential identity, and canonical body digest.
+Claim creation additionally requires a short-lived Ed25519 permit over the
+canonical claim digest and its authorization, account, policy, target-version,
+runner, owner, and expiry identities. The Worker verifies the permit against
+deployment-pinned public keys and derives credential and expiry-actor identity
+from authenticated configuration; it never trusts caller-supplied
+`verified=true` assertions or actor identities.
+
+No Authority Worker, custom hostname, Access policy, HMAC secret, Ed25519
+permit key, control D1, route, or migration has been created or changed
+remotely. Credential revocation evidence, isolated staging apply/readback,
+default-disabled deployment, authentication and replay fault campaigns,
+immutable runner proof, the full Edge -> sharded DO -> Linux Container ->
+KV/D1/R2 campaign, P5-B, and Go/VPS drain remain open. Go/VPS remains traffic
+and scheduler authority, and production remains **NO-GO**.

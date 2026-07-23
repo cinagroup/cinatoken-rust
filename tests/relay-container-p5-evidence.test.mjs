@@ -191,7 +191,7 @@ describe("Relay Container P5 evidence contract", () => {
     await expect(verify(crossCampaign)).rejects.toThrow(/same sealed activation campaign/);
   });
 
-  test("rejects the pre-0059 schema totals", async () => {
+  test("rejects the pre-0060 schema totals", async () => {
     const bundle = await createBundle({
       mutateEvidence: (kind, evidence) => {
         if (kind === "schema-readback") {
@@ -756,8 +756,8 @@ function candidateFixture() {
     containerClass: "RelayShardContainer",
     ringGeneration: 1,
     shardCount: 8,
-    migrationHead: "0059_relay_container_ring_transition_claims.sql",
-    migrationCount: 59,
+    migrationHead: "0060_relay_container_ring_transition_authority.sql",
+    migrationCount: 60,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,
@@ -1007,10 +1007,10 @@ function factsFixture(kind, candidate, foundationBinding) {
     case "schema-readback":
       return {
         migrationHead: candidate.migrationHead,
-        migrationCount: 59,
-        tableCount: 68,
-        incrementalColumnCount: 899,
-        keyIndexCount: 100,
+        migrationCount: 60,
+        tableCount: 69,
+        incrementalColumnCount: 909,
+        keyIndexCount: 101,
         schemaFingerprintSha256: "a".repeat(64),
         businessFingerprintBeforeSha256: "b".repeat(64),
         businessFingerprintAfterSha256: "b".repeat(64),

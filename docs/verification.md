@@ -8243,3 +8243,90 @@ call, customer traffic, or production action occurred. The private
 claim-authority Worker, live bounded mutation transport, immutable enabled
 runner artifact, exposed-token revocation, remote 0059/fault/P5-B evidence, and
 Go/VPS drain remain open. Production remains **NO-GO**.
+
+## Ring Transition Authority Migration Verification (2026-07-23)
+
+This section is the current-head overlay for the preceding 0059 verification
+record. Historical command outputs remain historical. The current local
+workspace D1 target is:
+
+```text
+head: 0060_relay_container_ring_transition_authority.sql
+count: 60
+required tables: 69
+checked incremental columns: 909
+key indexes: 101
+```
+
+Run the read-only local schema gates:
+
+```powershell
+python -B tools/verify_sqlite.py
+bun run check:d1:migration-config
+```
+
+The schema verifier must prove the `0060/60, 69/909/101` integrated-workspace
+totals and additionally reject:
+
+1. applying 0060 while any 0059 writer remains active or any transition claim
+   remains nonterminal;
+2. an expiry actor equal to the claim owner;
+3. expiry before D1 `expires_at`;
+4. ordinary `expired` after Controller mutation;
+5. a post-readback mutation digest that differs from the immediately preceding
+   intent;
+6. `transport_outcome=rejected` paired with `controller_verified` or
+   `completed`; and
+7. rejected transport without
+   `to_status=recovery_required,failure_class=http_rejected`.
+
+Positive cases must prove independent authority expiry, pre-mutation
+`expired`, post-mutation `recovery_required`, exact intent-digest binding, and
+explicit `not_applicable|success|ambiguous|rejected` transport evidence.
+
+The local Authority verification aggregate currently passes:
+
+```text
+Wrangler types: up to date
+Wrangler local dry-run: PASS
+Authority unit tests: 21 PASS
+Workerd/D1 runtime tests: 2 PASS
+configuration and deploy-preflight tests: 22 PASS
+full repository `bun run check`: PASS (2026-07-23)
+```
+
+The Workerd suite uses a dedicated in-memory D1 containing only the claim,
+step, and expiry domain schema. It covers disabled defaults, exact
+create/read/step, concurrent single-winner claims with exact replay, body-bound
+HMAC rejection, invalid Ed25519 permits, premature expiry rejection, and
+error/secret redaction. The broader authenticated staging fault campaign,
+including Access enforcement, response loss, unavailable readback, clock
+boundaries, key rotation, actor drift, state/version jumps, and outbound-fetch
+inventory, remains remote acceptance work.
+
+Configuration verification must reject any Authority Worker candidate unless:
+
+- the only bindings are `cinatoken-ring-control-staging` D1 and Version
+  Metadata;
+- `workers_dev=false` and `preview_urls=false`;
+- authority, claim, step, and expiry write gates are all false;
+- no production configuration exists; and
+- no KV, R2, Durable Object, Container, Queue, service, application-D1, URL, or
+  general SQL authority is present.
+
+The current local Authority Worker passes this static isolation gate: staging
+names dedicated `cinatoken-ring-control-staging`, and the audit rejects the
+shared application database name. Deploy preflight still returns NO-GO because
+the database ID and trust identities are placeholders, every write gate is
+false, and the authenticated remote D1, route, Access, key-rotation, and
+revocation evidence is absent.
+
+Remote acceptance is a separate retained packet: credential revocation,
+control-D1 creation and exact catalog readback, route and Access inventory,
+deployed version/config digest, secret rotation, failure campaigns, unchanged
+application-D1 business fingerprint, and zero provider/financial/customer
+effect. The integrated local total `69/909/101` must not be reported as the
+three-domain-table control D1 catalog.
+
+No remote verification or Cloudflare change is claimed by this section.
+Production remains **NO-GO**, and Go/VPS remains authoritative.

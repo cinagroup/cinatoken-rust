@@ -313,3 +313,89 @@ dedicated private claim-authority Worker, a reviewed immutable runner artifact
 with build-time trust pins, native bounded zero-retry transports, exposed-token
 revocation, remote 0059 readback, and the complete fault campaign. Production
 remains **NO-GO**.
+
+## 0060 Authority And Expiry Overlay
+
+This overlay supersedes only current-head and current authority behavior in the
+0059 overlay. Current local workspace D1 head/count is `0060/60`, with 69
+required tables, 909 checked incremental columns, and 101 key indexes.
+
+Migration 0060 separates expiry authority from execution ownership. The
+expiry-event actor must not equal `claim_owner_sha256`, D1 time must prove the
+claim has expired, and the resulting terminal state depends on mutation
+progress:
+
+Before applying 0060, disable every 0059 writer and prove there are no claims
+in `claimed`, `t1_verified`, either inflight state, `controller_verified`, or
+`edge_prechecked`. The migration's temporary drain guard aborts otherwise
+because an old writer cannot supply the new transport evidence.
+
+| Current state | Expiry result | Reason |
+| --- | --- | --- |
+| `claimed`, `t1_verified` | `expired` | No Cloudflare mutation has been persisted as sent |
+| `controller_verified`, `edge_prechecked` | `recovery_required` | A control-plane mutation may already be effective and must be repaired forward |
+| `controller_inflight`, `edge_inflight` | No expiry transition | Only authenticated stable readback may classify the one persisted mutation intent |
+
+Every Controller or Edge post-readback step must bind the exact
+`mutation_request_sha256` stored by the immediately preceding intent.
+`transport_outcome` is explicit evidence:
+
+- `not_applicable` for read-only, intent, abort, and expiry transitions;
+- `success` for an accepted request with confirming readback;
+- `ambiguous` for response loss or transport uncertainty classified by stable
+  authenticated readback; and
+- `rejected` only for `recovery_required/http_rejected`.
+
+A rejected transport can never advance to `controller_verified` or
+`completed`.
+
+### Staging Authority trust boundary
+
+The planned Authority Worker is staging-only and uses a dedicated
+`cinatoken-ring-control-staging` D1. Besides provider-managed migration
+metadata, that database contains only the claim, step, and expiry-event tables.
+The Worker has only that D1 binding and Version Metadata. It has no application
+D1, KV, R2, Durable Object, Container, Queue, service, AI, browser, or outbound
+URL authority.
+
+The current local Worker configuration names the dedicated
+`cinatoken-ring-control-staging` database, but its database ID and trust
+identities remain placeholders, every write gate remains false, and no
+authenticated remote D1, route, Access, secret-rotation, or revocation evidence
+exists. It is therefore not eligible for staging deployment or P5 evidence.
+
+The exact machine endpoints are:
+
+```text
+POST /internal/v1/ring-transition/claims
+GET  /internal/v1/ring-transition/claims/{authorization_id_sha256}
+POST /internal/v1/ring-transition/claims/{authorization_id_sha256}/steps
+POST /internal/v1/ring-transition/claims/{authorization_id_sha256}/expiry
+```
+
+Every request passes Cloudflare Access Service Auth and an application HMAC
+that binds method, normalized path, timestamp, unique request ID,
+authenticated credential identity, and canonical body digest. Claim creation
+also carries a short-lived Ed25519 permit that binds the claim digest,
+authorization ID, signed policy and candidate identities, account and control
+ledger, exact Controller/Edge targets, runner/build/trust identity, claim owner,
+credential identity, and D1-compatible expiry bounds. The Worker verifies the
+permit using deployment-pinned public keys. It derives the claim credential and
+expiry actor from authenticated configuration and never accepts caller claims
+that authorization or signature verification already occurred.
+
+Create, step, and expiry writes use fixed prepared statements, no `OR IGNORE`,
+`REPLACE`, UPSERT, general SQL, or retry-on-ambiguity. Every attempted write is
+followed by an exact primary readback in the same D1 session. A matching row is
+an exact replay; a mismatch is a conflict; unavailable readback is
+outcome-unknown and permits only later GET, never a repeated mutation.
+
+Tracked staging configuration requires `workers_dev=false`,
+`preview_urls=false`, all authority/write gates false, and no production
+configuration. Access, HMAC, and Ed25519 are independent layers; possession of
+one does not substitute for either of the others.
+
+No Authority Worker, control D1, Access policy, HMAC secret, permit key, route,
+migration, or deployment has been created remotely. Exposed-credential
+revocation evidence and every remote staging fault/readback gate remain open.
+Production remains **NO-GO**.

@@ -30,6 +30,7 @@ const AUTHORITY_HMAC_DOMAIN =
 const AUTHORITY_PREFLIGHT_PATH = "/internal/v1/ring-transition/preflight";
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const HMAC_KEY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 const SERVICE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const VERSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -96,6 +97,11 @@ class RingTransitionNativeTransport {
     requestIdFactory = () => crypto.randomUUID(),
   }) {
     this.#trust = validatePublishedRingTransitionTrust(anchors);
+    requireToken(
+      this.#trust.claimAuthorityHmacKeyId,
+      HMAC_KEY_ID_PATTERN,
+      "invalid_hmac_key_id",
+    );
     this.#credentialIds = validateCredentialIds(credentialIds);
     if (
       typeof environment !== "object" ||
@@ -153,37 +159,46 @@ class RingTransitionNativeTransport {
   }
 
   async verifyCredentialIdentities() {
-    this.#readCredentialVerified = false;
-    this.#claimCredentialVerified = false;
-    this.#deployCredentialVerified = false;
-    const readIdentity = await this.#verifyCloudflareToken(
-      this.#readToken,
-      this.#credentialIds.read,
-      "read",
-    );
-    const deployIdentity = await this.#verifyCloudflareToken(
-      this.#deployToken,
-      this.#credentialIds.deploy,
-      "deploy",
-    );
-    await this.preflightAuthority();
-    this.#readCredentialVerified = true;
-    this.#deployCredentialVerified = true;
-    return {
-      readCredentialIdSha256: readIdentity,
-      claimCredentialIdSha256: this.#credentialIds.claim,
-      deployCredentialIdSha256: deployIdentity,
-      allDistinct: true,
-      allCredentialsVerified: true,
-    };
+    this.#clearCredentialVerification();
+    try {
+      const readIdentity = await this.#verifyCloudflareToken(
+        this.#readToken,
+        this.#credentialIds.read,
+        "read",
+      );
+      const deployIdentity = await this.#verifyCloudflareToken(
+        this.#deployToken,
+        this.#credentialIds.deploy,
+        "deploy",
+      );
+      await this.#preflightAuthority();
+      this.#readCredentialVerified = true;
+      this.#claimCredentialVerified = true;
+      this.#deployCredentialVerified = true;
+      return {
+        readCredentialIdSha256: readIdentity,
+        claimCredentialIdSha256: this.#credentialIds.claim,
+        deployCredentialIdSha256: deployIdentity,
+        allDistinct: true,
+        allCredentialsVerified: true,
+      };
+    } catch (error) {
+      this.#clearCredentialVerification();
+      throw error;
+    }
   }
 
   async sendAuthorityRequest(request) {
     assertAuthorityRequest(request, this.#trust);
     const responseKind = authorityResponseKind(request);
-    if (responseKind !== "preflight" && !this.#claimCredentialVerified) {
-      throw new RingTransitionTransportError("claim_credential_not_verified");
+    if (responseKind === "preflight") {
+      throw new RingTransitionTransportError("authority_preflight_private");
     }
+    this.#requireAllCredentialsVerified("claim_credential_not_verified");
+    return this.#sendAuthorityRequest(request, responseKind);
+  }
+
+  async #sendAuthorityRequest(request, responseKind) {
     const requestId = this.#requestIdFactory();
     const token = await createRingTransitionAuthorityToken({
       request,
@@ -242,8 +257,7 @@ class RingTransitionNativeTransport {
     return classified;
   }
 
-  async preflightAuthority() {
-    this.#claimCredentialVerified = false;
+  async #preflightAuthority() {
     const request = {
       method: "GET",
       url: `${this.#trust.claimAuthorityOrigin}${AUTHORITY_PREFLIGHT_PATH}`,
@@ -253,11 +267,11 @@ class RingTransitionNativeTransport {
       timeoutMilliseconds: REQUEST_TIMEOUT_MILLISECONDS,
       maximumResponseBytes: AUTHORITY_RESPONSE_LIMIT,
     };
-    const result = await this.sendAuthorityRequest(request);
+    assertAuthorityRequest(request, this.#trust);
+    const result = await this.#sendAuthorityRequest(request, "preflight");
     if (result.transportOutcome !== "success") {
       throw new RingTransitionTransportError("claim_credential_preflight_rejected");
     }
-    this.#claimCredentialVerified = true;
     return {
       claimCredentialIdSha256: this.#credentialIds.claim,
       authorityVersionId: this.#trust.claimAuthorityVersionId,
@@ -452,23 +466,27 @@ class RingTransitionNativeTransport {
   }
 
   #requireReadCredential() {
-    if (
-      !this.#readCredentialVerified ||
-      !this.#claimCredentialVerified ||
-      !this.#deployCredentialVerified
-    ) {
-      throw new RingTransitionTransportError("read_credential_not_verified");
-    }
+    this.#requireAllCredentialsVerified("read_credential_not_verified");
   }
 
   #requireDeployCredential() {
+    this.#requireAllCredentialsVerified("deploy_credential_not_verified");
+  }
+
+  #requireAllCredentialsVerified(code) {
     if (
       !this.#readCredentialVerified ||
       !this.#claimCredentialVerified ||
       !this.#deployCredentialVerified
     ) {
-      throw new RingTransitionTransportError("deploy_credential_not_verified");
+      throw new RingTransitionTransportError(code);
     }
+  }
+
+  #clearCredentialVerification() {
+    this.#readCredentialVerified = false;
+    this.#claimCredentialVerified = false;
+    this.#deployCredentialVerified = false;
   }
 }
 
@@ -488,7 +506,7 @@ export async function createRingTransitionAuthorityToken({
     /^[a-z0-9][a-z0-9._:-]{0,127}$/,
     "invalid_hmac_audience",
   );
-  requireToken(keyId, /^[a-z0-9][a-z0-9._-]{0,63}$/, "invalid_hmac_key_id");
+  requireToken(keyId, HMAC_KEY_ID_PATTERN, "invalid_hmac_key_id");
   requireToken(credentialIdSha256, SHA256_PATTERN, "invalid_claim_credential_id");
   requireSecret(secret, "invalid_claim_hmac_secret");
   requireToken(requestId, REQUEST_ID_PATTERN, "invalid_request_id");
@@ -1138,10 +1156,12 @@ function requireEnvironmentSecret(environment, name) {
 }
 
 function requireSecret(value, code) {
+  const byteLength =
+    typeof value === "string" ? Buffer.byteLength(value, "utf8") : 0;
   if (
     typeof value !== "string" ||
-    value.length < 20 ||
-    value.length > 4096 ||
+    byteLength < 32 ||
+    byteLength > 4096 ||
     /\s/.test(value)
   ) {
     throw new RingTransitionTransportError(code);

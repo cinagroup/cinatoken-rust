@@ -27,6 +27,45 @@ import {
 } from "./fixtures";
 
 describe("compact HMAC authority token", () => {
+  test("accepts the exact Rust and native-transport HMAC vector", async () => {
+    const credential =
+      "a01bfefd6a25d9107e9472809973052a7e3f09266616eae2de0ae5cf09fb2bf3";
+    const secret = "0123456789abcdef0123456789abcdef";
+    const token =
+      "eyJhbGciOiJIUzI1NiIsImtpZCI6ImN1cnJlbnQtdjEiLCJ0eXAiOiJDSU5BVE9LRU4tUklORy1BVVRIT1JJVFkifQ.eyJhdWRpZW5jZSI6ImF1dGhvcml0eS1zdGFnaW5nIiwiYm9keV9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiY3JlZGVudGlhbF9pZF9zaGEyNTYiOiJhMDFiZmVmZDZhMjVkOTEwN2U5NDcyODA5OTczMDUyYTdlM2YwOTI2NjYxNmVhZTJkZTBhZTVjZjA5ZmIyYmYzIiwiZXhwaXJlc19hdCI6MTgwMDAwMDAzMCwiaXNzdWVkX2F0IjoxODAwMDAwMDAwLCJpc3N1ZXIiOiJydW5uZXItc3RhZ2luZyIsIm1ldGhvZCI6IkdFVCIsInBhdGhfYW5kX3F1ZXJ5IjoiL2ludGVybmFsL3YxL3JpbmctdHJhbnNpdGlvbi9wcmVmbGlnaHQiLCJyZXF1ZXN0X2lkIjoicmVxdWVzdC0xIn0.ar2B2dDPZLGvIOwK930i5TOHmv8EBKgF1HQWowJxq2c";
+    const generated = await createHmacTokenForTest(secret, "current-v1", {
+      issuer: "runner-staging",
+      audience: "authority-staging",
+      credential_id_sha256: credential,
+      request_id: "request-1",
+      method: "GET",
+      path_and_query: "/internal/v1/ring-transition/preflight",
+      body_sha256:
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      issued_at: 1_800_000_000,
+      expires_at: 1_800_000_030,
+    });
+    expect(generated).toBe(token);
+    const request = new Request(
+      "https://authority.example/internal/v1/ring-transition/preflight",
+      { method: "GET", headers: { "x-cinatoken-ring-authority": token } },
+    );
+    await expect(
+      verifyHmacRequest(
+        request,
+        new Uint8Array(),
+        securityEnv({
+          RING_TRANSITION_HMAC_CURRENT_CREDENTIAL_ID_SHA256: credential,
+          RING_TRANSITION_HMAC_CURRENT_SECRET: secret,
+        }),
+        1_800_000_000,
+      ),
+    ).resolves.toMatchObject({
+      credentialIdSha256: credential,
+      requestId: "request-1",
+    });
+  });
+
   test.each([
     ["current-v1", CURRENT_SECRET, CURRENT_CREDENTIAL],
     ["previous-v1", PREVIOUS_SECRET, PREVIOUS_CREDENTIAL],

@@ -3009,7 +3009,7 @@ an exact fresh `step_appended` result consumes that attempt into a private
 non-cloneable/non-serializable permit; replay does not. Binding the exact
 canonical deployment request digest consumes the permit again. The
 orchestrator, release-verifier and publication/activation sources are now
-mandatory in the 19-file detached-release module closure.
+mandatory in the 20-file detached-release module closure.
 
 This closes the local pure reducer and capability gap. Rust fixed-sidecar,
 compiled-pin, DSSE, current-executable and host-target verification are also
@@ -3026,7 +3026,7 @@ credential or network access. An enabled build accepts only its current
 executable and the two fixed sibling sidecars, then requires canonical,
 duplicate-free exact-schema JSON; compiled policy/key/origin pins; one
 Ed25519 DSSE signature; bounded validity; permit/release key separation; the
-complete 19-path source closure; reproducible-build/evidence/Authority
+complete 20-path source closure; reproducible-build/evidence/Authority
 identities; the current artifact bytes; and a target matching the launcher's
 compile-time x86_64 architecture/OS/ABI.
 
@@ -3055,3 +3055,36 @@ one sequence contend on one activation filename; only one can become active.
 activation record to match the signed publication before credentials. The
 checked-in build still fails at disabled trust before clock or filesystem
 access. Real signing/build/install evidence and all remote gates remain open.
+
+## 2026-07-23 Activated Credential Identity Core
+
+The Rust runner now consumes verified publication activation before it can
+touch runtime credential handles. Current-publication verification uses only
+checked-in release trust and no longer exposes a public activation constructor
+or caller-selected trust input. The activated release retains its signed
+trust-config and permit-SPKI identities so a separate compiled credential
+trust must match the exact generation.
+
+The credential trust is still disabled with null pins. An enabled build reads
+only the fixed account/read/claim-HMAC/deploy environment names, never
+enumerates the environment, and validates the account hash before reading any
+secret. Secret material is 32-4096 UTF-8 bytes, pairwise different, whitespace
+free and stored in zeroizing non-cloneable/non-debuggable wrappers.
+
+Identity proof is an ordered consuming Rust typestate. Read and deploy token
+responses require active exact token IDs. The claim state creates the exact
+Authority HMAC preflight and verifies request ID, claim credential, Authority
+version and permit SPKI. A fixed vector is accepted byte-for-byte by Rust, the
+JavaScript transport and the Authority verifier.
+
+The JavaScript reference transport now applies the same atomic rule: preflight
+is private, all non-preflight Authority traffic requires all three proofs, and
+any revalidation failure clears every proof. HMAC key IDs and secret byte
+bounds now match the Authority protocol.
+
+This closes only local handle ordering, secret lifetime and identity proof.
+Cloudflare token scope/owner/revocation evidence, an explicit Cloudflare Access
+workload identity for the Authority, bounded Rust HTTP clients, coherent claim
+resume, the sole typed deployment POST, stable readback, receipts and crash
+campaign remain P0. No credential value or network was used. Production
+remains **NO-GO**.

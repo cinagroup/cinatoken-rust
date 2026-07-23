@@ -37,12 +37,13 @@ const ED25519_SPKI_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-pub const REQUIRED_MODULE_PATHS: [&str; 19] = [
+pub const REQUIRED_MODULE_PATHS: [&str; 20] = [
     ".gitattributes",
     "Cargo.lock",
     "Cargo.toml",
     "bun.lock",
     "crates/ring-transition-runner/Cargo.toml",
+    "crates/ring-transition-runner/src/credentials.rs",
     "crates/ring-transition-runner/src/lib.rs",
     "crates/ring-transition-runner/src/main.rs",
     "crates/ring-transition-runner/src/orchestrator.rs",
@@ -77,6 +78,8 @@ pub struct VerifiedRelease {
     pub module_count: u64,
     pub module_bytes: u64,
     pub authority_version_id: String,
+    pub permit_spki_sha256: String,
+    pub trust_config_sha256: String,
     pub issued_at: String,
     pub expires_at: String,
 }
@@ -330,6 +333,8 @@ pub fn verify_release_bytes(
         module_count: inventory.module_count,
         module_bytes: inventory.module_bytes,
         authority_version_id: manifest.trust.authority_version_id,
+        permit_spki_sha256: manifest.trust.permit_spki_sha256,
+        trust_config_sha256: manifest.trust.trust_config_sha256,
         issued_at: manifest.issued_at,
         expires_at: manifest.expires_at,
     })
@@ -1250,7 +1255,7 @@ impl<'de> Visitor<'de> for NoDuplicateJsonVisitor {
     }
 }
 
-fn reject_duplicate_json(bytes: &[u8], maximum_bytes: usize) -> Result<(), ()> {
+pub(crate) fn reject_duplicate_json(bytes: &[u8], maximum_bytes: usize) -> Result<(), ()> {
     if bytes.is_empty() || bytes.len() > maximum_bytes {
         return Err(());
     }
@@ -1289,20 +1294,20 @@ pub(crate) mod tests {
         );
         assert_eq!(
             verified.module_inventory_sha256,
-            "5199295df3e91e3c95e4afc4035306bfe79b7a2333841a668e72cad118226c07"
+            "654a12f3b9c8d19b057b532632988e2ce6595ad662bd39ed4caf58d4d3fd32d9"
         );
         assert_eq!(
             verified.manifest_sha256,
-            "85ad40156703e566e368be3d2f116704391e3b36920c4faf4b861212ca44d42f"
+            "f10dfcd528e86355b60a23cb23411a677897d83da1380609cb2108f4f3a26ce4"
         );
         assert_eq!(
             verified.packet_sha256,
-            "5269e64bf87b0d236cc838e0323b452dded66b687c6a83d8f168f04209c52d80"
+            "74de3b160af09e2a27ce328b4c1a04a3139f514a590d0190e6fdb46bcf090ab5"
         );
         let packet: ReleasePacket = serde_json::from_slice(&fixture.packet_json).unwrap();
         assert_eq!(
             packet.envelope.signatures[0].sig,
-            "aKA/cksGtMPK4EhqGqPqQkRe3vFlIUqQduYnF8h26oZmegl/nPafziCNIFnHnS0fmDue8MmfarwbShM66JPJAQ=="
+            "XHFYf4b7gZFJuzgEX72QlHLRJKOKRi0dq4UMU2ZOYExMmd2OCKityaiKLX4WD9+NajsStiswaBOGdIYjxoRYDA=="
         );
     }
 

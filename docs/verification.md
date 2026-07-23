@@ -8383,13 +8383,12 @@ Access, remote D1, route, deployed version, stable Cloudflare readback,
 customer traffic, billing conservation, P5-B or Go/VPS drain. No remote action
 is claimed; production remains **NO-GO**.
 
-The current final repository aggregate passed on 2026-07-23 in approximately
-668 seconds. It included the 28 runner
-tests, 17 detached release/source tests, 58
-ring-transition contract tests, 22 Authority unit tests, two Authority Workerd
-tests, 22 Authority configuration/preflight tests, the Rust workspace, all
-configured wasm32 builds, D1 migration/schema gates, Worker dry-runs, frontend
-checks, and the existing fault suites.
+The current final repository aggregate passed on 2026-07-23 in 826.4 seconds
+with exit code 0. It included 36 runner tests, 17 detached release/source tests,
+61 ring-transition contract tests with 458 expectations, 23 Authority unit
+tests, two Authority Workerd tests, 22 Authority configuration/preflight tests,
+the Rust workspace, all configured wasm32 builds, D1 migration/schema gates,
+Worker dry-runs, frontend checks, and the existing fault suites.
 
 ## Detached Runner Release Verification (2026-07-23)
 
@@ -8455,7 +8454,7 @@ counterpart. Rust tests additionally prove:
 
 Run `cargo test -p cinatoken-ring-transition-runner` directly or use the
 combined `bun run check:ring-transition-runner`. The combined gate currently
-executes 28 Rust tests and 17 Bun release/source tests.
+executes 36 Rust tests and 17 Bun release/source tests.
 
 These tests do not prove the future Rust HTTP call site consumes the type,
 process crash behavior around a real network send, persisted hash-chain
@@ -8467,7 +8466,7 @@ The runner package now adds seven release-verifier library cases. Together
 with the orchestrator and launcher tests, the package result is:
 
 ```text
-25 library tests: PASS
+33 library tests: PASS
 1 binary test: PASS
 2 CLI integration tests: PASS
 17 Bun packet/source tests: PASS
@@ -8527,9 +8526,9 @@ verify:
 - source-level absence of credential enumeration, network clients,
   subprocesses, Wrangler and destructive cleanup.
 
-`authorize_execution` now returns a non-cloneable `ActivatedPublication`, not
-a bare release or offline publication result. For an enabled build it
-additionally requires the current executable
+`authorize_execution` now consumes the non-cloneable `ActivatedPublication`
+into an opaque `LoadedCredentials`, rather than exposing the activation
+capability. For an enabled build it first requires the current executable
 to live under the exact publication-manifest-derived directory and requires
 the fixed append-only activation record to match manifest, outer packet,
 generation, sequence and predecessor before credential access.
@@ -8538,3 +8537,65 @@ The tests use temporary local roots only. They do not prove production
 filesystem ownership, Windows source hardlink rejection, Unix runtime link
 count, disk/power-loss durability, service-manager selection, two concurrent
 OS processes or a real signed artifact.
+
+## Activated Credential Identity Verification (2026-07-23)
+
+Run the focused local gates:
+
+```powershell
+cargo test -p cinatoken-ring-transition-runner --locked
+cargo clippy -p cinatoken-ring-transition-runner --all-targets --locked -- -D warnings
+bun run check:ring-transition-runner
+bun run check:relay-container:ring-transition
+bun run --cwd services/ring-transition-authority test
+```
+
+The current focused results are:
+
+```text
+33 runner library tests: PASS
+1 runner binary test: PASS
+2 runner CLI integration tests: PASS
+17 detached release/source tests: PASS
+61 ring-transition contract/execution/transport tests, 458 expectations: PASS
+23 Authority unit tests across 5 files: PASS
+strict runner Clippy: PASS
+complete repository bun run check, 826.4 seconds, exit code 0: PASS
+```
+
+Eight credential-library cases prove:
+
+- checked-in disabled credential trust performs zero environment reads;
+- activated trust-config, Authority version and permit-SPKI drift fails before
+  the first handle;
+- account identity is read and hashed before exactly the three fixed secret
+  handles;
+- malformed, short, whitespace or shared secret material fails closed;
+- read then deploy then claim-preflight typestate is consuming and ordered;
+- Cloudflare token ID/status and exact Authority response identities reject
+  drift;
+- duplicate and unknown preflight response fields fail; and
+- production source uses zeroizing storage, no environment enumeration,
+  network, subprocess or Wrangler primitive.
+
+The release closure is now 20 paths and includes `credentials.rs`; independent
+Rust/JavaScript release/publication vectors were advanced together. A separate
+fixed token proves exact HS256 interoperability across the Rust builder,
+JavaScript native transport and deployed-Authority protocol implementation,
+including canonical header/claims bytes and signature.
+
+The JavaScript transport now keeps preflight private and commits read, claim
+and deploy proof flags only after all three succeed. Eighteen transport tests
+cover preflight bypass, partial/revalidation failure clearing, HMAC UTF-8 byte
+bounds, key-ID compatibility, identity drift and the existing no-retry,
+fresh-intent and response-loss rules.
+
+The orchestrator now carries both `generated_at` and `expires_at` through the
+typed permit and rejects clock rollback as well as expiry before creating an
+authorized mutation.
+
+These are local synthetic proofs. They do not establish Cloudflare token
+scope/owner/revocation evidence, a Cloudflare Access workload identity,
+bounded Rust HTTP, a coherent remote Authority snapshot, sole POST use,
+stable readback, an execution receipt or a crash campaign. No real environment
+credential or network request was used; production remains **NO-GO**.

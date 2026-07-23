@@ -311,6 +311,7 @@ pub struct PreparedMutationIntent<P: MutationPhase> {
     authorization_id_sha256: String,
     service_name: String,
     target_version_id: String,
+    generated_at: u64,
     expires_at: u64,
     phase: PhantomData<P>,
 }
@@ -404,6 +405,7 @@ fn prepare_intent<P: MutationPhase>(
         authorization_id_sha256: snapshot.authorization_id_sha256().to_owned(),
         service_name: service.service_name.clone(),
         target_version_id: service.target_version_id.clone(),
+        generated_at: snapshot.snapshot.claim.generated_at,
         expires_at: snapshot.snapshot.claim.expires_at,
         phase: PhantomData,
     })
@@ -436,6 +438,7 @@ pub struct FreshIntentPermit<P: MutationPhase> {
     mutation_request_sha256: String,
     service_name: String,
     target_version_id: String,
+    generated_at: u64,
     expires_at: u64,
     phase: PhantomData<P>,
 }
@@ -478,6 +481,7 @@ pub fn verify_fresh_append<P: MutationPhase>(
             .expect("prepared mutation intent always has a request digest"),
         service_name: attempt.intent.service_name,
         target_version_id: attempt.intent.target_version_id,
+        generated_at: attempt.intent.generated_at,
         expires_at: attempt.intent.expires_at,
         phase: PhantomData,
     })
@@ -490,6 +494,7 @@ pub struct AuthorizedMutation<P: MutationPhase> {
     mutation_request_sha256: String,
     service_name: String,
     target_version_id: String,
+    generated_at: u64,
     expires_at: u64,
     phase: PhantomData<P>,
 }
@@ -519,6 +524,10 @@ impl<P: MutationPhase> AuthorizedMutation<P> {
         &self.target_version_id
     }
 
+    pub fn generated_at(&self) -> u64 {
+        self.generated_at
+    }
+
     pub fn expires_at(&self) -> u64 {
         self.expires_at
     }
@@ -533,6 +542,9 @@ pub fn authorize_mutation<P: MutationPhase>(
     if permit.mutation_request_sha256 != request_digest_sha256 {
         return Err(OrchestratorError::RequestDigestMismatch);
     }
+    if now < permit.generated_at {
+        return Err(OrchestratorError::ClockBeforeClaim);
+    }
     if now >= permit.expires_at {
         return Err(OrchestratorError::AuthorizationExpired);
     }
@@ -543,6 +555,7 @@ pub fn authorize_mutation<P: MutationPhase>(
         mutation_request_sha256: permit.mutation_request_sha256,
         service_name: permit.service_name,
         target_version_id: permit.target_version_id,
+        generated_at: permit.generated_at,
         expires_at: permit.expires_at,
         phase: PhantomData,
     })
@@ -1506,6 +1519,7 @@ mod tests {
         assert_eq!(mutation.service_name(), "controller-staging");
         assert_eq!(mutation.target_version_id(), "controller-version-002");
         assert_eq!(mutation.state_version(), 2);
+        assert_eq!(mutation.generated_at(), NOW);
         assert_eq!(mutation.expires_at(), NOW + 300);
 
         let replay_intent =
@@ -1559,6 +1573,17 @@ mod tests {
         assert!(matches!(
             authorize_mutation(permit, REQUEST_DIGEST, NOW + 300),
             Err(OrchestratorError::AuthorizationExpired)
+        ));
+
+        let intent =
+            prepare_controller_intent(&snapshot, REQUEST_DIGEST, EVIDENCE_DIGEST, NOW).unwrap();
+        let appended = append_response(&intent, "step_appended", "request-003");
+        let attempt = begin_authority_append(intent, "request-003").unwrap();
+        let permit =
+            verify_fresh_append(attempt, appended.as_bytes(), "authority-version-001").unwrap();
+        assert!(matches!(
+            authorize_mutation(permit, REQUEST_DIGEST, NOW - 1),
+            Err(OrchestratorError::ClockBeforeClaim)
         ));
     }
 

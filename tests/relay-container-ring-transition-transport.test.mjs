@@ -13,6 +13,7 @@ import {
 } from "../tools/relay_container_ring_transition_execution_contract.mjs";
 import {
   RING_TRANSITION_TRANSPORT_ENV,
+  createRingTransitionAuthorityToken,
   createRingTransitionNativeTransport,
   describeRingTransitionNativeTransport,
 } from "../tools/relay_container_ring_transition_native_transport.mjs";
@@ -28,8 +29,32 @@ const DEPLOY_TOKEN = "deploy-token-value-00000000000001";
 const READ_TOKEN_ID = "read-token-identity-v1";
 const DEPLOY_TOKEN_ID = "deploy-token-identity-v1";
 const CLAIM_CREDENTIAL_ID = "b".repeat(64);
+const RUST_HMAC_VECTOR =
+  "eyJhbGciOiJIUzI1NiIsImtpZCI6ImN1cnJlbnQtdjEiLCJ0eXAiOiJDSU5BVE9LRU4tUklORy1BVVRIT1JJVFkifQ.eyJhdWRpZW5jZSI6ImF1dGhvcml0eS1zdGFnaW5nIiwiYm9keV9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiY3JlZGVudGlhbF9pZF9zaGEyNTYiOiJhMDFiZmVmZDZhMjVkOTEwN2U5NDcyODA5OTczMDUyYTdlM2YwOTI2NjYxNmVhZTJkZTBhZTVjZjA5ZmIyYmYzIiwiZXhwaXJlc19hdCI6MTgwMDAwMDAzMCwiaXNzdWVkX2F0IjoxODAwMDAwMDAwLCJpc3N1ZXIiOiJydW5uZXItc3RhZ2luZyIsIm1ldGhvZCI6IkdFVCIsInBhdGhfYW5kX3F1ZXJ5IjoiL2ludGVybmFsL3YxL3JpbmctdHJhbnNpdGlvbi9wcmVmbGlnaHQiLCJyZXF1ZXN0X2lkIjoicmVxdWVzdC0xIn0.ar2B2dDPZLGvIOwK930i5TOHmv8EBKgF1HQWowJxq2c";
 
 describe("Relay Container native ring-transition transport", () => {
+  test("matches the Rust and Authority fixed HMAC vector", async () => {
+    const token = await createRingTransitionAuthorityToken({
+      request: {
+        method: "GET",
+        url:
+          "https://ring-transition-authority-staging.cinatoken.com" +
+          "/internal/v1/ring-transition/preflight",
+        headers: { accept: "application/json" },
+        body: null,
+      },
+      issuer: "runner-staging",
+      audience: "authority-staging",
+      keyId: "current-v1",
+      credentialIdSha256:
+        "a01bfefd6a25d9107e9472809973052a7e3f09266616eae2de0ae5cf09fb2bf3",
+      secret: "0123456789abcdef0123456789abcdef",
+      now: new Date(1_800_000_000_000),
+      requestId: "request-1",
+    });
+    expect(token).toBe(RUST_HMAC_VECTOR);
+  });
+
   test("keeps the transport free of ambient secrets, logging, and helper subprocesses", async () => {
     const source = await Bun.file(
       new URL(
@@ -88,6 +113,7 @@ describe("Relay Container native ring-transition transport", () => {
       credentialsRead: true,
       accountIdentityMatched: true,
       readCredentialVerified: false,
+      claimCredentialVerified: false,
       deployCredentialVerified: false,
     });
     expect(JSON.stringify(transport)).toBe("{}");
@@ -115,6 +141,109 @@ describe("Relay Container native ring-transition transport", () => {
         environment,
       }),
     ).toThrow(/credential_ids_must_be_distinct/);
+  });
+
+  test("matches Authority HMAC key ID and UTF-8 secret boundaries", async () => {
+    const validAnchors = publishedAnchors({
+      claimAuthorityHmacKeyId: "k".repeat(32),
+    });
+    const calls = [];
+    const transport = createRingTransitionNativeTransport({
+      anchors: validAnchors,
+      credentialIds: credentialIds(),
+      environment: {
+        ...credentialEnvironment(),
+        [RING_TRANSITION_TRANSPORT_ENV.claimHmacSecret]: "\u00e9".repeat(16),
+      },
+      fetchImpl: successfulFetch(calls, validAnchors),
+    });
+    await expect(transport.verifyCredentialIdentities()).resolves.toMatchObject({
+      allCredentialsVerified: true,
+    });
+    const preflightCall = calls.find(({ url }) => url.endsWith("/preflight"));
+    const token =
+      preflightCall.options.headers[RING_TRANSITION_AUTHORITY_HEADER];
+    const header = JSON.parse(
+      Buffer.from(token.split(".")[0], "base64url").toString("utf8"),
+    );
+    expect(header.kid).toBe("k".repeat(32));
+
+    expect(() =>
+      createRingTransitionNativeTransport({
+        anchors: validAnchors,
+        credentialIds: credentialIds(),
+        environment: {
+          ...credentialEnvironment(),
+          [RING_TRANSITION_TRANSPORT_ENV.claimHmacSecret]: "s".repeat(4096),
+        },
+      }),
+    ).not.toThrow();
+
+    for (const claimHmacSecret of [
+      "s".repeat(31),
+      "s".repeat(4097),
+      `${"s".repeat(31)} `,
+    ]) {
+      expect(() =>
+        createRingTransitionNativeTransport({
+          anchors: validAnchors,
+          credentialIds: credentialIds(),
+          environment: {
+            ...credentialEnvironment(),
+            [RING_TRANSITION_TRANSPORT_ENV.claimHmacSecret]: claimHmacSecret,
+          },
+        }),
+      ).toThrow(/missing_or_invalid_cinatoken_ring_transition_claim_hmac_secret/);
+    }
+
+    expect(() =>
+      createRingTransitionNativeTransport({
+        anchors: publishedAnchors({
+          claimAuthorityHmacKeyId: "k".repeat(33),
+        }),
+        credentialIds: credentialIds(),
+        environment: credentialEnvironment(),
+      }),
+    ).toThrow(/invalid_hmac_key_id/);
+  });
+
+  test("keeps preflight private and blocks claim traffic before all proofs", async () => {
+    const anchors = publishedAnchors();
+    const calls = [];
+    const transport = createRingTransitionNativeTransport({
+      anchors,
+      credentialIds: credentialIds(),
+      environment: credentialEnvironment(),
+      fetchImpl: async (...args) => {
+        calls.push(args);
+        throw new Error("network must remain blocked");
+      },
+    });
+    expect(transport.preflightAuthority).toBeUndefined();
+
+    await expect(
+      transport.sendAuthorityRequest({
+        method: "GET",
+        url: `${anchors.claimAuthorityOrigin}/internal/v1/ring-transition/preflight`,
+        headers: { accept: "application/json" },
+        body: null,
+        retry: false,
+        timeoutMilliseconds: 10_000,
+        maximumResponseBytes: 256 * 1024,
+      }),
+    ).rejects.toThrow(/authority_preflight_private/);
+    await expect(
+      transport.sendAuthorityRequest(
+        buildClaimAuthorityReadRequest({
+          anchors,
+          authorizationIdSha256: "1".repeat(64),
+          claimDigestSha256: "2".repeat(64),
+          claimOwnerSha256: "3".repeat(64),
+          authorityToken: "placeholder.".padEnd(64, "x"),
+        }),
+      ),
+    ).rejects.toThrow(/claim_credential_not_verified/);
+    expect(calls).toHaveLength(0);
   });
 
   test("snapshots and freezes validated trust before caller mutation", async () => {
@@ -240,40 +369,77 @@ describe("Relay Container native ring-transition transport", () => {
     );
   });
 
-  test("commits no Cloudflare credential state when Authority preflight fails", async () => {
-    const anchors = publishedAnchors();
-    const transport = createRingTransitionNativeTransport({
-      anchors,
-      credentialIds: credentialIds(),
-      environment: credentialEnvironment(),
-      fetchImpl: async (url, options) => {
-        if (url.endsWith("/tokens/verify")) {
-          const id = options.headers.authorization.includes(READ_TOKEN)
-            ? READ_TOKEN_ID
-            : DEPLOY_TOKEN_ID;
-          return jsonResponse({ success: true, result: { id, status: "active" } });
-        }
-        const response = authorityPreflightResponse(options, anchors);
-        const payload = await response.json();
-        payload.authorityVersionId = "authority-version-unreviewed";
-        return jsonResponse(payload);
-      },
-    });
+  test("clears every proof after read, deploy, or preflight revalidation failure", async () => {
+    for (const failure of ["read", "deploy", "preflight"]) {
+      const anchors = publishedAnchors();
+      let failRevalidation = false;
+      const transport = createRingTransitionNativeTransport({
+        anchors,
+        credentialIds: credentialIds(),
+        environment: credentialEnvironment(),
+        fetchImpl: async (url, options) => {
+          if (url.endsWith("/tokens/verify")) {
+            const credentialClass = options.headers.authorization.includes(
+              READ_TOKEN,
+            )
+              ? "read"
+              : "deploy";
+            const id =
+              failRevalidation && failure === credentialClass
+                ? "unreviewed-token-identity"
+                : credentialClass === "read"
+                  ? READ_TOKEN_ID
+                  : DEPLOY_TOKEN_ID;
+            return jsonResponse({
+              success: true,
+              result: { id, status: "active" },
+            });
+          }
+          const response = authorityPreflightResponse(options, anchors);
+          const payload = await response.json();
+          if (failRevalidation && failure === "preflight") {
+            payload.authorityVersionId = "authority-version-unreviewed";
+          }
+          return jsonResponse(payload);
+        },
+      });
 
-    await expect(transport.verifyCredentialIdentities()).rejects.toThrow(
-      /authority_response_identity_mismatch/,
-    );
-    expect(transport.describe()).toMatchObject({
-      readCredentialVerified: false,
-      claimCredentialVerified: false,
-      deployCredentialVerified: false,
-    });
-    await expect(
-      transport.readDeployment(anchors.controllerServiceName),
-    ).rejects.toThrow(/read_credential_not_verified/);
-    await expect(
-      transport.deployOnce({}),
-    ).rejects.toThrow(/deploy_credential_not_verified/);
+      await transport.verifyCredentialIdentities();
+      expect(transport.describe()).toMatchObject({
+        readCredentialVerified: true,
+        claimCredentialVerified: true,
+        deployCredentialVerified: true,
+      });
+
+      failRevalidation = true;
+      await expect(transport.verifyCredentialIdentities()).rejects.toThrow(
+        failure === "preflight"
+          ? /authority_response_identity_mismatch/
+          : new RegExp(`${failure}_credential_identity_mismatch`),
+      );
+      expect(transport.describe()).toMatchObject({
+        readCredentialVerified: false,
+        claimCredentialVerified: false,
+        deployCredentialVerified: false,
+      });
+      await expect(
+        transport.readDeployment(anchors.controllerServiceName),
+      ).rejects.toThrow(/read_credential_not_verified/);
+      await expect(transport.deployOnce({})).rejects.toThrow(
+        /deploy_credential_not_verified/,
+      );
+      await expect(
+        transport.sendAuthorityRequest(
+          buildClaimAuthorityReadRequest({
+            anchors,
+            authorizationIdSha256: "1".repeat(64),
+            claimDigestSha256: "2".repeat(64),
+            claimOwnerSha256: "3".repeat(64),
+            authorityToken: "placeholder.".padEnd(64, "x"),
+          }),
+        ),
+      ).rejects.toThrow(/claim_credential_not_verified/);
+    }
   });
 
   test("builds an Authority-compatible HMAC without exposing the secret", async () => {
@@ -285,6 +451,12 @@ describe("Relay Container native ring-transition transport", () => {
       environment: credentialEnvironment(),
       fetchImpl: async (url, options) => {
         calls.push({ url, options });
+        if (url.endsWith("/tokens/verify")) {
+          const id = options.headers.authorization.includes(READ_TOKEN)
+            ? READ_TOKEN_ID
+            : DEPLOY_TOKEN_ID;
+          return jsonResponse({ success: true, result: { id, status: "active" } });
+        }
         if (url.endsWith("/preflight")) {
           return authorityPreflightResponse(options, anchors);
         }
@@ -300,7 +472,7 @@ describe("Relay Container native ring-transition transport", () => {
         "runner-request-read",
       ]),
     });
-    await transport.preflightAuthority();
+    await transport.verifyCredentialIdentities();
     const request = buildClaimAuthorityReadRequest({
       anchors,
       authorizationIdSha256: "1".repeat(64),
@@ -310,8 +482,10 @@ describe("Relay Container native ring-transition transport", () => {
     });
     const result = await transport.sendAuthorityRequest(request);
     expect(result.transportOutcome).toBe("success");
-    expect(calls).toHaveLength(2);
-    const token = calls[1].options.headers[RING_TRANSITION_AUTHORITY_HEADER];
+    expect(calls).toHaveLength(4);
+    const authorityCall = calls.at(-1);
+    const token =
+      authorityCall.options.headers[RING_TRANSITION_AUTHORITY_HEADER];
     const [headerPart, claimsPart, signaturePart] = token.split(".");
     expect(JSON.parse(Buffer.from(headerPart, "base64url").toString())).toEqual({
       alg: "HS256",
@@ -328,7 +502,7 @@ describe("Relay Container native ring-transition transport", () => {
     });
     expect(Buffer.from(signaturePart, "base64url")).toHaveLength(32);
     expect(token).not.toContain(CLAIM_SECRET);
-    expect(calls[1].options.redirect).toBe("error");
+    expect(authorityCall.options.redirect).toBe("error");
   });
 
   test("treats Authority outcome_unknown as ambiguous without a second POST", async () => {
@@ -340,6 +514,12 @@ describe("Relay Container native ring-transition transport", () => {
       environment: credentialEnvironment(),
       fetchImpl: async (url, options) => {
         calls.push({ url, options });
+        if (url.endsWith("/tokens/verify")) {
+          const id = options.headers.authorization.includes(READ_TOKEN)
+            ? READ_TOKEN_ID
+            : DEPLOY_TOKEN_ID;
+          return jsonResponse({ success: true, result: { id, status: "active" } });
+        }
         if (url.endsWith("/preflight")) {
           return authorityPreflightResponse(options, anchors);
         }
@@ -350,7 +530,7 @@ describe("Relay Container native ring-transition transport", () => {
       },
       requestIdFactory: () => "runner-request-ambiguous",
     });
-    await transport.preflightAuthority();
+    await transport.verifyCredentialIdentities();
     const request = {
       method: "POST",
       url: `${anchors.claimAuthorityOrigin}/internal/v1/ring-transition/claims/${"1".repeat(64)}/steps`,
@@ -380,7 +560,16 @@ describe("Relay Container native ring-transition transport", () => {
         anchors,
         credentialIds: credentialIds(),
         environment: credentialEnvironment(),
-        fetchImpl: async (_url, options) => {
+        fetchImpl: async (url, options) => {
+          if (url.endsWith("/tokens/verify")) {
+            const id = options.headers.authorization.includes(READ_TOKEN)
+              ? READ_TOKEN_ID
+              : DEPLOY_TOKEN_ID;
+            return jsonResponse({
+              success: true,
+              result: { id, status: "active" },
+            });
+          }
           const response = authorityPreflightResponse(options, anchors);
           const payload = await response.json();
           if (drift === "authority_version") {
@@ -391,7 +580,7 @@ describe("Relay Container native ring-transition transport", () => {
           return jsonResponse(payload);
         },
       });
-      await expect(transport.preflightAuthority()).rejects.toThrow(
+      await expect(transport.verifyCredentialIdentities()).rejects.toThrow(
         /authority_(?:response_identity|preflight_identity)_mismatch/,
       );
     }
@@ -671,7 +860,7 @@ describe("Relay Container native ring-transition transport", () => {
   });
 });
 
-function publishedAnchors() {
+function publishedAnchors(overrides = {}) {
   const anchors = {
     ...DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
     enabled: true,
@@ -693,6 +882,7 @@ function publishedAnchors() {
     runnerBuildSha256: "9".repeat(64),
     runnerTrustConfigSha256: "0".repeat(64),
     releaseEvidenceSha256: "a".repeat(64),
+    ...overrides,
   };
   anchors.runnerTrustConfigSha256 =
     ringTransitionTrustConfigDigestSha256(anchors);

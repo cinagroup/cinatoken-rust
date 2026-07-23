@@ -61,3 +61,4 @@ tower = { version = "=0.5.1", features = ["util"] }
 unicode-segmentation = "1"
 url = "2"
 worker = "0.5"
+zeroize = "=1.8.1"

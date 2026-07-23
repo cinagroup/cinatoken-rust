@@ -72,6 +72,7 @@ describe("Relay Container ring-transition runner release contract", () => {
       "Cargo.toml",
       "bun.lock",
       "crates/ring-transition-runner/Cargo.toml",
+      "crates/ring-transition-runner/src/credentials.rs",
       "crates/ring-transition-runner/src/lib.rs",
       "crates/ring-transition-runner/src/main.rs",
       "crates/ring-transition-runner/src/orchestrator.rs",
@@ -132,7 +133,7 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.moduleCount).toBe(19);
+    expect(result.moduleCount).toBe(20);
   });
 
   test("matches the deterministic Rust DSSE release vector", () => {
@@ -142,23 +143,23 @@ describe("Relay Container ring-transition runner release contract", () => {
       policySha256:
         "9b12c3dd50812180f2122311480876bd6508a81618082c615ca52d4701ec3856",
       inventorySha256:
-        "5199295df3e91e3c95e4afc4035306bfe79b7a2333841a668e72cad118226c07",
+        "654a12f3b9c8d19b057b532632988e2ce6595ad662bd39ed4caf58d4d3fd32d9",
       manifestSha256:
-        "85ad40156703e566e368be3d2f116704391e3b36920c4faf4b861212ca44d42f",
+        "f10dfcd528e86355b60a23cb23411a677897d83da1380609cb2108f4f3a26ce4",
       packetSha256:
-        "5269e64bf87b0d236cc838e0323b452dded66b687c6a83d8f168f04209c52d80",
+        "74de3b160af09e2a27ce328b4c1a04a3139f514a590d0190e6fdb46bcf090ab5",
       signatureBase64:
-        "aKA/cksGtMPK4EhqGqPqQkRe3vFlIUqQduYnF8h26oZmegl/nPafziCNIFnHnS0fmDue8MmfarwbShM66JPJAQ==",
+        "XHFYf4b7gZFJuzgEX72QlHLRJKOKRi0dq4UMU2ZOYExMmd2OCKityaiKLX4WD9+NajsStiswaBOGdIYjxoRYDA==",
       publicationGenerationSha256:
-        "516114cf01584d962b03f31ff81fb6a4ae6eadb54b055c379d925ff7d08f34d9",
+        "9bbec7fb3934ce364f27b54a79ccae62c423e6d01f4ff5fe187d0f61ca620234",
       publicationManifestSha256:
-        "cb3042b9e957e18364bb7f1c05395df133f7c86db103cd3c20def7e7ffd12288",
+        "8beca6784152e2034d2b3e4866efe1f9892dfa7bc252ed87dd6a1397f8b211f2",
       publicationPacketSha256:
-        "137bba6275f589706e9ef37c58a1ee0ff673f8324eac096c069dc509cd30a6c6",
+        "49ae3ccac08abd1c9fa3e205d7444ef260c50956f55a06f80f9f622f3b459f89",
       publicationSignatureBase64:
-        "3TY81utL+dYIkbSJEsdCYgw2J714YbfjdUEkv5InwlsGZm+h2VQWxjipW960cBqUHkegAHNaUQSFuKe5CG85Dw==",
+        "I3wT6H82lVOz5VvPDHWRT21aozvFOuQoVEBGsVZEqYMKJ48QQCXGySLZrj0vJRvwo1LLQ7Hu3y97+FAIrbkVDQ==",
       activationSha256:
-        "8067544a478f8ef9b95913610b7d770980ef9522fa26c593eb38cec1c6ee32c0",
+        "10bd518fe1fc5935672ea01696f2b80c719f8ce535f7d6711d6890c6452efff8",
     });
   });
 
@@ -703,6 +704,10 @@ async function releaseFixture({
     [
       "crates/ring-transition-runner/Cargo.toml",
       "runner-cargo-fixture",
+    ],
+    [
+      "crates/ring-transition-runner/src/credentials.rs",
+      "runner-credentials-fixture",
     ],
     [
       "crates/ring-transition-runner/src/lib.rs",

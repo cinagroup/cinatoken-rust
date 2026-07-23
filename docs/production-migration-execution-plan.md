@@ -2521,7 +2521,7 @@ launcher remains disabled, and phases K-L remain blocked.
 
 Required release-campaign order:
 
-1. freeze one clean commit and review the 19-path module inventory;
+1. freeze one clean commit and review the 20-path module inventory;
 2. build twice from separate archive extractions under the pinned Rust 1.78
    toolchain and fixed environment;
 3. run complete local/fault/security/no-secret gates against both identical
@@ -2575,4 +2575,51 @@ hardlink rejection, Unix link count one, two isolated Rust 1.78 builds,
 independent signature custody, power-loss durability, process-manager launch
 from the selected generation, and exact readback from a non-checkout root.
 Until then the checked-in launcher remains disabled and production is
+**NO-GO**.
+
+## 2026-07-23 Activated Credential Boundary Addendum
+
+This addendum advances the local part of phase K execution integration. It
+does not authorize credential provisioning or network access.
+
+| Phase | Required action | Current local evidence | Remaining pass evidence | Abort and retain |
+| --- | --- | --- | --- | --- |
+| K0 activation capability | Produce activation only from checked-in release trust and exact installed publication | Current verifier/capability are crate-private; alternate caller trust cannot mint activation | Independent binary/API review of the exact signed build | Public/custom-trust activation path or reusable capability |
+| K1 credential trust | Match compiled account/role/Authority/permit/trust-config pins to the activated signed release | Disabled/null checked-in trust; exact validation and mixed-generation tests | Reviewed non-null pins compiled into two identical builds | Runtime override, pin drift, shared role identity or unsigned config |
+| K2 fixed loading | Read account, then read/claim/deploy from exactly four fixed handles; zeroize all secret storage | Counted fake source proves order and zero reads on disabled/mismatched trust | Service-account environment/ACL evidence with no process or log exposure | Enumeration, alias/file/CLI fallback, account mismatch or leaked secret |
+| K3 token identity | Prove read/deploy active token ID hashes with bounded duplicate-free responses | Consuming Rust typestate and JS negative tests pass | Bounded no-proxy client plus account/owner/scope/revocation attestation | ID/status drift, wrong account, writable read token or over-scoped deploy token |
+| K4 claim identity | Produce exact HS256 preflight and match claim ID, request, Authority version and permit SPKI | Rust/JS/Authority fixed vector agrees; JS preflight is private and proofs are atomic | Explicit Cloudflare Access workload identity, deployed policy/readback and bounded Rust Authority client | HMAC-only Access bypass, public preflight, partial proof state or identity drift |
+| K5 coherent execution | Consume fully verified credentials in coherent claim resume and sole typed POST | Pure orchestrator and credentials are separate, private capability cores | One client owns stable reads, canonical request bytes, fresh permit, deploy token and one POST | Generic send, restored/forged permit, retry, clock rollback or second POST |
+
+### Credential fault matrix
+
+The exact signed generation must be killed or failed:
+
+1. before credential trust, after credential trust and before account read;
+2. after account read/hash and before each secret read;
+3. before/after read token verification and deploy token verification;
+4. before HMAC construction, after preflight send, on response loss and after
+   response identity validation; and
+5. after all identities verify but before claim read/create.
+
+Every restart begins again at release/publication activation. No partial proof
+is persisted or reconstructed. A failed revalidation clears all proof state
+and zeroizes every loaded secret.
+
+### Identity evidence still required
+
+Cloudflare `/tokens/verify` returns active ID evidence, not an authoritative
+least-privilege scope attestation. The ceremony must separately retain
+redacted token owner/account/scope/revocation records and prove read/deploy
+role separation.
+
+The private Authority is also expected to sit behind Cloudflare Access.
+HMAC authenticates the runner protocol and the Ed25519 permit authorizes a
+claim; neither authenticates the workload to Access. Before K4 can pass, the
+deployment design must explicitly freeze either Access service-token handles
+and exact headers or a reviewed WARP/mTLS identity. Ambient browser sessions,
+proxy credentials and undocumented header injection are abort conditions.
+
+No credential value, Cloudflare API call, remote resource or mutation was used
+for this addendum. Go/VPS remains authoritative and production remains
 **NO-GO**.

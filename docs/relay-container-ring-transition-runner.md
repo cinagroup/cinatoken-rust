@@ -89,7 +89,7 @@ and the two fixed sibling names. It then enforces:
   policy/release validity windows;
 - a sorted key-separation inventory that contains the manifest permit key and
   excludes release/permit key reuse;
-- the complete 19-path transitive module closure, portable paths, module
+- the complete 20-path transitive module closure, portable paths, module
   counts/bytes/digests, Git/lock/package identities, and two-build equality;
 - exact evidence, Authority version, executable name, byte length, signed
   digest, and current executable bytes; and
@@ -142,6 +142,66 @@ to agree before any credential handle is opened. The activation record also
 binds the exact outer publication-packet digest, closing substitution outside
 the signed payload without creating a self-hash cycle.
 
+### Rust activated credential boundary
+
+`crates/ring-transition-runner/src/credentials.rs` now owns the next local
+capability boundary. The current-publication verifier and
+`ActivatedPublication` are crate-private. Runtime code cannot pass alternate
+release trust to mint activation, and `authorize_execution` consumes
+activation directly into opaque loaded credentials.
+
+A second compiled trust object remains independently `enabled=false` with
+null pins. An enabled one-shot staging build must pin the exact:
+
+- account, read, claim and deploy credential identity SHA-256 values;
+- Authority origin, version, issuer, audience and HMAC key ID;
+- permit SPKI and runner trust-config SHA-256 values; and
+- fixed Cloudflare API origin.
+
+The three credential identities must differ. The Authority version, permit
+SPKI and trust-config digest must also equal the values carried through the
+activated signed release before any environment access.
+
+Only the four documented handles can be read. The loader does not enumerate
+the environment or accept aliases, CLI values, files or caller-provided
+sources. It reads the account first, requires 32 lowercase hexadecimal
+characters and matches its SHA-256 before reading secrets. Each secret must be
+32-4096 UTF-8 bytes, contain no whitespace and differ from the other two.
+Secret bytes are held in a zeroizing wrapper with no clone, debug, display or
+serialization implementation.
+
+The proof core is consuming typestate:
+
+```text
+LoadedCredentials
+  -> ReadCredentialProven
+  -> DeployCredentialProven
+  -> PendingAuthorityPreflight
+  -> VerifiedCredentials
+```
+
+Cloudflare token proof requires duplicate-free bounded JSON, `success=true`,
+`status=active`, and the exact SHA-256 of the returned token ID. The claim
+proof emits the Authority-compatible 30-second HS256 token and accepts only an
+exact request ID, claim credential ID, Authority version, permit SPKI and
+`authority_ready` preflight response. These proof types and raw secret access
+remain private to the library; the future HTTP client must consume them rather
+than accept caller-created identities.
+
+The JavaScript reference transport now clears all three proof flags before
+every verification and commits them only after read, deploy and private
+preflight all succeed. Any failure leaves all three false. Public preflight
+requests are rejected, and every other Authority request requires all three
+proofs. Rust, JavaScript and the Authority protocol tests share one exact HMAC
+vector, including canonical JSON and signature bytes.
+
+This is not a live identity client. Cloudflare token verification proves
+active ID, not least-privilege scopes; retained owner/scope/revocation evidence
+is still mandatory. The Authority also requires a reviewed Cloudflare Access
+workload identity. HMAC and Ed25519 permit verification do not replace Access,
+so a fixed service-token or reviewed WARP/mTLS design must be selected before
+the Rust client is linked.
+
 ### Detached release packet
 
 `relay_container_ring_transition_release_contract.mjs` and
@@ -190,6 +250,11 @@ deploy credential IDs must be pairwise distinct. Read and deploy tokens are
 verified against the account token-identity endpoint before use. The claim
 HMAC is proven by an authenticated, read-only Authority preflight before any
 claim POST.
+
+Credential proof is now atomic in the reference transport. The preflight is a
+private method and cannot independently enable claim traffic. Revalidation
+sets all three proof flags false before work and sets them true only after all
+three exact proofs succeed.
 
 The transport has no console logging, credential serialization, retry loop,
 subprocess, Wrangler, SDK mutation helper, arbitrary URL, or caller-provided
@@ -351,10 +416,10 @@ Authority version, target status, state version and step digest consumes the
 attempt into `FreshIntentPermit<S>`. `step_replayed` returns no permit. The
 permit is private, non-cloneable and non-serializable; binding the exact
 canonical Cloudflare request digest consumes it again into
-`AuthorizedMutation<S>`. The claim expiry travels through the capability chain;
-the final bind rejects `now >= expires_at`, and the authorized value retains
-the deadline for the future sole POST call site to recheck immediately before
-network I/O.
+`AuthorizedMutation<S>`. The claim generation and expiry bounds travel through
+the capability chain; the final bind rejects `now < generated_at` and
+`now >= expires_at`, and the authorized value retains both bounds for the
+future sole POST call site to recheck immediately before network I/O.
 
 The new module is included in both required release-module inventories. A
 signed runner packet that omits or changes the Rust orchestrator therefore
@@ -364,11 +429,11 @@ cannot satisfy the release verifier.
 
 The pure core is not a live executor. The next code boundaries are:
 
-1. load only the fixed credential handles after publication verification,
-   prove
-   read/claim/deploy identity separation and complete exactly one claim;
-2. build a bounded Authority client that obtains a transactionally coherent
-   snapshot or detects query-version drift, then feeds only verified bytes to
+1. build bounded Cloudflare identity and Authority clients that consume the
+   Rust credential typestates, use an explicit reviewed Access workload
+   identity, and perform no ambient proxy/redirect/retry behavior;
+2. obtain a transactionally coherent Authority
+   snapshot or detect query-version drift, then feed only verified bytes to
    the reducer;
 3. implement authenticated Controller/Edge deployment readers with a
    signed-policy timing window for two stable observations;

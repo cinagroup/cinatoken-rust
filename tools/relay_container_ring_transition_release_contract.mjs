@@ -44,6 +44,7 @@ const REQUIRED_MODULE_PATHS = Object.freeze([
   "Cargo.toml",
   "bun.lock",
   "crates/ring-transition-runner/Cargo.toml",
+  "crates/ring-transition-runner/src/credentials.rs",
   "crates/ring-transition-runner/src/lib.rs",
   "crates/ring-transition-runner/src/main.rs",
   "crates/ring-transition-runner/src/orchestrator.rs",

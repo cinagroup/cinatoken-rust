@@ -60,14 +60,13 @@ pub struct VerifiedPublication {
     publication_packet: Vec<u8>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct ActivatedPublication {
+pub(crate) struct ActivatedPublication {
     identity: PublicationIdentity,
 }
 
 impl ActivatedPublication {
-    pub fn identity(&self) -> &PublicationIdentity {
-        &self.identity
+    pub(crate) fn into_identity(self) -> PublicationIdentity {
+        self.identity
     }
 }
 
@@ -323,17 +322,17 @@ pub fn verify_publication_bytes(
     })
 }
 
-pub fn verify_current_publication(
-    trust: &EmbeddedReleaseTrust,
+pub(crate) fn verify_current_publication(
     now: u64,
 ) -> Result<ActivatedPublication, PublicationError> {
+    let trust = EmbeddedReleaseTrust::checked_in();
     trust
         .validate_for_execution()
         .map_err(release::ReleaseVerificationError::Trust)?;
     let executable =
         std::env::current_exe().map_err(|_| PublicationError::FileInvalid("artifact"))?;
     Ok(ActivatedPublication {
-        identity: verify_installed_publication_at(trust, &executable, now, true, true)?,
+        identity: verify_installed_publication_at(&trust, &executable, now, true, true)?,
     })
 }
 
@@ -901,23 +900,23 @@ mod tests {
         let packet: PublicationPacket = serde_json::from_slice(&fixture.packet_json).unwrap();
         assert_eq!(
             verified.identity().generation_sha256,
-            "516114cf01584d962b03f31ff81fb6a4ae6eadb54b055c379d925ff7d08f34d9"
+            "9bbec7fb3934ce364f27b54a79ccae62c423e6d01f4ff5fe187d0f61ca620234"
         );
         assert_eq!(
             verified.identity().publication_manifest_sha256,
-            "cb3042b9e957e18364bb7f1c05395df133f7c86db103cd3c20def7e7ffd12288"
+            "8beca6784152e2034d2b3e4866efe1f9892dfa7bc252ed87dd6a1397f8b211f2"
         );
         assert_eq!(
             verified.identity().publication_packet_sha256,
-            "137bba6275f589706e9ef37c58a1ee0ff673f8324eac096c069dc509cd30a6c6"
+            "49ae3ccac08abd1c9fa3e205d7444ef260c50956f55a06f80f9f622f3b459f89"
         );
         assert_eq!(
             packet.envelope.signatures[0].sig,
-            "3TY81utL+dYIkbSJEsdCYgw2J714YbfjdUEkv5InwlsGZm+h2VQWxjipW960cBqUHkegAHNaUQSFuKe5CG85Dw=="
+            "I3wT6H82lVOz5VvPDHWRT21aozvFOuQoVEBGsVZEqYMKJ48QQCXGySLZrj0vJRvwo1LLQ7Hu3y97+FAIrbkVDQ=="
         );
         assert_eq!(
             sha256_hex(&activation_bytes(verified.identity()).unwrap()),
-            "8067544a478f8ef9b95913610b7d770980ef9522fa26c593eb38cec1c6ee32c0"
+            "10bd518fe1fc5935672ea01696f2b80c719f8ce535f7d6711d6890c6452efff8"
         );
 
         let root = temporary_directory();
@@ -1073,6 +1072,9 @@ mod tests {
     #[test]
     fn static_source_has_no_credentials_network_subprocess_or_destructive_cleanup() {
         let source = include_str!("publication.rs");
+        assert!(source.contains("pub(crate) fn verify_current_publication("));
+        assert!(!source.contains("\npub fn verify_current_publication("));
+        assert!(source.contains("pub(crate) struct ActivatedPublication"));
         for forbidden in [
             ["std::env", "::var"].concat(),
             ["std::process", "::Command"].concat(),

@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod credentials;
 pub mod orchestrator;
 pub mod publication;
 pub mod release;
@@ -126,10 +127,12 @@ pub struct RunnerDescription {
     pub customer_traffic_authorized: bool,
     pub production_cutover_authorized: bool,
     pub release_trust: EmbeddedReleaseTrust,
+    pub credential_trust: credentials::EmbeddedCredentialTrust,
 }
 
 pub fn describe() -> RunnerDescription {
     let release_trust = EmbeddedReleaseTrust::checked_in();
+    let credential_trust = credentials::EmbeddedCredentialTrust::checked_in();
     RunnerDescription {
         ok: true,
         schema_version: 1,
@@ -144,6 +147,7 @@ pub fn describe() -> RunnerDescription {
         customer_traffic_authorized: false,
         production_cutover_authorized: false,
         release_trust,
+        credential_trust,
     }
 }
 
@@ -152,6 +156,7 @@ pub enum ExecutionAuthorizationError {
     ReleaseTrust(ReleaseValidationError),
     ClockUnavailable,
     PublicationVerification(publication::PublicationError),
+    Credentials(credentials::CredentialError),
 }
 
 impl fmt::Display for ExecutionAuthorizationError {
@@ -160,14 +165,15 @@ impl fmt::Display for ExecutionAuthorizationError {
             Self::ReleaseTrust(error) => error.fmt(formatter),
             Self::ClockUnavailable => formatter.write_str("runner clock is unavailable"),
             Self::PublicationVerification(error) => error.fmt(formatter),
+            Self::Credentials(error) => error.fmt(formatter),
         }
     }
 }
 
 impl std::error::Error for ExecutionAuthorizationError {}
 
-pub fn authorize_execution(
-) -> Result<publication::ActivatedPublication, ExecutionAuthorizationError> {
+pub fn authorize_execution() -> Result<credentials::LoadedCredentials, ExecutionAuthorizationError>
+{
     let trust = EmbeddedReleaseTrust::checked_in();
     trust
         .validate_for_execution()
@@ -176,8 +182,10 @@ pub fn authorize_execution(
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ExecutionAuthorizationError::ClockUnavailable)?
         .as_secs();
-    publication::verify_current_publication(&trust, now)
-        .map_err(ExecutionAuthorizationError::PublicationVerification)
+    let activation = publication::verify_current_publication(now)
+        .map_err(ExecutionAuthorizationError::PublicationVerification)?;
+    credentials::load_activated_credentials(activation)
+        .map_err(ExecutionAuthorizationError::Credentials)
 }
 
 #[cfg(test)]
@@ -190,12 +198,12 @@ mod tests {
         assert!(!describe().release_published);
         assert!(!describe().credentials_read);
         assert!(!describe().network_requests_performed);
-        assert_eq!(
+        assert!(matches!(
             authorize_execution(),
             Err(ExecutionAuthorizationError::ReleaseTrust(
                 ReleaseValidationError::Disabled
             ))
-        );
+        ));
     }
 
     #[test]

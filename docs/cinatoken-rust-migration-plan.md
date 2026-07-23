@@ -17842,7 +17842,7 @@ authorize staging.
     request digest, pinned service/target and still-live claim expiry.
 
 The Rust orchestrator, release verifier and publication/activation sources are
-now part of the 19-file clean-commit release
+now part of the 20-file clean-commit release
 module closure. An otherwise valid signed packet cannot omit the code that
 decides whether a deployment write is structurally possible.
 
@@ -17944,7 +17944,7 @@ remote evidence.
    bytes, rejecting unknown fields and recursive duplicate keys;
 6. verify policy/key/origin pins, policy/release validity, key-role separation,
    one Ed25519 DSSE signature and the standard PAE bytes;
-7. verify source, lock, package, 19-path transitive module closure, repeated
+7. verify source, lock, package, 20-path transitive module closure, repeated
    build, evidence, Authority, artifact name/length/digest identities; and
 8. require the signed Windows/MSVC or Linux/musl target to match the launcher's
    compile-time x86_64 architecture/OS/ABI.
@@ -17957,7 +17957,7 @@ transport remain unreachable.
 ### Cross-language contract and dependency controls
 
 The Rust verifier and JavaScript release contract share the same canonical
-schemas, 18 required paths, DSSE payload type, time bounds and path rules.
+schemas, 20 required paths, DSSE payload type, time bounds and path rules.
 Independent deterministic fixtures bind the Ed25519 SPKI, policy, inventory,
 manifest, packet and signature bytes. Negative tests cover non-canonical and
 duplicate JSON, pin/key/signature/time drift, permit-key inventory omission,
@@ -18080,9 +18080,10 @@ predecessor CAS and two sequential activations. The source guard finds no
 credential enumeration, network client, subprocess, Wrangler or destructive
 cleanup primitive.
 
-The release module closure is now 19 paths and includes
-`crates/ring-transition-runner/src/publication.rs`. A release packet cannot
-omit the code that authorizes local activation.
+The release module closure is now 20 paths and includes
+`crates/ring-transition-runner/src/publication.rs` and
+`crates/ring-transition-runner/src/credentials.rs`. A release packet cannot
+omit the code that authorizes local activation or gates credential access.
 
 ### Remaining P0 sequence
 
@@ -18100,3 +18101,128 @@ The checked-in launcher remains disabled/null-pinned. No production key,
 credential, installation root, Cloudflare API, remote resource, customer
 traffic, provider operation, billing state or Go/VPS authority changed.
 Production remains **NO-GO**.
+
+## 22.275 Activated Credential Identity Boundary Overlay (2026-07-23)
+
+This overlay supersedes section 22.274's first remaining P0 item only for the
+local loading and proof core. It does not claim that a production credential
+exists, that its least-privilege scope was attested, or that any identity
+request was sent.
+
+### Capability and trust order
+
+The runtime path is now:
+
+1. validate the checked-in detached-release trust before clock or filesystem;
+2. verify the current executable, four fixed sidecars and append-only
+   activation using only `EmbeddedReleaseTrust::checked_in()`;
+3. consume the crate-private, non-cloneable `ActivatedPublication`;
+4. validate a second checked-in credential trust object against the activated
+   release's signed trust-config digest, Authority version and permit SPKI;
+5. read and hash the account handle; and
+6. only after the account pin matches, read the read, claim-HMAC and deploy
+   secret handles.
+
+The current-publication verifier and activated capability are no longer public
+Rust API. A caller cannot supply an alternate release trust or timestamp to
+mint activation. `authorize_execution` consumes activation into an opaque
+`LoadedCredentials`; it never returns activation to a transport caller.
+
+The checked-in credential trust is independently `enabled=false` with null
+account, credential, Authority, permit and trust-config pins. An eventual
+one-shot staging build must compile all of these exact values:
+
+- account ID SHA-256;
+- pairwise-distinct read, claim and deploy credential ID SHA-256 values;
+- Authority origin, Version Metadata ID, issuer, audience and HMAC key ID;
+- permit SPKI SHA-256; and
+- runner trust-config SHA-256 already bound by the signed release.
+
+No argv, environment, sidecar or caller object can replace these pins.
+
+### Fixed handles and secret lifetime
+
+Only these four names can be read, in this order:
+
+```text
+CINATOKEN_RING_TRANSITION_ACCOUNT_ID
+CINATOKEN_RING_TRANSITION_READ_TOKEN
+CINATOKEN_RING_TRANSITION_CLAIM_HMAC_SECRET
+CINATOKEN_RING_TRANSITION_DEPLOY_TOKEN
+```
+
+There is no environment enumeration, alias fallback, dotenv/config path,
+stdin, CLI secret, subprocess, Wrangler, SDK or network client in the Rust
+module. The account must be exactly 32 lowercase hexadecimal characters and
+hash to the compiled pin. Every secret must be 32-4096 UTF-8 bytes, contain no
+whitespace, and differ byte-for-byte from the other two. Secret storage uses
+`Zeroizing<Vec<u8>>` behind a type that implements no `Clone`, `Debug`,
+`Display`, `Serialize` or `Deserialize`.
+
+### Atomic identity-proof typestate
+
+The local proof core consumes values in one direction:
+
+```text
+LoadedCredentials
+  -> ReadCredentialProven
+  -> DeployCredentialProven
+  -> PendingAuthorityPreflight
+  -> VerifiedCredentials
+```
+
+Read and deploy proof parsing rejects oversized or duplicate-key JSON,
+requires Cloudflare `success=true`, exact `status=active`, a bounded token ID,
+and `SHA256(result.id)` equal to the compiled role pin. The claim proof creates
+the exact Authority HS256 token over domain, issuer, audience, 32-character
+maximum key ID, credential ID, request ID, method, path/query, empty-body
+digest and 30-second validity. The preflight response must match the request
+ID, claim credential ID, Authority version, permit SPKI and
+`authority_ready`.
+
+Every transition consumes the previous state. A failed read, deploy or
+preflight proof drops and zeroizes the complete set; no partial verified state
+is reusable. The proof states and raw secret access remain crate-private for
+the future bounded client.
+
+The JavaScript reference transport now follows the same all-or-nothing rule.
+Its preflight method is private, public preflight descriptors are rejected,
+and all non-preflight Authority traffic requires read, claim and deploy proofs
+to be simultaneously true. Revalidation clears all three flags before work
+and leaves all three false on any failure. Rust, the native transport and the
+Authority verifier share one fixed canonical HMAC vector.
+
+### Open production identity gates
+
+`/tokens/verify` proves only token ID and active status. Production still
+requires operator-owned account/scope/owner/revocation evidence showing that
+the read token cannot mutate and that the deploy token can perform only the
+one reviewed deployment operation. This evidence must be bound to the signed
+candidate without recording token values.
+
+The Authority route also requires a separately reviewed Cloudflare Access
+workload identity. HMAC and Ed25519 permit checks do not replace Access. Before
+the Rust client is linked, the plan must freeze either exact Access service
+token handles and header policy or a reviewed WARP/mTLS identity, then prove
+the deployed Access policy and identity readback. Adding ambient Access
+fallbacks to the current four-handle loader is forbidden.
+
+### Remaining P0 sequence
+
+1. implement the bounded no-proxy/no-redirect Rust identity and Authority
+   client, including the explicit Access workload identity decision;
+2. bind authenticated coherent Authority snapshots to the compiled
+   credential identities and exact claim resume;
+3. make one private transport consume both `VerifiedCredentials` and
+   `AuthorizedMutation<S>` with the canonical request bytes at its sole POST;
+4. add policy-timed stable double readback and create-new execution receipts;
+5. run scope/revocation, crash/restart/concurrency/response-loss/clock and
+   target-drift campaigns against one real independently signed generation;
+   and
+6. only after independent credential-revocation evidence, consider isolated
+   staging resources with every mutation gate false.
+
+No production key, credential value, environment handle, Access identity,
+network request, Cloudflare API, remote resource, customer traffic, provider
+operation, billing state or Go/VPS authority changed. Production remains
+**NO-GO**.

@@ -2881,3 +2881,41 @@ preflight. The production order, forward-only rollback, and required remote
 evidence are defined in `docs/relay-container-ring-transition.md`. No remote
 resource, credential, provider, or traffic action occurred; production remains
 **NO-GO**.
+
+## 2026-07-23 Offline Signed Adjacent Ring Transition Manifest
+
+Phase 1 now has a strict offline integrity boundary for the adjacent expansion.
+The canonical v1 manifest reuses the strict P5 candidate schema and binds a
+candidate-foundation artifact that makes no remote-promotion claim. It then
+binds `G/N -> G+1/M`, the 30-900 second whole-second admission window,
+300-second preflight lead, `max_instances >= M`, routing identity, non-secret
+key IDs, a synthetic no-customer/no-paid-provider cohort, capacity/observability/
+rollback/revocation canonical artifacts, and short-lived Go/VPS hot-fallback readiness.
+Go/VPS must remain traffic and scheduler authority; the manifest cannot drain
+ingress or stop its processes.
+
+The signed subject also carries a fresh canonical previous-ring readback
+produced by a separately authenticated collector. Its old edge/Controller
+deployment identities are frozen; its commit, resource identities, Container
+image/build/provenance/SBOM, provider-egress, schema, protocols, key IDs, and key
+fingerprints must match the new candidate, preventing expansion from carrying
+unrelated artifacts or same-ID key rotation.
+
+Five distinct Ed25519 role keys sign a transition-specific subject after all
+evidence and before admission. The verifier reads and hashes seven fixed evidence
+artifacts and rejects P5-domain replay,
+noncanonical/symlink/hard-linked/changing files, ring/capacity/window drift,
+stale evidence, authority escalation, and digest or signature mutation. It
+outputs only a deterministic declarative overlay and plan digest. It reads no
+credential, uses no network or subprocess, writes no file, and leaves every
+deploy, mutation, provider, traffic, production, rotation, rollback, and Go/VPS
+shutdown authority false.
+
+`bun run check:relay-container:ring-transition` covers 17 focused contract/CLI
+cases. The ordinary Controller deploy preflight still requires all four
+previous-ring variables to be zero and cannot be bypassed by this result. This
+closes the local signed-manifest gap only; authenticated remote status,
+propagation, lifecycle/fault, overlap/cutoff/replay, accounting, SLO/cost,
+post-transition P5-B, real replacement-credential revocation, and Go/VPS cutover
+evidence remain open. Go/VPS remains authoritative and production remains
+**NO-GO**.

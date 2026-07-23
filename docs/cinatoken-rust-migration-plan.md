@@ -17217,6 +17217,10 @@ for `N+1`, advance generation and shard count together, deploy the edge last,
 then run remote distribution, capacity, lifecycle, financial, and rollback
 evidence. Secret rotation is always a separate frozen candidate.
 
+This paragraph records the 22.263 checkpoint and is superseded by the adjacent
+dual-generation runtime in section 22.264. Its drained rollout remains the
+fallback when the transition contract is absent or invalid.
+
 The local cross-language planning blocker is closed. Remote routing-secret
 provisioning/rotation, real-tenant distribution, old-generation drain,
 Controller/Container lifecycle, P5 evidence, and Go/VPS cutover remain open.
@@ -17257,3 +17261,68 @@ pass locally. Remote propagation, Container lifecycle/fault, real-tenant
 distribution, provider/billing conservation, load/SLO/cost/alert, signed P5,
 credential revocation, and Go/VPS rollback evidence remain open. No Cloudflare
 mutation occurred and production remains **NO-GO**.
+
+## 22.265 Offline Signed Adjacent Ring Transition Manifest (2026-07-23)
+
+The conceptual signed record in section 22.264 is now a machine-verifiable,
+credential-free contract. The envelope, subject, trust policy, and five detached
+approvals use canonical JSON, SHA-256, external public-key trust, distinct
+Ed25519 key material, and the transition-specific approval domain
+`cinatoken-relay-container-ring-transition-approval-v1`. P5 signatures therefore
+cannot be replayed into a ring change.
+
+The subject reuses the strict P5 candidate validator and binds a canonical
+candidate-foundation artifact with candidate-freeze, source-audit, build-
+provenance, and foundation-capture digests while claiming no remote promotion
+or transition evidence. It additionally freezes both rings,
+the 30-900 second whole-second window, at least 300 seconds of preflight lead,
+Container capacity, edge and Controller key IDs, the immutable routing contract,
+the synthetic no-customer/no-paid-provider cohort, capacity/observability/
+rollback/revocation evidence artifacts, and a short-lived Go/VPS hot-fallback readiness
+artifact. The Go/VPS artifact must retain traffic and scheduler authority while
+explicitly denying ingress drain and process shutdown; it is not confused with
+the later production-cutover packet.
+
+A fresh canonical `G/N` readback produced by a separately authenticated
+collector independently binds old edge and Controller version/deployment sets,
+the deployed Rust commit and resource identities, Container
+image/build/provenance/SBOM, provider-egress version, schema, protocols, and
+routing/authority key IDs plus key fingerprints. Frozen fields must equal the
+`G+1/M` candidate, so expansion cannot hide a code, image, resource, schema,
+protocol, or same-ID secret rotation.
+
+`tools/verify_relay_container_ring_transition.mjs` checks candidate/commit/
+digest/expiry alignment and all transition invariants. It opens and hashes seven
+fixed canonical evidence artifacts, validates
+their schemas, facts, times, status, bytes, paths, and candidate binding. It
+accepts one adjacent expand-only `G/N -> G+1/M`, requires `max_instances >= M`,
+rejects noncanonical/symlink/hard-linked/changing inputs,
+and verifies five ordered signatures that postdate evidence and predate admission.
+The output is a deterministic declarative Controller-first/edge-second/cutoff/
+drain/zero-cleanup plan and plan digest, never a command.
+
+The only success decision is
+`eligible-for-isolated-staging-adjacent-ring-transition-review`. Deploy,
+Controller deploy, edge deploy, remote mutation, provider calls, customer
+traffic, production, secret rotation, generation rollback, and Go/VPS shutdown
+remain explicit false authorities. There is no callback or prevalidated-result
+injection path; the verifier itself must read the signed manifest, external
+policy, and all seven artifacts before returning the positive decision. It reads no environment credential,
+performs no network request, starts no subprocess, and writes no file. Ordinary
+deploy preflight remains unchanged and still requires the four transition values
+to be zero, so a review packet cannot bypass tracked configuration policy.
+
+Focused tests cover the plan plus candidate/ring/capacity/window/routing/safety
+drift, candidate-foundation and Go/VPS fallback binding, missing/reordered/
+shared/expired/tampered approvals, all seven artifact read/hash/semantic checks,
+P5-domain replay, late signatures, canonical/external-policy/hardlink checks,
+unknown fields, CLI argument rejection, poisoned credential environment,
+deterministic output, and zero authority. They establish only the offline
+integrity boundary.
+
+The next execution boundary remains independently authorized isolated staging:
+authenticated Controller readback, real propagation and Container lifecycle,
+old/new overlap and cutoff replay, provider/billing conservation, load/SLO/cost,
+fault and rollback campaigns, post-transition P5-B evidence, and a separate
+Go/VPS cutover decision. No credential or Cloudflare state was read or changed;
+Go/VPS remains authoritative and production remains **NO-GO**.

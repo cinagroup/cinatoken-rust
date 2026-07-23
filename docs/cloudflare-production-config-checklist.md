@@ -1196,7 +1196,7 @@ production configuration:
 | `CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED` | `false` | Reviewed remote D1/DO/R2 convergence evidence, not inferred from compiled code |
 | `CONTAINER_CHAT_CANARY_ENABLED` | `false` | Narrow non-streaming internal-token route only after all earlier authorities pass |
 | `CONTAINER_OPERATION_STAGING_VERIFIED` | `false` | Final remote Container operation proof marker; local tests cannot promote it |
-| `CONTAINER_CONTROLLER_PROBE_ENABLED` | `false` | Enables only the signed status probe; it is not execution or cutover authority |
+| `CONTAINER_CONTROLLER_PROBE_ENABLED` | `false` | Enables only the authenticated status probe; it is not execution or cutover authority |
 | `CONTAINER_SHARD_READINESS_PROBE_ENABLED` | `false` | Enables admin-only ledger inspection; does not authorize a Container wake by itself |
 | `CONTAINER_SHARD_READINESS_WAKE_ENABLED` | `false` | Separately authorizes an explicitly confirmed targeted cold/warm probe |
 | `CONTAINER_SHARD_READINESS_STAGING_VERIFIED` | `false` | Remote evidence only; production wake rejects requests until this reviewed marker is true |
@@ -1240,7 +1240,7 @@ to the edge Rust Worker; Container ownership belongs to the isolated Controller
 configuration.
 
 Promotion order for readiness is strict: deploy Controller first with both
-gates false; deploy edge binding and all three edge gates false; verify signed
+gates false; deploy edge binding and all three edge gates false; verify authenticated
 status; enable only ledger inspection in isolated staging; archive the
 non-waking result; enable Controller and edge wake gates for one named canary;
 run cold, warm, malformed, timeout, concurrent, replay, drain, sleep, restart,
@@ -1284,6 +1284,61 @@ Do not store caller keys, raw request bodies, provider IDs, credentials, or
 frozen contracts in capability archives. Record only candidate/config hashes,
 aggregate counts, redacted digests, status transitions, provider request
 counts, and invoice reconciliation. Production remains **NO-GO**.
+
+## Adjacent Ring Transition Offline Gate
+
+The four previous-ring values remain `0` in every tracked Controller config and
+in ordinary deploy preflight. A transition uses the separate canonical contracts
+`cinatoken-relay-container-ring-transition-manifest-v1` and
+`cinatoken-relay-container-ring-transition-trust-policy-v1`; it must never be
+implemented by editing and committing nonzero defaults.
+
+Run `bun run plan:relay-container:ring-transition` to inspect the offline
+contract. A prepared packet is checked by
+`tools/verify_relay_container_ring_transition.mjs` with the transition manifest,
+its external trust policy, and the seven fixed evidence artifacts referenced by
+the manifest. Do not pass a Cloudflare token or any other credential. The tool
+does not read environment credentials, access the network, start a subprocess,
+write a file, call ordinary deploy preflight, or emit an executable command.
+
+The gate must reject unless:
+
+- the signed strict candidate and candidate-foundation artifact exactly match
+  the current ring and frozen Rust, source, Worker, image, storage, schema, and
+  protocol identities, while claiming no remote promotion evidence;
+- a fresh canonical previous-ring artifact produced by the separately
+  authenticated collector freezes old edge and Controller deployment sets and
+  matches the candidate's commit, resources, image/build/provenance/SBOM,
+  provider-egress, schema, protocols, key IDs, and irreversible key
+  fingerprints;
+- the transition is adjacent and expand-only, bounded to 30-900 seconds, has at
+  least 300 seconds of preflight lead, and has `max_instances >= M`;
+- the verifier opens and hashes the seven fixed canonical candidate-foundation,
+  previous-ring, capacity, observability, rollback, exposed-credential revocation,
+  and Go/VPS fallback
+  artifacts, then checks bytes, digest, candidate, capture/expiry, pass status,
+  and kind-specific facts;
+- Go/VPS still owns traffic rollback and scheduling, while ingress drain and
+  process shutdown are false;
+- security, finance, operations, product, and rollback provide distinct,
+  current Ed25519 signatures in the transition-specific domain;
+- customer/provider traffic, deploy, mutation, production, secret rotation,
+  generation rollback, and Go/VPS shutdown authorities are all explicit false.
+
+Archive the canonical manifest, seven evidence artifacts, detached approvals,
+public trust-policy snapshot and digest, approval key IDs/fingerprints, the
+candidate-foundation artifact digest, verifier commit, plan digest,
+decision/expiry, frozen version IDs, ring/window values, and false authority
+fields. Signatures and public keys are audit evidence, not credentials. Never
+archive private keys, token values, secret values, raw resource payloads, or
+executable commands.
+
+A positive result means only
+`eligible-for-isolated-staging-adjacent-ring-transition-review`. It does not
+satisfy any production G gate, arm a deploy, authorize traffic, or prove the
+post-transition status/lifecycle/cutoff/accounting/SLO/rollback evidence. Those
+outputs require a new independently reviewed P5-B/production packet. Production
+remains **NO-GO**.
 
 ## Container Shared Storage Binding Checklist
 

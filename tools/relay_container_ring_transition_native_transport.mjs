@@ -2,6 +2,9 @@ import {
   CLOUDFLARE_API_ORIGIN,
   RING_TRANSITION_AUTHORITY_HEADER,
   RING_TRANSITION_CLAIM_AUTHORITY_PATH,
+  ringTransitionDeploymentMutationBinding,
+  validateRingTransitionExecutionClaim,
+  validateRingTransitionExecutionStep,
   validatePublishedRingTransitionTrust,
 } from "./relay_container_ring_transition_execution_contract.mjs";
 import {
@@ -79,6 +82,7 @@ class RingTransitionNativeTransport {
   #fetch;
   #clock;
   #requestIdFactory;
+  #freshIntentPermits = new WeakMap();
   #readCredentialVerified = false;
   #claimCredentialVerified = false;
   #deployCredentialVerified = false;
@@ -218,13 +222,22 @@ class RingTransitionNativeTransport {
       };
     }
     if (classified.transportOutcome === "success") {
-      validateAuthoritySuccessResponse(
+      const response = validateAuthoritySuccessResponse(
         classified.payload,
         responseKind,
         requestId,
         this.#credentialIds.claim,
         this.#trust,
       );
+      const binding =
+        responseKind === "step_append"
+          ? freshMutationIntentBinding(request, response)
+          : null;
+      if (binding !== null) {
+        const freshIntentPermit = Object.freeze(Object.create(null));
+        this.#freshIntentPermits.set(freshIntentPermit, binding);
+        classified = { ...classified, freshIntentPermit };
+      }
     }
     return classified;
   }
@@ -299,11 +312,64 @@ class RingTransitionNativeTransport {
     };
   }
 
-  async deployOnce(request) {
+  async deployOnce(input) {
     this.#requireDeployCredential();
-    assertCloudflareMutationRequest(request, this.#trust, this.#accountId);
+    const deployment = requireObject(input, "invalid_deployment_authorization");
+    assertExactObjectKeys(
+      deployment,
+      ["claim", "freshIntentPermit", "request"],
+      "invalid_deployment_authorization",
+    );
+    const binding = this.#freshIntentPermits.get(
+      deployment.freshIntentPermit,
+    );
+    if (binding === undefined) {
+      throw new RingTransitionTransportError("fresh_intent_permit_required");
+    }
+    this.#freshIntentPermits.delete(deployment.freshIntentPermit);
+    const claim = validateRingTransitionExecutionClaim(deployment.claim);
+    if (
+      binding.authorizationIdSha256 !== claim.authorizationIdSha256 ||
+      binding.claimDigestSha256 !== claim.claimDigestSha256 ||
+      claim.readCredentialIdSha256 !== this.#credentialIds.read ||
+      claim.claimCredentialIdSha256 !== this.#credentialIds.claim ||
+      claim.deployCredentialIdSha256 !== this.#credentialIds.deploy
+    ) {
+      throw new RingTransitionTransportError("mutation_claim_not_authorized");
+    }
+    const now = this.#clock();
+    const nowSeconds =
+      now instanceof Date && Number.isFinite(now.getTime())
+        ? Math.floor(now.getTime() / 1000)
+        : null;
+    if (
+      nowSeconds === null ||
+      nowSeconds < claim.generatedAt ||
+      nowSeconds >= claim.expiresAt
+    ) {
+      throw new RingTransitionTransportError("mutation_claim_expired");
+    }
+    const expected = ringTransitionDeploymentMutationBinding({
+      anchors: this.#trust,
+      claim,
+      phase: binding.phase,
+      stateVersion: binding.stateVersion,
+    });
+    if (
+      binding.stepCode !== expected.stepCode ||
+      binding.mutationRequestSha256 !==
+        deployment.request.requestDigestSha256
+    ) {
+      throw new RingTransitionTransportError("mutation_request_not_authorized");
+    }
+    assertCloudflareMutationRequest(
+      deployment.request,
+      this.#trust,
+      this.#accountId,
+      expected,
+    );
     const result = await executeBoundedJsonRequest({
-      request,
+      request: deployment.request,
       authorization: `Bearer ${this.#deployToken}`,
       fetchImpl: this.#fetch,
       postOutcomeAware: true,
@@ -742,7 +808,12 @@ function assertCloudflareReadRequest(request, trust, accountId) {
   throw new RingTransitionTransportError("cloudflare_read_path_forbidden");
 }
 
-function assertCloudflareMutationRequest(request, trust, accountId) {
+function assertCloudflareMutationRequest(
+  request,
+  trust,
+  accountId,
+  expected,
+) {
   assertRequestDescriptor(request);
   if (
     request.method !== "POST" ||
@@ -765,19 +836,64 @@ function assertCloudflareMutationRequest(request, trust, accountId) {
   ) {
     throw new RingTransitionTransportError("cloudflare_mutation_digest_mismatch");
   }
+  let body;
+  try {
+    body = JSON.parse(request.body);
+  } catch {
+    throw new RingTransitionTransportError("cloudflare_mutation_body_invalid");
+  }
+  if (canonicalJson(body) !== request.body) {
+    throw new RingTransitionTransportError("cloudflare_mutation_body_not_canonical");
+  }
+  assertExactObjectKeys(
+    requireObject(body, "cloudflare_mutation_body_invalid"),
+    ["annotations", "strategy", "versions"],
+    "cloudflare_mutation_body_invalid",
+  );
+  if (
+    body.strategy !== "percentage" ||
+    !Array.isArray(body.versions) ||
+    body.versions.length !== 1
+  ) {
+    throw new RingTransitionTransportError("cloudflare_mutation_body_invalid");
+  }
+  const version = requireObject(
+    body.versions[0],
+    "cloudflare_mutation_body_invalid",
+  );
+  assertExactObjectKeys(
+    version,
+    ["percentage", "version_id"],
+    "cloudflare_mutation_body_invalid",
+  );
+  const annotations = requireObject(
+    body.annotations,
+    "cloudflare_mutation_body_invalid",
+  );
+  assertExactObjectKeys(
+    annotations,
+    ["workers/message"],
+    "cloudflare_mutation_body_invalid",
+  );
+  if (
+    version.percentage !== 100 ||
+    version.version_id !== expected.targetVersionId ||
+    annotations["workers/message"] !== expected.mutationAnnotation
+  ) {
+    throw new RingTransitionTransportError("cloudflare_mutation_binding_mismatch");
+  }
   const url = new URL(request.url);
   if (url.origin !== CLOUDFLARE_API_ORIGIN || url.search !== "") {
     throw new RingTransitionTransportError("cloudflare_mutation_path_forbidden");
   }
-  for (const serviceName of [trust.controllerServiceName, trust.edgeServiceName]) {
-    if (
-      url.pathname ===
-      `/client/v4/accounts/${accountId}/workers/scripts/${encodeURIComponent(serviceName)}/deployments`
-    ) {
-      return;
-    }
+  requirePinnedService(expected.serviceName, trust);
+  if (
+    url.pathname !==
+    `/client/v4/accounts/${accountId}/workers/scripts/` +
+      `${encodeURIComponent(expected.serviceName)}/deployments`
+  ) {
+    throw new RingTransitionTransportError("cloudflare_mutation_path_forbidden");
   }
-  throw new RingTransitionTransportError("cloudflare_mutation_path_forbidden");
 }
 
 function normalizeDeploymentReadback(payload, serviceName) {
@@ -835,6 +951,80 @@ function authorityResponseKind(request) {
   return "claim_create";
 }
 
+function freshMutationIntentBinding(request, response) {
+  if (response.result !== "step_appended") return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(request.body);
+  } catch {
+    throw new RingTransitionTransportError("authority_step_body_invalid");
+  }
+  if (canonicalJson(parsed) !== request.body) {
+    throw new RingTransitionTransportError("authority_step_body_not_canonical");
+  }
+  const step = validateRingTransitionExecutionStep(parsed);
+  const transitions = {
+    controller_mutation_intent: {
+      phase: "controller",
+      stateVersion: 2,
+      fromStatus: "t1_verified",
+      toStatus: "controller_inflight",
+    },
+    edge_mutation_intent: {
+      phase: "edge",
+      stateVersion: 5,
+      fromStatus: "edge_prechecked",
+      toStatus: "edge_inflight",
+    },
+  };
+  const expected = transitions[step.stepCode];
+  if (expected === undefined) return null;
+  const authorizationIdSha256 = new URL(request.url).pathname
+    .split("/")
+    .at(-2);
+  if (
+    step.stateVersion !== expected.stateVersion ||
+    step.fromStatus !== expected.fromStatus ||
+    step.toStatus !== expected.toStatus ||
+    step.mutationRequestSha256 === null ||
+    step.cloudflareRequestIdSha256 !== null ||
+    step.deploymentSetSha256 !== null ||
+    step.failureClass !== "" ||
+    step.transportOutcome !== "not_applicable" ||
+    response.authorizationIdSha256 !== authorizationIdSha256 ||
+    response.claimDigestSha256 !== step.claimDigestSha256 ||
+    response.stateVersion !== step.stateVersion ||
+    response.stepDigestSha256 !== step.stepDigestSha256 ||
+    response.status !== step.toStatus
+  ) {
+    throw new RingTransitionTransportError(
+      "authority_mutation_intent_mismatch",
+    );
+  }
+  assertExactObjectKeys(
+    response,
+    [
+      "authorizationIdSha256",
+      "authorityVersionId",
+      "claimDigestSha256",
+      "requestId",
+      "result",
+      "stateVersion",
+      "status",
+      "stepDigestSha256",
+    ],
+    "authority_mutation_intent_response_invalid",
+  );
+  return Object.freeze({
+    authorizationIdSha256,
+    claimDigestSha256: step.claimDigestSha256,
+    stateVersion: step.stateVersion,
+    stepCode: step.stepCode,
+    phase: expected.phase,
+    mutationRequestSha256: step.mutationRequestSha256,
+  });
+}
+
 function validateAuthoritySuccessResponse(
   payload,
   responseKind,
@@ -866,11 +1056,20 @@ function validateAuthoritySuccessResponse(
   ) {
     throw new RingTransitionTransportError("authority_preflight_identity_mismatch");
   }
+  return response;
 }
 
 function assertExactHeaderNames(headers, expected, code) {
   const names = Object.keys(headers).map((name) => name.toLowerCase()).sort();
   const normalizedExpected = expected.map((name) => name.toLowerCase()).sort();
+  if (canonicalJson(names) !== canonicalJson(normalizedExpected)) {
+    throw new RingTransitionTransportError(code);
+  }
+}
+
+function assertExactObjectKeys(value, expected, code) {
+  const names = Object.keys(value).sort();
+  const normalizedExpected = [...expected].sort();
   if (canonicalJson(names) !== canonicalJson(normalizedExpected)) {
     throw new RingTransitionTransportError(code);
   }

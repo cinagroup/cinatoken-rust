@@ -3,9 +3,12 @@
 ## Decision
 
 The staging ring transition is executed only by a compiled Rust launcher whose
-release identity is embedded at build time. The checked-in launcher is
-permanently disabled and cannot be enabled by argv, environment, a writable
-checkout, or a caller-selected trust file.
+release-policy digest, release-key fingerprint, fixed sidecar names, and
+Authority origin are embedded at build time. The signed release manifest is a
+detached sidecar produced after the executable is built; it binds the finished
+executable digest without creating an impossible binary-self-hash cycle. The
+checked-in launcher is permanently disabled and cannot be enabled by argv,
+environment, a writable checkout, or a caller-selected trust file.
 
 The JavaScript execution contract and native transport remain the portable,
 fault-injectable reference implementation. They do not themselves constitute a
@@ -47,24 +50,54 @@ cinatoken-ring-transition-runner --execute
 ```
 
 It accepts no runtime config, trust key, runner path, account, service, target,
-credential, origin, or force argument. Its checked-in embedded release has
-`enabled=false` and null release pins. `--execute` therefore fails before
+credential, origin, or force argument. Its checked-in `releaseTrust` has
+`enabled=false`, fixed packet/policy file names, and null policy/key/origin
+pins. `--execute` therefore fails before
 reading credentials or using the network even when poison environment values
 attempt to enable or replace trust.
 
-The embedded release contract reserves exact fields for:
+The compiled trust root reserves only non-circular anchors:
 
-- source commit and Git tree;
-- source archive, `Cargo.lock`, `bun.lock`, and `package.json` digests;
-- runner build, final bundle, and two-build reproducibility digests;
-- trust config, release evidence, release policy, and release-key SPKI
-  fingerprints;
-- exact Authority origin and Worker version; and
-- exact permit SPKI fingerprint.
+- `cinatoken-ring-transition-runner.release.json`;
+- `cinatoken-ring-transition-runner.release-policy.json`;
+- exact release-policy SHA-256;
+- independent release-key SPKI SHA-256; and
+- exact staging Authority origin.
 
-These fields are structural reservations, not published evidence. A future
-signed release builder must populate and verify all of them before producing an
-enabled launcher.
+Commit/tree/archive/lock/module/build/evidence/Authority-version/permit-SPKI
+identities live in the DSSE-signed manifest. A production launcher will verify
+the fixed policy and packet against the compiled anchors, then hash its current
+executable and compare it to the signed artifact identity.
+
+### Detached release packet
+
+`relay_container_ring_transition_release_contract.mjs` and
+`verify_relay_container_ring_transition_release.mjs` now implement the offline
+release packet contract:
+
+- canonical JSON with exact fields and one standard DSSE PAE;
+- exactly one Ed25519 signature and one external release policy;
+- issue/expiry bounds and a sorted forbidden-key fingerprint inventory;
+- exact Authority origin/version, permit SPKI, trust config and evidence
+  digests;
+- full Git commit/tree/archive and lock/package digests;
+- sorted portable module paths, byte counts and complete SHA-256 values;
+- identical first/second/normalized build and artifact digests; and
+- fixed sibling artifact read with byte bounds, TOCTOU checks, and
+  symlink/hardlink rejection.
+
+CLI verification deliberately has no compiled pins and reports
+`releaseInstallAuthorized=false`. It proves packet consistency only.
+
+`collect_ring_transition_runner_release_source.mjs` reads only a completely
+clean Git repository. It hashes `git archive HEAD` and reads every required
+module from `HEAD:<path>`, never from mutable checkout bytes. It rejects tracked
+changes, untracked files, submodules, forbidden modes, missing transitive
+verifier modules, path escape, truncated Git identity, and oversized output.
+The collector has no injectable Git runner and starts Git with an explicit
+minimal environment that drops ambient `GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_CONFIG_*`, credential-helper, and interactive-prompt controls. It emits
+an unsigned candidate to stdout and writes no file.
 
 ### Native transport
 
@@ -88,6 +121,29 @@ claim POST.
 The transport has no console logging, credential serialization, retry loop,
 subprocess, Wrangler, SDK mutation helper, arbitrary URL, or caller-provided
 Authorization header.
+
+Published JavaScript trust anchors are canonicalized into a new plain-data
+snapshot and recursively frozen before the transport stores them. Later
+changes to the caller object, including nested approval-key arrays or getters,
+cannot alter the allowlist. Transition-approval, authorization-approval, and
+claim-permit SPKI fingerprints must be pairwise disjoint.
+
+`deployOnce` no longer accepts a request descriptor by itself. A deployment
+requires an opaque `freshIntentPermit` created by this transport instance only
+when the Authority returns an exact, identity-bound `step_appended` response
+for `controller_mutation_intent` or `edge_mutation_intent`. The permit binds
+the authorization ID, claim digest, state version, step code, and persisted
+request digest. It is consumed before validation or network I/O, cannot be
+cloned or reconstructed, and is never issued for `step_replayed`, ambiguous
+responses, or restored inflight state.
+
+The canonical Cloudflare body carries one target at 100 percent and a bounded
+annotation containing the complete authorization ID, exact state version, and
+a semantic intent digest over claim, service, and target. Before `fetch`, the
+transport also matches the claim's account, ledger, policies, services,
+runner/trust identities, credential identities, and validity window; then it
+matches the URL, body, annotation, and body digest to the freshly appended
+intent. Any mismatch spends the permit and performs zero Cloudflare mutation.
 
 ### Authority preflight
 
@@ -114,7 +170,7 @@ The transport compares all three against compiled trust before claim traffic.
 | --- | --- | --- |
 | Read | account token verify; exact pinned Controller/Edge deployment and version GET | POST, arbitrary service/account/origin, redirects |
 | Claim | exact Authority preflight, claim create/read, step, and expiry routes with per-request HMAC | arbitrary path/query, general D1/SQL, caller Authorization header |
-| Deploy | account token verify; one exact pinned Controller or Edge deployment POST | upload, force, delete, secret/binding/resource mutation, second POST |
+| Deploy | account token verify; one exact pinned Controller or Edge deployment POST carrying a same-process fresh Authority intent permit | replayed/restored intent, upload, force, delete, secret/binding/resource mutation, second POST |
 
 Every request uses HTTPS, `redirect=error`, a 10-second timeout, streamed bounded
 response parsing, strict JSON success handling, and no retry. Authority request
@@ -137,16 +193,18 @@ never part of a receipt.
 
 ## Required signed release
 
-An enabled runner remains blocked until a separate release pipeline produces a
-signed, create-new artifact packet outside the writable checkout. The packet
-must contain:
+The packet schema, verifier, and source collector now exist. An enabled runner
+remains blocked until a separate release pipeline actually produces a signed,
+create-new artifact packet outside the writable checkout. The packet must
+contain:
 
 1. strict canonical release manifest with no unknown fields;
 2. exact Git commit/tree and clean source-archive digest;
 3. lockfile, package, toolchain, target, build-argument, and fixed environment
    allowlist digests;
 4. sorted module/file inventory with byte counts and SHA-256 digests;
-5. two isolated builds with identical normalized artifact digest;
+5. two independently extracted and isolated builds with identical artifact
+   digest;
 6. Node, Rust, Workerd, fault, security, and no-secret test evidence bound to
    that artifact;
 7. exact Authority origin/version and permit SPKI fingerprint;
@@ -154,15 +212,20 @@ must contain:
 9. DSSE signature with issue/expiry bounds and keys distinct from transition,
    authorization, HMAC, and Cloudflare credentials.
 
+The signed manifest includes the executable digest but not its own envelope or
+distribution-package digest. A separate publication receipt hashes the policy,
+packet and executable after signing; this avoids a second self-reference.
 The final artifact must be installed by digest outside the source checkout.
-The production launcher verifies the embedded release identity before reading
-the four runtime handles.
+The production launcher verifies compiled pins, fixed sidecars, DSSE,
+manifest, current executable and publication receipt before reading the four
+runtime handles.
 
 ## Remaining execution state machine
 
 The next code boundary is the Rust-owned resumable orchestrator:
 
-1. verify the signed transition, authorization, permit, and embedded release;
+1. verify the fixed policy/packet, DSSE, current executable, signed transition,
+   authorization and permit;
 2. verify all three credentials and claim once;
 3. read the exact claim on every start and derive the only legal next action;
 4. persist Controller intent before one deployment POST;

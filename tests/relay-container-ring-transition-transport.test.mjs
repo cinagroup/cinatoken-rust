@@ -3,8 +3,10 @@ import { describe, expect, test } from "bun:test";
 import {
   DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
   buildClaimAuthorityReadRequest,
+  buildClaimAuthorityStepRequest,
   buildCloudflareDeploymentMutationRequest,
   ringTransitionTrustConfigDigestSha256,
+  validatePublishedRingTransitionTrust,
 } from "../tools/relay_container_ring_transition_execution_contract.mjs";
 import {
   RING_TRANSITION_AUTHORITY_HEADER,
@@ -14,7 +16,10 @@ import {
   createRingTransitionNativeTransport,
   describeRingTransitionNativeTransport,
 } from "../tools/relay_container_ring_transition_native_transport.mjs";
-import { sha256Hex } from "../tools/relay_container_p5_evidence_contract.mjs";
+import {
+  canonicalJson,
+  sha256Hex,
+} from "../tools/relay_container_p5_evidence_contract.mjs";
 
 const ACCOUNT_ID = "a".repeat(32);
 const READ_TOKEN = "read-token-value-0000000000000001";
@@ -112,6 +117,55 @@ describe("Relay Container native ring-transition transport", () => {
     ).toThrow(/credential_ids_must_be_distinct/);
   });
 
+  test("snapshots and freezes validated trust before caller mutation", async () => {
+    const anchors = publishedAnchors();
+    const snapshot = validatePublishedRingTransitionTrust(anchors);
+    expect(snapshot).not.toBe(anchors);
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(
+      Object.isFrozen(snapshot.transitionApprovalKeyFingerprintsSha256),
+    ).toBe(true);
+
+    const calls = [];
+    const expectedAnchors = publishedAnchors();
+    const transport = createRingTransitionNativeTransport({
+      anchors,
+      credentialIds: credentialIds(),
+      environment: credentialEnvironment(),
+      fetchImpl: successfulFetch(calls, expectedAnchors),
+    });
+    anchors.controllerServiceName = "unreviewed-service-staging";
+    anchors.transitionApprovalKeyFingerprintsSha256[0] = "f".repeat(64);
+
+    await transport.verifyCredentialIdentities();
+    await expect(
+      transport.readDeployment(expectedAnchors.controllerServiceName),
+    ).resolves.toMatchObject({
+      serviceName: expectedAnchors.controllerServiceName,
+    });
+    await expect(
+      transport.readDeployment(anchors.controllerServiceName),
+    ).rejects.toThrow(/service_outside_pinned_ring/);
+    expect(calls.some(({ url }) => url.includes("unreviewed-service"))).toBe(
+      false,
+    );
+
+    const getterAnchors = publishedAnchors();
+    const stableOrigin = getterAnchors.claimAuthorityOrigin;
+    let reads = 0;
+    Object.defineProperty(getterAnchors, "claimAuthorityOrigin", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return reads === 1 ? stableOrigin : "https://drift.invalid";
+      },
+    });
+    const getterSnapshot =
+      validatePublishedRingTransitionTrust(getterAnchors);
+    expect(getterSnapshot.claimAuthorityOrigin).toBe(stableOrigin);
+    expect(reads).toBe(1);
+  });
+
   test("verifies read/deploy token identities before pinned read and mutation", async () => {
     const calls = [];
     const anchors = publishedAnchors();
@@ -151,14 +205,12 @@ describe("Relay Container native ring-transition transport", () => {
     );
     expect(version.versionDetailSha256).toMatch(/^[0-9a-f]{64}$/);
 
-    const mutation = buildCloudflareDeploymentMutationRequest({
+    const authorized = await authorizeMutation(
+      transport,
       anchors,
-      accountId: ACCOUNT_ID,
-      serviceName: anchors.controllerServiceName,
-      targetVersionId: "controller-version-002",
-      authorizationIdSha256: "1".repeat(64),
-    });
-    const result = await transport.deployOnce(mutation);
+      "controller",
+    );
+    const result = await transport.deployOnce(authorized);
     expect(result).toMatchObject({
       transportOutcome: "success",
       httpStatus: 200,
@@ -176,7 +228,8 @@ describe("Relay Container native ring-transition transport", () => {
       `Bearer ${DEPLOY_TOKEN}`,
     );
     const deploymentPost = calls.find(
-      ({ options }) => options.method === "POST",
+      ({ url, options }) =>
+        options.method === "POST" && url.startsWith("https://api.cloudflare.com"),
     );
     expect(deploymentPost.options.headers.authorization).toBe(
       `Bearer ${DEPLOY_TOKEN}`,
@@ -219,15 +272,7 @@ describe("Relay Container native ring-transition transport", () => {
       transport.readDeployment(anchors.controllerServiceName),
     ).rejects.toThrow(/read_credential_not_verified/);
     await expect(
-      transport.deployOnce(
-        buildCloudflareDeploymentMutationRequest({
-          anchors,
-          accountId: ACCOUNT_ID,
-          serviceName: anchors.controllerServiceName,
-          targetVersionId: "controller-version-002",
-          authorizationIdSha256: "1".repeat(64),
-        }),
-      ),
+      transport.deployOnce({}),
     ).rejects.toThrow(/deploy_credential_not_verified/);
   });
 
@@ -370,18 +415,15 @@ describe("Relay Container native ring-transition transport", () => {
         if (url.endsWith("/preflight")) {
           return authorityPreflightResponse(options, anchors);
         }
+        if (url.endsWith("/steps")) {
+          return authorityStepAppendResponse(url, options, anchors);
+        }
         throw new Error("controlled response loss");
       },
     });
     await transport.verifyCredentialIdentities();
-    const mutation = buildCloudflareDeploymentMutationRequest({
-      anchors,
-      accountId: ACCOUNT_ID,
-      serviceName: anchors.edgeServiceName,
-      targetVersionId: "edge-version-002",
-      authorizationIdSha256: "1".repeat(64),
-    });
-    const result = await transport.deployOnce(mutation);
+    const authorized = await authorizeMutation(transport, anchors, "edge");
+    const result = await transport.deployOnce(authorized);
     expect(result).toEqual({
       transportOutcome: "ambiguous",
       httpStatus: null,
@@ -390,7 +432,12 @@ describe("Relay Container native ring-transition transport", () => {
       responseIdSha256: null,
       retry: false,
     });
-    expect(calls.filter(({ options }) => options.method === "POST")).toHaveLength(1);
+    expect(
+      calls.filter(
+        ({ url, options }) =>
+          options.method === "POST" && url.startsWith("https://api.cloudflare.com"),
+      ),
+    ).toHaveLength(1);
   });
 
   test("rejects HTTP failures and refuses unpinned or oversized requests", async () => {
@@ -411,6 +458,9 @@ describe("Relay Container native ring-transition transport", () => {
         if (url.endsWith("/preflight")) {
           return authorityPreflightResponse(options, anchors);
         }
+        if (url.endsWith("/steps")) {
+          return authorityStepAppendResponse(url, options, anchors);
+        }
         return jsonResponse(
           { success: false, errors: [{ code: 10000 }] },
           403,
@@ -418,39 +468,49 @@ describe("Relay Container native ring-transition transport", () => {
       },
     });
     await transport.verifyCredentialIdentities();
-    const mutation = buildCloudflareDeploymentMutationRequest({
+    let authorized = await authorizeMutation(
+      transport,
       anchors,
-      accountId: ACCOUNT_ID,
-      serviceName: anchors.controllerServiceName,
-      targetVersionId: "controller-version-002",
-      authorizationIdSha256: "1".repeat(64),
-    });
+      "controller",
+    );
     await expect(
       transport.deployOnce({
-        ...mutation,
-        url: mutation.url.replace(
-          anchors.controllerServiceName,
-          "unreviewed-service-staging",
-        ),
+        ...authorized,
+        request: {
+          ...authorized.request,
+          url: authorized.request.url.replace(
+            anchors.controllerServiceName,
+            "unreviewed-service-staging",
+          ),
+        },
       }),
     ).rejects.toThrow(/cloudflare_mutation_path_forbidden/);
-    expect(await transport.deployOnce(mutation)).toMatchObject({
+    authorized = await authorizeMutation(transport, anchors, "controller");
+    expect(await transport.deployOnce(authorized)).toMatchObject({
       transportOutcome: "rejected",
       httpStatus: 403,
       retry: false,
     });
+    authorized = await authorizeMutation(transport, anchors, "controller");
     await expect(
       transport.deployOnce({
-        ...mutation,
-        body: `${mutation.body}${" ".repeat(20 * 1024)}`,
+        ...authorized,
+        request: {
+          ...authorized.request,
+          body: `${authorized.request.body}${" ".repeat(20 * 1024)}`,
+        },
       }),
     ).rejects.toThrow(/cloudflare_mutation_body_too_large/);
+    authorized = await authorizeMutation(transport, anchors, "controller");
     await expect(
       transport.deployOnce({
-        ...mutation,
-        requestDigestSha256: "f".repeat(64),
+        ...authorized,
+        request: {
+          ...authorized.request,
+          requestDigestSha256: "f".repeat(64),
+        },
       }),
-    ).rejects.toThrow(/cloudflare_mutation_digest_mismatch/);
+    ).rejects.toThrow(/mutation_request_not_authorized/);
 
     const oversizedTransport = createRingTransitionNativeTransport({
       anchors,
@@ -470,6 +530,113 @@ describe("Relay Container native ring-transition transport", () => {
     );
   });
 
+  test("binds a fresh Authority intent to one exact deployment request", async () => {
+    const anchors = publishedAnchors();
+    const calls = [];
+    const transport = createRingTransitionNativeTransport({
+      anchors,
+      credentialIds: credentialIds(),
+      environment: credentialEnvironment(),
+      fetchImpl: successfulFetch(calls, anchors),
+    });
+    await transport.verifyCredentialIdentities();
+
+    let authorized = await authorizeMutation(transport, anchors, "controller");
+    const changedBody = JSON.parse(authorized.request.body);
+    changedBody.versions[0].version_id = "controller-version-unapproved";
+    const changedBodyText = canonicalJson(changedBody);
+    await expect(
+      transport.deployOnce({
+        ...authorized,
+        request: {
+          ...authorized.request,
+          body: changedBodyText,
+          requestDigestSha256: sha256Hex(
+            Buffer.from(changedBodyText, "utf8"),
+          ),
+        },
+      }),
+    ).rejects.toThrow(/mutation_request_not_authorized/);
+    expect(cloudflareDeploymentPosts(calls)).toHaveLength(0);
+
+    authorized = await authorizeMutation(transport, anchors, "controller");
+    await expect(transport.deployOnce(authorized)).resolves.toMatchObject({
+      transportOutcome: "success",
+    });
+    await expect(transport.deployOnce(authorized)).rejects.toThrow(
+      /fresh_intent_permit_required/,
+    );
+    expect(cloudflareDeploymentPosts(calls)).toHaveLength(1);
+  });
+
+  test("a replayed Authority intent never creates a mutation capability", async () => {
+    const anchors = publishedAnchors();
+    const calls = [];
+    const baseFetch = successfulFetch(calls, anchors);
+    const transport = createRingTransitionNativeTransport({
+      anchors,
+      credentialIds: credentialIds(),
+      environment: credentialEnvironment(),
+      fetchImpl: async (url, options) => {
+        if (url.endsWith("/steps")) {
+          calls.push({ url, options });
+          return authorityStepAppendResponse(
+            url,
+            options,
+            anchors,
+            "step_replayed",
+          );
+        }
+        return baseFetch(url, options);
+      },
+    });
+    await transport.verifyCredentialIdentities();
+    const authorization = mutationAuthorization(anchors, "edge");
+    const result = await transport.sendAuthorityRequest(
+      authorization.authorityRequest,
+    );
+    expect(result).toMatchObject({
+      transportOutcome: "success",
+      payload: { result: "step_replayed" },
+    });
+    expect(result.freshIntentPermit).toBeUndefined();
+    await expect(
+      transport.deployOnce({
+        claim: authorization.claim,
+        freshIntentPermit: {},
+        request: authorization.request,
+      }),
+    ).rejects.toThrow(/fresh_intent_permit_required/);
+    expect(cloudflareDeploymentPosts(calls)).toHaveLength(0);
+  });
+
+  test("spends a fresh intent without sending when the claim expires", async () => {
+    const anchors = publishedAnchors();
+    const calls = [];
+    let clock = new Date();
+    const transport = createRingTransitionNativeTransport({
+      anchors,
+      credentialIds: credentialIds(),
+      environment: credentialEnvironment(),
+      fetchImpl: successfulFetch(calls, anchors),
+      clockImpl: () => clock,
+    });
+    await transport.verifyCredentialIdentities();
+    const authorized = await authorizeMutation(
+      transport,
+      anchors,
+      "controller",
+    );
+    clock = new Date(authorized.claim.expiresAt * 1000);
+    await expect(transport.deployOnce(authorized)).rejects.toThrow(
+      /mutation_claim_expired/,
+    );
+    await expect(transport.deployOnce(authorized)).rejects.toThrow(
+      /fresh_intent_permit_required/,
+    );
+    expect(cloudflareDeploymentPosts(calls)).toHaveLength(0);
+  });
+
   test("treats throttling, timeout-like statuses, and 5xx as ambiguous", async () => {
     for (const status of [408, 425, 429, 500, 503]) {
       const anchors = publishedAnchors();
@@ -487,18 +654,15 @@ describe("Relay Container native ring-transition transport", () => {
           if (url.endsWith("/preflight")) {
             return authorityPreflightResponse(options, anchors);
           }
+          if (url.endsWith("/steps")) {
+            return authorityStepAppendResponse(url, options, anchors);
+          }
           return jsonResponse({ success: false, errors: [{ code: 10000 }] }, status);
         },
       });
       await transport.verifyCredentialIdentities();
-      const mutation = buildCloudflareDeploymentMutationRequest({
-        anchors,
-        accountId: ACCOUNT_ID,
-        serviceName: anchors.edgeServiceName,
-        targetVersionId: "edge-version-002",
-        authorizationIdSha256: "1".repeat(64),
-      });
-      expect(await transport.deployOnce(mutation)).toMatchObject({
+      const authorized = await authorizeMutation(transport, anchors, "edge");
+      expect(await transport.deployOnce(authorized)).toMatchObject({
         transportOutcome: "ambiguous",
         httpStatus: status,
         retry: false,
@@ -552,6 +716,114 @@ function credentialEnvironment() {
   };
 }
 
+async function authorizeMutation(transport, anchors, phase) {
+  const authorization = mutationAuthorization(anchors, phase);
+  const result = await transport.sendAuthorityRequest(
+    authorization.authorityRequest,
+  );
+  expect(result.transportOutcome).toBe("success");
+  expect(result.freshIntentPermit).toBeDefined();
+  return {
+    claim: authorization.claim,
+    freshIntentPermit: result.freshIntentPermit,
+    request: authorization.request,
+  };
+}
+
+function mutationAuthorization(anchors, phase) {
+  const claim = mutationClaim(anchors);
+  const stateVersion = phase === "controller" ? 2 : 5;
+  const request = buildCloudflareDeploymentMutationRequest({
+    anchors,
+    accountId: ACCOUNT_ID,
+    claim,
+    phase,
+    stateVersion,
+  });
+  const unsignedStep = {
+    schemaVersion: 1,
+    contract: "cinatoken-relay-container-ring-transition-execution-step-v1",
+    ledgerIdentitySha256: claim.ledgerIdentitySha256,
+    claimDigestSha256: claim.claimDigestSha256,
+    stateVersion,
+    stepCode: `${phase}_mutation_intent`,
+    fromStatus: phase === "controller" ? "t1_verified" : "edge_prechecked",
+    toStatus: phase === "controller" ? "controller_inflight" : "edge_inflight",
+    mutationRequestSha256: request.requestDigestSha256,
+    cloudflareRequestIdSha256: null,
+    deploymentSetSha256: null,
+    evidenceSha256: "d".repeat(64),
+    failureClass: "",
+    transportOutcome: "not_applicable",
+  };
+  const step = {
+    ...unsignedStep,
+    stepDigestSha256: sha256Hex(
+      Buffer.from(canonicalJson(unsignedStep), "utf8"),
+    ),
+  };
+  return {
+    claim,
+    request,
+    authorityRequest: buildClaimAuthorityStepRequest({
+      anchors,
+      authorizationIdSha256: claim.authorizationIdSha256,
+      step,
+      authorityToken: "placeholder.".padEnd(64, "x"),
+    }),
+  };
+}
+
+function mutationClaim(anchors) {
+  const now = Math.floor(Date.now() / 1000);
+  const claim = {
+    schemaVersion: 1,
+    contract: "cinatoken-relay-container-ring-transition-execution-claim-v1",
+    claimAuthority: "d1-unique-claim-v1",
+    claimScope: "staging-worker-ring-transition",
+    environment: "staging",
+    authorizationIdSha256: "1".repeat(64),
+    executionNonceSha256: "2".repeat(64),
+    authorizationManifestSha256: "3".repeat(64),
+    authorizationSubjectSha256: "4".repeat(64),
+    authorizationPolicySha256: anchors.authorizationPolicySha256,
+    transitionManifestSha256: "5".repeat(64),
+    transitionSubjectSha256: "6".repeat(64),
+    transitionPolicySha256: anchors.transitionPolicySha256,
+    transitionPlanSha256: "7".repeat(64),
+    candidateSha256: "8".repeat(64),
+    executionPlanSha256: "9".repeat(64),
+    accountIdSha256: anchors.accountIdSha256,
+    ledgerIdentitySha256: anchors.ledgerIdentitySha256,
+    readCredentialIdSha256: credentialIds().read,
+    claimCredentialIdSha256: credentialIds().claim,
+    deployCredentialIdSha256: credentialIds().deploy,
+    controller: {
+      serviceName: anchors.controllerServiceName,
+      previousVersionId: "controller-version-001",
+      previousDeploymentSetSha256: "a".repeat(64),
+      targetVersionId: "controller-version-002",
+    },
+    edge: {
+      serviceName: anchors.edgeServiceName,
+      previousVersionId: "edge-version-001",
+      previousDeploymentSetSha256: "b".repeat(64),
+      targetVersionId: "edge-version-002",
+    },
+    runnerBuildSha256: anchors.runnerBuildSha256,
+    runnerTrustConfigSha256: anchors.runnerTrustConfigSha256,
+    claimOwnerSha256: "c".repeat(64),
+    generatedAt: now - 1,
+    expiresAt: now + 299,
+  };
+  return {
+    ...claim,
+    claimDigestSha256: sha256Hex(
+      Buffer.from(canonicalJson(claim), "utf8"),
+    ),
+  };
+}
+
 function successfulFetch(calls, anchors) {
   return async (url, options) => {
     calls.push({ url, options });
@@ -563,6 +835,9 @@ function successfulFetch(calls, anchors) {
     }
     if (url.endsWith("/preflight")) {
       return authorityPreflightResponse(options, anchors);
+    }
+    if (url.endsWith("/steps")) {
+      return authorityStepAppendResponse(url, options, anchors);
     }
     if (url.includes("/versions/")) {
       return jsonResponse({
@@ -598,6 +873,33 @@ function successfulFetch(calls, anchors) {
   };
 }
 
+function cloudflareDeploymentPosts(calls) {
+  return calls.filter(
+    ({ url, options }) =>
+      options.method === "POST" &&
+      url.startsWith("https://api.cloudflare.com/") &&
+      url.endsWith("/deployments"),
+  );
+}
+
+function authorityStepAppendResponse(url, options, anchors, result = "step_appended") {
+  const step = JSON.parse(options.body);
+  const authorizationIdSha256 = new URL(url).pathname.split("/").at(-2);
+  return authoritySuccessResponse(
+    options,
+    anchors,
+    {
+      result,
+      authorizationIdSha256,
+      claimDigestSha256: step.claimDigestSha256,
+      status: step.toStatus,
+      stateVersion: step.stateVersion,
+      stepDigestSha256: step.stepDigestSha256,
+    },
+    result === "step_appended" ? 201 : 200,
+  );
+}
+
 function authorityPreflightResponse(options, anchors) {
   return authoritySuccessResponse(options, anchors, {
     result: "authority_ready",
@@ -606,16 +908,19 @@ function authorityPreflightResponse(options, anchors) {
   });
 }
 
-function authoritySuccessResponse(options, anchors, payload) {
+function authoritySuccessResponse(options, anchors, payload, status = 200) {
   const token = options.headers[RING_TRANSITION_AUTHORITY_HEADER];
   const claims = JSON.parse(
     Buffer.from(token.split(".")[1], "base64url").toString("utf8"),
   );
-  return jsonResponse({
-    ...payload,
-    requestId: claims.request_id,
-    authorityVersionId: anchors.claimAuthorityVersionId,
-  });
+  return jsonResponse(
+    {
+      ...payload,
+      requestId: claims.request_id,
+      authorityVersionId: anchors.claimAuthorityVersionId,
+    },
+    status,
+  );
 }
 
 function sequentialRequestIds(values) {

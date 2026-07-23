@@ -17702,3 +17702,106 @@ release exists, and no remote Cloudflare resource or mutation was created.
 See `docs/relay-container-ring-transition-runner.md` for the artifact and
 execution contract. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 22.270 Detached Signed Release Packet Overlay (2026-07-23)
+
+This overlay supersedes the release-artifact shape in section 22.269. Embedding
+the final executable SHA-256 inside that same executable would create an
+unresolvable self-hash cycle. The production design therefore uses:
+
+1. a compiled Rust trust root containing only fixed packet/policy file names,
+   release-policy SHA-256, release-key SPKI SHA-256, and the staging Authority
+   origin;
+2. a post-build canonical manifest that binds the finished executable digest,
+   commit/tree/archive/locks/modules/build/evidence/Authority identities;
+3. a detached standard-DSSE Ed25519 envelope over that manifest; and
+4. a later publication receipt over policy + packet + executable, rather than
+   making the signed manifest hash its own envelope.
+
+The checked-in launcher now exposes this smaller `releaseTrust` object and
+remains `enabled=false` with null policy/key/origin pins. Runtime argv,
+environment and writable checkout contents still cannot replace those pins or
+sidecar names.
+
+### Implemented local release boundaries
+
+- the strict packet verifier rejects unknown fields, non-canonical JSON,
+  malformed/multiple signatures, key reuse, inactive policy/release windows,
+  policy/key pin drift, Authority drift, module path escape/order/omission,
+  lock/package digest drift, differing repeated builds, artifact replacement,
+  and symlink/hardlink candidates;
+- the source collector requires a completely clean repository and reads
+  commit/tree/timestamp/archive/modules only through fixed local Git read
+  commands; tracked changes, untracked files, submodules and missing transitive
+  verifier sources fail closed;
+- module inventory includes `.gitattributes`, workspace locks/config,
+  launcher source/tests, release source collector, canonical/P5 dependencies,
+  packet verifier and release tests; and
+- both CLIs are offline, stdout-only and non-authorizing. They read no
+  transition credential, perform no network request, create no file, install
+  no artifact, and never enable the runner.
+
+### Remaining P0
+
+1. execute two builds from separately extracted copies of the frozen Git
+   archive with pinned Rust/Bun/linker versions, fixed `SOURCE_DATE_EPOCH`,
+   normalized build arguments and environment allowlist;
+2. compare the two exact executable bytes, generate retained test/fault/
+   security/no-secret evidence, and obtain the independent release-key DSSE
+   signature outside the writable checkout;
+3. implement the Rust-side fixed-sidecar parser, policy/key pin verification,
+   DSSE verification, current-executable digest check and create-new
+   publication receipt;
+4. implement the resumable claim/intent/one-POST/double-readback/receipt state
+   machine and crash matrix; and
+5. only after exposed-credential revocation evidence, independently review the
+   resulting staging packet before any remote resource creation.
+
+No real release key, signed packet, executable installation, credential,
+Cloudflare call or remote mutation was used. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
+## 22.271 Fresh Mutation Intent Capability Overlay (2026-07-23)
+
+This overlay closes the reference transport's ability to send an arbitrary
+well-formed version after credential preflight. It does not enable the Rust
+launcher or authorize staging.
+
+Implemented locally:
+
+1. validated trust is canonical-cloned and recursively frozen before storage;
+   caller mutation, nested-array mutation, and getter drift cannot alter the
+   live allowlist;
+2. transition-approval, authorization-approval, and permit SPKI fingerprints
+   must be disjoint;
+3. the deployment builder consumes a complete validated claim plus fixed
+   `controller/2` or `edge/5` phase identity instead of loose service, target,
+   and authorization strings;
+4. the canonical Cloudflare body binds one target at 100 percent plus the full
+   authorization ID, state version, and semantic intent digest;
+5. only an exact Authority `step_appended` response for the corresponding
+   persisted mutation-intent step creates an opaque same-process permit;
+6. `step_replayed`, response ambiguity, caller-created objects, cloned
+   objects, and process restart cannot create or restore that permit;
+7. `deployOnce` consumes the permit before validation, matches claim digest,
+   policies, account, ledger, runner/trust, credentials, expiry, phase,
+   service, target, canonical body and persisted request digest, and then
+   reaches the sole bounded `fetch` call site; and
+8. a spent permit cannot be reused even after a failed validation or lost
+   response.
+
+Focused tests now prove target/body tampering fails before Cloudflare fetch,
+one successful permit produces one deployment POST, permit reuse produces no
+second POST, replayed intent produces no permit, caller trust mutation has no
+effect, and signing-role overlap is rejected.
+
+The next P0 implementation remains the Rust-owned resumable orchestrator. Its
+state reducer must be read-only; only the immediate `step_appended` branch may
+construct a private, non-cloneable `FreshIntentPermit<S>`. It must also verify
+the detached release sidecars and current executable, perform policy-timed
+stable double reads, append a hash-chained create-new receipt, and pass the
+full crash/restart matrix before any remote mutation review.
+
+No credential or remote API was used. The launcher and Authority write gates
+remain disabled, Go/VPS remains authoritative, and production remains
+**NO-GO**.

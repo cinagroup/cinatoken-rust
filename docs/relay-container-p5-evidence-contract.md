@@ -543,9 +543,10 @@ mutation campaign, it must reference a separate
    fixed build-environment allowlist;
 4. sorted source/module inventory with relative path, byte count and SHA-256;
 5. compiled launcher, final installed bundle and two-isolated-build digests;
-6. strict embedded trust-config digest including account, ledger, services,
-   versions, policies, approval keys, Authority origin/version, HMAC identity,
-   permit identity/SPKI and separate credential identity hashes;
+6. non-circular compiled pins for fixed packet/policy names, release-policy
+   digest, independent release-key SPKI digest and Authority origin, plus the
+   DSSE manifest's exact account, ledger, services, policies, approval keys,
+   Authority version, permit SPKI, trust-config and credential identities;
 7. exact unit, Workerd, fault, configuration, security and no-secret test
    evidence against the same artifact digest;
 8. release policy digest, issue/expiry times and independent Ed25519 release
@@ -567,6 +568,19 @@ authorization headers, Access material, bodies, SQL errors and unrestricted
 Cloudflare metadata are forbidden. A lost/invalid/truncated POST response is
 recorded as ambiguous and never authorizes resend.
 
-The checked-in launcher merely reserves this schema and remains disabled. No
-signed release item or execution receipt exists, so P5 remains incomplete and
-production remains **NO-GO**.
+The local offline verifier now enforces this canonical packet and detached
+DSSE shape, and the clean-source collector derives commit/tree/archive/module
+identities from committed Git objects. These are contract foundations, not a
+release item: there is still no independently signed packet, isolated
+two-build result, non-null compiled pin, Rust-side fixed-sidecar verification,
+installed executable, publication receipt, or execution receipt. P5 remains
+incomplete and production remains **NO-GO**.
+
+Every execution receipt must additionally prove that each Cloudflare POST was
+enabled by a fresh same-process capability derived from an exact Authority
+`step_appended` response. The capability binds authorization, claim, state
+version, intent step, and canonical request digest; it is single-use and is
+not issued for `step_replayed`, ambiguity, or restart recovery. The body must
+bind the full authorization ID, state version, semantic intent digest, exact
+service, and exact target before network I/O. Evidence that merely shows a
+valid request shape or a persisted inflight row is insufficient.

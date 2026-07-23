@@ -426,6 +426,22 @@ clean two-build digest, strict canonical manifest, source/module inventory,
 test evidence, release policy and independent DSSE Ed25519 signature are
 verified and the artifact is installed by digest outside the checkout.
 
+The JavaScript reference now snapshots and freezes its validated trust data,
+and it rejects overlap among transition-approval, authorization-approval, and
+permit signing keys. Its deployment write boundary requires an opaque,
+single-use `freshIntentPermit`. Only an exact Authority `step_appended`
+response for the just-persisted Controller or Edge intent creates that
+capability. The response must match the authorization ID, claim digest, state
+version, status, and step digest. Replay, response ambiguity, caller
+construction, cloning, and process restart cannot recreate it.
+
+Before the one POST, the capability is consumed and the transport verifies the
+complete signed claim, current validity window, credential identities,
+service/target, canonical body, full authorization annotation, semantic intent
+digest, and persisted request digest. A mismatch fails before `fetch`. This
+closes the reference transport's arbitrary-valid-version gap, but does not
+replace the required Rust implementation or remote fault proof.
+
 After release verification, the missing Rust orchestrator must resume solely
 from the exact Authority claim. A persisted inflight mutation may perform
 stable readback but can never schedule a second POST under the same

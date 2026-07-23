@@ -2406,3 +2406,51 @@ fails before credential or network use. This closes the mutable script as
 trust-root design gap, but not signed release provenance or orchestration.
 There was no remote action in this increment. Production remains **NO-GO** and
 Go/VPS remains hot authority.
+
+## 2026-07-23 Detached Release And Fresh-Intent Addendum
+
+This addendum supersedes the release shape and reference-mutation boundary in
+phases J-K above.
+
+The release is deliberately detached. The compiled launcher pins only fixed
+packet/policy names, release-policy digest, independent release-key SPKI
+digest, and staging Authority origin. The post-build canonical manifest binds
+the executable plus source, build, evidence, and Authority identities and is
+signed once with standard DSSE Ed25519 PAE. A later create-new publication
+receipt binds packet, policy, and executable without requiring the executable
+or manifest to contain its own final digest.
+
+The local verifier and source collector now enforce exact packet schemas,
+signature/policy windows, key separation inventory, clean commit-object input,
+portable module closure, repeated-build digest equality, artifact
+TOCTOU/symlink/hardlink defenses, and no runtime authority. This is not a real
+release ceremony: two isolated builds, retained evidence, an independent
+signature, compiled non-null pins, Rust-side sidecar/current-executable
+verification, digest installation, and publication receipt remain open.
+
+The JavaScript reference deployment transport now has a structural one-write
+boundary:
+
+1. canonicalize and freeze trust; reject overlap among transition,
+   authorization, and permit signing keys;
+2. accept a mutation capability only from an exact authenticated Authority
+   `step_appended` response for the just-persisted intent;
+3. bind that opaque capability to authorization ID, claim digest, phase/state
+   version, step digest, and canonical request digest;
+4. consume it before any request validation or network I/O;
+5. match current claim validity, credentials, policies, account, ledger,
+   service, target, URL, body, full authorization annotation, semantic intent
+   digest, and persisted request digest; and
+6. perform at most one POST. Replayed intents, ambiguity, validation failure,
+   process restart, or permit reuse yield zero additional POSTs.
+
+The Rust-owned orchestrator must preserve this capability property with a
+private, non-cloneable `FreshIntentPermit<S>` created only by the
+`step_appended` branch. Reducers over restored snapshots must never return a
+deployment write. The remaining acceptance campaign must inject a crash before
+send, during send, after response, after each readback, and after each receipt
+append, then prove lifetime POST count at most one per service.
+
+No remote Cloudflare operation, credential read, release signing, artifact
+installation, customer traffic, provider call, or financial mutation occurred.
+Go/VPS remains authoritative and production remains **NO-GO**.

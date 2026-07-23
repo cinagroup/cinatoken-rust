@@ -17,6 +17,8 @@ export const RING_TRANSITION_CLAIM_PERMIT_DOMAIN =
   "cinatoken-ring-transition-claim-permit-v1\n";
 export const RING_TRANSITION_EXPIRY_EVENT_CONTRACT =
   "cinatoken-relay-container-ring-transition-expiry-event-v1";
+export const RING_TRANSITION_DEPLOYMENT_MUTATION_INTENT_CONTRACT =
+  "cinatoken-relay-container-ring-transition-deployment-mutation-intent-v1";
 export const RING_TRANSITION_AUTHORITY_HEADER =
   "x-cinatoken-ring-authority";
 export const RING_TRANSITION_CLAIM_AUTHORITY_PATH =
@@ -101,7 +103,7 @@ export function describeRingTransitionMutationRunner() {
 export function validatePublishedRingTransitionTrust(
   anchors = DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
 ) {
-  const trust = requireObject(anchors, "[trust] anchors");
+  const trust = canonicalSnapshot(anchors, "[trust] anchors");
   exactKeys(
     trust,
     Object.keys(DEPLOYMENT_PINNED_RING_TRANSITION_TRUST),
@@ -189,6 +191,24 @@ export function validatePublishedRingTransitionTrust(
     trust.authorizationApprovalKeyFingerprintsSha256,
     "[trust] authorization approval keys",
   );
+  const transitionKeys = new Set(
+    trust.transitionApprovalKeyFingerprintsSha256,
+  );
+  const authorizationKeys = new Set(
+    trust.authorizationApprovalKeyFingerprintsSha256,
+  );
+  if (
+    trust.transitionApprovalKeyFingerprintsSha256.some((fingerprint) =>
+      authorizationKeys.has(fingerprint),
+    ) ||
+    transitionKeys.has(trust.claimPermitSpkiSha256) ||
+    authorizationKeys.has(trust.claimPermitSpkiSha256)
+  ) {
+    throw new Error("[trust] signing key roles must be disjoint");
+  }
+  if (trust.controllerServiceName === trust.edgeServiceName) {
+    throw new Error("[trust] controller and edge services must differ");
+  }
   if (
     trust.transitionPolicySha256 === trust.authorizationPolicySha256
   ) {
@@ -199,11 +219,11 @@ export function validatePublishedRingTransitionTrust(
     ringTransitionTrustConfigDigestSha256(trust),
     "[trust] configuration digest",
   );
-  return trust;
+  return deepFreeze(trust);
 }
 
 export function ringTransitionTrustConfigDigestSha256(anchors) {
-  const trust = { ...requireObject(anchors, "[trust] anchors") };
+  const trust = canonicalSnapshot(anchors, "[trust] anchors");
   delete trust.runnerTrustConfigSha256;
   return digestCanonical(trust);
 }
@@ -554,39 +574,35 @@ export function buildClaimAuthorityExpiryRequest({
 export function buildCloudflareDeploymentMutationRequest({
   anchors,
   accountId,
-  serviceName,
-  targetVersionId,
-  authorizationIdSha256,
+  claim,
+  phase,
+  stateVersion,
 }) {
   const trust = validatePublishedRingTransitionTrust(anchors);
+  const binding = ringTransitionDeploymentMutationBinding({
+    anchors: trust,
+    claim,
+    phase,
+    stateVersion,
+  });
   requireToken(accountId, accountIdPattern, "[mutation] account ID");
   requireExact(
     sha256Hex(Buffer.from(accountId, "utf8")),
     trust.accountIdSha256,
     "[mutation] account anchor",
   );
-  requireToken(serviceName, serviceNamePattern, "[mutation] service name");
-  if (
-    serviceName !== trust.controllerServiceName &&
-    serviceName !== trust.edgeServiceName
-  ) {
-    throw new Error("[mutation] service is outside the pinned staging ring");
-  }
-  requireToken(targetVersionId, versionIdPattern, "[mutation] target version");
-  requireSha256(authorizationIdSha256, "[mutation] authorization ID");
   const body = {
     strategy: "percentage",
-    versions: [{ version_id: targetVersionId, percentage: 100 }],
+    versions: [{ version_id: binding.targetVersionId, percentage: 100 }],
     annotations: {
-      "workers/message":
-        `cinatoken staging ring transition ${authorizationIdSha256.slice(0, 16)}`,
+      "workers/message": binding.mutationAnnotation,
     },
   };
   return {
     method: "POST",
     url:
       `${CLOUDFLARE_API_ORIGIN}/client/v4/accounts/${accountId}` +
-      `/workers/scripts/${encodeURIComponent(serviceName)}/deployments`,
+      `/workers/scripts/${encodeURIComponent(binding.serviceName)}/deployments`,
     headers: {
       accept: "application/json",
       "content-type": "application/json",
@@ -598,6 +614,92 @@ export function buildCloudflareDeploymentMutationRequest({
     timeoutMilliseconds: 10_000,
     maximumResponseBytes: 2 * 1024 * 1024,
   };
+}
+
+export function ringTransitionDeploymentMutationBinding({
+  anchors,
+  claim,
+  phase,
+  stateVersion,
+}) {
+  const trust = validatePublishedRingTransitionTrust(anchors);
+  const verifiedClaim = validateRingTransitionExecutionClaim(claim);
+  requireOneOf(phase, ["controller", "edge"], "[mutation] phase");
+  const expectedStateVersion = phase === "controller" ? 2 : 5;
+  requireExact(
+    stateVersion,
+    expectedStateVersion,
+    "[mutation] state version",
+  );
+  requireExact(
+    verifiedClaim.accountIdSha256,
+    trust.accountIdSha256,
+    "[mutation] claim account anchor",
+  );
+  requireExact(
+    verifiedClaim.ledgerIdentitySha256,
+    trust.ledgerIdentitySha256,
+    "[mutation] claim ledger anchor",
+  );
+  requireExact(
+    verifiedClaim.transitionPolicySha256,
+    trust.transitionPolicySha256,
+    "[mutation] claim transition policy",
+  );
+  requireExact(
+    verifiedClaim.authorizationPolicySha256,
+    trust.authorizationPolicySha256,
+    "[mutation] claim authorization policy",
+  );
+  requireExact(
+    verifiedClaim.runnerBuildSha256,
+    trust.runnerBuildSha256,
+    "[mutation] claim runner build",
+  );
+  requireExact(
+    verifiedClaim.runnerTrustConfigSha256,
+    trust.runnerTrustConfigSha256,
+    "[mutation] claim trust configuration",
+  );
+  for (const role of ["controller", "edge"]) {
+    requireExact(
+      verifiedClaim[role].serviceName,
+      trust[`${role}ServiceName`],
+      `[mutation] claim ${role} service`,
+    );
+  }
+  const service = verifiedClaim[phase];
+  const intent = {
+    schemaVersion: 1,
+    contract: RING_TRANSITION_DEPLOYMENT_MUTATION_INTENT_CONTRACT,
+    environment: "staging",
+    authorizationIdSha256: verifiedClaim.authorizationIdSha256,
+    claimDigestSha256: verifiedClaim.claimDigestSha256,
+    stateVersion,
+    stepCode: `${phase}_mutation_intent`,
+    serviceName: service.serviceName,
+    targetVersionId: service.targetVersionId,
+  };
+  const mutationIntentSha256 = digestCanonical(intent);
+  return deepFreeze({
+    ...intent,
+    mutationIntentSha256,
+    mutationAnnotation:
+      `cinatoken-ring-v1:${verifiedClaim.authorizationIdSha256}:` +
+      `${stateVersion}:${mutationIntentSha256}`,
+  });
+}
+
+export function validateRingTransitionExecutionClaim(value) {
+  const claim = canonicalSnapshot(value, "[claim] execution claim");
+  validateExecutionClaim(claim);
+  return deepFreeze(claim);
+}
+
+export function validateRingTransitionExecutionStep(value) {
+  const step = canonicalSnapshot(value, "[step] execution step");
+  validateExecutionStep(step);
+  return deepFreeze(step);
 }
 
 export function classifyDeploymentMutationAttempt({
@@ -825,6 +927,19 @@ function requireObject(value, label) {
     throw new Error(`${label} must be an object`);
   }
   return value;
+}
+
+function canonicalSnapshot(value, label) {
+  requireObject(value, label);
+  let serialized;
+  try {
+    serialized = canonicalJson(value);
+  } catch {
+    throw new Error(`${label} must be canonical JSON-compatible data`);
+  }
+  const snapshot = JSON.parse(serialized);
+  requireObject(snapshot, label);
+  return snapshot;
 }
 
 function exactKeys(value, expected, label) {

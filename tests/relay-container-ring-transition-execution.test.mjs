@@ -565,15 +565,17 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
     const mutation = buildCloudflareDeploymentMutationRequest({
       anchors,
       accountId,
-      serviceName: anchors.controllerServiceName,
-      targetVersionId: "controller-version-002",
-      authorizationIdSha256: claim.authorizationIdSha256,
+      claim,
+      phase: "controller",
+      stateVersion: 2,
     });
     expect(mutation.retry).toBe(false);
     expect(mutation.force).toBe(false);
     expect(JSON.parse(mutation.body)).toEqual({
       annotations: {
-        "workers/message": "cinatoken staging ring transition 1111111111111111",
+        "workers/message": expect.stringMatching(
+          /^cinatoken-ring-v1:1{64}:2:[0-9a-f]{64}$/,
+        ),
       },
       strategy: "percentage",
       versions: [
@@ -615,6 +617,23 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
         ledgerIdentitySha256: anchors.ledgerIdentitySha256,
       }),
     ).toThrow(/credentials must be distinct/);
+
+    expect(() =>
+      validatePublishedRingTransitionTrust({
+        ...anchors,
+        authorizationApprovalKeyFingerprintsSha256: [
+          "4".repeat(64),
+          "7".repeat(64),
+        ],
+      }),
+    ).toThrow(/signing key roles must be disjoint/);
+    expect(() =>
+      validatePublishedRingTransitionTrust({
+        ...anchors,
+        claimPermitSpkiSha256:
+          anchors.transitionApprovalKeyFingerprintsSha256[0],
+      }),
+    ).toThrow(/signing key roles must be disjoint/);
   });
 
   test("classifies response loss only by stable authenticated target readback", () => {

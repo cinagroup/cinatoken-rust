@@ -8347,13 +8347,14 @@ cargo fmt --all --check
 bun run check
 ```
 
-The focused contract target is 25 Bun tests: 14 claim/execution tests and 11
+The focused contract target is 29 Bun tests: 14 claim/execution tests and 15
 native-transport tests. The transport cases cover fixed secret handles,
 pairwise-distinct credentials, raw-account binding, token-ID verification,
 Authority HMAC compatibility, Authority version/permit-SPKI pinning, exact
 request/body/header allowlists, bounded bodies, rejected and ambiguous status
-families, atomic all-credential verification, response loss and zero POST
-retry. A source guard rejects ambient
+families, atomic all-credential verification, response loss, immutable trust
+snapshots, disjoint signing roles, exact fresh-intent binding, replay denial,
+single-use permits and zero POST retry. A source guard rejects ambient
 `process.env`, console logging, high-level unbounded response readers,
 Wrangler, child processes and multiple fetch call sites.
 
@@ -8376,8 +8377,60 @@ prove token revocation, Access, remote D1, route, deployed version, stable
 Cloudflare readback, customer traffic, billing conservation, P5-B or Go/VPS
 drain. No remote action is claimed; production remains **NO-GO**.
 
-The final repository aggregate passed on 2026-07-23 in 637.8 seconds. It
-included the six runner tests, 54 ring-transition contract tests, 22 Authority
+The final repository aggregate passed on 2026-07-23 in 637.7 seconds. It
+included the six runner tests, 58 ring-transition contract tests, 22 Authority
 unit tests, two Authority Workerd tests, 22 Authority configuration/preflight
 tests, the Rust workspace, all configured wasm32 builds, D1 migration/schema
 gates, Worker dry-runs, frontend checks, and the existing fault suites.
+
+## Detached Runner Release Verification (2026-07-23)
+
+Run the local release gate:
+
+```powershell
+bun run check:ring-transition-runner
+```
+
+The release addition contributes 16 Bun tests:
+
+- ten packet tests cover canonical DSSE PAE, Ed25519 verification, external
+  policy/key pins, exact schema, time bounds, key separation, required module
+  closure, build reproducibility claims, Authority/evidence drift, artifact
+  replacement, hardlinks, CLI isolation and non-authorization;
+- six source tests create real temporary Git repositories and prove stable
+  commit/tree/archive/module identities, clean-tree enforcement, tracked and
+  untracked change rejection, missing-module rejection, CLI collection and
+  caller-override rejection.
+
+The Rust launcher still contributes six tests and now describes a fixed
+detached `releaseTrust` rather than embedding its own future artifact digest.
+The focused gate also runs both CLIs in describe mode. No test reads a real
+release/transition credential, calls a network service, signs with a production
+key, writes outside its temporary fixture, installs an artifact, enables
+execution or changes Cloudflare.
+
+These tests validate the packet and source foundations only. Two isolated real
+builds, a retained DSSE signature, compiled non-null pins, Rust-side sidecar and
+self-digest verification, publication receipt, resumable orchestrator,
+credential revocation and remote staging evidence remain open. Production
+remains **NO-GO**.
+
+## Fresh Mutation Intent Verification (2026-07-23)
+
+The native-transport subset now proves:
+
+- caller mutation of the validated trust object and nested key arrays cannot
+  change the stored allowlist, and a drifting getter is read into one frozen
+  snapshot;
+- transition-approval, authorization-approval and permit SPKI overlap fails;
+- only an exact `step_appended` response with matching authorization, claim,
+  state, status and step digest yields an opaque permit;
+- `step_replayed` yields no permit and a caller-created object is rejected;
+- target/body/request-digest tampering is rejected before Cloudflare fetch;
+- one valid permit sends one deployment POST and reuse sends no second POST;
+  and
+- timeout-like and response-loss results remain ambiguous and never retry.
+
+These are JavaScript reference-transport tests. They do not prove a Rust
+capability type, process-restart behavior, persisted hash-chain receipt,
+stable-read timing, remote deployment history, or any enabled release.

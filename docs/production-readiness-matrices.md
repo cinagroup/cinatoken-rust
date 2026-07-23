@@ -1305,3 +1305,32 @@ rows above. It does not change any remote or production decision.
 
 The JavaScript transport remains a testable reference boundary, not a
 production trust root or live CLI. Go/VPS remains authoritative.
+
+## 2026-07-23 Detached Runner Release Matrix
+
+This matrix supersedes the compiled-trust and release-provenance rows above.
+
+| Control | Current local evidence | Required staging/production evidence | Decision |
+| --- | --- | --- | --- |
+| Non-circular trust root | Rust embeds fixed sidecar names plus policy/key/origin pins only; artifact identity is detached and signed after build | Production build with reviewed non-null pins; runtime verifies fixed sidecars and current executable | Local design pass; Rust verifier open |
+| Canonical packet | Exact manifest/policy/packet/inventory schemas, standard DSSE PAE, one Ed25519 signature, whole-second validity and no unknown fields | Independent release policy/key ceremony and retained real packet | Local contract pass |
+| Source identity | Clean-tree collector uses commit objects, full commit/tree/archive/lock/module SHA-256; mutable checkout, untracked files, submodules and missing closure fail | Run against the committed candidate in an isolated release workspace | Local collector pass; current worktree intentionally dirty |
+| Key separation | External policy key fingerprint plus at least three sorted forbidden asymmetric-key fingerprints; key/policy pins can be independently checked | Owner inventory proving release key distinct from transition, authorization and permit keys; HMAC/read/deploy credentials separately inventoried | Local negative tests; ceremony open |
+| Artifact safety | Sibling-only bounded regular artifact, TOCTOU snapshot and hardlink/symlink rejection; signed digest must equal both build digests | Two independently extracted builds with identical bytes and signed publication receipt | Verifier pass; real builds open |
+| Authorization boundary | CLIs report install/execution/remote/customer/production authority false even for a valid packet | Rust compiled pins plus complete orchestrator and independent staging approval | **P0 open** |
+| Promotion | No key, signed packet, installation or Cloudflare action exists | Reproducible build, Rust packet verification, fault matrix, revocation, P5-B and Go/VPS approvals | **NO-GO** |
+
+The detached packet fixes the self-hash design flaw but does not publish a
+release. Go/VPS remains authoritative.
+
+## 2026-07-23 Fresh Mutation Intent Matrix
+
+| Control | Current local evidence | Required staging/production evidence | Decision |
+| --- | --- | --- | --- |
+| Trust immutability | Validated trust is canonical-cloned and recursively frozen; caller and nested-array mutation tests pass | Same behavior in compiled Rust release with immutable pins | JavaScript reference pass |
+| Signing-role separation | Transition, authorization and permit SPKI sets must be disjoint | Independent owner/key inventory also proving release-key separation and rotation | Local contract pass; ceremony open |
+| Intent provenance | Only exact authenticated Authority `step_appended` creates an opaque permit bound to claim/state/step/request; replay and ambiguity do not | Rust non-cloneable capability plus Authority/D1 trace from frozen artifact | JavaScript reference pass |
+| Request binding | Claim validity, credential IDs, policies, account, ledger, runner/trust, service, target, URL, canonical body, full authorization annotation, semantic intent and persisted request digest match before fetch | Remote negative campaign proving all drift classes yield zero Cloudflare POST | Local negative tests pass |
+| One-write structure | Permit is same-process, consumed before validation/network, and cannot be reused; one permit yields at most one POST | Crash/restart/response-loss campaign and deployment history proving lifetime count at most one per service | Local unit pass; remote open |
+| Resumption | Replayed/restored inflight state cannot mint a permit and therefore remains readback-only | Rust reducer, stable double-read timing policy, hash-chained receipt and fault matrix | **P0 implementation open** |
+| Promotion | Launcher/write gates remain disabled and no remote call occurred | Detached signed release, revocation, isolated staging, P5-B and independent approvals | **NO-GO** |

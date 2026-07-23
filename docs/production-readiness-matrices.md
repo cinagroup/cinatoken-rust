@@ -1243,3 +1243,22 @@ into a safe refund or retry. Go/VPS remains authoritative.
 
 Local pull-driven behavior is sufficient to close the implementation blocker,
 not the production transport gate. Go/VPS remains authoritative.
+
+## 2026-07-23 Ring Transition Claim And Runner Matrix
+
+Current local D1 head is 0059/59 with 68 required tables, 899 checked
+incremental columns, and 100 key indexes.
+
+| Control | Implemented local evidence | Required staging/production evidence | Decision |
+| --- | --- | --- | --- |
+| Single-use authority | Unique authorization/nonce/digest, one active staging scope, D1 time/TTL, owner-bound ordered steps | Private D1-bound authority, concurrent remote claim race, restart/expiry/readback campaign | Local schema pass; service absent |
+| Persist before mutation | Controller and Edge inflight states require a persisted exact mutation-request digest | Runner crash between persist/send/response/readback with one control-plane write and durable classification | Local state-machine pass; remote open |
+| Three credentials | Signed evidence requires pairwise-distinct read/claim/deploy identities and least-privilege assertions | Revoked exposed token plus authoritative scope/identity readbacks; claim token cannot run arbitrary D1 SQL | Contract pass; credentials blocked |
+| Deployment trust root | Fixed account, policy, approval-key, service, claim-origin/ledger and runner build/release pins; config digest self-check | Immutable attested runner build with pins outside caller control and override negatives | Checked-in trust disabled |
+| Mutation transport | Exact percentage body, one target at 100 percent, no force, zero retry; response loss classified by stable double readback | Native bounded fetch, token verification, deployment/version readback, HTTP loss/truncation/invalid JSON/drift tests | Shape pass; live transport absent |
+| Partial success | Controller success/Edge failure retains dual-ring Controller, old verified Edge and Go/VPS; forward repair only | Rehearsed fault with measured RTO/RPO, no generation rollback, complete old-ring drain | Planned; remote open |
+| Four-layer path | Prior local Edge/DO/Container/D1/R2 contracts and default-off gates remain | One frozen old/new overlap campaign including KV, Container wake/restart/OOM, cutoff replay and exact billing/provider conservation | **Remote blocked** |
+| Promotion | Focused claim/runner contract and exact local schema pass; execution remains disabled | Remote 0059, immutable runner/authority, fault/load/SLO/cost/security/P5-B/Go drain packet and independent approvals | **NO-GO** |
+
+No local success result turns `remoteMutationAuthorized` true. Go/VPS remains
+traffic and scheduler authority.

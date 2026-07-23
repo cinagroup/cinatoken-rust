@@ -443,6 +443,18 @@ describe("Relay Container adjacent ring transition mutation authorization", () =
     expect(result.executionPlan.controller.targetPercentage).toBe(100);
     expect(result.executionPlan.edge.targetPercentage).toBe(100);
     expect(result.executionPlan.executableCommand).toBeNull();
+    expect(result.credentialScope.credentialsDistinct).toBe(true);
+    expect(
+      new Set([
+        result.credentialScope.replacementReadCredentialIdSha256,
+        result.credentialScope.replacementClaimCredentialIdSha256,
+        result.credentialScope.replacementDeployCredentialIdSha256,
+      ]).size,
+    ).toBe(3);
+    expect(result.claimAuthority.migrationHead).toBe(
+      "0059_relay_container_ring_transition_claims.sql",
+    );
+    expect(result.claimAuthority.remoteClaimPerformed).toBe(false);
     for (const name of [
       "credentialsReadByVerifier",
       "networkRequestsPerformedByVerifier",
@@ -536,6 +548,10 @@ describe("Relay Container adjacent ring transition mutation authorization", () =
       }],
       ["credential-scope-readback", (facts) => {
         facts.replacementDeployCredentialIdSha256 =
+          facts.replacementReadCredentialIdSha256;
+      }],
+      ["credential-scope-readback", (facts) => {
+        facts.replacementClaimCredentialIdSha256 =
           facts.replacementReadCredentialIdSha256;
       }],
       ["operator-ceremony", (facts) => {
@@ -1599,9 +1615,11 @@ function authorizationArtifactFactsFixture(
         revokedAt: timeline.revokedAt,
         revocationReadbackSha256: "6".repeat(64),
         replacementReadCredentialIdSha256: "7".repeat(64),
+        replacementClaimCredentialIdSha256: "f".repeat(64),
         replacementDeployCredentialIdSha256: "8".repeat(64),
         credentialsDistinct: true,
         readCredentialLeastPrivilege: true,
+        claimCredentialLeastPrivilege: true,
         deployCredentialLeastPrivilege: true,
         scopeAuditSha256: "9".repeat(64),
         secretValueIncluded: false,
@@ -1624,6 +1642,12 @@ function authorizationArtifactFactsFixture(
         executionNonceSha256: timeline.executionNonceSha256,
         authority: "d1-unique-claim-v1",
         ledgerIdentitySha256: "c".repeat(64),
+        claimAuthorityOriginSha256: "1".repeat(64),
+        migrationHead:
+          "0059_relay_container_ring_transition_claims.sql",
+        claimTable: "relay_container_ring_transition_claims",
+        stepTable: "relay_container_ring_transition_steps",
+        claimCredentialIdSha256: "f".repeat(64),
         state: "unclaimed",
         atomicUniqueInsertRequired: true,
         ttlBound: true,
@@ -1774,8 +1798,8 @@ function candidateFixture() {
     containerClass: "RelayShardContainer",
     ringGeneration: 2,
     shardCount: 12,
-    migrationHead: "0058_relay_http_stream_client_abort_watchdogs.sql",
-    migrationCount: 58,
+    migrationHead: "0059_relay_container_ring_transition_claims.sql",
+    migrationCount: 59,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,

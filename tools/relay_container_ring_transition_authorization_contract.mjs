@@ -146,9 +146,14 @@ export async function verifyRingTransitionMutationAuthorization({
     evidence.byKind.get("operator-ceremony"),
     manifest.subject,
   );
-  validateClaimReadiness(
+  const claimReadiness = validateClaimReadiness(
     evidence.byKind.get("single-use-claim-readiness"),
     manifest.subject,
+  );
+  requireExact(
+    claimReadiness.claimCredentialIdSha256,
+    credentialScope.replacementClaimCredentialIdSha256,
+    "[claim] replacement claim credential identity",
   );
   validateRollbackReadiness(
     evidence.byKind.get("rollback-readiness"),
@@ -179,6 +184,8 @@ export async function verifyRingTransitionMutationAuthorization({
     phase: intent.phase,
     authorizationIdSha256: manifest.subject.authorizationIdSha256,
     executionNonceSha256: manifest.subject.executionNonceSha256,
+    generatedAt: manifest.subject.generatedAt,
+    expiresAt: manifest.subject.expiresAt,
     executionOrder: [
       "atomic-single-use-claim",
       "authenticated-t1-readback",
@@ -233,6 +240,7 @@ export async function verifyRingTransitionMutationAuthorization({
     candidateDigestSha256: transition.candidateDigestSha256,
     approvalRoles: approvalKeys.map((approval) => approval.role),
     approvalKeys,
+    transitionApprovalKeys: transition.approvalKeys,
     artifacts: evidence.items.map(
       ({ kind, sha256, capturedAt, expiresAt }) => ({
         kind,
@@ -251,12 +259,27 @@ export async function verifyRingTransitionMutationAuthorization({
     credentialScope: {
       replacementReadCredentialIdSha256:
         credentialScope.replacementReadCredentialIdSha256,
+      replacementClaimCredentialIdSha256:
+        credentialScope.replacementClaimCredentialIdSha256,
       replacementDeployCredentialIdSha256:
         credentialScope.replacementDeployCredentialIdSha256,
       credentialsDistinct: true,
       leastPrivilege: true,
       secretValueIncluded: false,
     },
+    claimAuthority: {
+      authority: claimReadiness.authority,
+      ledgerIdentitySha256: claimReadiness.ledgerIdentitySha256,
+      claimAuthorityOriginSha256:
+        claimReadiness.claimAuthorityOriginSha256,
+      migrationHead: claimReadiness.migrationHead,
+      claimTable: claimReadiness.claimTable,
+      stepTable: claimReadiness.stepTable,
+      claimCredentialIdSha256:
+        claimReadiness.claimCredentialIdSha256,
+      remoteClaimPerformed: false,
+    },
+    generatedAt: manifest.subject.generatedAt,
     offlineSignedAuthorizationVerified: true,
     signedWorkerDeploymentScopeApproved: true,
     trustedPolicyAnchorVerified: false,
@@ -857,9 +880,11 @@ function validateCredentialScope(item, accountIdSha256) {
       "revokedAt",
       "revocationReadbackSha256",
       "replacementReadCredentialIdSha256",
+      "replacementClaimCredentialIdSha256",
       "replacementDeployCredentialIdSha256",
       "credentialsDistinct",
       "readCredentialLeastPrivilege",
+      "claimCredentialLeastPrivilege",
       "deployCredentialLeastPrivilege",
       "scopeAuditSha256",
       "secretValueIncluded",
@@ -879,22 +904,33 @@ function validateCredentialScope(item, accountIdSha256) {
   for (const field of [
     "revocationReadbackSha256",
     "replacementReadCredentialIdSha256",
+    "replacementClaimCredentialIdSha256",
     "replacementDeployCredentialIdSha256",
     "scopeAuditSha256",
   ]) {
     requireSha256(facts[field], `[credential] ${field}`);
   }
   if (
-    facts.replacementReadCredentialIdSha256 ===
-    facts.replacementDeployCredentialIdSha256
+    new Set([
+      facts.replacementReadCredentialIdSha256,
+      facts.replacementClaimCredentialIdSha256,
+      facts.replacementDeployCredentialIdSha256,
+    ]).size !== 3
   ) {
-    throw new Error("[credential] read and deploy credentials must be distinct");
+    throw new Error(
+      "[credential] read, claim, and deploy credentials must be distinct",
+    );
   }
   requireExact(facts.credentialsDistinct, true, "[credential] credential separation");
   requireExact(
     facts.readCredentialLeastPrivilege,
     true,
     "[credential] read least privilege",
+  );
+  requireExact(
+    facts.claimCredentialLeastPrivilege,
+    true,
+    "[credential] claim least privilege",
   );
   requireExact(
     facts.deployCredentialLeastPrivilege,
@@ -950,6 +986,11 @@ function validateClaimReadiness(item, subject) {
       "executionNonceSha256",
       "authority",
       "ledgerIdentitySha256",
+      "claimAuthorityOriginSha256",
+      "migrationHead",
+      "claimTable",
+      "stepTable",
+      "claimCredentialIdSha256",
       "state",
       "atomicUniqueInsertRequired",
       "ttlBound",
@@ -969,6 +1010,29 @@ function validateClaimReadiness(item, subject) {
   );
   requireExact(facts.authority, "d1-unique-claim-v1", "[claim] authority");
   requireSha256(facts.ledgerIdentitySha256, "[claim] ledger identity");
+  requireSha256(
+    facts.claimAuthorityOriginSha256,
+    "[claim] authority origin",
+  );
+  requireExact(
+    facts.migrationHead,
+    "0059_relay_container_ring_transition_claims.sql",
+    "[claim] migration head",
+  );
+  requireExact(
+    facts.claimTable,
+    "relay_container_ring_transition_claims",
+    "[claim] claim table",
+  );
+  requireExact(
+    facts.stepTable,
+    "relay_container_ring_transition_steps",
+    "[claim] step table",
+  );
+  requireSha256(
+    facts.claimCredentialIdSha256,
+    "[claim] credential identity",
+  );
   requireExact(facts.state, "unclaimed", "[claim] state");
   requireExact(
     facts.atomicUniqueInsertRequired,
@@ -981,6 +1045,7 @@ function validateClaimReadiness(item, subject) {
     false,
     "[claim] pre-authorization remote claim",
   );
+  return facts;
 }
 
 function validateRollbackReadiness(item, transition) {

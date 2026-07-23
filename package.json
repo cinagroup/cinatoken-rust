@@ -84,7 +84,7 @@
     "check:go-vps-cutover:evidence": "bun test tests/go-vps-cutover-evidence.test.mjs",
     "plan:go-vps-cutover:evidence": "bun tools/verify_go_vps_cutover_evidence.mjs --describe --json",
     "verify:go-vps-cutover:evidence": "bun tools/verify_go_vps_cutover_evidence.mjs",
-    "check:relay-container:ring-transition": "bun test --timeout 30000 tests/relay-container-ring-transition-contract.test.mjs && bun tools/verify_relay_container_ring_transition.mjs --describe --json && bun tools/verify_relay_container_ring_transition_authorization.mjs --describe --json",
+    "check:relay-container:ring-transition": "bun test --timeout 30000 tests/relay-container-ring-transition-contract.test.mjs tests/relay-container-ring-transition-execution.test.mjs && bun tools/verify_relay_container_ring_transition.mjs --describe --json && bun tools/verify_relay_container_ring_transition_authorization.mjs --describe --json && bun tools/run_relay_container_ring_transition_mutation.mjs --describe --json",
     "plan:relay-container:ring-transition": "bun tools/verify_relay_container_ring_transition.mjs --describe --json",
     "verify:relay-container:ring-transition": "bun tools/verify_relay_container_ring_transition.mjs",
     "plan:relay-container:ring-transition:authorization": "bun tools/verify_relay_container_ring_transition_authorization.mjs --describe --json",

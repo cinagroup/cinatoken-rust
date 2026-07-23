@@ -8191,3 +8191,55 @@ activation, generation/count change in one frozen release, full shard registry
 readback, distribution and max+1 capacity replay, lifecycle/fault/load/cost,
 billing/provider uniqueness, and disable-first rollback. Do not rotate the
 routing secret in the same ring-transition candidate.
+
+## Ring Transition Claim And Fail-Closed Runner Verification (2026-07-23)
+
+Migration 0059 adds the single-use staging ring-transition claim and ordered
+step ledger. The authorization evidence now binds three pairwise-distinct
+read/claim/deploy identities, and the runner contract pins policy, approval-key,
+account, ledger, service, source/build/trust, and release identities while the
+checked-in trust object remains disabled.
+
+Commands and results:
+
+```powershell
+python tools/verify_sqlite.py
+# PASS: 59 migrations, 68 tables, 899 incremental columns, 100 key indexes
+
+bun run check:d1:migration-config
+# PASS: contiguous 0001..0059; runtime count 59
+
+bun test --timeout 30000 `
+  tests/relay-container-p5-evidence.test.mjs `
+  tests/relay-container-p5-foundation-collector.test.mjs `
+  tests/relay-container-ring-transition-contract.test.mjs `
+  tests/relay-container-ring-transition-execution.test.mjs
+# PASS: 106/106
+
+cargo test -p cinatoken-worker --lib `
+  d1_migration_readiness_requires_the_current_schema_marker
+# PASS: 1/1
+
+bun run check
+# PASS: 1083.8 seconds
+```
+
+The execution suite proves claim/nonce/digest replay rejection, one active
+scope, ordered owner-bound step evidence, no unjournaled state update,
+immutable evidence, ambiguous mutation recovery without retry, self-consistent
+trust pins, approval-key pinning, exact no-force deployment request shapes,
+authorization annotation readback, stable response-loss classification, poison
+credential isolation, and CLI execution rejection while trust roots are
+unpublished.
+
+The aggregate gate passed release Worker/WFP builds, Workerd 53/53, frontend
+and route audits, exact D1 config/SQLite verification, Rust workspace tests,
+formatting, and all configured wasm32 checks. Controlled stream failures, DLQ
+movement, storage-corruption probes, and existing dead-code warnings appeared
+inside expected passing tests.
+
+No Cloudflare request, credential read, remote migration, deployment, provider
+call, customer traffic, or production action occurred. The private
+claim-authority Worker, live bounded mutation transport, immutable enabled
+runner artifact, exposed-token revocation, remote 0059/fault/P5-B evidence, and
+Go/VPS drain remain open. Production remains **NO-GO**.

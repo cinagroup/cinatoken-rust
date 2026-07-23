@@ -437,8 +437,8 @@ git diff --check -- docs/relay-container-p5-evidence-contract.md `
 
 Current worktree results:
 
-- SQLite schema verifier: pass, 58 migrations and 66/848/97 schema baseline;
-- D1 migration/config audit: pass, contiguous 0001 through 0058;
+- SQLite schema verifier: pass, 59 migrations and 68/899/100 schema baseline;
+- D1 migration/config audit: pass, contiguous 0001 through 0059;
 - runtime readiness build-ID test: 1 pass;
 - Controller activation writer tests: 5 pass, including the exact 0054 schema
   through a real SQLite catalog;
@@ -451,8 +451,9 @@ Current worktree results:
 - P5 evidence verifier tests: 44 pass.
 
 The current schema overlay does not rewrite the sealed 0055 campaign. It adds
-0056/0057/0058 to candidate identity and remote readback, and requires all HTTP SSE
-producer gates to remain false throughout activation-ledger collection.
+0056/0057/0058/0059 to candidate identity and remote readback, and requires all
+HTTP SSE producer gates plus the ring mutation runner to remain false
+throughout activation-ledger collection.
 
 These commands test local contracts only. They cannot prove remote migration
 state, deployed Worker versions, Container image provenance, authenticated all-page
@@ -461,14 +462,15 @@ approvals. No document or local test authorizes deployment or remote mutation.
 Foundation, P5, customer traffic, production cutover, and Go/VPS shutdown all
 remain **NO-GO**.
 
-## 0058 Schema Overlay
+## 0059 Schema Overlay
 
 The activation ledger and sealed 0055 campaign are unchanged, but every new
-candidate identity and remote readback now includes 0056/0057/0058. The exact
-current baseline is 58 migrations, 66 tables, 848 checked incremental columns,
-97 key indexes, and head
-`0058_relay_http_stream_client_abort_watchdogs.sql`. Activation collection
-requires all HTTP SSE gates false, `enable_request_signal` present on N, N-1
-reader-only, and zero unexpected abort/provider/financial effect. Local schema
-and collector checks are not remote activation evidence. Production remains
+candidate identity and remote readback now includes 0056/0057/0058/0059. The
+exact current baseline is 59 migrations, 68 tables, 899 checked incremental
+columns, 100 key indexes, and head
+`0059_relay_container_ring_transition_claims.sql`. Activation collection
+requires all HTTP SSE gates false, the ring mutation runner and claim authority
+disabled, `enable_request_signal` present on N, N-1 reader-only, and zero
+unexpected claim/step/abort/provider/financial effect. Local schema and
+collector checks are not remote activation evidence. Production remains
 **NO-GO**.

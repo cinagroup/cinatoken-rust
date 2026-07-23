@@ -119,7 +119,7 @@ regular files at fixed paths below `evidence/`:
 | Kind | Required proof |
 | --- | --- |
 | `deployment-set-readback` | Stable two-sample Cloudflare API readback for Controller and Edge, exact old deployment digests/version IDs, version-detail digests, verified read-credential identity hash, account hash, execution nonce, and transition plan |
-| `credential-scope-readback` | Exposed credential revoked; distinct replacement read/deploy credential identities; least-privilege account scope; no token value |
+| `credential-scope-readback` | Exposed credential revoked; pairwise-distinct replacement read/claim/deploy credential identities; separate least-privilege scope assertions; no token value |
 | `operator-ceremony` | At least two distinct live operators, no break-glass, session/recording digests, abort owner, authorization ID, and nonce |
 | `single-use-claim-readiness` | D1 unique-claim authority identity, `unclaimed` state, atomic unique insert and TTL required, no pre-authorization claim |
 | `rollback-readiness` | Go/VPS traffic and scheduler authority, retained dual-ring Controller drain, previous Edge allowed after partial success, no generation rollback, and forward-repair plans |
@@ -168,7 +168,7 @@ bun run collect:relay-container:ring-transition:deployment-sets -- `
 ```
 
 Live readback is forbidden until the exposed credential has been revoked and
-separate least-privilege read/deploy identities exist. The collector accepts no
+separate least-privilege read/claim/deploy identities exist. The collector accepts no
 token argument. Live mode reads only:
 
 - `CINATOKEN_RING_TRANSITION_READ_TOKEN`;
@@ -241,8 +241,9 @@ The future runner must:
 10. durably record request IDs, before/after digests, step state, and failure
    class without credentials or raw provider/customer payloads.
 
-Until this claim authority and runner exist and pass fault tests, the
-authorization is not executable by repository tooling.
+Until the private claim-authority service and immutable enabled runner artifact
+exist and pass fault tests, the authorization is not executable by repository
+tooling.
 
 ## Partial Success
 
@@ -272,3 +273,43 @@ Cloudflare propagation, distributed claim uniqueness, mutation response-loss
 classification, Controller/Edge post-readback, Container lifecycle, accounting,
 load/SLO/cost, or rollback. No Cloudflare request was made in this increment.
 Production remains **NO-GO**.
+
+## 0059 Execution Claim And Runner Overlay
+
+Migration `0059_relay_container_ring_transition_claims.sql` now provides the
+local single-use execution ledger required by this authorization. It creates an
+expiring unique claim plus append-preserved ordered step evidence. The claim
+binds the authorization/nonce, both signed policy domains, transition and
+candidate digests, execution plan, account and ledger identities, exact
+Controller/Edge old and target versions, and runner build/trust digests.
+
+Credential evidence now contains pairwise-distinct read, claim, and deploy
+identity hashes and separate least-privilege assertions. Claim-readiness
+evidence additionally binds the claim-authority origin hash, 0059 head, exact
+claim/step table names, ledger identity, and claim credential. Secret values
+remain forbidden.
+
+The execution states are:
+
+```text
+claimed -> t1_verified -> controller_inflight -> controller_verified
+        -> edge_prechecked -> edge_inflight -> completed
+
+claimed|t1_verified -> aborted|expired
+controller_inflight|controller_verified|edge_prechecked|edge_inflight
+  -> recovery_required
+```
+
+Both mutation intents must be persisted before their corresponding remote
+write. An inflight state schedules authenticated readback, never another write.
+Stable double readback of the exact target at 100 percent confirms application;
+any unresolved or drifting observation seals recovery and requires a new signed
+forward-repair packet.
+
+The checked-in runner trust object is deliberately unpublished and disabled.
+The CLI can only describe the contract or fail closed; it reads no credentials
+and performs no network request. A real staging execution still requires a
+dedicated private claim-authority Worker, a reviewed immutable runner artifact
+with build-time trust pins, native bounded zero-retry transports, exposed-token
+revocation, remote 0059 readback, and the complete fault campaign. Production
+remains **NO-GO**.

@@ -17364,8 +17364,8 @@ transition admission start. Five bounded canonical artifacts prove:
 1. fresh stable Controller/Edge deployment sets sampled over 5-120 seconds with
    at most 30 seconds of capture lag, one active old version at 100 percent,
    full version-detail digests, and the verified read-token ID hash;
-2. exposed-credential revocation and distinct least-privilege read/deploy
-   credential identities without token values;
+2. exposed-credential revocation and distinct least-privilege
+   read/claim/deploy credential identities without token values;
 3. two or more distinct live operators, recording/session digests, no
    break-glass, and an abort owner;
 4. an unclaimed, TTL-bound D1 unique-insert authorization claim;
@@ -17428,3 +17428,124 @@ exact financial conservation.
 
 No exposed credential was used and no Cloudflare state was read or changed.
 Go/VPS remains traffic and scheduler authority. Production remains **NO-GO**.
+
+## 22.267 Deployment-Pinned Runner And Single-Use Claim Foundation (2026-07-23)
+
+This increment implements the local persistence and trust-contract foundation
+for the next staging boundary. It does not publish a runnable deployment
+artifact and does not authorize a Cloudflare write.
+
+Migration `0059_relay_container_ring_transition_claims.sql` is the current D1
+head. Exact local replay now reports 59 migrations, 68 required tables, 899
+checked incremental columns, and 100 key indexes. It adds:
+
+- one unique, expiring staging claim bound to the authorization, transition,
+  candidate, execution plan, account, ledger, three credential identities,
+  exact Controller/Edge old and target versions, and runner build/trust digests;
+- one append-preserved step stream owned by a single execution identity;
+- a single active `staging-worker-ring-transition` scope;
+- D1-owned claim/step timestamps and a 60-600 second claim window;
+- ordered `claimed -> t1_verified -> controller_inflight ->
+  controller_verified -> edge_prechecked -> edge_inflight -> completed`
+  transitions;
+- terminal `aborted`, `expired`, and `recovery_required` states; and
+- immutable identity/evidence, fail-on-duplicate DDL, replay, skipped-state,
+  cross-owner, concurrent-scope, and post-terminal guards.
+
+The mutation intent is persisted before each Cloudflare deployment request.
+After `controller_inflight` or `edge_inflight`, an operator may not erase the
+attempt, return to a pre-write state, automatically retry, or classify an old
+deployment readback as proof that the request was not applied. The only valid
+next action is an authenticated stable readback that proves the target at 100
+percent or seals `recovery_required`. Recovery uses a new signed packet and
+forward repair; generation rollback remains forbidden.
+
+The authorization packet now requires three pairwise-distinct credential
+identities:
+
+| Credential | Permitted surface | Explicitly forbidden |
+| --- | --- | --- |
+| Read | Account-token identity plus Controller/Edge deployment and version GET readback | Deployment write, D1 claim write, upload, delete, secret or resource mutation |
+| Claim | One fixed private claim-authority create/read API for the exact authorization ID | General Cloudflare deployment, arbitrary D1 SQL, KV/R2, upload, delete, secret mutation |
+| Deploy | Account-token identity plus the two exact reviewed deployment POSTs | Version upload, arbitrary service, force, delete, secret/resource/binding mutation |
+
+The claim credential must not be a general-purpose D1 API token. The production
+shape is a dedicated private Worker with a D1 binding and a narrow create/read
+protocol. This keeps SQL and table names inside the Worker trust boundary and
+follows the platform binding model. That private service is not implemented or
+deployed yet, so no current local program can consume a real claim credential.
+
+`relay_container_ring_transition_execution_contract.mjs` defines the
+deployment-pinned trust object, exact claim/request shapes, two deployment
+writes, zero-retry policy, stable-readback response-loss classifier, and
+state-to-next-action mapping. A publishable trust object must pin:
+
+1. staging environment and the fixed Cloudflare API origin;
+2. claim-authority HTTPS origin and D1 ledger identity;
+3. account hash, transition/authorization policy digests, and sorted approval
+   key fingerprints;
+4. exact Controller and Edge service names;
+5. runner source commit, build digest, trust-config digest, and release
+   evidence digest.
+
+The checked-in object deliberately has `enabled=false` and null unpublished
+anchors. `run_relay_container_ring_transition_mutation.mjs` therefore supports
+deterministic describe output and rejects execution before reading credentials
+or using the network. It accepts no token, account, API-origin, claim-origin,
+Wrangler, service, or target override argument. Plain JavaScript in a writable
+checkout is not a deployment trust root; the enablement and exact pins must be
+embedded in a reviewed immutable build and independently attested.
+
+### Staging execution state machine
+
+| State | Only permitted next action | Ambiguous outcome |
+| --- | --- | --- |
+| `claimed` | Authenticated stable T1 old deployment-set readback | Abort before mutation |
+| `t1_verified` | Persist exact Controller mutation intent | Expire/abort before mutation |
+| `controller_inflight` | Send once if this execution owns the persisted intent, then perform two authenticated readbacks | Never resend; target stable means verified, otherwise recovery required |
+| `controller_verified` | Re-read Edge old deployment set | Drift means recovery required; retain dual-ring Controller |
+| `edge_prechecked` | Persist exact Edge mutation intent | No remote write before persistence |
+| `edge_inflight` | Send once, then perform two authenticated readbacks | Never resend; target stable means complete, otherwise recovery required |
+| terminal | Seal redacted receipt and stop | New authorization required for forward repair |
+
+Cloudflare SDK automatic retries and `wrangler deploy` are excluded from this
+write path. The final runner must use native bounded `fetch`, fixed HTTPS
+allowlists, redirects disabled, bounded response streaming, zero POST retries,
+no shell, no inherited broad environment, and no `force`. A successful HTTP
+response alone is insufficient; the exact target must be observed at 100
+percent in two stable authenticated readbacks. A timeout, connection loss,
+truncated body, invalid JSON, HTTP rejection, old deployment, or readback drift
+after a write attempt never permits a second POST under the same authorization.
+
+### Remaining implementation and production gates
+
+1. Build the dedicated private claim-authority Worker, D1 repository methods,
+   strict request authentication, fixed authorization-ID readback, bounded
+   bodies, redacted logs, and Workerd race/expiry/replay tests.
+2. Build the immutable runner release pipeline and provenance attestation;
+   inject reviewed trust pins at build time and prove checkout/config/argv/env
+   overrides cannot change them.
+3. Implement the native read/claim/deploy transports with separate secret
+   handles, token-identity verification, exact two-write allowlist, bounded
+   response parsing, stable double readback, and durable redacted receipt.
+4. Revoke the exposed credential and retain authoritative revocation evidence.
+   Create least-privilege replacement identities only after that evidence is
+   independently reviewed.
+5. Apply 0059 reader-first to isolated staging with every mutation gate false;
+   verify exact remote head/count/catalog/fingerprint and zero business,
+   provider, financial, or traffic delta.
+6. Run concurrent claim, stale T1, Controller response loss, Controller
+   success/Edge failure, Edge response loss, expiry, runner crash/restart,
+   duplicate invocation, and post-readback drift campaigns.
+7. Exercise the complete Edge -> named DO -> Linux Container -> KV/D1/R2 path
+   with old/new overlap, cutoff replay, Container wake/restart/OOM, and exact
+   provider/billing/audit/request conservation.
+8. Retain the post-transition P5-B, security/privacy, SLO/cost/alert, rollback,
+   Go/VPS reverse-sync, drain, and independent approval packet before any
+   production decision.
+
+Local tests prove only the schema and fail-closed contracts. The claim-authority
+service, live mutation transport, immutable enabled runner artifact, credential
+revocation, remote 0059, staging fault matrix, customer traffic, production
+cutover, and Go/VPS shutdown remain open. Go/VPS remains authoritative and
+production remains **NO-GO**.

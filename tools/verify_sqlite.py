@@ -266,6 +266,8 @@ REQUIRED_TABLES = [
     "relay_http_stream_handoffs",
     "relay_http_stream_finalization_receipts",
     "relay_http_stream_client_abort_events",
+    "relay_container_ring_transition_claims",
+    "relay_container_ring_transition_steps",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1208,6 +1210,61 @@ REQUIRED_COLUMNS = {
         "finalization_event_sha256",
         "applied_at",
     },
+    "relay_container_ring_transition_claims": {
+        "authorization_id_sha256",
+        "execution_nonce_sha256",
+        "claim_contract",
+        "claim_scope",
+        "environment",
+        "authorization_manifest_sha256",
+        "authorization_subject_sha256",
+        "authorization_policy_sha256",
+        "transition_manifest_sha256",
+        "transition_subject_sha256",
+        "transition_policy_sha256",
+        "transition_plan_sha256",
+        "candidate_sha256",
+        "execution_plan_sha256",
+        "account_id_sha256",
+        "ledger_identity_sha256",
+        "read_credential_id_sha256",
+        "claim_credential_id_sha256",
+        "deploy_credential_id_sha256",
+        "controller_service_name",
+        "controller_previous_version_id",
+        "controller_previous_deployment_set_sha256",
+        "controller_target_version_id",
+        "edge_service_name",
+        "edge_previous_version_id",
+        "edge_previous_deployment_set_sha256",
+        "edge_target_version_id",
+        "runner_build_sha256",
+        "runner_trust_config_sha256",
+        "claim_owner_sha256",
+        "claim_digest_sha256",
+        "status",
+        "state_version",
+        "generated_at",
+        "claimed_at",
+        "expires_at",
+        "updated_at",
+        "terminal_at",
+    },
+    "relay_container_ring_transition_steps": {
+        "authorization_id_sha256",
+        "state_version",
+        "step_code",
+        "from_status",
+        "to_status",
+        "actor_execution_id_sha256",
+        "mutation_request_sha256",
+        "cloudflare_request_id_sha256",
+        "deployment_set_sha256",
+        "evidence_sha256",
+        "failure_class",
+        "step_digest_sha256",
+        "recorded_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -1372,6 +1429,13 @@ REQUIRED_INDEXES = {
     "relay_http_stream_client_abort_events": {
         "idx_relay_http_stream_client_abort_events_observed": False,
     },
+    "relay_container_ring_transition_claims": {
+        "idx_relay_container_ring_transition_active_scope": True,
+        "idx_relay_container_ring_transition_claim_expiry": False,
+    },
+    "relay_container_ring_transition_steps": {
+        "idx_relay_container_ring_transition_steps_recorded": False,
+    },
 }
 
 
@@ -1434,6 +1498,7 @@ def main() -> int:
     relay_http_stream_handoff_rollout_verified = False
     relay_http_stream_dispatch_rollout_verified = False
     relay_http_stream_client_abort_rollout_verified = False
+    relay_container_ring_transition_claim_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -1489,6 +1554,8 @@ def main() -> int:
         relay_http_stream_dispatch_rollout_verified = True
         verify_relay_http_stream_client_abort_rollout(schema_paths)
         relay_http_stream_client_abort_rollout_verified = True
+        verify_relay_container_ring_transition_claim_rollout(schema_paths)
+        relay_container_ring_transition_claim_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -1697,6 +1764,8 @@ def main() -> int:
         message += " + 0057 persist-before-provider HTTP stream dispatch"
     if relay_http_stream_client_abort_rollout_verified:
         message += " + 0058 Request.signal durable client-abort watchdog"
+    if relay_container_ring_transition_claim_rollout_verified:
+        message += " + 0059 single-use ring transition claim ledger"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -12957,7 +13026,7 @@ def verify_relay_container_provider_usage_binding_rollout(
     binding_index = schema_paths.index(binding_path)
     if binding_index == 0 or schema_paths[binding_index - 1] != receipt_path:
         raise SystemExit("0049 provider usage binding must immediately follow 0048")
-    if binding_index != len(schema_paths) - 10 or schema_paths[binding_index + 1].name != (
+    if binding_index + 1 >= len(schema_paths) or schema_paths[binding_index + 1].name != (
         "0050_relay_container_atomic_admission.sql"
     ):
         raise SystemExit("0049 provider usage binding must immediately precede 0050")
@@ -13321,13 +13390,11 @@ def verify_relay_container_scheduled_terminalization_rollout(
     )
     if response_artifact_path is None:
         raise SystemExit("0051/0052 relay Container response migrations not found")
-    if len(schema_paths) != 58:
+    if len(schema_paths) < 58:
         raise SystemExit(
-            f"0051 scheduled terminalization compatibility requires the 58-migration current chain, got {len(schema_paths)}"
+            f"0051 scheduled terminalization compatibility requires at least 58 migrations, got {len(schema_paths)}"
         )
     scheduled_index = schema_paths.index(scheduled_path)
-    if scheduled_index != len(schema_paths) - 8:
-        raise SystemExit("0051 scheduled terminalization must immediately precede 0052")
     if scheduled_index == 0 or schema_paths[scheduled_index - 1] != atomic_path:
         raise SystemExit("0051 scheduled terminalization must immediately follow 0050")
     if schema_paths[scheduled_index + 1] != response_artifact_path:
@@ -13393,13 +13460,11 @@ def verify_relay_container_response_artifacts_rollout(
     )
     if response_path is None or scheduled_path is None:
         raise SystemExit("0051/0052 relay Container response-artifact migrations not found")
-    if len(schema_paths) != 58:
+    if len(schema_paths) < 58:
         raise SystemExit(
-            f"0052 response artifacts require the 58-migration current chain, got {len(schema_paths)}"
+            f"0052 response artifacts require at least 58 migrations, got {len(schema_paths)}"
         )
     response_index = schema_paths.index(response_path)
-    if response_index != len(schema_paths) - 7:
-        raise SystemExit("0052 response artifacts must immediately precede 0053")
     if response_index == 0 or schema_paths[response_index - 1] != scheduled_path:
         raise SystemExit("0052 response artifacts must immediately follow 0051")
 
@@ -13696,14 +13761,12 @@ def verify_relay_container_financial_terminal_v2_rollout(
     )
     if v2_path is None or response_path is None or activation_path is None:
         raise SystemExit("0052/0053/0054 relay Container migrations not found")
-    if len(schema_paths) != 58:
+    if len(schema_paths) < 58:
         raise SystemExit(
-            "0053 financial terminal v2 requires the 58-migration current chain, "
+            "0053 financial terminal v2 requires at least 58 migrations, "
             f"got {len(schema_paths)}"
         )
     v2_index = schema_paths.index(v2_path)
-    if v2_index != len(schema_paths) - 6:
-        raise SystemExit("0053 financial terminal v2 must immediately precede 0054")
     if v2_index == 0 or schema_paths[v2_index - 1] != response_path:
         raise SystemExit("0053 financial terminal v2 must immediately follow 0052")
     if schema_paths[v2_index + 1] != activation_path:
@@ -14114,14 +14177,12 @@ def verify_relay_container_shard_activation_rollout(
     )
     if activation_path is None or v2_path is None:
         raise SystemExit("0053/0054 relay Container activation migrations not found")
-    if len(schema_paths) != 58:
+    if len(schema_paths) < 58:
         raise SystemExit(
-            "0054 shard activations require the 58-migration current chain, "
+            "0054 shard activations require at least 58 migrations, "
             f"got {len(schema_paths)}"
         )
     activation_index = schema_paths.index(activation_path)
-    if activation_index != len(schema_paths) - 5:
-        raise SystemExit("0054 shard activations must immediately precede 0055")
     if activation_index == 0 or schema_paths[activation_index - 1] != v2_path:
         raise SystemExit("0054 shard activations must immediately follow 0053")
 
@@ -14536,14 +14597,12 @@ def verify_relay_container_shard_activation_campaign_rollout(
     )
     if campaign_path is None or activation_path is None:
         raise SystemExit("0054/0055 relay Container activation migrations not found")
-    if len(schema_paths) != 58:
+    if len(schema_paths) < 58:
         raise SystemExit(
-            "0055 activation campaigns require the 58-migration current chain, "
+            "0055 activation campaigns require at least 58 migrations, "
             f"got {len(schema_paths)}"
         )
     campaign_index = schema_paths.index(campaign_path)
-    if campaign_index != len(schema_paths) - 4:
-        raise SystemExit("0055 activation campaigns must immediately precede 0056")
     if campaign_index == 0 or schema_paths[campaign_index - 1] != activation_path:
         raise SystemExit("0055 activation campaigns must immediately follow 0054")
 
@@ -16004,14 +16063,12 @@ def verify_relay_http_stream_handoff_rollout(
     )
     if handoff_path is None or campaign_path is None:
         raise SystemExit("0055/0056 HTTP stream handoff migrations not found")
-    if len(schema_paths) != 58:
+    if len(schema_paths) < 58:
         raise SystemExit(
-            "0056 HTTP stream handoff requires the 58-migration current chain, "
+            "0056 HTTP stream handoff requires at least 58 migrations, "
             f"got {len(schema_paths)}"
         )
     handoff_index = schema_paths.index(handoff_path)
-    if handoff_index != len(schema_paths) - 3:
-        raise SystemExit("0056 HTTP stream handoff must immediately precede 0057")
     if handoff_index == 0 or schema_paths[handoff_index - 1] != campaign_path:
         raise SystemExit("0056 HTTP stream handoff must immediately follow 0055")
 
@@ -16440,14 +16497,12 @@ def verify_relay_http_stream_dispatch_rollout(
     )
     if dispatch_path is None or handoff_path is None or abort_path is None:
         raise SystemExit("0056/0057/0058 HTTP stream migrations not found")
-    if len(schema_paths) != 58:
+    if len(schema_paths) < 58:
         raise SystemExit(
-            "0057 HTTP stream dispatch requires exactly 58 D1 migrations, "
+            "0057 HTTP stream dispatch requires at least 58 D1 migrations, "
             f"got {len(schema_paths)}"
         )
     dispatch_index = schema_paths.index(dispatch_path)
-    if dispatch_index != len(schema_paths) - 2:
-        raise SystemExit("0057 HTTP stream dispatch must immediately precede 0058")
     if dispatch_index == 0 or schema_paths[dispatch_index - 1] != handoff_path:
         raise SystemExit("0057 HTTP stream dispatch must immediately follow 0056")
     if schema_paths[dispatch_index + 1] != abort_path:
@@ -16803,14 +16858,12 @@ def verify_relay_http_stream_client_abort_rollout(
     )
     if abort_path is None or dispatch_path is None:
         raise SystemExit("0057/0058 HTTP stream client-abort migrations not found")
-    if len(schema_paths) != 58:
+    if len(schema_paths) < 58:
         raise SystemExit(
-            "0058 HTTP stream client-abort watchdog requires exactly 58 D1 migrations, "
+            "0058 HTTP stream client-abort watchdog requires at least 58 D1 migrations, "
             f"got {len(schema_paths)}"
         )
     abort_index = schema_paths.index(abort_path)
-    if abort_index != len(schema_paths) - 1:
-        raise SystemExit("0058 HTTP stream client-abort watchdog must be the D1 head")
     if abort_index == 0 or schema_paths[abort_index - 1] != dispatch_path:
         raise SystemExit("0058 HTTP stream client-abort watchdog must follow 0057")
 
@@ -17105,15 +17158,11 @@ def verify_relay_container_atomic_admission_rollout(
     )
     if atomic_path is None or binding_path is None:
         raise SystemExit("0049/0050 relay Container admission migrations not found")
-    if len(schema_paths) != 58:
+    if len(schema_paths) < 58:
         raise SystemExit(
-            f"0050 atomic admission compatibility requires the 58-migration current chain, got {len(schema_paths)}"
+            f"0050 atomic admission compatibility requires at least 58 migrations, got {len(schema_paths)}"
         )
     atomic_index = schema_paths.index(atomic_path)
-    if atomic_index != len(schema_paths) - 9:
-        raise SystemExit(
-            "0050 atomic admission must remain immediately before 0051 through 0056"
-        )
     if atomic_index == 0 or schema_paths[atomic_index - 1] != binding_path:
         raise SystemExit("0050 atomic admission must immediately follow 0049")
 
@@ -18529,6 +18578,250 @@ def verify_task_poll_recovery_rollout(schema_paths: list[Path]) -> None:
         "UPDATE midjourneys SET next_poll_at = 31 WHERE id = 370038"
     ).rowcount != 1:
         raise SystemExit("0037 recovery rollout broke a 0036-compatible Midjourney writer")
+
+
+def verify_relay_container_ring_transition_claim_rollout(
+    schema_paths: list[Path],
+) -> None:
+    claim_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0059_relay_container_ring_transition_claims.sql"
+        ),
+        None,
+    )
+    abort_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0058_relay_http_stream_client_abort_watchdogs.sql"
+        ),
+        None,
+    )
+    if claim_path is None or abort_path is None:
+        raise SystemExit("0058/0059 ring transition claim migrations not found")
+    claim_index = schema_paths.index(claim_path)
+    if claim_index != len(schema_paths) - 1:
+        raise SystemExit("0059 ring transition claim ledger must be the D1 head")
+    if claim_index == 0 or schema_paths[claim_index - 1] != abort_path:
+        raise SystemExit("0059 ring transition claim ledger must follow 0058")
+
+    claim_sql = claim_path.read_text(encoding="utf-8")
+    if "if not exists" in claim_sql.lower():
+        raise SystemExit("0059 critical claim objects must fail duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_ring_transition_claims",
+        "CREATE TABLE relay_container_ring_transition_steps",
+        "idx_relay_container_ring_transition_active_scope",
+        "relay_container_ring_transition_claim_insert_guard",
+        "relay_container_ring_transition_claim_update_guard",
+        "relay_container_ring_transition_claim_delete_guard",
+        "relay_container_ring_transition_step_insert_guard",
+        "relay_container_ring_transition_step_apply",
+        "relay_container_ring_transition_step_update_guard",
+        "relay_container_ring_transition_step_delete_guard",
+        "'controller_inflight'",
+        "'edge_inflight'",
+        "'recovery_required'",
+        "read_credential_id_sha256 <> claim_credential_id_sha256",
+        "claim_credential_id_sha256 <> deploy_credential_id_sha256",
+    ):
+        if fragment not in claim_sql:
+            raise SystemExit(f"0059 ring transition claim rollout missing: {fragment}")
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("PRAGMA foreign_keys = ON")
+    for path in schema_paths:
+        conn.executescript(path.read_text(encoding="utf-8"))
+    now = int(conn.execute("SELECT unixepoch()").fetchone()[0])
+    claim_values = {
+        "authorization_id": "1" * 64,
+        "execution_nonce": "2" * 64,
+        "authorization_manifest": "3" * 64,
+        "authorization_subject": "4" * 64,
+        "authorization_policy": "5" * 64,
+        "transition_manifest": "6" * 64,
+        "transition_subject": "7" * 64,
+        "transition_policy": "8" * 64,
+        "transition_plan": "9" * 64,
+        "candidate": "a" * 64,
+        "execution_plan": "b" * 64,
+        "account_id": "c" * 64,
+        "ledger_identity": "d" * 64,
+        "read_credential": "e" * 64,
+        "claim_credential": "f" * 64,
+        "deploy_credential": "0" * 64,
+        "controller_previous_set": "1" * 64,
+        "edge_previous_set": "2" * 64,
+        "runner_build": "3" * 64,
+        "runner_trust": "4" * 64,
+        "claim_owner": "5" * 64,
+        "claim_digest": "6" * 64,
+        "generated_at": now,
+        "expires_at": now + 300,
+    }
+    claim_insert = """
+        INSERT INTO relay_container_ring_transition_claims (
+          authorization_id_sha256, execution_nonce_sha256,
+          claim_contract, claim_scope, environment,
+          authorization_manifest_sha256, authorization_subject_sha256,
+          authorization_policy_sha256, transition_manifest_sha256,
+          transition_subject_sha256, transition_policy_sha256,
+          transition_plan_sha256, candidate_sha256, execution_plan_sha256,
+          account_id_sha256, ledger_identity_sha256,
+          read_credential_id_sha256, claim_credential_id_sha256,
+          deploy_credential_id_sha256,
+          controller_service_name, controller_previous_version_id,
+          controller_previous_deployment_set_sha256, controller_target_version_id,
+          edge_service_name, edge_previous_version_id,
+          edge_previous_deployment_set_sha256, edge_target_version_id,
+          runner_build_sha256, runner_trust_config_sha256,
+          claim_owner_sha256, claim_digest_sha256,
+          status, state_version, generated_at, claimed_at,
+          expires_at, updated_at, terminal_at
+        ) VALUES (
+          :authorization_id, :execution_nonce,
+          'd1-unique-claim-v1', 'staging-worker-ring-transition', 'staging',
+          :authorization_manifest, :authorization_subject, :authorization_policy,
+          :transition_manifest, :transition_subject, :transition_policy,
+          :transition_plan, :candidate, :execution_plan,
+          :account_id, :ledger_identity,
+          :read_credential, :claim_credential, :deploy_credential,
+          'cinatoken-container-controller-staging', 'controller-version-001',
+          :controller_previous_set, 'controller-version-002',
+          'cinatoken-rust-api-staging', 'edge-version-001',
+          :edge_previous_set, 'edge-version-002',
+          :runner_build, :runner_trust, :claim_owner, :claim_digest,
+          'claimed', 0, :generated_at, unixepoch(),
+          :expires_at, unixepoch(), NULL
+        )
+    """
+    conn.execute(claim_insert, claim_values)
+    try:
+        conn.execute(claim_insert, claim_values)
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise SystemExit("0059 accepted a replayed ring transition claim")
+
+    step_insert = """
+        INSERT INTO relay_container_ring_transition_steps (
+          authorization_id_sha256, state_version, step_code,
+          from_status, to_status, actor_execution_id_sha256,
+          mutation_request_sha256, cloudflare_request_id_sha256,
+          deployment_set_sha256, evidence_sha256, failure_class,
+          step_digest_sha256, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    """
+    conn.execute(
+        step_insert,
+        (
+            claim_values["authorization_id"],
+            1,
+            "t1_readback",
+            "claimed",
+            "t1_verified",
+            claim_values["claim_owner"],
+            None,
+            None,
+            "7" * 64,
+            "8" * 64,
+            "",
+            "9" * 64,
+        ),
+    )
+    try:
+        conn.execute(
+            "UPDATE relay_container_ring_transition_claims "
+            "SET status = 'controller_inflight', state_version = 2, "
+            "updated_at = unixepoch() WHERE authorization_id_sha256 = ?",
+            (claim_values["authorization_id"],),
+        )
+    except sqlite3.IntegrityError as error:
+        if "matching step evidence" not in str(error):
+            raise SystemExit(
+                f"0059 unjournaled state advance failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0059 allowed an unjournaled claim state advance")
+    conn.execute(
+        step_insert,
+        (
+            claim_values["authorization_id"],
+            2,
+            "controller_mutation_intent",
+            "t1_verified",
+            "controller_inflight",
+            claim_values["claim_owner"],
+            "a" * 64,
+            None,
+            None,
+            "b" * 64,
+            "",
+            "c" * 64,
+        ),
+    )
+    conn.execute(
+        step_insert,
+        (
+            claim_values["authorization_id"],
+            3,
+            "controller_post_readback",
+            "controller_inflight",
+            "recovery_required",
+            claim_values["claim_owner"],
+            "a" * 64,
+            None,
+            "d" * 64,
+            "e" * 64,
+            "transport_response_lost",
+            "f" * 64,
+        ),
+    )
+    state = conn.execute(
+        "SELECT status, state_version, terminal_at "
+        "FROM relay_container_ring_transition_claims "
+        "WHERE authorization_id_sha256 = ?",
+        (claim_values["authorization_id"],),
+    ).fetchone()
+    if (
+        state is None
+        or state[0] != "recovery_required"
+        or state[1] != 3
+        or state[2] is None
+    ):
+        raise SystemExit(f"0059 did not seal ambiguous mutation recovery: {state}")
+    try:
+        conn.execute(
+            "UPDATE relay_container_ring_transition_steps "
+            "SET evidence_sha256 = ? WHERE authorization_id_sha256 = ?",
+            ("0" * 64, claim_values["authorization_id"]),
+        )
+    except sqlite3.IntegrityError as error:
+        if "immutable" not in str(error):
+            raise SystemExit(
+                f"0059 step immutability failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0059 allowed mutation of ring transition step evidence")
+
+    schema_before_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        conn.executescript(claim_sql)
+    except sqlite3.Error as error:
+        if "already exists" not in str(error):
+            raise SystemExit(f"0059 duplicate DDL failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0059 critical ring transition objects accepted duplicate DDL")
+    schema_after_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0059 duplicate DDL attempt changed persistent schema")
+    conn.close()
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

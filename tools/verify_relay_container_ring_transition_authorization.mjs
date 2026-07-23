@@ -109,6 +109,9 @@ function describeContract() {
       transitionReviewReverified: true,
       externalDistinctTrustPolicyRequired: true,
       canonicalEvidenceArtifactsRequired: true,
+      distinctReadClaimDeployCredentialsRequired: true,
+      claimLedgerMigration:
+        "0059_relay_container_ring_transition_claims.sql",
       atomicSingleUseRemoteClaimRequired: true,
       authenticatedT1ReadbackRequired: true,
       controllerFirstRequired: true,

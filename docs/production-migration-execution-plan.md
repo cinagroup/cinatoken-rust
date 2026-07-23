@@ -2309,3 +2309,30 @@ Local Workerd now proves reader cancellation through incoming
 the real Cloudflare fault matrix, remote 0058 readback, provider invoice,
 Queue/restart/version-skew, P5, SLO/cost/security approvals, credential
 revocation, default-path backpressure, and Go/VPS drain/reverse-sync evidence.
+
+## 2026-07-23 Migration 0059 Ring Transition Claim Addendum
+
+This addendum supersedes the current-head statements above, not the 0056-0058
+SSE safety contracts. Current local head is 0059/59 with 68 required tables,
+899 checked incremental columns, and 100 key indexes.
+
+| Phase | Required action | Pass evidence | Abort and retain |
+| --- | --- | --- | --- |
+| A credential and runner freeze | Revoke the exposed credential; freeze read/claim/deploy identities, two policy roots, key fingerprints, account/ledger/service pins, runner source/build/trust/release digests | Three pairwise-distinct least-privilege identities; immutable disabled runner artifact; no secret in argv/files/logs/evidence | Missing revocation, shared identity, writable/unpinned runner, origin/service override, or broad D1/deploy scope |
+| B reader-first 0059 expand | Back up staging D1; keep runner/claim authority and all traffic/provider gates false; apply 0059 once | Remote 0059/59 and 68/899/100; exact tables/indexes/triggers; unchanged business fingerprint; zero claim/provider/financial/traffic delta | Partial catalog, unexpected claim, old writer, drift, or side effect |
+| C claim authority | Deploy the private D1-bound claim Worker with create/read-only protocol and dedicated secret | Bounded authenticated request; unique auth/nonce/scope; D1 time/TTL; replay/concurrency/expiry negatives; redacted logs | General SQL API, bearer leak, duplicate active claim, mutable evidence, or ambiguous ownership |
+| D immutable runner | Publish attested build with fixed origins/account/policies/keys/services/claim ledger and exactly two deployment POSTs | Checkout/config/argv/env cannot override pins; read/claim/deploy secrets isolated; native bounded fetch; redirects off; POST retry zero; `force` absent | Shell/Wrangler/SDK retry, inherited broad env, arbitrary URL/service/version, unbounded body, or secret output |
+| E Controller transition | Claim once, stable T1, persist Controller intent, POST once, stable target readback | Exact reviewed target at 100 percent twice; durable request/evidence digests; no customer/provider/financial action | T1 drift, response loss without target proof, old/mixed target, readback drift, second POST, or generation rollback |
+| F Edge transition | Re-read old Edge, persist Edge intent, POST once, stable target readback | Exact reviewed Edge target at 100 percent twice; completed claim and redacted receipt | Controller drift, old Edge mismatch, response ambiguity, second POST, or unreviewed cleanup |
+| G overlap and fault campaign | Exercise old/new Edge, named DO, Linux Container, KV/D1/R2, cutoff replay, restart/OOM, runner crash, concurrent invocation, D1/readback faults | One claim owner, one mutation per service, no duplicate provider/financial effect, forward-safe recovery, measured RTO/RPO/SLO/cost | Unknown owner, retry, stranded state, accounting mismatch, data leak, unsafe Go rollback, or unbounded backlog |
+| H P5-B and production decision | Bind remote results to the frozen candidate and independent security/operations/release/rollback/Go approvals | Complete signed P5-B, reverse-sync and Go drain packet, G1-G8/C1-C5 acceptance | Missing/stale/mixed evidence, live Go authority not retained, or any production gate open |
+
+Controller success with Edge failure is an intentional partial-success boundary:
+retain the dual-ring Controller, keep the exact old Edge if still verified,
+return new traffic to Go/VPS, disable Rust admission, and repair forward with a
+new packet. Never roll generation backward or reuse the old authorization.
+
+The local repository currently implements only B's schema and the fail-closed
+contract portions of A/D/E/F. The private authority, live transport, immutable
+enabled artifact, revocation, and all remote phases remain open. Production
+remains **NO-GO**.

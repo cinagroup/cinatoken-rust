@@ -936,3 +936,48 @@ retain 0056/0057/0058, every abort event, handoff, receipt, billing row, audit
 and provider counter. Never down-migrate, delete or rewrite abort evidence,
 re-enable an N-1 producer, refund an ambiguous reservation automatically, or
 resend its provider operation. Production remains **NO-GO**.
+
+## 0059 Ring Transition Claim Ledger Migration Runbook
+
+0059 is an expand-only control-plane evidence migration after 0058. The exact
+local target is 59 migrations, 68 required tables, 899 checked incremental
+columns, and 100 key indexes. It adds no customer, provider, billing, task, or
+relay payload column.
+
+### Compatibility preflight
+
+1. Keep every ring-transition and SSE mutation gate false. Go/VPS remains
+   traffic and scheduler authority.
+2. Revoke the exposed credential and retain independent revocation evidence.
+   Do not create or use replacement write credentials before review.
+3. Freeze the D1 backup/Time Travel point, normalized catalog, business
+   fingerprint, old/new Worker version candidates, runner release identity,
+   claim-authority identity, rollback owner, and provider/financial counters.
+4. Require all pre-0059 binaries to be reader-only for the affected staging
+   control path. No executable runner or general D1-write claim token is
+   permitted.
+
+### Apply and exact readback
+
+1. Apply `0059_relay_container_ring_transition_claims.sql` once through the
+   ordered migration runner; never hand-edit migration history.
+2. Read back 0059/59, 68/899/100, both exact tables, three named indexes, seven
+   claim/step triggers, normalized schema digest, and unchanged business
+   fingerprint.
+3. Prove duplicate authorization ID, duplicate nonce, concurrent active scope,
+   replayed digest, wrong owner, skipped state, expired pre-write action,
+   identity mutation, evidence mutation/deletion, and duplicate DDL all fail.
+4. Prove Controller/Edge intent persistence precedes each simulated write and
+   an ambiguous post-write observation becomes immutable
+   `recovery_required`, never a retry.
+5. Deploy only 0059-aware readers with execution disabled. Observe longer than
+   the maximum old Worker/deployment lifetime and require zero claim/step rows,
+   provider calls, financial changes, customer traffic, and unexplained wake.
+
+### Rollback
+
+Disable the unpublished runner/claim authority first and retain 0059. Claims
+and steps are audit evidence and are never down-migrated, deleted, rewritten,
+or reused. If a mutation was attempted, preserve the dual-ring Controller and
+Go/VPS traffic authority, classify by authenticated readback, and repair
+forward under a new authorization. Production remains **NO-GO**.

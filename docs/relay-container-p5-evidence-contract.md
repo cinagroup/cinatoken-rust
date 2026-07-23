@@ -424,32 +424,34 @@ requires `python tools/verify_sqlite.py` and
 `bun run check:relay-container:p5-shard-registry`; report their actual output
 and never infer a pass from this paragraph.
 
-On the current worktree, the focused candidate checks pass the 58-migration
-66/848/97 SQLite verifier, 44 P5 verifier tests, 24 foundation collector tests
+On the current worktree, the focused candidate checks pass the 59-migration
+68/899/100 SQLite verifier, 44 P5 verifier tests, 24 foundation collector tests
 plus its offline self-test, 13 shard-registry/campaign collector tests, and 22 deploy-preflight
 tests. These are still local contract checks, not Cloudflare evidence.
 
 The signed candidate and schema-readback facts now require exact migration head
-`0058_relay_http_stream_client_abort_watchdogs.sql`, count 58, and 66/848/97 totals.
+`0059_relay_container_ring_transition_claims.sql`, count 59, and 68/899/100 totals.
 Historical sealed 0055 activation evidence remains valid only when the current
-candidate also proves ordered 0056/0057/0058 compatibility. A pre-0058 packet is
+candidate also proves ordered 0056/0057/0058/0059 compatibility. A pre-0059 packet is
 rejected and cannot be relabeled as current evidence.
 
 Those fixtures are tests of the verifier, not Cloudflare evidence. No remote
 resource, credential, provider, financial row, deployment, or traffic state was
 changed. Production remains **NO-GO**.
 
-## 0058 Candidate Identity Overlay
+## 0059 Candidate Identity Overlay
 
 Every new P5 packet must bind migration head
-`0058_relay_http_stream_client_abort_watchdogs.sql`, count 58, and exact
-66-table/848-column/97-index totals. A 0057 packet is historical and cannot be
+`0059_relay_container_ring_transition_claims.sql`, count 59, and exact
+68-table/899-column/100-index totals. A 0058 packet is historical and cannot be
 relabeled as the current candidate.
 
 Schema readback must include the exact seven-column abort table, observation
-index, five triggers, normalized schema digest, `enable_request_signal`
-compatibility, all four SSE gates false, and zero unexpected abort/provider/
-financial effect during the observation window. The remote fault packet must
-add HTTP/2, HTTP/3, TCP and WFP cancellation plus first-wins race, D1 ambiguity,
-restart/version-skew, invoice and rollback evidence. Local fixture acceptance
-does not authorize traffic. Production remains **NO-GO**.
+index, five triggers, both 0059 claim/step tables, three named claim indexes,
+seven claim/step triggers, normalized schema digest, `enable_request_signal`
+compatibility, all four SSE gates false, the ring runner disabled, and zero
+unexpected claim/step/abort/provider/financial effect during the observation
+window. The remote fault packet must add claim races, response-loss readback,
+HTTP/2, HTTP/3, TCP and WFP cancellation, D1 ambiguity, restart/version-skew,
+invoice and rollback evidence. Local fixture acceptance does not authorize
+traffic. Production remains **NO-GO**.

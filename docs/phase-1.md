@@ -1690,8 +1690,10 @@ authoritative and production remains **NO-GO**.
 
 ## 2026-07-22 Ordinary HTTP SSE Client-Abort Watchdog v1
 
-Migration 0058 is the current local head at 58 migrations, 66 tables, 848
-checked incremental columns, and 97 key indexes. `enable_request_signal` is
+At this historical checkpoint, migration 0058 was the local head at 58
+migrations, 66 tables, 848 checked incremental columns, and 97 key indexes.
+The 0059 runner-claim section below supersedes only that head/count statement.
+`enable_request_signal` is
 tracked for the Worker, and positive durable SSE now requires 0056/0057/0058
 readiness before provider I/O.
 
@@ -2933,7 +2935,7 @@ every transition-review key.
 
 Five actual canonical artifacts bind fresh stable Controller/Edge deployment
 sets and active-version settings, revoked exposed credentials and separate least-
-privilege read/deploy identities, a two-person live operator ceremony, an
+privilege read/claim/deploy identities, a two-person live operator ceremony, an
 unclaimed expiring D1 unique claim, and Go/VPS forward-safe rollback. The output
 requires an atomic remote claim plus T1, Controller post-write, Edge pre-write,
 and Edge post-write readbacks. It explicitly states that Cloudflare native
@@ -2962,3 +2964,26 @@ revocation/permission proof, claim races, response-loss classification,
 post-deployment readbacks, four-layer Workerd/remote overlap, accounting,
 fault/load/SLO/cost, P5-B, and Go/VPS cutover remain open. Production remains
 **NO-GO**.
+
+## 2026-07-23 Ring Transition Claim And Fail-Closed Runner Foundation
+
+The previous "claim authority and runner do not yet exist" statement is now
+partially superseded. Migration 0059 implements the D1 single-use claim and
+ordered step ledger, and the authorization contract now requires separate
+least-privilege read, claim, and deploy credential identities. Local exact
+schema replay passes at 59 migrations, 68 tables, 899 checked incremental
+columns, and 100 key indexes.
+
+The new runner contract pins account, policy, approval-key, service,
+claim-authority, source/build, trust-config, and release identities. It
+constructs only the exact Controller/Edge 100-percent deployment requests,
+marks them zero-retry, and classifies response loss only through two stable
+authenticated target readbacks. An inflight claim never schedules another
+mutation.
+
+The checked-in trust object remains `enabled=false`; the runner CLI rejects
+execution before credential or network access. The private claim-authority
+Worker, live read/claim/deploy transports, immutable enabled runner artifact,
+credential revocation, remote 0059, fault campaign, P5-B, Go/VPS drain, and
+production decision remain open. No Cloudflare request or mutation occurred.
+Production remains **NO-GO**.

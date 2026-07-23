@@ -3,7 +3,7 @@
 ## Decision
 
 The staging ring transition is executed only by a compiled Rust launcher whose
-release-policy digest, release-key fingerprint, fixed sidecar names, and
+release-policy digest, release-key fingerprint, three fixed sidecar names, and
 Authority origin are embedded at build time. The signed release manifest is a
 detached sidecar produced after the executable is built; it binds the finished
 executable digest without creating an impossible binary-self-hash cycle. The
@@ -60,6 +60,7 @@ The compiled trust root reserves only non-circular anchors:
 
 - `cinatoken-ring-transition-runner.release.json`;
 - `cinatoken-ring-transition-runner.release-policy.json`;
+- `cinatoken-ring-transition-runner.publication.json`;
 - exact release-policy SHA-256;
 - independent release-key SPKI SHA-256; and
 - exact staging Authority origin.
@@ -88,7 +89,7 @@ and the two fixed sibling names. It then enforces:
   policy/release validity windows;
 - a sorted key-separation inventory that contains the manifest permit key and
   excludes release/permit key reuse;
-- the complete 18-path transitive module closure, portable paths, module
+- the complete 19-path transitive module closure, portable paths, module
   counts/bytes/digests, Git/lock/package identities, and two-build equality;
 - exact evidence, Authority version, executable name, byte length, signed
   digest, and current executable bytes; and
@@ -98,8 +99,48 @@ and the two fixed sibling names. It then enforces:
 Stable file reads reject symlinks, non-regular or empty files, path movement,
 parent escape, replacement between metadata/read checks, and Unix hardlinks.
 The JavaScript pre-install verifier additionally rejects Windows hardlinks.
-That Windows link-count check and a create-new publication receipt remain
-installation-ceremony controls rather than claims made by the Rust verifier.
+That Windows source link-count check remains an installation-ceremony control
+rather than a claim made by the Rust runtime verifier.
+
+### Signed publication and append-only activation
+
+`crates/ring-transition-runner/src/publication.rs` now verifies and consumes a
+second DSSE domain signed by the independent release key. Its canonical
+publication manifest binds the already verified policy, release packet and
+executable identities, target/Authority/source identities, a deterministic
+three-file generation digest, a monotonically increasing activation sequence,
+and the exact previous publication-manifest digest.
+
+The publication packet cannot grant remote authority. It authorizes only one
+local create-new generation:
+
+```text
+<install-root>/
+  publications/
+    publication-<publication-manifest-sha256>/
+      cinatoken-ring-transition-runner[.exe]
+      cinatoken-ring-transition-runner.release.json
+      cinatoken-ring-transition-runner.release-policy.json
+      cinatoken-ring-transition-runner.publication.json
+  activations/
+    <20-digit-sequence>.activation.json
+```
+
+The installer consumes a non-cloneable verified candidate, creates every file
+with `create_new`, flushes it, re-verifies the installed bytes, makes the
+generation read-only, and creates the activation record last. An existing
+directory/file or sequence is a conflict, never an overwrite. Sequence `1`
+requires no predecessor; every later sequence requires the exact prior
+activation record. Concurrent candidates for the same sequence race on one
+fixed create-new activation path, so at most one becomes active. A crash may
+leave an incomplete, unactivated generation; the production response is
+quarantine/forward repair, not deletion or silent reuse.
+
+Runtime authorization now requires the publication directory name, exact
+compile target, all four sibling bytes and the append-only activation record
+to agree before any credential handle is opened. The activation record also
+binds the exact outer publication-packet digest, closing substitution outside
+the signed payload without creating a self-hash cycle.
 
 ### Detached release packet
 
@@ -250,8 +291,10 @@ packet and executable after signing; this avoids a second self-reference.
 The final artifact must be installed by digest outside the source checkout.
 The launcher now verifies compiled pins, fixed sidecars, DSSE, manifest,
 current executable and compile target before reading the four runtime handles.
-The future installer must verify and retain the separate publication receipt
-before making those three files executable/visible as one installed release.
+The local installer/verifier now retains the separate signed publication
+packet and create-new activation record before the generation is executable as
+an authorized release. A real ceremony must still run it outside the writable
+checkout under an operator-owned installation root.
 
 ## Rust resumable core
 
@@ -321,20 +364,20 @@ cannot satisfy the release verifier.
 
 The pure core is not a live executor. The next code boundaries are:
 
-1. implement create-new publication-receipt verification and atomic
-   digest-addressed installation around the completed Rust sidecar verifier;
-2. load only the fixed credential handles after release verification, prove
+1. load only the fixed credential handles after publication verification,
+   prove
    read/claim/deploy identity separation and complete exactly one claim;
-3. build a bounded Authority client that obtains a transactionally coherent
+2. build a bounded Authority client that obtains a transactionally coherent
    snapshot or detects query-version drift, then feeds only verified bytes to
    the reducer;
-4. implement authenticated Controller/Edge deployment readers with a
+3. implement authenticated Controller/Edge deployment readers with a
    signed-policy timing window for two stable observations;
-5. join `AuthorizedMutation<S>` directly to the sole deployment POST call site
+4. join `AuthorizedMutation<S>` directly to the sole deployment POST call site
    so no request can be sent from a restored snapshot or reusable descriptor;
-6. append immutable readback outcomes and seal a create-new, hash-chained,
+5. append immutable readback outcomes and seal a create-new, hash-chained,
    redacted execution receipt; and
-7. inject process death before and after release verification, claim, every
+6. inject process death before and after release/publication verification,
+   claim, every
    Authority append/readback, the one deployment POST, each stable read and
    each receipt append.
 

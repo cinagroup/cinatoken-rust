@@ -75,6 +75,7 @@ describe("Relay Container ring-transition runner release contract", () => {
       "crates/ring-transition-runner/src/lib.rs",
       "crates/ring-transition-runner/src/main.rs",
       "crates/ring-transition-runner/src/orchestrator.rs",
+      "crates/ring-transition-runner/src/publication.rs",
       "crates/ring-transition-runner/src/release.rs",
       "crates/ring-transition-runner/tests/cli.rs",
       "package.json",
@@ -131,7 +132,7 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.moduleCount).toBe(18);
+    expect(result.moduleCount).toBe(19);
   });
 
   test("matches the deterministic Rust DSSE release vector", () => {
@@ -141,13 +142,23 @@ describe("Relay Container ring-transition runner release contract", () => {
       policySha256:
         "9b12c3dd50812180f2122311480876bd6508a81618082c615ca52d4701ec3856",
       inventorySha256:
-        "686c6dedb4686bed7e33290ec3ce087e07c581c70eff35222f32581062009370",
+        "5199295df3e91e3c95e4afc4035306bfe79b7a2333841a668e72cad118226c07",
       manifestSha256:
-        "01d1f22f04245c8e467421e43aa25b5dbd4b5166fdf29819f518e01af455dda3",
+        "85ad40156703e566e368be3d2f116704391e3b36920c4faf4b861212ca44d42f",
       packetSha256:
-        "48c0f232106474c489109982de470737c69c63acee984f68d373e486819885bc",
+        "5269e64bf87b0d236cc838e0323b452dded66b687c6a83d8f168f04209c52d80",
       signatureBase64:
-        "xd572FoAEqiTiFWTL9nFgUc9CYvbyIPJyD8ehNXUEvF9He5Zq7yt54H994eQ/lk1pRNfepK97z9vqwMRP39MCQ==",
+        "aKA/cksGtMPK4EhqGqPqQkRe3vFlIUqQduYnF8h26oZmegl/nPafziCNIFnHnS0fmDue8MmfarwbShM66JPJAQ==",
+      publicationGenerationSha256:
+        "516114cf01584d962b03f31ff81fb6a4ae6eadb54b055c379d925ff7d08f34d9",
+      publicationManifestSha256:
+        "cb3042b9e957e18364bb7f1c05395df133f7c86db103cd3c20def7e7ffd12288",
+      publicationPacketSha256:
+        "137bba6275f589706e9ef37c58a1ee0ff673f8324eac096c069dc509cd30a6c6",
+      publicationSignatureBase64:
+        "3TY81utL+dYIkbSJEsdCYgw2J714YbfjdUEkv5InwlsGZm+h2VQWxjipW960cBqUHkegAHNaUQSFuKe5CG85Dw==",
+      activationSha256:
+        "8067544a478f8ef9b95913610b7d770980ef9522fa26c593eb38cec1c6ee32c0",
     });
   });
 
@@ -516,13 +527,135 @@ function deterministicRustReleaseVector() {
     },
     moduleInventory,
   };
+  const packetBytes = Buffer.from(canonicalJson(packet), "utf8");
+  const publicationFiles = [
+    {
+      fileName: "cinatoken-ring-transition-runner.exe",
+      byteLength: artifactBytes.length,
+      sha256: artifactSha256,
+    },
+    {
+      fileName: "cinatoken-ring-transition-runner.release.json",
+      byteLength: packetBytes.length,
+      sha256: sha256Hex(packetBytes),
+    },
+    {
+      fileName: "cinatoken-ring-transition-runner.release-policy.json",
+      byteLength: policyBytes.length,
+      sha256: policySha256,
+    },
+  ].sort((left, right) =>
+    left.fileName < right.fileName
+      ? -1
+      : left.fileName > right.fileName
+        ? 1
+        : 0,
+  );
+  const publicationGenerationSha256 = sha256Hex(
+    Buffer.from(
+      canonicalJson({
+        schemaVersion: 1,
+        contract:
+          "cinatoken-relay-container-ring-transition-runner-publication-generation-v1",
+        targetTriple: "x86_64-pc-windows-msvc",
+        files: publicationFiles,
+      }),
+      "utf8",
+    ),
+  );
+  const publicationManifest = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-relay-container-ring-transition-runner-publication-manifest-v1",
+    environment: "staging",
+    publishedAt: "2026-07-23T01:00:00.000Z",
+    expiresAt: "2026-07-23T12:00:00.000Z",
+    release: {
+      sourceCommit: "1".repeat(40),
+      gitTreeSha: "2".repeat(40),
+      manifestSha256: sha256Hex(manifestBytes),
+      packetSha256: sha256Hex(packetBytes),
+      policySha256,
+      releaseKeySpkiSha256: spkiSha256,
+      authorityOrigin:
+        "https://ring-transition-authority-staging.cinatoken.com",
+      authorityVersionId: "authority-version-001",
+      targetTriple: "x86_64-pc-windows-msvc",
+    },
+    generation: {
+      generationSha256: publicationGenerationSha256,
+      activationSequence: 1,
+      previousPublicationManifestSha256: null,
+      packetFileName: "cinatoken-ring-transition-runner.release.json",
+      policyFileName:
+        "cinatoken-ring-transition-runner.release-policy.json",
+      publicationFileName:
+        "cinatoken-ring-transition-runner.publication.json",
+      files: publicationFiles,
+    },
+  };
+  const publicationManifestBytes = Buffer.from(
+    canonicalJson(publicationManifest),
+    "utf8",
+  );
+  const publicationPayloadType =
+    "application/vnd.cinatoken.ring-transition-runner-publication.v1+json";
+  const publicationSignature = signBytes(
+    null,
+    Buffer.concat([
+      Buffer.from(`DSSEv1 ${Buffer.byteLength(publicationPayloadType)} `),
+      Buffer.from(publicationPayloadType),
+      Buffer.from(` ${publicationManifestBytes.length} `),
+      publicationManifestBytes,
+    ]),
+    privateKey,
+  );
+  const publicationPacket = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-relay-container-ring-transition-runner-publication-packet-v1",
+    envelope: {
+      payloadType: publicationPayloadType,
+      payload: publicationManifestBytes.toString("base64"),
+      signatures: [
+        {
+          keyid: policy.keyId,
+          sig: publicationSignature.toString("base64"),
+        },
+      ],
+    },
+  };
+  const publicationManifestSha256 = sha256Hex(publicationManifestBytes);
+  const publicationPacketBytes = Buffer.from(
+    canonicalJson(publicationPacket),
+    "utf8",
+  );
+  const publicationPacketSha256 = sha256Hex(publicationPacketBytes);
+  const activationBytes = Buffer.from(
+    canonicalJson({
+      schemaVersion: 1,
+      contract:
+        "cinatoken-relay-container-ring-transition-runner-publication-activation-v1",
+      activationSequence: 1,
+      publicationManifestSha256,
+      publicationPacketSha256,
+      previousPublicationManifestSha256: null,
+      generationSha256: publicationGenerationSha256,
+    }),
+    "utf8",
+  );
   return {
     spkiSha256,
     policySha256,
     inventorySha256,
     manifestSha256: sha256Hex(manifestBytes),
-    packetSha256: sha256Hex(Buffer.from(canonicalJson(packet), "utf8")),
+    packetSha256: sha256Hex(packetBytes),
     signatureBase64: signature.toString("base64"),
+    publicationGenerationSha256,
+    publicationManifestSha256,
+    publicationPacketSha256,
+    publicationSignatureBase64: publicationSignature.toString("base64"),
+    activationSha256: sha256Hex(activationBytes),
   };
 }
 
@@ -582,6 +715,10 @@ async function releaseFixture({
     [
       "crates/ring-transition-runner/src/orchestrator.rs",
       "runner-orchestrator-fixture",
+    ],
+    [
+      "crates/ring-transition-runner/src/publication.rs",
+      "runner-publication-fixture",
     ],
     [
       "crates/ring-transition-runner/src/release.rs",

@@ -2516,12 +2516,12 @@ launcher remains disabled, and phases K-L remain blocked.
 | J1 sidecar verification | Read current executable plus fixed policy/packet siblings; verify canonical exact schemas, one Ed25519 DSSE signature and bounded time windows | Rust unit/cross-language vectors pass | Independent packet/key review from frozen release workspace | Unknown/duplicate field, invalid PAE/signature, future/expired policy or packet |
 | J2 provenance closure | Verify 18 required modules, Git/locks/package, two-build/evidence/Authority identities and permit-key separation | Rust and JavaScript closure/tamper tests pass | Two separately extracted real builds and retained evidence | Missing/transitive module drift, key reuse, build/evidence/Authority mismatch |
 | J3 installed artifact | Verify stable regular current-executable bytes, signed name/length/digest and compile target | Rust rejects symlink/replacement/parent/Unix-hardlink/foreign-target drift; JS rejects Windows hardlinks pre-install | Atomic digest-addressed generation outside checkout | Mixed sidecars, in-place overwrite, writable active generation, path/link drift |
-| J4 publication receipt | Bind final policy, packet, executable and activated generation after signing | Contract planned only | Create-new signed/approved receipt plus independently read back installed digests | Missing/overwritten receipt, digest drift, ambiguous activation |
+| J4 publication receipt | Bind final policy, packet, executable and activated generation after signing | Rust signed publication verifier plus create-new generation and append-only predecessor-CAS activation are implemented locally | Real signed candidate installed under an operator-owned root plus independent byte/activation readback | Missing/overwritten receipt, digest drift, ambiguous activation |
 | K execution join | Read fixed credential handles only after J0-J4; sole POST consumes typed fresh permit | Rust release and pure capability cores are separate and fail closed | Bounded Authority/read/deploy clients, stable reads, execution receipt and crash campaign | Credential before release, generic/retry send, restored permit or duplicate POST |
 
 Required release-campaign order:
 
-1. freeze one clean commit and review the 18-path module inventory;
+1. freeze one clean commit and review the 19-path module inventory;
 2. build twice from separate archive extractions under the pinned Rust 1.78
    toolchain and fixed environment;
 3. run complete local/fault/security/no-secret gates against both identical
@@ -2539,3 +2539,40 @@ The release packet alone never authorizes installation, customer traffic or a
 Cloudflare write. Missing credential-revocation evidence, any mismatch between
 the reviewed and installed generation, or any unexplained business/provider
 delta keeps Go/VPS authoritative and production **NO-GO**.
+
+## 2026-07-23 Append-Only Publication Activation Addendum
+
+Phase J4 now has a local Rust implementation. This does not advance phase K or
+authorize a real installation.
+
+The implementation replaces the planned mutable activation pointer with an
+append-only protocol:
+
+1. release-key DSSE signs a distinct publication payload type;
+2. the payload binds the exact release policy, packet and executable plus a
+   canonical three-file generation digest;
+3. its manifest digest derives the create-new publication directory;
+4. activation sequence 1 requires no predecessor, while every later sequence
+   signs the exact prior publication-manifest digest;
+5. the installer creates and flushes all four generation files, re-verifies
+   them, and freezes the directory;
+6. one fixed 20-digit sequence activation record is created last and binds
+   manifest, outer packet, generation and predecessor digests; and
+7. runtime authorization verifies that record and the compile target before
+   credential access.
+
+| Fault | Durable observation | Recovery/abort rule |
+| --- | --- | --- |
+| Crash before generation directory | No candidate bytes | Retry only with the same independently verified candidate |
+| Crash during file creation | Unactivated partial manifest-hash directory | Quarantine and repair forward; never overwrite/adopt/delete automatically |
+| Crash after readback/freeze, before activation | Complete but unactivated generation | Independent evidence may authorize a new forward candidate; it cannot execute |
+| Two candidates at one sequence | One create-new activation path | First complete create wins; loser remains unactivated and is quarantined |
+| Activation short write or replacement | Runtime canonical/exact-byte verification fails | No credential or network access; preserve evidence |
+| Predecessor mismatch or gap | New generation is not created | Re-read append-only history and issue a newly signed next candidate |
+
+The real ceremony must still prove filesystem ownership/ACLs, Windows source
+hardlink rejection, Unix link count one, two isolated Rust 1.78 builds,
+independent signature custody, power-loss durability, process-manager launch
+from the selected generation, and exact readback from a non-checkout root.
+Until then the checked-in launcher remains disabled and production is
+**NO-GO**.

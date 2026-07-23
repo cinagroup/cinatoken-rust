@@ -639,16 +639,18 @@ replay every Rust authorization decision:
 2. raw canonical policy and packet byte digests plus bounded byte lengths;
 3. independently recomputed DSSE PAE digest, signature result, key ID and SPKI
    digest without retaining a private key;
-4. all 18 module records and their canonical inventory digest, including
-   `orchestrator.rs` and `release.rs`;
+4. all 19 module records and their canonical inventory digest, including
+   `orchestrator.rs`, `release.rs` and `publication.rs`;
 5. signed target triple, launcher compile-time architecture/OS/ABI, executable
    file name, byte length and independently read back SHA-256;
 6. pre-install symlink/hardlink/regular-file/canonical-parent results and the
    immutable destination generation identity;
 7. verifier version, whole-second verification time, policy/release windows
    and result before any credential handle is opened; and
-8. create-new publication-receipt identity linking policy, packet, executable,
-   installer and activated generation.
+8. signed publication manifest/packet identities linking policy, packet,
+   executable, generation, sequence and predecessor; and
+9. exact create-new activation bytes linking publication manifest, outer
+   packet, generation and predecessor.
 
 The evidence must show the disabled/null checked-in build fails before clock
 and file reads, while the real release build succeeds only for the reviewed
@@ -660,3 +662,39 @@ the safe Rust runtime path does not claim NTFS link-count inspection. Unix
 runtime evidence additionally requires link count one. Any missing receipt,
 mixed generation, mutable active file, sidecar replacement, platform mismatch
 or credential access before release success makes the release item invalid.
+
+## Publication Activation Evidence Overlay
+
+The local Rust core now defines the evidence shape that a real installation
+must retain. This moves publication from "contract absent" to "ceremony and
+external proof absent."
+
+For every activation sequence retain:
+
+1. canonical publication manifest, outer packet, payload type, key ID, DSSE
+   PAE/signature result and whole-second verification time;
+2. independently recomputed generation subject and exact artifact,
+   release-packet and policy records;
+3. publication-manifest-derived directory name and canonical installation
+   root/`publications`/`activations` parent identities;
+4. predecessor activation bytes and SHA-256 for sequence N >1;
+5. create-new results for directory, four files and fixed sequence activation
+   record, including service account and filesystem identity;
+6. file sync, installed-byte readback and read-only/ACL results before
+   activation;
+7. exact activation-record bytes and digest after creation;
+8. process/crash point and whether the generation remained unactivated; and
+9. runtime readback proving credentials were unopened until the exact selected
+   publication identity succeeded.
+
+An unactivated directory is evidence, not an executable candidate. P5 must
+inventory and quarantine it; automatic overwrite, deletion, adoption or
+sequence reuse is forbidden. The real campaign must include two concurrent
+installers, short/disk-full writes, permission failure, process kill after each
+file/sync/freeze boundary, activation short write, predecessor drift and
+power-loss durability.
+
+The Rust core and deterministic JavaScript/Rust vectors are local evidence
+only. P5 remains incomplete until a real release owner signs one candidate,
+the operator-owned filesystem produces retained create-new/ACL/durability
+evidence, and the exact installed launcher independently authorizes itself.

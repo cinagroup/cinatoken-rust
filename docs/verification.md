@@ -8358,7 +8358,7 @@ single-use permits and zero POST retry. A source guard rejects ambient
 `process.env`, console logging, high-level unbounded response readers,
 Wrangler, child processes and multiple fetch call sites.
 
-The Rust package target is now 23 tests: 20 library, one binary and two CLI
+The Rust package target is now 28 tests: 25 library, one binary and two CLI
 integration tests. The original launcher cases still prove the checked-in
 release is deterministic and disabled, every enabled identity requires all
 release/Authority pins, only two fixed commands are accepted, the staging
@@ -8384,7 +8384,7 @@ customer traffic, billing conservation, P5-B or Go/VPS drain. No remote action
 is claimed; production remains **NO-GO**.
 
 The current final repository aggregate passed on 2026-07-23 in approximately
-1,211 seconds after the dependency-lock rebuild. It included the 23 runner
+668 seconds. It included the 28 runner
 tests, 17 detached release/source tests, 58
 ring-transition contract tests, 22 Authority unit tests, two Authority Workerd
 tests, 22 Authority configuration/preflight tests, the Rust workspace, all
@@ -8411,8 +8411,8 @@ The release addition contributes 17 Bun tests:
   untracked change rejection, missing-module rejection, CLI collection and
   caller-override rejection.
 
-The Rust package contributes 23 tests and describes a fixed detached
-`releaseTrust` rather than embedding its own future artifact digest.
+The Rust package contributes 28 tests and describes fixed release/publication
+sidecar trust rather than embedding its own future artifact digest.
 The focused gate also runs both CLIs in describe mode. No test reads a real
 release/transition credential, calls a network service, signs with a production
 key, writes outside its temporary fixture, installs an artifact, enables
@@ -8421,8 +8421,9 @@ execution or changes Cloudflare.
 These tests validate packet/source foundations and the Rust runtime verifier,
 but do not publish a release. Two isolated real builds, a retained independent
 DSSE signature, compiled non-null pins, atomic digest installation,
-publication receipt, live orchestrator integration, credential revocation and
-remote staging evidence remain open. Production remains **NO-GO**.
+real operator-owned publication activation, live orchestrator integration,
+credential revocation and remote staging evidence remain open. Production
+remains **NO-GO**.
 
 ## Fresh Mutation Intent Verification (2026-07-23)
 
@@ -8454,7 +8455,7 @@ counterpart. Rust tests additionally prove:
 
 Run `cargo test -p cinatoken-ring-transition-runner` directly or use the
 combined `bun run check:ring-transition-runner`. The combined gate currently
-executes 23 Rust tests and 17 Bun release/source tests.
+executes 28 Rust tests and 17 Bun release/source tests.
 
 These tests do not prove the future Rust HTTP call site consumes the type,
 process crash behavior around a real network send, persisted hash-chain
@@ -8466,7 +8467,7 @@ The runner package now adds seven release-verifier library cases. Together
 with the orchestrator and launcher tests, the package result is:
 
 ```text
-20 library tests: PASS
+25 library tests: PASS
 1 binary test: PASS
 2 CLI integration tests: PASS
 17 Bun packet/source tests: PASS
@@ -8504,5 +8505,36 @@ not recorded as an MSRV build pass; the isolated release builder must still
 complete the locked Rust 1.78 compile and tests.
 
 These are local fail-closed checks. They do not provide a production key,
-signature, non-null compiled pins, isolated repeated builds, publication
-receipt, installed generation, credential revocation or remote evidence.
+signature, non-null compiled pins, isolated repeated builds, real installed
+generation, credential revocation or remote evidence.
+
+## Signed Publication And Activation Verification (2026-07-23)
+
+Five publication tests extend the Rust library count from 20 to 25. They
+verify:
+
+- canonical domain-separated publication DSSE with the exact release key/key
+  ID and validity bounded by the signed release;
+- deterministic JavaScript/Rust generation, manifest, outer packet, signature
+  and activation-record vectors;
+- exact release/policy/artifact generation binding, with mixed release,
+  artifact, file inventory, signature, unknown/duplicate/non-canonical JSON,
+  sequence, predecessor and time drift rejected;
+- create-new manifest-hash publication directories and four exact sibling
+  files, installed-byte readback and read-only freeze;
+- sequence-1 activation and exact sequence-2 predecessor CAS, while repeat
+  install or wrong predecessor fails without overwrite; and
+- source-level absence of credential enumeration, network clients,
+  subprocesses, Wrangler and destructive cleanup.
+
+`authorize_execution` now returns a non-cloneable `ActivatedPublication`, not
+a bare release or offline publication result. For an enabled build it
+additionally requires the current executable
+to live under the exact publication-manifest-derived directory and requires
+the fixed append-only activation record to match manifest, outer packet,
+generation, sequence and predecessor before credential access.
+
+The tests use temporary local roots only. They do not prove production
+filesystem ownership, Windows source hardlink rejection, Unix runtime link
+count, disk/power-loss durability, service-manager selection, two concurrent
+OS processes or a real signed artifact.

@@ -17841,8 +17841,8 @@ authorize staging.
 12. a second consuming bind from that permit to the exact canonical deployment
     request digest, pinned service/target and still-live claim expiry.
 
-The Rust orchestrator and release-verifier sources are now part of the 18-file
-clean-commit release
+The Rust orchestrator, release verifier and publication/activation sources are
+now part of the 19-file clean-commit release
 module closure. An otherwise valid signed packet cannot omit the code that
 decides whether a deployment write is structurally possible.
 
@@ -17944,7 +17944,7 @@ remote evidence.
    bytes, rejecting unknown fields and recursive duplicate keys;
 6. verify policy/key/origin pins, policy/release validity, key-role separation,
    one Ed25519 DSSE signature and the standard PAE bytes;
-7. verify source, lock, package, 18-path transitive module closure, repeated
+7. verify source, lock, package, 19-path transitive module closure, repeated
    build, evidence, Authority, artifact name/length/digest identities; and
 8. require the signed Windows/MSVC or Linux/musl target to match the launcher's
    compile-time x86_64 architecture/OS/ABI.
@@ -17981,7 +17981,7 @@ file write, signing, installation or remote mutation.
 | Reproducible release | Two separately extracted clean-archive builds produce identical bytes with retained toolchain/environment/test evidence | Dirty input, differing bytes, missing module/evidence or mutable checkout artifact |
 | Independent signing | Offline release owner signs the exact canonical manifest; policy and signature remain current and independently verified | Shared permit/approval/deploy key, future/expired policy, ambiguous owner or packet drift |
 | Atomic installation | JS pre-install verification rejects symlink/hardlink candidates on Windows and Unix; installer creates one digest-addressed immutable generation | In-place overwrite, mixed packet/policy/executable, path escape, writable active generation |
-| Publication receipt | Create-new receipt binds policy, packet, executable, installer identity, destination generation and predecessor/current pointers | Missing receipt, overwrite, receipt/artifact digest drift or non-atomic activation |
+| Publication activation | Domain-separated signed publication binds policy, packet, executable, generation, sequence and predecessor; append-only create-new activation binds the outer packet | Missing receipt, overwrite, digest/predecessor drift or ambiguous activation |
 | Runtime integration | Credentials are read only after this verifier; sole Rust POST consumes `AuthorizedMutation<S>`; stable reads and hash-chain receipt complete | Credential before verification, generic send path, retry, restored permit, receipt gap |
 | Staging acceptance | Exact installed digest passes concurrent crash/fault campaign and deployment history proves at most one POST per service | Duplicate POST, target drift, unexplained control/business delta or missing revocation proof |
 
@@ -18008,3 +18008,95 @@ canonical-parent drift.
 No production key, credential, Cloudflare API, remote resource, customer
 traffic, provider operation, billing state or Go/VPS authority changed in this
 overlay. Production remains **NO-GO**.
+
+## 22.274 Signed Publication And Append-Only Activation Overlay (2026-07-23)
+
+This overlay supersedes section 22.273's first remaining P0 item. It closes the
+local publication-verification and create-new activation core, but does not
+claim that a real independently signed artifact has been built or installed.
+
+### Non-circular publication identity
+
+The release executable still embeds only fixed sidecar names plus
+policy/key/origin pins. The completed release packet signs the executable
+digest. A second canonical DSSE payload type then uses the same independent
+release key with domain separation to bind:
+
+1. source commit/tree, release manifest, packet, policy, key, Authority
+   version and compile target;
+2. exact policy, release-packet and executable names, byte lengths and
+   SHA-256 values;
+3. a canonical generation digest over those three files;
+4. publication time and the exact release expiry;
+5. one activation sequence; and
+6. `null` predecessor for sequence 1 or the exact prior
+   publication-manifest SHA-256 for every later sequence.
+
+The publication-manifest digest derives the directory name. The signed
+manifest therefore does not hash its own outer packet, while the later
+create-new activation record binds both manifest and outer-packet digests.
+
+### Create-new filesystem protocol
+
+The local installer accepts only an opaque `VerifiedPublication` that owns the
+exact verified bytes. It has no generic file list, copy source, overwrite,
+delete, shell, credential or network input.
+
+| Step | Filesystem action | Fail-closed invariant |
+| --- | --- | --- |
+| Root | Require an existing non-symlink install root; create/check direct `publications` and `activations` children | Canonical child parent must be the exact root |
+| Predecessor | For sequence >1, read the fixed prior activation file and match its publication digest | Missing, malformed, moved or mismatched predecessor aborts before creating the new generation |
+| Generation | Create `publication-<manifest-sha256>` once | Existing directory is a conflict; no reuse or overwrite |
+| Files | Create artifact, policy, release packet and publication packet with `create_new`; write and `sync_all` | Any existing file, short write or sync failure aborts |
+| Readback | Re-run strict release/publication verification against installed sibling bytes | Mixed policy/packet/artifact/publication cannot activate |
+| Freeze | Mark all generation files and the generation directory read-only | Permission failure aborts before activation |
+| Activate | Create one fixed 20-digit sequence activation record last, then make it read-only | Concurrent candidates for one sequence have one create-new winner |
+
+There is deliberately no mutable `current` pointer and no cleanup path. A
+crash before activation leaves only an unactivated generation; a crash while
+creating the activation record makes readers fail closed until an operator
+quarantines and repairs forward. Existing paths are never silently adopted or
+deleted.
+
+Runtime `--execute` now returns a non-cloneable `ActivatedPublication` only
+after:
+
+- compiled trust succeeds before clock/filesystem access;
+- release and publication DSSE signatures and all identities verify;
+- the parent directory equals the publication-manifest-derived name;
+- target triple equals compile-time architecture/OS/ABI; and
+- the exact append-only activation bytes match sequence, predecessor,
+  generation, publication manifest and outer publication packet.
+
+Only after this value exists may future code open fixed credential handles.
+
+### Local evidence
+
+Rust tests cover canonical publication verification, independent
+JavaScript/Rust generation/manifest/packet/signature/activation vectors,
+mixed-release and mixed-generation rejection, signature/JSON/time/sequence
+drift, create-new conflicts, read-only installed-byte verification, exact
+predecessor CAS and two sequential activations. The source guard finds no
+credential enumeration, network client, subprocess, Wrangler or destructive
+cleanup primitive.
+
+The release module closure is now 19 paths and includes
+`crates/ring-transition-runner/src/publication.rs`. A release packet cannot
+omit the code that authorizes local activation.
+
+### Remaining P0 sequence
+
+1. implement fixed credential loading and account/read/HMAC/deploy identity
+   proofs that require `ActivatedPublication`;
+2. implement a bounded coherent Authority client and exact claim resume;
+3. connect `AuthorizedMutation<S>` to the sole Rust Cloudflare POST;
+4. add policy-timed stable double readback and create-new execution receipts;
+5. perform the real two-build, independent-signature and operator-owned
+   installation ceremony plus crash/concurrency campaign; and
+6. only after credential revocation and independent review, consider isolated
+   staging resources with every mutation gate false.
+
+The checked-in launcher remains disabled/null-pinned. No production key,
+credential, installation root, Cloudflare API, remote resource, customer
+traffic, provider operation, billing state or Go/VPS authority changed.
+Production remains **NO-GO**.

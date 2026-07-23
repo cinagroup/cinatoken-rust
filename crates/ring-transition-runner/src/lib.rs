@@ -3,6 +3,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod orchestrator;
+pub mod publication;
 pub mod release;
 
 pub const RELEASE_TRUST_CONTRACT: &str =
@@ -13,6 +14,7 @@ pub const STAGING_AUTHORITY_ORIGIN: &str =
     "https://ring-transition-authority-staging.cinatoken.com";
 pub const RELEASE_PACKET_FILE_NAME: &str = "cinatoken-ring-transition-runner.release.json";
 pub const RELEASE_POLICY_FILE_NAME: &str = "cinatoken-ring-transition-runner.release-policy.json";
+pub const PUBLICATION_PACKET_FILE_NAME: &str = "cinatoken-ring-transition-runner.publication.json";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +25,7 @@ pub struct EmbeddedReleaseTrust {
     pub environment: &'static str,
     pub packet_file_name: &'static str,
     pub policy_file_name: &'static str,
+    pub publication_file_name: &'static str,
     pub release_policy_sha256: Option<&'static str>,
     pub release_key_spki_sha256: Option<&'static str>,
     pub authority_origin: Option<&'static str>,
@@ -37,6 +40,7 @@ impl EmbeddedReleaseTrust {
             environment: "staging",
             packet_file_name: RELEASE_PACKET_FILE_NAME,
             policy_file_name: RELEASE_POLICY_FILE_NAME,
+            publication_file_name: PUBLICATION_PACKET_FILE_NAME,
             release_policy_sha256: None,
             release_key_spki_sha256: None,
             authority_origin: None,
@@ -52,6 +56,7 @@ impl EmbeddedReleaseTrust {
             || self.environment != "staging"
             || self.packet_file_name != RELEASE_PACKET_FILE_NAME
             || self.policy_file_name != RELEASE_POLICY_FILE_NAME
+            || self.publication_file_name != PUBLICATION_PACKET_FILE_NAME
         {
             return Err(ReleaseValidationError::ContractMismatch);
         }
@@ -146,7 +151,7 @@ pub fn describe() -> RunnerDescription {
 pub enum ExecutionAuthorizationError {
     ReleaseTrust(ReleaseValidationError),
     ClockUnavailable,
-    ReleaseVerification(release::ReleaseVerificationError),
+    PublicationVerification(publication::PublicationError),
 }
 
 impl fmt::Display for ExecutionAuthorizationError {
@@ -154,14 +159,15 @@ impl fmt::Display for ExecutionAuthorizationError {
         match self {
             Self::ReleaseTrust(error) => error.fmt(formatter),
             Self::ClockUnavailable => formatter.write_str("runner clock is unavailable"),
-            Self::ReleaseVerification(error) => error.fmt(formatter),
+            Self::PublicationVerification(error) => error.fmt(formatter),
         }
     }
 }
 
 impl std::error::Error for ExecutionAuthorizationError {}
 
-pub fn authorize_execution() -> Result<release::VerifiedRelease, ExecutionAuthorizationError> {
+pub fn authorize_execution(
+) -> Result<publication::ActivatedPublication, ExecutionAuthorizationError> {
     let trust = EmbeddedReleaseTrust::checked_in();
     trust
         .validate_for_execution()
@@ -170,8 +176,8 @@ pub fn authorize_execution() -> Result<release::VerifiedRelease, ExecutionAuthor
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ExecutionAuthorizationError::ClockUnavailable)?
         .as_secs();
-    release::verify_current_release(&trust, now)
-        .map_err(ExecutionAuthorizationError::ReleaseVerification)
+    publication::verify_current_publication(&trust, now)
+        .map_err(ExecutionAuthorizationError::PublicationVerification)
 }
 
 #[cfg(test)]

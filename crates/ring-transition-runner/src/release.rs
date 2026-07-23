@@ -24,20 +24,20 @@ pub const MODULE_INVENTORY_CONTRACT: &str =
 pub const DSSE_PAYLOAD_TYPE: &str =
     "application/vnd.cinatoken.ring-transition-runner-release.v1+json";
 
-const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-const MAX_PACKET_BYTES: usize = 2 * 1024 * 1024;
-const MAX_POLICY_BYTES: usize = 256 * 1024;
-const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+pub(crate) const MAX_PACKET_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_POLICY_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_INVENTORY_FILES: usize = 2048;
 const MAX_INVENTORY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_RELEASE_LIFETIME_SECONDS: u64 = 24 * 60 * 60;
-const MAX_CLOCK_SKEW_SECONDS: u64 = 300;
+pub(crate) const MAX_CLOCK_SKEW_SECONDS: u64 = 300;
 const ARTIFACT_BASENAME: &str = "cinatoken-ring-transition-runner";
 const ED25519_SPKI_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-pub const REQUIRED_MODULE_PATHS: [&str; 18] = [
+pub const REQUIRED_MODULE_PATHS: [&str; 19] = [
     ".gitattributes",
     "Cargo.lock",
     "Cargo.toml",
@@ -46,6 +46,7 @@ pub const REQUIRED_MODULE_PATHS: [&str; 18] = [
     "crates/ring-transition-runner/src/lib.rs",
     "crates/ring-transition-runner/src/main.rs",
     "crates/ring-transition-runner/src/orchestrator.rs",
+    "crates/ring-transition-runner/src/publication.rs",
     "crates/ring-transition-runner/src/release.rs",
     "crates/ring-transition-runner/tests/cli.rs",
     "package.json",
@@ -66,8 +67,11 @@ pub struct VerifiedRelease {
     pub manifest_sha256: String,
     pub packet_sha256: String,
     pub policy_sha256: String,
+    pub release_key_id: String,
+    pub release_key_spki_base64url: String,
     pub release_key_spki_sha256: String,
     pub artifact_file_name: String,
+    pub artifact_byte_length: u64,
     pub artifact_sha256: String,
     pub module_inventory_sha256: String,
     pub module_count: u64,
@@ -316,8 +320,11 @@ pub fn verify_release_bytes(
         manifest_sha256: sha256_hex(&manifest_bytes),
         packet_sha256: sha256_hex(packet_json),
         policy_sha256: validated_policy.policy_sha256,
+        release_key_id: validated_policy.policy.key_id,
+        release_key_spki_base64url: validated_policy.policy.release_key_spki_base64url,
         release_key_spki_sha256: validated_policy.policy.release_key_spki_sha256,
         artifact_file_name: manifest.artifact.file_name,
+        artifact_byte_length: manifest.artifact.byte_length,
         artifact_sha256: manifest.artifact.sha256,
         module_inventory_sha256: inventory.digest_sha256,
         module_count: inventory.module_count,
@@ -328,7 +335,8 @@ pub fn verify_release_bytes(
     })
 }
 
-pub fn verify_current_release(
+#[cfg(test)]
+pub(crate) fn verify_current_release(
     trust: &EmbeddedReleaseTrust,
     now: u64,
 ) -> Result<VerifiedRelease, ReleaseVerificationError> {
@@ -338,6 +346,7 @@ pub fn verify_current_release(
     verify_installed_release_at(trust, &executable, now)
 }
 
+#[cfg(test)]
 fn verify_installed_release_at(
     trust: &EmbeddedReleaseTrust,
     executable: &Path,
@@ -381,7 +390,7 @@ fn verify_installed_release_at(
     Ok(verified)
 }
 
-fn current_release_target() -> Option<&'static str> {
+pub(crate) fn current_release_target() -> Option<&'static str> {
     if cfg!(all(
         target_arch = "x86_64",
         target_os = "windows",
@@ -764,7 +773,7 @@ fn validate_artifact(
     Ok(())
 }
 
-fn parse_canonical_json<T>(
+pub(crate) fn parse_canonical_json<T>(
     bytes: &[u8],
     maximum_bytes: usize,
     label: &'static str,
@@ -844,7 +853,7 @@ fn decode_base64url(
     Ok(bytes)
 }
 
-fn parse_whole_second_timestamp(
+pub(crate) fn parse_whole_second_timestamp(
     value: &str,
     field: &'static str,
 ) -> Result<u64, ReleaseVerificationError> {
@@ -996,7 +1005,7 @@ fn valid_lower_hex(value: &str, length: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn read_stable_regular_file(
+pub(crate) fn read_stable_regular_file(
     path: &Path,
     maximum_bytes: usize,
     canonical_parent: &Path,
@@ -1081,7 +1090,7 @@ fn canonical_sha256<T: Serialize>(value: &T) -> Result<String, ReleaseVerificati
     Ok(sha256_hex(canonical_json(value)?.as_bytes()))
 }
 
-fn canonical_json<T: Serialize>(value: &T) -> Result<String, ReleaseVerificationError> {
+pub(crate) fn canonical_json<T: Serialize>(value: &T) -> Result<String, ReleaseVerificationError> {
     let value = serde_json::to_value(value)
         .map_err(|_| ReleaseVerificationError::InvalidField("canonical_json"))?;
     let mut output = String::new();
@@ -1143,7 +1152,7 @@ fn write_canonical(value: &Value, output: &mut String) -> Result<(), ReleaseVeri
     Ok(())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     hex_lower(&Sha256::digest(bytes))
 }
 
@@ -1251,7 +1260,7 @@ fn reject_duplicate_json(bytes: &[u8], maximum_bytes: usize) -> Result<(), ()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{RELEASE_PACKET_FILE_NAME, RELEASE_POLICY_FILE_NAME};
     use ed25519_dalek::{Signer, SigningKey};
@@ -1280,20 +1289,20 @@ mod tests {
         );
         assert_eq!(
             verified.module_inventory_sha256,
-            "686c6dedb4686bed7e33290ec3ce087e07c581c70eff35222f32581062009370"
+            "5199295df3e91e3c95e4afc4035306bfe79b7a2333841a668e72cad118226c07"
         );
         assert_eq!(
             verified.manifest_sha256,
-            "01d1f22f04245c8e467421e43aa25b5dbd4b5166fdf29819f518e01af455dda3"
+            "85ad40156703e566e368be3d2f116704391e3b36920c4faf4b861212ca44d42f"
         );
         assert_eq!(
             verified.packet_sha256,
-            "48c0f232106474c489109982de470737c69c63acee984f68d373e486819885bc"
+            "5269e64bf87b0d236cc838e0323b452dded66b687c6a83d8f168f04209c52d80"
         );
         let packet: ReleasePacket = serde_json::from_slice(&fixture.packet_json).unwrap();
         assert_eq!(
             packet.envelope.signatures[0].sig,
-            "xd572FoAEqiTiFWTL9nFgUc9CYvbyIPJyD8ehNXUEvF9He5Zq7yt54H994eQ/lk1pRNfepK97z9vqwMRP39MCQ=="
+            "aKA/cksGtMPK4EhqGqPqQkRe3vFlIUqQduYnF8h26oZmegl/nPafziCNIFnHnS0fmDue8MmfarwbShM66JPJAQ=="
         );
     }
 
@@ -1561,16 +1570,16 @@ mod tests {
         assert!(parse_whole_second_timestamp("2026-07-23T00:00:00.001Z", "test").is_err());
     }
 
-    struct ReleaseFixture {
-        trust: EmbeddedReleaseTrust,
-        packet_json: Vec<u8>,
-        policy_json: Vec<u8>,
-        artifact_file_name: String,
-        artifact: Vec<u8>,
-        now: u64,
+    pub(crate) struct ReleaseFixture {
+        pub(crate) trust: EmbeddedReleaseTrust,
+        pub(crate) packet_json: Vec<u8>,
+        pub(crate) policy_json: Vec<u8>,
+        pub(crate) artifact_file_name: String,
+        pub(crate) artifact: Vec<u8>,
+        pub(crate) now: u64,
     }
 
-    fn release_fixture() -> ReleaseFixture {
+    pub(crate) fn release_fixture() -> ReleaseFixture {
         release_fixture_for_target("x86_64-pc-windows-msvc")
     }
 
@@ -1742,7 +1751,7 @@ mod tests {
         canonical_json(&packet).unwrap().into_bytes()
     }
 
-    fn signing_key() -> SigningKey {
+    pub(crate) fn signing_key() -> SigningKey {
         SigningKey::from_bytes(&TEST_SEED)
     }
 

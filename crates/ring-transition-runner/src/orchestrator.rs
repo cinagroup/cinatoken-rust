@@ -9,6 +9,8 @@ use std::marker::PhantomData;
 pub const CLAIM_CONTRACT: &str = "cinatoken-relay-container-ring-transition-execution-claim-v1";
 pub const STEP_CONTRACT: &str = "cinatoken-relay-container-ring-transition-execution-step-v1";
 pub const EXPIRY_CONTRACT: &str = "cinatoken-relay-container-ring-transition-expiry-event-v1";
+pub const DEPLOYMENT_MUTATION_INTENT_CONTRACT: &str =
+    "cinatoken-relay-container-ring-transition-deployment-mutation-intent-v1";
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
@@ -206,6 +208,42 @@ impl VerifiedSnapshot {
         self.snapshot.state.state_version
     }
 
+    pub fn account_id_sha256(&self) -> &str {
+        &self.snapshot.claim.account_id_sha256
+    }
+
+    pub fn read_credential_id_sha256(&self) -> &str {
+        &self.snapshot.claim.read_credential_id_sha256
+    }
+
+    pub fn claim_credential_id_sha256(&self) -> &str {
+        &self.snapshot.claim.claim_credential_id_sha256
+    }
+
+    pub fn deploy_credential_id_sha256(&self) -> &str {
+        &self.snapshot.claim.deploy_credential_id_sha256
+    }
+
+    pub fn runner_build_sha256(&self) -> &str {
+        &self.snapshot.claim.runner_build_sha256
+    }
+
+    pub fn runner_trust_config_sha256(&self) -> &str {
+        &self.snapshot.claim.runner_trust_config_sha256
+    }
+
+    pub fn claim_owner_sha256(&self) -> &str {
+        &self.snapshot.claim.claim_owner_sha256
+    }
+
+    pub fn controller_service_name(&self) -> &str {
+        &self.snapshot.claim.controller.service_name
+    }
+
+    pub fn edge_service_name(&self) -> &str {
+        &self.snapshot.claim.edge.service_name
+    }
+
     pub fn decision(&self, now: u64) -> Result<RunnerDecision, OrchestratorError> {
         if now < self.snapshot.claim.generated_at {
             return Err(OrchestratorError::ClockBeforeClaim);
@@ -285,6 +323,110 @@ impl MutationPhase for EdgeMutation {
     const DECISION: RunnerDecision = RunnerDecision::AppendEdgeIntent;
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeploymentMutationIntent<'a> {
+    schema_version: u8,
+    contract: &'static str,
+    environment: &'static str,
+    authorization_id_sha256: &'a str,
+    claim_digest_sha256: &'a str,
+    state_version: u8,
+    step_code: StepCode,
+    service_name: &'a str,
+    target_version_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct DeploymentBody<'a> {
+    annotations: BTreeMap<&'static str, String>,
+    strategy: &'static str,
+    versions: [DeploymentVersion<'a>; 1],
+}
+
+#[derive(Serialize)]
+struct DeploymentVersion<'a> {
+    percentage: u8,
+    version_id: &'a str,
+}
+
+pub struct CanonicalDeploymentRequest<P: MutationPhase> {
+    body: Vec<u8>,
+    request_digest_sha256: String,
+    service_name: String,
+    target_version_id: String,
+    phase: PhantomData<P>,
+}
+
+impl<P: MutationPhase> CanonicalDeploymentRequest<P> {
+    pub fn request_digest_sha256(&self) -> &str {
+        &self.request_digest_sha256
+    }
+
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+
+    pub fn target_version_id(&self) -> &str {
+        &self.target_version_id
+    }
+
+    pub(crate) fn body(&self) -> &[u8] {
+        &self.body
+    }
+}
+
+pub fn plan_controller_deployment(
+    snapshot: &VerifiedSnapshot,
+) -> Result<CanonicalDeploymentRequest<ControllerMutation>, OrchestratorError> {
+    plan_deployment::<ControllerMutation>(snapshot)
+}
+
+pub fn plan_edge_deployment(
+    snapshot: &VerifiedSnapshot,
+) -> Result<CanonicalDeploymentRequest<EdgeMutation>, OrchestratorError> {
+    plan_deployment::<EdgeMutation>(snapshot)
+}
+
+fn plan_deployment<P: MutationPhase>(
+    snapshot: &VerifiedSnapshot,
+) -> Result<CanonicalDeploymentRequest<P>, OrchestratorError> {
+    let service = snapshot.service::<P>();
+    let intent = DeploymentMutationIntent {
+        schema_version: 1,
+        contract: DEPLOYMENT_MUTATION_INTENT_CONTRACT,
+        environment: "staging",
+        authorization_id_sha256: snapshot.authorization_id_sha256(),
+        claim_digest_sha256: snapshot.claim_digest_sha256(),
+        state_version: P::STATE_VERSION,
+        step_code: P::STEP_CODE,
+        service_name: &service.service_name,
+        target_version_id: &service.target_version_id,
+    };
+    let intent_sha256 = canonical_sha256(&intent)?;
+    let annotation = format!(
+        "cinatoken-ring-v1:{}:{}:{intent_sha256}",
+        snapshot.authorization_id_sha256(),
+        P::STATE_VERSION
+    );
+    let body = DeploymentBody {
+        annotations: BTreeMap::from([("workers/message", annotation)]),
+        strategy: "percentage",
+        versions: [DeploymentVersion {
+            percentage: 100,
+            version_id: &service.target_version_id,
+        }],
+    };
+    let canonical = canonical_json(&body)?;
+    Ok(CanonicalDeploymentRequest {
+        request_digest_sha256: hex_lower(&Sha256::digest(canonical.as_bytes())),
+        body: canonical.into_bytes(),
+        service_name: service.service_name.clone(),
+        target_version_id: service.target_version_id.clone(),
+        phase: PhantomData,
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutationIntentStep {
@@ -305,12 +447,10 @@ pub struct MutationIntentStep {
     pub step_digest_sha256: String,
 }
 
-#[derive(Debug, Eq, PartialEq)]
 pub struct PreparedMutationIntent<P: MutationPhase> {
     step: MutationIntentStep,
     authorization_id_sha256: String,
-    service_name: String,
-    target_version_id: String,
+    request: CanonicalDeploymentRequest<P>,
     generated_at: u64,
     expires_at: u64,
     phase: PhantomData<P>,
@@ -328,6 +468,14 @@ impl<P: MutationPhase> AuthorityAppendAttempt<P> {
 
     pub fn request_id(&self) -> &str {
         &self.request_id
+    }
+
+    pub fn authorization_id_sha256(&self) -> &str {
+        &self.intent.authorization_id_sha256
+    }
+
+    pub fn claim_digest_sha256(&self) -> &str {
+        &self.intent.step.claim_digest_sha256
     }
 }
 
@@ -354,32 +502,41 @@ impl<P: MutationPhase> PreparedMutationIntent<P> {
 
 pub fn prepare_controller_intent(
     snapshot: &VerifiedSnapshot,
-    mutation_request_sha256: &str,
+    request: CanonicalDeploymentRequest<ControllerMutation>,
     evidence_sha256: &str,
     now: u64,
 ) -> Result<PreparedMutationIntent<ControllerMutation>, OrchestratorError> {
-    prepare_intent::<ControllerMutation>(snapshot, mutation_request_sha256, evidence_sha256, now)
+    prepare_intent::<ControllerMutation>(snapshot, request, evidence_sha256, now)
 }
 
 pub fn prepare_edge_intent(
     snapshot: &VerifiedSnapshot,
-    mutation_request_sha256: &str,
+    request: CanonicalDeploymentRequest<EdgeMutation>,
     evidence_sha256: &str,
     now: u64,
 ) -> Result<PreparedMutationIntent<EdgeMutation>, OrchestratorError> {
-    prepare_intent::<EdgeMutation>(snapshot, mutation_request_sha256, evidence_sha256, now)
+    prepare_intent::<EdgeMutation>(snapshot, request, evidence_sha256, now)
 }
 
 fn prepare_intent<P: MutationPhase>(
     snapshot: &VerifiedSnapshot,
-    mutation_request_sha256: &str,
+    request: CanonicalDeploymentRequest<P>,
     evidence_sha256: &str,
     now: u64,
 ) -> Result<PreparedMutationIntent<P>, OrchestratorError> {
     if snapshot.decision(now)? != P::DECISION {
         return Err(OrchestratorError::DecisionMismatch);
     }
-    require_sha256(mutation_request_sha256, "mutation_request_sha256")?;
+    let service = snapshot.service::<P>();
+    if request.service_name != service.service_name
+        || request.target_version_id != service.target_version_id
+    {
+        return Err(OrchestratorError::RequestBindingMismatch);
+    }
+    if hex_lower(&Sha256::digest(&request.body)) != request.request_digest_sha256 {
+        return Err(OrchestratorError::RequestBindingMismatch);
+    }
+    require_sha256(&request.request_digest_sha256, "mutation_request_sha256")?;
     require_sha256(evidence_sha256, "evidence_sha256")?;
     let mut step = MutationIntentStep {
         schema_version: 1,
@@ -390,7 +547,7 @@ fn prepare_intent<P: MutationPhase>(
         step_code: P::STEP_CODE,
         from_status: P::FROM_STATUS,
         to_status: P::TO_STATUS,
-        mutation_request_sha256: Some(mutation_request_sha256.to_owned()),
+        mutation_request_sha256: Some(request.request_digest_sha256.clone()),
         cloudflare_request_id_sha256: None,
         deployment_set_sha256: None,
         evidence_sha256: evidence_sha256.to_owned(),
@@ -399,12 +556,10 @@ fn prepare_intent<P: MutationPhase>(
         step_digest_sha256: String::new(),
     };
     step.step_digest_sha256 = mutation_step_digest(&step)?;
-    let service = snapshot.service::<P>();
     Ok(PreparedMutationIntent {
         step,
         authorization_id_sha256: snapshot.authorization_id_sha256().to_owned(),
-        service_name: service.service_name.clone(),
-        target_version_id: service.target_version_id.clone(),
+        request,
         generated_at: snapshot.snapshot.claim.generated_at,
         expires_at: snapshot.snapshot.claim.expires_at,
         phase: PhantomData,
@@ -435,9 +590,7 @@ pub struct FreshIntentPermit<P: MutationPhase> {
     authorization_id_sha256: String,
     claim_digest_sha256: String,
     state_version: u8,
-    mutation_request_sha256: String,
-    service_name: String,
-    target_version_id: String,
+    request: CanonicalDeploymentRequest<P>,
     generated_at: u64,
     expires_at: u64,
     phase: PhantomData<P>,
@@ -474,13 +627,7 @@ pub fn verify_fresh_append<P: MutationPhase>(
         authorization_id_sha256: attempt.intent.authorization_id_sha256,
         claim_digest_sha256: attempt.intent.step.claim_digest_sha256,
         state_version: P::STATE_VERSION,
-        mutation_request_sha256: attempt
-            .intent
-            .step
-            .mutation_request_sha256
-            .expect("prepared mutation intent always has a request digest"),
-        service_name: attempt.intent.service_name,
-        target_version_id: attempt.intent.target_version_id,
+        request: attempt.intent.request,
         generated_at: attempt.intent.generated_at,
         expires_at: attempt.intent.expires_at,
         phase: PhantomData,
@@ -491,9 +638,7 @@ pub struct AuthorizedMutation<P: MutationPhase> {
     authorization_id_sha256: String,
     claim_digest_sha256: String,
     state_version: u8,
-    mutation_request_sha256: String,
-    service_name: String,
-    target_version_id: String,
+    request: CanonicalDeploymentRequest<P>,
     generated_at: u64,
     expires_at: u64,
     phase: PhantomData<P>,
@@ -513,15 +658,15 @@ impl<P: MutationPhase> AuthorizedMutation<P> {
     }
 
     pub fn mutation_request_sha256(&self) -> &str {
-        &self.mutation_request_sha256
+        &self.request.request_digest_sha256
     }
 
     pub fn service_name(&self) -> &str {
-        &self.service_name
+        &self.request.service_name
     }
 
     pub fn target_version_id(&self) -> &str {
-        &self.target_version_id
+        &self.request.target_version_id
     }
 
     pub fn generated_at(&self) -> u64 {
@@ -531,17 +676,16 @@ impl<P: MutationPhase> AuthorizedMutation<P> {
     pub fn expires_at(&self) -> u64 {
         self.expires_at
     }
+
+    pub(crate) fn into_request(self) -> CanonicalDeploymentRequest<P> {
+        self.request
+    }
 }
 
 pub fn authorize_mutation<P: MutationPhase>(
     permit: FreshIntentPermit<P>,
-    request_digest_sha256: &str,
     now: u64,
 ) -> Result<AuthorizedMutation<P>, OrchestratorError> {
-    require_sha256(request_digest_sha256, "request_digest_sha256")?;
-    if permit.mutation_request_sha256 != request_digest_sha256 {
-        return Err(OrchestratorError::RequestDigestMismatch);
-    }
     if now < permit.generated_at {
         return Err(OrchestratorError::ClockBeforeClaim);
     }
@@ -552,9 +696,7 @@ pub fn authorize_mutation<P: MutationPhase>(
         authorization_id_sha256: permit.authorization_id_sha256,
         claim_digest_sha256: permit.claim_digest_sha256,
         state_version: permit.state_version,
-        mutation_request_sha256: permit.mutation_request_sha256,
-        service_name: permit.service_name,
-        target_version_id: permit.target_version_id,
+        request: permit.request,
         generated_at: permit.generated_at,
         expires_at: permit.expires_at,
         phase: PhantomData,
@@ -572,7 +714,7 @@ pub enum OrchestratorError {
     DecisionMismatch,
     AppendNotFresh,
     AppendMismatch,
-    RequestDigestMismatch,
+    RequestBindingMismatch,
     AuthorizationExpired,
 }
 
@@ -596,8 +738,8 @@ impl fmt::Display for OrchestratorError {
             Self::AppendMismatch => {
                 formatter.write_str("authority append response does not match the intent")
             }
-            Self::RequestDigestMismatch => {
-                formatter.write_str("deployment request does not match the fresh intent")
+            Self::RequestBindingMismatch => {
+                formatter.write_str("deployment request does not match the verified claim")
             }
             Self::AuthorizationExpired => {
                 formatter.write_str("fresh mutation intent authorization has expired")
@@ -1435,11 +1577,21 @@ mod tests {
     use super::*;
 
     const NOW: u64 = 1_784_800_000;
-    const REQUEST_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const REQUEST_DIGEST: &str = "4f75767d59d027a0ed9fc763954ac1b128c08732ac46bd1f19a274595a5225e2";
     const EDGE_REQUEST_DIGEST: &str =
-        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        "d55285086f56bd7f0c1c250f5e1378eb645b1ef2110c6db43d07a5d41e0baa8b";
     const EVIDENCE_DIGEST: &str =
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn controller_request(
+        snapshot: &VerifiedSnapshot,
+    ) -> CanonicalDeploymentRequest<ControllerMutation> {
+        plan_controller_deployment(snapshot).unwrap()
+    }
+
+    fn edge_request(snapshot: &VerifiedSnapshot) -> CanonicalDeploymentRequest<EdgeMutation> {
+        plan_edge_deployment(snapshot).unwrap()
+    }
 
     #[test]
     fn validates_claimed_snapshot_and_returns_only_a_read_decision() {
@@ -1499,7 +1651,12 @@ mod tests {
             Ok(RunnerDecision::ObserveController)
         );
         assert!(matches!(
-            prepare_controller_intent(&snapshot, REQUEST_DIGEST, EVIDENCE_DIGEST, NOW),
+            prepare_controller_intent(
+                &snapshot,
+                controller_request(&snapshot),
+                EVIDENCE_DIGEST,
+                NOW
+            ),
             Err(OrchestratorError::DecisionMismatch)
         ));
     }
@@ -1509,21 +1666,31 @@ mod tests {
         let mut raw = base_snapshot();
         append_t1(&mut raw);
         let snapshot = verified(raw);
-        let intent =
-            prepare_controller_intent(&snapshot, REQUEST_DIGEST, EVIDENCE_DIGEST, NOW).unwrap();
+        let intent = prepare_controller_intent(
+            &snapshot,
+            controller_request(&snapshot),
+            EVIDENCE_DIGEST,
+            NOW,
+        )
+        .unwrap();
         let appended = append_response(&intent, "step_appended", "request-001");
         let attempt = begin_authority_append(intent, "request-001").unwrap();
         let permit =
             verify_fresh_append(attempt, appended.as_bytes(), "authority-version-001").unwrap();
-        let mutation = authorize_mutation(permit, REQUEST_DIGEST, NOW).unwrap();
+        let mutation = authorize_mutation(permit, NOW).unwrap();
         assert_eq!(mutation.service_name(), "controller-staging");
         assert_eq!(mutation.target_version_id(), "controller-version-002");
         assert_eq!(mutation.state_version(), 2);
         assert_eq!(mutation.generated_at(), NOW);
         assert_eq!(mutation.expires_at(), NOW + 300);
 
-        let replay_intent =
-            prepare_controller_intent(&snapshot, REQUEST_DIGEST, EVIDENCE_DIGEST, NOW).unwrap();
+        let replay_intent = prepare_controller_intent(
+            &snapshot,
+            controller_request(&snapshot),
+            EVIDENCE_DIGEST,
+            NOW,
+        )
+        .unwrap();
         let replayed = append_response(&replay_intent, "step_replayed", "request-002");
         let replay_attempt = begin_authority_append(replay_intent, "request-002").unwrap();
         assert!(matches!(
@@ -1537,8 +1704,13 @@ mod tests {
         let mut raw = base_snapshot();
         append_t1(&mut raw);
         let snapshot = verified(raw);
-        let intent =
-            prepare_controller_intent(&snapshot, REQUEST_DIGEST, EVIDENCE_DIGEST, NOW).unwrap();
+        let intent = prepare_controller_intent(
+            &snapshot,
+            controller_request(&snapshot),
+            EVIDENCE_DIGEST,
+            NOW,
+        )
+        .unwrap();
         let mut response: Value =
             serde_json::from_str(&append_response(&intent, "step_appended", "request-001"))
                 .unwrap();
@@ -1553,36 +1725,42 @@ mod tests {
             Err(OrchestratorError::AppendMismatch)
         ));
 
-        let intent =
-            prepare_controller_intent(&snapshot, REQUEST_DIGEST, EVIDENCE_DIGEST, NOW).unwrap();
-        let appended = append_response(&intent, "step_appended", "request-001");
-        let attempt = begin_authority_append(intent, "request-001").unwrap();
-        let permit =
-            verify_fresh_append(attempt, appended.as_bytes(), "authority-version-001").unwrap();
+        let mut tampered_request = controller_request(&snapshot);
+        tampered_request.body.push(b' ');
         assert!(matches!(
-            authorize_mutation(permit, &"c".repeat(64), NOW),
-            Err(OrchestratorError::RequestDigestMismatch)
+            prepare_controller_intent(&snapshot, tampered_request, EVIDENCE_DIGEST, NOW),
+            Err(OrchestratorError::RequestBindingMismatch)
         ));
 
-        let intent =
-            prepare_controller_intent(&snapshot, REQUEST_DIGEST, EVIDENCE_DIGEST, NOW).unwrap();
+        let intent = prepare_controller_intent(
+            &snapshot,
+            controller_request(&snapshot),
+            EVIDENCE_DIGEST,
+            NOW,
+        )
+        .unwrap();
         let appended = append_response(&intent, "step_appended", "request-002");
         let attempt = begin_authority_append(intent, "request-002").unwrap();
         let permit =
             verify_fresh_append(attempt, appended.as_bytes(), "authority-version-001").unwrap();
         assert!(matches!(
-            authorize_mutation(permit, REQUEST_DIGEST, NOW + 300),
+            authorize_mutation(permit, NOW + 300),
             Err(OrchestratorError::AuthorizationExpired)
         ));
 
-        let intent =
-            prepare_controller_intent(&snapshot, REQUEST_DIGEST, EVIDENCE_DIGEST, NOW).unwrap();
+        let intent = prepare_controller_intent(
+            &snapshot,
+            controller_request(&snapshot),
+            EVIDENCE_DIGEST,
+            NOW,
+        )
+        .unwrap();
         let appended = append_response(&intent, "step_appended", "request-003");
         let attempt = begin_authority_append(intent, "request-003").unwrap();
         let permit =
             verify_fresh_append(attempt, appended.as_bytes(), "authority-version-001").unwrap();
         assert!(matches!(
-            authorize_mutation(permit, REQUEST_DIGEST, NOW - 1),
+            authorize_mutation(permit, NOW - 1),
             Err(OrchestratorError::ClockBeforeClaim)
         ));
     }
@@ -1645,11 +1823,16 @@ mod tests {
             snapshot.claim_digest_sha256(),
             "84490febce426e4a525c1f08a4f9c7650e9df95c317e0bfa21fb17d6946f0b32"
         );
-        let intent =
-            prepare_controller_intent(&snapshot, REQUEST_DIGEST, EVIDENCE_DIGEST, NOW).unwrap();
+        let request = controller_request(&snapshot);
+        assert_eq!(request.request_digest_sha256(), REQUEST_DIGEST);
+        assert_eq!(
+            std::str::from_utf8(request.body()).unwrap(),
+            "{\"annotations\":{\"workers/message\":\"cinatoken-ring-v1:1111111111111111111111111111111111111111111111111111111111111111:2:f129da426a8b40e5fa9f8f8ffb53747a0ed6b4feda21093ef570b8fe847aa293\"},\"strategy\":\"percentage\",\"versions\":[{\"percentage\":100,\"version_id\":\"controller-version-002\"}]}"
+        );
+        let intent = prepare_controller_intent(&snapshot, request, EVIDENCE_DIGEST, NOW).unwrap();
         assert_eq!(
             intent.step().step_digest_sha256,
-            "5d40b3d0610be0c9967a5595cc35421f273c2128cad19b590dd052690f3cc7b5"
+            "39eb3e2ae155b9569aad3a2401ba1e8f1285197a1bc1e97079bf59c196489794"
         );
     }
 
@@ -1663,13 +1846,14 @@ mod tests {
 
         let snapshot = verified(raw.clone());
         assert_eq!(snapshot.decision(NOW), Ok(RunnerDecision::AppendEdgeIntent));
-        let intent =
-            prepare_edge_intent(&snapshot, EDGE_REQUEST_DIGEST, EVIDENCE_DIGEST, NOW).unwrap();
+        let request = edge_request(&snapshot);
+        assert_eq!(request.request_digest_sha256(), EDGE_REQUEST_DIGEST);
+        let intent = prepare_edge_intent(&snapshot, request, EVIDENCE_DIGEST, NOW).unwrap();
         let appended = append_response(&intent, "step_appended", "request-edge-001");
         let attempt = begin_authority_append(intent, "request-edge-001").unwrap();
         let permit =
             verify_fresh_append(attempt, appended.as_bytes(), "authority-version-001").unwrap();
-        let mutation = authorize_mutation(permit, EDGE_REQUEST_DIGEST, NOW).unwrap();
+        let mutation = authorize_mutation(permit, NOW).unwrap();
         assert_eq!(mutation.service_name(), "edge-staging");
         assert_eq!(mutation.target_version_id(), "edge-version-002");
         assert_eq!(mutation.state_version(), 5);

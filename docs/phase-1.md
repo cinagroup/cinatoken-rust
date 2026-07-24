@@ -3088,3 +3088,39 @@ workload identity for the Authority, bounded Rust HTTP clients, coherent claim
 resume, the sole typed deployment POST, stable readback, receipts and crash
 campaign remain P0. No credential value or network was used. Production
 remains **NO-GO**.
+
+## 2026-07-24 Bounded Rust Control Plane And Access Identity
+
+Phase 1 now has a bounded native Rust control-plane client behind the verified
+release/publication capability. The Access workload identity is fixed to
+Cloudflare Access service-token mode. The loader reads six exact handles,
+pins the account and Access client ID before completing secret loading, and
+keeps all secret material pairwise distinct and zeroized. Standard Access
+headers are emitted only to the fixed private Authority origin.
+
+The client proves read token, deploy token, and Authority preflight identities
+in order; performs exact claim resume bound to account, role credentials,
+runner build, trust config, owner, and Controller/Edge services; and accepts no
+proxy, redirect, retry, caller origin, or caller path. Responses share one
+deadline and enforce JSON/content-encoding/content-length/streaming byte
+bounds.
+
+The Rust orchestrator now owns canonical Controller/Edge deployment body bytes
+and digest. That opaque request is consumed through the persisted
+request-ID-bound Authority append and exact fresh permit. The sole private POST
+consumes `AuthorizedMutation<P>` and cannot accept a replacement URL, service,
+target, body, or digest. 408/425/429/5xx, redirect, timeout, disconnect,
+truncation, and invalid success envelopes are ambiguous and never retried.
+
+The release closure is 21 paths including `transport.rs`. Local Rust tests
+execute successfully on Windows using the MSRV-compatible Schannel dependency
+lock; Linux remains the release target with Rustls/WebPKI. Local loopback
+faults cover redirect, poisoned proxy variables, timeout, disconnect,
+Content-Length/chunked overflow and secret non-disclosure.
+
+This does not advance a remote gate. Next are policy-timed stable double
+readback, Authority post-readback steps, create-new execution receipts, an
+exact Rust 1.78 two-build Linux release, independent signature/installation,
+actual exposed-credential revocation, deployed Access policy readback, token
+scope evidence, and the two-process fault campaign. Go/VPS remains
+authoritative and production remains **NO-GO**.

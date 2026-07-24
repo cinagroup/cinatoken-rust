@@ -37,7 +37,7 @@ const ED25519_SPKI_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-pub const REQUIRED_MODULE_PATHS: [&str; 20] = [
+pub const REQUIRED_MODULE_PATHS: [&str; 21] = [
     ".gitattributes",
     "Cargo.lock",
     "Cargo.toml",
@@ -49,6 +49,7 @@ pub const REQUIRED_MODULE_PATHS: [&str; 20] = [
     "crates/ring-transition-runner/src/orchestrator.rs",
     "crates/ring-transition-runner/src/publication.rs",
     "crates/ring-transition-runner/src/release.rs",
+    "crates/ring-transition-runner/src/transport.rs",
     "crates/ring-transition-runner/tests/cli.rs",
     "package.json",
     "tests/relay-container-ring-transition-release-source.test.mjs",
@@ -1294,20 +1295,20 @@ pub(crate) mod tests {
         );
         assert_eq!(
             verified.module_inventory_sha256,
-            "654a12f3b9c8d19b057b532632988e2ce6595ad662bd39ed4caf58d4d3fd32d9"
+            "8886f7c77cd4fff095768c8444a27c2738d6cb8595668828554bd09e73b92039"
         );
         assert_eq!(
             verified.manifest_sha256,
-            "f10dfcd528e86355b60a23cb23411a677897d83da1380609cb2108f4f3a26ce4"
+            "538f997aa1757626f60b58e899f079c109d36d34109690b90296abc05a8e9fd3"
         );
         assert_eq!(
             verified.packet_sha256,
-            "74de3b160af09e2a27ce328b4c1a04a3139f514a590d0190e6fdb46bcf090ab5"
+            "2bdc37993f2c651b698b7d1756beeb70895c9ac26af40b796f6062a70bf7f28a"
         );
         let packet: ReleasePacket = serde_json::from_slice(&fixture.packet_json).unwrap();
         assert_eq!(
             packet.envelope.signatures[0].sig,
-            "XHFYf4b7gZFJuzgEX72QlHLRJKOKRi0dq4UMU2ZOYExMmd2OCKityaiKLX4WD9+NajsStiswaBOGdIYjxoRYDA=="
+            "7l12y4S9xjKu6gmDc7cUJd2+JkH18ZpZO+pRP82SatTgtddTT4H0nPLTyAkKtKEM3Ksd+Ln68kypSieaPrO7DA=="
         );
     }
 

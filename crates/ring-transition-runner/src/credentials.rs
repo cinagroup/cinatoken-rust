@@ -21,6 +21,9 @@ pub const ACCOUNT_ID_ENV: &str = "CINATOKEN_RING_TRANSITION_ACCOUNT_ID";
 pub const READ_TOKEN_ENV: &str = "CINATOKEN_RING_TRANSITION_READ_TOKEN";
 pub const CLAIM_HMAC_SECRET_ENV: &str = "CINATOKEN_RING_TRANSITION_CLAIM_HMAC_SECRET";
 pub const DEPLOY_TOKEN_ENV: &str = "CINATOKEN_RING_TRANSITION_DEPLOY_TOKEN";
+pub const ACCESS_CLIENT_ID_ENV: &str = "CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_ID";
+pub const ACCESS_CLIENT_SECRET_ENV: &str = "CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_SECRET";
+pub const ACCESS_MODE_SERVICE_TOKEN_V1: &str = "service-token-v1";
 
 const AUTHORITY_HMAC_DOMAIN: &[u8] = b"cinatoken-ring-transition-authority-v1\n";
 const AUTHORITY_TOKEN_LIFETIME_SECONDS: u64 = 30;
@@ -36,6 +39,7 @@ pub struct EmbeddedCredentialTrust {
     pub enabled: bool,
     pub environment: &'static str,
     pub cloudflare_api_origin: &'static str,
+    pub access_mode: &'static str,
     pub authority_origin: Option<&'static str>,
     pub authority_version_id: Option<&'static str>,
     pub authority_issuer: Option<&'static str>,
@@ -47,6 +51,9 @@ pub struct EmbeddedCredentialTrust {
     pub read_credential_id_sha256: Option<&'static str>,
     pub claim_credential_id_sha256: Option<&'static str>,
     pub deploy_credential_id_sha256: Option<&'static str>,
+    pub access_client_id_sha256: Option<&'static str>,
+    pub controller_service_name: Option<&'static str>,
+    pub edge_service_name: Option<&'static str>,
 }
 
 impl EmbeddedCredentialTrust {
@@ -57,6 +64,7 @@ impl EmbeddedCredentialTrust {
             enabled: false,
             environment: "staging",
             cloudflare_api_origin: CLOUDFLARE_API_ORIGIN,
+            access_mode: "disabled",
             authority_origin: None,
             authority_version_id: None,
             authority_issuer: None,
@@ -68,6 +76,9 @@ impl EmbeddedCredentialTrust {
             read_credential_id_sha256: None,
             claim_credential_id_sha256: None,
             deploy_credential_id_sha256: None,
+            access_client_id_sha256: None,
+            controller_service_name: None,
+            edge_service_name: None,
         }
     }
 
@@ -82,6 +93,7 @@ impl EmbeddedCredentialTrust {
             || self.contract != CREDENTIAL_TRUST_CONTRACT
             || self.environment != "staging"
             || self.cloudflare_api_origin != CLOUDFLARE_API_ORIGIN
+            || self.access_mode != ACCESS_MODE_SERVICE_TOKEN_V1
             || self.authority_origin != Some(STAGING_AUTHORITY_ORIGIN)
         {
             return Err(CredentialError::TrustContractMismatch);
@@ -106,13 +118,23 @@ impl EmbeddedCredentialTrust {
             self.deploy_credential_id_sha256,
             "deploy_credential_id_sha256",
         )?;
+        let access_client_id_sha256 =
+            required_sha256(self.access_client_id_sha256, "access_client_id_sha256")?;
+        let controller_service_name =
+            required_field(self.controller_service_name, "controller_service_name")?;
+        let edge_service_name = required_field(self.edge_service_name, "edge_service_name")?;
 
         if !valid_token(authority_version_id, 1, 128, version_token_byte)
             || !valid_token(authority_issuer, 1, 128, identity_token_byte)
             || !valid_token(authority_audience, 1, 128, identity_token_byte)
             || !valid_token(authority_hmac_key_id, 1, 32, key_id_token_byte)
+            || !valid_token(controller_service_name, 1, 63, service_name_byte)
+            || !valid_token(edge_service_name, 1, 63, service_name_byte)
         {
             return Err(CredentialError::InvalidTrustField("authority_identity"));
+        }
+        if controller_service_name == edge_service_name {
+            return Err(CredentialError::InvalidTrustField("service_separation"));
         }
         if read_credential_id_sha256 == claim_credential_id_sha256
             || read_credential_id_sha256 == deploy_credential_id_sha256
@@ -138,6 +160,9 @@ impl EmbeddedCredentialTrust {
             read_credential_id_sha256,
             claim_credential_id_sha256,
             deploy_credential_id_sha256,
+            access_client_id_sha256,
+            controller_service_name,
+            edge_service_name,
         })
     }
 }
@@ -149,10 +174,14 @@ pub struct CredentialIdentity {
     pub read_credential_id_sha256: String,
     pub claim_credential_id_sha256: String,
     pub deploy_credential_id_sha256: String,
+    pub access_client_id_sha256: String,
     pub authority_version_id: String,
     pub permit_spki_sha256: String,
     pub trust_config_sha256: String,
     pub publication_manifest_sha256: String,
+    pub runner_build_sha256: String,
+    pub controller_service_name: String,
+    pub edge_service_name: String,
     pub activation_sequence: u64,
 }
 
@@ -165,6 +194,14 @@ pub struct LoadedCredentials {
 impl LoadedCredentials {
     pub fn identity(&self) -> &CredentialIdentity {
         &self.identity
+    }
+
+    pub(crate) fn account_id(&self) -> &str {
+        self.material.account_id.expose()
+    }
+
+    pub(crate) fn read_token(&self) -> &str {
+        self.material.read_token.expose()
     }
 
     #[allow(dead_code)]
@@ -187,6 +224,14 @@ pub(crate) struct ReadCredentialProven {
 }
 
 impl ReadCredentialProven {
+    pub(crate) fn account_id(&self) -> &str {
+        self.loaded.material.account_id.expose()
+    }
+
+    pub(crate) fn deploy_token(&self) -> &str {
+        self.loaded.material.deploy_token.expose()
+    }
+
     pub(crate) fn prove_deploy_token_identity(
         self,
         response_json: &[u8],
@@ -242,6 +287,18 @@ pub(crate) struct PendingAuthorityPreflight {
 }
 
 impl PendingAuthorityPreflight {
+    pub(crate) fn authority_token(&self) -> &str {
+        self.authority_token.expose()
+    }
+
+    pub(crate) fn access_client_id(&self) -> &str {
+        self.loaded.material.access_client_id.expose()
+    }
+
+    pub(crate) fn access_client_secret(&self) -> &str {
+        self.loaded.material.access_client_secret.expose()
+    }
+
     pub(crate) fn verify_response(
         self,
         response_json: &[u8],
@@ -261,6 +318,7 @@ impl PendingAuthorityPreflight {
         Ok(VerifiedCredentials {
             material: self.loaded.material,
             identity: self.loaded.identity,
+            trust: self.loaded.trust,
         })
     }
 }
@@ -269,11 +327,40 @@ impl PendingAuthorityPreflight {
 pub(crate) struct VerifiedCredentials {
     material: CredentialMaterial,
     identity: CredentialIdentity,
+    trust: ValidatedCredentialTrust,
 }
 
 impl VerifiedCredentials {
     pub(crate) fn identity(&self) -> &CredentialIdentity {
         &self.identity
+    }
+
+    pub(crate) fn account_id(&self) -> &str {
+        self.material.account_id.expose()
+    }
+
+    pub(crate) fn read_token(&self) -> &str {
+        self.material.read_token.expose()
+    }
+
+    pub(crate) fn claim_hmac_secret(&self) -> &str {
+        self.material.claim_hmac_secret.expose()
+    }
+
+    pub(crate) fn deploy_token(&self) -> &str {
+        self.material.deploy_token.expose()
+    }
+
+    pub(crate) fn access_client_id(&self) -> &str {
+        self.material.access_client_id.expose()
+    }
+
+    pub(crate) fn access_client_secret(&self) -> &str {
+        self.material.access_client_secret.expose()
+    }
+
+    pub(crate) fn trust(&self) -> ValidatedCredentialTrust {
+        self.trust
     }
 }
 
@@ -288,6 +375,7 @@ pub enum CredentialError {
     MissingEnvironment(&'static str),
     InvalidEnvironment(&'static str),
     AccountIdentityMismatch,
+    AccessClientIdentityMismatch,
     SecretMaterialNotDistinct,
     InvalidJson(&'static str),
     CredentialIdentityRejected(&'static str),
@@ -330,6 +418,8 @@ impl fmt::Display for CredentialError {
             Self::AccountIdentityMismatch => {
                 formatter.write_str("Cloudflare account identity does not match compiled trust")
             }
+            Self::AccessClientIdentityMismatch => formatter
+                .write_str("Cloudflare Access client identity does not match compiled trust"),
             Self::SecretMaterialNotDistinct => {
                 formatter.write_str("credential secret material is not distinct")
             }
@@ -399,9 +489,24 @@ fn load_from_source(
     let read_token = read_secret(source, READ_TOKEN_ENV)?;
     let claim_hmac_secret = read_secret(source, CLAIM_HMAC_SECRET_ENV)?;
     let deploy_token = read_secret(source, DEPLOY_TOKEN_ENV)?;
+    let access_client_id = read_secret(source, ACCESS_CLIENT_ID_ENV)?;
+    if sha256_hex(access_client_id.as_bytes()) != validated.access_client_id_sha256 {
+        return Err(CredentialError::AccessClientIdentityMismatch);
+    }
+    let access_client_secret = read_secret(source, ACCESS_CLIENT_SECRET_ENV)?;
     if constant_time_equal(read_token.as_bytes(), claim_hmac_secret.as_bytes())
         || constant_time_equal(read_token.as_bytes(), deploy_token.as_bytes())
         || constant_time_equal(claim_hmac_secret.as_bytes(), deploy_token.as_bytes())
+        || constant_time_equal(read_token.as_bytes(), access_client_id.as_bytes())
+        || constant_time_equal(read_token.as_bytes(), access_client_secret.as_bytes())
+        || constant_time_equal(claim_hmac_secret.as_bytes(), access_client_id.as_bytes())
+        || constant_time_equal(
+            claim_hmac_secret.as_bytes(),
+            access_client_secret.as_bytes(),
+        )
+        || constant_time_equal(deploy_token.as_bytes(), access_client_id.as_bytes())
+        || constant_time_equal(deploy_token.as_bytes(), access_client_secret.as_bytes())
+        || constant_time_equal(access_client_id.as_bytes(), access_client_secret.as_bytes())
     {
         return Err(CredentialError::SecretMaterialNotDistinct);
     }
@@ -411,10 +516,14 @@ fn load_from_source(
         read_credential_id_sha256: validated.read_credential_id_sha256.to_owned(),
         claim_credential_id_sha256: validated.claim_credential_id_sha256.to_owned(),
         deploy_credential_id_sha256: validated.deploy_credential_id_sha256.to_owned(),
+        access_client_id_sha256: validated.access_client_id_sha256.to_owned(),
         authority_version_id: validated.authority_version_id.to_owned(),
         permit_spki_sha256: validated.permit_spki_sha256.to_owned(),
         trust_config_sha256: validated.trust_config_sha256.to_owned(),
         publication_manifest_sha256: publication.publication_manifest_sha256,
+        runner_build_sha256: publication.release.artifact_sha256,
+        controller_service_name: validated.controller_service_name.to_owned(),
+        edge_service_name: validated.edge_service_name.to_owned(),
         activation_sequence: publication.activation_sequence,
     };
     Ok(LoadedCredentials {
@@ -423,6 +532,8 @@ fn load_from_source(
             read_token,
             claim_hmac_secret,
             deploy_token,
+            access_client_id,
+            access_client_secret,
         },
         identity,
         trust: validated,
@@ -449,6 +560,8 @@ struct CredentialMaterial {
     read_token: SecretBytes,
     claim_hmac_secret: SecretBytes,
     deploy_token: SecretBytes,
+    access_client_id: SecretBytes,
+    access_client_secret: SecretBytes,
 }
 
 struct SecretBytes(Zeroizing<Vec<u8>>);
@@ -468,17 +581,20 @@ impl SecretBytes {
 }
 
 #[derive(Clone, Copy)]
-struct ValidatedCredentialTrust {
-    authority_version_id: &'static str,
-    authority_issuer: &'static str,
-    authority_audience: &'static str,
-    authority_hmac_key_id: &'static str,
-    permit_spki_sha256: &'static str,
-    trust_config_sha256: &'static str,
-    account_id_sha256: &'static str,
-    read_credential_id_sha256: &'static str,
-    claim_credential_id_sha256: &'static str,
-    deploy_credential_id_sha256: &'static str,
+pub(crate) struct ValidatedCredentialTrust {
+    pub(crate) authority_version_id: &'static str,
+    pub(crate) authority_issuer: &'static str,
+    pub(crate) authority_audience: &'static str,
+    pub(crate) authority_hmac_key_id: &'static str,
+    pub(crate) permit_spki_sha256: &'static str,
+    pub(crate) trust_config_sha256: &'static str,
+    pub(crate) account_id_sha256: &'static str,
+    pub(crate) read_credential_id_sha256: &'static str,
+    pub(crate) claim_credential_id_sha256: &'static str,
+    pub(crate) deploy_credential_id_sha256: &'static str,
+    pub(crate) access_client_id_sha256: &'static str,
+    pub(crate) controller_service_name: &'static str,
+    pub(crate) edge_service_name: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -640,6 +756,10 @@ fn key_id_token_byte(index: usize, byte: u8) -> bool {
         || (index > 0 && matches!(byte, b'.' | b'_' | b'-'))
 }
 
+fn service_name_byte(index: usize, byte: u8) -> bool {
+    byte.is_ascii_digit() || byte.is_ascii_lowercase() || (index > 0 && byte == b'-')
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(64);
@@ -678,6 +798,9 @@ mod tests {
         "a01bfefd6a25d9107e9472809973052a7e3f09266616eae2de0ae5cf09fb2bf3";
     const DEPLOY_CREDENTIAL_ID_SHA256: &str =
         "4926f0bf601ffe3ddfabdb7be57907446e507d58ecafedd1bac1eaf26acc10ef";
+    const ACCESS_CLIENT_ID: &str = "access-client-id-0123456789abcdef";
+    const ACCESS_CLIENT_ID_SHA256: &str =
+        "f83d7a8476a2faca92ada22e0d4808d1495ae55b1ae876ae669f03efbe08e7fc";
     const TRUST_CONFIG_SHA256: &str =
         "5555555555555555555555555555555555555555555555555555555555555555";
     const PERMIT_SPKI_SHA256: &str =
@@ -702,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn loader_reads_only_four_fixed_handles_after_activation_identity_matches() {
+    fn loader_reads_only_six_fixed_handles_after_activation_identity_matches() {
         let mut source = FakeSource::valid();
         let loaded =
             load_from_source(publication_identity(), &fully_pinned_trust(), &mut source).unwrap();
@@ -712,10 +835,21 @@ mod tests {
                 ACCOUNT_ID_ENV,
                 READ_TOKEN_ENV,
                 CLAIM_HMAC_SECRET_ENV,
-                DEPLOY_TOKEN_ENV
+                DEPLOY_TOKEN_ENV,
+                ACCESS_CLIENT_ID_ENV,
+                ACCESS_CLIENT_SECRET_ENV,
             ]
         );
         assert_eq!(loaded.identity().account_id_sha256, ACCOUNT_ID_SHA256);
+        assert_eq!(
+            loaded.identity().access_client_id_sha256,
+            ACCESS_CLIENT_ID_SHA256
+        );
+        assert_eq!(
+            loaded.identity().controller_service_name,
+            "controller-staging"
+        );
+        assert_eq!(loaded.identity().edge_service_name, "edge-staging");
         assert_eq!(loaded.identity().activation_sequence, 7);
     }
 
@@ -737,6 +871,26 @@ mod tests {
             Some(CredentialError::AccountIdentityMismatch)
         );
         assert_eq!(source.reads, [ACCOUNT_ID_ENV]);
+
+        let mut source = FakeSource::valid();
+        source.values.insert(
+            ACCESS_CLIENT_ID_ENV,
+            "drifting-access-client-id-000000".to_owned(),
+        );
+        assert_eq!(
+            load_from_source(publication_identity(), &fully_pinned_trust(), &mut source).err(),
+            Some(CredentialError::AccessClientIdentityMismatch)
+        );
+        assert_eq!(
+            source.reads,
+            [
+                ACCOUNT_ID_ENV,
+                READ_TOKEN_ENV,
+                CLAIM_HMAC_SECRET_ENV,
+                DEPLOY_TOKEN_ENV,
+                ACCESS_CLIENT_ID_ENV,
+            ]
+        );
     }
 
     #[test]
@@ -754,6 +908,21 @@ mod tests {
             .insert(DEPLOY_TOKEN_ENV, shared.values[READ_TOKEN_ENV].clone());
         assert_eq!(
             load_from_source(publication_identity(), &fully_pinned_trust(), &mut shared).err(),
+            Some(CredentialError::SecretMaterialNotDistinct)
+        );
+
+        let mut shared_access = FakeSource::valid();
+        shared_access.values.insert(
+            ACCESS_CLIENT_SECRET_ENV,
+            shared_access.values[READ_TOKEN_ENV].clone(),
+        );
+        assert_eq!(
+            load_from_source(
+                publication_identity(),
+                &fully_pinned_trust(),
+                &mut shared_access
+            )
+            .err(),
             Some(CredentialError::SecretMaterialNotDistinct)
         );
     }
@@ -853,6 +1022,8 @@ mod tests {
             READ_TOKEN_ENV,
             CLAIM_HMAC_SECRET_ENV,
             DEPLOY_TOKEN_ENV,
+            ACCESS_CLIENT_ID_ENV,
+            ACCESS_CLIENT_SECRET_ENV,
         ] {
             assert_eq!(production.matches(handle).count(), 1);
         }
@@ -895,6 +1066,7 @@ mod tests {
     fn fully_pinned_trust() -> EmbeddedCredentialTrust {
         EmbeddedCredentialTrust {
             enabled: true,
+            access_mode: ACCESS_MODE_SERVICE_TOKEN_V1,
             authority_origin: Some(STAGING_AUTHORITY_ORIGIN),
             authority_version_id: Some(AUTHORITY_VERSION_ID),
             authority_issuer: Some("runner-staging"),
@@ -906,6 +1078,9 @@ mod tests {
             read_credential_id_sha256: Some(READ_CREDENTIAL_ID_SHA256),
             claim_credential_id_sha256: Some(CLAIM_CREDENTIAL_ID_SHA256),
             deploy_credential_id_sha256: Some(DEPLOY_CREDENTIAL_ID_SHA256),
+            access_client_id_sha256: Some(ACCESS_CLIENT_ID_SHA256),
+            controller_service_name: Some("controller-staging"),
+            edge_service_name: Some("edge-staging"),
             ..EmbeddedCredentialTrust::checked_in()
         }
     }
@@ -926,7 +1101,7 @@ mod tests {
                 artifact_byte_length: 64,
                 artifact_sha256: "7".repeat(64),
                 module_inventory_sha256: "8".repeat(64),
-                module_count: 20,
+                module_count: 21,
                 module_bytes: 4096,
                 authority_version_id: AUTHORITY_VERSION_ID.to_owned(),
                 permit_spki_sha256: PERMIT_SPKI_SHA256.to_owned(),
@@ -963,6 +1138,11 @@ mod tests {
                     (
                         DEPLOY_TOKEN_ENV,
                         "deploy-token-secret-0123456789abcdef".to_owned(),
+                    ),
+                    (ACCESS_CLIENT_ID_ENV, ACCESS_CLIENT_ID.to_owned()),
+                    (
+                        ACCESS_CLIENT_SECRET_ENV,
+                        "access-client-secret-0123456789abcdef".to_owned(),
                     ),
                 ]),
                 reads: Vec::new(),

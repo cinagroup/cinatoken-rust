@@ -8599,3 +8599,64 @@ scope/owner/revocation evidence, a Cloudflare Access workload identity,
 bounded Rust HTTP, a coherent remote Authority snapshot, sole POST use,
 stable readback, an execution receipt or a crash campaign. No real environment
 credential or network request was used; production remains **NO-GO**.
+
+## Bounded Rust Control Plane Verification (2026-07-24)
+
+Focused commands:
+
+```powershell
+cargo test -p cinatoken-ring-transition-runner --locked
+cargo clippy -p cinatoken-ring-transition-runner --all-targets --locked -- -D warnings
+bun test tests/relay-container-ring-transition-execution.test.mjs tests/relay-container-ring-transition-transport.test.mjs tests/relay-container-ring-transition-release.test.mjs tests/relay-container-ring-transition-release-source.test.mjs
+bun run check:relay-container:ring-transition
+```
+
+Current local results:
+
+```text
+41 runner library tests: PASS
+1 runner binary test: PASS
+2 runner CLI integration tests: PASS
+strict runner Clippy: PASS
+17 detached release/source tests: PASS
+61 ring-transition contract/execution/transport tests, 509 expectations: PASS
+complete repository bun run check, 659.7 seconds, exit code 0: PASS
+```
+
+The dependency audit found and corrected two release-host issues before the
+test claim was accepted. `native-tls 0.2.14` required Rust 1.80, so the
+Windows validation path is locked to `native-tls 0.2.13`. Newer Schannel and
+`winapi-util` resolution selected `windows-sys 0.61` and required a broken
+local GNU raw-dylib tool path; the lock now uses `schannel 0.1.27`,
+`windows-sys 0.59.0`, and `winapi-util 0.1.10`. With these
+MSRV-compatible/prebuilt-import-library versions, the tests executed rather
+than stopping at type checking.
+
+Rust adversarial tests use only scripted exchanges and `127.0.0.1` raw HTTP
+fixtures. They prove:
+
+- read-token and deploy-token account verification precede the
+  Access-protected Authority preflight;
+- Access and Authority secrets never reach Cloudflare API requests;
+- exact claim/build/trust/service drift aborts;
+- one consumed typed request produces one exact POST path/body;
+- 302 is not followed and poisoned proxy environment variables are ignored;
+- declared and chunked overflow, timeout and disconnect fail closed;
+- uncertain HTTP and connection outcomes are ambiguous with `retry=false`;
+  and
+- raw secret values do not appear in debug, error, JSON outcome, or release
+  source inventory output.
+
+Cross-language canonical vectors now use a 21-module release inventory and
+advance the release manifest, DSSE packet, publication generation/manifest/
+packet/signature, and activation digest together. Missing or digest-drifted
+`transport.rs` is rejected by the clean commit-object source collector and the
+detached release verifier.
+
+The checked-in release and credential roots remain disabled. No real
+credential, Access policy, Cloudflare API, remote D1, Worker, route,
+deployment, customer traffic, provider call, financial mutation, or Go/VPS
+authority was used. Stable double readback, execution receipts, exact Linux
+Rust 1.78 reproducible builds, independent signing/installation, remote
+scope/revocation/Access evidence and the crash campaign remain open.
+Production remains **NO-GO**.

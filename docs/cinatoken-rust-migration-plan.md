@@ -18226,3 +18226,156 @@ No production key, credential value, environment handle, Access identity,
 network request, Cloudflare API, remote resource, customer traffic, provider
 operation, billing state or Go/VPS authority changed. Production remains
 **NO-GO**.
+
+## 22.276 Bounded Native Control Plane And Typed Deployment Join Overlay (2026-07-24)
+
+This overlay supersedes sections 22.273-22.275 only where they describe the
+Rust HTTP client, Access workload identity, canonical deployment request, or
+release module count as still absent. It closes a local executable capability
+boundary. It does not enable the checked-in trust roots, provision credentials,
+create Cloudflare resources, or authorize staging or production mutation.
+
+### Fixed identity and transport policy
+
+The Access decision is now explicit: the private Authority uses one
+Cloudflare Access service token carried in the standard
+`CF-Access-Client-Id` and `CF-Access-Client-Secret` headers. The activated
+credential loader reads exactly six handles, in order:
+
+```text
+CINATOKEN_RING_TRANSITION_ACCOUNT_ID
+CINATOKEN_RING_TRANSITION_READ_TOKEN
+CINATOKEN_RING_TRANSITION_CLAIM_HMAC_SECRET
+CINATOKEN_RING_TRANSITION_DEPLOY_TOKEN
+CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_ID
+CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_SECRET
+```
+
+An enabled build must compile `service-token-v1`, the Access client-ID
+SHA-256, account/token/Authority/release identities, and distinct Controller
+and Edge service names. The account pin is checked before any secret read.
+The Access client-ID pin is checked before its secret is read. All five secret
+values are pairwise distinct, bounded to 32-4096 whitespace-free UTF-8 bytes,
+held in zeroizing non-cloneable storage, and absent from errors, outcomes,
+descriptors, receipts, and debug output. The Access headers are added only to
+the fixed Authority origin; Cloudflare API token verification and deployment
+requests cannot receive them.
+
+The operator runner owns a direct HTTPS client with no proxy configuration,
+redirect following, automatic retry, connection reuse, caller-selected origin,
+or caller-selected path. Linux release builds use `hyper-rustls 0.27.7` with
+WebPKI roots, TLS 1.2+, HTTP/1, and the reviewed `ring` provider. Windows local
+validation uses Schannel through `hyper-tls 0.6.0` and
+`native-tls 0.2.13`, also TLS 1.2+ and HTTPS-only. The lock deliberately keeps
+`schannel 0.1.27`, `windows-sys 0.59.0`, and `winapi-util 0.1.10`; this avoids
+the Rust 1.80 requirement and GNU raw-dylib tool dependency introduced by
+newer transitive versions while preserving the Rust 1.78 release baseline.
+The production artifact remains Linux-native; the Windows path is a local
+operator/test implementation, not the deployment target.
+
+Every response has one deadline shared by headers and body, an endpoint-class
+byte ceiling, strict JSON content type, no content encoding, bounded
+`Content-Length`, and a streaming hard limit for chunked or unknown-length
+bodies. Timeout, truncation, connection loss, malformed length, encoded body,
+invalid content type, or body overflow fails closed. A redirect is returned as
+one response and is never followed.
+
+### Ordered proof and sole mutation capability
+
+Runtime authorization is now one consuming sequence:
+
+```text
+checked-in release trust
+  -> signed installed publication and append-only activation
+  -> six fixed credential handles
+  -> account-scoped read-token identity GET
+  -> account-scoped deploy-token identity GET
+  -> Access-protected Authority HMAC preflight
+  -> exact identity-bound claim snapshot
+  -> canonical deployment request
+  -> request-bound Authority intent append
+  -> exact fresh step_appended permit
+  -> sole Cloudflare deployment POST
+```
+
+The canonical request is generated inside the Rust orchestrator from the
+verified claim. It owns the exact service, target, annotation, body bytes, and
+body digest. `prepare_controller_intent` and `prepare_edge_intent` consume
+this opaque request and recompute its digest. The request then travels through
+the non-cloneable append attempt and fresh permit. `authorize_mutation`
+requires no caller digest, URL, service, target, or body. The private transport
+consumes the resulting `AuthorizedMutation<P>`, reconstructs only the fixed
+account-scoped Cloudflare path, verifies the owned bytes once more, and sends
+at most one POST. Restored snapshots still cannot recreate this capability.
+
+The exact-claim read binds authorization, claim digest, owner, account,
+read/claim/deploy credential IDs, runner build, trust config, and both service
+names to the activated identities. Any mixed sequential read, release drift,
+credential drift, service drift, unknown/duplicate field, or invalid canonical
+digest aborts before mutation.
+
+### Outcome policy
+
+One syntactically valid 2xx response advances only to transport success when
+the bounded duplicate-free Cloudflare envelope says `success=true`. A
+validated non-timeout 4xx with explicit error codes is a rejected attempt.
+Response loss, timeout, reset, truncation, redirect, invalid 2xx,
+408/425/429, every 5xx, and any unparseable response are ambiguous.
+All outcomes set `retry=false`. The outcome stores only status, bounded error
+codes, response-body SHA-256, and Cloudflare response-ID SHA-256; response
+messages and credential material are discarded.
+
+This classification does not prove deployment success. A later overlay must
+perform two policy-timed, Access/HMAC-authenticated stable deployment
+readbacks and append the matching Authority step. Ambiguity can schedule reads
+only; it can never recreate a POST capability.
+
+### Local adversarial evidence
+
+The Rust runner release closure is now 21 paths and includes
+`transport.rs`. Release, publication, generation, packet, signature, and
+activation vectors were advanced together in Rust and JavaScript. Local tests
+prove:
+
+- strict read-token, deploy-token, then Access/Authority preflight order;
+- Access headers appear only on Authority requests;
+- exact claim/build/trust/service drift fails closed;
+- the POST path and body come only from the consumed typed mutation;
+- 302, poisoned proxy variables, timeout, disconnect, oversized declared and
+  chunked bodies, encoded/non-JSON responses, and uncertain status classes do
+  not redirect or retry;
+- secret values do not enter errors or serializable outcomes; and
+- missing or digest-drifted `transport.rs` invalidates the signed source
+  closure.
+
+The focused local result is 41 runner library tests, one binary test, two CLI
+tests, strict Clippy, 17 detached release/source tests, and 61
+ring-transition contract/execution/transport tests. These are synthetic local
+tests and loopback sockets only.
+
+### Remaining P0 sequence
+
+1. implement policy-timed double deployment readback, Authority post-readback
+   append, and create-new hash-chained execution receipts;
+2. prove a deployed Access application/policy and service-token identity by
+   independent remote readback; HMAC success alone is insufficient;
+3. retain redacted account/owner/scope/revocation evidence proving the read
+   token cannot mutate and the deploy token can perform only the reviewed
+   deployment operation;
+4. build the exact Linux runner twice with Rust 1.78 from separate clean
+   archives, independently sign it, compile reviewed non-null pins, install
+   one append-only generation, and verify the active bytes independently;
+5. run the two-process crash/restart/response-loss/clock/target-drift campaign
+   and prove lifetime deployment-history count at most one POST per service;
+6. after actual exposed-credential revocation, provision isolated staging
+   control D1, Authority, Access, routes, and secrets with every customer,
+   provider, billing, scheduler, traffic, and production gate false; and
+7. complete remote four-layer overlap, P5-B, accounting/SLO/cost, rollback,
+   Go/VPS drain, and G1-G8 approval before any production decision.
+
+The checked-in release and credential trust objects remain disabled and
+null-pinned. `--execute` can verify identities in an eventual enabled build,
+but claim execution remains deliberately unreachable from the public CLI until
+stable readback and receipt durability are joined. No real credential,
+Cloudflare API, remote resource, customer traffic, provider call, financial
+mutation, or Go/VPS authority changed. Production remains **NO-GO**.

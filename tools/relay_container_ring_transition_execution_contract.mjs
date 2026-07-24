@@ -19,6 +19,7 @@ export const RING_TRANSITION_EXPIRY_EVENT_CONTRACT =
   "cinatoken-relay-container-ring-transition-expiry-event-v1";
 export const RING_TRANSITION_DEPLOYMENT_MUTATION_INTENT_CONTRACT =
   "cinatoken-relay-container-ring-transition-deployment-mutation-intent-v1";
+export const RING_TRANSITION_ACCESS_SERVICE_TOKEN_MODE = "service-token-v1";
 export const RING_TRANSITION_AUTHORITY_HEADER =
   "x-cinatoken-ring-authority";
 export const RING_TRANSITION_CLAIM_AUTHORITY_PATH =
@@ -37,6 +38,8 @@ export const DEPLOYMENT_PINNED_RING_TRANSITION_TRUST = deepFreeze({
   enabled: false,
   environment: "staging",
   cloudflareApiOrigin: CLOUDFLARE_API_ORIGIN,
+  accessServiceTokenMode: "disabled",
+  accessClientIdSha256: null,
   claimAuthorityOrigin: null,
   claimAuthorityVersionId: null,
   claimAuthorityIssuer: null,
@@ -70,11 +73,12 @@ export function describeRingTransitionMutationRunner() {
     environment: "staging",
     trustRootsPublished: DEPLOYMENT_PINNED_RING_TRANSITION_TRUST.enabled,
     executionMode: "deployment-pinned-artifact-only",
-    credentialClasses: ["read", "claim", "deploy"],
+    credentialClasses: ["read", "claim", "deploy", "access-service-token"],
     executionOrder: [
       "verify-pinned-trust-roots",
       "verify-signed-transition-and-authorization",
       "verify-three-distinct-credential-identities",
+      "verify-access-service-token-and-authority-preflight",
       "atomic-single-use-claim",
       "authenticated-t1-readback",
       "persist-controller-mutation-intent",
@@ -122,6 +126,15 @@ export function validatePublishedRingTransitionTrust(
     CLOUDFLARE_API_ORIGIN,
     "[trust] Cloudflare API origin",
   );
+  requireExact(
+    trust.accessServiceTokenMode,
+    RING_TRANSITION_ACCESS_SERVICE_TOKEN_MODE,
+    "[trust] Access service-token mode",
+  );
+  requireSha256(
+    trust.accessClientIdSha256,
+    "[trust] Access client ID fingerprint",
+  );
   requireHttpsOrigin(trust.claimAuthorityOrigin, "[trust] claim authority origin");
   requireToken(
     trust.claimAuthorityVersionId,
@@ -140,7 +153,7 @@ export function validatePublishedRingTransitionTrust(
   );
   requireToken(
     trust.claimAuthorityHmacKeyId,
-    /^[a-z0-9][a-z0-9._-]{0,63}$/,
+    /^[a-z0-9][a-z0-9._-]{0,31}$/,
     "[trust] claim authority HMAC key ID",
   );
   requireToken(

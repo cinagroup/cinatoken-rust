@@ -2623,3 +2623,45 @@ proxy credentials and undocumented header injection are abort conditions.
 No credential value, Cloudflare API call, remote resource or mutation was used
 for this addendum. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-24 Bounded Native Control Plane Addendum
+
+This addendum supersedes the local K2-K5 status above. The bounded Rust
+identity/Authority client and sole typed deployment POST now exist locally.
+Stable readback, receipt durability, enabled signed release evidence, and all
+remote acceptance remain open.
+
+| Phase | Implemented local boundary | Required production evidence | Abort and retain Go/VPS |
+| --- | --- | --- | --- |
+| K2 six-handle load | Account, read, claim-HMAC, deploy, Access client ID, Access secret; account and Access client-ID compile-time pins; pairwise distinct zeroized material | Service-manager ACL/process-owner evidence and redacted fixed-handle inventory for the exact installed generation | Alias/fallback/enumeration, shared material, runtime pin override or secret in process arguments/logs |
+| K3 ordered identities | Account-scoped read/deploy token verification followed by Access service-token + HMAC Authority preflight | Remote account/owner/scope/revocation packet plus deployed Access app/policy/service-token readback | HMAC without Access, writable read token, broad deploy token, version/SPKI/client-ID drift |
+| K4 coherent resume | Bounded exact-claim GET binds claim, credentials, build, trust config and service names | Authenticated isolated-staging claim read from the exact Authority version and control D1 catalog | Mixed snapshot, shared application D1, unknown field, claim/build/service drift |
+| K5 typed one POST | Canonical request owns service/target/body/digest through fresh append permit; private transport consumes it once; no redirect/proxy/retry | Deployment history plus crash campaign proves lifetime at most one POST per service and exact body annotation | Caller URL/body, permit restoration, any automatic/manual resend, unexpected deployment |
+| K6 stable proof | Not implemented | Two policy-timed authenticated reads match target, deployment set and version details; exact Authority post-readback append | HTTP response alone advances state, unstable pair, target drift, read after policy expiry |
+| K7 receipt/restart | Not implemented | Create-new predecessor-bound digest-only receipt survives kill/power-loss and every restart remains readback-only | Mutable receipt, missing predecessor, secret/body leak, inflight restart can write |
+
+### Transport acceptance profile
+
+- Linux release: `hyper-rustls 0.27.7`, WebPKI roots, `ring`, TLS 1.2+,
+  HTTP/1, direct HTTPS only.
+- Windows local validation: Schannel via `hyper-tls 0.6.0` and
+  `native-tls 0.2.13`, TLS 1.2+, HTTPS only.
+- Both: fixed origins and paths, one shared response deadline, endpoint byte
+  limits, JSON-only unencoded bodies, no proxy, redirect, retry, caller URL,
+  subprocess, Wrangler, or SDK fallback.
+- Mutation classification: only valid `success=true` 2xx is transport success;
+  explicit non-timeout 4xx is rejected; redirect, response loss, malformed
+  response, 408/425/429, and 5xx are ambiguous; every class has
+  `retry=false`.
+
+The signed source closure is 21 paths including `transport.rs`. Before phase L,
+the release owner must reproduce the exact Linux bytes twice under Rust 1.78,
+independently sign and install them, compile reviewed non-null release,
+credential, Access, Authority, account, and service pins, then run the required
+two-process fault matrix.
+
+No tracked default/staging/production mutation gate changed. No credential or
+remote request was used. The exposed-credential revocation proof, isolated
+control resources, Access policy, stable readback, receipts, P5-B,
+accounting/SLO/cost, rollback, G1-G8 approval, and Go/VPS drain remain hard
+blockers. Production remains **NO-GO**.

@@ -17,6 +17,7 @@ import {
 
 import {
   DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
+  RING_TRANSITION_ACCESS_SERVICE_TOKEN_MODE,
   RING_TRANSITION_EXECUTION_CLAIM_CONTRACT,
   RING_TRANSITION_AUTHORITY_HEADER,
   RING_TRANSITION_EXECUTION_STEP_CONTRACT,
@@ -425,6 +426,7 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
     expect(first.remoteMutationAuthorized).toBe(false);
     expect(first.networkRequestsPerformed).toBe(false);
     expect(first.mutationPerformed).toBe(false);
+    expect(first.credentialClasses).toContain("access-service-token");
     expect(() =>
       validatePublishedRingTransitionTrust(
         DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
@@ -634,6 +636,24 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
           anchors.transitionApprovalKeyFingerprintsSha256[0],
       }),
     ).toThrow(/signing key roles must be disjoint/);
+
+    expect(() =>
+      validatePublishedRingTransitionTrust({
+        ...anchors,
+        accessServiceTokenMode: "disabled",
+      }),
+    ).toThrow(/Access service-token mode/);
+    const { accessClientIdSha256: _missingAccessClientId, ...missingAccessPin } =
+      anchors;
+    expect(() => validatePublishedRingTransitionTrust(missingAccessPin)).toThrow(
+      /fields are invalid/,
+    );
+    expect(() =>
+      validatePublishedRingTransitionTrust({
+        ...anchors,
+        claimAuthorityHmacKeyId: "k".repeat(33),
+      }),
+    ).toThrow(/HMAC key ID/);
   });
 
   test("classifies response loss only by stable authenticated target readback", () => {
@@ -980,6 +1000,10 @@ function publishedAnchors() {
   const anchors = {
     ...DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
     enabled: true,
+    accessServiceTokenMode: RING_TRANSITION_ACCESS_SERVICE_TOKEN_MODE,
+    accessClientIdSha256: sha256Hex(
+      Buffer.from("access-client-id-0000000000000001", "utf8"),
+    ),
     claimAuthorityOrigin: "https://ring-claim.staging.example.com",
     claimAuthorityVersionId: "authority-version-001",
     claimAuthorityIssuer: "cinatoken-ring-runner-staging",

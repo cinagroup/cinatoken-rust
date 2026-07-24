@@ -6,6 +6,7 @@ pub mod credentials;
 pub mod orchestrator;
 pub mod publication;
 pub mod release;
+pub mod transport;
 
 pub const RELEASE_TRUST_CONTRACT: &str =
     "cinatoken-relay-container-ring-transition-runner-release-trust-v1";
@@ -120,6 +121,8 @@ pub struct RunnerDescription {
     pub environment: &'static str,
     pub execution_mode: &'static str,
     pub immutable_launcher_compiled: bool,
+    pub bounded_native_transport_compiled: bool,
+    pub access_service_token_compiled: bool,
     pub release_published: bool,
     pub credentials_read: bool,
     pub network_requests_performed: bool,
@@ -140,6 +143,8 @@ pub fn describe() -> RunnerDescription {
         environment: "staging",
         execution_mode: "compiled-release-only",
         immutable_launcher_compiled: true,
+        bounded_native_transport_compiled: true,
+        access_service_token_compiled: true,
         release_published: release_trust.enabled,
         credentials_read: false,
         network_requests_performed: false,
@@ -157,6 +162,7 @@ pub enum ExecutionAuthorizationError {
     ClockUnavailable,
     PublicationVerification(publication::PublicationError),
     Credentials(credentials::CredentialError),
+    ControlPlane(transport::ControlPlaneError),
 }
 
 impl fmt::Display for ExecutionAuthorizationError {
@@ -166,14 +172,15 @@ impl fmt::Display for ExecutionAuthorizationError {
             Self::ClockUnavailable => formatter.write_str("runner clock is unavailable"),
             Self::PublicationVerification(error) => error.fmt(formatter),
             Self::Credentials(error) => error.fmt(formatter),
+            Self::ControlPlane(error) => error.fmt(formatter),
         }
     }
 }
 
 impl std::error::Error for ExecutionAuthorizationError {}
 
-pub fn authorize_execution() -> Result<credentials::LoadedCredentials, ExecutionAuthorizationError>
-{
+pub async fn authorize_execution(
+) -> Result<transport::PreparedControlPlane, ExecutionAuthorizationError> {
     let trust = EmbeddedReleaseTrust::checked_in();
     trust
         .validate_for_execution()
@@ -184,22 +191,25 @@ pub fn authorize_execution() -> Result<credentials::LoadedCredentials, Execution
         .as_secs();
     let activation = publication::verify_current_publication(now)
         .map_err(ExecutionAuthorizationError::PublicationVerification)?;
-    credentials::load_activated_credentials(activation)
-        .map_err(ExecutionAuthorizationError::Credentials)
+    let credentials = credentials::load_activated_credentials(activation)
+        .map_err(ExecutionAuthorizationError::Credentials)?;
+    transport::verify_loaded_credentials(credentials)
+        .await
+        .map_err(ExecutionAuthorizationError::ControlPlane)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn checked_in_launcher_is_deterministic_and_disabled() {
+    #[tokio::test]
+    async fn checked_in_launcher_is_deterministic_and_disabled() {
         assert_eq!(describe(), describe());
         assert!(!describe().release_published);
         assert!(!describe().credentials_read);
         assert!(!describe().network_requests_performed);
         assert!(matches!(
-            authorize_execution(),
+            authorize_execution().await,
             Err(ExecutionAuthorizationError::ReleaseTrust(
                 ReleaseValidationError::Disabled
             ))

@@ -23,11 +23,15 @@ export const RING_TRANSITION_TRANSPORT_ENV = Object.freeze({
   readToken: "CINATOKEN_RING_TRANSITION_READ_TOKEN",
   claimHmacSecret: "CINATOKEN_RING_TRANSITION_CLAIM_HMAC_SECRET",
   deployToken: "CINATOKEN_RING_TRANSITION_DEPLOY_TOKEN",
+  accessClientId: "CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_ID",
+  accessClientSecret: "CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_SECRET",
 });
 
 const AUTHORITY_HMAC_DOMAIN =
   "cinatoken-ring-transition-authority-v1\n";
 const AUTHORITY_PREFLIGHT_PATH = "/internal/v1/ring-transition/preflight";
+const ACCESS_CLIENT_ID_HEADER = "CF-Access-Client-Id";
+const ACCESS_CLIENT_SECRET_HEADER = "CF-Access-Client-Secret";
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const HMAC_KEY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,31}$/;
@@ -56,7 +60,7 @@ export function describeRingTransitionNativeTransport() {
     contract: RING_TRANSITION_NATIVE_TRANSPORT_CONTRACT,
     environment: "staging",
     credentialEnvironmentBindings: Object.values(RING_TRANSITION_TRANSPORT_ENV),
-    credentialClasses: ["read", "claim", "deploy"],
+    credentialClasses: ["read", "claim", "deploy", "access-service-token"],
     cloudflareApiOrigin: CLOUDFLARE_API_ORIGIN,
     requestTimeoutMilliseconds: REQUEST_TIMEOUT_MILLISECONDS,
     authorityMaximumResponseBytes: AUTHORITY_RESPONSE_LIMIT,
@@ -80,6 +84,8 @@ class RingTransitionNativeTransport {
   #readToken;
   #claimHmacSecret;
   #deployToken;
+  #accessClientId;
+  #accessClientSecret;
   #fetch;
   #clock;
   #requestIdFactory;
@@ -87,6 +93,7 @@ class RingTransitionNativeTransport {
   #readCredentialVerified = false;
   #claimCredentialVerified = false;
   #deployCredentialVerified = false;
+  #accessServiceTokenVerified = false;
 
   constructor({
     anchors,
@@ -135,6 +142,27 @@ class RingTransitionNativeTransport {
       environment,
       RING_TRANSITION_TRANSPORT_ENV.deployToken,
     );
+    this.#accessClientId = requireEnvironmentSecret(
+      environment,
+      RING_TRANSITION_TRANSPORT_ENV.accessClientId,
+    );
+    if (
+      sha256Hex(Buffer.from(this.#accessClientId, "utf8")) !==
+      this.#trust.accessClientIdSha256
+    ) {
+      throw new RingTransitionTransportError("access_client_identity_mismatch");
+    }
+    this.#accessClientSecret = requireEnvironmentSecret(
+      environment,
+      RING_TRANSITION_TRANSPORT_ENV.accessClientSecret,
+    );
+    requireDistinctCredentialMaterial([
+      this.#readToken,
+      this.#claimHmacSecret,
+      this.#deployToken,
+      this.#accessClientId,
+      this.#accessClientSecret,
+    ]);
     if (
       typeof fetchImpl !== "function" ||
       typeof clockImpl !== "function" ||
@@ -155,6 +183,8 @@ class RingTransitionNativeTransport {
       readCredentialVerified: this.#readCredentialVerified,
       claimCredentialVerified: this.#claimCredentialVerified,
       deployCredentialVerified: this.#deployCredentialVerified,
+      accessClientIdentityMatched: true,
+      accessServiceTokenVerified: this.#accessServiceTokenVerified,
     };
   }
 
@@ -175,11 +205,14 @@ class RingTransitionNativeTransport {
       this.#readCredentialVerified = true;
       this.#claimCredentialVerified = true;
       this.#deployCredentialVerified = true;
+      this.#accessServiceTokenVerified = true;
       return {
         readCredentialIdSha256: readIdentity,
         claimCredentialIdSha256: this.#credentialIds.claim,
         deployCredentialIdSha256: deployIdentity,
+        accessClientIdSha256: this.#trust.accessClientIdSha256,
         allDistinct: true,
+        accessServiceTokenVerified: true,
         allCredentialsVerified: true,
       };
     } catch (error) {
@@ -217,6 +250,10 @@ class RingTransitionNativeTransport {
     const result = await executeBoundedJsonRequest({
       request: { ...request, headers },
       authorization: null,
+      privateAuthorityHeaders: {
+        [ACCESS_CLIENT_ID_HEADER]: this.#accessClientId,
+        [ACCESS_CLIENT_SECRET_HEADER]: this.#accessClientSecret,
+      },
       fetchImpl: this.#fetch,
       postOutcomeAware: request.method === "POST",
       label: "claim_authority",
@@ -477,7 +514,8 @@ class RingTransitionNativeTransport {
     if (
       !this.#readCredentialVerified ||
       !this.#claimCredentialVerified ||
-      !this.#deployCredentialVerified
+      !this.#deployCredentialVerified ||
+      !this.#accessServiceTokenVerified
     ) {
       throw new RingTransitionTransportError(code);
     }
@@ -487,6 +525,7 @@ class RingTransitionNativeTransport {
     this.#readCredentialVerified = false;
     this.#claimCredentialVerified = false;
     this.#deployCredentialVerified = false;
+    this.#accessServiceTokenVerified = false;
   }
 }
 
@@ -556,12 +595,27 @@ export async function createRingTransitionAuthorityToken({
 async function executeBoundedJsonRequest({
   request,
   authorization,
+  privateAuthorityHeaders = null,
   fetchImpl,
   postOutcomeAware,
   label,
 }) {
   assertRequestDescriptor(request);
   const headers = { ...request.headers };
+  if (privateAuthorityHeaders !== null) {
+    const privateHeaders = requireObject(
+      privateAuthorityHeaders,
+      "private_authority_headers_invalid",
+    );
+    assertExactHeaderNames(
+      privateHeaders,
+      [ACCESS_CLIENT_ID_HEADER, ACCESS_CLIENT_SECRET_HEADER],
+      "private_authority_headers_invalid",
+    );
+    headers[ACCESS_CLIENT_ID_HEADER] = privateHeaders[ACCESS_CLIENT_ID_HEADER];
+    headers[ACCESS_CLIENT_SECRET_HEADER] =
+      privateHeaders[ACCESS_CLIENT_SECRET_HEADER];
+  }
   if (authorization !== null) headers.authorization = authorization;
   let response;
   try {
@@ -718,7 +772,9 @@ function assertRequestDescriptor(request) {
     if (
       ["authorization", "cookie", "origin", "host", "content-encoding"].includes(
         normalized,
-      )
+      ) ||
+      normalized === ACCESS_CLIENT_ID_HEADER.toLowerCase() ||
+      normalized === ACCESS_CLIENT_SECRET_HEADER.toLowerCase()
     ) {
       throw new RingTransitionTransportError("request_header_forbidden");
     }
@@ -1153,6 +1209,17 @@ function requireEnvironmentSecret(environment, name) {
   const value = environment[name];
   requireSecret(value, `missing_or_invalid_${name.toLowerCase()}`);
   return value;
+}
+
+function requireDistinctCredentialMaterial(values) {
+  const fingerprints = values.map((value) =>
+    sha256Hex(Buffer.from(value, "utf8")),
+  );
+  if (new Set(fingerprints).size !== values.length) {
+    throw new RingTransitionTransportError(
+      "credential_material_must_be_distinct",
+    );
+  }
 }
 
 function requireSecret(value, code) {

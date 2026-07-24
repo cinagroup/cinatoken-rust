@@ -1,6 +1,7 @@
 use cinatoken_ring_transition_runner::{authorize_execution, describe};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let exit_code = match parse_command(std::env::args().skip(1)) {
         Ok(Command::Describe) => match serde_json::to_string_pretty(&describe()) {
             Ok(output) => {
@@ -12,9 +13,9 @@ fn main() {
                 1
             }
         },
-        Ok(Command::Execute) => match authorize_execution() {
+        Ok(Command::Execute) => match authorize_execution().await {
             Ok(_) => {
-                eprintln!("ring transition execution transport is not linked into this release");
+                eprintln!("ring transition identities verified; claim execution remains disabled");
                 1
             }
             Err(error) => {

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
+  RING_TRANSITION_ACCESS_SERVICE_TOKEN_MODE,
   buildClaimAuthorityReadRequest,
   buildClaimAuthorityStepRequest,
   buildCloudflareDeploymentMutationRequest,
@@ -26,6 +27,8 @@ const ACCOUNT_ID = "a".repeat(32);
 const READ_TOKEN = "read-token-value-0000000000000001";
 const CLAIM_SECRET = "claim-hmac-secret-00000000000001";
 const DEPLOY_TOKEN = "deploy-token-value-00000000000001";
+const ACCESS_CLIENT_ID = "access-client-id-0000000000000001";
+const ACCESS_CLIENT_SECRET = "access-client-secret-00000000000001";
 const READ_TOKEN_ID = "read-token-identity-v1";
 const DEPLOY_TOKEN_ID = "deploy-token-identity-v1";
 const CLAIM_CREDENTIAL_ID = "b".repeat(64);
@@ -92,9 +95,20 @@ describe("Relay Container native ring-transition transport", () => {
     expect(result.credentialEnvironmentBindings).toEqual(
       Object.values(RING_TRANSITION_TRANSPORT_ENV),
     );
+    expect(RING_TRANSITION_TRANSPORT_ENV).toEqual({
+      accountId: "CINATOKEN_RING_TRANSITION_ACCOUNT_ID",
+      readToken: "CINATOKEN_RING_TRANSITION_READ_TOKEN",
+      claimHmacSecret: "CINATOKEN_RING_TRANSITION_CLAIM_HMAC_SECRET",
+      deployToken: "CINATOKEN_RING_TRANSITION_DEPLOY_TOKEN",
+      accessClientId: "CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_ID",
+      accessClientSecret: "CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_SECRET",
+    });
     expect(JSON.stringify(result)).not.toContain(READ_TOKEN);
     expect(JSON.stringify(result)).not.toContain(CLAIM_SECRET);
     expect(JSON.stringify(result)).not.toContain(DEPLOY_TOKEN);
+    expect(JSON.stringify(result)).not.toContain(ACCESS_CLIENT_ID);
+    expect(JSON.stringify(result)).not.toContain(ACCESS_CLIENT_SECRET);
+    expect(result.credentialClasses).toContain("access-service-token");
   });
 
   test("reads only fixed secret handles and binds the raw account to trust", () => {
@@ -115,10 +129,16 @@ describe("Relay Container native ring-transition transport", () => {
       readCredentialVerified: false,
       claimCredentialVerified: false,
       deployCredentialVerified: false,
+      accessClientIdentityMatched: true,
+      accessServiceTokenVerified: false,
     });
     expect(JSON.stringify(transport)).toBe("{}");
     expect(JSON.stringify(transport.describe())).not.toContain(
       "poison-must-not-be-read",
+    );
+    expect(JSON.stringify(transport.describe())).not.toContain(ACCESS_CLIENT_ID);
+    expect(JSON.stringify(transport.describe())).not.toContain(
+      ACCESS_CLIENT_SECRET,
     );
 
     expect(() =>
@@ -141,6 +161,57 @@ describe("Relay Container native ring-transition transport", () => {
         environment,
       }),
     ).toThrow(/credential_ids_must_be_distinct/);
+
+    let pinDriftError;
+    try {
+      createRingTransitionNativeTransport({
+        anchors,
+        credentialIds: credentialIds(),
+        environment: {
+          ...credentialEnvironment(),
+          [RING_TRANSITION_TRANSPORT_ENV.accessClientId]:
+            "drifted-access-client-id-0000000001",
+        },
+      });
+    } catch (error) {
+      pinDriftError = error;
+    }
+    expect(pinDriftError?.code).toBe("access_client_identity_mismatch");
+    expect(String(pinDriftError)).not.toContain(ACCESS_CLIENT_ID);
+    expect(String(pinDriftError)).not.toContain(ACCESS_CLIENT_SECRET);
+
+    for (const handle of [
+      RING_TRANSITION_TRANSPORT_ENV.accessClientId,
+      RING_TRANSITION_TRANSPORT_ENV.accessClientSecret,
+    ]) {
+      const missing = credentialEnvironment();
+      delete missing[handle];
+      let error;
+      try {
+        createRingTransitionNativeTransport({
+          anchors,
+          credentialIds: credentialIds(),
+          environment: missing,
+        });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(Error);
+      expect(error.code).toBe(`missing_or_invalid_${handle.toLowerCase()}`);
+      expect(String(error)).not.toContain(ACCESS_CLIENT_ID);
+      expect(String(error)).not.toContain(ACCESS_CLIENT_SECRET);
+    }
+
+    expect(() =>
+      createRingTransitionNativeTransport({
+        anchors,
+        credentialIds: credentialIds(),
+        environment: {
+          ...credentialEnvironment(),
+          [RING_TRANSITION_TRANSPORT_ENV.accessClientSecret]: READ_TOKEN,
+        },
+      }),
+    ).toThrow(/credential_material_must_be_distinct/);
   });
 
   test("matches Authority HMAC key ID and UTF-8 secret boundaries", async () => {
@@ -204,7 +275,7 @@ describe("Relay Container native ring-transition transport", () => {
         credentialIds: credentialIds(),
         environment: credentialEnvironment(),
       }),
-    ).toThrow(/invalid_hmac_key_id/);
+    ).toThrow(/HMAC key ID|invalid_hmac_key_id/);
   });
 
   test("keeps preflight private and blocks claim traffic before all proofs", async () => {
@@ -314,7 +385,9 @@ describe("Relay Container native ring-transition transport", () => {
       readCredentialIdSha256: credentialIds().read,
       claimCredentialIdSha256: credentialIds().claim,
       deployCredentialIdSha256: credentialIds().deploy,
+      accessClientIdSha256: anchors.accessClientIdSha256,
       allDistinct: true,
+      accessServiceTokenVerified: true,
       allCredentialsVerified: true,
     });
 
@@ -356,6 +429,32 @@ describe("Relay Container native ring-transition transport", () => {
     expect(tokenVerifyCalls[1].options.headers.authorization).toBe(
       `Bearer ${DEPLOY_TOKEN}`,
     );
+    expect(calls.slice(0, 3).map(({ url }) => new URL(url).pathname)).toEqual([
+      `/client/v4/accounts/${ACCOUNT_ID}/tokens/verify`,
+      `/client/v4/accounts/${ACCOUNT_ID}/tokens/verify`,
+      "/internal/v1/ring-transition/preflight",
+    ]);
+    for (const call of tokenVerifyCalls) {
+      expect(call.options.headers["CF-Access-Client-Id"]).toBeUndefined();
+      expect(call.options.headers["CF-Access-Client-Secret"]).toBeUndefined();
+    }
+    const preflightCall = calls[2];
+    expect(preflightCall.options.headers["CF-Access-Client-Id"]).toBe(
+      ACCESS_CLIENT_ID,
+    );
+    expect(preflightCall.options.headers["CF-Access-Client-Secret"]).toBe(
+      ACCESS_CLIENT_SECRET,
+    );
+    for (const call of calls) {
+      const isAuthority =
+        new URL(call.url).origin === anchors.claimAuthorityOrigin;
+      expect(
+        call.options.headers["CF-Access-Client-Id"] !== undefined,
+      ).toBe(isAuthority);
+      expect(
+        call.options.headers["CF-Access-Client-Secret"] !== undefined,
+      ).toBe(isAuthority);
+    }
     const deploymentPost = calls.find(
       ({ url, options }) =>
         options.method === "POST" && url.startsWith("https://api.cloudflare.com"),
@@ -363,6 +462,10 @@ describe("Relay Container native ring-transition transport", () => {
     expect(deploymentPost.options.headers.authorization).toBe(
       `Bearer ${DEPLOY_TOKEN}`,
     );
+    expect(deploymentPost.options.headers["CF-Access-Client-Id"]).toBeUndefined();
+    expect(
+      deploymentPost.options.headers["CF-Access-Client-Secret"],
+    ).toBeUndefined();
     expect(deploymentPost.options.redirect).toBe("error");
     expect(calls.every(({ options }) => options.signal instanceof AbortSignal)).toBe(
       true,
@@ -409,6 +512,7 @@ describe("Relay Container native ring-transition transport", () => {
         readCredentialVerified: true,
         claimCredentialVerified: true,
         deployCredentialVerified: true,
+        accessServiceTokenVerified: true,
       });
 
       failRevalidation = true;
@@ -421,6 +525,7 @@ describe("Relay Container native ring-transition transport", () => {
         readCredentialVerified: false,
         claimCredentialVerified: false,
         deployCredentialVerified: false,
+        accessServiceTokenVerified: false,
       });
       await expect(
         transport.readDeployment(anchors.controllerServiceName),
@@ -502,6 +607,16 @@ describe("Relay Container native ring-transition transport", () => {
     });
     expect(Buffer.from(signaturePart, "base64url")).toHaveLength(32);
     expect(token).not.toContain(CLAIM_SECRET);
+    expect(authorityCall.options.headers["CF-Access-Client-Id"]).toBe(
+      ACCESS_CLIENT_ID,
+    );
+    expect(authorityCall.options.headers["CF-Access-Client-Secret"]).toBe(
+      ACCESS_CLIENT_SECRET,
+    );
+    expect(request.headers["CF-Access-Client-Id"]).toBeUndefined();
+    expect(request.headers["CF-Access-Client-Secret"]).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain(ACCESS_CLIENT_ID);
+    expect(JSON.stringify(result)).not.toContain(ACCESS_CLIENT_SECRET);
     expect(authorityCall.options.redirect).toBe("error");
   });
 
@@ -864,6 +979,8 @@ function publishedAnchors(overrides = {}) {
   const anchors = {
     ...DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
     enabled: true,
+    accessServiceTokenMode: RING_TRANSITION_ACCESS_SERVICE_TOKEN_MODE,
+    accessClientIdSha256: sha256Hex(Buffer.from(ACCESS_CLIENT_ID, "utf8")),
     claimAuthorityOrigin: "https://ring-transition-authority-staging.example.com",
     claimAuthorityVersionId: "authority-version-001",
     claimAuthorityIssuer: "cinatoken-ring-runner-staging",
@@ -903,6 +1020,8 @@ function credentialEnvironment() {
     [RING_TRANSITION_TRANSPORT_ENV.readToken]: READ_TOKEN,
     [RING_TRANSITION_TRANSPORT_ENV.claimHmacSecret]: CLAIM_SECRET,
     [RING_TRANSITION_TRANSPORT_ENV.deployToken]: DEPLOY_TOKEN,
+    [RING_TRANSITION_TRANSPORT_ENV.accessClientId]: ACCESS_CLIENT_ID,
+    [RING_TRANSITION_TRANSPORT_ENV.accessClientSecret]: ACCESS_CLIENT_SECRET,
   };
 }
 

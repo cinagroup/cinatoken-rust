@@ -17,6 +17,14 @@ fn describe_ignores_runtime_trust_and_secret_poisoning() {
             "CINATOKEN_RING_TRANSITION_DEPLOY_TOKEN",
             "poison-deploy-token",
         )
+        .env(
+            "CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_ID",
+            "poison-access-client-id",
+        )
+        .env(
+            "CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_SECRET",
+            "poison-access-client-secret",
+        )
         .output()
         .expect("runner must start");
     assert!(output.status.success());

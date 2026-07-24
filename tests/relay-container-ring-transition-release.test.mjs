@@ -78,6 +78,7 @@ describe("Relay Container ring-transition runner release contract", () => {
       "crates/ring-transition-runner/src/orchestrator.rs",
       "crates/ring-transition-runner/src/publication.rs",
       "crates/ring-transition-runner/src/release.rs",
+      "crates/ring-transition-runner/src/transport.rs",
       "crates/ring-transition-runner/tests/cli.rs",
       "package.json",
       "tests/relay-container-ring-transition-release-source.test.mjs",
@@ -133,7 +134,7 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.moduleCount).toBe(20);
+    expect(result.moduleCount).toBe(21);
   });
 
   test("matches the deterministic Rust DSSE release vector", () => {
@@ -143,28 +144,46 @@ describe("Relay Container ring-transition runner release contract", () => {
       policySha256:
         "9b12c3dd50812180f2122311480876bd6508a81618082c615ca52d4701ec3856",
       inventorySha256:
-        "654a12f3b9c8d19b057b532632988e2ce6595ad662bd39ed4caf58d4d3fd32d9",
+        "8886f7c77cd4fff095768c8444a27c2738d6cb8595668828554bd09e73b92039",
       manifestSha256:
-        "f10dfcd528e86355b60a23cb23411a677897d83da1380609cb2108f4f3a26ce4",
+        "538f997aa1757626f60b58e899f079c109d36d34109690b90296abc05a8e9fd3",
       packetSha256:
-        "74de3b160af09e2a27ce328b4c1a04a3139f514a590d0190e6fdb46bcf090ab5",
+        "2bdc37993f2c651b698b7d1756beeb70895c9ac26af40b796f6062a70bf7f28a",
       signatureBase64:
-        "XHFYf4b7gZFJuzgEX72QlHLRJKOKRi0dq4UMU2ZOYExMmd2OCKityaiKLX4WD9+NajsStiswaBOGdIYjxoRYDA==",
+        "7l12y4S9xjKu6gmDc7cUJd2+JkH18ZpZO+pRP82SatTgtddTT4H0nPLTyAkKtKEM3Ksd+Ln68kypSieaPrO7DA==",
       publicationGenerationSha256:
-        "9bbec7fb3934ce364f27b54a79ccae62c423e6d01f4ff5fe187d0f61ca620234",
+        "2acea1f7722178da8ecb786590f5bf4347e338a8358f984bbd9ffdd79fd4563b",
       publicationManifestSha256:
-        "8beca6784152e2034d2b3e4866efe1f9892dfa7bc252ed87dd6a1397f8b211f2",
+        "d326b78b08bc2ad51a7bf26bb2ccc93e2335d00c6e4b5f632b63533361e4edfa",
       publicationPacketSha256:
-        "49ae3ccac08abd1c9fa3e205d7444ef260c50956f55a06f80f9f622f3b459f89",
+        "7731207b5a95f057bda7cb5c3455ce81925dcb108d627f6ee920bcef5e194ad9",
       publicationSignatureBase64:
-        "I3wT6H82lVOz5VvPDHWRT21aozvFOuQoVEBGsVZEqYMKJ48QQCXGySLZrj0vJRvwo1LLQ7Hu3y97+FAIrbkVDQ==",
+        "+hHPYIYnFkjubmtcQohVRS8pNlDOm8LqpJOBD6o70BzejITR0ZMbo1TpwptZTso6/NMAJAwwF9+kZl9YSFiGBw==",
       activationSha256:
-        "10bd518fe1fc5935672ea01696f2b80c719f8ce535f7d6711d6890c6452efff8",
+        "e4e23a885959ccc110af716395d5b5a85752f7c73493de3498d187a55521cbfc",
     });
   });
 
   test("CLI verifies consistency without claiming compiled trust or installation", async () => {
-    const fixture = await releaseFixture();
+    const fixtureNow = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const fixture = await releaseFixture({
+      policyMutator: (policy) => {
+        policy.validFrom = new Date(
+          fixtureNow.getTime() - 60 * 60 * 1000,
+        ).toISOString();
+        policy.validUntil = new Date(
+          fixtureNow.getTime() + 2 * 60 * 60 * 1000,
+        ).toISOString();
+      },
+      manifestMutator: (manifest) => {
+        manifest.issuedAt = new Date(
+          fixtureNow.getTime() - 60 * 1000,
+        ).toISOString();
+        manifest.expiresAt = new Date(
+          fixtureNow.getTime() + 60 * 60 * 1000,
+        ).toISOString();
+      },
+    });
     const verified = await runCli([
       "--packet",
       fixture.packetPath,
@@ -298,11 +317,28 @@ describe("Relay Container ring-transition runner release contract", () => {
     const missing = await releaseFixture({
       inventoryMutator: (inventory) => {
         inventory.files = inventory.files.filter(
-          (record) => record.path !== "Cargo.lock",
+          (record) =>
+            record.path !==
+            "crates/ring-transition-runner/src/transport.rs",
         );
       },
     });
     await expectReleaseFailure(missing, /file count is invalid|required path missing/);
+
+    const transportDigestDrift = await releaseFixture({
+      packetMutator: (packet) => {
+        const transport = packet.moduleInventory.files.find(
+          (record) =>
+            record.path ===
+            "crates/ring-transition-runner/src/transport.rs",
+        );
+        transport.sha256 = "f".repeat(64);
+      },
+    });
+    await expectReleaseFailure(
+      transportDigestDrift,
+      /module inventory digest mismatch/,
+    );
   });
 
   test("rejects build drift, policy drift, and Authority trust drift", async () => {
@@ -728,6 +764,10 @@ async function releaseFixture({
     [
       "crates/ring-transition-runner/src/release.rs",
       "runner-release-fixture",
+    ],
+    [
+      "crates/ring-transition-runner/src/transport.rs",
+      "runner-transport-fixture",
     ],
     [
       "crates/ring-transition-runner/tests/cli.rs",

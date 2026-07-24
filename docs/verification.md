@@ -8872,3 +8872,56 @@ two-process kill, ext4/XFS power-loss, remote Access/D1/version, or credential
 revocation gates. Checked-in trust remains disabled. No Authority claim,
 Cloudflare request, deployment, route, DNS, traffic, or Go/VPS change occurred.
 Production remains **NO-GO**.
+
+## 2026-07-24 Typed Stable Baseline Verification
+
+The T1 and Edge-previous local baseline increment was verified without
+credentials or remote network access:
+
+```powershell
+cargo fmt --all -- --check
+cargo test -p cinatoken-ring-transition-runner --lib --no-fail-fast
+cargo clippy -p cinatoken-ring-transition-runner --all-targets -- -D warnings
+bun test tests/relay-container-ring-transition-execution.test.mjs
+bun run check:ring-transition-runner
+bun run check:relay-container:ring-transition
+```
+
+Observed results:
+
+- runner Rust library: 91 passed;
+- runner binary and CLI: one plus two passed;
+- strict all-target Clippy: PASS;
+- focused execution JavaScript: 16 tests and 89 expectations;
+- runner JavaScript: 39 tests and 146 expectations; and
+- broader ring-transition JavaScript: 66 tests and 729 expectations;
+- complete repository `bun run check`: PASS with exit code 0 in 747 seconds;
+- Worker library: 859 passed; and
+- frontend: 71 passed, with zero bundle-redaction findings and zero budget
+  failures.
+
+The cases prove:
+
+- T1 and Edge-previous are isolated sealed phases;
+- each phase performs exactly four ordered read requests around the compiled
+  stable wait;
+- both observations bind the exact service, previous version, deployment set,
+  annotation, version detail, and monotonic times;
+- wait-time expiry, equality with expiry, and clock rollback perform no
+  Authority append;
+- `201/step_appended` and `200/step_replayed` are the only accepted pairs;
+- response loss, invalid success, `503 outcome_unknown`, timeout-like status,
+  redirect, throttling, or server failure never triggers a second POST;
+- accepted and ambiguous appends both require an exact GET containing the
+  expected canonical step;
+- an ambiguous append followed by the prior Authority state fails closed;
+- the old `ClaimedControlPlane` is consumed and cannot carry its stale
+  snapshot into the next phase; and
+- independent JavaScript recomputes the Rust T1 canonical step digest.
+
+These tests do not prove live receipt persistence, end-to-end reducer resume,
+the remaining append-path recovery changes, Linux process/power-loss
+durability, remote Access/D1/version behavior, credential revocation, or
+staging rollback. Checked-in trust remains disabled. No Authority claim,
+Cloudflare request, deployment, route, DNS, traffic, billing, or Go/VPS
+change occurred. Production remains **NO-GO**.

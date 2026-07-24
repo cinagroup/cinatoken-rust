@@ -236,6 +236,23 @@ impl VerifiedSnapshot {
         &self.snapshot.claim.claim_owner_sha256
     }
 
+    pub(crate) fn contains_exact_step(
+        &self,
+        state_version: u8,
+        status: ClaimStatus,
+        step_digest_sha256: &str,
+    ) -> bool {
+        self.snapshot.state.state_version >= state_version
+            && self
+                .snapshot
+                .steps
+                .iter()
+                .find(|step| step.state_version == state_version)
+                .is_some_and(|step| {
+                    step.to_status == status && step.step_digest_sha256 == step_digest_sha256
+                })
+    }
+
     pub fn controller_service_name(&self) -> &str {
         &self.snapshot.claim.controller.service_name
     }
@@ -298,6 +315,8 @@ pub struct ControllerMutation;
 pub struct EdgeMutation;
 pub struct ControllerObservation;
 pub struct EdgeObservation;
+pub struct T1ReadbackPhase;
+pub struct EdgePreviousReadbackPhase;
 
 mod sealed {
     pub trait Sealed {}
@@ -318,6 +337,15 @@ pub trait ObservationPhase: sealed::Sealed {
     const STEP_CODE: StepCode;
     const FROM_STATUS: ClaimStatus;
     const CONFIRMED_STATUS: ClaimStatus;
+    const DECISION: RunnerDecision;
+}
+
+pub trait BaselineReadbackPhase: sealed::Sealed {
+    const STATE_VERSION: u8;
+    const STEP_CODE: StepCode;
+    const FROM_STATUS: ClaimStatus;
+    const CONFIRMED_STATUS: ClaimStatus;
+    const DRIFT_STATUS: ClaimStatus;
     const DECISION: RunnerDecision;
 }
 
@@ -359,6 +387,299 @@ impl ObservationPhase for EdgeObservation {
     const FROM_STATUS: ClaimStatus = ClaimStatus::EdgeInflight;
     const CONFIRMED_STATUS: ClaimStatus = ClaimStatus::Completed;
     const DECISION: RunnerDecision = RunnerDecision::ObserveEdge;
+}
+
+impl sealed::Sealed for T1ReadbackPhase {}
+impl BaselineReadbackPhase for T1ReadbackPhase {
+    const STATE_VERSION: u8 = 1;
+    const STEP_CODE: StepCode = StepCode::T1Readback;
+    const FROM_STATUS: ClaimStatus = ClaimStatus::Claimed;
+    const CONFIRMED_STATUS: ClaimStatus = ClaimStatus::T1Verified;
+    const DRIFT_STATUS: ClaimStatus = ClaimStatus::Aborted;
+    const DECISION: RunnerDecision = RunnerDecision::ReadT1;
+}
+
+impl sealed::Sealed for EdgePreviousReadbackPhase {}
+impl BaselineReadbackPhase for EdgePreviousReadbackPhase {
+    const STATE_VERSION: u8 = 4;
+    const STEP_CODE: StepCode = StepCode::EdgePreReadback;
+    const FROM_STATUS: ClaimStatus = ClaimStatus::ControllerVerified;
+    const CONFIRMED_STATUS: ClaimStatus = ClaimStatus::EdgePrechecked;
+    const DRIFT_STATUS: ClaimStatus = ClaimStatus::RecoveryRequired;
+    const DECISION: RunnerDecision = RunnerDecision::ReadEdgePrevious;
+}
+
+pub struct BaselineReadbackBinding<P: BaselineReadbackPhase> {
+    service_name: String,
+    previous_version_id: String,
+    previous_deployment_set_sha256: String,
+    phase: PhantomData<P>,
+}
+
+impl<P: BaselineReadbackPhase> BaselineReadbackBinding<P> {
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+
+    pub fn previous_version_id(&self) -> &str {
+        &self.previous_version_id
+    }
+
+    pub fn previous_deployment_set_sha256(&self) -> &str {
+        &self.previous_deployment_set_sha256
+    }
+}
+
+pub struct PreparedBaselineReadback<P: BaselineReadbackPhase> {
+    binding: BaselineReadbackBinding<P>,
+    authorization_id_sha256: String,
+    claim_digest_sha256: String,
+    claim_owner_sha256: String,
+    ledger_identity_sha256: String,
+    generated_at: u64,
+    expires_at: u64,
+    phase: PhantomData<P>,
+}
+
+impl<P: BaselineReadbackPhase> PreparedBaselineReadback<P> {
+    pub fn binding(&self) -> &BaselineReadbackBinding<P> {
+        &self.binding
+    }
+
+    pub fn authorization_id_sha256(&self) -> &str {
+        &self.authorization_id_sha256
+    }
+
+    pub fn claim_digest_sha256(&self) -> &str {
+        &self.claim_digest_sha256
+    }
+
+    pub fn claim_owner_sha256(&self) -> &str {
+        &self.claim_owner_sha256
+    }
+}
+
+pub fn prepare_t1_readback(
+    snapshot: &VerifiedSnapshot,
+    now: u64,
+) -> Result<PreparedBaselineReadback<T1ReadbackPhase>, OrchestratorError> {
+    prepare_baseline_readback::<T1ReadbackPhase>(snapshot, now)
+}
+
+pub fn prepare_edge_previous_readback(
+    snapshot: &VerifiedSnapshot,
+    now: u64,
+) -> Result<PreparedBaselineReadback<EdgePreviousReadbackPhase>, OrchestratorError> {
+    prepare_baseline_readback::<EdgePreviousReadbackPhase>(snapshot, now)
+}
+
+fn prepare_baseline_readback<P: BaselineReadbackPhase>(
+    snapshot: &VerifiedSnapshot,
+    now: u64,
+) -> Result<PreparedBaselineReadback<P>, OrchestratorError> {
+    if snapshot.decision(now)? != P::DECISION {
+        return Err(OrchestratorError::DecisionMismatch);
+    }
+    let service = if P::STATE_VERSION == 1 {
+        &snapshot.snapshot.claim.controller
+    } else {
+        &snapshot.snapshot.claim.edge
+    };
+    Ok(PreparedBaselineReadback {
+        binding: BaselineReadbackBinding {
+            service_name: service.service_name.clone(),
+            previous_version_id: service.previous_version_id.clone(),
+            previous_deployment_set_sha256: service.previous_deployment_set_sha256.clone(),
+            phase: PhantomData,
+        },
+        authorization_id_sha256: snapshot.authorization_id_sha256().to_owned(),
+        claim_digest_sha256: snapshot.claim_digest_sha256().to_owned(),
+        claim_owner_sha256: snapshot.claim_owner_sha256().to_owned(),
+        ledger_identity_sha256: snapshot.snapshot.claim.ledger_identity_sha256.clone(),
+        generated_at: snapshot.snapshot.claim.generated_at,
+        expires_at: snapshot.snapshot.claim.expires_at,
+        phase: PhantomData,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BaselineReadbackStability {
+    Confirmed,
+    Drift,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct BaselineReadbackRecordInput {
+    pub deployment_set_sha256: String,
+    pub evidence_sha256: String,
+    pub stability: BaselineReadbackStability,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaselineReadbackStep {
+    pub schema_version: u8,
+    pub contract: &'static str,
+    pub ledger_identity_sha256: String,
+    pub claim_digest_sha256: String,
+    pub state_version: u8,
+    pub step_code: StepCode,
+    pub from_status: ClaimStatus,
+    pub to_status: ClaimStatus,
+    pub mutation_request_sha256: Option<String>,
+    pub cloudflare_request_id_sha256: Option<String>,
+    pub deployment_set_sha256: Option<String>,
+    pub evidence_sha256: String,
+    pub failure_class: FailureClass,
+    pub transport_outcome: TransportOutcome,
+    pub step_digest_sha256: String,
+}
+
+pub struct BaselineReadbackAppendAttempt<P: BaselineReadbackPhase> {
+    step: BaselineReadbackStep,
+    authorization_id_sha256: String,
+    request_id: String,
+    phase: PhantomData<P>,
+}
+
+impl<P: BaselineReadbackPhase> BaselineReadbackAppendAttempt<P> {
+    pub fn step(&self) -> &BaselineReadbackStep {
+        &self.step
+    }
+
+    pub fn canonical_step_json(&self) -> Result<String, OrchestratorError> {
+        canonical_json(&self.step)
+    }
+
+    pub fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
+    pub fn authorization_id_sha256(&self) -> &str {
+        &self.authorization_id_sha256
+    }
+
+    pub fn claim_digest_sha256(&self) -> &str {
+        &self.step.claim_digest_sha256
+    }
+}
+
+pub fn begin_baseline_readback_append<P: BaselineReadbackPhase>(
+    prepared: PreparedBaselineReadback<P>,
+    input: BaselineReadbackRecordInput,
+    request_id: &str,
+    now: u64,
+) -> Result<BaselineReadbackAppendAttempt<P>, OrchestratorError> {
+    require_token(request_id, 1, 128, "request_id")?;
+    if now < prepared.generated_at {
+        return Err(OrchestratorError::ClockBeforeClaim);
+    }
+    if now >= prepared.expires_at {
+        return Err(OrchestratorError::AuthorizationExpired);
+    }
+    require_sha256(&input.deployment_set_sha256, "deployment_set_sha256")?;
+    require_sha256(&input.evidence_sha256, "evidence_sha256")?;
+    let (to_status, failure_class) = match input.stability {
+        BaselineReadbackStability::Confirmed => (P::CONFIRMED_STATUS, FailureClass::None),
+        BaselineReadbackStability::Drift => (P::DRIFT_STATUS, FailureClass::ReadbackDrift),
+    };
+    let mut step = BaselineReadbackStep {
+        schema_version: 1,
+        contract: STEP_CONTRACT,
+        ledger_identity_sha256: prepared.ledger_identity_sha256,
+        claim_digest_sha256: prepared.claim_digest_sha256,
+        state_version: P::STATE_VERSION,
+        step_code: P::STEP_CODE,
+        from_status: P::FROM_STATUS,
+        to_status,
+        mutation_request_sha256: None,
+        cloudflare_request_id_sha256: None,
+        deployment_set_sha256: Some(input.deployment_set_sha256),
+        evidence_sha256: input.evidence_sha256,
+        failure_class,
+        transport_outcome: TransportOutcome::NotApplicable,
+        step_digest_sha256: String::new(),
+    };
+    step.step_digest_sha256 = baseline_readback_step_digest(&step)?;
+    Ok(BaselineReadbackAppendAttempt {
+        step,
+        authorization_id_sha256: prepared.authorization_id_sha256,
+        request_id: request_id.to_owned(),
+        phase: PhantomData,
+    })
+}
+
+pub struct RecordedBaselineReadback<P: BaselineReadbackPhase> {
+    replayed: bool,
+    authorization_id_sha256: String,
+    claim_digest_sha256: String,
+    status: ClaimStatus,
+    state_version: u8,
+    step_digest_sha256: String,
+    phase: PhantomData<P>,
+}
+
+impl<P: BaselineReadbackPhase> RecordedBaselineReadback<P> {
+    pub fn was_replayed(&self) -> bool {
+        self.replayed
+    }
+
+    pub fn authorization_id_sha256(&self) -> &str {
+        &self.authorization_id_sha256
+    }
+
+    pub fn claim_digest_sha256(&self) -> &str {
+        &self.claim_digest_sha256
+    }
+
+    pub fn status(&self) -> ClaimStatus {
+        self.status
+    }
+
+    pub fn state_version(&self) -> u8 {
+        self.state_version
+    }
+
+    pub fn step_digest_sha256(&self) -> &str {
+        &self.step_digest_sha256
+    }
+}
+
+pub fn verify_baseline_readback_append<P: BaselineReadbackPhase>(
+    attempt: BaselineReadbackAppendAttempt<P>,
+    response_json: &[u8],
+    expected_authority_version_id: &str,
+    response_was_created: bool,
+) -> Result<RecordedBaselineReadback<P>, OrchestratorError> {
+    require_token(
+        expected_authority_version_id,
+        1,
+        128,
+        "authority_version_id",
+    )?;
+    reject_duplicate_json(response_json, MAX_APPEND_RESPONSE_BYTES)?;
+    let response: AuthorityStepAppendResponse =
+        serde_json::from_slice(response_json).map_err(|_| OrchestratorError::InvalidJson)?;
+    if (response.result == AppendResult::StepAppended) != response_was_created
+        || response.request_id != attempt.request_id
+        || response.authority_version_id != expected_authority_version_id
+        || response.authorization_id_sha256 != attempt.authorization_id_sha256
+        || response.claim_digest_sha256 != attempt.step.claim_digest_sha256
+        || response.status != attempt.step.to_status
+        || response.state_version != P::STATE_VERSION
+        || response.step_digest_sha256 != attempt.step.step_digest_sha256
+    {
+        return Err(OrchestratorError::AppendMismatch);
+    }
+    Ok(RecordedBaselineReadback {
+        replayed: response.result == AppendResult::StepReplayed,
+        authorization_id_sha256: attempt.authorization_id_sha256,
+        claim_digest_sha256: attempt.step.claim_digest_sha256,
+        status: attempt.step.to_status,
+        state_version: P::STATE_VERSION,
+        step_digest_sha256: attempt.step.step_digest_sha256,
+        phase: PhantomData,
+    })
 }
 
 #[derive(Serialize)]
@@ -1737,6 +2058,25 @@ fn mutation_step_digest(step: &MutationIntentStep) -> Result<String, Orchestrato
     })
 }
 
+fn baseline_readback_step_digest(step: &BaselineReadbackStep) -> Result<String, OrchestratorError> {
+    canonical_sha256(&StepDigestInput {
+        schema_version: step.schema_version,
+        contract: step.contract,
+        ledger_identity_sha256: &step.ledger_identity_sha256,
+        claim_digest_sha256: &step.claim_digest_sha256,
+        state_version: step.state_version,
+        step_code: step.step_code,
+        from_status: step.from_status,
+        to_status: step.to_status,
+        mutation_request_sha256: step.mutation_request_sha256.as_deref(),
+        cloudflare_request_id_sha256: step.cloudflare_request_id_sha256.as_deref(),
+        deployment_set_sha256: step.deployment_set_sha256.as_deref(),
+        evidence_sha256: &step.evidence_sha256,
+        failure_class: step.failure_class,
+        transport_outcome: step.transport_outcome,
+    })
+}
+
 fn observation_step_digest(step: &ObservationStep) -> Result<String, OrchestratorError> {
     canonical_sha256(&StepDigestInput {
         schema_version: step.schema_version,
@@ -1966,6 +2306,219 @@ mod tests {
         let snapshot = verified(base_snapshot());
         assert_eq!(snapshot.state_version(), 0);
         assert_eq!(snapshot.decision(NOW), Ok(RunnerDecision::ReadT1));
+    }
+
+    #[test]
+    fn baseline_readback_phases_are_snapshot_owned_and_isolated() {
+        let claimed = verified(base_snapshot());
+        let t1 = prepare_t1_readback(&claimed, NOW).unwrap();
+        assert_eq!(t1.binding().service_name(), "controller-staging");
+        assert_eq!(t1.binding().previous_version_id(), "controller-version-001");
+        assert_eq!(
+            t1.binding().previous_deployment_set_sha256(),
+            "1".repeat(64)
+        );
+        assert!(matches!(
+            prepare_edge_previous_readback(&claimed, NOW),
+            Err(OrchestratorError::DecisionMismatch)
+        ));
+
+        let mut raw = base_snapshot();
+        append_t1(&mut raw);
+        append_controller_intent(&mut raw);
+        append_controller_post_readback(&mut raw);
+        let controller_verified = verified(raw);
+        let edge = prepare_edge_previous_readback(&controller_verified, NOW).unwrap();
+        assert_eq!(edge.binding().service_name(), "edge-staging");
+        assert_eq!(edge.binding().previous_version_id(), "edge-version-001");
+        assert_eq!(
+            edge.binding().previous_deployment_set_sha256(),
+            "2".repeat(64)
+        );
+        assert!(matches!(
+            prepare_t1_readback(&controller_verified, NOW),
+            Err(OrchestratorError::DecisionMismatch)
+        ));
+    }
+
+    #[test]
+    fn baseline_readback_outcomes_match_t1_and_edge_history_rules() {
+        let claimed = verified(base_snapshot());
+        let confirmed = begin_baseline_readback_append(
+            prepare_t1_readback(&claimed, NOW).unwrap(),
+            BaselineReadbackRecordInput {
+                deployment_set_sha256: "1".repeat(64),
+                evidence_sha256: EVIDENCE_DIGEST.to_owned(),
+                stability: BaselineReadbackStability::Confirmed,
+            },
+            "t1-readback-request-001",
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(confirmed.step().state_version, 1);
+        assert_eq!(confirmed.step().step_code, StepCode::T1Readback);
+        assert_eq!(confirmed.step().to_status, ClaimStatus::T1Verified);
+        assert_eq!(confirmed.step().failure_class, FailureClass::None);
+        assert_eq!(
+            confirmed.step().deployment_set_sha256.as_deref(),
+            Some("1111111111111111111111111111111111111111111111111111111111111111")
+        );
+        assert_eq!(
+            confirmed.step().step_digest_sha256,
+            "7af14e9d7761d3d665d5fbe5ae425cb407b33730b40567867c70410a580c859b"
+        );
+
+        let t1_drift = begin_baseline_readback_append(
+            prepare_t1_readback(&claimed, NOW).unwrap(),
+            BaselineReadbackRecordInput {
+                deployment_set_sha256: "a".repeat(64),
+                evidence_sha256: EVIDENCE_DIGEST.to_owned(),
+                stability: BaselineReadbackStability::Drift,
+            },
+            "t1-readback-request-002",
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(t1_drift.step().to_status, ClaimStatus::Aborted);
+        assert_eq!(t1_drift.step().failure_class, FailureClass::ReadbackDrift);
+
+        let mut raw = base_snapshot();
+        append_t1(&mut raw);
+        append_controller_intent(&mut raw);
+        append_controller_post_readback(&mut raw);
+        let controller_verified = verified(raw);
+        let edge_drift = begin_baseline_readback_append(
+            prepare_edge_previous_readback(&controller_verified, NOW).unwrap(),
+            BaselineReadbackRecordInput {
+                deployment_set_sha256: "a".repeat(64),
+                evidence_sha256: EVIDENCE_DIGEST.to_owned(),
+                stability: BaselineReadbackStability::Drift,
+            },
+            "edge-previous-request-001",
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(edge_drift.step().state_version, 4);
+        assert_eq!(edge_drift.step().step_code, StepCode::EdgePreReadback);
+        assert_eq!(edge_drift.step().to_status, ClaimStatus::RecoveryRequired);
+        assert_eq!(edge_drift.step().failure_class, FailureClass::ReadbackDrift);
+
+        for (at, expected) in [
+            (NOW - 1, OrchestratorError::ClockBeforeClaim),
+            (NOW + 300, OrchestratorError::AuthorizationExpired),
+        ] {
+            let result = begin_baseline_readback_append(
+                prepare_t1_readback(&claimed, NOW).unwrap(),
+                BaselineReadbackRecordInput {
+                    deployment_set_sha256: "1".repeat(64),
+                    evidence_sha256: EVIDENCE_DIGEST.to_owned(),
+                    stability: BaselineReadbackStability::Confirmed,
+                },
+                "t1-readback-window-check",
+                at,
+            );
+            assert!(matches!(result, Err(error) if error == expected));
+        }
+    }
+
+    #[test]
+    fn baseline_append_accepts_exact_replay_without_minting_mutation_authority() {
+        for result in ["step_appended", "step_replayed"] {
+            let snapshot = verified(base_snapshot());
+            let attempt = begin_baseline_readback_append(
+                prepare_t1_readback(&snapshot, NOW).unwrap(),
+                BaselineReadbackRecordInput {
+                    deployment_set_sha256: "1".repeat(64),
+                    evidence_sha256: EVIDENCE_DIGEST.to_owned(),
+                    stability: BaselineReadbackStability::Confirmed,
+                },
+                "t1-readback-request-001",
+                NOW,
+            )
+            .unwrap();
+            let response = baseline_readback_response(
+                &attempt,
+                result,
+                "t1-readback-request-001",
+                "authority-version-001",
+            );
+            let recorded = verify_baseline_readback_append(
+                attempt,
+                response.as_bytes(),
+                "authority-version-001",
+                result == "step_appended",
+            )
+            .unwrap();
+            assert_eq!(recorded.was_replayed(), result == "step_replayed");
+            assert_eq!(recorded.status(), ClaimStatus::T1Verified);
+            assert_eq!(recorded.state_version(), 1);
+            assert_eq!(
+                recorded.authorization_id_sha256(),
+                snapshot.authorization_id_sha256()
+            );
+            assert_eq!(
+                recorded.claim_digest_sha256(),
+                snapshot.claim_digest_sha256()
+            );
+        }
+
+        let snapshot = verified(base_snapshot());
+        let attempt = begin_baseline_readback_append(
+            prepare_t1_readback(&snapshot, NOW).unwrap(),
+            BaselineReadbackRecordInput {
+                deployment_set_sha256: "1".repeat(64),
+                evidence_sha256: EVIDENCE_DIGEST.to_owned(),
+                stability: BaselineReadbackStability::Confirmed,
+            },
+            "t1-readback-request-001",
+            NOW,
+        )
+        .unwrap();
+        let mut response: Value = serde_json::from_str(&baseline_readback_response(
+            &attempt,
+            "step_appended",
+            "t1-readback-request-001",
+            "authority-version-001",
+        ))
+        .unwrap();
+        response["stepDigestSha256"] = Value::String("a".repeat(64));
+        assert!(matches!(
+            verify_baseline_readback_append(
+                attempt,
+                serde_json::to_string(&response).unwrap().as_bytes(),
+                "authority-version-001",
+                true,
+            ),
+            Err(OrchestratorError::AppendMismatch)
+        ));
+
+        let snapshot = verified(base_snapshot());
+        let attempt = begin_baseline_readback_append(
+            prepare_t1_readback(&snapshot, NOW).unwrap(),
+            BaselineReadbackRecordInput {
+                deployment_set_sha256: "1".repeat(64),
+                evidence_sha256: EVIDENCE_DIGEST.to_owned(),
+                stability: BaselineReadbackStability::Confirmed,
+            },
+            "t1-readback-request-001",
+            NOW,
+        )
+        .unwrap();
+        let swapped = baseline_readback_response(
+            &attempt,
+            "step_replayed",
+            "t1-readback-request-001",
+            "authority-version-001",
+        );
+        assert!(matches!(
+            verify_baseline_readback_append(
+                attempt,
+                swapped.as_bytes(),
+                "authority-version-001",
+                true,
+            ),
+            Err(OrchestratorError::AppendMismatch)
+        ));
     }
 
     #[test]
@@ -2737,6 +3290,25 @@ mod tests {
             "stateVersion": attempt.step.state_version,
             "stepDigestSha256": attempt.step.step_digest_sha256,
             "authorityVersionId": "authority-version-001"
+        })
+        .to_string()
+    }
+
+    fn baseline_readback_response<P: BaselineReadbackPhase>(
+        attempt: &BaselineReadbackAppendAttempt<P>,
+        result: &str,
+        request_id: &str,
+        authority_version_id: &str,
+    ) -> String {
+        serde_json::json!({
+            "result": result,
+            "requestId": request_id,
+            "authorizationIdSha256": attempt.authorization_id_sha256,
+            "claimDigestSha256": attempt.step.claim_digest_sha256,
+            "status": attempt.step.to_status,
+            "stateVersion": attempt.step.state_version,
+            "stepDigestSha256": attempt.step.step_digest_sha256,
+            "authorityVersionId": authority_version_id
         })
         .to_string()
     }

@@ -36,6 +36,7 @@ import {
   ringTransitionDeploymentMutationBinding,
   ringTransitionTrustConfigDigestSha256,
   validatePublishedRingTransitionTrust,
+  validateRingTransitionExecutionStep,
 } from "../tools/relay_container_ring_transition_execution_contract.mjs";
 import {
   canonicalJson,
@@ -896,6 +897,29 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
       "authenticated-edge-post-readback",
     );
     expect(nextRingTransitionRunnerAction("recovery_required")).toBeNull();
+  });
+
+  test("independently verifies the Rust T1 baseline step vector", () => {
+    const step = {
+      schemaVersion: 1,
+      contract: RING_TRANSITION_EXECUTION_STEP_CONTRACT,
+      ledgerIdentitySha256: "d".repeat(64),
+      claimDigestSha256:
+        "84490febce426e4a525c1f08a4f9c7650e9df95c317e0bfa21fb17d6946f0b32",
+      stateVersion: 1,
+      stepCode: "t1_readback",
+      fromStatus: "claimed",
+      toStatus: "t1_verified",
+      mutationRequestSha256: null,
+      cloudflareRequestIdSha256: null,
+      deploymentSetSha256: "1".repeat(64),
+      evidenceSha256: "b".repeat(64),
+      failureClass: "",
+      transportOutcome: "not_applicable",
+      stepDigestSha256:
+        "7af14e9d7761d3d665d5fbe5ae425cb407b33730b40567867c70410a580c859b",
+    };
+    expect(validateRingTransitionExecutionStep(step)).toEqual(step);
   });
 
   test("CLI ignores poison credentials in describe mode and rejects execution", () => {

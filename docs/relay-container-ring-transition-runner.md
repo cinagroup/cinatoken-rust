@@ -627,3 +627,58 @@ integration, and the resumable driver, followed by exact Linux crash,
 concurrency, ACL, sync and power-loss evidence, full approval revalidation,
 external receipt anchoring, isolated staging proof, and exposed-credential
 revocation. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Typed Stable Baseline Readback
+
+The native runner now owns the authenticated T1 and Edge-previous baseline
+boundaries. They are separate sealed phase types and accept only the exact
+Authority state/history from which that phase is legal. Raw phase names or
+caller-selected service/version values cannot create a capability.
+
+Each prepared phase is snapshot-owned. It freezes the claim identities,
+Authority version, previous service/version/deployment set, observation
+window, claim validity window, canonical evidence identity, and exact append
+binding. The transport performs four ordered read-only Cloudflare requests:
+
+```text
+deployment set A -> version detail A -> stable wait
+                 -> deployment set B -> version detail B
+```
+
+Both normalized observations must be identical and equal the signed previous
+baseline. Drift is recorded through the phase's fail-closed Authority
+outcome: T1 becomes `aborted`; Edge-previous becomes `recovery_required`.
+Neither classification creates a deployment permit.
+
+The runner rechecks the clock and claim expiry after the wait and before the
+POST. Expiry or clock rollback sends no append. The one append accepts only
+`201/step_appended` or `200/step_replayed`. Malformed or mismatched `2xx`,
+redirects, timeout-like responses, throttling, `5xx`, transport loss, and
+`outcome_unknown` are ambiguous and are never reposted.
+
+Accepted and ambiguous append outcomes both require one new exact Authority
+GET. `record_t1_readback(self)` and
+`record_edge_previous_readback(self)` consume the old
+`ClaimedControlPlane`; only a GET-verified snapshot containing the exact step
+is returned. A prior or unverifiable snapshot drops the stale capability and
+requires restart-time exact recovery.
+
+The canonical evidence contract is
+`cinatoken-ring-transition-runner-stable-baseline-readback-evidence-v1`.
+Independent JavaScript verifies the frozen Rust T1 step digest
+`7af14e9d7761d3d665d5fbe5ae425cb407b33730b40567867c70410a580c859b`.
+
+Local evidence is 91 Rust library tests, one binary test, two CLI tests,
+strict all-target Clippy, 39 runner JavaScript tests with 146 expectations,
+and 66 broader ring-transition tests with 729 expectations. The complete
+repository `bun run check` passed with exit code 0 in 747 seconds, including
+859 Worker tests and 71 frontend tests. Checked-in trust remains disabled and
+no credential or remote API was used.
+
+Remaining P0 starts with live create-new receipt append at every network and
+recovery boundary, then the resumable one-action `execute_current()` driver.
+The older mutation-intent and post-observation append paths must also adopt
+the same strict response/ambiguous exact-GET model before staging. Linux
+crash/power-loss proof, approval revalidation, external receipt anchoring,
+credential revocation, isolated staging, and G1-G8 remain open. Production is
+**NO-GO**.

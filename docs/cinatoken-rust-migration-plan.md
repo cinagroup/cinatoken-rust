@@ -18936,3 +18936,177 @@ The next K7 implementation order is now:
 
 Until those items and G1-G8 pass, Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 22.281 Typed T1 And Edge-Previous Stable Baseline Overlay (2026-07-24)
+
+This overlay completes the local implementation portion of section 22.280
+item 1. It adds authenticated stable baseline readback and exact Authority
+append/recovery for the two pre-mutation boundaries:
+
+1. T1 verifies the Controller previous deployment before any Controller
+   mutation intent can exist.
+2. Edge-previous verifies the Edge previous deployment only after the
+   Controller post-readback has been accepted by Authority.
+
+No deployment permit is created by either boundary. Checked-in release,
+execution-activation, and credential trust remain disabled. No credential was
+read and no Cloudflare API, Authority, deployment, route, DNS, customer
+traffic, billing, or Go/VPS mutation was performed.
+
+### Refreshed source audits
+
+The design was rechecked against the complete, clean
+`cinaVibeSDK main@918e97480ee44e357abe99bf33c27259d6ac7ebd` source tree and
+the complete Go `cinatoken main@73652508abc5cb09214dde02d51d69d1d1ccc703`
+tree. The Go tree had one pre-existing local status entry and remained
+read-only.
+
+The cinaVibeSDK audit confirms the architecture direction:
+
+- deterministic entity ownership belongs in a Durable Object;
+- the Durable Object is the persistent supervisor/control plane;
+- Linux Containers are disposable execution workers and must be rebuildable
+  from persistent state;
+- D1 is global truth, Durable Object SQLite is local serialized truth, KV is
+  a non-authoritative cache, and R2 holds snapshots and large artifacts; and
+- Worker-to-DO and DO-to-Container communication should use bindings/RPC.
+
+The future sharding implementation must not copy the source repository's
+modulo routing, session ID as stable identity, in-memory timers, or unbounded
+retry behavior. It still requires a versioned Jump/Rendezvous ring,
+generation fencing, persisted drain/recovery state, alarms, and bounded fault
+handling.
+
+The Go audit was performed after reading
+`C:\cinagroup\cinatoken\pkg\billingexpr\expr.md`. It reconfirms that production
+compatibility includes priority-tier and weighted channel selection, retry
+and auto-group behavior, multi-key/model mapping, frozen billing expressions,
+Go-compatible rounding and request rules, one ordered SSE consumer, and the
+three-stage task financial state machine. This overlay changes none of those
+surfaces. Go/VPS remains the authoritative implementation.
+
+### Snapshot-owned sealed phases
+
+`T1ReadbackPhase` and `EdgePreviousReadbackPhase` are sealed, disjoint Rust
+types. Each phase defines its exact Authority state, history length, actor,
+success outcome, drift outcome, and previous Cloudflare service. A caller
+cannot substitute the Edge phase for T1 or use a raw state string to mint a
+baseline capability.
+
+Preparation freezes:
+
+- authorization ID, claim digest, claim owner, and ledger identity;
+- Authority version and the complete verified claim snapshot;
+- expected service, exact previous version, and normalized deployment set;
+- generated/expiry times and the compiled stable observation window; and
+- the canonical append actor, outcome, evidence digest, and request digest.
+
+Each transition performs exactly four ordered read-only Cloudflare requests:
+deployment set and version detail at observation A, the compiled wait, then
+deployment set and version detail at observation B. Both observations must
+have the same service/version/deployment identities and must equal the signed
+previous baseline. Annotation, percentage, version metadata, deployment set,
+time order, or target identity drift is evidence, never success.
+
+The baseline evidence uses the closed contract:
+
+```text
+cinatoken-ring-transition-runner-stable-baseline-readback-evidence-v1
+```
+
+The frozen T1 cross-runtime step digest is:
+
+```text
+7af14e9d7761d3d665d5fbe5ae425cb407b33730b40567867c70410a580c859b
+```
+
+The independent JavaScript execution contract recomputes and verifies that
+vector. It does not import the Rust implementation.
+
+### Expiry, append, and exact recovery
+
+After the stable wait and before any Authority POST, the runner rechecks the
+clock and claim expiry. Clock rollback, expiry during the wait, or
+`now >= expires_at` performs no Authority append. The prepared capability
+cannot be reused.
+
+The append has one fixed path, bounded canonical body, request ID, HMAC
+credential, timeout, and response ceiling. It is sent at most once. Accepted
+responses are exactly:
+
+| HTTP | Required result | Meaning |
+|---|---|---|
+| `201` | `step_appended` | the exact baseline step was created |
+| `200` | `step_replayed` | the exact baseline step already exists |
+
+A swapped pair, malformed or identity-drifted success, any other `2xx`,
+redirect, `408`, `409`, `425`, `429`, `5xx`, transport loss, truncation, or
+explicit `outcome_unknown` is ambiguous. It never causes a second POST.
+Other deterministic `4xx` results are rejected.
+
+POST classification is never used as the next reducer snapshot. Exact
+accepted and ambiguous outcomes both perform one new exact Authority GET.
+Only a fully verified snapshot containing the exact expected step is
+returned. If the GET still shows the prior state, contains a different step,
+or cannot be verified, the operation fails closed.
+
+`ClaimedControlPlane::record_t1_readback(self)` and
+`record_edge_previous_readback(self)` consume the old control-plane value.
+The returned value owns only the newly fetched exact snapshot. If recovery
+fails, the stale capability is dropped; restart must reverify the installed
+chain and exact Authority state. This prevents phase advancement from an old
+in-memory snapshot or from a POST response.
+
+Stable baseline success advances through the existing success outcome. Drift
+records the existing fail-closed transition: T1 enters `aborted`, while
+Edge-previous enters `recovery_required`. Neither path mints a deployment
+capability.
+
+### Local evidence
+
+Focused evidence on the final worktree for this overlay is:
+
+- `cargo fmt --all -- --check`: PASS;
+- runner Rust library: 91 tests, all PASS;
+- runner binary and CLI: one plus two tests, all PASS;
+- strict all-target runner Clippy with warnings denied: PASS;
+- runner JavaScript: 39 tests and 146 expectations, all PASS; and
+- broader ring-transition JavaScript: 66 tests and 729 expectations, all
+  PASS;
+- complete repository `bun run check`: PASS with exit code 0 in 747 seconds,
+  including 859 Worker library tests, 71 frontend tests, bundle redaction and
+  budget audits, workspace tests, and the required WASM target checks.
+
+The signed source closure remains 28 modules. This overlay changes three Rust
+modules already inside that closure. The independent baseline vector is in
+the broader execution-contract test and is also required by the repository
+gate. These results are local deterministic, loopback, build, and static
+evidence, not remote staging or production evidence.
+
+### Remaining P0 sequence
+
+The next K7 implementation order is:
+
+1. append create-new live receipts around every Authority request, stable
+   readback, deployment boundary, ambiguous result, and recovery transition;
+2. implement a library-owned resumable `execute_current()` that re-verifies
+   release, publication, activation, dispatch guard, credentials, receipt
+   chain, and exact Authority state on every start and executes at most one
+   reducer action;
+3. apply the same strict append classification and exact-GET recovery model
+   to the older mutation-intent and post-observation append paths;
+4. revalidate all four independent approvals and externally anchor the
+   terminal receipt-chain head;
+5. run exact Rust 1.78 Linux reproducible builds plus two-process path/link,
+   response-loss, kill, sync, ACL, backup/restore, and ext4/XFS power-loss
+   campaigns;
+6. implement the versioned Durable Object shard supervisor, fencing,
+   drain/recovery alarms, and disposable Container adapter with fault tests;
+7. close Go-compatibility P0 gaps for cached channel candidate sets, billing
+   expression DST/golden vectors, paid SSE handoff, and task provider and
+   financial-state semantics; and
+8. collect isolated staging Access, route, D1, version, key-rotation, scope,
+   concurrency, revocation, rollback, and Go/VPS fallback evidence.
+
+Until those items and G1-G8 pass, Go/VPS remains authoritative and production
+remains **NO-GO**.

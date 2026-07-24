@@ -12,15 +12,16 @@ use crate::execution_activation::{
     ExecutionActivationIdentity, CLAIMS_PATH,
 };
 use crate::orchestrator::{
-    self, AuthorityAppendAttempt, AuthorizedMutation, ClaimStatus, FreshIntentPermit,
-    MutationPhase, ObservationAppendAttempt, ObservationPhase, ObservationRecordInput,
-    ObservationStability, PreparedObservation, RecordedObservation, TransportOutcome,
-    VerifiedSnapshot,
+    self, AuthorityAppendAttempt, AuthorizedMutation, BaselineReadbackAppendAttempt,
+    BaselineReadbackPhase, BaselineReadbackRecordInput, BaselineReadbackStability, ClaimStatus,
+    FreshIntentPermit, MutationPhase, ObservationAppendAttempt, ObservationPhase,
+    ObservationRecordInput, ObservationStability, PreparedBaselineReadback, PreparedObservation,
+    RecordedObservation, TransportOutcome, VerifiedSnapshot,
 };
 use crate::readback::{
-    ReadbackClassification, ReadbackError, ReadbackSnapshot, StableReadbackPair,
-    MAX_DEPLOYMENTS_RESPONSE_BYTES, MAX_OBSERVATION_SECONDS, MAX_TARGET_VERSION_RESPONSE_BYTES,
-    MIN_OBSERVATION_SECONDS,
+    BaselineReadbackClassification, ReadbackClassification, ReadbackError, ReadbackSnapshot,
+    StableBaselineReadbackPair, StableReadbackPair, MAX_DEPLOYMENTS_RESPONSE_BYTES,
+    MAX_OBSERVATION_SECONDS, MAX_TARGET_VERSION_RESPONSE_BYTES, MIN_OBSERVATION_SECONDS,
 };
 use crate::release::{canonical_json, reject_duplicate_json, MAX_SAFE_INTEGER};
 use crate::STAGING_AUTHORITY_ORIGIN;
@@ -197,6 +198,52 @@ impl ClaimedControlPlane {
 
     pub fn classification(&self) -> ClaimCreationClassification {
         self.classification
+    }
+
+    pub(crate) async fn record_t1_readback(mut self) -> Result<Self, ControlPlaneError> {
+        let now = system_time_seconds()?;
+        let prepared = orchestrator::prepare_t1_readback(&self.snapshot, now)
+            .map_err(ControlPlaneError::Orchestrator)?;
+        self.require_claim_binding(
+            prepared.authorization_id_sha256(),
+            prepared.claim_digest_sha256(),
+        )?;
+        let append_request_id = random_request_id()?;
+        let read_request_id = random_request_id()?;
+        let snapshot = self
+            .core
+            .record_baseline_readback_once_at(
+                prepared,
+                &SystemObservationSchedule,
+                &append_request_id,
+                &read_request_id,
+            )
+            .await?;
+        self.snapshot = Box::new(snapshot);
+        Ok(self)
+    }
+
+    pub(crate) async fn record_edge_previous_readback(mut self) -> Result<Self, ControlPlaneError> {
+        let now = system_time_seconds()?;
+        let prepared = orchestrator::prepare_edge_previous_readback(&self.snapshot, now)
+            .map_err(ControlPlaneError::Orchestrator)?;
+        self.require_claim_binding(
+            prepared.authorization_id_sha256(),
+            prepared.claim_digest_sha256(),
+        )?;
+        let append_request_id = random_request_id()?;
+        let read_request_id = random_request_id()?;
+        let snapshot = self
+            .core
+            .record_baseline_readback_once_at(
+                prepared,
+                &SystemObservationSchedule,
+                &append_request_id,
+                &read_request_id,
+            )
+            .await?;
+        self.snapshot = Box::new(snapshot);
+        Ok(self)
     }
 
     pub(crate) async fn read_exact_claim(
@@ -608,6 +655,62 @@ impl<E: HttpExchange> ControlPlaneCore<E> {
         .map_err(ControlPlaneError::Orchestrator)
     }
 
+    async fn append_baseline_readback_at<P: BaselineReadbackPhase>(
+        &self,
+        attempt: BaselineReadbackAppendAttempt<P>,
+        now: u64,
+    ) -> Result<BaselineAppendDisposition, ControlPlaneError> {
+        let path = format!(
+            "/internal/v1/ring-transition/claims/{}/steps",
+            attempt.authorization_id_sha256()
+        );
+        let request_id = attempt.request_id().to_owned();
+        let body = attempt
+            .canonical_step_json()
+            .map_err(ControlPlaneError::Orchestrator)?
+            .into_bytes();
+        let request = authority_request(
+            &self.credentials,
+            Method::POST,
+            &path,
+            Bytes::from(body),
+            &request_id,
+            now,
+        )?;
+        let response = match self
+            .exchange
+            .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => return Ok(BaselineAppendDisposition::Ambiguous),
+        };
+        if response.status == StatusCode::CREATED || response.status == StatusCode::OK {
+            return Ok(
+                match orchestrator::verify_baseline_readback_append(
+                    attempt,
+                    &response.body,
+                    &self.credentials.identity().authority_version_id,
+                    response.status == StatusCode::CREATED,
+                ) {
+                    Ok(_) => BaselineAppendDisposition::Accepted,
+                    Err(_) => BaselineAppendDisposition::Ambiguous,
+                },
+            );
+        }
+        if response.status.is_success()
+            || response.status.is_redirection()
+            || response.status == StatusCode::REQUEST_TIMEOUT
+            || response.status == StatusCode::CONFLICT
+            || response.status == StatusCode::TOO_EARLY
+            || response.status == StatusCode::TOO_MANY_REQUESTS
+            || response.status.is_server_error()
+        {
+            return Ok(BaselineAppendDisposition::Ambiguous);
+        }
+        Err(ControlPlaneError::AuthorityMutationRejected)
+    }
+
     async fn deploy_once_at<P: MutationPhase>(
         &self,
         mutation: AuthorizedMutation<P>,
@@ -662,6 +765,69 @@ impl<E: HttpExchange> ControlPlaneCore<E> {
         let now = schedule.now_seconds()?;
         self.append_observation_at(attempt, now).await
     }
+
+    async fn record_baseline_readback_once_at<P: BaselineReadbackPhase, S: ObservationSchedule>(
+        &self,
+        prepared: PreparedBaselineReadback<P>,
+        schedule: &S,
+        append_request_id: &str,
+        read_request_id: &str,
+    ) -> Result<VerifiedSnapshot, ControlPlaneError> {
+        let authorization_id_sha256 = prepared.authorization_id_sha256().to_owned();
+        let claim_digest_sha256 = prepared.claim_digest_sha256().to_owned();
+        let claim_owner_sha256 = prepared.claim_owner_sha256().to_owned();
+        let binding = prepared.binding();
+        let readback = read_stable_baseline(
+            &self.exchange,
+            self.credentials.account_id(),
+            self.credentials.read_token(),
+            binding.service_name(),
+            binding.previous_version_id(),
+            binding.previous_deployment_set_sha256(),
+            u64::from(
+                self.credentials
+                    .identity()
+                    .stable_readback_observation_seconds,
+            ),
+            schedule,
+        )
+        .await?;
+        let stability = match readback.stability {
+            BaselineReadbackClassification::Confirmed => BaselineReadbackStability::Confirmed,
+            BaselineReadbackClassification::Drift => BaselineReadbackStability::Drift,
+        };
+        let input = BaselineReadbackRecordInput {
+            deployment_set_sha256: readback.deployment_set_sha256,
+            evidence_sha256: readback.evidence_sha256,
+            stability,
+        };
+        let now = schedule.now_seconds()?;
+        let attempt =
+            orchestrator::begin_baseline_readback_append(prepared, input, append_request_id, now)
+                .map_err(ControlPlaneError::Orchestrator)?;
+        let expected_state_version = attempt.step().state_version;
+        let expected_status = attempt.step().to_status;
+        let expected_step_digest_sha256 = attempt.step().step_digest_sha256.clone();
+        self.append_baseline_readback_at(attempt, now).await?;
+        let read_now = schedule.now_seconds()?;
+        let snapshot = self
+            .read_exact_claim_at(
+                &authorization_id_sha256,
+                &claim_digest_sha256,
+                &claim_owner_sha256,
+                read_now,
+                read_request_id,
+            )
+            .await?;
+        if !snapshot.contains_exact_step(
+            expected_state_version,
+            expected_status,
+            &expected_step_digest_sha256,
+        ) {
+            return Err(ControlPlaneError::AuthorityClaimConflict);
+        }
+        Ok(snapshot)
+    }
 }
 
 #[async_trait]
@@ -690,6 +856,70 @@ struct StableObservation {
     deployment_set_sha256: String,
     evidence_sha256: String,
     stability: ObservationStability,
+}
+
+#[derive(Debug)]
+struct StableBaseline {
+    deployment_set_sha256: String,
+    evidence_sha256: String,
+    stability: BaselineReadbackClassification,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn read_stable_baseline<E: HttpExchange, S: ObservationSchedule>(
+    exchange: &E,
+    account_id: &str,
+    read_token: &str,
+    service_name: &str,
+    previous_version_id: &str,
+    expected_deployment_set_sha256: &str,
+    observation_seconds: u64,
+    schedule: &S,
+) -> Result<StableBaseline, ControlPlaneError> {
+    if !(MIN_OBSERVATION_SECONDS..=MAX_OBSERVATION_SECONDS).contains(&observation_seconds) {
+        return Err(ControlPlaneError::Readback(
+            ReadbackError::InvalidObservationSeconds,
+        ));
+    }
+    let first = read_observation_snapshot(
+        exchange,
+        account_id,
+        read_token,
+        service_name,
+        previous_version_id,
+    )
+    .await?;
+    let first = crate::readback::ObservedReadback::new(schedule.now_seconds()?, first)
+        .map_err(ControlPlaneError::Readback)?;
+    schedule
+        .wait(Duration::from_secs(observation_seconds))
+        .await?;
+    let second = read_observation_snapshot(
+        exchange,
+        account_id,
+        read_token,
+        service_name,
+        previous_version_id,
+    )
+    .await?;
+    let second = crate::readback::ObservedReadback::new(schedule.now_seconds()?, second)
+        .map_err(ControlPlaneError::Readback)?;
+    let decision = StableBaselineReadbackPair::new(
+        service_name,
+        previous_version_id,
+        expected_deployment_set_sha256,
+        observation_seconds,
+        first,
+        second,
+    )
+    .map_err(ControlPlaneError::Readback)?
+    .evaluate()
+    .map_err(ControlPlaneError::Readback)?;
+    Ok(StableBaseline {
+        deployment_set_sha256: decision.deployment_set_sha256().to_owned(),
+        evidence_sha256: decision.evidence_digest_sha256().to_owned(),
+        stability: decision.classification(),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -967,6 +1197,12 @@ fn verify_exact_claim_response(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ClaimPostDisposition {
     Accepted(ClaimCreationClassification),
+    Ambiguous,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BaselineAppendDisposition {
+    Accepted,
     Ambiguous,
 }
 
@@ -2506,6 +2742,324 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn baseline_readback_uses_previous_version_and_exact_deployment_identity() {
+        let expected =
+            baseline_readback_decision("controller-staging", "controller-version-001", None);
+        let exchange = ScriptedExchange::new(stable_baseline_responses(
+            "controller-staging",
+            "controller-version-001",
+        ));
+        let schedule = ScriptedObservationSchedule::new([1_000, 1_005]);
+        let baseline = read_stable_baseline(
+            &exchange,
+            ACCOUNT_ID,
+            READ_TOKEN,
+            "controller-staging",
+            "controller-version-001",
+            expected.deployment_set_sha256(),
+            5,
+            &schedule,
+        )
+        .await
+        .expect("stable previous baseline");
+
+        assert_eq!(
+            baseline.stability,
+            BaselineReadbackClassification::Confirmed
+        );
+        assert_eq!(
+            baseline.deployment_set_sha256,
+            expected.deployment_set_sha256()
+        );
+        assert_eq!(baseline.evidence_sha256, expected.evidence_digest_sha256());
+        assert_eq!(schedule.waits(), [Duration::from_secs(5)]);
+        let observed = exchange.observed();
+        assert_eq!(observed.len(), 4);
+        for (request, suffix) in observed.iter().zip([
+            "deployments",
+            "versions/controller-version-001",
+            "deployments",
+            "versions/controller-version-001",
+        ]) {
+            assert_eq!(request.method, Method::GET);
+            assert!(request.uri.ends_with(suffix));
+            assert_eq!(
+                request.headers.get(AUTHORIZATION),
+                Some(&HeaderValue::from_static(
+                    "Bearer read-token-secret-material-00000001"
+                ))
+            );
+            assert_authority_headers_absent(&request.headers);
+        }
+    }
+
+    #[tokio::test]
+    async fn baseline_phase_reads_stably_before_one_exact_authority_append() {
+        let expected =
+            baseline_readback_decision("controller-staging", "controller-version-001", None);
+        let claimed_value =
+            claimed_snapshot_value_with_controller_baseline(expected.deployment_set_sha256());
+        let snapshot = verified_snapshot(&claimed_value);
+        let prepared = orchestrator::prepare_t1_readback(&snapshot, NOW)
+            .expect("prepared T1 baseline readback");
+        let attempt = orchestrator::begin_baseline_readback_append(
+            orchestrator::prepare_t1_readback(&snapshot, NOW).expect("prepared response fixture"),
+            BaselineReadbackRecordInput {
+                deployment_set_sha256: expected.deployment_set_sha256().to_owned(),
+                evidence_sha256: expected.evidence_digest_sha256().to_owned(),
+                stability: BaselineReadbackStability::Confirmed,
+            },
+            "t1-live-readback-001",
+            NOW,
+        )
+        .expect("baseline append fixture");
+        let append_response = scripted_json(
+            StatusCode::CREATED,
+            serde_json::json!({
+                "result": "step_appended",
+                "requestId": "t1-live-readback-001",
+                "authorizationIdSha256": attempt.authorization_id_sha256(),
+                "claimDigestSha256": attempt.claim_digest_sha256(),
+                "status": attempt.step().to_status,
+                "stateVersion": attempt.step().state_version,
+                "stepDigestSha256": attempt.step().step_digest_sha256,
+                "authorityVersionId": "authority-version-001",
+            }),
+        );
+        let mut responses =
+            stable_baseline_responses("controller-staging", "controller-version-001");
+        responses.push(Ok(append_response));
+        let advanced_value = advanced_baseline_snapshot_value(claimed_value, &attempt, NOW);
+        responses.push(Ok(scripted_json(
+            StatusCode::OK,
+            serde_json::from_slice(&exact_claim_response(
+                &advanced_value,
+                &matching_identity(),
+                "t1-live-readback-get-001",
+            ))
+            .expect("exact baseline GET fixture"),
+        )));
+        let exchange = ScriptedExchange::new(responses);
+        let schedule = ScriptedObservationSchedule::new([1_000, 1_005, NOW, NOW]);
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+        };
+
+        let refreshed = core
+            .record_baseline_readback_once_at(
+                prepared,
+                &schedule,
+                "t1-live-readback-001",
+                "t1-live-readback-get-001",
+            )
+            .await
+            .expect("baseline read and append");
+        assert_eq!(refreshed.status(), ClaimStatus::T1Verified);
+        assert_eq!(refreshed.state_version(), 1);
+        assert!(refreshed.contains_exact_step(
+            attempt.step().state_version,
+            attempt.step().to_status,
+            &attempt.step().step_digest_sha256,
+        ));
+        let observed = exchange.observed();
+        assert_eq!(observed.len(), 6);
+        assert!(observed[..4]
+            .iter()
+            .all(|request| request.method == Method::GET));
+        assert_eq!(observed[4].method, Method::POST);
+        assert!(observed[4].uri.ends_with(&format!(
+            "/internal/v1/ring-transition/claims/{}/steps",
+            snapshot.authorization_id_sha256()
+        )));
+        let authority_header = observed[4]
+            .headers
+            .get(AUTHORITY_HEADER_NAME)
+            .and_then(|value| value.to_str().ok())
+            .expect("signed Authority header");
+        assert_eq!(authority_header.split('.').count(), 3);
+        assert!(!authority_header.contains(AUTHORITY_TOKEN));
+        assert!(observed[4].headers.get(AUTHORIZATION).is_none());
+        assert_eq!(observed[5].method, Method::GET);
+        assert!(observed[5].uri.contains("claimDigestSha256="));
+        assert_eq!(exchange.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_baseline_append_never_reposts_and_recovers_by_exact_get() {
+        for mode in ["connection_loss", "unavailable", "invalid_success"] {
+            let expected =
+                baseline_readback_decision("controller-staging", "controller-version-001", None);
+            let claimed_value =
+                claimed_snapshot_value_with_controller_baseline(expected.deployment_set_sha256());
+            let snapshot = verified_snapshot(&claimed_value);
+            let prepared = orchestrator::prepare_t1_readback(&snapshot, NOW)
+                .expect("prepared T1 baseline readback");
+            let attempt = orchestrator::begin_baseline_readback_append(
+                orchestrator::prepare_t1_readback(&snapshot, NOW)
+                    .expect("prepared ambiguity fixture"),
+                BaselineReadbackRecordInput {
+                    deployment_set_sha256: expected.deployment_set_sha256().to_owned(),
+                    evidence_sha256: expected.evidence_digest_sha256().to_owned(),
+                    stability: BaselineReadbackStability::Confirmed,
+                },
+                "t1-ambiguous-append-001",
+                NOW,
+            )
+            .expect("ambiguous append fixture");
+            let append_response = match mode {
+                "connection_loss" => Err(ExchangeError::Connection),
+                "unavailable" => Ok(scripted_json(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    serde_json::json!({
+                        "error": "outcome_unknown",
+                        "outcomeUnknown": true,
+                    }),
+                )),
+                "invalid_success" => Ok(scripted_json(
+                    StatusCode::CREATED,
+                    serde_json::json!({
+                        "result": "step_replayed",
+                        "requestId": "t1-ambiguous-append-001",
+                        "authorizationIdSha256": attempt.authorization_id_sha256(),
+                        "claimDigestSha256": attempt.claim_digest_sha256(),
+                        "status": attempt.step().to_status,
+                        "stateVersion": attempt.step().state_version,
+                        "stepDigestSha256": attempt.step().step_digest_sha256,
+                        "authorityVersionId": "authority-version-001",
+                    }),
+                )),
+                _ => unreachable!("fixed ambiguity mode"),
+            };
+            let advanced_value = advanced_baseline_snapshot_value(claimed_value, &attempt, NOW);
+            let mut responses =
+                stable_baseline_responses("controller-staging", "controller-version-001");
+            responses.push(append_response);
+            responses.push(Ok(scripted_json(
+                StatusCode::OK,
+                serde_json::from_slice(&exact_claim_response(
+                    &advanced_value,
+                    &matching_identity(),
+                    "t1-ambiguous-get-001",
+                ))
+                .expect("ambiguous exact GET fixture"),
+            )));
+            let exchange = ScriptedExchange::new(responses);
+            let schedule = ScriptedObservationSchedule::new([1_000, 1_005, NOW, NOW]);
+            let core = ControlPlaneCore {
+                credentials: verified_credentials_for_transport_test(),
+                exchange: exchange.clone(),
+            };
+
+            let refreshed = core
+                .record_baseline_readback_once_at(
+                    prepared,
+                    &schedule,
+                    "t1-ambiguous-append-001",
+                    "t1-ambiguous-get-001",
+                )
+                .await
+                .expect("exact GET recovers ambiguous append");
+            assert_eq!(refreshed.status(), ClaimStatus::T1Verified);
+            let observed = exchange.observed();
+            assert_eq!(
+                observed
+                    .iter()
+                    .filter(|request| request.method == Method::POST)
+                    .count(),
+                1
+            );
+            assert_eq!(observed.last().expect("exact GET").method, Method::GET);
+            assert_eq!(exchange.remaining(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn baseline_append_expiry_and_unproven_outcome_fail_closed() {
+        let expected =
+            baseline_readback_decision("controller-staging", "controller-version-001", None);
+        let claimed_value =
+            claimed_snapshot_value_with_controller_baseline(expected.deployment_set_sha256());
+        let snapshot = verified_snapshot(&claimed_value);
+        let expired_exchange = ScriptedExchange::new(stable_baseline_responses(
+            "controller-staging",
+            "controller-version-001",
+        ));
+        let expired_schedule = ScriptedObservationSchedule::new([1_000, 1_005, NOW + 300]);
+        let expired_core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: expired_exchange.clone(),
+        };
+        assert!(matches!(
+            expired_core
+                .record_baseline_readback_once_at(
+                    orchestrator::prepare_t1_readback(&snapshot, NOW)
+                        .expect("prepared expiry fixture"),
+                    &expired_schedule,
+                    "t1-expired-append-001",
+                    "t1-expired-get-001",
+                )
+                .await,
+            Err(ControlPlaneError::Orchestrator(
+                orchestrator::OrchestratorError::AuthorizationExpired
+            ))
+        ));
+        assert_eq!(expired_exchange.observed().len(), 4);
+        assert!(expired_exchange
+            .observed()
+            .iter()
+            .all(|request| request.method == Method::GET));
+
+        let prepared = orchestrator::prepare_t1_readback(&snapshot, NOW)
+            .expect("prepared stale outcome fixture");
+        let mut responses =
+            stable_baseline_responses("controller-staging", "controller-version-001");
+        responses.push(Err(ExchangeError::Connection));
+        responses.push(Ok(scripted_json(
+            StatusCode::OK,
+            serde_json::from_slice(&exact_claim_response(
+                &claimed_value,
+                &matching_identity(),
+                "t1-stale-get-001",
+            ))
+            .expect("stale exact GET fixture"),
+        )));
+        let stale_exchange = ScriptedExchange::new(responses);
+        let stale_schedule = ScriptedObservationSchedule::new([1_000, 1_005, NOW, NOW]);
+        let stale_core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: stale_exchange.clone(),
+        };
+        assert!(matches!(
+            stale_core
+                .record_baseline_readback_once_at(
+                    prepared,
+                    &stale_schedule,
+                    "t1-stale-append-001",
+                    "t1-stale-get-001",
+                )
+                .await,
+            Err(ControlPlaneError::AuthorityClaimConflict)
+        ));
+        assert_eq!(
+            stale_exchange
+                .observed()
+                .iter()
+                .filter(|request| request.method == Method::POST)
+                .count(),
+            1
+        );
+        assert_eq!(
+            stale_exchange
+                .observed()
+                .last()
+                .expect("stale exact GET")
+                .method,
+            Method::GET
+        );
+    }
+
+    #[tokio::test]
     async fn each_readback_failure_stops_without_retry_or_authority_append() {
         let annotation = controller_mutation_annotation();
         for failed_request in 0..4 {
@@ -2993,6 +3547,136 @@ mod tests {
             ))
         };
         vec![deployment(), version(), deployment(), version()]
+    }
+
+    fn baseline_payloads(service_name: &str, version_id: &str) -> (Value, Value) {
+        (
+            serde_json::json!({
+                "success": true,
+                "result": {
+                    "deployments": [{
+                        "id": format!("deployment-{service_name}-previous"),
+                        "strategy": "percentage",
+                        "versions": [{
+                            "version_id": version_id,
+                            "percentage": 100,
+                        }],
+                        "annotations": {
+                            "workers/message": "historical deployment",
+                        },
+                    }],
+                },
+            }),
+            serde_json::json!({
+                "success": true,
+                "result": {
+                    "id": version_id,
+                    "compatibility_date": "2026-07-01",
+                    "usage_model": "standard",
+                },
+            }),
+        )
+    }
+
+    fn stable_baseline_responses(
+        service_name: &str,
+        version_id: &str,
+    ) -> Vec<Result<BoundedHttpResponse, ExchangeError>> {
+        let (deployment, version) = baseline_payloads(service_name, version_id);
+        vec![
+            Ok(scripted_json(StatusCode::OK, deployment.clone())),
+            Ok(scripted_json(StatusCode::OK, version.clone())),
+            Ok(scripted_json(StatusCode::OK, deployment)),
+            Ok(scripted_json(StatusCode::OK, version)),
+        ]
+    }
+
+    fn baseline_readback_decision(
+        service_name: &str,
+        version_id: &str,
+        expected_deployment_set_sha256: Option<&str>,
+    ) -> crate::readback::BaselineReadbackDecision {
+        let (deployment, version) = baseline_payloads(service_name, version_id);
+        let deployment = canonical_json(&deployment)
+            .expect("canonical baseline deployment")
+            .into_bytes();
+        let version = canonical_json(&version)
+            .expect("canonical baseline version")
+            .into_bytes();
+        let snapshot = ReadbackSnapshot::from_json(service_name, version_id, &deployment, &version)
+            .expect("normalized baseline snapshot");
+        let expected = expected_deployment_set_sha256
+            .unwrap_or_else(|| snapshot.deployment_set_sha256())
+            .to_owned();
+        StableBaselineReadbackPair::new(
+            service_name,
+            version_id,
+            &expected,
+            5,
+            crate::readback::ObservedReadback::new(1_000, snapshot.clone())
+                .expect("first baseline observation"),
+            crate::readback::ObservedReadback::new(1_005, snapshot)
+                .expect("second baseline observation"),
+        )
+        .expect("stable baseline pair")
+        .evaluate()
+        .expect("baseline decision")
+    }
+
+    fn claimed_snapshot_value_with_controller_baseline(
+        previous_deployment_set_sha256: &str,
+    ) -> Value {
+        let mut snapshot = claimed_snapshot_value();
+        snapshot["claim"]["controller"]["previousDeploymentSetSha256"] =
+            Value::String(previous_deployment_set_sha256.to_owned());
+        let claim: orchestrator::SnapshotClaim =
+            serde_json::from_value(snapshot["claim"].clone()).expect("snapshot claim");
+        let claim_digest =
+            orchestrator::activation_claim_digest(&claim).expect("refreshed claim digest");
+        snapshot["claim"]["claimDigestSha256"] = Value::String(claim_digest.clone());
+        snapshot["state"]["claimDigestSha256"] = Value::String(claim_digest);
+        snapshot
+    }
+
+    fn claimed_snapshot_with_controller_baseline(
+        previous_deployment_set_sha256: &str,
+    ) -> VerifiedSnapshot {
+        verified_snapshot(&claimed_snapshot_value_with_controller_baseline(
+            previous_deployment_set_sha256,
+        ))
+    }
+
+    fn advanced_baseline_snapshot_value<P: orchestrator::BaselineReadbackPhase>(
+        mut claimed: Value,
+        attempt: &orchestrator::BaselineReadbackAppendAttempt<P>,
+        recorded_at: u64,
+    ) -> Value {
+        claimed["state"]["status"] =
+            serde_json::to_value(attempt.step().to_status).expect("baseline status");
+        claimed["state"]["stateVersion"] = Value::from(attempt.step().state_version);
+        claimed["state"]["updatedAt"] = Value::from(recorded_at);
+        claimed["state"]["terminalAt"] = if attempt.step().to_status.is_terminal() {
+            Value::from(recorded_at)
+        } else {
+            Value::Null
+        };
+        let actor_execution_id_sha256 = claimed["claim"]["claimOwnerSha256"].clone();
+        claimed["steps"] = Value::Array(vec![serde_json::json!({
+            "stateVersion": attempt.step().state_version,
+            "stepCode": attempt.step().step_code,
+            "fromStatus": attempt.step().from_status,
+            "toStatus": attempt.step().to_status,
+            "actorExecutionIdSha256": actor_execution_id_sha256,
+            "mutationRequestSha256": attempt.step().mutation_request_sha256,
+            "cloudflareRequestIdSha256": attempt.step().cloudflare_request_id_sha256,
+            "deploymentSetSha256": attempt.step().deployment_set_sha256,
+            "evidenceSha256": attempt.step().evidence_sha256,
+            "failureClass": attempt.step().failure_class,
+            "transportOutcome": attempt.step().transport_outcome,
+            "stepDigestSha256": attempt.step().step_digest_sha256,
+            "recordedAt": recorded_at,
+        })]);
+        claimed
     }
 
     fn t1_snapshot_value() -> Value {

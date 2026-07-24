@@ -12,12 +12,21 @@ pub const MAX_OBSERVATION_SECONDS: u64 = 120;
 pub const MAX_MUTATION_ANNOTATION_BYTES: usize = 256;
 pub const READBACK_EVIDENCE_CONTRACT: &str =
     "cinatoken-ring-transition-runner-stable-readback-evidence-v1";
+pub const BASELINE_READBACK_EVIDENCE_CONTRACT: &str =
+    "cinatoken-ring-transition-runner-stable-baseline-readback-evidence-v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadbackClassification {
     Confirmed,
     TargetNotStable,
+    Drift,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BaselineReadbackClassification {
+    Confirmed,
     Drift,
 }
 
@@ -313,6 +322,116 @@ impl StableReadbackPair {
             deployment_set_sha256: self.second.snapshot.deployment_set_sha256.clone(),
             evidence_digest_sha256: sha256_hex(evidence_json.as_bytes()),
         })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StableBaselineReadbackPair {
+    expected_service_name: String,
+    expected_version_id: String,
+    expected_deployment_set_sha256: String,
+    observation_seconds: u64,
+    first: ObservedReadback,
+    second: ObservedReadback,
+}
+
+impl StableBaselineReadbackPair {
+    pub fn new(
+        expected_service_name: &str,
+        expected_version_id: &str,
+        expected_deployment_set_sha256: &str,
+        observation_seconds: u64,
+        first: ObservedReadback,
+        second: ObservedReadback,
+    ) -> Result<Self, ReadbackError> {
+        require_service_name(expected_service_name)?;
+        require_opaque_id(expected_version_id, "expected_version_id")?;
+        require_sha256(
+            expected_deployment_set_sha256,
+            "expected_deployment_set_sha256",
+        )?;
+        if !(MIN_OBSERVATION_SECONDS..=MAX_OBSERVATION_SECONDS).contains(&observation_seconds) {
+            return Err(ReadbackError::InvalidObservationSeconds);
+        }
+        for observed in [&first, &second] {
+            if observed.snapshot.service_name != expected_service_name
+                || observed.snapshot.target_version_id != expected_version_id
+            {
+                return Err(ReadbackError::SnapshotBindingMismatch);
+            }
+        }
+        let actual_interval = second
+            .observed_at
+            .checked_sub(first.observed_at)
+            .ok_or(ReadbackError::ObservationNotMonotonic)?;
+        if actual_interval < observation_seconds {
+            return Err(ReadbackError::ObservationTooShort);
+        }
+        if actual_interval > MAX_OBSERVATION_SECONDS {
+            return Err(ReadbackError::ObservationTooLong);
+        }
+        Ok(Self {
+            expected_service_name: expected_service_name.to_owned(),
+            expected_version_id: expected_version_id.to_owned(),
+            expected_deployment_set_sha256: expected_deployment_set_sha256.to_owned(),
+            observation_seconds,
+            first,
+            second,
+        })
+    }
+
+    pub fn evaluate(&self) -> Result<BaselineReadbackDecision, ReadbackError> {
+        let snapshots_stable =
+            self.first.snapshot.canonical_json()? == self.second.snapshot.canonical_json()?;
+        let baseline_confirmed = snapshots_stable
+            && self.first.snapshot.deployment_set_sha256 == self.expected_deployment_set_sha256
+            && self.first.snapshot.active_versions.len() == 1
+            && self.first.snapshot.active_versions[0].version_id == self.expected_version_id
+            && self.first.snapshot.active_versions[0].percentage == 100;
+        let classification = if baseline_confirmed {
+            BaselineReadbackClassification::Confirmed
+        } else {
+            BaselineReadbackClassification::Drift
+        };
+        let evidence = CanonicalBaselineReadbackEvidence {
+            schema_version: 1,
+            contract: BASELINE_READBACK_EVIDENCE_CONTRACT,
+            classification,
+            expected_service_name: &self.expected_service_name,
+            expected_version_id: &self.expected_version_id,
+            expected_deployment_set_sha256: &self.expected_deployment_set_sha256,
+            observation_seconds: self.observation_seconds,
+            first: CanonicalObservedSnapshot::from(&self.first),
+            second: CanonicalObservedSnapshot::from(&self.second),
+        };
+        let evidence_json =
+            canonical_json(&evidence).map_err(|_| ReadbackError::Canonicalization)?;
+        Ok(BaselineReadbackDecision {
+            classification,
+            deployment_set_sha256: self.second.snapshot.deployment_set_sha256.clone(),
+            evidence_digest_sha256: sha256_hex(evidence_json.as_bytes()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BaselineReadbackDecision {
+    classification: BaselineReadbackClassification,
+    deployment_set_sha256: String,
+    evidence_digest_sha256: String,
+}
+
+impl BaselineReadbackDecision {
+    pub const fn classification(&self) -> BaselineReadbackClassification {
+        self.classification
+    }
+
+    pub fn deployment_set_sha256(&self) -> &str {
+        &self.deployment_set_sha256
+    }
+
+    pub fn evidence_digest_sha256(&self) -> &str {
+        &self.evidence_digest_sha256
     }
 }
 
@@ -845,6 +964,20 @@ struct CanonicalReadbackEvidence<'a> {
     second: CanonicalObservedSnapshot<'a>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanonicalBaselineReadbackEvidence<'a> {
+    schema_version: u8,
+    contract: &'static str,
+    classification: BaselineReadbackClassification,
+    expected_service_name: &'a str,
+    expected_version_id: &'a str,
+    expected_deployment_set_sha256: &'a str,
+    observation_seconds: u64,
+    first: CanonicalObservedSnapshot<'a>,
+    second: CanonicalObservedSnapshot<'a>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1055,6 +1188,74 @@ mod tests {
             "fe68186649a4e349f725f3ec5a55b794de276f5955f42258c733faedc83ae93b"
         );
         assert_eq!(decision.evidence_digest_sha256().len(), 64);
+    }
+
+    #[test]
+    fn confirms_only_two_stable_exact_baseline_snapshots() {
+        let baseline = snapshot("historical annotation", "detail-a", 100);
+        let expected_deployment_set_sha256 = baseline.deployment_set_sha256.clone();
+        let decision = StableBaselineReadbackPair::new(
+            SERVICE,
+            TARGET,
+            &expected_deployment_set_sha256,
+            5,
+            observed(1_000, baseline.clone()),
+            observed(1_005, baseline),
+        )
+        .unwrap()
+        .evaluate()
+        .unwrap();
+
+        assert_eq!(
+            decision.classification(),
+            BaselineReadbackClassification::Confirmed
+        );
+        assert_eq!(
+            decision.deployment_set_sha256(),
+            expected_deployment_set_sha256
+        );
+        assert_eq!(decision.evidence_digest_sha256().len(), 64);
+    }
+
+    #[test]
+    fn baseline_evidence_fails_closed_on_identity_or_snapshot_drift() {
+        let baseline = snapshot("historical annotation", "detail-a", 100);
+        let expected_deployment_set_sha256 = baseline.deployment_set_sha256.clone();
+        let stable_wrong_identity = StableBaselineReadbackPair::new(
+            SERVICE,
+            TARGET,
+            &"f".repeat(64),
+            5,
+            observed(1_000, baseline.clone()),
+            observed(1_005, baseline.clone()),
+        )
+        .unwrap()
+        .evaluate()
+        .unwrap();
+        assert_eq!(
+            stable_wrong_identity.classification(),
+            BaselineReadbackClassification::Drift
+        );
+
+        let snapshot_drift = StableBaselineReadbackPair::new(
+            SERVICE,
+            TARGET,
+            &expected_deployment_set_sha256,
+            5,
+            observed(1_000, baseline),
+            observed(1_005, snapshot("historical annotation", "detail-b", 100)),
+        )
+        .unwrap()
+        .evaluate()
+        .unwrap();
+        assert_eq!(
+            snapshot_drift.classification(),
+            BaselineReadbackClassification::Drift
+        );
+        assert_ne!(
+            stable_wrong_identity.evidence_digest_sha256(),
+            snapshot_drift.evidence_digest_sha256()
+        );
     }
 
     #[test]

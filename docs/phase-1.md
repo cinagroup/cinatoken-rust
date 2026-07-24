@@ -3285,3 +3285,39 @@ Next are typed T1 and Edge-previous phases, live receipt integration, the
 resumable driver, Linux crash/power-loss proof, full approval revalidation,
 external receipt anchoring, isolated staging proof, and exposed-credential
 revocation. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-24 Typed T1 And Edge-Previous Baselines
+
+Phase 1 now has local native stable-baseline execution for the T1 Controller
+previous-deployment boundary and the later Edge previous-deployment boundary.
+The phases are sealed Rust types, own their verified Authority snapshot, and
+cannot be interchanged.
+
+Each phase performs two stable deployment/version observations separated by
+the compiled wait. Both observations must match each other and the exact
+signed previous version and normalized deployment set. Drift records the
+existing fail-closed outcome: T1 aborts; Edge enters recovery-required. No
+deployment ability is minted by a baseline phase.
+
+After the wait, the runner checks clock monotonicity and claim expiry before
+the single Authority append. Only exact `201/step_appended` and
+`200/step_replayed` pairs are accepted. Every ambiguous result is never
+reposted and is resolved only by one exact Authority GET.
+
+Both baseline methods consume `ClaimedControlPlane`. The next control
+plane can contain only the fresh GET-verified snapshot with the exact step;
+failure drops the stale capability. Rust and independent JavaScript agree on
+the frozen T1 step digest.
+
+Focused gates pass with 91 Rust library tests, one binary test, two CLI tests,
+strict Clippy, 39 runner JavaScript tests/146 expectations, and 66 broader
+ring-transition tests/729 expectations. The complete repository
+`bun run check` passed with exit code 0 in 747 seconds, including 859 Worker
+tests and 71 frontend tests. Checked-in trust remains disabled and no
+credential or remote API was used.
+
+Next are live receipt append around every request/readback/recovery boundary,
+the resumable single-action driver, strict append recovery for the remaining
+mutation and observation paths, Linux crash/power-loss proof, approval and
+external-anchor evidence, isolated staging, and credential revocation.
+Go/VPS remains authoritative and production remains **NO-GO**.

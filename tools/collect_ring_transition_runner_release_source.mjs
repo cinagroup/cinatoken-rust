@@ -21,9 +21,10 @@ const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_MODULE_BYTES = 16 * 1024 * 1024;
 const MAX_TOTAL_MODULE_BYTES = 64 * 1024 * 1024;
 const MAX_MODULE_COUNT = 2048;
+const MAX_TREE_PATH_BYTES = 240;
 const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const WHOLE_SECONDS_PATTERN = /^[1-9][0-9]{0,15}$/;
-const MODULE_PATH_PATTERN = /^[A-Za-z0-9.][A-Za-z0-9._/-]{0,239}$/;
+const UNSAFE_TREE_PATH_PATTERN = /[\\\p{Cc}\p{Cf}]/u;
 const REQUIRED_MODULE_PATHS = Object.freeze([
   ".gitattributes",
   "Cargo.lock",
@@ -376,8 +377,9 @@ function isReleaseModule(modulePath) {
 function validateModulePath(value) {
   if (
     typeof value !== "string" ||
-    !MODULE_PATH_PATTERN.test(value) ||
-    value.includes("\\") ||
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > MAX_TREE_PATH_BYTES ||
+    UNSAFE_TREE_PATH_PATTERN.test(value) ||
     value.includes("//") ||
     value.startsWith("/") ||
     value.endsWith("/")

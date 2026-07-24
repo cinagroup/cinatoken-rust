@@ -241,6 +241,10 @@ async function fixtureRepository({ omit = null } = {}) {
     ["bun.lock", "fixture bun.lock\n"],
     ["package.json", "{\"private\":true}\n"],
     [
+      "apps/web/source/default/src/routes/(auth)/$provider.tsx",
+      "export const routeFixture = true;\n",
+    ],
+    [
       "crates/ring-transition-runner/Cargo.toml",
       "[package]\nname=\"fixture\"\n",
     ],

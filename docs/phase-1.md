@@ -3446,3 +3446,44 @@ Linux crash/power-loss and ACL proof, the DO shard supervisor/Container
 adapter, replacement-credential isolated staging, remaining Go compatibility
 and G1-G8. No credential or remote action was used. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-24 Read-Only Operation Receipt Gate
+
+Phase 1 now records every native-runner GET: separate read/deploy Cloudflare
+token proofs, Authority preflight, exact claim recovery, deployment sets and
+version details. The mutation rule above remains unchanged: a write operation
+ID is a deterministic singleton. A read operation is intentionally unique per
+runner-local request nonce and binds `GET`, the absolute HTTPS target, kind,
+state and nonce digest.
+
+Slot 1 is create-new and exactly read back before send. Existing operations
+perform zero network. HTTP `200` is accepted only for subsequent endpoint
+semantics; deterministic client rejection is rejected; `408`, `425`, `429`,
+redirect, `5xx`, transport loss and malformed/identity-drifting success are
+ambiguous. Authority snapshots and stable-readback evidence remain the state
+source.
+
+Cloudflare deployment/version observations cannot start after expiry. Exact
+claim plus credential/preflight proofs have a fixed 600-second read-only
+recovery window; all writes remain strictly pre-expiry. The directory limit is
+128 chains per authorization, with a nominal lifecycle estimate of about 59.
+Fixed create-new capacity markers use synced same-directory staging,
+no-replace publication and exact readback before operation directories. The
+129th contender persists no directory/start and fails before network progress.
+Interrupted staging is non-authorizing. A complete crash-stranded marker, with
+or without its marker-backed empty operation directory, is also
+non-authorizing but consumes its slot. Audit ignores the absent start; only the
+same operation can later resume through normal slot-1 publication. Markers and
+evidence are never reused or deleted, and exhaustion requires a new
+authorization.
+
+Focused local gates pass with 111 Rust library tests and 21 independent
+receipt tests/72 expectations. Cross-runtime frozen read-request,
+operation-ID and start-head vectors agree. Checked-in trust remains disabled,
+and no credential or remote action was used.
+
+Read request coverage closes only part of K4. Terminal binding of every
+operation head, an independent signed/WORM anchor, Linux crash/durability
+proof, the DO shard supervisor/Container adapter, isolated staging, remaining
+Go compatibility, revocation and G1-G8 remain open. Go/VPS remains
+authoritative and production remains **NO-GO**.

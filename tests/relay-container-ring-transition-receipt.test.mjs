@@ -3,10 +3,13 @@ import { describe, expect, test } from "bun:test";
 import {
   MAX_RING_TRANSITION_RECEIPT_BYTES,
   MAX_RING_TRANSITION_RECEIPTS_PER_CHAIN,
+  MAX_RING_TRANSITION_OPERATION_CHAINS_PER_AUTHORIZATION,
   MAX_RING_TRANSITION_OPERATION_RECEIPTS_PER_CHAIN,
+  MAX_RING_TRANSITION_READ_RECOVERY_SECONDS,
   canonicalReceiptBytes,
   computeRingTransitionExpiryDigest,
   computeRingTransitionOperationId,
+  computeRingTransitionReadOperationRequestSha256,
   computeRingTransitionStepDigest,
   describeRingTransitionExecutionReceiptContract,
   describeRingTransitionOperationReceiptContract,
@@ -332,10 +335,19 @@ describe("K7 ring-transition Operation Receipt V1 replay verifier", () => {
       environment: "staging",
       maximumReceiptBytes: 65_536,
       maximumReceiptsPerChain: 2,
+      maximumOperationChainsPerAuthorization: 128,
+      maximumReadRecoverySeconds: 600,
+      verificationScope: "single_operation_chain",
+      aggregateCapacityVerified: false,
+      absoluteHttpsTargetVerified: false,
       constraints: {
         canonicalJsonRequired: true,
         duplicateAndUnknownFieldsAllowed: false,
         deterministicOperationIdRequired: true,
+        createNewCapacityMarkersRequired: true,
+        strandedCapacityMarkersAreNonAuthorizing: true,
+        readRequestsUseUniqueRequestBoundOperationIds: true,
+        readOperationsAreNonAuthorizing: true,
         requestStartRequiredBeforeMutation: true,
         createNewReservationRequired: true,
         restartAfterReservationIsReadOnly: true,
@@ -347,6 +359,8 @@ describe("K7 ring-transition Operation Receipt V1 replay verifier", () => {
       },
     });
     expect(MAX_RING_TRANSITION_OPERATION_RECEIPTS_PER_CHAIN).toBe(2);
+    expect(MAX_RING_TRANSITION_OPERATION_CHAINS_PER_AUTHORIZATION).toBe(128);
+    expect(MAX_RING_TRANSITION_READ_RECOVERY_SECONDS).toBe(600);
   });
 
   test("matches the Rust operation-id and request-start fixed vector", () => {
@@ -365,6 +379,9 @@ describe("K7 ring-transition Operation Receipt V1 replay verifier", () => {
     ]);
     expect(verifyRingTransitionOperationReceiptChain(bytes)).toEqual({
       ok: true,
+      verificationScope: "single_operation_chain",
+      aggregateCapacityVerified: false,
+      absoluteHttpsTargetVerified: false,
       operationIdSha256:
         "9e499bf7a66322d55ebc9104845bd79d26f9585185a24926f61d49a65b604544",
       receiptCount: 2,
@@ -380,6 +397,9 @@ describe("K7 ring-transition Operation Receipt V1 replay verifier", () => {
       verifyRingTransitionOperationReceiptChain([Array.from(bytes[0])]),
     ).toEqual({
       ok: true,
+      verificationScope: "single_operation_chain",
+      aggregateCapacityVerified: false,
+      absoluteHttpsTargetVerified: false,
       operationIdSha256:
         "9e499bf7a66322d55ebc9104845bd79d26f9585185a24926f61d49a65b604544",
       receiptCount: 1,
@@ -387,6 +407,149 @@ describe("K7 ring-transition Operation Receipt V1 replay verifier", () => {
         "4ca2eb642f701c9c201f3835f0d2d1431620d4ec951ca573c0a9714bfd377ece",
       outcome: null,
     });
+  });
+
+  test("matches the Rust read-request, operation-id, and request-start vectors", () => {
+    const { records, bytes } = deterministicReadOperationReceiptChain();
+    expect(
+      computeRingTransitionReadOperationRequestSha256({
+        targetSha256: "a".repeat(64),
+        requestIdSha256: "e".repeat(64),
+      }),
+    ).toBe(
+      "6344097a6f022e09b2589e570e92bcaff8df407f56edfe85e32c7c29e55dba7d",
+    );
+    expect(records[0].operation.operationIdSha256).toBe(
+      "468efe016ebf4ec7a517c6213cab5d861b27c46eaea89329251c1b42d0aaa230",
+    );
+    expect(sha256ReceiptBytes(bytes[0])).toBe(
+      "070c862e67b2f0a4aba4273d1f2fe3f0abac75462469a962aabacdc7d0fd6dbf",
+    );
+    expect(
+      verifyRingTransitionOperationReceiptChain(
+        bytes.map((value) => Array.from(value)),
+      ),
+    ).toEqual({
+      ok: true,
+      verificationScope: "single_operation_chain",
+      aggregateCapacityVerified: false,
+      absoluteHttpsTargetVerified: false,
+      operationIdSha256:
+        "468efe016ebf4ec7a517c6213cab5d861b27c46eaea89329251c1b42d0aaa230",
+      receiptCount: 2,
+      headSha256: sha256ReceiptBytes(bytes[1]),
+      outcome: "accepted",
+    });
+  });
+
+  test("binds each read operation to one request ID and permits recovery after expiry", () => {
+    {
+      const { records } = deterministicReadOperationReceiptChain();
+      records[0].event.request_id_sha256 = "f".repeat(64);
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain([
+          canonicalReceiptBytes(records[0]),
+        ]),
+      ).toThrow(/read request SHA-256 mismatch/);
+    }
+
+    {
+      const { records } = deterministicReadOperationReceiptChain();
+      records[0].operation.requestSha256 = "b".repeat(64);
+      records[0].operation.operationIdSha256 =
+        computeRingTransitionOperationId({
+          context: records[0].context,
+          ...records[0].operation,
+        });
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain([
+          canonicalReceiptBytes(records[0]),
+        ]),
+      ).toThrow(/read request SHA-256 mismatch/);
+    }
+
+    {
+      const { records } = deterministicReadOperationReceiptChain();
+      records[0].operation.method = "POST";
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain([
+          canonicalReceiptBytes(records[0]),
+        ]),
+      ).toThrow(/method must equal "GET"/);
+    }
+
+    {
+      const { records } = deterministicReadOperationReceiptChain();
+      records[0].operation.stateVersion = 1;
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain([
+          canonicalReceiptBytes(records[0]),
+        ]),
+      ).toThrow(/stateVersion is invalid for operation kind/);
+    }
+
+    const first = deterministicReadOperationReceiptChain();
+    const secondRequestSha256 =
+      computeRingTransitionReadOperationRequestSha256({
+        targetSha256: "a".repeat(64),
+        requestIdSha256: "f".repeat(64),
+      });
+    expect(secondRequestSha256).not.toBe(
+      first.records[0].operation.requestSha256,
+    );
+    expect(
+      computeRingTransitionOperationId({
+        context: first.records[0].context,
+        kind: "authority_claim_read",
+        stateVersion: 0,
+        method: "GET",
+        targetSha256: "a".repeat(64),
+        requestSha256: secondRequestSha256,
+      }),
+    ).not.toBe(first.records[0].operation.operationIdSha256);
+
+    const expiryBoundary = deterministicReadOperationReceiptChain().records[0];
+    expiryBoundary.recordedAt = expiryBoundary.context.expiresAt;
+    expect(
+      verifyRingTransitionOperationReceiptChain([
+        canonicalReceiptBytes(expiryBoundary),
+      ]).receiptCount,
+    ).toBe(1);
+
+    const lateRecovery = deterministicReadOperationReceiptChain().records[0];
+    lateRecovery.recordedAt =
+      lateRecovery.context.expiresAt +
+      MAX_RING_TRANSITION_READ_RECOVERY_SECONDS +
+      1;
+    expect(() =>
+      verifyRingTransitionOperationReceiptChain([
+        canonicalReceiptBytes(lateRecovery),
+      ]),
+    ).toThrow(/request-start binding is invalid/);
+
+    const deploymentRead =
+      deterministicReadOperationReceiptChain().records[0];
+    deploymentRead.recordedAt = deploymentRead.context.expiresAt;
+    deploymentRead.operation.kind = "cloudflare_deployment_read";
+    deploymentRead.operation.stateVersion = 1;
+    deploymentRead.operation.operationIdSha256 =
+      computeRingTransitionOperationId({
+        context: deploymentRead.context,
+        ...deploymentRead.operation,
+      });
+    expect(() =>
+      verifyRingTransitionOperationReceiptChain([
+        canonicalReceiptBytes(deploymentRead),
+      ]),
+    ).toThrow(/request-start binding is invalid/);
+
+    const write = deterministicOperationReceiptChain().records[0];
+    write.recordedAt = write.context.expiresAt;
+    expect(() =>
+      verifyRingTransitionOperationReceiptChain([
+        canonicalReceiptBytes(write),
+      ]),
+    ).toThrow(/request-start binding is invalid/);
   });
 
   test("rejects gaps, predecessor drift, identity drift, and time reversal", () => {
@@ -498,7 +661,7 @@ describe("K7 ring-transition Operation Receipt V1 replay verifier", () => {
       records[1].event.http_status = null;
       expect(() =>
         verifyRingTransitionOperationReceiptChain(linkRecords(records)),
-      ).toThrow(/accepted outcome requires a 2xx status/);
+      ).toThrow(/accepted outcome has an invalid status/);
     }
 
     {
@@ -507,7 +670,33 @@ describe("K7 ring-transition Operation Receipt V1 replay verifier", () => {
       records[1].event.http_status = 500;
       expect(() =>
         verifyRingTransitionOperationReceiptChain(linkRecords(records)),
-      ).toThrow(/rejected outcome requires a 4xx status/);
+      ).toThrow(/rejected outcome has an invalid status/);
+    }
+
+    {
+      const { records } = deterministicReadOperationReceiptChain();
+      records[1].event.http_status = 201;
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain(linkRecords(records)),
+      ).toThrow(/accepted outcome has an invalid status/);
+    }
+
+    for (const status of [408, 425, 429]) {
+      const { records } = deterministicReadOperationReceiptChain();
+      records[1].event.outcome = "rejected";
+      records[1].event.http_status = status;
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain(linkRecords(records)),
+      ).toThrow(/rejected outcome has an invalid status/);
+    }
+
+    {
+      const { records } = deterministicOperationReceiptChain();
+      records[1].event.outcome = "rejected";
+      records[1].event.http_status = 409;
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain(linkRecords(records)),
+      ).toThrow(/rejected outcome has an invalid status/);
     }
   });
 });
@@ -598,6 +787,67 @@ function operationIdentityInput() {
     method: "POST",
     targetSha256: "a".repeat(64),
     requestSha256: "b".repeat(64),
+  };
+}
+
+function deterministicReadOperationReceiptChain() {
+  const context = structuredClone(
+    deterministicOperationReceiptChain().records[0].context,
+  );
+  const requestIdSha256 = "e".repeat(64);
+  const input = {
+    kind: "authority_claim_read",
+    stateVersion: 0,
+    method: "GET",
+    targetSha256: "a".repeat(64),
+    requestSha256: computeRingTransitionReadOperationRequestSha256({
+      targetSha256: "a".repeat(64),
+      requestIdSha256,
+    }),
+  };
+  const operation = {
+    operationIdSha256: computeRingTransitionOperationId({
+      context,
+      ...input,
+    }),
+    ...input,
+  };
+  const start = {
+    schemaVersion: 1,
+    contract: "cinatoken-ring-transition-runner-operation-receipt-v1",
+    environment: "staging",
+    sequence: 1,
+    predecessorReceiptSha256: null,
+    recordedAt: 1_700_000_401,
+    context,
+    operation,
+    event: {
+      kind: "request_started",
+      request_id_sha256: requestIdSha256,
+    },
+  };
+  const finish = {
+    schemaVersion: 1,
+    contract: "cinatoken-ring-transition-runner-operation-receipt-v1",
+    environment: "staging",
+    sequence: 2,
+    predecessorReceiptSha256: sha256ReceiptBytes(
+      canonicalReceiptBytes(start),
+    ),
+    recordedAt: 1_700_000_402,
+    context: structuredClone(context),
+    operation: structuredClone(operation),
+    event: {
+      kind: "request_finished",
+      outcome: "accepted",
+      http_status: 200,
+      response_body_sha256: "c".repeat(64),
+      response_id_sha256: "d".repeat(64),
+    },
+  };
+  return {
+    records: [start, finish],
+    bytes: [canonicalReceiptBytes(start), canonicalReceiptBytes(finish)],
   };
 }
 

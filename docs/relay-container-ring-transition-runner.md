@@ -806,7 +806,7 @@ prefix and exact Authority state are never trusted from prior process memory.
 
 Before credential proof traffic, the runner enumerates and verifies the fixed
 operation-receipt subtree for the current authorization. Unknown or linked
-entries, context drift, malformed chains, more than 16 operations, gaps or
+entries, context drift, malformed chains, more than 128 operations, gaps or
 noncanonical content stop execution. After credential proof, every discovered
 unfinished start is finished ambiguous and the directory is re-audited. An
 absent start is never created by recovery.
@@ -848,3 +848,94 @@ and external anchoring, exact Linux process/power-loss/ACL proof, the DO shard
 supervisor and disposable Container adapter, replacement-credential isolated
 staging, remaining Go compatibility, revocation and G1-G8. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## Read-Only Operation Receipt Gate
+
+The native runner now places every current Authority and Cloudflare GET behind
+Operation Receipt V1. This supersedes the prior "read-only request receipt
+coverage" gap and the old 16-chain audit limit. It does not supersede exact
+Authority/stable-readback semantics or the external-anchor gap.
+
+| Kind | State versions | Start after expiry |
+| --- | --- | --- |
+| `authority_claim_read` | `0` | through expiry + 600 seconds |
+| `authority_preflight_read` | `0` | through expiry + 600 seconds |
+| `cloudflare_token_verify_read` | `0` | through expiry + 600 seconds |
+| `cloudflare_deploy_token_verify_read` | `0` | through expiry + 600 seconds |
+| `cloudflare_deployment_read` | `1`, `3`, `4`, `6` | never |
+| `cloudflare_version_read` | `1`, `3`, `4`, `6` | never |
+
+Each GET hashes its absolute HTTPS URI and a fresh runner-local request nonce
+under `cinatoken-ring-transition-runner-read-operation-request-v1`. That
+digest enters the existing activation/authorization/claim-bound operation ID.
+The request-start event repeats the nonce digest. A changed target, nonce,
+method, kind, state or request digest therefore fails independent replay even
+when the operation ID is recomputed.
+
+The read-token and deploy-token identity checks use separate operation kinds.
+The receipt still stores no credential, header or body; the nonce is local and
+does not prove remote receipt. Operation timestamps are whole-second local
+audit values and do not measure request latency.
+
+The two-slot transition is fixed:
+
+```text
+absent
+  -> create-new request_started + exact readback
+  -> exactly one HTTPS GET
+  -> first linked request_finished wins
+```
+
+An existing unfinished start is finished ambiguous with zero network. An
+existing terminal chain also performs zero network. The response categories
+are:
+
+| Receipt outcome | Read classification |
+| --- | --- |
+| `accepted` | expected bounded `200`; exact claim additionally passed exact semantic verification |
+| `rejected` | deterministic client rejection other than `408`, `425`, `429` |
+| `ambiguous` | exchange loss, redirect, unexpected success, `408`, `425`, `429`, `5xx`, malformed or identity-drifting response |
+
+`accepted` is transport evidence, not state authority. Token verification and
+Cloudflare observation bodies still pass their dedicated semantic verifiers;
+only exact Authority snapshots and stable-readback evidence select reducer
+state.
+
+The per-authorization operation tree has 128 fixed create-new capacity-marker
+slots. A marker canonically binds its slot and operation ID. It uses the same
+same-directory synced staging, no-replace publication, parent sync and exact
+readback discipline as receipts before the operation directory or slot 1 is
+created. Interrupted staging is ignored as non-authorizing. The 129th
+concurrent contender cannot publish a marker, persists no operation
+directory/start and cannot reach network I/O. A crash may strand a complete
+marker before slot 1; audit treats it as consumed non-authorizing capacity and
+creates no receipt or send capability. If the operation directory was already
+created, audit accepts only the empty-or-staging-only form and still creates no
+finish or send; the exact operation may later resume normal slot-1
+publication. Markers and historical evidence are never deleted or reused.
+Exhaustion requires a new authorization. The nominal fault-free lifecycle
+estimate is about 59 chains.
+
+Rust and JavaScript share frozen read-request, operation-ID and request-start
+vectors. Adversarial coverage includes recomputed-ID request drift, method and
+state drift, exact and late recovery boundaries, disallowed post-expiry
+Cloudflare reads, absolute-origin binding, separate credential classes,
+`408/425/429`, kind-specific accepted/rejected statuses, transport loss,
+collision with zero sends, marker-backed empty-directory recovery and the
+129th reservation.
+
+The JavaScript verifier declares
+`verificationScope=single_operation_chain`,
+`aggregateCapacityVerified=false` and
+`absoluteHttpsTargetVerified=false`. It verifies the supplied chain's internal
+target digest binding, not the URI that originally produced the digest or the
+authorization directory's aggregate marker set. Rust transport enforces the
+absolute HTTPS URI before hashing; Rust authorization audit enforces the 128
+marker bound.
+
+Internal links cannot detect whole-chain replacement by a writer that controls
+the operation directory. Remaining K7 starts with binding all execution and
+operation heads into the terminal seal plus an independent signed/WORM anchor,
+then the exact Linux crash/path/sync/ACL/power-loss campaign and isolated
+staging proof. Checked-in trust remains disabled; Go/VPS remains authoritative
+and production remains **NO-GO**.

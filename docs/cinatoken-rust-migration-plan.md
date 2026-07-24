@@ -19527,7 +19527,9 @@ foreign-context, noncanonical or over-limit operation tree fails before
 credential proof network traffic. Recovery finishes only real slot-1 starts;
 it never synthesizes an absent operation. It then re-audits the complete
 authorization directory and requires every discovered chain to be terminal.
-The fixed bound is 16 operation chains per authorization.
+The fixed bound is 128 operation chains per authorization. A nominal complete
+ring-transition lifecycle currently consumes about 59 chains, leaving bounded
+headroom for response-loss recovery while retaining fail-closed enumeration.
 
 `execute_current()` calls `authorize_execution()` anew on every invocation.
 Process memory is therefore never the durable state owner. Exact Authority
@@ -19633,3 +19635,129 @@ The next required order is:
 
 Go/VPS remains the traffic, scheduler and financial authority. Production
 remains **NO-GO**.
+
+## 22.285 Read-Only Operation Receipt Overlay (2026-07-24)
+
+This overlay completes section 22.284 remaining-P0 item 1 locally. Every
+Authority or Cloudflare GET issued by the native reducer now has a durable,
+request-bound Operation Receipt V1 chain. The receipt records a local request
+boundary; it never authorizes a request, advances Authority state, proves a
+remote outcome or mints a mutation permit.
+
+No checked-in trust was enabled. No live credential, Authority, Cloudflare
+resource, deployment, route, DNS record, customer request, billing state or
+Go/VPS state was read or changed.
+
+### Covered reads and identity
+
+The transport records Cloudflare read-token verification, deploy-token
+verification, Authority authenticated preflight, exact Authority claim
+readback/recovery, Cloudflare deployment-set observations and Cloudflare
+version-detail observations. Stable readback therefore emits four ordered GET
+chains: deployment A, version A, deployment B and version B.
+
+Write operation IDs remain deterministic singletons for one logical mutation.
+Each repeatable GET instead generates a runner-local nonce and hashes this
+canonical subject:
+
+```text
+{
+  schemaVersion: 1,
+  contract: "cinatoken-ring-transition-runner-read-operation-request-v1",
+  method: "GET",
+  targetSha256: SHA-256(absolute HTTPS URI),
+  requestIdSha256: SHA-256(runner-local request nonce)
+}
+```
+
+The operation ID joins that request digest to activation, authorization,
+claim, operation kind and state version. Read-token and deploy-token
+verification use separate operation kinds. The nonce proves local uniqueness;
+it does not claim that Cloudflare received a corresponding header.
+
+Slot 1 repeats the request-ID digest. Rust replay and the independent
+JavaScript verifier detect internal target-digest, nonce, method, kind, state,
+request-digest and operation-ID drift, including a recomputed operation ID.
+Rust transport enforces the absolute HTTPS URI before hashing it. The
+single-chain JavaScript verifier explicitly does not prove the preimage URI or
+aggregate marker capacity. Neither verifier detects replacement of an entire
+internally consistent chain by a writer with directory access. Terminal
+operation-head binding plus an independent signed/WORM anchor remains required
+for that threat.
+
+### Time, outcome and restart
+
+Write starts and Cloudflare deployment/version observations remain strictly
+before claim expiry. Exact Authority claim read, Authority preflight, and both
+Cloudflare credential proofs may start during a fixed 600-second recovery
+window after expiry so the runner can observe terminal state without write
+authority. All starts must be at or after claim generation; a finish may occur
+after expiry. Receipt timestamps are whole-second local audit times and are
+not network-latency evidence.
+
+The shared wrapper publishes and reads back slot 1 before network I/O. Only
+`Fresh` may send. An existing chain returns receipt conflict with zero network
+requests; a later observation needs a new nonce. Every returned transport path
+attempts one linked terminal finish:
+
+- `accepted`: expected bounded HTTP `200` eligible for semantic verification;
+  exact claim read additionally validates the exact claim before acceptance;
+- `rejected`: deterministic client rejection, excluding `408`, `425` and
+  `429`; or
+- `ambiguous`: transport/response loss, redirect, unexpected success,
+  `408`, `425`, `429`, `5xx`, parse/identity drift or another unproven result.
+
+An accepted token/readback response is still not Authority truth. Exact claim
+and stable-readback evidence remain the state projections. Startup audits the
+local operation tree before credential-proof traffic, runs identity proofs,
+seals only real unfinished starts ambiguous, then re-audits. Recovery creates
+no absent start and restores no send capability.
+
+Each operation remains a fixed two-slot chain. The authorization directory is
+bounded at 128 chains; a nominal complete lifecycle is estimated at about 59.
+The authorization owns 128 fixed create-new capacity-marker slots. A canonical
+marker is written to a same-directory staging file, synced, published
+no-replace, parent-synced and independently read back before its operation
+directory or slot 1 can exist. Interrupted staging is non-authorizing. The
+129th contender cannot publish a marker, so it persists no operation
+directory/start, returns no send authority and fails before network progress.
+A crash after complete marker publication may strand a non-authorizing slot;
+audit tolerates the marker without inventing a start. If the crash also left a
+marker-backed empty-or-staging-only operation directory, audit and recovery
+skip it; only the exact operation may later resume normal slot-1 publication.
+The marker is never deleted or reused. Exhausted, unknown, linked, gapped,
+drifting or noncanonical state requires a new authorization rather than
+deletion or in-place repair. The bound is local capacity, not staging sizing
+evidence.
+
+### Evidence and remaining gates
+
+Rust and JavaScript agree on:
+
+- read-request digest
+  `6344097a6f022e09b2589e570e92bcaff8df407f56edfe85e32c7c29e55dba7d`;
+- operation ID
+  `468efe016ebf4ec7a517c6213cab5d861b27c46eaea89329251c1b42d0aaa230`;
+  and
+- request-start head
+  `070c862e67b2f0a4aba4273d1f2fe3f0abac75462469a962aabacdc7d0fd6dbf`.
+
+Focused tests cover exact claim, separate credential classes, absolute-origin
+binding, ordered stable reads, zero-send collision, transport loss,
+`408/425/429`, kind-specific deterministic rejection, bounded recovery,
+marker-backed empty-directory restart, 129th-reservation failure, canonical
+request binding and cross-runtime replay. The authoritative commands and
+aggregate results are recorded in `docs/verification.md`.
+
+This closes local read request-boundary coverage, not K7 or production.
+Remaining P0 order is terminal operation-head and independent external
+anchoring; exact Rust 1.78 Linux concurrency/path/link/sync/ACL/backup/ext4/
+XFS/power-loss campaigns; the versioned Durable Object shard supervisor and
+disposable Container adapter; replacement-credential isolated staging
+fault/load/cost/SLO/rollback evidence; remaining cached-channel, billing,
+paid-SSE, task/provider and financial Go compatibility; credential revocation,
+Go/VPS hot fallback/drain and G1-G8 against one immutable candidate.
+
+No Cloudflare deployment or production execution is enabled. Go/VPS remains
+the traffic, scheduler and financial authority. Production remains
+**NO-GO**.

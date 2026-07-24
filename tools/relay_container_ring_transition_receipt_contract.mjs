@@ -6,6 +6,10 @@ export const RING_TRANSITION_OPERATION_RECEIPT_CONTRACT =
   "cinatoken-ring-transition-runner-operation-receipt-v1";
 export const RING_TRANSITION_OPERATION_ID_CONTRACT =
   "cinatoken-ring-transition-runner-operation-id-v1";
+export const RING_TRANSITION_OPERATION_CAPACITY_RESERVATION_CONTRACT =
+  "cinatoken-ring-transition-runner-operation-capacity-reservation-v1";
+export const RING_TRANSITION_READ_OPERATION_REQUEST_CONTRACT =
+  "cinatoken-ring-transition-runner-read-operation-request-v1";
 export const STEP_CONTRACT =
   "cinatoken-relay-container-ring-transition-execution-step-v1";
 export const EXPIRY_CONTRACT =
@@ -13,6 +17,8 @@ export const EXPIRY_CONTRACT =
 export const MAX_RING_TRANSITION_RECEIPT_BYTES = 64 * 1024;
 export const MAX_RING_TRANSITION_RECEIPTS_PER_CHAIN = 128;
 export const MAX_RING_TRANSITION_OPERATION_RECEIPTS_PER_CHAIN = 2;
+export const MAX_RING_TRANSITION_OPERATION_CHAINS_PER_AUTHORIZATION = 128;
+export const MAX_RING_TRANSITION_READ_RECOVERY_SECONDS = 600;
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -60,8 +66,28 @@ const FAILURE_CLASSES = new Set([
 ]);
 const OPERATION_KINDS = new Set([
   "authority_claim_create",
+  "authority_claim_read",
+  "authority_preflight_read",
   "authority_step_append",
   "cloudflare_deployment",
+  "cloudflare_deploy_token_verify_read",
+  "cloudflare_deployment_read",
+  "cloudflare_token_verify_read",
+  "cloudflare_version_read",
+]);
+const READ_OPERATION_KINDS = new Set([
+  "authority_claim_read",
+  "authority_preflight_read",
+  "cloudflare_deploy_token_verify_read",
+  "cloudflare_deployment_read",
+  "cloudflare_token_verify_read",
+  "cloudflare_version_read",
+]);
+const RECOVERY_OPERATION_KINDS = new Set([
+  "authority_claim_read",
+  "authority_preflight_read",
+  "cloudflare_deploy_token_verify_read",
+  "cloudflare_token_verify_read",
 ]);
 const OPERATION_OUTCOMES = new Set([
   "accepted",
@@ -248,10 +274,21 @@ export function describeRingTransitionOperationReceiptContract() {
     maximumReceiptBytes: MAX_RING_TRANSITION_RECEIPT_BYTES,
     maximumReceiptsPerChain:
       MAX_RING_TRANSITION_OPERATION_RECEIPTS_PER_CHAIN,
+    maximumOperationChainsPerAuthorization:
+      MAX_RING_TRANSITION_OPERATION_CHAINS_PER_AUTHORIZATION,
+    maximumReadRecoverySeconds:
+      MAX_RING_TRANSITION_READ_RECOVERY_SECONDS,
+    verificationScope: "single_operation_chain",
+    aggregateCapacityVerified: false,
+    absoluteHttpsTargetVerified: false,
     constraints: {
       canonicalJsonRequired: true,
       duplicateAndUnknownFieldsAllowed: false,
       deterministicOperationIdRequired: true,
+      createNewCapacityMarkersRequired: true,
+      strandedCapacityMarkersAreNonAuthorizing: true,
+      readRequestsUseUniqueRequestBoundOperationIds: true,
+      readOperationsAreNonAuthorizing: true,
       requestStartRequiredBeforeMutation: true,
       createNewReservationRequired: true,
       restartAfterReservationIsReadOnly: true,
@@ -314,6 +351,26 @@ export function computeRingTransitionOperationId({
       method,
       targetSha256,
       requestSha256,
+    }),
+  );
+}
+
+export function computeRingTransitionReadOperationRequestSha256({
+  targetSha256,
+  requestIdSha256,
+}) {
+  requireSha256(targetSha256, "[read operation request] targetSha256");
+  requireSha256(
+    requestIdSha256,
+    "[read operation request] requestIdSha256",
+  );
+  return sha256ReceiptBytes(
+    canonicalReceiptBytes({
+      schemaVersion: 1,
+      contract: RING_TRANSITION_READ_OPERATION_REQUEST_CONTRACT,
+      method: "GET",
+      targetSha256,
+      requestIdSha256,
     }),
   );
 }
@@ -453,6 +510,9 @@ export function verifyRingTransitionOperationReceiptChain(
 
   return Object.freeze({
     ok: true,
+    verificationScope: "single_operation_chain",
+    aggregateCapacityVerified: false,
+    absoluteHttpsTargetVerified: false,
     operationIdSha256: start.record.operation.operationIdSha256,
     receiptCount: receipts.length,
     headSha256: previous.sha256,
@@ -671,16 +731,34 @@ function validateOperationReceipt(record, label) {
     receipt.context,
     `${label} operation`,
   );
-  validateOperationEvent(receipt.event, `${label} event`);
+  validateOperationEvent(
+    receipt.event,
+    receipt.operation.kind,
+    `${label} event`,
+  );
   if (receipt.recordedAt < receipt.context.generatedAt) {
     throw new Error(`${label} time binding is invalid`);
   }
   if (
     receipt.event.kind === "request_started" &&
     (receipt.sequence !== 1 ||
-      receipt.recordedAt >= receipt.context.expiresAt)
+      (receipt.recordedAt >= receipt.context.expiresAt &&
+        (!RECOVERY_OPERATION_KINDS.has(receipt.operation.kind) ||
+          receipt.recordedAt - receipt.context.expiresAt >
+            MAX_RING_TRANSITION_READ_RECOVERY_SECONDS)))
   ) {
     throw new Error(`${label} request-start binding is invalid`);
+  }
+  if (
+    receipt.event.kind === "request_started" &&
+    READ_OPERATION_KINDS.has(receipt.operation.kind) &&
+    receipt.operation.requestSha256 !==
+      computeRingTransitionReadOperationRequestSha256({
+        targetSha256: receipt.operation.targetSha256,
+        requestIdSha256: receipt.event.request_id_sha256,
+      })
+  ) {
+    throw new Error(`${label} read request SHA-256 mismatch`);
   }
   if (
     receipt.event.kind === "request_finished" &&
@@ -768,23 +846,38 @@ function validateOperationIdentity(value, context, label) {
 function validateOperationShape(value, label) {
   requireEnum(value.kind, OPERATION_KINDS, `${label} kind`);
   requireInteger(value.stateVersion, 0, 255, `${label} stateVersion`);
-  requireExact(value.method, "POST", `${label} method`);
+  requireExact(
+    value.method,
+    READ_OPERATION_KINDS.has(value.kind) ? "GET" : "POST",
+    `${label} method`,
+  );
   requireSha256(value.targetSha256, `${label} targetSha256`);
   requireSha256(value.requestSha256, `${label} requestSha256`);
   if (
-    (value.kind === "authority_claim_create" &&
+    ([
+      "authority_claim_create",
+      "authority_claim_read",
+      "authority_preflight_read",
+      "cloudflare_deploy_token_verify_read",
+      "cloudflare_token_verify_read",
+    ].includes(value.kind) &&
       value.stateVersion !== 0) ||
     (value.kind === "authority_step_append" &&
       value.stateVersion === 0) ||
     (value.kind === "cloudflare_deployment" &&
       value.stateVersion !== 2 &&
-      value.stateVersion !== 5)
+      value.stateVersion !== 5) ||
+    ([
+      "cloudflare_deployment_read",
+      "cloudflare_version_read",
+    ].includes(value.kind) &&
+      ![1, 3, 4, 6].includes(value.stateVersion))
   ) {
     throw new Error(`${label} stateVersion is invalid for operation kind`);
   }
 }
 
-function validateOperationEvent(value, label) {
+function validateOperationEvent(value, operationKind, label) {
   const event = requireObject(value, label);
   requireString(event.kind, `${label} kind`);
   switch (event.kind) {
@@ -821,24 +914,60 @@ function validateOperationEvent(value, label) {
       );
       if (
         event.outcome === "accepted" &&
-        (event.http_status === null ||
-          event.http_status < 200 ||
-          event.http_status > 299)
+        !operationAcceptedStatusMatches(operationKind, event.http_status)
       ) {
-        throw new Error(`${label} accepted outcome requires a 2xx status`);
+        throw new Error(
+          `${label} accepted outcome has an invalid status for operation kind`,
+        );
       }
       if (
         event.outcome === "rejected" &&
-        (event.http_status === null ||
-          event.http_status < 400 ||
-          event.http_status > 499)
+        !operationRejectedStatusMatches(operationKind, event.http_status)
       ) {
-        throw new Error(`${label} rejected outcome requires a 4xx status`);
+        throw new Error(
+          `${label} rejected outcome has an invalid status for operation kind`,
+        );
       }
       return;
     default:
       throw new Error(`${label} kind is invalid`);
   }
+}
+
+function operationAcceptedStatusMatches(operationKind, status) {
+  if (!Number.isInteger(status)) {
+    return false;
+  }
+  if (READ_OPERATION_KINDS.has(operationKind)) {
+    return status === 200;
+  }
+  if (
+    operationKind === "authority_claim_create" ||
+    operationKind === "authority_step_append"
+  ) {
+    return status === 200 || status === 201;
+  }
+  return operationKind === "cloudflare_deployment" &&
+    status >= 200 &&
+    status <= 299;
+}
+
+function operationRejectedStatusMatches(operationKind, status) {
+  if (
+    !Number.isInteger(status) ||
+    status < 400 ||
+    status > 499 ||
+    status === 408 ||
+    status === 425 ||
+    status === 429
+  ) {
+    return false;
+  }
+  return !(
+    (operationKind === "authority_claim_create" ||
+      operationKind === "authority_step_append") &&
+    status === 409
+  );
 }
 
 function parseCanonicalReceipt(value, sequence) {

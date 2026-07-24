@@ -22,24 +22,68 @@ pub const EXECUTION_RECEIPT_CONTRACT: &str =
     "cinatoken-ring-transition-runner-execution-receipt-v1";
 pub const OPERATION_RECEIPT_CONTRACT: &str =
     "cinatoken-ring-transition-runner-operation-receipt-v1";
+pub const READ_OPERATION_REQUEST_CONTRACT: &str =
+    "cinatoken-ring-transition-runner-read-operation-request-v1";
+pub const READ_OPERATION_RECOVERY_WINDOW_SECONDS: u64 = 600;
 const OPERATION_ID_CONTRACT: &str = "cinatoken-ring-transition-runner-operation-id-v1";
+const OPERATION_CAPACITY_RESERVATION_CONTRACT: &str =
+    "cinatoken-ring-transition-runner-operation-capacity-reservation-v1";
 const HISTORY_DIGEST_CONTRACT: &str =
     "cinatoken-ring-transition-runner-execution-receipt-history-v1";
 const RECEIPTS_DIRECTORY_NAME: &str = "execution-receipts";
 const OPERATION_RECEIPTS_DIRECTORY_NAME: &str = "execution-operation-receipts";
 const RECEIPT_FILE_SUFFIX: &str = ".receipt.json";
 const OPERATION_RECEIPT_FILE_SUFFIX: &str = ".operation.json";
+const OPERATION_CAPACITY_FILE_SUFFIX: &str = ".operation-capacity.json";
 const MAX_RECEIPT_BYTES: usize = 64 * 1024;
 const MAX_RECEIPTS_PER_CHAIN: u64 = 128;
 const MAX_OPERATION_RECEIPTS_PER_CHAIN: u64 = 2;
-const MAX_OPERATION_CHAINS_PER_AUTHORIZATION: usize = 16;
+const MAX_OPERATION_CHAINS_PER_AUTHORIZATION: usize = 128;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum OperationKind {
     AuthorityClaimCreate,
+    AuthorityClaimRead,
+    AuthorityPreflightRead,
     AuthorityStepAppend,
     CloudflareDeployment,
+    CloudflareDeployTokenVerifyRead,
+    CloudflareDeploymentRead,
+    CloudflareTokenVerifyRead,
+    CloudflareVersionRead,
+}
+
+impl OperationKind {
+    fn method(self) -> &'static str {
+        if self.is_read() {
+            "GET"
+        } else {
+            "POST"
+        }
+    }
+
+    fn is_read(self) -> bool {
+        matches!(
+            self,
+            Self::AuthorityClaimRead
+                | Self::AuthorityPreflightRead
+                | Self::CloudflareDeployTokenVerifyRead
+                | Self::CloudflareDeploymentRead
+                | Self::CloudflareTokenVerifyRead
+                | Self::CloudflareVersionRead
+        )
+    }
+
+    fn may_start_during_recovery(self) -> bool {
+        matches!(
+            self,
+            Self::AuthorityClaimRead
+                | Self::AuthorityPreflightRead
+                | Self::CloudflareDeployTokenVerifyRead
+                | Self::CloudflareTokenVerifyRead
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -729,10 +773,14 @@ impl ReceiptStore {
         let context = project_operation_context(publication, credentials, activation)?;
         let operation = project_operation_identity(&context, &input.identity)?;
         validate_operation_start_input(&context, input)?;
+        let authorization =
+            self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
+        reserve_operation_capacity(&authorization, &operation.operation_id_sha256)?;
         let directory = self.ensure_operation_directory(
             &context.authorization_id_sha256,
             &operation.operation_id_sha256,
         )?;
+        self.authorization_operation_ids(&context.authorization_id_sha256)?;
         let start_path = directory.join(operation_receipt_file_name(1));
         if start_path
             .try_exists()
@@ -744,6 +792,7 @@ impl ReceiptStore {
                 &operation.operation_id_sha256,
             )?;
             require_operation_identity(&verified, &context, &operation)?;
+            self.authorization_operations(&context)?;
             return Ok(operation_reservation(&verified));
         }
 
@@ -770,6 +819,7 @@ impl ReceiptStore {
                 {
                     return Err(ReceiptError::Conflict);
                 }
+                self.authorization_operations(&context)?;
                 Ok(OperationReservation::Fresh)
             }
             Ok(AppendOutcome::ExistingExact) | Err(ReceiptError::Conflict) => {
@@ -779,6 +829,7 @@ impl ReceiptStore {
                     &operation.operation_id_sha256,
                 )?;
                 require_operation_identity(&verified, &context, &operation)?;
+                self.authorization_operations(&context)?;
                 Ok(operation_reservation(&verified))
             }
             Err(error) => Err(error),
@@ -808,7 +859,7 @@ impl ReceiptStore {
         if let Some(outcome) = verified.verified.outcome {
             return Ok(outcome);
         }
-        validate_operation_finish_input(input, verified.start_recorded_at)?;
+        validate_operation_finish_input(operation.kind, input, verified.start_recorded_at)?;
         let finish = canonical_operation_receipt(
             2,
             Some(verified.start_sha256),
@@ -962,56 +1013,8 @@ impl ReceiptStore {
         &self,
         context: &OperationContextIdentity,
     ) -> Result<Vec<VerifiedOperationReceiptChainInternal>, ReceiptError> {
-        let receipts = self.root.join(OPERATION_RECEIPTS_DIRECTORY_NAME);
-        if !receipts
-            .try_exists()
-            .map_err(|_| ReceiptError::Io("operation_receipts_exists"))?
-        {
-            return Ok(Vec::new());
-        }
-        require_fixed_directory(&receipts, &self.root, "operation_receipts_directory")?;
-        for entry in
-            fs::read_dir(&receipts).map_err(|_| ReceiptError::Io("operation_receipts_read"))?
-        {
-            let entry = entry.map_err(|_| ReceiptError::Io("operation_receipts_entry"))?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| ReceiptError::UnsafeFilesystem("operation_authorization_name"))?;
-            validate_lower_hex(&name, "operation_authorization_id")?;
-            require_fixed_directory(
-                &entry.path(),
-                &receipts,
-                "operation_authorization_directory",
-            )?;
-        }
-
-        let authorization = receipts.join(&context.authorization_id_sha256);
-        if !authorization
-            .try_exists()
-            .map_err(|_| ReceiptError::Io("operation_authorization_exists"))?
-        {
-            return Ok(Vec::new());
-        }
-        require_fixed_directory(
-            &authorization,
-            &receipts,
-            "operation_authorization_directory",
-        )?;
-        let mut operation_ids = Vec::new();
-        for entry in fs::read_dir(&authorization)
-            .map_err(|_| ReceiptError::Io("operation_authorization_read"))?
-        {
-            let entry = entry.map_err(|_| ReceiptError::Io("operation_authorization_entry"))?;
-            let operation_id = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| ReceiptError::UnsafeFilesystem("operation_directory_name"))?;
-            validate_lower_hex(&operation_id, "operation_id_sha256")?;
-            require_fixed_directory(&entry.path(), &authorization, "operation_directory")?;
-            operation_ids.push(operation_id);
-        }
-        operation_ids.sort();
+        let (authorization, operation_ids, _) =
+            self.authorization_operation_ids(&context.authorization_id_sha256)?;
         if operation_ids.len() > MAX_OPERATION_CHAINS_PER_AUTHORIZATION {
             return Err(ReceiptError::InvalidField("operation_chain_count"));
         }
@@ -1030,15 +1033,134 @@ impl ReceiptStore {
         Ok(verified)
     }
 
+    fn authorization_operation_ids(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<(PathBuf, Vec<String>, Vec<String>), ReceiptError> {
+        validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
+        let receipts = self.root.join(OPERATION_RECEIPTS_DIRECTORY_NAME);
+        let authorization = receipts.join(authorization_id_sha256);
+        if !receipts
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_receipts_exists"))?
+        {
+            return Ok((authorization, Vec::new(), Vec::new()));
+        }
+        require_fixed_directory(&receipts, &self.root, "operation_receipts_directory")?;
+        for entry in
+            fs::read_dir(&receipts).map_err(|_| ReceiptError::Io("operation_receipts_read"))?
+        {
+            let entry = entry.map_err(|_| ReceiptError::Io("operation_receipts_entry"))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| ReceiptError::UnsafeFilesystem("operation_authorization_name"))?;
+            validate_lower_hex(&name, "operation_authorization_id")?;
+            require_fixed_directory(
+                &entry.path(),
+                &receipts,
+                "operation_authorization_directory",
+            )?;
+        }
+
+        if !authorization
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_authorization_exists"))?
+        {
+            return Ok((authorization, Vec::new(), Vec::new()));
+        }
+        require_fixed_directory(
+            &authorization,
+            &receipts,
+            "operation_authorization_directory",
+        )?;
+        let mut operation_ids = Vec::new();
+        let mut capacity_operation_ids = Vec::new();
+        for entry in fs::read_dir(&authorization)
+            .map_err(|_| ReceiptError::Io("operation_authorization_read"))?
+        {
+            let entry = entry.map_err(|_| ReceiptError::Io("operation_authorization_entry"))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| ReceiptError::UnsafeFilesystem("operation_directory_name"))?;
+            let valid_staging =
+                valid_staging_file_name(&name, MAX_OPERATION_CHAINS_PER_AUTHORIZATION as u64);
+            if valid_staging {
+                if let Some(metadata) = read_directory_entry_metadata(&entry.path(), true)? {
+                    if metadata.file_type().is_symlink() || !metadata.is_file() {
+                        return Err(ReceiptError::UnsafeFilesystem("operation_capacity_staging"));
+                    }
+                }
+                continue;
+            }
+            if let Some(slot) = parse_operation_capacity_file_name(&name) {
+                let reservation =
+                    read_operation_capacity_reservation(&entry.path(), &authorization)?;
+                if usize::from(reservation.slot) != slot {
+                    return Err(ReceiptError::InvalidField("operation_capacity_slot"));
+                }
+                capacity_operation_ids.push(reservation.operation_id_sha256);
+                continue;
+            }
+            let operation_id = name;
+            validate_lower_hex(&operation_id, "operation_id_sha256")?;
+            require_fixed_directory(&entry.path(), &authorization, "operation_directory")?;
+            validate_operation_directory_entries(&entry.path())?;
+            let start_path = entry.path().join(operation_receipt_file_name(1));
+            if !start_path
+                .try_exists()
+                .map_err(|_| ReceiptError::Io("operation_start_exists"))?
+            {
+                if has_future_operation_receipt(&entry.path(), 2)? {
+                    return Err(ReceiptError::PredecessorMissing);
+                }
+                continue;
+            }
+            operation_ids.push(operation_id);
+        }
+        operation_ids.sort();
+        capacity_operation_ids.sort();
+        if capacity_operation_ids.len() > MAX_OPERATION_CHAINS_PER_AUTHORIZATION
+            || capacity_operation_ids
+                .windows(2)
+                .any(|window| window[0] == window[1])
+            || operation_ids
+                .iter()
+                .any(|operation_id| capacity_operation_ids.binary_search(operation_id).is_err())
+        {
+            return Err(ReceiptError::InvalidField(
+                "operation_capacity_reservations",
+            ));
+        }
+        Ok((authorization, operation_ids, capacity_operation_ids))
+    }
+
     fn ensure_chain_directory(
         &self,
         authorization_id_sha256: &str,
     ) -> Result<PathBuf, ReceiptError> {
         let receipts = self.root.join(RECEIPTS_DIRECTORY_NAME);
-        create_fixed_directory(&receipts, &self.root, "receipts_directory")?;
+        let _ = create_fixed_directory(&receipts, &self.root, "receipts_directory")?;
         let chain = receipts.join(authorization_id_sha256);
-        create_fixed_directory(&chain, &receipts, "chain_directory")?;
+        let _ = create_fixed_directory(&chain, &receipts, "chain_directory")?;
         Ok(chain)
+    }
+
+    fn ensure_operation_authorization_directory(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<PathBuf, ReceiptError> {
+        validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
+        let receipts = self.root.join(OPERATION_RECEIPTS_DIRECTORY_NAME);
+        let _ = create_fixed_directory(&receipts, &self.root, "operation_receipts_directory")?;
+        let authorization = receipts.join(authorization_id_sha256);
+        let _ = create_fixed_directory(
+            &authorization,
+            &receipts,
+            "operation_authorization_directory",
+        )?;
+        Ok(authorization)
     }
 
     fn ensure_operation_directory(
@@ -1046,18 +1168,11 @@ impl ReceiptStore {
         authorization_id_sha256: &str,
         operation_id_sha256: &str,
     ) -> Result<PathBuf, ReceiptError> {
-        validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
         validate_lower_hex(operation_id_sha256, "operation_id_sha256")?;
-        let receipts = self.root.join(OPERATION_RECEIPTS_DIRECTORY_NAME);
-        create_fixed_directory(&receipts, &self.root, "operation_receipts_directory")?;
-        let authorization = receipts.join(authorization_id_sha256);
-        create_fixed_directory(
-            &authorization,
-            &receipts,
-            "operation_authorization_directory",
-        )?;
+        let authorization =
+            self.ensure_operation_authorization_directory(authorization_id_sha256)?;
         let operation = authorization.join(operation_id_sha256);
-        create_fixed_directory(&operation, &authorization, "operation_directory")?;
+        let _ = create_fixed_directory(&operation, &authorization, "operation_directory")?;
         Ok(operation)
     }
 
@@ -1146,6 +1261,42 @@ struct OperationIdSubject<'a> {
     request_sha256: &'a str,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadOperationRequestSubject<'a> {
+    schema_version: u8,
+    contract: &'static str,
+    method: &'static str,
+    target_sha256: &'a str,
+    request_id_sha256: &'a str,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct OperationCapacityReservation {
+    schema_version: u8,
+    contract: String,
+    slot: u16,
+    operation_id_sha256: String,
+}
+
+pub(crate) fn read_operation_request_sha256(
+    target_sha256: &str,
+    request_id_sha256: &str,
+) -> Result<String, ReceiptError> {
+    validate_lower_hex(target_sha256, "operation_target_sha256")?;
+    validate_lower_hex(request_id_sha256, "operation_request_id_sha256")?;
+    canonical_json(&ReadOperationRequestSubject {
+        schema_version: 1,
+        contract: READ_OPERATION_REQUEST_CONTRACT,
+        method: "GET",
+        target_sha256,
+        request_id_sha256,
+    })
+    .map(|subject| sha256_hex(subject.as_bytes()))
+    .map_err(|_| ReceiptError::InvalidField("operation_read_request"))
+}
+
 fn project_operation_context(
     publication: &PublicationIdentity,
     credentials: &CredentialIdentity,
@@ -1230,7 +1381,13 @@ fn project_operation_identity(
     validate_lower_hex(&input.target_sha256, "operation_target_sha256")?;
     validate_lower_hex(&input.request_sha256, "operation_request_sha256")?;
     match input.kind {
-        OperationKind::AuthorityClaimCreate if input.state_version != 0 => {
+        OperationKind::AuthorityClaimCreate
+        | OperationKind::AuthorityClaimRead
+        | OperationKind::AuthorityPreflightRead
+        | OperationKind::CloudflareDeployTokenVerifyRead
+        | OperationKind::CloudflareTokenVerifyRead
+            if input.state_version != 0 =>
+        {
             return Err(ReceiptError::InvalidField("operation_state_version"));
         }
         OperationKind::AuthorityStepAppend if input.state_version == 0 => {
@@ -1239,8 +1396,14 @@ fn project_operation_identity(
         OperationKind::CloudflareDeployment if !matches!(input.state_version, 2 | 5) => {
             return Err(ReceiptError::InvalidField("operation_state_version"));
         }
+        OperationKind::CloudflareDeploymentRead | OperationKind::CloudflareVersionRead
+            if !matches!(input.state_version, 1 | 3 | 4 | 6) =>
+        {
+            return Err(ReceiptError::InvalidField("operation_state_version"));
+        }
         _ => {}
     }
+    let method = input.kind.method();
     let operation_id_sha256 = sha256_hex(
         canonical_json(&OperationIdSubject {
             schema_version: 1,
@@ -1250,7 +1413,7 @@ fn project_operation_identity(
             claim_digest_sha256: &context.claim_digest_sha256,
             kind: input.kind,
             state_version: input.state_version,
-            method: "POST",
+            method,
             target_sha256: &input.target_sha256,
             request_sha256: &input.request_sha256,
         })
@@ -1261,7 +1424,7 @@ fn project_operation_identity(
         operation_id_sha256,
         kind: input.kind,
         state_version: input.state_version,
-        method: "POST".to_owned(),
+        method: method.to_owned(),
         target_sha256: input.target_sha256.clone(),
         request_sha256: input.request_sha256.clone(),
     })
@@ -1272,9 +1435,28 @@ fn validate_operation_start_input(
     input: &OperationStartInput,
 ) -> Result<(), ReceiptError> {
     validate_lower_hex(&input.request_id_sha256, "operation_request_id_sha256")?;
+    if input.identity.kind.is_read()
+        && input.identity.request_sha256
+            != read_operation_request_sha256(
+                &input.identity.target_sha256,
+                &input.request_id_sha256,
+            )?
+    {
+        return Err(ReceiptError::InvalidField("operation_read_request_sha256"));
+    }
+    let recovery_start_is_valid = if input.started_at >= context.expires_at {
+        context
+            .expires_at
+            .checked_add(READ_OPERATION_RECOVERY_WINDOW_SECONDS)
+            .is_some_and(|deadline| {
+                input.identity.kind.may_start_during_recovery() && input.started_at <= deadline
+            })
+    } else {
+        true
+    };
     if input.started_at < context.generated_at
-        || input.started_at >= context.expires_at
         || input.started_at > MAX_SAFE_INTEGER
+        || !recovery_start_is_valid
     {
         return Err(ReceiptError::InvalidField("operation_start_time"));
     }
@@ -1282,6 +1464,7 @@ fn validate_operation_start_input(
 }
 
 fn validate_operation_finish_input(
+    kind: OperationKind,
     input: &OperationFinishInput,
     started_at: u64,
 ) -> Result<(), ReceiptError> {
@@ -1309,18 +1492,25 @@ fn validate_operation_finish_input(
     }
     match input.outcome {
         OperationOutcome::Accepted => {
-            if !input
-                .http_status
-                .is_some_and(|status| (200..=299).contains(&status))
-            {
+            if !input.http_status.is_some_and(|status| match kind {
+                OperationKind::AuthorityClaimCreate | OperationKind::AuthorityStepAppend => {
+                    matches!(status, 200 | 201)
+                }
+                OperationKind::CloudflareDeployment => (200..=299).contains(&status),
+                _ => status == 200,
+            }) {
                 return Err(ReceiptError::InvalidField("operation_accepted_status"));
             }
         }
         OperationOutcome::Rejected => {
-            if !input
-                .http_status
-                .is_some_and(|status| (400..=499).contains(&status))
-            {
+            if !input.http_status.is_some_and(|status| {
+                (400..=499).contains(&status)
+                    && !matches!(status, 408 | 425 | 429)
+                    && (!matches!(
+                        kind,
+                        OperationKind::AuthorityClaimCreate | OperationKind::AuthorityStepAppend
+                    ) || status != 409)
+            }) {
                 return Err(ReceiptError::InvalidField("operation_rejected_status"));
             }
         }
@@ -1938,18 +2128,37 @@ fn validate_operation_record(record: &OperationReceipt) -> Result<(), ReceiptErr
             request_sha256: record.operation.request_sha256.clone(),
         },
     )?;
-    if record.operation != projected || record.operation.method != "POST" {
+    if record.operation != projected || record.operation.method != record.operation.kind.method() {
         return Err(ReceiptError::InvalidField("operation_identity"));
     }
     match &record.event {
         OperationReceiptEvent::RequestStarted { request_id_sha256 } => {
-            if record.sequence != 1
-                || record.recorded_at < record.context.generated_at
-                || record.recorded_at >= record.context.expires_at
-            {
+            if record.sequence != 1 || record.recorded_at < record.context.generated_at {
                 return Err(ReceiptError::InvalidField("operation_start"));
             }
             validate_lower_hex(request_id_sha256, "operation_request_id_sha256")?;
+            if record.operation.kind.is_read()
+                && record.operation.request_sha256
+                    != read_operation_request_sha256(
+                        &record.operation.target_sha256,
+                        request_id_sha256,
+                    )?
+            {
+                return Err(ReceiptError::InvalidField("operation_read_request_sha256"));
+            }
+            if record.recorded_at >= record.context.expires_at {
+                let recovery_start_is_valid = record
+                    .context
+                    .expires_at
+                    .checked_add(READ_OPERATION_RECOVERY_WINDOW_SECONDS)
+                    .is_some_and(|deadline| {
+                        record.operation.kind.may_start_during_recovery()
+                            && record.recorded_at <= deadline
+                    });
+                if !recovery_start_is_valid {
+                    return Err(ReceiptError::InvalidField("operation_start"));
+                }
+            }
         }
         OperationReceiptEvent::RequestFinished {
             outcome,
@@ -1961,6 +2170,7 @@ fn validate_operation_record(record: &OperationReceipt) -> Result<(), ReceiptErr
                 return Err(ReceiptError::InvalidField("operation_finish"));
             }
             validate_operation_finish_input(
+                record.operation.kind,
                 &OperationFinishInput {
                     outcome: *outcome,
                     finished_at: record.recorded_at,
@@ -2593,6 +2803,100 @@ fn read_operation_receipt(
     })
 }
 
+fn reserve_operation_capacity(
+    authorization_directory: &Path,
+    operation_id_sha256: &str,
+) -> Result<(), ReceiptError> {
+    validate_lower_hex(operation_id_sha256, "operation_id_sha256")?;
+    let initial_slot = usize::from_str_radix(&operation_id_sha256[..16], 16)
+        .map_err(|_| ReceiptError::InvalidField("operation_id_sha256"))?
+        % MAX_OPERATION_CHAINS_PER_AUTHORIZATION;
+    for offset in 0..MAX_OPERATION_CHAINS_PER_AUTHORIZATION {
+        let slot = (initial_slot + offset) % MAX_OPERATION_CHAINS_PER_AUTHORIZATION;
+        let record = OperationCapacityReservation {
+            schema_version: 1,
+            contract: OPERATION_CAPACITY_RESERVATION_CONTRACT.to_owned(),
+            slot: u16::try_from(slot)
+                .map_err(|_| ReceiptError::InvalidField("operation_capacity_slot"))?,
+            operation_id_sha256: operation_id_sha256.to_owned(),
+        };
+        let bytes = canonical_json(&record)
+            .map_err(|_| ReceiptError::InvalidField("operation_capacity_reservation"))?
+            .into_bytes();
+        let path = authorization_directory.join(operation_capacity_file_name(slot));
+        if path
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_capacity_reservation_exists"))?
+        {
+            let existing = read_operation_capacity_reservation(&path, authorization_directory)?;
+            if existing.operation_id_sha256 == operation_id_sha256 {
+                return Ok(());
+            }
+            continue;
+        }
+        let stage = authorization_directory
+            .join(staging_file_name(u64::try_from(slot + 1).map_err(
+                |_| ReceiptError::InvalidField("operation_capacity_slot"),
+            )?)?);
+        write_staging(&stage, &bytes)?;
+        if publish_noreplace(&stage, &path).is_err() {
+            let _ = fs::remove_file(&stage);
+            match path.try_exists() {
+                Ok(true) => {
+                    let existing =
+                        read_operation_capacity_reservation(&path, authorization_directory)?;
+                    if existing.operation_id_sha256 == operation_id_sha256 {
+                        sync_directory(authorization_directory, operation_id_sha256)?;
+                        return Ok(());
+                    }
+                    continue;
+                }
+                Ok(false) | Err(_) => {
+                    return Err(ReceiptError::DurabilityUnknown {
+                        expected_sha256: sha256_hex(&bytes),
+                    });
+                }
+            }
+        }
+        sync_directory(authorization_directory, operation_id_sha256)?;
+        let installed = read_operation_capacity_reservation(&path, authorization_directory)?;
+        if installed != record {
+            return Err(ReceiptError::Conflict);
+        }
+        return Ok(());
+    }
+    Err(ReceiptError::InvalidField("operation_chain_count"))
+}
+
+fn read_operation_capacity_reservation(
+    path: &Path,
+    canonical_parent: &Path,
+) -> Result<OperationCapacityReservation, ReceiptError> {
+    let bytes = read_stable_regular_file(
+        path,
+        MAX_RECEIPT_BYTES,
+        canonical_parent,
+        "operation_capacity_reservation",
+    )
+    .map_err(map_release_file_error)?;
+    let record: OperationCapacityReservation =
+        parse_canonical_json(&bytes, MAX_RECEIPT_BYTES, "operation_capacity_reservation").map_err(
+            |error| match error {
+                ReleaseVerificationError::InvalidJson(_) => ReceiptError::InvalidJson,
+                ReleaseVerificationError::NonCanonicalJson(_) => ReceiptError::NonCanonicalJson,
+                _ => ReceiptError::UnsafeFilesystem("operation_capacity_reservation"),
+            },
+        )?;
+    if record.schema_version != 1
+        || record.contract != OPERATION_CAPACITY_RESERVATION_CONTRACT
+        || usize::from(record.slot) >= MAX_OPERATION_CHAINS_PER_AUTHORIZATION
+        || validate_lower_hex(&record.operation_id_sha256, "operation_id_sha256").is_err()
+    {
+        return Err(ReceiptError::InvalidField("operation_capacity_reservation"));
+    }
+    Ok(record)
+}
+
 fn map_release_file_error(error: ReleaseVerificationError) -> ReceiptError {
     match error {
         ReleaseVerificationError::FileInvalid(_) => {
@@ -2606,7 +2910,7 @@ fn create_fixed_directory(
     directory: &Path,
     expected_parent: &Path,
     label: &'static str,
-) -> Result<(), ReceiptError> {
+) -> Result<bool, ReceiptError> {
     let created = match fs::create_dir(directory) {
         Ok(()) => true,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
@@ -2616,7 +2920,7 @@ fn create_fixed_directory(
     if created {
         sync_directory(expected_parent, "directory")?;
     }
-    Ok(())
+    Ok(created)
 }
 
 fn require_fixed_directory(
@@ -2844,6 +3148,20 @@ fn receipt_file_name(sequence: u64) -> String {
 
 fn operation_receipt_file_name(sequence: u64) -> String {
     format!("{sequence:020}{OPERATION_RECEIPT_FILE_SUFFIX}")
+}
+
+fn operation_capacity_file_name(slot: usize) -> String {
+    format!("{slot:03}{OPERATION_CAPACITY_FILE_SUFFIX}")
+}
+
+fn parse_operation_capacity_file_name(name: &str) -> Option<usize> {
+    let prefix = name.strip_suffix(OPERATION_CAPACITY_FILE_SUFFIX)?;
+    if prefix.len() != 3 || !prefix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let slot = prefix.parse::<usize>().ok()?;
+    (slot < MAX_OPERATION_CHAINS_PER_AUTHORIZATION && name == operation_capacity_file_name(slot))
+        .then_some(slot)
 }
 
 fn staging_file_name(sequence: u64) -> Result<String, ReceiptError> {
@@ -3285,6 +3603,349 @@ mod tests {
     }
 
     #[test]
+    fn read_operation_binds_request_id_uses_get_and_may_finish_after_claim_expiry() {
+        let root = temporary_root("read-operation");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let target_sha256 = "a".repeat(64);
+        let request_id_sha256 = "e".repeat(64);
+        let request_sha256 =
+            read_operation_request_sha256(&target_sha256, &request_id_sha256).unwrap();
+        let start = OperationStartInput {
+            identity: OperationIdentityInput {
+                kind: OperationKind::AuthorityClaimRead,
+                state_version: 0,
+                target_sha256,
+                request_sha256: request_sha256.clone(),
+            },
+            request_id_sha256,
+            started_at: NOW + 301,
+        };
+        assert_eq!(
+            store
+                .reserve_operation(&publication, &credentials, &activation, &start)
+                .unwrap(),
+            OperationReservation::Fresh
+        );
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let operation = project_operation_identity(&context, &start.identity).unwrap();
+        assert_eq!(operation.method, "GET");
+        assert_eq!(
+            request_sha256,
+            "6344097a6f022e09b2589e570e92bcaff8df407f56edfe85e32c7c29e55dba7d"
+        );
+        assert_eq!(
+            operation.operation_id_sha256,
+            "468efe016ebf4ec7a517c6213cab5d861b27c46eaea89329251c1b42d0aaa230"
+        );
+        let started = store
+            .verify_operation(
+                activation.authorization_id_sha256(),
+                &operation.operation_id_sha256,
+            )
+            .unwrap();
+        assert_eq!(started.receipt_count, 1);
+        assert_eq!(started.outcome, None);
+        assert_eq!(
+            started.head_sha256,
+            "070c862e67b2f0a4aba4273d1f2fe3f0abac75462469a962aabacdc7d0fd6dbf"
+        );
+
+        assert_eq!(
+            store
+                .finish_operation(
+                    &publication,
+                    &credentials,
+                    &activation,
+                    &start.identity,
+                    &OperationFinishInput {
+                        outcome: OperationOutcome::Accepted,
+                        finished_at: NOW + 302,
+                        http_status: Some(200),
+                        response_body_sha256: Some("c".repeat(64)),
+                        response_id_sha256: Some("d".repeat(64)),
+                    },
+                )
+                .unwrap(),
+            OperationOutcome::Accepted
+        );
+
+        for (kind, request_nibble, started_at) in [
+            (
+                OperationKind::AuthorityClaimRead,
+                "f",
+                activation.claim_expires_at() + READ_OPERATION_RECOVERY_WINDOW_SECONDS + 1,
+            ),
+            (
+                OperationKind::CloudflareDeploymentRead,
+                "9",
+                activation.claim_expires_at(),
+            ),
+        ] {
+            let request_id_sha256 = request_nibble.repeat(64);
+            let target_sha256 = "b".repeat(64);
+            let request_sha256 =
+                read_operation_request_sha256(&target_sha256, &request_id_sha256).unwrap();
+            assert!(matches!(
+                store.reserve_operation(
+                    &publication,
+                    &credentials,
+                    &activation,
+                    &OperationStartInput {
+                        identity: OperationIdentityInput {
+                            kind,
+                            state_version: if kind == OperationKind::CloudflareDeploymentRead {
+                                1
+                            } else {
+                                0
+                            },
+                            target_sha256,
+                            request_sha256,
+                        },
+                        request_id_sha256,
+                        started_at,
+                    },
+                ),
+                Err(ReceiptError::InvalidField("operation_start_time"))
+            ));
+        }
+        cleanup(&root);
+    }
+
+    #[test]
+    fn operation_capacity_fails_the_129th_reservation_before_authority_progress() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let root = temporary_root("operation-capacity");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let target_sha256 = "a".repeat(64);
+
+        for index in 0..(MAX_OPERATION_CHAINS_PER_AUTHORIZATION - 1) {
+            let request_id_sha256 = sha256_hex(format!("read-{index}").as_bytes());
+            let request_sha256 =
+                read_operation_request_sha256(&target_sha256, &request_id_sha256).unwrap();
+            assert_eq!(
+                store
+                    .reserve_operation(
+                        &publication,
+                        &credentials,
+                        &activation,
+                        &OperationStartInput {
+                            identity: OperationIdentityInput {
+                                kind: OperationKind::AuthorityClaimRead,
+                                state_version: 0,
+                                target_sha256: target_sha256.clone(),
+                                request_sha256,
+                            },
+                            request_id_sha256,
+                            started_at: NOW,
+                        },
+                    )
+                    .unwrap(),
+                OperationReservation::Fresh
+            );
+        }
+
+        let barrier = Arc::new(Barrier::new(8));
+        let mut workers = Vec::new();
+        for index in 0..8 {
+            let root = root.clone();
+            let publication = publication.clone();
+            let credentials = credentials.clone();
+            let activation = activation.clone();
+            let target_sha256 = target_sha256.clone();
+            let barrier = Arc::clone(&barrier);
+            workers.push(thread::spawn(move || {
+                let store = ReceiptStore::open(&root).unwrap();
+                let request_id_sha256 = sha256_hex(format!("boundary-read-{index}").as_bytes());
+                let request_sha256 =
+                    read_operation_request_sha256(&target_sha256, &request_id_sha256).unwrap();
+                barrier.wait();
+                store.reserve_operation(
+                    &publication,
+                    &credentials,
+                    &activation,
+                    &OperationStartInput {
+                        identity: OperationIdentityInput {
+                            kind: OperationKind::AuthorityClaimRead,
+                            state_version: 0,
+                            target_sha256,
+                            request_sha256,
+                        },
+                        request_id_sha256,
+                        started_at: NOW,
+                    },
+                )
+            }));
+        }
+        let reservations = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("capacity worker"))
+            .collect::<Vec<_>>();
+        let fresh_count = reservations
+            .iter()
+            .filter(|result| matches!(result, Ok(OperationReservation::Fresh)))
+            .count();
+        assert_eq!(fresh_count, 1);
+        assert!(reservations.iter().all(|result| {
+            matches!(
+                result,
+                Ok(OperationReservation::Fresh)
+                    | Err(ReceiptError::InvalidField("operation_chain_count"))
+            )
+        }));
+        let audit = store
+            .audit_authorization_operations(&publication, &credentials, &activation)
+            .unwrap();
+        assert_eq!(
+            audit.operation_count,
+            MAX_OPERATION_CHAINS_PER_AUTHORIZATION
+        );
+
+        let request_id_sha256 = sha256_hex(b"read-over-capacity");
+        let request_sha256 =
+            read_operation_request_sha256(&target_sha256, &request_id_sha256).unwrap();
+        assert!(matches!(
+            store.reserve_operation(
+                &publication,
+                &credentials,
+                &activation,
+                &OperationStartInput {
+                    identity: OperationIdentityInput {
+                        kind: OperationKind::AuthorityClaimRead,
+                        state_version: 0,
+                        target_sha256,
+                        request_sha256,
+                    },
+                    request_id_sha256,
+                    started_at: NOW,
+                },
+            ),
+            Err(ReceiptError::InvalidField("operation_chain_count"))
+        ));
+        let audit = store
+            .audit_authorization_operations(&publication, &credentials, &activation)
+            .unwrap();
+        assert_eq!(
+            audit.operation_count,
+            MAX_OPERATION_CHAINS_PER_AUTHORIZATION
+        );
+        assert_eq!(
+            store
+                .authorization_operation_ids(activation.authorization_id_sha256())
+                .unwrap()
+                .1
+                .len(),
+            MAX_OPERATION_CHAINS_PER_AUTHORIZATION
+        );
+        assert_eq!(
+            store
+                .authorization_operation_ids(activation.authorization_id_sha256())
+                .unwrap()
+                .2
+                .len(),
+            MAX_OPERATION_CHAINS_PER_AUTHORIZATION
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn stranded_capacity_reservations_never_create_an_over_limit_operation_directory() {
+        let root = temporary_root("operation-capacity-crash");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let authorization = store
+            .ensure_operation_authorization_directory(activation.authorization_id_sha256())
+            .unwrap();
+        for index in 0..MAX_OPERATION_CHAINS_PER_AUTHORIZATION {
+            reserve_operation_capacity(
+                &authorization,
+                &sha256_hex(format!("stranded-capacity-{index}").as_bytes()),
+            )
+            .unwrap();
+        }
+        fs::write(
+            authorization.join(staging_file_name(1).unwrap()),
+            b"interrupted-capacity-staging",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            store.reserve_operation(
+                &publication,
+                &credentials,
+                &activation,
+                &operation_start("a", NOW),
+            ),
+            Err(ReceiptError::InvalidField("operation_chain_count"))
+        ));
+        let (_, operation_ids, capacity_operation_ids) = store
+            .authorization_operation_ids(activation.authorization_id_sha256())
+            .unwrap();
+        assert!(operation_ids.is_empty());
+        assert_eq!(
+            capacity_operation_ids.len(),
+            MAX_OPERATION_CHAINS_PER_AUTHORIZATION
+        );
+        assert_eq!(
+            store
+                .audit_authorization_operations(&publication, &credentials, &activation)
+                .unwrap()
+                .operation_count,
+            0
+        );
+        cleanup(&root);
+
+        let root = temporary_root("operation-capacity-empty-directory");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let start = operation_start("a", NOW);
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let operation = project_operation_identity(&context, &start.identity).unwrap();
+        let authorization = store
+            .ensure_operation_authorization_directory(activation.authorization_id_sha256())
+            .unwrap();
+        reserve_operation_capacity(&authorization, &operation.operation_id_sha256).unwrap();
+        store
+            .ensure_operation_directory(
+                activation.authorization_id_sha256(),
+                &operation.operation_id_sha256,
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .audit_authorization_operations(&publication, &credentials, &activation)
+                .unwrap()
+                .operation_count,
+            0
+        );
+        assert_eq!(
+            store
+                .recover_unfinished_operations(&publication, &credentials, &activation, NOW + 1)
+                .unwrap()
+                .recovered_ambiguous_count,
+            0
+        );
+        assert_eq!(
+            store
+                .reserve_operation(&publication, &credentials, &activation, &start)
+                .unwrap(),
+            OperationReservation::Fresh
+        );
+        assert_eq!(
+            store
+                .audit_authorization_operations(&publication, &credentials, &activation)
+                .unwrap()
+                .operation_count,
+            1
+        );
+        cleanup(&root);
+    }
+
+    #[test]
     fn operation_receipts_reject_canonical_identity_tampering_and_future_slots() {
         let root = temporary_root("operation-tamper");
         let store = ReceiptStore::open(&root).unwrap();
@@ -3366,6 +4027,66 @@ mod tests {
             )
             .is_err());
         cleanup(&root);
+
+        for (kind, outcome, status, field) in [
+            (
+                OperationKind::AuthorityClaimRead,
+                OperationOutcome::Accepted,
+                201,
+                "operation_accepted_status",
+            ),
+            (
+                OperationKind::AuthorityClaimRead,
+                OperationOutcome::Rejected,
+                408,
+                "operation_rejected_status",
+            ),
+            (
+                OperationKind::AuthorityClaimRead,
+                OperationOutcome::Rejected,
+                425,
+                "operation_rejected_status",
+            ),
+            (
+                OperationKind::AuthorityClaimRead,
+                OperationOutcome::Rejected,
+                429,
+                "operation_rejected_status",
+            ),
+            (
+                OperationKind::AuthorityStepAppend,
+                OperationOutcome::Rejected,
+                409,
+                "operation_rejected_status",
+            ),
+        ] {
+            assert_eq!(
+                validate_operation_finish_input(
+                    kind,
+                    &OperationFinishInput {
+                        outcome,
+                        finished_at: NOW + 1,
+                        http_status: Some(status),
+                        response_body_sha256: None,
+                        response_id_sha256: None,
+                    },
+                    NOW,
+                ),
+                Err(ReceiptError::InvalidField(field))
+            );
+        }
+        assert!(validate_operation_finish_input(
+            OperationKind::CloudflareDeployment,
+            &OperationFinishInput {
+                outcome: OperationOutcome::Rejected,
+                finished_at: NOW + 1,
+                http_status: Some(409),
+                response_body_sha256: None,
+                response_id_sha256: None,
+            },
+            NOW,
+        )
+        .is_ok());
     }
 
     #[test]

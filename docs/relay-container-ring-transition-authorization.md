@@ -495,3 +495,38 @@ verification, bounded Authority/Cloudflare clients, two timed stable reads,
 hash-chained receipt and full crash/restart campaign remain required. The
 checked-in launcher is still disabled, no remote operation occurred, and
 production remains **NO-GO**.
+
+## Read-Only Receipt Non-Authorization Overlay
+
+The current native runner now integrates the typed deployment client and
+durable mutation/read Operation Receipt V1 gates described in later migration
+overlays. This section supersedes only the earlier implementation-status
+sentences; the authorization model remains unchanged.
+
+A read receipt never constructs `FreshIntentPermit<S>`,
+`AuthorizedMutation<S>` or any other write capability. Its local request nonce,
+absolute HTTPS target digest, `request_started`, HTTP `200` or terminal
+`accepted` outcome cannot advance Authority state. Exact Authority history
+selects the reducer, and stable Cloudflare observations supply only the
+evidence accepted by that reducer.
+
+After claim expiry:
+
+- Authority claim read, Authority preflight and read/deploy credential proofs
+  may run for at most 600 seconds to observe recovery without write authority;
+- Cloudflare deployment/version observations cannot start; and
+- every Authority append and Cloudflare deployment start remains forbidden.
+
+An existing read start is zero-network and cannot be replayed into a new send.
+An unfinished start is sealed ambiguous. The authorization has 128 immutable
+create-new capacity markers; the 129th operation persists no directory/start
+and cannot progress to network. A crash-stranded marker consumes capacity but
+creates no authority and is never reused. A marker-backed directory with no
+slot 1 is the same non-authorizing crash state: audit skips it, recovery
+creates no finish, and only the exact operation can later publish its start
+through the normal reservation path. None of these rules makes the local
+receipt tree authoritative or replacement-resistant; terminal operation-head
+binding and an independent signed/WORM anchor remain required.
+
+Checked-in execution trust remains disabled. Go/VPS remains the traffic,
+scheduler and financial authority, and production remains **NO-GO**.

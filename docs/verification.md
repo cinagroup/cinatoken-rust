@@ -9080,3 +9080,74 @@ power-loss durability, real Durable Object/Container supervision, remote
 Authority/Access/D1/version behavior, credential revocation, provider
 exactly-once behavior, rollback or Go/VPS drain. Checked-in trust and CLI
 execution remain disabled; production remains **NO-GO**.
+
+## 2026-07-24 Read-Only Operation Receipt Verification
+
+The request-bound GET receipt increment was verified locally without loading a
+live credential or performing a remote mutation:
+
+```powershell
+cargo fmt --all --check
+cargo test -p cinatoken-ring-transition-runner --locked --no-fail-fast
+cargo clippy -p cinatoken-ring-transition-runner --all-targets --locked -- -D warnings
+bun test --timeout 30000 tests/relay-container-ring-transition-receipt.test.mjs
+bun run check:ring-transition-runner
+bun run check:relay-container:ring-transition
+bun run check
+```
+
+Observed results:
+
+- runner Rust: 111 library tests, one binary test and two CLI tests: PASS;
+- strict all-target Clippy with warnings denied: PASS;
+- focused independent receipt verifier: 21 tests/72 expectations: PASS;
+- runner JavaScript aggregate: 48 tests/190 expectations: PASS;
+- broader ring-transition JavaScript: 66 tests/729 expectations: PASS; and
+- complete repository gate: PASS with exit code 0 in 681.0 seconds.
+
+The focused cases prove:
+
+- Rust and JavaScript agree on the fixed read-request, operation-ID and
+  request-start vectors;
+- each read operation binds a fresh local nonce, absolute HTTPS URI, method,
+  credential/endpoint kind and legal state version;
+- read-token and deploy-token proofs are distinct receipt kinds;
+- an internally recomputed operation ID cannot hide nonce/request-digest
+  drift;
+- every current Authority/Cloudflare GET reserves slot 1 before network;
+- an existing operation performs zero network and transport loss is
+  ambiguous;
+- exact claim `408` and `425` are ambiguous rather than deterministic
+  rejection;
+- read `accepted` is exactly HTTP `200`; `408`, `425` and `429` cannot be
+  reclassified as rejected, and Authority write `409` remains ambiguous;
+- Cloudflare deployment/version reads cannot start after expiry;
+- claim/preflight/token recovery reads stop after the 600-second recovery
+  window;
+- 128 fixed create-new capacity markers allow exactly one of eight boundary
+  contenders to persist slot 1; the 129th persists no operation directory or
+  start and fails before network authority is returned;
+- interrupted marker staging and 128 complete crash-stranded markers create no
+  operation directory/start, remain non-authorizing and fail closed without
+  exceeding the fixed slot set;
+- a marker-backed empty operation directory is ignored by audit and recovery,
+  then only the exact operation can resume normal slot-1 publication; and
+- checked-in disabled trust still exposes no CLI execution path.
+
+The independent JavaScript function returns
+`verificationScope=single_operation_chain`,
+`aggregateCapacityVerified=false` and
+`absoluteHttpsTargetVerified=false`. It verifies one supplied chain's internal
+target digest; Rust transport proves the absolute HTTPS URI before hashing and
+the native Rust authorization audit enforces the aggregate 128-marker bound.
+Neither internal hash links nor this local test detect replacement of an
+entire self-consistent operation tree by a directory writer. Receipt
+timestamps are whole-second local evidence, not network latency, and a local
+nonce does not prove remote receipt.
+
+This remains Windows/local and dry-run evidence. It does not prove the exact
+Rust 1.78 Linux no-follow/no-replace/fsync/ACL/power-loss behavior, terminal
+operation-head and independent signed/WORM anchoring, real Authority or
+Cloudflare state, replacement-credential isolation, DO/Container supervision,
+rollback, credential revocation or Go/VPS drain. Checked-in trust remains
+disabled; production remains **NO-GO**.

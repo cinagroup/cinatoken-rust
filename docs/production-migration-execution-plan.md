@@ -2864,7 +2864,7 @@ implementation status, not the production decision.
 | K1 startup authorization | Implemented locally: every call re-verifies release, publication, signed activation, credential identities, operation chains and exact Authority state | Signed Linux candidate trace proving fixed ordering and no credential proof network request before local receipt audit | Any caller-injected state, skipped verification, ambient handle or mixed generation |
 | K2 crash recovery | Implemented locally: every real unfinished mutation start is sealed ambiguous; no existing start restores send authority | Two-process kill/response-loss matrix on exact Linux artifact, including parent sync and backup/restore | Any second POST, synthetic start, overwritten finish or restored permit |
 | K3 one-action reducer | Implemented locally: fresh claim stops; each state performs one legal reduction; inflight restart is deployment-read-only | Isolated staging lifetime counters proving at most one Controller and one Edge deployment across restarts/failover | Two reductions per invocation, second deployment, HTTP success treated as state, skipped readback |
-| K4 complete receipt closure | Open | Read-only GET operation evidence plus every operation head bound to terminal seal and independent WORM/signed anchor | Missing request boundary, locally replaceable whole history or observation treated as authority |
+| K4 complete receipt closure | Partial locally: every current GET is request-bound; terminal/external closure remains open | Every operation head bound to terminal seal and independent WORM/signed anchor | Missing request boundary, locally replaceable whole history or observation treated as authority |
 | K5 durable owner and execution adapter | Open | Versioned DO supervisor owns state/fencing/alarms/drain; disposable Container adapter survives crash/fault/load/cost campaigns | Container memory becomes authority, split generation, unfenced alarm or provider retry |
 
 The local reducer model is consistent with the source migration boundary:
@@ -2880,3 +2880,38 @@ installation, K4-K5 completion, remote default-disabled resource/config
 readback, the complete fault/load/cost/SLO/rollback packet, remaining Go
 compatibility, Go/VPS hot fallback/drain and G1-G8 against one immutable
 candidate. Production remains **NO-GO**.
+
+## 2026-07-24 Read-Only Operation Receipt Addendum
+
+K4 request-boundary coverage is implemented locally for all native Authority
+and Cloudflare GETs. Each read has a unique local nonce, absolute HTTPS target
+digest, read/deploy/endpoint kind, legal state version, create-new start before
+send and first-terminal finish. Receipts are non-authorizing; exact Authority
+or stable Cloudflare evidence still selects state.
+
+The restart and capacity rules are now explicit:
+
+- an existing read operation performs zero network;
+- unfinished starts are sealed ambiguous without recreating authority;
+- `408`, `425`, `429`, redirect, `5xx` and response loss are ambiguous;
+- Cloudflare observations cannot start after claim expiry;
+- exact claim and identity proofs have at most 600 seconds of read-only
+  recovery after expiry; and
+- 128 fixed create-new capacity markers are available per authorization; the
+  129th contender persists no operation directory/start and cannot progress
+  to network. A crash-stranded marker consumes capacity without authorizing a
+  send. A marker-backed empty operation directory is also ignored by audit and
+  recovery until the exact operation resumes normal slot-1 publication;
+  markers and history are never deleted or reused.
+
+This changes K4 from open to partial locally. It does not satisfy terminal
+closure: an operator with directory-write access can still replace an entire
+internally consistent operation tree. Phase K remains blocked until all
+execution and operation heads are committed to the terminal seal and an
+independently reviewed signed/WORM anchor.
+
+Phase L also remains blocked on exact Rust 1.78 Linux process/path/link/fsync/
+ACL/backup/ext4/XFS/power-loss proof, replacement-credential isolated staging,
+the versioned DO shard supervisor and disposable Container adapter, remaining
+Go compatibility, credential revocation, Go/VPS hot fallback/drain and G1-G8.
+No remote action was performed; production remains **NO-GO**.

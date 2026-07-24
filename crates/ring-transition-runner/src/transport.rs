@@ -25,9 +25,9 @@ use crate::readback::{
     MAX_OBSERVATION_SECONDS, MAX_TARGET_VERSION_RESPONSE_BYTES, MIN_OBSERVATION_SECONDS,
 };
 use crate::receipt::{
-    plan_snapshot_receipts, OperationFinishInput, OperationIdentityInput, OperationKind,
-    OperationOutcome, OperationReceiptAudit, OperationReservation, OperationStartInput,
-    ReceiptError, ReceiptStore,
+    plan_snapshot_receipts, read_operation_request_sha256, OperationFinishInput,
+    OperationIdentityInput, OperationKind, OperationOutcome, OperationReceiptAudit,
+    OperationReservation, OperationStartInput, ReceiptError, ReceiptStore,
 };
 use crate::release::{canonical_json, reject_duplicate_json, MAX_SAFE_INTEGER};
 use crate::STAGING_AUTHORITY_ORIGIN;
@@ -773,8 +773,16 @@ impl<E: HttpExchange, R: ReceiptRecorder> ControlPlaneCore<E, R> {
         now: u64,
         request_id: &str,
     ) -> Result<Self, ControlPlaneError> {
-        let credentials =
-            verify_identity_proof_sequence(loaded, &exchange, now, request_id).await?;
+        let identity = loaded.identity().clone();
+        let credentials = verify_identity_proof_sequence(
+            loaded,
+            &exchange,
+            &receipt_recorder,
+            &identity,
+            now,
+            request_id,
+        )
+        .await?;
         Ok(Self {
             credentials,
             exchange,
@@ -960,28 +968,52 @@ impl<E: HttpExchange, R: ReceiptRecorder> ControlPlaneCore<E, R> {
             request_id,
             now,
         )?;
-        let response = self
-            .exchange
-            .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
-            .await
-            .map_err(|_| ControlPlaneError::Exchange)?;
-        match response.status {
-            StatusCode::OK => {}
-            StatusCode::NOT_FOUND => return Err(ControlPlaneError::AuthorityClaimNotFound),
-            StatusCode::CONFLICT => return Err(ControlPlaneError::AuthorityClaimConflict),
-            status if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
-                return Err(ControlPlaneError::AuthorityReadUnavailable);
-            }
-            _ => return Err(ControlPlaneError::AuthorityRejected),
-        }
-        let snapshot = verify_exact_claim_response(
-            &response.body,
-            request_id,
-            authorization_id_sha256,
-            claim_digest_sha256,
-            claim_owner_sha256,
+        let snapshot = perform_recorded_read(
+            &self.exchange,
+            &self.receipt_recorder,
             self.credentials.identity(),
-        )?;
+            OperationKind::AuthorityClaimRead,
+            0,
+            &path_and_query,
+            request_id,
+            now,
+            request,
+            IDENTITY_RESPONSE_LIMIT,
+            |response| match response.status {
+                StatusCode::OK => match verify_exact_claim_response(
+                    &response.body,
+                    request_id,
+                    authorization_id_sha256,
+                    claim_digest_sha256,
+                    claim_owner_sha256,
+                    self.credentials.identity(),
+                ) {
+                    Ok(snapshot) => ReadOperationDisposition::Accepted(snapshot),
+                    Err(error) => ReadOperationDisposition::Ambiguous(error),
+                },
+                StatusCode::NOT_FOUND => {
+                    ReadOperationDisposition::Rejected(ControlPlaneError::AuthorityClaimNotFound)
+                }
+                StatusCode::CONFLICT => {
+                    ReadOperationDisposition::Rejected(ControlPlaneError::AuthorityClaimConflict)
+                }
+                status
+                    if matches!(
+                        status,
+                        StatusCode::REQUEST_TIMEOUT
+                            | StatusCode::TOO_EARLY
+                            | StatusCode::TOO_MANY_REQUESTS
+                    ) || status.is_server_error() =>
+                {
+                    ReadOperationDisposition::Ambiguous(ControlPlaneError::AuthorityReadUnavailable)
+                }
+                status if status.is_client_error() => {
+                    ReadOperationDisposition::Rejected(ControlPlaneError::AuthorityRejected)
+                }
+                _ => ReadOperationDisposition::Ambiguous(ControlPlaneError::AuthorityRejected),
+            },
+        )
+        .await?;
         self.receipt_recorder
             .record_snapshot(&snapshot, self.credentials.identity())
             .map_err(ControlPlaneError::Receipt)?;
@@ -1281,6 +1313,9 @@ impl<E: HttpExchange, R: ReceiptRecorder> ControlPlaneCore<E, R> {
         let binding = observation.binding();
         let readback = read_stable_observation(
             &self.exchange,
+            &self.receipt_recorder,
+            self.credentials.identity(),
+            P::STATE_VERSION,
             self.credentials.account_id(),
             self.credentials.read_token(),
             binding.service_name(),
@@ -1322,6 +1357,9 @@ impl<E: HttpExchange, R: ReceiptRecorder> ControlPlaneCore<E, R> {
         let binding = prepared.binding();
         let readback = read_stable_baseline(
             &self.exchange,
+            &self.receipt_recorder,
+            self.credentials.identity(),
+            P::STATE_VERSION,
             self.credentials.account_id(),
             self.credentials.read_token(),
             binding.service_name(),
@@ -1627,8 +1665,11 @@ struct StableBaseline {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn read_stable_baseline<E: HttpExchange, S: ObservationSchedule>(
+async fn read_stable_baseline<E: HttpExchange, R: ReceiptRecorder, S: ObservationSchedule>(
     exchange: &E,
+    receipt_recorder: &R,
+    identity: &CredentialIdentity,
+    state_version: u8,
     account_id: &str,
     read_token: &str,
     service_name: &str,
@@ -1644,6 +1685,9 @@ async fn read_stable_baseline<E: HttpExchange, S: ObservationSchedule>(
     }
     let first = read_observation_snapshot(
         exchange,
+        receipt_recorder,
+        identity,
+        state_version,
         account_id,
         read_token,
         service_name,
@@ -1657,6 +1701,9 @@ async fn read_stable_baseline<E: HttpExchange, S: ObservationSchedule>(
         .await?;
     let second = read_observation_snapshot(
         exchange,
+        receipt_recorder,
+        identity,
+        state_version,
         account_id,
         read_token,
         service_name,
@@ -1684,8 +1731,11 @@ async fn read_stable_baseline<E: HttpExchange, S: ObservationSchedule>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn read_stable_observation<E: HttpExchange, S: ObservationSchedule>(
+async fn read_stable_observation<E: HttpExchange, R: ReceiptRecorder, S: ObservationSchedule>(
     exchange: &E,
+    receipt_recorder: &R,
+    identity: &CredentialIdentity,
+    state_version: u8,
     account_id: &str,
     read_token: &str,
     service_name: &str,
@@ -1702,6 +1752,9 @@ async fn read_stable_observation<E: HttpExchange, S: ObservationSchedule>(
     }
     let first = read_observation_snapshot(
         exchange,
+        receipt_recorder,
+        identity,
+        state_version,
         account_id,
         read_token,
         service_name,
@@ -1717,6 +1770,9 @@ async fn read_stable_observation<E: HttpExchange, S: ObservationSchedule>(
 
     let second = read_observation_snapshot(
         exchange,
+        receipt_recorder,
+        identity,
+        state_version,
         account_id,
         read_token,
         service_name,
@@ -1750,8 +1806,12 @@ async fn read_stable_observation<E: HttpExchange, S: ObservationSchedule>(
     })
 }
 
-async fn read_observation_snapshot<E: HttpExchange>(
+#[allow(clippy::too_many_arguments)]
+async fn read_observation_snapshot<E: HttpExchange, R: ReceiptRecorder>(
     exchange: &E,
+    receipt_recorder: &R,
+    identity: &CredentialIdentity,
+    state_version: u8,
     account_id: &str,
     read_token: &str,
     service_name: &str,
@@ -1760,6 +1820,10 @@ async fn read_observation_snapshot<E: HttpExchange>(
     let base = format!("/client/v4/accounts/{account_id}/workers/scripts/{service_name}");
     let deployments = read_cloudflare_json(
         exchange,
+        receipt_recorder,
+        identity,
+        OperationKind::CloudflareDeploymentRead,
+        state_version,
         read_token,
         &format!("{base}/deployments"),
         MAX_DEPLOYMENTS_RESPONSE_BYTES,
@@ -1767,6 +1831,10 @@ async fn read_observation_snapshot<E: HttpExchange>(
     .await?;
     let target_version = read_cloudflare_json(
         exchange,
+        receipt_recorder,
+        identity,
+        OperationKind::CloudflareVersionRead,
+        state_version,
         read_token,
         &format!("{base}/versions/{target_version_id}"),
         MAX_TARGET_VERSION_RESPONSE_BYTES,
@@ -1781,12 +1849,19 @@ async fn read_observation_snapshot<E: HttpExchange>(
     .map_err(ControlPlaneError::Readback)
 }
 
-async fn read_cloudflare_json<E: HttpExchange>(
+#[allow(clippy::too_many_arguments)]
+async fn read_cloudflare_json<E: HttpExchange, R: ReceiptRecorder>(
     exchange: &E,
+    receipt_recorder: &R,
+    identity: &CredentialIdentity,
+    kind: OperationKind,
+    state_version: u8,
     read_token: &str,
     path: &str,
     maximum_response_bytes: usize,
 ) -> Result<Bytes, ControlPlaneError> {
+    let request_id = random_request_id()?;
+    let now = system_time_seconds()?;
     let request = Request::builder()
         .method(Method::GET)
         .uri(cloudflare_uri(path)?)
@@ -1794,14 +1869,32 @@ async fn read_cloudflare_json<E: HttpExchange>(
         .header(AUTHORIZATION, bearer_header(read_token)?)
         .body(Full::new(Bytes::new()))
         .map_err(|_| ControlPlaneError::InvalidRequest("cloudflare_readback"))?;
-    let response = exchange
-        .send(request, maximum_response_bytes, REQUEST_TIMEOUT)
-        .await
-        .map_err(|_| ControlPlaneError::Exchange)?;
-    if response.status != StatusCode::OK {
-        return Err(ControlPlaneError::ReadbackRejected);
-    }
-    Ok(response.body)
+    perform_recorded_read(
+        exchange,
+        receipt_recorder,
+        identity,
+        kind,
+        state_version,
+        path,
+        &request_id,
+        now,
+        request,
+        maximum_response_bytes,
+        |response| {
+            if response.status == StatusCode::OK {
+                ReadOperationDisposition::Accepted(response.body.clone())
+            } else if response.status.is_client_error()
+                && response.status != StatusCode::REQUEST_TIMEOUT
+                && response.status != StatusCode::TOO_EARLY
+                && response.status != StatusCode::TOO_MANY_REQUESTS
+            {
+                ReadOperationDisposition::Rejected(ControlPlaneError::ReadbackRejected)
+            } else {
+                ReadOperationDisposition::Ambiguous(ControlPlaneError::ReadbackRejected)
+            }
+        },
+    )
+    .await
 }
 
 trait IdentityProofMachine: Sized {
@@ -1894,30 +1987,59 @@ impl IdentityProofMachine for LoadedCredentials {
     }
 }
 
-async fn verify_identity_proof_sequence<M: IdentityProofMachine, E: HttpExchange>(
+async fn verify_identity_proof_sequence<
+    M: IdentityProofMachine,
+    E: HttpExchange,
+    R: ReceiptRecorder,
+>(
     machine: M,
     exchange: &E,
+    receipt_recorder: &R,
+    identity: &CredentialIdentity,
     now: u64,
     request_id: &str,
 ) -> Result<M::Verified, ControlPlaneError> {
-    let read_response =
-        verify_cloudflare_token(exchange, machine.account_id(), machine.read_token(), "read")
-            .await?;
+    require_request_id(request_id)?;
+    let read_request_id = format!("{request_id}-read-token");
+    let deploy_request_id = format!("{request_id}-deploy-token");
+    require_request_id(&read_request_id)?;
+    require_request_id(&deploy_request_id)?;
+    let read_response = verify_cloudflare_token(
+        exchange,
+        receipt_recorder,
+        identity,
+        machine.account_id(),
+        machine.read_token(),
+        OperationKind::CloudflareTokenVerifyRead,
+        "read",
+        &read_request_id,
+        now,
+    )
+    .await?;
     let read = machine.prove_read(&read_response)?;
     let deploy_response = verify_cloudflare_token(
         exchange,
+        receipt_recorder,
+        identity,
         M::proven_account_id(&read),
         M::deploy_token(&read),
+        OperationKind::CloudflareDeployTokenVerifyRead,
         "deploy",
+        &deploy_request_id,
+        now,
     )
     .await?;
     let deploy = M::prove_deploy(read, &deploy_response)?;
     let pending = M::begin_preflight(deploy, request_id, now)?;
     let response = send_authority_preflight(
         exchange,
+        receipt_recorder,
+        identity,
         M::authority_token(&pending),
         M::access_client_id(&pending),
         M::access_client_secret(&pending),
+        request_id,
+        now,
     )
     .await?;
     M::prove_preflight(pending, &response)
@@ -2162,6 +2284,120 @@ async fn deploy_authorized_once<E: HttpExchange, R: ReceiptRecorder, P: Mutation
     }
 }
 
+enum ReadOperationDisposition<T> {
+    Accepted(T),
+    Rejected(ControlPlaneError),
+    Ambiguous(ControlPlaneError),
+}
+
+impl<T> ReadOperationDisposition<T> {
+    fn outcome(&self) -> OperationOutcome {
+        match self {
+            Self::Accepted(_) => OperationOutcome::Accepted,
+            Self::Rejected(_) => OperationOutcome::Rejected,
+            Self::Ambiguous(_) => OperationOutcome::Ambiguous,
+        }
+    }
+
+    fn into_result(self) -> Result<T, ControlPlaneError> {
+        match self {
+            Self::Accepted(value) => Ok(value),
+            Self::Rejected(error) | Self::Ambiguous(error) => Err(error),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn perform_recorded_read<E, R, T, F>(
+    exchange: &E,
+    receipt_recorder: &R,
+    identity: &CredentialIdentity,
+    kind: OperationKind,
+    state_version: u8,
+    target: &str,
+    request_id: &str,
+    now: u64,
+    request: Request<Full<Bytes>>,
+    maximum_response_bytes: usize,
+    classify: F,
+) -> Result<T, ControlPlaneError>
+where
+    E: HttpExchange,
+    R: ReceiptRecorder,
+    F: FnOnce(&BoundedHttpResponse) -> ReadOperationDisposition<T>,
+{
+    require_request_id(request_id)?;
+    if request.method() != Method::GET
+        || request.uri().scheme_str() != Some("https")
+        || request.uri().authority().is_none()
+        || request.uri().path_and_query().map(|value| value.as_str()) != Some(target)
+    {
+        return Err(ControlPlaneError::InvalidRequest("recorded_read_identity"));
+    }
+    let target_sha256 = sha256_hex(request.uri().to_string().as_bytes());
+    let request_id_sha256 = sha256_hex(request_id.as_bytes());
+    let request_sha256 = read_operation_request_sha256(&target_sha256, &request_id_sha256)
+        .map_err(ControlPlaneError::Receipt)?;
+    let operation = operation_start(
+        OperationIdentityInput {
+            kind,
+            state_version,
+            target_sha256,
+            request_sha256,
+        },
+        request_id,
+        now,
+    );
+    match receipt_recorder
+        .reserve_operation(identity, &operation)
+        .map_err(ControlPlaneError::Receipt)?
+    {
+        OperationReservation::Fresh => {}
+        OperationReservation::ExistingUnfinished => {
+            receipt_recorder
+                .finish_operation(
+                    identity,
+                    &operation.identity,
+                    &ambiguous_operation_finish(now, None),
+                )
+                .map_err(ControlPlaneError::Receipt)?;
+            return Err(ControlPlaneError::Receipt(ReceiptError::Conflict));
+        }
+        OperationReservation::ExistingFinished(_) => {
+            return Err(ControlPlaneError::Receipt(ReceiptError::Conflict));
+        }
+    }
+    let response = match exchange
+        .send(request, maximum_response_bytes, REQUEST_TIMEOUT)
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => {
+            receipt_recorder
+                .finish_operation(
+                    identity,
+                    &operation.identity,
+                    &ambiguous_operation_finish(now, None),
+                )
+                .map_err(ControlPlaneError::Receipt)?;
+            return Err(ControlPlaneError::Exchange);
+        }
+    };
+    let disposition = classify(&response);
+    let intended = disposition.outcome();
+    let persisted = receipt_recorder
+        .finish_operation(
+            identity,
+            &operation.identity,
+            &operation_finish(intended, now, Some(&response)),
+        )
+        .map_err(ControlPlaneError::Receipt)?;
+    if persisted != intended {
+        return Err(ControlPlaneError::Receipt(ReceiptError::Conflict));
+    }
+    disposition.into_result()
+}
+
 fn operation_identity(
     kind: OperationKind,
     state_version: u8,
@@ -2241,13 +2477,28 @@ fn snapshot_matches_identity(snapshot: &VerifiedSnapshot, identity: &CredentialI
         && snapshot.edge_service_name() == identity.edge_service_name
 }
 
-async fn verify_cloudflare_token<E: HttpExchange>(
+#[allow(clippy::too_many_arguments)]
+async fn verify_cloudflare_token<E: HttpExchange, R: ReceiptRecorder>(
     exchange: &E,
+    receipt_recorder: &R,
+    identity: &CredentialIdentity,
     account_id: &str,
     token: &str,
+    kind: OperationKind,
     class: &'static str,
+    request_id: &str,
+    now: u64,
 ) -> Result<Bytes, ControlPlaneError> {
-    let uri = cloudflare_uri(&format!("/client/v4/accounts/{account_id}/tokens/verify"))?;
+    if !matches!(
+        kind,
+        OperationKind::CloudflareTokenVerifyRead | OperationKind::CloudflareDeployTokenVerifyRead
+    ) {
+        return Err(ControlPlaneError::InvalidRequest(
+            "cloudflare_token_verify_kind",
+        ));
+    }
+    let path = format!("/client/v4/accounts/{account_id}/tokens/verify");
+    let uri = cloudflare_uri(&path)?;
     let request = Request::builder()
         .method(Method::GET)
         .uri(uri)
@@ -2255,21 +2506,48 @@ async fn verify_cloudflare_token<E: HttpExchange>(
         .header(AUTHORIZATION, bearer_header(token)?)
         .body(Full::new(Bytes::new()))
         .map_err(|_| ControlPlaneError::InvalidRequest("cloudflare_token_verify"))?;
-    let response = exchange
-        .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
-        .await
-        .map_err(|_| ControlPlaneError::Exchange)?;
-    if response.status != StatusCode::OK {
-        return Err(ControlPlaneError::CredentialIdentityRejected(class));
-    }
-    Ok(response.body)
+    perform_recorded_read(
+        exchange,
+        receipt_recorder,
+        identity,
+        kind,
+        0,
+        &path,
+        request_id,
+        now,
+        request,
+        IDENTITY_RESPONSE_LIMIT,
+        |response| {
+            if response.status == StatusCode::OK {
+                ReadOperationDisposition::Accepted(response.body.clone())
+            } else if response.status.is_client_error()
+                && response.status != StatusCode::REQUEST_TIMEOUT
+                && response.status != StatusCode::TOO_EARLY
+                && response.status != StatusCode::TOO_MANY_REQUESTS
+            {
+                ReadOperationDisposition::Rejected(ControlPlaneError::CredentialIdentityRejected(
+                    class,
+                ))
+            } else {
+                ReadOperationDisposition::Ambiguous(ControlPlaneError::CredentialIdentityRejected(
+                    class,
+                ))
+            }
+        },
+    )
+    .await
 }
 
-async fn send_authority_preflight<E: HttpExchange>(
+#[allow(clippy::too_many_arguments)]
+async fn send_authority_preflight<E: HttpExchange, R: ReceiptRecorder>(
     exchange: &E,
+    receipt_recorder: &R,
+    identity: &CredentialIdentity,
     authority_token: &str,
     access_client_id: &str,
     access_client_secret: &str,
+    request_id: &str,
+    now: u64,
 ) -> Result<Bytes, ControlPlaneError> {
     let uri = authority_uri(AUTHORITY_PREFLIGHT_PATH)?;
     let request = Request::builder()
@@ -2290,14 +2568,32 @@ async fn send_authority_preflight<E: HttpExchange>(
         )
         .body(Full::new(Bytes::new()))
         .map_err(|_| ControlPlaneError::InvalidRequest("authority_preflight"))?;
-    let response = exchange
-        .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
-        .await
-        .map_err(|_| ControlPlaneError::Exchange)?;
-    if response.status != StatusCode::OK {
-        return Err(ControlPlaneError::AuthorityRejected);
-    }
-    Ok(response.body)
+    perform_recorded_read(
+        exchange,
+        receipt_recorder,
+        identity,
+        OperationKind::AuthorityPreflightRead,
+        0,
+        AUTHORITY_PREFLIGHT_PATH,
+        request_id,
+        now,
+        request,
+        IDENTITY_RESPONSE_LIMIT,
+        |response| {
+            if response.status == StatusCode::OK {
+                ReadOperationDisposition::Accepted(response.body.clone())
+            } else if response.status.is_client_error()
+                && response.status != StatusCode::REQUEST_TIMEOUT
+                && response.status != StatusCode::TOO_EARLY
+                && response.status != StatusCode::TOO_MANY_REQUESTS
+            {
+                ReadOperationDisposition::Rejected(ControlPlaneError::AuthorityRejected)
+            } else {
+                ReadOperationDisposition::Ambiguous(ControlPlaneError::AuthorityRejected)
+            }
+        },
+    )
+    .await
 }
 
 fn authority_request(
@@ -3284,10 +3580,18 @@ mod tests {
                 body: Bytes::from_static(b"authority-preflight-proven"),
             }),
         ]);
+        let recorder = OperationGateRecorder::new(OperationReservation::Fresh);
 
-        verify_identity_proof_sequence(FakeIdentityMachine, &exchange, NOW, "request-identity-001")
-            .await
-            .expect("ordered identity proof sequence");
+        verify_identity_proof_sequence(
+            FakeIdentityMachine,
+            &exchange,
+            &recorder,
+            &matching_identity(),
+            NOW,
+            "request-identity-001",
+        )
+        .await
+        .expect("ordered identity proof sequence");
 
         assert_eq!(exchange.remaining(), 0);
         let observed = exchange.observed();
@@ -3352,6 +3656,28 @@ mod tests {
         assert!(observed
             .iter()
             .all(|request| request.timeout == REQUEST_TIMEOUT));
+        let starts = recorder.starts();
+        assert_eq!(starts.len(), 3);
+        assert_eq!(
+            starts
+                .iter()
+                .map(|start| start.identity.kind)
+                .collect::<Vec<_>>(),
+            [
+                OperationKind::CloudflareTokenVerifyRead,
+                OperationKind::CloudflareDeployTokenVerifyRead,
+                OperationKind::AuthorityPreflightRead,
+            ]
+        );
+        assert_eq!(recorder.finishes().len(), 3);
+        assert!(recorder
+            .finishes()
+            .iter()
+            .all(|finish| finish.outcome == OperationOutcome::Accepted));
+        assert_ne!(
+            starts[0].identity.request_sha256,
+            starts[1].identity.request_sha256
+        );
     }
 
     #[test]
@@ -3476,6 +3802,97 @@ mod tests {
         );
         assert_eq!(exchange.observed().len(), 1);
         assert_eq!(exchange.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn exact_claim_get_records_one_request_bound_read_operation() {
+        let snapshot = claimed_snapshot_value();
+        let verified = verified_snapshot(&snapshot);
+        let identity = matching_identity();
+        let request_id = "exact-claim-read-operation";
+        let exchange = ScriptedExchange::new(vec![Ok(scripted_json(
+            StatusCode::OK,
+            serde_json::from_slice(&exact_claim_response(&snapshot, &identity, request_id))
+                .unwrap(),
+        ))]);
+        let recorder = OperationGateRecorder::new(OperationReservation::Fresh);
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+            receipt_recorder: recorder.clone(),
+        };
+
+        core.read_exact_claim_at(
+            verified.authorization_id_sha256(),
+            verified.claim_digest_sha256(),
+            verified.claim_owner_sha256(),
+            NOW,
+            request_id,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(exchange.observed().len(), 1);
+        let starts = recorder.starts();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0].identity.kind, OperationKind::AuthorityClaimRead);
+        assert_eq!(starts[0].identity.state_version, 0);
+        let expected_target = format!(
+            "{STAGING_AUTHORITY_ORIGIN}/internal/v1/ring-transition/claims/{}?claimDigestSha256={}&claimOwnerSha256={}",
+            verified.authorization_id_sha256(),
+            verified.claim_digest_sha256(),
+            verified.claim_owner_sha256(),
+        );
+        assert_eq!(
+            starts[0].identity.target_sha256,
+            sha256_hex(expected_target.as_bytes())
+        );
+        assert_eq!(recorder.finishes().len(), 1);
+        assert_eq!(recorder.finishes()[0].outcome, OperationOutcome::Accepted);
+        assert_eq!(
+            starts[0].identity.request_sha256,
+            read_operation_request_sha256(
+                &starts[0].identity.target_sha256,
+                &starts[0].request_id_sha256,
+            )
+            .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_claim_timeout_statuses_are_ambiguous_read_evidence() {
+        let snapshot = claimed_snapshot_value();
+        let verified = verified_snapshot(&snapshot);
+
+        for (index, status) in [StatusCode::REQUEST_TIMEOUT, StatusCode::TOO_EARLY]
+            .into_iter()
+            .enumerate()
+        {
+            let exchange = ScriptedExchange::new(vec![Ok(scripted_json(
+                status,
+                serde_json::json!({"success": false}),
+            ))]);
+            let recorder = OperationGateRecorder::new(OperationReservation::Fresh);
+            let core = ControlPlaneCore {
+                credentials: verified_credentials_for_transport_test(),
+                exchange: exchange.clone(),
+                receipt_recorder: recorder.clone(),
+            };
+
+            assert_eq!(
+                core.read_exact_claim_at(
+                    verified.authorization_id_sha256(),
+                    verified.claim_digest_sha256(),
+                    verified.claim_owner_sha256(),
+                    NOW,
+                    &format!("exact-claim-timeout-{index}"),
+                )
+                .await,
+                Err(ControlPlaneError::AuthorityReadUnavailable)
+            );
+            assert_eq!(exchange.observed().len(), 1);
+            assert_eq!(recorder.finishes()[0].outcome, OperationOutcome::Ambiguous);
+        }
     }
 
     #[tokio::test]
@@ -4154,9 +4571,13 @@ mod tests {
         let annotation = controller_mutation_annotation();
         let exchange = ScriptedExchange::new(stable_readback_responses(&annotation));
         let schedule = ScriptedObservationSchedule::new([1_000, 1_005]);
+        let recorder = OperationGateRecorder::new(OperationReservation::Fresh);
 
         let observation = read_stable_observation(
             &exchange,
+            &recorder,
+            &matching_identity(),
+            3,
             ACCOUNT_ID,
             READ_TOKEN,
             "controller-staging",
@@ -4207,7 +4628,110 @@ mod tests {
         assert!(observed
             .iter()
             .all(|request| request.method != Method::POST));
+        let starts = recorder.starts();
+        assert_eq!(starts.len(), 4);
+        assert_eq!(
+            starts
+                .iter()
+                .map(|start| (start.identity.kind, start.identity.state_version))
+                .collect::<Vec<_>>(),
+            [
+                (OperationKind::CloudflareDeploymentRead, 3),
+                (OperationKind::CloudflareVersionRead, 3),
+                (OperationKind::CloudflareDeploymentRead, 3),
+                (OperationKind::CloudflareVersionRead, 3),
+            ]
+        );
+        assert_eq!(recorder.finishes().len(), 4);
+        assert!(recorder
+            .finishes()
+            .iter()
+            .all(|finish| finish.outcome == OperationOutcome::Accepted));
+        assert_eq!(
+            starts
+                .iter()
+                .map(|start| start.identity.request_sha256.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            4
+        );
         assert_secret_absent(&format!("{observation:?}"));
+    }
+
+    #[tokio::test]
+    async fn read_receipts_classify_collision_transport_loss_and_deterministic_rejection() {
+        let identity = matching_identity();
+        let path = format!(
+            "/client/v4/accounts/{ACCOUNT_ID}/workers/scripts/controller-staging/deployments"
+        );
+
+        let collision_exchange = ScriptedExchange::new(Vec::new());
+        let collision_recorder = OperationGateRecorder::new(
+            OperationReservation::ExistingFinished(OperationOutcome::Accepted),
+        );
+        assert!(matches!(
+            read_cloudflare_json(
+                &collision_exchange,
+                &collision_recorder,
+                &identity,
+                OperationKind::CloudflareDeploymentRead,
+                3,
+                READ_TOKEN,
+                &path,
+                MAX_DEPLOYMENTS_RESPONSE_BYTES,
+            )
+            .await,
+            Err(ControlPlaneError::Receipt(ReceiptError::Conflict))
+        ));
+        assert!(collision_exchange.observed().is_empty());
+        assert_eq!(collision_recorder.starts().len(), 1);
+        assert!(collision_recorder.finishes().is_empty());
+
+        let loss_exchange = ScriptedExchange::new(vec![Err(ExchangeError::Connection)]);
+        let loss_recorder = OperationGateRecorder::new(OperationReservation::Fresh);
+        assert_eq!(
+            read_cloudflare_json(
+                &loss_exchange,
+                &loss_recorder,
+                &identity,
+                OperationKind::CloudflareDeploymentRead,
+                3,
+                READ_TOKEN,
+                &path,
+                MAX_DEPLOYMENTS_RESPONSE_BYTES,
+            )
+            .await,
+            Err(ControlPlaneError::Exchange)
+        );
+        assert_eq!(loss_exchange.observed().len(), 1);
+        assert_eq!(
+            loss_recorder.finishes()[0].outcome,
+            OperationOutcome::Ambiguous
+        );
+
+        let rejected_exchange = ScriptedExchange::new(vec![Ok(scripted_json(
+            StatusCode::FORBIDDEN,
+            serde_json::json!({"success": false}),
+        ))]);
+        let rejected_recorder = OperationGateRecorder::new(OperationReservation::Fresh);
+        assert_eq!(
+            read_cloudflare_json(
+                &rejected_exchange,
+                &rejected_recorder,
+                &identity,
+                OperationKind::CloudflareDeploymentRead,
+                3,
+                READ_TOKEN,
+                &path,
+                MAX_DEPLOYMENTS_RESPONSE_BYTES,
+            )
+            .await,
+            Err(ControlPlaneError::ReadbackRejected)
+        );
+        assert_eq!(
+            rejected_recorder.finishes()[0].outcome,
+            OperationOutcome::Rejected
+        );
     }
 
     #[tokio::test]
@@ -4221,6 +4745,9 @@ mod tests {
         let schedule = ScriptedObservationSchedule::new([1_000, 1_005]);
         let baseline = read_stable_baseline(
             &exchange,
+            &NoopSnapshotReceiptRecorder,
+            &matching_identity(),
+            1,
             ACCOUNT_ID,
             READ_TOKEN,
             "controller-staging",
@@ -4547,6 +5074,9 @@ mod tests {
             assert!(matches!(
                 read_stable_observation(
                     &exchange,
+                    &NoopSnapshotReceiptRecorder,
+                    &matching_identity(),
+                    3,
                     ACCOUNT_ID,
                     READ_TOKEN,
                     "controller-staging",
@@ -4577,6 +5107,9 @@ mod tests {
             let schedule = ScriptedObservationSchedule::new(times);
             let result = read_stable_observation(
                 &exchange,
+                &NoopSnapshotReceiptRecorder,
+                &matching_identity(),
+                3,
                 ACCOUNT_ID,
                 READ_TOKEN,
                 "controller-staging",
@@ -4604,6 +5137,9 @@ mod tests {
             assert!(matches!(
                 read_stable_observation(
                     &exchange,
+                    &NoopSnapshotReceiptRecorder,
+                    &matching_identity(),
+                    3,
                     ACCOUNT_ID,
                     READ_TOKEN,
                     "controller-staging",
@@ -4787,6 +5323,8 @@ mod tests {
         let error = verify_identity_proof_sequence(
             FakeIdentityMachine,
             &exchange,
+            &NoopSnapshotReceiptRecorder,
+            &matching_identity(),
             NOW,
             "request-identity-001",
         )

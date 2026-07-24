@@ -682,3 +682,55 @@ the same strict response/ambiguous exact-GET model before staging. Linux
 crash/power-loss proof, approval revalidation, external receipt anchoring,
 credential revocation, isolated staging, and G1-G8 remain open. Production is
 **NO-GO**.
+
+## Incremental Authority Receipt Prefix
+
+The runner now joins exact Authority claim readback to the existing Execution
+Receipt V1 store. A verified `claimed/0` snapshot projects the genesis
+receipt; each later nonterminal exact snapshot projects the same genesis plus
+its complete ordered Authority step/expiry history. A terminal snapshot adds
+the existing terminal seal. Existing terminal canonical vectors are
+unchanged.
+
+The public distinction is intentional:
+
+- `install_snapshot_plan` and `verify_prefix` accept a valid unsealed or
+  sealed prefix;
+- `install_terminal_plan` and `verify` still require a terminal seal; and
+- terminal Authority status without the seal is invalid in Rust and the
+  independent JavaScript verifier.
+
+Every shared `read_exact_claim_at` first validates the bounded authenticated
+response and complete Authority snapshot, then joins publication and
+credential identities, installs and independently reads back the canonical
+prefix, and only then returns the snapshot. A receipt planning, conflict,
+filesystem, or durability error returns no control-plane capability.
+
+Prefix extension is create-new. Exact old slots replay, only the missing
+suffix is created, a stale shorter snapshot conflicts with a longer durable
+prefix, and different bytes at an existing sequence fail closed. Eight
+concurrent same-genesis writers produce one create and exact replays only.
+The Windows staging-file retry is bounded contract-test accommodation; it is
+not Linux durability proof.
+
+`verifyRingTransitionExecutionReceiptPrefix` independently checks canonical
+bytes, links, shared identities, semantic digests, state progression and
+terminal/seal coupling. The frozen T1 prefix head is
+`058f4e27874bbab0243a81178ba41187cc981c43de43fce2fc70ec5a5667a1c5`.
+
+Focused and aggregate gates pass with 95 Rust library tests, one binary test,
+two CLI tests, 13 focused JavaScript receipt tests/32 expectations, 40 runner
+JavaScript tests/150 expectations, and 66 broader ring-transition tests/729
+expectations. Both release descriptions retain the fixed 28-module closure.
+The complete repository gate passed in 694.2 seconds with 859 Worker tests,
+71 frontend tests, required WASM checks, and zero frontend redaction or budget
+findings. Checked-in trust remains disabled and no credential or remote API
+was used.
+
+The prefix records observed Authority truth; it does not authorize or prove
+the start of an external operation. Remaining P0 begins with durable
+request-start and request-finish/ambiguous receipts around every mutation and
+readback boundary, followed by the one-action resumable driver, remaining
+append-path recovery, Linux crash/power-loss proof, approval revalidation,
+external anchoring, isolated staging and credential revocation. Go/VPS
+remains authoritative and production remains **NO-GO**.

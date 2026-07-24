@@ -18,11 +18,13 @@ use crate::orchestrator::{
     ObservationRecordInput, ObservationStability, PreparedBaselineReadback, PreparedObservation,
     RecordedObservation, TransportOutcome, VerifiedSnapshot,
 };
+use crate::publication::PublicationIdentity;
 use crate::readback::{
     BaselineReadbackClassification, ReadbackClassification, ReadbackError, ReadbackSnapshot,
     StableBaselineReadbackPair, StableReadbackPair, MAX_DEPLOYMENTS_RESPONSE_BYTES,
     MAX_OBSERVATION_SECONDS, MAX_TARGET_VERSION_RESPONSE_BYTES, MIN_OBSERVATION_SECONDS,
 };
+use crate::receipt::{plan_snapshot_receipts, ReceiptError, ReceiptStore};
 use crate::release::{canonical_json, reject_duplicate_json, MAX_SAFE_INTEGER};
 use crate::STAGING_AUTHORITY_ORIGIN;
 use async_trait::async_trait;
@@ -68,7 +70,7 @@ type ProductionConnector = NativeHttpsConnector<HttpConnector>;
 type ProductionHttpClient = Client<ProductionConnector, Full<Bytes>>;
 
 pub struct PreparedControlPlane {
-    core: ControlPlaneCore<HyperHttpsExchange>,
+    core: ControlPlaneCore<HyperHttpsExchange, PersistentSnapshotReceiptRecorder>,
     execution_activation: ExecutionActivationIdentity,
     dispatch_location: ClaimDispatchLocation,
 }
@@ -91,14 +93,14 @@ pub enum ClaimRecoveryOutcome {
 }
 
 pub struct ClaimedControlPlane {
-    core: ControlPlaneCore<HyperHttpsExchange>,
+    core: ControlPlaneCore<HyperHttpsExchange, PersistentSnapshotReceiptRecorder>,
     execution_activation: ExecutionActivationIdentity,
     snapshot: Box<VerifiedSnapshot>,
     classification: ClaimCreationClassification,
 }
 
 pub struct ClaimRecoveryControlPlane {
-    core: ControlPlaneCore<HyperHttpsExchange>,
+    core: ControlPlaneCore<HyperHttpsExchange, PersistentSnapshotReceiptRecorder>,
     execution_activation: ExecutionActivationIdentity,
     classification: ClaimCreationClassification,
     last_error: ControlPlaneError,
@@ -383,14 +385,21 @@ pub(crate) async fn verify_loaded_credentials(
     loaded: LoadedCredentials,
     execution_activation: ExecutionActivationIdentity,
     dispatch_location: ClaimDispatchLocation,
+    receipt_publication: PublicationIdentity,
 ) -> Result<PreparedControlPlane, ControlPlaneError> {
     execution_activation
         .validate_credential_identity(loaded.identity())
         .map_err(ControlPlaneError::ExecutionActivation)?;
     let exchange = HyperHttpsExchange::new()?;
+    let receipt_recorder = PersistentSnapshotReceiptRecorder::open(
+        dispatch_location.installation_root(),
+        receipt_publication,
+    )
+    .map_err(ControlPlaneError::Receipt)?;
     let now = system_time_seconds()?;
     let request_id = random_request_id()?;
-    let core = ControlPlaneCore::verify(loaded, exchange, now, &request_id).await?;
+    let core =
+        ControlPlaneCore::verify(loaded, exchange, receipt_recorder, now, &request_id).await?;
     Ok(PreparedControlPlane {
         core,
         execution_activation,
@@ -398,15 +407,54 @@ pub(crate) async fn verify_loaded_credentials(
     })
 }
 
-struct ControlPlaneCore<E: HttpExchange> {
-    credentials: VerifiedCredentials,
-    exchange: E,
+trait SnapshotReceiptRecorder: Send + Sync {
+    fn record_snapshot(
+        &self,
+        snapshot: &VerifiedSnapshot,
+        credentials: &CredentialIdentity,
+    ) -> Result<(), ReceiptError>;
 }
 
-impl<E: HttpExchange> ControlPlaneCore<E> {
+struct PersistentSnapshotReceiptRecorder {
+    store: ReceiptStore,
+    publication: PublicationIdentity,
+}
+
+impl PersistentSnapshotReceiptRecorder {
+    fn open(
+        root: &std::path::Path,
+        publication: PublicationIdentity,
+    ) -> Result<Self, ReceiptError> {
+        Ok(Self {
+            store: ReceiptStore::open(root)?,
+            publication,
+        })
+    }
+}
+
+impl SnapshotReceiptRecorder for PersistentSnapshotReceiptRecorder {
+    fn record_snapshot(
+        &self,
+        snapshot: &VerifiedSnapshot,
+        credentials: &CredentialIdentity,
+    ) -> Result<(), ReceiptError> {
+        let plan = plan_snapshot_receipts(snapshot, &self.publication, credentials)?;
+        self.store.install_snapshot_plan(&plan)?;
+        Ok(())
+    }
+}
+
+struct ControlPlaneCore<E: HttpExchange, R: SnapshotReceiptRecorder> {
+    credentials: VerifiedCredentials,
+    exchange: E,
+    receipt_recorder: R,
+}
+
+impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
     async fn verify(
         loaded: LoadedCredentials,
         exchange: E,
+        receipt_recorder: R,
         now: u64,
         request_id: &str,
     ) -> Result<Self, ControlPlaneError> {
@@ -415,6 +463,7 @@ impl<E: HttpExchange> ControlPlaneCore<E> {
         Ok(Self {
             credentials,
             exchange,
+            receipt_recorder,
         })
     }
 
@@ -569,14 +618,18 @@ impl<E: HttpExchange> ControlPlaneCore<E> {
             }
             _ => return Err(ControlPlaneError::AuthorityRejected),
         }
-        verify_exact_claim_response(
+        let snapshot = verify_exact_claim_response(
             &response.body,
             request_id,
             authorization_id_sha256,
             claim_digest_sha256,
             claim_owner_sha256,
             self.credentials.identity(),
-        )
+        )?;
+        self.receipt_recorder
+            .record_snapshot(&snapshot, self.credentials.identity())
+            .map_err(ControlPlaneError::Receipt)?;
+        Ok(snapshot)
     }
 
     async fn append_intent_at<P: MutationPhase>(
@@ -1827,6 +1880,7 @@ pub enum ControlPlaneError {
     Credential(crate::credentials::CredentialError),
     ExecutionActivation(crate::execution_activation::ExecutionActivationError),
     Orchestrator(orchestrator::OrchestratorError),
+    Receipt(ReceiptError),
     Exchange,
     InvalidRequest(&'static str),
     CredentialIdentityRejected(&'static str),
@@ -1856,6 +1910,7 @@ impl fmt::Display for ControlPlaneError {
             Self::Credential(error) => error.fmt(formatter),
             Self::ExecutionActivation(error) => error.fmt(formatter),
             Self::Orchestrator(error) => error.fmt(formatter),
+            Self::Receipt(error) => error.fmt(formatter),
             Self::Exchange => formatter.write_str("bounded control-plane request failed"),
             Self::InvalidRequest(field) => {
                 write!(formatter, "control-plane request is invalid: {field}")
@@ -2028,6 +2083,65 @@ mod tests {
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const MUTATION_REQUEST_DIGEST: &str =
         "4f75767d59d027a0ed9fc763954ac1b128c08732ac46bd1f19a274595a5225e2";
+
+    #[derive(Clone, Copy)]
+    struct NoopSnapshotReceiptRecorder;
+
+    impl SnapshotReceiptRecorder for NoopSnapshotReceiptRecorder {
+        fn record_snapshot(
+            &self,
+            _snapshot: &VerifiedSnapshot,
+            _credentials: &CredentialIdentity,
+        ) -> Result<(), ReceiptError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct SpySnapshotReceiptRecorder {
+        snapshots: Arc<Mutex<Vec<(ClaimStatus, u8)>>>,
+        failure: Option<ReceiptError>,
+    }
+
+    impl SpySnapshotReceiptRecorder {
+        fn accepting() -> Self {
+            Self {
+                snapshots: Arc::new(Mutex::new(Vec::new())),
+                failure: None,
+            }
+        }
+
+        fn failing(error: ReceiptError) -> Self {
+            Self {
+                snapshots: Arc::new(Mutex::new(Vec::new())),
+                failure: Some(error),
+            }
+        }
+
+        fn snapshots(&self) -> Vec<(ClaimStatus, u8)> {
+            self.snapshots
+                .lock()
+                .expect("receipt snapshot lock")
+                .clone()
+        }
+    }
+
+    impl SnapshotReceiptRecorder for SpySnapshotReceiptRecorder {
+        fn record_snapshot(
+            &self,
+            snapshot: &VerifiedSnapshot,
+            _credentials: &CredentialIdentity,
+        ) -> Result<(), ReceiptError> {
+            if let Some(error) = &self.failure {
+                return Err(error.clone());
+            }
+            self.snapshots
+                .lock()
+                .expect("receipt snapshot lock")
+                .push((snapshot.status(), snapshot.state_version()));
+            Ok(())
+        }
+    }
 
     struct ObservedRequest {
         method: Method,
@@ -2372,6 +2486,164 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exact_claim_records_receipt_prefix_before_returning_any_snapshot() {
+        for snapshot in [claimed_snapshot_value(), t1_snapshot_value()] {
+            let identity = matching_identity();
+            let verified = verified_snapshot(&snapshot);
+            let request_id = format!("receipt-read-{}", verified.state_version());
+            let exchange = ScriptedExchange::new(vec![Ok(scripted_json(
+                StatusCode::OK,
+                serde_json::from_slice(&exact_claim_response(&snapshot, &identity, &request_id))
+                    .unwrap(),
+            ))]);
+            let recorder = SpySnapshotReceiptRecorder::accepting();
+            let core = ControlPlaneCore {
+                credentials: verified_credentials_for_transport_test(),
+                exchange: exchange.clone(),
+                receipt_recorder: recorder.clone(),
+            };
+
+            let returned = core
+                .read_exact_claim_at(
+                    verified.authorization_id_sha256(),
+                    verified.claim_digest_sha256(),
+                    verified.claim_owner_sha256(),
+                    NOW,
+                    &request_id,
+                )
+                .await
+                .expect("receipt-recorded exact snapshot");
+            assert_eq!(
+                recorder.snapshots(),
+                vec![(returned.status(), returned.state_version())]
+            );
+            assert_eq!(exchange.observed().len(), 1);
+            assert_eq!(exchange.remaining(), 0);
+        }
+
+        let snapshot = claimed_snapshot_value();
+        let verified = verified_snapshot(&snapshot);
+        let identity = matching_identity();
+        let exchange = ScriptedExchange::new(vec![Ok(scripted_json(
+            StatusCode::OK,
+            serde_json::from_slice(&exact_claim_response(
+                &snapshot,
+                &identity,
+                "receipt-failure-read",
+            ))
+            .unwrap(),
+        ))]);
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+            receipt_recorder: SpySnapshotReceiptRecorder::failing(ReceiptError::Conflict),
+        };
+        assert_eq!(
+            core.read_exact_claim_at(
+                verified.authorization_id_sha256(),
+                verified.claim_digest_sha256(),
+                verified.claim_owner_sha256(),
+                NOW,
+                "receipt-failure-read",
+            )
+            .await,
+            Err(ControlPlaneError::Receipt(ReceiptError::Conflict))
+        );
+        assert_eq!(exchange.observed().len(), 1);
+        assert_eq!(exchange.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn persistent_recorder_extends_claimed_to_t1_and_replays_without_new_slots() {
+        let root = temporary_receipt_root("exact-prefix");
+        let identity = matching_identity();
+        let claimed = claimed_snapshot_value();
+        let t1 = t1_snapshot_value();
+        let exchange = ScriptedExchange::new(vec![
+            Ok(scripted_json(
+                StatusCode::OK,
+                serde_json::from_slice(&exact_claim_response(
+                    &claimed,
+                    &identity,
+                    "persistent-claimed-read",
+                ))
+                .unwrap(),
+            )),
+            Ok(scripted_json(
+                StatusCode::OK,
+                serde_json::from_slice(&exact_claim_response(&t1, &identity, "persistent-t1-read"))
+                    .unwrap(),
+            )),
+            Ok(scripted_json(
+                StatusCode::OK,
+                serde_json::from_slice(&exact_claim_response(
+                    &t1,
+                    &identity,
+                    "persistent-t1-replay",
+                ))
+                .unwrap(),
+            )),
+        ]);
+        let recorder =
+            PersistentSnapshotReceiptRecorder::open(&root, matching_publication()).unwrap();
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+            receipt_recorder: recorder,
+        };
+        let claimed_verified = verified_snapshot(&claimed);
+        let t1_verified = verified_snapshot(&t1);
+
+        core.read_exact_claim_at(
+            claimed_verified.authorization_id_sha256(),
+            claimed_verified.claim_digest_sha256(),
+            claimed_verified.claim_owner_sha256(),
+            NOW,
+            "persistent-claimed-read",
+        )
+        .await
+        .unwrap();
+        let store = ReceiptStore::open(&root).unwrap();
+        let genesis = store
+            .verify_prefix(claimed_verified.authorization_id_sha256())
+            .unwrap();
+        assert_eq!(genesis.receipt_count, 1);
+        assert!(!genesis.sealed);
+
+        core.read_exact_claim_at(
+            t1_verified.authorization_id_sha256(),
+            t1_verified.claim_digest_sha256(),
+            t1_verified.claim_owner_sha256(),
+            NOW,
+            "persistent-t1-read",
+        )
+        .await
+        .unwrap();
+        let advanced = store
+            .verify_prefix(t1_verified.authorization_id_sha256())
+            .unwrap();
+        assert_eq!(advanced.receipt_count, 2);
+        assert!(!advanced.sealed);
+
+        core.read_exact_claim_at(
+            t1_verified.authorization_id_sha256(),
+            t1_verified.claim_digest_sha256(),
+            t1_verified.claim_owner_sha256(),
+            NOW,
+            "persistent-t1-replay",
+        )
+        .await
+        .unwrap();
+        let replayed = store
+            .verify_prefix(t1_verified.authorization_id_sha256())
+            .unwrap();
+        assert_eq!(replayed, advanced);
+        assert_eq!(exchange.observed().len(), 3);
+        assert_eq!(exchange.remaining(), 0);
+        cleanup_receipt_root(&root);
+    }
+
+    #[tokio::test]
     async fn claim_creation_posts_frozen_bytes_once_then_requires_exact_readback() {
         let activation = transport_activation();
         let identity = matching_identity();
@@ -2397,6 +2669,7 @@ mod tests {
         let core = ControlPlaneCore {
             credentials: verified_credentials_for_transport_test(),
             exchange: exchange.clone(),
+            receipt_recorder: NoopSnapshotReceiptRecorder,
         };
 
         let result = core
@@ -2497,6 +2770,7 @@ mod tests {
             let core = ControlPlaneCore {
                 credentials: verified_credentials_for_transport_test(),
                 exchange: exchange.clone(),
+                receipt_recorder: NoopSnapshotReceiptRecorder,
             };
             let result = core
                 .establish_claim_once_at(
@@ -2549,6 +2823,7 @@ mod tests {
         let core = ControlPlaneCore {
             credentials: verified_credentials_for_transport_test(),
             exchange: exchange.clone(),
+            receipt_recorder: NoopSnapshotReceiptRecorder,
         };
         let first = core
             .establish_claim_once_at(
@@ -2600,6 +2875,7 @@ mod tests {
         let core = ControlPlaneCore {
             credentials: verified_credentials_for_transport_test(),
             exchange: exchange.clone(),
+            receipt_recorder: NoopSnapshotReceiptRecorder,
         };
         assert!(matches!(
             core.establish_claim_once_at(
@@ -2618,6 +2894,7 @@ mod tests {
         let expired_core = ControlPlaneCore {
             credentials: verified_credentials_for_transport_test(),
             exchange: expired_exchange.clone(),
+            receipt_recorder: NoopSnapshotReceiptRecorder,
         };
         assert!(matches!(
             expired_core
@@ -2844,6 +3121,7 @@ mod tests {
         let core = ControlPlaneCore {
             credentials: verified_credentials_for_transport_test(),
             exchange: exchange.clone(),
+            receipt_recorder: NoopSnapshotReceiptRecorder,
         };
 
         let refreshed = core
@@ -2949,6 +3227,7 @@ mod tests {
             let core = ControlPlaneCore {
                 credentials: verified_credentials_for_transport_test(),
                 exchange: exchange.clone(),
+                receipt_recorder: NoopSnapshotReceiptRecorder,
             };
 
             let refreshed = core
@@ -2989,6 +3268,7 @@ mod tests {
         let expired_core = ControlPlaneCore {
             credentials: verified_credentials_for_transport_test(),
             exchange: expired_exchange.clone(),
+            receipt_recorder: NoopSnapshotReceiptRecorder,
         };
         assert!(matches!(
             expired_core
@@ -3029,6 +3309,7 @@ mod tests {
         let stale_core = ControlPlaneCore {
             credentials: verified_credentials_for_transport_test(),
             exchange: stale_exchange.clone(),
+            receipt_recorder: NoopSnapshotReceiptRecorder,
         };
         assert!(matches!(
             stale_core
@@ -3379,6 +3660,73 @@ mod tests {
             edge_service_name: "edge-staging".to_owned(),
             stable_readback_observation_seconds: 5,
             activation_sequence: 1,
+        }
+    }
+
+    fn matching_publication() -> PublicationIdentity {
+        PublicationIdentity {
+            release: crate::release::VerifiedRelease {
+                source_commit: "1".repeat(40),
+                git_tree_sha: "2".repeat(40),
+                target_triple: "x86_64-unknown-linux-gnu".to_owned(),
+                manifest_sha256: "5".repeat(64),
+                packet_sha256: "6".repeat(64),
+                policy_sha256: "7".repeat(64),
+                release_key_id: "release-v1".to_owned(),
+                release_key_spki_base64url: "release-spki".to_owned(),
+                release_key_spki_sha256: "8".repeat(64),
+                artifact_file_name: "cinatoken-ring-transition-runner".to_owned(),
+                artifact_byte_length: 1,
+                artifact_sha256: "3".repeat(64),
+                module_inventory_sha256: "9".repeat(64),
+                module_count: 28,
+                module_bytes: 1,
+                authority_version_id: "authority-version-001".to_owned(),
+                permit_spki_sha256: "6".repeat(64),
+                trust_config_sha256: "4".repeat(64),
+                issued_at: "2026-07-24T00:00:00Z".to_owned(),
+                expires_at: "2026-07-25T00:00:00Z".to_owned(),
+            },
+            publication_manifest_sha256: "7".repeat(64),
+            publication_packet_sha256: "b".repeat(64),
+            generation_sha256: "d".repeat(64),
+            publication_directory_name: format!("publication-{}", "7".repeat(64)),
+            activation_sequence: 1,
+            previous_publication_manifest_sha256: None,
+            published_at: "2026-07-24T00:00:00.000Z".to_owned(),
+            expires_at: "2026-07-25T00:00:00.000Z".to_owned(),
+        }
+    }
+
+    fn temporary_receipt_root(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "cinatoken-transport-receipt-{label}-{}",
+            random_request_id().expect("temporary receipt suffix")
+        ));
+        std::fs::create_dir(&root).expect("temporary receipt root");
+        root
+    }
+
+    fn cleanup_receipt_root(root: &std::path::Path) {
+        #[cfg(windows)]
+        make_receipt_tree_writable(root);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn make_receipt_tree_writable(path: &std::path::Path) {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let child = entry.path();
+                if child.is_dir() {
+                    make_receipt_tree_writable(&child);
+                } else if let Ok(metadata) = child.metadata() {
+                    let mut permissions = metadata.permissions();
+                    permissions.set_readonly(false);
+                    let _ = std::fs::set_permissions(&child, permissions);
+                }
+            }
         }
     }
 

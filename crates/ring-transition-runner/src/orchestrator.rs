@@ -3080,7 +3080,7 @@ mod tests {
     fn terminal_snapshot_projects_one_predecessor_bound_receipt_per_history_event() {
         use crate::credentials::CredentialIdentity;
         use crate::publication::PublicationIdentity;
-        use crate::receipt::{plan_terminal_receipts, ReceiptEvent};
+        use crate::receipt::{plan_snapshot_receipts, plan_terminal_receipts, ReceiptEvent};
         use crate::release::VerifiedRelease;
 
         let mut raw = base_snapshot();
@@ -3139,6 +3139,29 @@ mod tests {
             stable_readback_observation_seconds: 5,
             activation_sequence: 1,
         };
+
+        let claimed =
+            plan_snapshot_receipts(&verified(base_snapshot()), &publication, &credentials).unwrap();
+        assert_eq!(claimed.receipts().len(), 1);
+        assert!(!claimed.is_sealed());
+        assert!(matches!(
+            claimed.receipts()[0].record().event,
+            ReceiptEvent::ClaimObserved {
+                status: ClaimStatus::Claimed,
+                state_version: 0
+            }
+        ));
+
+        let mut t1_raw = base_snapshot();
+        append_t1(&mut t1_raw);
+        let t1 = plan_snapshot_receipts(&verified(t1_raw), &publication, &credentials).unwrap();
+        assert_eq!(t1.receipts().len(), 2);
+        assert!(!t1.is_sealed());
+        assert_eq!(t1.receipts()[0].bytes(), claimed.receipts()[0].bytes());
+        assert!(matches!(
+            t1.receipts()[1].record().event,
+            ReceiptEvent::AuthorityStep { .. }
+        ));
 
         let plan = plan_terminal_receipts(&completed, &publication, &credentials).unwrap();
         assert_eq!(plan.receipts().len(), 8);

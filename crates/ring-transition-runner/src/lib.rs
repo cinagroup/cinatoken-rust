@@ -207,11 +207,17 @@ pub async fn authorize_execution(
     let execution = execution_activation::verify_current_execution_activation(activation, now)
         .map_err(ExecutionAuthorizationError::ExecutionActivation)?;
     let (publication, execution_identity, dispatch_location) = execution.into_parts();
+    let receipt_publication = publication.clone();
     let credentials = credentials::load_activated_credentials(publication)
         .map_err(ExecutionAuthorizationError::Credentials)?;
-    transport::verify_loaded_credentials(credentials, execution_identity, dispatch_location)
-        .await
-        .map_err(ExecutionAuthorizationError::ControlPlane)
+    transport::verify_loaded_credentials(
+        credentials,
+        execution_identity,
+        dispatch_location,
+        receipt_publication,
+    )
+    .await
+    .map_err(ExecutionAuthorizationError::ControlPlane)
 }
 
 #[cfg(test)]

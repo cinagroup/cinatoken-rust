@@ -265,8 +265,14 @@ impl ReceiptPlan {
     pub fn head_sha256(&self) -> &str {
         self.receipts
             .last()
-            .expect("a terminal receipt plan is never empty")
+            .expect("a receipt plan is never empty")
             .sha256()
+    }
+
+    pub fn is_sealed(&self) -> bool {
+        self.receipts
+            .last()
+            .is_some_and(|receipt| receipt.record.event.is_terminal_seal())
     }
 }
 
@@ -282,6 +288,7 @@ pub struct InstalledReceiptChain {
     pub chain_directory: PathBuf,
     pub receipt_count: u64,
     pub head_sha256: String,
+    pub sealed: bool,
     pub created_count: u64,
     pub replayed_count: u64,
 }
@@ -339,6 +346,19 @@ impl fmt::Display for ReceiptError {
 impl std::error::Error for ReceiptError {}
 
 pub fn plan_terminal_receipts(
+    snapshot: &VerifiedSnapshot,
+    publication: &PublicationIdentity,
+    credentials: &CredentialIdentity,
+) -> Result<ReceiptPlan, ReceiptError> {
+    let plan = plan_snapshot_receipts(snapshot, publication, credentials)?;
+    if !plan.is_sealed() {
+        return Err(ReceiptError::NotSealed);
+    }
+    validate_planned_chain(plan.receipts())?;
+    Ok(plan)
+}
+
+pub fn plan_snapshot_receipts(
     snapshot: &VerifiedSnapshot,
     publication: &PublicationIdentity,
     credentials: &CredentialIdentity,
@@ -410,45 +430,47 @@ pub fn plan_terminal_receipts(
         )?;
     }
 
-    let snapshot_bytes = canonical_json(snapshot)
-        .map_err(|_| ReceiptError::Projection("final_snapshot"))?
-        .into_bytes();
-    let history_sha256 = sha256_hex(
-        canonical_json(&HistoryDigestSubject {
-            schema_version: 1,
-            contract: HISTORY_DIGEST_CONTRACT,
-            history_digests: &history_digests,
-        })
-        .map_err(|_| ReceiptError::Projection("history"))?
-        .as_bytes(),
-    );
-    let terminal_at = snapshot
-        .state
-        .terminal_at
-        .ok_or(ReceiptError::Projection("terminal_at"))?;
-    let chain_length =
-        u64::try_from(receipts.len() + 1).map_err(|_| ReceiptError::Projection("chain_length"))?;
-    push_receipt(
-        &mut receipts,
-        release,
-        credential_identity,
-        claim,
-        terminal_at,
-        ReceiptEvent::TerminalSeal {
-            status: snapshot.state.status,
-            state_version: snapshot.state.state_version,
+    if snapshot.state.status.is_terminal() {
+        let snapshot_bytes = canonical_json(snapshot)
+            .map_err(|_| ReceiptError::Projection("final_snapshot"))?
+            .into_bytes();
+        let history_sha256 = sha256_hex(
+            canonical_json(&HistoryDigestSubject {
+                schema_version: 1,
+                contract: HISTORY_DIGEST_CONTRACT,
+                history_digests: &history_digests,
+            })
+            .map_err(|_| ReceiptError::Projection("history"))?
+            .as_bytes(),
+        );
+        let terminal_at = snapshot
+            .state
+            .terminal_at
+            .ok_or(ReceiptError::Projection("terminal_at"))?;
+        let chain_length = u64::try_from(receipts.len() + 1)
+            .map_err(|_| ReceiptError::Projection("chain_length"))?;
+        push_receipt(
+            &mut receipts,
+            release,
+            credential_identity,
+            claim,
             terminal_at,
-            final_snapshot_sha256: sha256_hex(&snapshot_bytes),
-            final_snapshot_bytes: snapshot_bytes
-                .len()
-                .try_into()
-                .map_err(|_| ReceiptError::Projection("final_snapshot_bytes"))?,
-            history_sha256,
-            chain_length,
-        },
-    )?;
+            ReceiptEvent::TerminalSeal {
+                status: snapshot.state.status,
+                state_version: snapshot.state.state_version,
+                terminal_at,
+                final_snapshot_sha256: sha256_hex(&snapshot_bytes),
+                final_snapshot_bytes: snapshot_bytes
+                    .len()
+                    .try_into()
+                    .map_err(|_| ReceiptError::Projection("final_snapshot_bytes"))?,
+                history_sha256,
+                chain_length,
+            },
+        )?;
+    }
 
-    validate_planned_chain(&receipts)?;
+    validate_planned_prefix(&receipts)?;
     Ok(ReceiptPlan {
         authorization_id_sha256: snapshot.claim.authorization_id_sha256.clone(),
         receipts,
@@ -475,6 +497,17 @@ impl ReceiptStore {
         &self,
         plan: &ReceiptPlan,
     ) -> Result<InstalledReceiptChain, ReceiptError> {
+        if !plan.is_sealed() {
+            return Err(ReceiptError::NotSealed);
+        }
+        self.install_snapshot_plan(plan)
+    }
+
+    pub fn install_snapshot_plan(
+        &self,
+        plan: &ReceiptPlan,
+    ) -> Result<InstalledReceiptChain, ReceiptError> {
+        validate_planned_prefix(&plan.receipts)?;
         validate_lower_hex(&plan.authorization_id_sha256, "authorization_id_sha256")?;
         let chain_directory = self.ensure_chain_directory(&plan.authorization_id_sha256)?;
         let mut created_count = 0_u64;
@@ -486,7 +519,7 @@ impl ReceiptStore {
             }
         }
         let verified = verify_chain_directory(&chain_directory, &plan.authorization_id_sha256)?;
-        if !verified.sealed
+        if verified.sealed != plan.is_sealed()
             || verified.receipt_count
                 != u64::try_from(plan.receipts.len())
                     .map_err(|_| ReceiptError::InvalidField("receipt_count"))?
@@ -499,12 +532,24 @@ impl ReceiptStore {
             chain_directory,
             receipt_count: verified.receipt_count,
             head_sha256: verified.head_sha256,
+            sealed: verified.sealed,
             created_count,
             replayed_count,
         })
     }
 
     pub fn verify(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<VerifiedReceiptChain, ReceiptError> {
+        let verified = self.verify_prefix(authorization_id_sha256)?;
+        if !verified.sealed {
+            return Err(ReceiptError::NotSealed);
+        }
+        Ok(verified)
+    }
+
+    pub fn verify_prefix(
         &self,
         authorization_id_sha256: &str,
     ) -> Result<VerifiedReceiptChain, ReceiptError> {
@@ -555,9 +600,6 @@ fn validate_projection(
     publication: &PublicationIdentity,
     credentials: &CredentialIdentity,
 ) -> Result<(), ReceiptError> {
-    if !snapshot.state.status.is_terminal() {
-        return Err(ReceiptError::Projection("status"));
-    }
     for (field, left, right) in [
         (
             "account_id_sha256",
@@ -674,7 +716,18 @@ fn push_receipt(
 }
 
 fn validate_planned_chain(receipts: &[CanonicalReceipt]) -> Result<(), ReceiptError> {
-    if receipts.len() < 2 || receipts.len() > MAX_RECEIPTS_PER_CHAIN as usize {
+    validate_planned_prefix(receipts)?;
+    if !receipts
+        .last()
+        .is_some_and(|receipt| receipt.record.event.is_terminal_seal())
+    {
+        return Err(ReceiptError::NotSealed);
+    }
+    Ok(())
+}
+
+fn validate_planned_prefix(receipts: &[CanonicalReceipt]) -> Result<(), ReceiptError> {
+    if receipts.is_empty() || receipts.len() > MAX_RECEIPTS_PER_CHAIN as usize {
         return Err(ReceiptError::InvalidField("receipt_count"));
     }
     let first = &receipts[0].record;
@@ -715,9 +768,10 @@ fn validate_planned_chain(receipts: &[CanonicalReceipt]) -> Result<(), ReceiptEr
             return Err(ReceiptError::AlreadySealed);
         }
     }
-    if !receipts
-        .last()
-        .is_some_and(|receipt| receipt.record.event.is_terminal_seal())
+    if status.is_terminal()
+        && !receipts
+            .last()
+            .is_some_and(|receipt| receipt.record.event.is_terminal_seal())
     {
         return Err(ReceiptError::NotSealed);
     }
@@ -1294,21 +1348,22 @@ fn append_canonical_receipt(
 
     let stage = chain_directory.join(staging_file_name(receipt.record.sequence)?);
     write_staging(&stage, receipt.bytes())?;
-    match publish_noreplace(&stage, &target) {
-        Ok(()) => {}
-        Err(error) if is_already_exists(&error) => {
-            let _ = fs::remove_file(&stage);
-            let existing = read_receipt(&target, &canonical_parent)?;
-            if existing.bytes == receipt.bytes {
-                sync_directory(chain_directory, receipt.sha256())?;
-                return Ok(AppendOutcome::ExistingExact);
+    if publish_noreplace(&stage, &target).is_err() {
+        let _ = fs::remove_file(&stage);
+        match target.try_exists() {
+            Ok(true) => {
+                let existing = read_receipt(&target, &canonical_parent)?;
+                if existing.bytes == receipt.bytes {
+                    sync_directory(chain_directory, receipt.sha256())?;
+                    return Ok(AppendOutcome::ExistingExact);
+                }
+                return Err(ReceiptError::Conflict);
             }
-            return Err(ReceiptError::Conflict);
-        }
-        Err(_) => {
-            return Err(ReceiptError::DurabilityUnknown {
-                expected_sha256: receipt.sha256().to_owned(),
-            });
+            Ok(false) | Err(_) => {
+                return Err(ReceiptError::DurabilityUnknown {
+                    expected_sha256: receipt.sha256().to_owned(),
+                });
+            }
         }
     }
     sync_directory(chain_directory, receipt.sha256())?;
@@ -1378,9 +1433,6 @@ fn verify_chain_directory(
     }
     let head = previous.ok_or(ReceiptError::PredecessorMissing)?;
     let receipt_count = head.record.sequence;
-    if !sealed {
-        return Err(ReceiptError::NotSealed);
-    }
     if let ReceiptEvent::TerminalSeal { chain_length, .. } = head.record.event {
         if chain_length != receipt_count {
             return Err(ReceiptError::InvalidField("chain_length"));
@@ -1395,6 +1447,9 @@ fn verify_chain_directory(
             &mut status,
             &mut state_version,
         )?;
+    }
+    if status.is_terminal() && !sealed {
+        return Err(ReceiptError::NotSealed);
     }
     Ok(VerifiedReceiptChain {
         authorization_id_sha256: authorization_id_sha256.to_owned(),
@@ -1697,10 +1752,13 @@ fn validate_receipt_directory_entries(directory: &Path) -> Result<(), ReceiptErr
             .file_name()
             .into_string()
             .map_err(|_| ReceiptError::UnsafeFilesystem("chain_entry_name"))?;
-        let metadata = fs::symlink_metadata(entry.path())
-            .map_err(|_| ReceiptError::UnsafeFilesystem("chain_entry"))?;
+        let valid_staging = valid_staging_file_name(&file_name);
+        let metadata = match read_directory_entry_metadata(&entry.path(), valid_staging)? {
+            Some(metadata) => metadata,
+            None => continue,
+        };
         if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(ReceiptError::UnsafeFilesystem("chain_entry"));
+            return Err(ReceiptError::UnsafeFilesystem("chain_entry_type"));
         }
         if let Some(sequence) = parse_receipt_file_name(&file_name) {
             if sequence == 0 || sequence > MAX_RECEIPTS_PER_CHAIN {
@@ -1708,12 +1766,40 @@ fn validate_receipt_directory_entries(directory: &Path) -> Result<(), ReceiptErr
             }
             continue;
         }
-        if valid_staging_file_name(&file_name) {
+        if valid_staging {
             continue;
         }
         return Err(ReceiptError::UnsafeFilesystem("chain_entry_name"));
     }
     Ok(())
+}
+
+fn read_directory_entry_metadata(
+    path: &Path,
+    transient_staging: bool,
+) -> Result<Option<fs::Metadata>, ReceiptError> {
+    for attempt in 0..8 {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => return Ok(Some(metadata)),
+            Err(error) if transient_staging && error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(error)
+                if transient_staging
+                    && attempt < 7
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+                    ) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(_) => {
+                return Err(ReceiptError::UnsafeFilesystem("chain_entry_metadata"));
+            }
+        }
+    }
+    Err(ReceiptError::UnsafeFilesystem("chain_entry_metadata"))
 }
 
 fn parse_receipt_file_name(file_name: &str) -> Option<u64> {
@@ -1757,20 +1843,6 @@ fn has_future_receipt(directory: &Path, start: u64) -> Result<bool, ReceiptError
         }
     }
     Ok(false)
-}
-
-fn is_already_exists(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::AlreadyExists || error.raw_os_error() == Some(libc_eexist())
-}
-
-#[cfg(target_os = "linux")]
-const fn libc_eexist() -> i32 {
-    libc::EEXIST
-}
-
-#[cfg(not(target_os = "linux"))]
-const fn libc_eexist() -> i32 {
-    17
 }
 
 fn validate_lower_hex(value: &str, field: &'static str) -> Result<(), ReceiptError> {
@@ -1854,6 +1926,103 @@ mod tests {
         make_writable(&first);
         fs::write(&first, b"{}").unwrap();
         assert!(store.install_terminal_plan(&plan).is_err());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn unsealed_prefix_extends_exactly_and_never_satisfies_terminal_verification() {
+        let root = temporary_root("prefix");
+        let terminal = synthetic_plan();
+        let mut genesis = terminal.clone();
+        genesis.receipts.truncate(1);
+        validate_planned_prefix(genesis.receipts()).unwrap();
+        assert!(!genesis.is_sealed());
+
+        let store = ReceiptStore::open(&root).unwrap();
+        let first = store.install_snapshot_plan(&genesis).unwrap();
+        assert_eq!(first.created_count, 1);
+        assert_eq!(first.replayed_count, 0);
+        assert_eq!(first.receipt_count, 1);
+        assert!(!first.sealed);
+        assert_eq!(
+            store.verify(genesis.authorization_id_sha256()),
+            Err(ReceiptError::NotSealed)
+        );
+        assert_eq!(
+            store
+                .verify_prefix(genesis.authorization_id_sha256())
+                .unwrap()
+                .head_sha256,
+            genesis.head_sha256()
+        );
+
+        let replay = store.install_snapshot_plan(&genesis).unwrap();
+        assert_eq!(replay.created_count, 0);
+        assert_eq!(replay.replayed_count, 1);
+
+        let sealed = store.install_terminal_plan(&terminal).unwrap();
+        assert_eq!(sealed.created_count, 2);
+        assert_eq!(sealed.replayed_count, 1);
+        assert!(sealed.sealed);
+        assert_eq!(sealed.receipt_count, 3);
+        assert_eq!(
+            store
+                .verify(terminal.authorization_id_sha256())
+                .unwrap()
+                .head_sha256,
+            terminal.head_sha256()
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn concurrent_genesis_prefix_has_one_create_and_exact_replays_only() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let root = temporary_root("concurrent-prefix");
+        let terminal = synthetic_plan();
+        let mut genesis = terminal.clone();
+        genesis.receipts.truncate(1);
+        let barrier = Arc::new(Barrier::new(8));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let root = root.clone();
+            let plan = genesis.clone();
+            let barrier = Arc::clone(&barrier);
+            workers.push(thread::spawn(move || {
+                let store = ReceiptStore::open(&root).unwrap();
+                barrier.wait();
+                store.install_snapshot_plan(&plan)
+            }));
+        }
+
+        let installed = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("prefix worker"))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            installed
+                .iter()
+                .map(|result| result.created_count)
+                .sum::<u64>(),
+            1
+        );
+        assert_eq!(
+            installed
+                .iter()
+                .map(|result| result.replayed_count)
+                .sum::<u64>(),
+            7
+        );
+        let verified = ReceiptStore::open(&root)
+            .unwrap()
+            .verify_prefix(genesis.authorization_id_sha256())
+            .unwrap();
+        assert_eq!(verified.receipt_count, 1);
+        assert_eq!(verified.head_sha256, genesis.head_sha256());
+        assert!(!verified.sealed);
         cleanup(&root);
     }
 

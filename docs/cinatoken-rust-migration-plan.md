@@ -19110,3 +19110,190 @@ The next K7 implementation order is:
 
 Until those items and G1-G8 pass, Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 22.282 Incremental Authority Receipt Prefix Overlay (2026-07-24)
+
+This overlay completes the first durable part of section 22.281 item 1. The
+native runner now persists every exact Authority claim snapshot as a
+create-new Execution Receipt V1 prefix before the snapshot can be returned as
+a control-plane capability.
+
+The change deliberately reuses the existing
+`cinatoken-ring-transition-runner-execution-receipt-v1` schema. It does not
+create a second receipt format, alter the frozen terminal vectors, or treat a
+receipt as Authority state. Checked-in release, execution-activation, and
+credential trust remain disabled. No credential was read and no Cloudflare
+API, Authority, deployment, route, DNS, customer traffic, billing, or Go/VPS
+mutation was performed.
+
+### Prefix state machine
+
+`plan_snapshot_receipts` projects a fully verified Authority snapshot into
+the unique canonical prefix implied by its complete ordered history:
+
+| Exact Authority snapshot | Required receipt prefix | Sealed |
+|---|---|---|
+| `claimed/0` | claim-observed genesis | no |
+| nonterminal state with N history events | genesis plus N Authority step/expiry receipts | no |
+| terminal state with N history events | genesis plus N history receipts plus terminal seal | yes |
+
+An empty chain is invalid. A terminal Authority status without a terminal
+seal is invalid in both Rust and the independent JavaScript verifier. A
+terminal seal must be the final receipt, bind the final snapshot and history
+digests, carry the exact chain length and terminal time, and prohibit every
+later record.
+
+The existing `plan_terminal_receipts` and `ReceiptStore::verify` APIs remain
+terminal-only. They now delegate to the prefix machinery and still reject an
+unsealed chain. The explicit `install_snapshot_plan` and `verify_prefix` APIs
+are the only interfaces that accept a valid nonterminal prefix. This keeps
+callers from accidentally using partial audit evidence where a terminal
+proof is required.
+
+### Exact-GET evidence boundary
+
+`PreparedControlPlane`, `ClaimedControlPlane`, and
+`ClaimRecoveryControlPlane` now own a
+`PersistentSnapshotReceiptRecorder`. It is constructed from the already
+verified installation root and publication identity; it accepts no
+caller-selected receipt path or identity.
+
+Every `read_exact_claim_at` follows this order:
+
+```text
+bounded authenticated exact Authority GET
+  -> strict response and complete snapshot verification
+  -> publication/credential/snapshot identity join
+  -> canonical prefix planning
+  -> create-new prefix install and independent readback
+  -> return the verified snapshot capability
+```
+
+Receipt planning or persistence failure returns
+`ControlPlaneError::Receipt` and no snapshot capability escapes. This applies
+to initial claim success, ambiguous claim recovery, typed T1 and
+Edge-previous append recovery, and any existing path that obtains its next
+state through the shared exact-GET function.
+
+The receipt remains audit evidence only. It cannot authorize a POST, recreate
+a consumed typestate, restore a dispatch capability, mint a deployment
+permit, advance the reducer, or override Authority. Restart recovery must
+still verify the signed release, publication, activation, dispatch guard,
+credentials, and exact Authority state.
+
+### Create-new extension and concurrency
+
+Receipt slots remain fixed-width, predecessor-hash-bound canonical files.
+Installation accepts only these outcomes:
+
+| Existing durable state | Candidate snapshot | Result |
+|---|---|---|
+| no chain | valid genesis or longer prefix | create missing slots |
+| exact same prefix | same verified snapshot | exact replay |
+| shorter exact prefix | strictly extending verified snapshot | replay old slots, create suffix |
+| longer durable prefix | stale shorter snapshot | conflict; caller must re-read Authority |
+| same sequence, different bytes | divergent snapshot/history/identity | conflict |
+| gap, unknown file, linked file, invalid digest, post-seal record | any | fail closed |
+| publish result cannot be confirmed by fixed-target readback | any | durability unknown |
+
+Concurrent writers of the same genesis are therefore idempotent: exactly one
+slot creation is observed and all other successful writers are exact replays.
+Concurrent or stale writers that do not describe the same prefix cannot
+silently win or truncate the durable chain.
+
+On Windows, verification tolerates only a bounded transient
+`PermissionDenied`/`WouldBlock` window for a cryptographically random,
+schema-valid staging filename and ignores a staging file that vanished before
+metadata read. All other names and metadata failures remain fail closed.
+This is contract-test portability, not production filesystem evidence. The
+Linux no-follow, no-replace, file-sync, directory-sync, independent-readback,
+ACL, kill, ext4/XFS and power-loss campaign remains required.
+
+### Cross-runtime contract
+
+The independent JavaScript verifier now exposes
+`verifyRingTransitionExecutionReceiptPrefix`. It verifies the same:
+
+- strict canonical JSON, duplicate/unknown-field rejection and byte bounds;
+- contiguous sequence and exact predecessor SHA-256;
+- invariant release, credential and claim identities;
+- monotonic record times and state-version progression;
+- Authority step and expiry semantic digests;
+- terminal-status/seal coupling and terminal-seal finality.
+
+The frozen `claimed -> t1_verified` prefix head is:
+
+```text
+058f4e27874bbab0243a81178ba41187cc981c43de43fce2fc70ec5a5667a1c5
+```
+
+The older terminal chain head and canonical bytes are unchanged. The
+JavaScript tests also prove that the terminal-only verifier rejects a valid
+unsealed T1 prefix and that the prefix verifier rejects a terminal step whose
+seal is missing.
+
+### Focused local evidence
+
+Focused evidence on this worktree is:
+
+- `cargo fmt --all -- --check`: PASS;
+- runner Rust library: 95 tests, all PASS;
+- focused JavaScript receipt verifier: 13 tests and 32 expectations, all
+  PASS;
+- runner aggregate: 95 library tests, one binary test, two CLI tests and 40
+  JavaScript tests/150 expectations, all PASS;
+- broader ring-transition aggregate: 66 JavaScript tests/729 expectations,
+  all PASS;
+- signed source and release descriptions: the fixed 28-module closure is
+  unchanged; and
+- repeated eight-writer genesis publication: one create plus exact replays,
+  with no chain gaps or divergent bytes.
+
+The complete repository `bun run check` also passed with exit code 0 in 694.2
+seconds. It included 859 Worker library tests, 71 frontend tests, the runner
+and broader ring-transition gates above, Worker/WFP WASM target checks, and
+frontend bundle redaction and budget audits with zero findings/failures.
+
+The Rust transport cases additionally prove that claimed and T1 exact GETs
+persist the prefix before returning; a receipt conflict returns no snapshot;
+claimed extends to T1 without rewriting genesis; and repeated T1 readback
+creates no new slot. These are local deterministic and Windows contract
+results, not remote staging or production evidence.
+
+### Remaining P0 sequence
+
+This overlay does not yet create a pre-request operation receipt. A process
+can still stop after a mutation becomes externally observable but before the
+following exact GET installs its snapshot prefix. The dispatch guard prevents
+claim POST replay, and append paths remain exact-GET recoverable, but the
+receipt chain does not yet distinguish request-not-started from
+request-started/may-have-escaped.
+
+The next K7 implementation order is:
+
+1. append durable request-start and request-finish/ambiguous boundary receipts
+   around every Authority append, Cloudflare mutation, stable readback,
+   deployment and recovery transition without storing headers, credentials,
+   raw request bodies or provider content;
+2. make each operation identity deterministic and predecessor-bound so a
+   restart can perform exact readback but can never repeat a possibly escaped
+   mutation;
+3. implement library-owned `execute_current()` that re-verifies all installed
+   authority and performs at most one reducer action per invocation;
+4. apply the strict status/result classification and exact-GET recovery model
+   to the remaining mutation-intent and post-observation append paths;
+5. revalidate all four independent approvals and externally anchor the
+   terminal receipt-chain head;
+6. run exact Rust 1.78 Linux reproducible builds plus two-process path/link,
+   response-loss, kill, sync, ACL, backup/restore, ext4/XFS and power-loss
+   campaigns;
+7. implement and fault-test the versioned Durable Object shard supervisor,
+   fencing, drain/recovery alarms and disposable Container adapter;
+8. close cached channel candidate, billing-expression DST/golden, paid SSE
+   terminal handoff, task-provider and financial-state Go-compatibility gaps;
+9. collect isolated staging Access, route, D1, version, key-rotation, scope,
+   revocation, rollback and Go/VPS fallback evidence; and
+10. pass G1-G8 before any `cinatoken.com` traffic movement.
+
+Go/VPS remains the traffic, scheduler and financial authority. Production
+remains **NO-GO**.

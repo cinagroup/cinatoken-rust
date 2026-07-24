@@ -9,6 +9,7 @@ import {
   describeRingTransitionExecutionReceiptContract,
   sha256ReceiptBytes,
   verifyRingTransitionExecutionReceiptChain,
+  verifyRingTransitionExecutionReceiptPrefix,
 } from "../tools/relay_container_ring_transition_receipt_contract.mjs";
 
 const H = Object.freeze({
@@ -51,6 +52,7 @@ describe("K7 ring-transition Execution Receipt V1 replay verifier", () => {
         sharedIdentityRequired: true,
         monotonicRecordedAtRequired: true,
         terminalSealRequired: true,
+        unsealedPrefixVerificationSupported: true,
         credentialsRead: false,
         networkRequestsPerformed: false,
         filesWritten: false,
@@ -82,6 +84,35 @@ describe("K7 ring-transition Execution Receipt V1 replay verifier", () => {
       headSha256:
         "749caa2c9591265ef0bc93381fb6d03c191621479cbd84c1806c881b4f022565",
     });
+  });
+
+  test("independently verifies claimed and T1 prefixes without treating them as terminal", () => {
+    const terminalBytes = deterministicTwoRecordChain().bytes;
+    const t1Prefix = controllerRecoveryExpiryChain().bytes.slice(0, 2);
+    expect(
+      verifyRingTransitionExecutionReceiptPrefix(terminalBytes.slice(0, 1)),
+    ).toEqual({
+      ok: true,
+      authorizationIdSha256: H.authorization,
+      receiptCount: 1,
+      headSha256:
+        "01dcd416f65dbe5b7a75fd6a400f077533deafcf1d62d992f2b24a9b59e24988",
+      sealed: false,
+    });
+    expect(verifyRingTransitionExecutionReceiptPrefix(t1Prefix)).toEqual({
+      ok: true,
+      authorizationIdSha256: H.authorization,
+      receiptCount: 2,
+      headSha256:
+        "058f4e27874bbab0243a81178ba41187cc981c43de43fce2fc70ec5a5667a1c5",
+      sealed: false,
+    });
+    expect(() =>
+      verifyRingTransitionExecutionReceiptChain(t1Prefix),
+    ).toThrow(/terminal seal is missing/);
+    expect(() =>
+      verifyRingTransitionExecutionReceiptPrefix(terminalBytes.slice(0, 2)),
+    ).toThrow(/terminal seal is missing/);
   });
 
   test("rejects predecessor drift", () => {

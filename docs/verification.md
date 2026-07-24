@@ -8925,3 +8925,58 @@ durability, remote Access/D1/version behavior, credential revocation, or
 staging rollback. Checked-in trust remains disabled. No Authority claim,
 Cloudflare request, deployment, route, DNS, traffic, billing, or Go/VPS
 change occurred. Production remains **NO-GO**.
+
+## 2026-07-24 Incremental Receipt Prefix Verification
+
+The exact-GET receipt-prefix increment was verified without credentials or
+remote network access:
+
+```powershell
+cargo fmt --all -- --check
+cargo test -p cinatoken-ring-transition-runner --lib --no-fail-fast
+cargo clippy -p cinatoken-ring-transition-runner --all-targets -- -D warnings
+bun test tests/relay-container-ring-transition-receipt.test.mjs
+bun run check:ring-transition-runner
+bun run check:relay-container:ring-transition
+```
+
+Observed results before the repository-wide gate:
+
+- runner Rust library: 95 passed;
+- runner binary and CLI: one plus two passed;
+- focused receipt JavaScript: 13 tests and 32 expectations;
+- runner JavaScript aggregate: 40 tests and 150 expectations;
+- broader ring-transition JavaScript: 66 tests and 729 expectations;
+- signed source/release descriptions: 28 fixed modules; and
+- formatting: PASS.
+
+The complete repository `bun run check` passed with exit code 0 in 694.2
+seconds. It included 859 Worker library tests, 71 frontend tests, required
+Worker/WFP WASM target checks, 459-file bundle-redaction inspection with zero
+findings, and all frontend bundle budgets with zero failures.
+
+The new cases prove:
+
+- claimed exact GET persists one unsealed genesis before returning;
+- T1 exact GET extends that chain to two records without rewriting genesis;
+- repeated exact T1 GET is an exact replay and creates no new slot;
+- receipt conflict prevents a verified snapshot from becoming a capability;
+- eight concurrent same-genesis installers yield one create and exact replays
+  only;
+- terminal-only Rust and JavaScript verification reject an unsealed prefix;
+- prefix verification accepts claimed and T1 but rejects terminal status
+  without its seal;
+- canonical terminal vectors remain byte-for-byte unchanged; and
+- receipt persistence joins snapshot, publication and credential identities
+  without reading or serializing secret material.
+
+Windows concurrency establishes canonical create-new/replay behavior only.
+It does not establish Linux no-follow/no-replace durability, parent sync,
+process-kill recovery, UID/GID/ACL isolation, ext4/XFS power-loss behavior,
+external anchoring, or remote staging behavior.
+
+The current prefix is post-readback evidence. It does not prove whether an
+external mutation started or escaped before a crash. Operation-start and
+operation-finish/ambiguous receipt boundaries, the resumable driver and the
+remaining production gates are still required. Checked-in trust remains
+disabled; production remains **NO-GO**.

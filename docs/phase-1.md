@@ -3321,3 +3321,43 @@ the resumable single-action driver, strict append recovery for the remaining
 mutation and observation paths, Linux crash/power-loss proof, approval and
 external-anchor evidence, isolated staging, and credential revocation.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-24 Incremental Authority Receipt Prefix
+
+Phase 1 now persists every exact verified Authority claim snapshot before
+returning it as a runner capability. The existing Receipt V1 format is
+extended operationally, not structurally:
+
+```text
+claimed exact GET -> create/replay genesis prefix
+T1 exact GET      -> replay genesis + create/replay T1 suffix
+terminal GET      -> replay prefix + create/replay terminal seal
+```
+
+Only the missing create-new suffix may be written. Existing exact bytes are
+replayed; a stale shorter view, divergent history, slot conflict, gap,
+unknown file, linked file, invalid semantic digest, or unconfirmed durability
+fails closed. A receipt failure prevents the snapshot capability from
+escaping.
+
+The independent JavaScript prefix verifier matches Rust and rejects terminal
+status without a seal. Terminal-only APIs continue to reject all unsealed
+prefixes. Receipts remain non-authorizing audit evidence and cannot restore a
+POST, append or deployment capability.
+
+Focused and aggregate verification passes with 95 runner Rust library tests,
+one binary test, two CLI tests, 13 JavaScript receipt tests/32 expectations,
+40 runner JavaScript tests/150 expectations, and 66 broader ring-transition
+tests/729 expectations. The fixed signed source closure remains 28 modules.
+Eight concurrent genesis writers produce one creation and exact replays only.
+The complete repository gate passed in 694.2 seconds with 859 Worker tests,
+71 frontend tests, required WASM checks, and zero frontend redaction or budget
+findings. No checked-in trust, credential or remote API was used.
+
+Next is the operation boundary layer: durable request-start plus
+request-finish/ambiguous receipts before and after every Authority or
+Cloudflare side effect, deterministic operation identities, and restart-time
+GET-only recovery. Then comes the one-action resumable driver, remaining
+append-path recovery, Linux crash/power-loss evidence, approval and external
+anchor gates, isolated staging, credential revocation and G1-G8. Go/VPS
+remains authoritative and production remains **NO-GO**.

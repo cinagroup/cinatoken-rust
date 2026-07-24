@@ -601,6 +601,12 @@ pub(crate) struct ClaimDispatchLocation {
     directory: PathBuf,
 }
 
+impl ClaimDispatchLocation {
+    pub(crate) fn installation_root(&self) -> &Path {
+        &self.installation_root
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ClaimDispatchReservation {
     Fresh,

@@ -165,6 +165,7 @@ export function describeRingTransitionExecutionReceiptContract() {
       sharedIdentityRequired: true,
       monotonicRecordedAtRequired: true,
       terminalSealRequired: true,
+      unsealedPrefixVerificationSupported: true,
       credentialsRead: false,
       networkRequestsPerformed: false,
       filesWritten: false,
@@ -244,14 +245,30 @@ export function computeRingTransitionExpiryDigest({ claim, expiry }) {
 }
 
 export function verifyRingTransitionExecutionReceiptChain(canonicalByteArrays) {
+  const verified = verifyRingTransitionExecutionReceiptSequence(
+    canonicalByteArrays,
+  );
+  if (!verified.sealed) {
+    throw new Error("[chain] terminal seal is missing");
+  }
+  return verified;
+}
+
+export function verifyRingTransitionExecutionReceiptPrefix(
+  canonicalByteArrays,
+) {
+  return verifyRingTransitionExecutionReceiptSequence(canonicalByteArrays);
+}
+
+function verifyRingTransitionExecutionReceiptSequence(canonicalByteArrays) {
   if (!Array.isArray(canonicalByteArrays)) {
     throw new TypeError("[chain] expected an array of canonical byte arrays");
   }
   if (
-    canonicalByteArrays.length < 2 ||
+    canonicalByteArrays.length < 1 ||
     canonicalByteArrays.length > MAX_RING_TRANSITION_RECEIPTS_PER_CHAIN
   ) {
-    throw new Error("[chain] receipt count must be between 2 and 128");
+    throw new Error("[chain] receipt count must be between 1 and 128");
   }
 
   const receipts = canonicalByteArrays.map((value, index) =>
@@ -347,15 +364,16 @@ export function verifyRingTransitionExecutionReceiptChain(canonicalByteArrays) {
     previous = receipt;
   }
 
-  if (!sealed) {
+  if (TERMINAL_CLAIM_STATUSES.has(status) && !sealed) {
     throw new Error("[chain] terminal seal is missing");
   }
+
   return Object.freeze({
     ok: true,
     authorizationIdSha256: genesis.claim.authorizationIdSha256,
     receiptCount: receipts.length,
     headSha256: previous.sha256,
-    sealed: true,
+    sealed,
   });
 }
 

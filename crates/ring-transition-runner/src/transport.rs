@@ -27,7 +27,7 @@ use crate::readback::{
 use crate::receipt::{
     plan_snapshot_receipts, read_operation_request_sha256, OperationFinishInput,
     OperationIdentityInput, OperationKind, OperationOutcome, OperationReceiptAudit,
-    OperationReservation, OperationStartInput, ReceiptError, ReceiptStore,
+    OperationReservation, OperationStartInput, ReceiptError, ReceiptStore, VerifiedTerminalClosure,
 };
 use crate::release::{canonical_json, reject_duplicate_json, MAX_SAFE_INTEGER};
 use crate::STAGING_AUTHORITY_ORIGIN;
@@ -74,9 +74,11 @@ type ProductionConnector = NativeHttpsConnector<HttpConnector>;
 type ProductionHttpClient = Client<ProductionConnector, Full<Bytes>>;
 
 pub struct PreparedControlPlane {
-    core: ControlPlaneCore<HyperHttpsExchange, PersistentReceiptRecorder>,
+    core: Option<ControlPlaneCore<HyperHttpsExchange, PersistentReceiptRecorder>>,
+    identity: CredentialIdentity,
     execution_activation: ExecutionActivationIdentity,
     dispatch_location: ClaimDispatchLocation,
+    terminal_closure: Option<VerifiedTerminalClosure>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -194,11 +196,11 @@ impl ExecuteCurrentOutcome {
 
 impl PreparedControlPlane {
     pub fn identity(&self) -> &CredentialIdentity {
-        self.core.credentials.identity()
+        &self.identity
     }
 
     pub fn access_service_token_verified(&self) -> bool {
-        true
+        self.core.is_some()
     }
 
     pub fn execution_activation(&self) -> &ExecutionActivationIdentity {
@@ -206,6 +208,12 @@ impl PreparedControlPlane {
     }
 
     pub async fn create_claim_once(self) -> Result<ClaimCreationOutcome, ControlPlaneError> {
+        if self.terminal_closure.is_some() {
+            return Err(ControlPlaneError::Receipt(ReceiptError::AlreadySealed));
+        }
+        let core = self
+            .core
+            .ok_or(ControlPlaneError::Receipt(ReceiptError::AlreadySealed))?;
         let now = system_time_seconds()?;
         let post_request_id = random_request_id()?;
         let read_request_id = random_request_id()?;
@@ -219,17 +227,16 @@ impl PreparedControlPlane {
         let claim_send_authorized = matches!(reservation, ClaimDispatchReservation::Fresh);
         let establishment = match reservation {
             ClaimDispatchReservation::Fresh => {
-                self.core
-                    .establish_claim_once_at(
-                        &self.execution_activation,
-                        now,
-                        &post_request_id,
-                        &read_request_id,
-                    )
-                    .await?
+                core.establish_claim_once_at(
+                    &self.execution_activation,
+                    now,
+                    &post_request_id,
+                    &read_request_id,
+                )
+                .await?
             }
             ClaimDispatchReservation::Existing => {
-                self.core.finish_unresolved_write_operation(
+                core.finish_unresolved_write_operation(
                     &operation_identity(
                         OperationKind::AuthorityClaimCreate,
                         0,
@@ -238,8 +245,7 @@ impl PreparedControlPlane {
                     ),
                     now,
                 )?;
-                match self
-                    .core
+                match core
                     .read_activated_claim_at(&self.execution_activation, now, &read_request_id)
                     .await
                 {
@@ -259,7 +265,7 @@ impl PreparedControlPlane {
                 snapshot,
                 classification,
             } => Ok(ClaimCreationOutcome::Claimed(ClaimedControlPlane {
-                core: self.core,
+                core,
                 execution_activation: self.execution_activation,
                 snapshot,
                 classification,
@@ -269,7 +275,7 @@ impl PreparedControlPlane {
                 error: last_error,
                 classification,
             } => Ok(ClaimCreationOutcome::Recovery(ClaimRecoveryControlPlane {
-                core: self.core,
+                core,
                 execution_activation: self.execution_activation,
                 classification,
                 claim_send_authorized,
@@ -279,6 +285,16 @@ impl PreparedControlPlane {
     }
 
     pub async fn execute_current(self) -> Result<ExecuteCurrentOutcome, ControlPlaneError> {
+        if let Some(closure) = &self.terminal_closure {
+            return Ok(ExecuteCurrentOutcome {
+                action: ExecuteCurrentAction::ReceiptSealed,
+                authorization_id_sha256: closure.authorization_id_sha256.clone(),
+                status: Some(closure.terminal_status),
+                state_version: Some(closure.terminal_state_version),
+                claim_classification: None,
+                mutation_transport_outcome: None,
+            });
+        }
         match self.create_claim_once().await? {
             ClaimCreationOutcome::Claimed(claimed) if claimed.claim_send_authorized => {
                 Ok(ExecuteCurrentOutcome::from_snapshot(
@@ -542,27 +558,44 @@ pub(crate) async fn verify_loaded_credentials(
     execution_activation
         .validate_credential_identity(loaded.identity())
         .map_err(ControlPlaneError::ExecutionActivation)?;
-    let exchange = HyperHttpsExchange::new()?;
+    let identity = loaded.identity().clone();
     let receipt_recorder = PersistentReceiptRecorder::open(
         dispatch_location.installation_root(),
         receipt_publication,
         execution_activation.clone(),
     )
     .map_err(ControlPlaneError::Receipt)?;
-    let now = system_time_seconds()?;
-    receipt_recorder
-        .audit_operations(loaded.identity())
+    let operation_audit = receipt_recorder
+        .audit_operations(&identity)
         .map_err(ControlPlaneError::Receipt)?;
+    if operation_audit.unfinished_count != 0 {
+        receipt_recorder
+            .recover_unfinished_operations(&identity, system_time_seconds()?)
+            .map_err(ControlPlaneError::Receipt)?;
+    }
+    if let Some(terminal_closure) = receipt_recorder
+        .recover_terminal_closure(&identity)
+        .map_err(ControlPlaneError::Receipt)?
+    {
+        return Ok(PreparedControlPlane {
+            core: None,
+            identity,
+            execution_activation,
+            dispatch_location,
+            terminal_closure: Some(terminal_closure),
+        });
+    }
+    let exchange = HyperHttpsExchange::new()?;
+    let now = system_time_seconds()?;
     let request_id = random_request_id()?;
     let core =
         ControlPlaneCore::verify(loaded, exchange, receipt_recorder, now, &request_id).await?;
-    core.receipt_recorder
-        .recover_unfinished_operations(core.credentials.identity(), now)
-        .map_err(ControlPlaneError::Receipt)?;
     Ok(PreparedControlPlane {
-        core,
+        core: Some(core),
+        identity,
         execution_activation,
         dispatch_location,
+        terminal_closure: None,
     })
 }
 
@@ -588,6 +621,25 @@ trait ReceiptRecorder: Send + Sync {
         input: &OperationFinishInput,
     ) -> Result<OperationOutcome, ReceiptError> {
         Ok(input.outcome)
+    }
+
+    fn record_terminal_snapshot_candidate(
+        &self,
+        _snapshot: &VerifiedSnapshot,
+        _credentials: &CredentialIdentity,
+        _identity: &OperationIdentityInput,
+        _finish: &OperationFinishInput,
+    ) -> Result<bool, ReceiptError> {
+        Ok(false)
+    }
+
+    fn finish_operation_after_terminal_candidate(
+        &self,
+        credentials: &CredentialIdentity,
+        identity: &OperationIdentityInput,
+        input: &OperationFinishInput,
+    ) -> Result<OperationOutcome, ReceiptError> {
+        self.finish_operation(credentials, identity, input)
     }
 
     fn finish_unresolved_operation(
@@ -637,6 +689,14 @@ impl PersistentReceiptRecorder {
             activation,
         })
     }
+
+    fn recover_terminal_closure(
+        &self,
+        credentials: &CredentialIdentity,
+    ) -> Result<Option<VerifiedTerminalClosure>, ReceiptError> {
+        self.store
+            .recover_terminal_closure(&self.publication, credentials, &self.activation)
+    }
 }
 
 impl ReceiptRecorder for PersistentReceiptRecorder {
@@ -646,7 +706,16 @@ impl ReceiptRecorder for PersistentReceiptRecorder {
         credentials: &CredentialIdentity,
     ) -> Result<(), ReceiptError> {
         let plan = plan_snapshot_receipts(snapshot, &self.publication, credentials)?;
-        self.store.install_snapshot_plan(&plan)?;
+        if plan.is_sealed() {
+            self.store.install_terminal_closure(
+                &plan,
+                &self.publication,
+                credentials,
+                &self.activation,
+            )?;
+        } else {
+            self.store.install_snapshot_plan(&plan)?;
+        }
         Ok(())
     }
 
@@ -666,6 +735,39 @@ impl ReceiptRecorder for PersistentReceiptRecorder {
         input: &OperationFinishInput,
     ) -> Result<OperationOutcome, ReceiptError> {
         self.store.finish_operation(
+            &self.publication,
+            credentials,
+            &self.activation,
+            identity,
+            input,
+        )
+    }
+
+    fn record_terminal_snapshot_candidate(
+        &self,
+        snapshot: &VerifiedSnapshot,
+        credentials: &CredentialIdentity,
+        identity: &OperationIdentityInput,
+        finish: &OperationFinishInput,
+    ) -> Result<bool, ReceiptError> {
+        self.store.install_terminal_snapshot_candidate(
+            snapshot,
+            &self.publication,
+            credentials,
+            &self.activation,
+            identity,
+            finish,
+        )?;
+        Ok(true)
+    }
+
+    fn finish_operation_after_terminal_candidate(
+        &self,
+        credentials: &CredentialIdentity,
+        identity: &OperationIdentityInput,
+        input: &OperationFinishInput,
+    ) -> Result<OperationOutcome, ReceiptError> {
+        self.store.finish_operation_after_terminal_candidate(
             &self.publication,
             credentials,
             &self.activation,
@@ -1011,6 +1113,19 @@ impl<E: HttpExchange, R: ReceiptRecorder> ControlPlaneCore<E, R> {
                     ReadOperationDisposition::Rejected(ControlPlaneError::AuthorityRejected)
                 }
                 _ => ReadOperationDisposition::Ambiguous(ControlPlaneError::AuthorityRejected),
+            },
+            |snapshot, operation, finish| {
+                if !snapshot.status().is_terminal() {
+                    return Ok(false);
+                }
+                self.receipt_recorder
+                    .record_terminal_snapshot_candidate(
+                        snapshot,
+                        self.credentials.identity(),
+                        operation,
+                        finish,
+                    )
+                    .map_err(ControlPlaneError::Receipt)
             },
         )
         .await?;
@@ -1893,6 +2008,7 @@ async fn read_cloudflare_json<E: HttpExchange, R: ReceiptRecorder>(
                 ReadOperationDisposition::Ambiguous(ControlPlaneError::ReadbackRejected)
             }
         },
+        |_, _, _| Ok(false),
     )
     .await
 }
@@ -2308,7 +2424,7 @@ impl<T> ReadOperationDisposition<T> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn perform_recorded_read<E, R, T, F>(
+async fn perform_recorded_read<E, R, T, F, G>(
     exchange: &E,
     receipt_recorder: &R,
     identity: &CredentialIdentity,
@@ -2320,11 +2436,17 @@ async fn perform_recorded_read<E, R, T, F>(
     request: Request<Full<Bytes>>,
     maximum_response_bytes: usize,
     classify: F,
+    persist_accepted: G,
 ) -> Result<T, ControlPlaneError>
 where
     E: HttpExchange,
     R: ReceiptRecorder,
     F: FnOnce(&BoundedHttpResponse) -> ReadOperationDisposition<T>,
+    G: FnOnce(
+        &T,
+        &OperationIdentityInput,
+        &OperationFinishInput,
+    ) -> Result<bool, ControlPlaneError>,
 {
     require_request_id(request_id)?;
     if request.method() != Method::GET
@@ -2385,13 +2507,23 @@ where
     };
     let disposition = classify(&response);
     let intended = disposition.outcome();
-    let persisted = receipt_recorder
-        .finish_operation(
+    let finish = operation_finish(intended, now, Some(&response));
+    let terminal_candidate_persisted = match &disposition {
+        ReadOperationDisposition::Accepted(value) => {
+            persist_accepted(value, &operation.identity, &finish)?
+        }
+        ReadOperationDisposition::Rejected(_) | ReadOperationDisposition::Ambiguous(_) => false,
+    };
+    let persisted = if terminal_candidate_persisted {
+        receipt_recorder.finish_operation_after_terminal_candidate(
             identity,
             &operation.identity,
-            &operation_finish(intended, now, Some(&response)),
+            &finish,
         )
-        .map_err(ControlPlaneError::Receipt)?;
+    } else {
+        receipt_recorder.finish_operation(identity, &operation.identity, &finish)
+    }
+    .map_err(ControlPlaneError::Receipt)?;
     if persisted != intended {
         return Err(ControlPlaneError::Receipt(ReceiptError::Conflict));
     }
@@ -2534,6 +2666,7 @@ async fn verify_cloudflare_token<E: HttpExchange, R: ReceiptRecorder>(
                 ))
             }
         },
+        |_, _, _| Ok(false),
     )
     .await
 }
@@ -2592,6 +2725,7 @@ async fn send_authority_preflight<E: HttpExchange, R: ReceiptRecorder>(
                 ReadOperationDisposition::Ambiguous(ControlPlaneError::AuthorityRejected)
             }
         },
+        |_, _, _| Ok(false),
     )
     .await
 }
@@ -3337,6 +3471,88 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct TerminalCandidateOrderRecorder {
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl TerminalCandidateOrderRecorder {
+        fn new() -> Self {
+            Self {
+                events: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn events(&self) -> Vec<&'static str> {
+            self.events
+                .lock()
+                .expect("terminal candidate events lock")
+                .clone()
+        }
+    }
+
+    impl ReceiptRecorder for TerminalCandidateOrderRecorder {
+        fn record_snapshot(
+            &self,
+            _snapshot: &VerifiedSnapshot,
+            _credentials: &CredentialIdentity,
+        ) -> Result<(), ReceiptError> {
+            self.events
+                .lock()
+                .expect("terminal candidate events lock")
+                .push("snapshot");
+            Ok(())
+        }
+
+        fn reserve_operation(
+            &self,
+            _credentials: &CredentialIdentity,
+            _input: &OperationStartInput,
+        ) -> Result<OperationReservation, ReceiptError> {
+            Ok(OperationReservation::Fresh)
+        }
+
+        fn finish_operation(
+            &self,
+            _credentials: &CredentialIdentity,
+            _identity: &OperationIdentityInput,
+            input: &OperationFinishInput,
+        ) -> Result<OperationOutcome, ReceiptError> {
+            self.events
+                .lock()
+                .expect("terminal candidate events lock")
+                .push("ordinary_finish");
+            Ok(input.outcome)
+        }
+
+        fn record_terminal_snapshot_candidate(
+            &self,
+            _snapshot: &VerifiedSnapshot,
+            _credentials: &CredentialIdentity,
+            _identity: &OperationIdentityInput,
+            _finish: &OperationFinishInput,
+        ) -> Result<bool, ReceiptError> {
+            self.events
+                .lock()
+                .expect("terminal candidate events lock")
+                .push("candidate");
+            Ok(true)
+        }
+
+        fn finish_operation_after_terminal_candidate(
+            &self,
+            _credentials: &CredentialIdentity,
+            _identity: &OperationIdentityInput,
+            input: &OperationFinishInput,
+        ) -> Result<OperationOutcome, ReceiptError> {
+            self.events
+                .lock()
+                .expect("terminal candidate events lock")
+                .push("terminal_finish");
+            Ok(input.outcome)
+        }
+    }
+
     struct ObservedRequest {
         method: Method,
         uri: String,
@@ -3860,6 +4076,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_exact_claim_persists_candidate_before_finishing_the_read() {
+        let snapshot = aborted_snapshot_value();
+        let verified = verified_snapshot(&snapshot);
+        let identity = matching_identity();
+        let request_id = "terminal-candidate-order";
+        let exchange = ScriptedExchange::new(vec![Ok(scripted_json(
+            StatusCode::OK,
+            serde_json::from_slice(&exact_claim_response(&snapshot, &identity, request_id))
+                .unwrap(),
+        ))]);
+        let recorder = TerminalCandidateOrderRecorder::new();
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+            receipt_recorder: recorder.clone(),
+        };
+
+        let returned = core
+            .read_exact_claim_at(
+                verified.authorization_id_sha256(),
+                verified.claim_digest_sha256(),
+                verified.claim_owner_sha256(),
+                NOW,
+                request_id,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(returned.status(), ClaimStatus::Aborted);
+        assert_eq!(
+            recorder.events(),
+            vec!["candidate", "terminal_finish", "snapshot"]
+        );
+        assert_eq!(exchange.observed().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn persistent_terminal_exact_claim_installs_the_complete_local_closure() {
+        let root = temporary_receipt_root("terminal-candidate-closure");
+        let snapshot = aborted_snapshot_value();
+        let verified = verified_snapshot(&snapshot);
+        let identity = matching_identity();
+        let request_id = "persistent-terminal-candidate";
+        let exchange = ScriptedExchange::new(vec![Ok(scripted_json(
+            StatusCode::OK,
+            serde_json::from_slice(&exact_claim_response(&snapshot, &identity, request_id))
+                .unwrap(),
+        ))]);
+        let activation = transport_activation();
+        let publication = matching_publication();
+        let credentials = verified_credentials_for_transport_test();
+        let recorder =
+            PersistentReceiptRecorder::open(&root, publication.clone(), activation.clone())
+                .unwrap();
+        let core = ControlPlaneCore {
+            credentials,
+            exchange: exchange.clone(),
+            receipt_recorder: recorder,
+        };
+
+        core.read_exact_claim_at(
+            verified.authorization_id_sha256(),
+            verified.claim_digest_sha256(),
+            verified.claim_owner_sha256(),
+            NOW,
+            request_id,
+        )
+        .await
+        .unwrap();
+
+        let store = ReceiptStore::open(&root).unwrap();
+        let closure = store
+            .recover_terminal_closure(&publication, &identity, &activation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(closure.terminal_status, ClaimStatus::Aborted);
+        assert_eq!(closure.terminal_state_version, 1);
+        assert_eq!(exchange.observed().len(), 1);
+        cleanup_receipt_root(&root);
+    }
+
+    #[tokio::test]
     async fn exact_claim_timeout_statuses_are_ambiguous_read_evidence() {
         let snapshot = claimed_snapshot_value();
         let verified = verified_snapshot(&snapshot);
@@ -4095,6 +4393,56 @@ mod tests {
         assert!(exchange.observed().is_empty());
         assert!(recorder.starts().is_empty());
         assert!(recorder.finishes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepared_terminal_closure_returns_receipt_sealed_without_an_http_core() {
+        let root = temporary_receipt_root("prepared-terminal");
+        let activation = transport_activation();
+        let identity = verified_credentials_for_transport_test().identity().clone();
+        let prepared = PreparedControlPlane {
+            core: None,
+            identity,
+            execution_activation: activation.clone(),
+            dispatch_location: ClaimDispatchLocation::for_transport_test(root.clone()),
+            terminal_closure: Some(VerifiedTerminalClosure {
+                authorization_id_sha256: activation.authorization_id_sha256().to_owned(),
+                terminal_status: ClaimStatus::Aborted,
+                terminal_state_version: 7,
+                execution_receipt_head_sha256: "a".repeat(64),
+                operation_head_set_sha256: "b".repeat(64),
+                local_seal_sha256: "c".repeat(64),
+            }),
+        };
+        assert!(!prepared.access_service_token_verified());
+        let outcome = prepared.execute_current().await.unwrap();
+        assert_eq!(outcome.action, ExecuteCurrentAction::ReceiptSealed);
+        assert_eq!(
+            outcome.authorization_id_sha256,
+            activation.authorization_id_sha256()
+        );
+        assert_eq!(outcome.status, Some(ClaimStatus::Aborted));
+        assert_eq!(outcome.state_version, Some(7));
+        assert_eq!(outcome.claim_classification, None);
+        assert_eq!(outcome.mutation_transport_outcome, None);
+        cleanup_receipt_root(&root);
+    }
+
+    #[test]
+    fn startup_source_recovers_operations_and_terminal_closure_before_http_construction() {
+        let source = include_str!("transport.rs");
+        let start = source
+            .find("pub(crate) async fn verify_loaded_credentials")
+            .unwrap();
+        let end = source[start..].find("trait ReceiptRecorder").unwrap() + start;
+        let startup = &source[start..end];
+        let recover_operations = startup.find(".recover_unfinished_operations(").unwrap();
+        let recover_closure = startup.find(".recover_terminal_closure(").unwrap();
+        let construct_http = startup.find("HyperHttpsExchange::new()").unwrap();
+        let verify_remote = startup.find("ControlPlaneCore::verify(").unwrap();
+        assert!(recover_operations < recover_closure);
+        assert!(recover_closure < construct_http);
+        assert!(construct_http < verify_remote);
     }
 
     #[tokio::test]
@@ -5554,6 +5902,59 @@ mod tests {
         snapshot["state"]["terminalAt"] = Value::Null;
         snapshot["steps"] = Value::Array(Vec::new());
         snapshot["expiryEvents"] = Value::Array(Vec::new());
+        snapshot
+    }
+
+    fn aborted_snapshot_value() -> Value {
+        let mut snapshot = claimed_snapshot_value();
+        let claim_digest = snapshot["claim"]["claimDigestSha256"]
+            .as_str()
+            .expect("claim digest")
+            .to_owned();
+        let ledger_identity = snapshot["claim"]["ledgerIdentitySha256"]
+            .as_str()
+            .expect("ledger identity")
+            .to_owned();
+        let evidence_sha256 = "a".repeat(64);
+        let step_digest = sha256_hex(
+            canonical_json(&serde_json::json!({
+                "schemaVersion": 1,
+                "contract": orchestrator::STEP_CONTRACT,
+                "ledgerIdentitySha256": ledger_identity,
+                "claimDigestSha256": claim_digest,
+                "stateVersion": 1,
+                "stepCode": "terminal",
+                "fromStatus": "claimed",
+                "toStatus": "aborted",
+                "mutationRequestSha256": null,
+                "cloudflareRequestIdSha256": null,
+                "deploymentSetSha256": null,
+                "evidenceSha256": evidence_sha256,
+                "failureClass": "operator_abort",
+                "transportOutcome": "not_applicable",
+            }))
+            .expect("terminal step digest input")
+            .as_bytes(),
+        );
+        snapshot["state"]["status"] = Value::String("aborted".to_owned());
+        snapshot["state"]["stateVersion"] = Value::from(1);
+        snapshot["state"]["updatedAt"] = Value::from(NOW + 1);
+        snapshot["state"]["terminalAt"] = Value::from(NOW + 1);
+        snapshot["steps"] = Value::Array(vec![serde_json::json!({
+            "stateVersion": 1,
+            "stepCode": "terminal",
+            "fromStatus": "claimed",
+            "toStatus": "aborted",
+            "actorExecutionIdSha256": snapshot["claim"]["claimOwnerSha256"],
+            "mutationRequestSha256": null,
+            "cloudflareRequestIdSha256": null,
+            "deploymentSetSha256": null,
+            "evidenceSha256": evidence_sha256,
+            "failureClass": "operator_abort",
+            "transportOutcome": "not_applicable",
+            "stepDigestSha256": step_digest,
+            "recordedAt": NOW + 1,
+        })]);
         snapshot
     }
 

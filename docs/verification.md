@@ -9074,9 +9074,10 @@ The new and retained cases jointly prove:
 - inflight typestates remain readback-only after restart.
 
 This evidence is local state-machine and Windows filesystem-contract evidence.
-It does not establish secure installed-chain enumeration on Linux, read-only
-GET operation receipts, terminal operation-head anchoring, ext4/XFS
-power-loss durability, real Durable Object/Container supervision, remote
+Later sections add local GET operation receipts and supplied-document
+operation-head/candidate closure verification. They still do not establish
+dirfd-pinned installed-chain enumeration on Linux, ext4/XFS power-loss
+durability, real Durable Object/Container supervision, remote
 Authority/Access/D1/version behavior, credential revocation, provider
 exactly-once behavior, rollback or Go/VPS drain. Checked-in trust and CLI
 execution remain disabled; production remains **NO-GO**.
@@ -9151,3 +9152,131 @@ operation-head and independent signed/WORM anchoring, real Authority or
 Cloudflare state, replacement-credential isolation, DO/Container supervision,
 rollback, credential revocation or Go/VPS drain. Checked-in trust remains
 disabled; production remains **NO-GO**.
+
+## 2026-07-24 Operation Anchor Release-Source Closure Verification
+
+The independent local operation-anchor verifier and its complete release-source
+closure were checked with no credential access or remote network request:
+
+```powershell
+bun test --timeout 30000 tests/relay-container-ring-transition-operation-anchor.test.mjs tests/relay-container-ring-transition-release-source.test.mjs tests/relay-container-ring-transition-release.test.mjs
+bun tools/verify_relay_container_ring_transition_operation_anchor.mjs --describe
+bun tools/collect_ring_transition_runner_release_source.mjs --describe --json
+bun tools/verify_relay_container_ring_transition_release.mjs --describe --json
+bun tools/collect_ring_transition_runner_release_source.mjs --repo <clean-candidate-repository> --json
+bun run check:ring-transition-runner
+```
+
+Observed results:
+
+- combined focused JavaScript: 33 tests passed, zero failed, with 141
+  expectations;
+- operation-anchor verifier: 12 tests passed with 49 expectations;
+- release-source collector: 10 tests passed, including omission of each new
+  contract/verifier/test path;
+- detached release contract: 11 tests passed, including refreshed
+  deterministic DSSE/release/publication vectors;
+- standard `check:ring-transition-runner`: PASS with 124 Rust library tests,
+  one binary test, two CLI tests and 61 JavaScript tests/242 expectations;
+- required module count: `31`;
+- canonical module inventory SHA-256:
+  `7de1ae33cb4f36b7ea103fea15118680d076567c305270f8f74ef6d617ee4003`;
+- aggregate module bytes: `1490766`; and
+- package JSON SHA-256:
+  `487f0469bc98ce6d9a7ae6e9cc904a3e52966798067be26886221aaa1fa3277d`.
+
+The 31-path closure adds:
+
+```text
+tests/relay-container-ring-transition-operation-anchor.test.mjs
+tools/relay_container_ring_transition_operation_anchor_contract.mjs
+tools/verify_relay_container_ring_transition_operation_anchor.mjs
+```
+
+Both the source collector and detached release verifier now require these
+paths. The clean commit-object-only fixture also commits them before `git
+archive`, so omission changes or rejects the source candidate rather than
+leaving the independent anchor verifier outside the signed release source.
+The focused `check:ring-transition-runner` command now executes the
+operation-anchor test with the existing execution-activation, receipt,
+release-source and release tests.
+
+The local verifier reports
+`verificationScope=supplied_operation_anchor_documents`,
+`maximumCapacityReservations=128`,
+`suppliedHeadSetStructureVerified=true` and
+`suppliedLocalSealBindingVerified=true`. It validates canonical closed-schema
+bytes, slot ordering/uniqueness, supplied entry/count consistency, terminal-
+shaped supplied entries, head-set digest/length binding and the local seal's
+all-null/all-populated terminal-candidate tuple. When that tuple is populated,
+the supplied head set must contain the matching `accepted` terminal
+operation/start pair and
+`suppliedTerminalCandidateOperationBindingVerified=true`; when the tuple is
+absent that field remains false.
+
+This scope cannot discover a marker omitted from the real filesystem when the
+supplied document and counts omit it consistently, and it does not inspect the
+real operation receipts or candidate bytes. The verifier explicitly reports
+`executionChainVerified=false`,
+`operationContextPreimageVerified=false`,
+`operationReceiptHeadsVerified=false`,
+`capacityMarkerFilesystemCompletenessVerified=false`,
+`terminalSnapshotCandidateContentVerified=false`,
+`localFilesystemCompletenessVerified=false`,
+`detachedSignatureVerified=false`, `wormStorageVerified=false` and
+`externalAnchored=false`. Release-packet DSSE verification is not an operation
+anchor signature. Native Linux dirfd/`openat2`, rename/replacement,
+ext4/XFS power-loss, external DSSE/WORM, remote staging and all remaining
+K7/G1-G8 gates stay open. Go/VPS remains authoritative and this Rust
+ring-transition candidate remains production **NO-GO**.
+
+## 2026-07-24 Terminal Snapshot Candidate Crash-Window Verification
+
+The terminal exact-claim read now executes this durable order:
+
+```text
+verify bounded Authority response
+-> create-new TerminalSnapshotCandidateV1 + sync/readback
+-> append the candidate-bound accepted operation finish
+-> install terminal Execution Receipt V1
+-> publish OperationHeadSetV1
+-> publish candidate-bound OperationHeadLocalSealV1
+```
+
+Focused and aggregate local commands:
+
+```powershell
+cargo test -p cinatoken-ring-transition-runner --lib
+cargo clippy -p cinatoken-ring-transition-runner --all-targets -- -D warnings
+bun test --timeout 30000 tests/relay-container-ring-transition-operation-anchor.test.mjs
+bun run check:ring-transition-runner
+```
+
+Observed local evidence:
+
+- 124 Rust library tests passed;
+- terminal transport ordering is exactly `candidate`, `terminal_finish`,
+  `snapshot/closure`;
+- a crash after candidate publication but before finish recovers the bound GET
+  as `accepted`, completes the terminal execution/head-set/local-seal closure
+  locally and does not mint a new send capability;
+- other unfinished operations remain locally recoverable only as
+  `ambiguous`;
+- candidate/operation/closure staging residue blocks admission, and deleting a
+  candidate bound by a published local seal makes closure verification fail;
+- the zero-operation cross-runtime local-seal vector is 1000 bytes with
+  SHA-256
+  `5875614a4d23597ccf6406c013a8aaab99f9f3cb762d2c793ad4ab7b89fbe9b3`;
+- the operation-anchor verifier passed 12 tests/49 expectations and continues
+  to report `terminalSnapshotCandidateContentVerified=false`; and
+- the clean commit-object-only 31-module inventory is 1490766 bytes with
+  SHA-256
+  `7de1ae33cb4f36b7ea103fea15118680d076567c305270f8f74ef6d617ee4003`.
+
+This is Windows/local evidence. The Linux target download was unavailable in
+this workspace, and no native dirfd/`openat2`, directory replacement,
+multi-process kill/fsync, ext4/XFS power-loss, external DSSE/WORM or remote
+staging campaign was run. The current path re-resolution after directory
+`flock` remains a production blocker. No credential or Cloudflare remote
+action occurred; Go/VPS remains authoritative and production remains
+**NO-GO**.

@@ -941,23 +941,23 @@ mod tests {
         let packet: PublicationPacket = serde_json::from_slice(&fixture.packet_json).unwrap();
         assert_eq!(
             verified.identity().generation_sha256,
-            "a1622d649ad3f3350f5b7bbee710e91ec1b72e0d91d6fae991cb19eca8880098"
+            "7511d83dba6cf5e66baf1de47dc72871fec75bdf1a417f25fdd319972fe6e10d"
         );
         assert_eq!(
             verified.identity().publication_manifest_sha256,
-            "1c88ec27f7adf4a1e4a65957413c0ee28f3b7b5fd327c958f8deb3be62dc717d"
+            "48be9fa670469d82181b85ea2b9686c28aab412c56cde1a7c6397ea338182199"
         );
         assert_eq!(
             verified.identity().publication_packet_sha256,
-            "88d7dd6164bd624df5e3f544a1fffe7ff702a7c083a8c1ea0843d548aba75683"
+            "10a01a83a625780fca28f7ebf54a5ab6af2f71d63d2ed7c5f6b2c140f40ade92"
         );
         assert_eq!(
             packet.envelope.signatures[0].sig,
-            "sU7nywZP9j6depYP24sSk+ZcUdlwj7MYvPmfafYU0vAVxDaCClsa+Aalt8tIXyavDdDBGVOKWBve71NYtvHOBA=="
+            "wcleQ3k/FyeiYvBk0LBg6jaqdRNVUwynI3fqLrwWrliwRWDtlJIYp0RK50EKdh/MiT98qwSu98P1arU/caslCQ=="
         );
         assert_eq!(
             sha256_hex(&activation_bytes(verified.identity()).unwrap()),
-            "a7d479a7e8c9e9d5c24de0550b98acb0685ff18a5d49a2a649c7884d628329c4"
+            "f704b3e95e7e979f75b821eb069f5f2262dde367bee8c4c2e22cd5eca95ef1e5"
         );
 
         let root = temporary_directory();

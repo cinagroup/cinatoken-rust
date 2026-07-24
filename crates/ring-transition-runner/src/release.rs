@@ -37,7 +37,7 @@ const ED25519_SPKI_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-pub const REQUIRED_MODULE_PATHS: [&str; 28] = [
+pub const REQUIRED_MODULE_PATHS: [&str; 31] = [
     ".gitattributes",
     "Cargo.lock",
     "Cargo.toml",
@@ -56,6 +56,7 @@ pub const REQUIRED_MODULE_PATHS: [&str; 28] = [
     "crates/ring-transition-runner/tests/cli.rs",
     "package.json",
     "tests/relay-container-ring-transition-execution-activation.test.mjs",
+    "tests/relay-container-ring-transition-operation-anchor.test.mjs",
     "tests/relay-container-ring-transition-receipt.test.mjs",
     "tests/relay-container-ring-transition-release-source.test.mjs",
     "tests/relay-container-ring-transition-release.test.mjs",
@@ -63,8 +64,10 @@ pub const REQUIRED_MODULE_PATHS: [&str; 28] = [
     "tools/relay_container_p5_evidence_contract.mjs",
     "tools/relay_container_ring_transition_contract.mjs",
     "tools/relay_container_ring_transition_execution_activation_contract.mjs",
+    "tools/relay_container_ring_transition_operation_anchor_contract.mjs",
     "tools/relay_container_ring_transition_receipt_contract.mjs",
     "tools/relay_container_ring_transition_release_contract.mjs",
+    "tools/verify_relay_container_ring_transition_operation_anchor.mjs",
     "tools/verify_relay_container_ring_transition_release.mjs",
 ];
 
@@ -1302,20 +1305,20 @@ pub(crate) mod tests {
         );
         assert_eq!(
             verified.module_inventory_sha256,
-            "a228493b23d8cb9751179b8c86f2e0330cf9a9d99300e430277df2a53576c544"
+            "3f8053ba2d32f873f2ed97163cceb593c9061f6c640cadfa8a5f006d0d0a0871"
         );
         assert_eq!(
             verified.manifest_sha256,
-            "2425d983b37bba26468fb8e3c509b03ab7ef1e2be645ee758d9eb627f050a36e"
+            "7206467d82e388eb4f66920a3485e24322727579b04fda2eca43928b0f366f4b"
         );
         assert_eq!(
             verified.packet_sha256,
-            "74b1312b6d6762611341a5e33e2a31724fa5c3e13b65b2a885bdbdfbe067111d"
+            "cc27a202b61400b788e324c0aea315a4acea6ff98f78c33ba70e8be86e5cd5e8"
         );
         let packet: ReleasePacket = serde_json::from_slice(&fixture.packet_json).unwrap();
         assert_eq!(
             packet.envelope.signatures[0].sig,
-            "WQgg0Qw/c0l0Bzt4flsv0ToWj6XXEvH3tAL1f1rmM+R70O+Pv2EX9Oq6eQlAKAT9BRLoRA8wMi+0FMTm+sZXDA=="
+            "9gfuwYmBHH9fYPihHVa3t0fbr4MqpP8djZPbM/BCXYTMEQQa4oUtJs92ggWKoEdvHjTqDsQ2zoff2m8AhDi3CA=="
         );
     }
 

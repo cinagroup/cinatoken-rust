@@ -82,7 +82,7 @@ describe("ring-transition runner release source collector", () => {
     expect(first.moduleInventory.files.map((record) => record.path)).toEqual(
       [...first.moduleInventory.files.map((record) => record.path)].sort(),
     );
-    expect(first.moduleCount).toBe(28);
+    expect(first.moduleCount).toBe(31);
     expect(first.moduleInventory.files).toContainEqual({
       path: "crates/ring-transition-runner/src/execution_activation.rs",
       byteLength: Buffer.byteLength(
@@ -174,6 +174,21 @@ describe("ring-transition runner release source collector", () => {
       "crates/ring-transition-runner/src/execution_activation.rs",
       "tools/relay_container_ring_transition_execution_activation_contract.mjs",
       "tests/relay-container-ring-transition-execution-activation.test.mjs",
+    ]) {
+      const repository = await fixtureRepository({ omit });
+      await expect(
+        collectRingTransitionRunnerReleaseSource({
+          repositoryRoot: repository,
+        }),
+      ).rejects.toThrow(/required module missing/);
+    }
+  });
+
+  test("rejects a missing operation anchor contract, verifier, or verifier test", async () => {
+    for (const omit of [
+      "tools/relay_container_ring_transition_operation_anchor_contract.mjs",
+      "tools/verify_relay_container_ring_transition_operation_anchor.mjs",
+      "tests/relay-container-ring-transition-operation-anchor.test.mjs",
     ]) {
       const repository = await fixtureRepository({ omit });
       await expect(
@@ -297,6 +312,10 @@ async function fixtureRepository({ omit = null } = {}) {
       "export const executionActivationFixture = true;\n",
     ],
     [
+      "tests/relay-container-ring-transition-operation-anchor.test.mjs",
+      "export const operationAnchorFixture = true;\n",
+    ],
+    [
       "tests/relay-container-ring-transition-receipt.test.mjs",
       "export const receiptFixture = true;\n",
     ],
@@ -325,12 +344,20 @@ async function fixtureRepository({ omit = null } = {}) {
       "export const executionActivationContract = true;\n",
     ],
     [
+      "tools/relay_container_ring_transition_operation_anchor_contract.mjs",
+      "export const operationAnchorContract = true;\n",
+    ],
+    [
       "tools/relay_container_ring_transition_receipt_contract.mjs",
       "export const receiptContract = true;\n",
     ],
     [
       "tools/relay_container_ring_transition_release_contract.mjs",
       "export const contract = true;\n",
+    ],
+    [
+      "tools/verify_relay_container_ring_transition_operation_anchor.mjs",
+      "export const operationAnchorVerifier = true;\n",
     ],
     [
       "tools/verify_relay_container_ring_transition_release.mjs",

@@ -85,6 +85,7 @@ describe("Relay Container ring-transition runner release contract", () => {
       "crates/ring-transition-runner/tests/cli.rs",
       "package.json",
       "tests/relay-container-ring-transition-execution-activation.test.mjs",
+      "tests/relay-container-ring-transition-operation-anchor.test.mjs",
       "tests/relay-container-ring-transition-receipt.test.mjs",
       "tests/relay-container-ring-transition-release-source.test.mjs",
       "tests/relay-container-ring-transition-release.test.mjs",
@@ -92,8 +93,10 @@ describe("Relay Container ring-transition runner release contract", () => {
       "tools/relay_container_p5_evidence_contract.mjs",
       "tools/relay_container_ring_transition_contract.mjs",
       "tools/relay_container_ring_transition_execution_activation_contract.mjs",
+      "tools/relay_container_ring_transition_operation_anchor_contract.mjs",
       "tools/relay_container_ring_transition_receipt_contract.mjs",
       "tools/relay_container_ring_transition_release_contract.mjs",
+      "tools/verify_relay_container_ring_transition_operation_anchor.mjs",
       "tools/verify_relay_container_ring_transition_release.mjs",
     ]);
 
@@ -141,7 +144,7 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.moduleCount).toBe(28);
+    expect(result.moduleCount).toBe(31);
   });
 
   test("matches the deterministic Rust DSSE release vector", () => {
@@ -151,23 +154,23 @@ describe("Relay Container ring-transition runner release contract", () => {
       policySha256:
         "9b12c3dd50812180f2122311480876bd6508a81618082c615ca52d4701ec3856",
       inventorySha256:
-        "a228493b23d8cb9751179b8c86f2e0330cf9a9d99300e430277df2a53576c544",
+        "3f8053ba2d32f873f2ed97163cceb593c9061f6c640cadfa8a5f006d0d0a0871",
       manifestSha256:
-        "2425d983b37bba26468fb8e3c509b03ab7ef1e2be645ee758d9eb627f050a36e",
+        "7206467d82e388eb4f66920a3485e24322727579b04fda2eca43928b0f366f4b",
       packetSha256:
-        "74b1312b6d6762611341a5e33e2a31724fa5c3e13b65b2a885bdbdfbe067111d",
+        "cc27a202b61400b788e324c0aea315a4acea6ff98f78c33ba70e8be86e5cd5e8",
       signatureBase64:
-        "WQgg0Qw/c0l0Bzt4flsv0ToWj6XXEvH3tAL1f1rmM+R70O+Pv2EX9Oq6eQlAKAT9BRLoRA8wMi+0FMTm+sZXDA==",
+        "9gfuwYmBHH9fYPihHVa3t0fbr4MqpP8djZPbM/BCXYTMEQQa4oUtJs92ggWKoEdvHjTqDsQ2zoff2m8AhDi3CA==",
       publicationGenerationSha256:
-        "a1622d649ad3f3350f5b7bbee710e91ec1b72e0d91d6fae991cb19eca8880098",
+        "7511d83dba6cf5e66baf1de47dc72871fec75bdf1a417f25fdd319972fe6e10d",
       publicationManifestSha256:
-        "1c88ec27f7adf4a1e4a65957413c0ee28f3b7b5fd327c958f8deb3be62dc717d",
+        "48be9fa670469d82181b85ea2b9686c28aab412c56cde1a7c6397ea338182199",
       publicationPacketSha256:
-        "88d7dd6164bd624df5e3f544a1fffe7ff702a7c083a8c1ea0843d548aba75683",
+        "10a01a83a625780fca28f7ebf54a5ab6af2f71d63d2ed7c5f6b2c140f40ade92",
       publicationSignatureBase64:
-        "sU7nywZP9j6depYP24sSk+ZcUdlwj7MYvPmfafYU0vAVxDaCClsa+Aalt8tIXyavDdDBGVOKWBve71NYtvHOBA==",
+        "wcleQ3k/FyeiYvBk0LBg6jaqdRNVUwynI3fqLrwWrliwRWDtlJIYp0RK50EKdh/MiT98qwSu98P1arU/caslCQ==",
       activationSha256:
-        "a7d479a7e8c9e9d5c24de0550b98acb0685ff18a5d49a2a649c7884d628329c4",
+        "f704b3e95e7e979f75b821eb069f5f2262dde367bee8c4c2e22cd5eca95ef1e5",
     });
   });
 
@@ -812,6 +815,10 @@ async function releaseFixture({
       "execution-activation-test-fixture",
     ],
     [
+      "tests/relay-container-ring-transition-operation-anchor.test.mjs",
+      "operation-anchor-test-fixture",
+    ],
+    [
       "tests/relay-container-ring-transition-receipt.test.mjs",
       "receipt-test-fixture",
     ],
@@ -840,12 +847,20 @@ async function releaseFixture({
       "execution-activation-contract-fixture",
     ],
     [
+      "tools/relay_container_ring_transition_operation_anchor_contract.mjs",
+      "operation-anchor-contract-fixture",
+    ],
+    [
       "tools/relay_container_ring_transition_receipt_contract.mjs",
       "receipt-contract-fixture",
     ],
     [
       "tools/relay_container_ring_transition_release_contract.mjs",
       "release-contract-fixture",
+    ],
+    [
+      "tools/verify_relay_container_ring_transition_operation_anchor.mjs",
+      "operation-anchor-verifier-fixture",
     ],
     [
       "tools/verify_relay_container_ring_transition_release.mjs",

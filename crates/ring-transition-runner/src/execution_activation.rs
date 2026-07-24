@@ -605,6 +605,15 @@ impl ClaimDispatchLocation {
     pub(crate) fn installation_root(&self) -> &Path {
         &self.installation_root
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_transport_test(installation_root: PathBuf) -> Self {
+        let directory = installation_root.clone();
+        Self {
+            installation_root,
+            directory,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

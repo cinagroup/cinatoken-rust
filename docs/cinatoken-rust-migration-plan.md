@@ -19749,10 +19749,11 @@ marker-backed empty-directory restart, 129th-reservation failure, canonical
 request binding and cross-runtime replay. The authoritative commands and
 aggregate results are recorded in `docs/verification.md`.
 
-This closes local read request-boundary coverage, not K7 or production.
-Remaining P0 order is terminal operation-head and independent external
-anchoring; exact Rust 1.78 Linux concurrency/path/link/sync/ACL/backup/ext4/
-XFS/power-loss campaigns; the versioned Durable Object shard supervisor and
+This closes local read request-boundary coverage, not K7 or production. Section
+22.286 records the subsequent local operation-head/candidate closure.
+Remaining P0 order is independent external anchoring; exact Rust 1.78 Linux
+dirfd/inode/concurrency/path/link/sync/ACL/backup/ext4/XFS/power-loss
+campaigns; the versioned Durable Object shard supervisor and
 disposable Container adapter; replacement-credential isolated staging
 fault/load/cost/SLO/rollback evidence; remaining cached-channel, billing,
 paid-SSE, task/provider and financial Go compatibility; credential revocation,
@@ -19761,3 +19762,192 @@ Go/VPS hot fallback/drain and G1-G8 against one immutable candidate.
 No Cloudflare deployment or production execution is enabled. Go/VPS remains
 the traffic, scheduler and financial authority. Production remains
 **NO-GO**.
+
+## 22.286 K7 Aggregate Local Receipt Closure Decision (2026-07-24)
+
+This section freezes the next K7 local-closure contract. It supersedes earlier
+wording that says operation heads are added to the Execution Receipt V1
+terminal seal. Execution Receipt V1, including its schema, canonical vectors,
+history projection and terminal-seal bytes, remains unchanged. The aggregate
+join is a separate object and does not reinterpret an existing V1 receipt.
+This documentation decision does not claim that the writer, verifier or Linux
+fault campaign is complete.
+
+The local implementation now also includes
+`TerminalSnapshotCandidateV1` (maximum canonical size 320 KiB). For an
+accepted terminal Authority GET it is create-new published, file/parent
+synced and read back before the operation finish. It binds activation,
+authorization, claim and operation context; canonical snapshot digest/bytes;
+the exact GET operation/start receipt; accepted HTTP/response evidence and
+finish time; and the expected terminal Execution Receipt head/count. This
+closes the response-accepted/closure-not-yet-written restart window without
+changing Execution Receipt V1.
+
+### Immutable aggregate objects
+
+`OperationHeadSetV1` is a canonical, create-new, per-authorization manifest
+over the complete operation-capacity tree. It binds the environment,
+activation, authorization, claim and operation-context identities and has
+exactly one entry for every published capacity marker, sorted by numeric slot.
+Directory enumeration order is never semantic.
+
+Each entry records the slot, operation ID and one closed chain state:
+
+- `marker_only` binds a valid published marker with no slot-1 receipt; its
+  start/head digests and outcome are absent and its receipt count is zero;
+- `terminal` binds the exact start digest, two-receipt count, terminal head and
+  outcome of the operation chain associated with that marker.
+
+Unfinished starts, unmarked operation directories, duplicate slots, missing
+markers, unknown files, identity drift, gaps, noncanonical records or a
+nonterminal operation chain prohibit publication. The manifest records
+`capacityLimit=128`, `operationCount`, `capacityReservationCount` and
+`markerOnlyCount`; the entry count equals `capacityReservationCount`, and:
+
+```text
+capacityReservationCount = operationCount + markerOnlyCount <= 128
+```
+
+A marker-only entry is evidence of consumed non-authorizing capacity. It must
+not be omitted merely because no request started. The exact canonical
+`OperationHeadSetV1` bytes are published no-replace, synced and read back; an
+existing object is accepted only when its bytes are identical.
+
+`OperationHeadLocalSealV1` is the aggregate local root. It joins the same
+environment, activation, authorization, claim and operation-context identities
+to:
+
+- the frozen terminal Execution Receipt V1 head SHA-256, receipt count,
+  terminal status and terminal state version;
+- the exact `OperationHeadSetV1` SHA-256 and canonical byte length; and
+- its operation, capacity-reservation and marker-only counts; and
+- an all-null or all-populated terminal-candidate tuple containing candidate
+  SHA-256/bytes and operation/start-receipt identities.
+
+The local seal is also canonical, create-new, synced and independently read
+back. When the candidate tuple is populated, the candidate must still exist,
+identify an `accepted` terminal head-set entry and match the installed
+execution head/count and final snapshot digest/length. Removing or changing it
+invalidates closure verification. A candidate-less seal is structurally valid
+for paths that did not consume an accepted terminal GET, but it is not
+promotion evidence for a production terminal claim-read path. A terminal
+Execution Receipt V1 chain without this matching aggregate local seal is
+locally sealed but is not the full K7 terminal typestate.
+
+### Linearization and admission barrier
+
+Every capacity reservation, slot-1 start publication, slot-2 finish
+publication, unfinished-start recovery, terminal Execution Receipt
+installation, head-set publication and local-seal publication linearizes under
+one exclusive Linux `flock` for the authorization. The fixed lock object is
+currently the opened authorization-directory inode; it is not evidence
+itself. The lock is held through canonical re-audit, create-new
+publication, file and parent-directory sync, and exact readback. It is not held
+across a network exchange: reserve commits and releases it before send; finish
+reacquires it after the response.
+
+After acquiring the lock, every reservation must first audit the execution
+chain, operation tree and closure objects. Any of these is an admission
+barrier:
+
+1. a terminal snapshot candidate is committed, or operation/closure staging is
+   indeterminate;
+2. the Execution Receipt V1 chain is terminally sealed; or
+3. `OperationHeadSetV1` has been published.
+
+Once any barrier exists, no new marker, operation start, identity proof,
+credential proof or Cloudflare request may begin. A terminal execution chain
+may only drive local recovery of already published starts and aggregate
+closure. A published head set freezes the operation tree; no reserve or finish
+may follow it. `flock` supplies process linearization only. It does not replace
+create-new publication, path confinement, canonical verification, fsync,
+external anchoring or power-loss evidence.
+
+The current implementation is not yet a production Linux pathname boundary:
+it locks the authorization-directory inode and then re-resolves some paths.
+Acceptance requires pinned trusted-parent/authorization dirfds,
+UID/GID/mode/dev/inode/nlink continuity, and contained scans, opens,
+no-replace renames and fsync through reviewed `openat2`/`*at` operations.
+Directory rename/replacement and split-lock tests remain mandatory.
+
+### Local-first crash recovery
+
+After the fixed local activation and credential handles are loaded and bound,
+startup performs local path, execution-chain, marker, operation-chain,
+head-set and local-seal audit before any remote identity proof or network call.
+Recovery follows this order under the same lock:
+
+1. reject unsafe/noncanonical objects and treat recognized operation/closure
+   staging without a committed target as indeterminate durability;
+2. when a valid terminal candidate exists, finish its bound GET `accepted`,
+   finish other unfinished starts `ambiguous`, install the candidate-implied
+   terminal Execution Receipt plan and re-audit; if there is no candidate and
+   the execution chain remains nonterminal, release the lock before any later
+   separately authorized identity/network step;
+3. if the execution chain is terminal and no head set exists, publish the
+   complete slot-sorted head set after local operation recovery;
+4. if the head set exists and the local seal is absent, verify the exact frozen
+   execution head, operation tree and candidate binding, then publish only the
+   uniquely implied local seal; and
+5. if the local seal exists, verify every bound byte count, digest, count,
+   status, state version and candidate reference before reporting closure.
+
+Process death releases `flock`; it never grants recovery authority. The next
+process starts from disk and re-audits. Any conflicting publication,
+directory replacement, impossible count, operation after the head set or local
+seal drift quarantines the authorization. It is never repaired by deletion,
+overwrite, slot reuse or receipt rewriting.
+
+### Threat and invariant matrix
+
+| Threat or failure | Required invariant | Fail-closed result |
+| --- | --- | --- |
+| Reserve races terminal projection | One authorization lock plus pre-reserve barrier audit | No new marker, start or network call after terminal seal |
+| Finish races head-set publication | Closure and finish use the same lock | Head set cannot publish with an unfinished chain; finish cannot follow it |
+| Crash after marker publication | Every published marker has a head-set entry | Slot remains consumed as `marker_only`; no synthetic start |
+| Crash after start or response loss | Recovery is local before credentials/network | Existing start becomes terminal `ambiguous`; no resend |
+| Crash after durable terminal candidate | Candidate binds the verified response and exact GET start | Bound operation becomes `accepted`; closure completes with zero network |
+| Crash after all finishes | Head set is reconstructed only from exact published bytes | Deterministic create-new publication |
+| Crash after head set, before local seal | Published head set is an admission barrier | Verify and publish the one implied local seal; no operation mutation |
+| Crash after local seal | Full closure requires exact aggregate verification | Return the same terminal typestate or quarantine |
+| Candidate missing after local seal | Candidate digest/bytes and operation/start are seal inputs | Closure fails verification; quarantine |
+| Recognized operation/closure staging without target | Durability is indeterminate | Quarantine before HTTP construction |
+| Lock-holder death | Kernel releases lock; disk remains authority | Successor re-audits; no inherited permit |
+| Marker omission or directory-order drift | Slot-sorted complete marker inventory and exact counts | Head-set publication fails |
+| Whole-tree replacement by a privileged writer | Local root must later be externally anchored | K7 external gate remains false |
+
+### External anchor and production gates
+
+Local closure does not close whole-tree replacement by a writer that can
+replace the execution chain, operation tree, head set and local seal together.
+A future independently operated DSSE signer must sign the exact local-seal
+identity and digest. A separate provider WORM proof must establish object
+identity, retention mode, retention deadline and deletion/overwrite resistance.
+These are independent claims: a DSSE signature does not prove retention, and a
+WORM receipt does not prove signer identity or authorization.
+
+K7 remains blocked until all of the following pass for one exact signed Linux
+artifact:
+
+1. Rust and an independent verifier share frozen canonical vectors for both
+   aggregate objects, including the candidate tuple, and reject omission,
+   reordering, count drift and replay;
+2. two-process reserve/finish/closure contention and the full kill matrix prove
+   the admission barriers and zero network before local recovery;
+3. trusted-path, link-count, dirfd/inode continuity, UID/GID/ACL, `flock`,
+   `openat2`, no-replace, fsync, backup/restore and ext4/XFS power-loss
+   behavior pass;
+4. the DSSE signature packet passes independent key-custody and verification
+   review;
+5. provider WORM retention and legal-hold behavior is read back independently;
+   and
+6. replacement-credential isolated staging, remaining Go compatibility,
+   rollback, Go/VPS drain and G1-G8 approvals pass for the same candidate.
+
+The audited cinaVibeSDK and cinatoken Go sources provide useful durable-owner,
+commit-identity, CAS-winner and audit-boundary principles, but no direct parity
+for these aggregate objects, `flock` linearization, DSSE evidence or provider
+WORM retention. Rollback never unseals or deletes local evidence. If closure
+cannot converge exactly, quarantine the authorization, disable the candidate,
+route new work to hot Go/VPS and issue a new authorization. Go/VPS remains the
+traffic, scheduler and financial authority. Production remains **NO-GO**.

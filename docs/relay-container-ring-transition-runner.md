@@ -934,8 +934,211 @@ absolute HTTPS URI before hashing; Rust authorization audit enforces the 128
 marker bound.
 
 Internal links cannot detect whole-chain replacement by a writer that controls
-the operation directory. Remaining K7 starts with binding all execution and
-operation heads into the terminal seal plus an independent signed/WORM anchor,
-then the exact Linux crash/path/sync/ACL/power-loss campaign and isolated
-staging proof. Checked-in trust remains disabled; Go/VPS remains authoritative
-and production remains **NO-GO**.
+the operation directory. The following section records the now-implemented
+local aggregate/candidate binding without changing Execution Receipt V1.
+Remaining K7 is independent signed/WORM anchoring, dirfd-pinned Linux
+crash/path/sync/ACL/power-loss evidence and isolated staging proof. Checked-in
+trust remains disabled; Go/VPS remains authoritative and production remains
+**NO-GO**.
+
+## K7 Aggregate Local Closure Contract
+
+This section supersedes the preceding shorthand "into the terminal seal."
+Execution Receipt V1 is frozen byte-for-byte. No operation data is added to its
+schema or terminal receipt. The join is expressed by an immutable
+`OperationHeadSetV1` plus an immutable `OperationHeadLocalSealV1`. The latter
+binds the frozen execution terminal head to the former. This is a required
+runner contract and does not assert that the implementation or Linux
+acceptance campaign is complete.
+
+A third immutable local object, `TerminalSnapshotCandidateV1`, closes the
+accepted-terminal-GET crash window. It is durably published before the
+accepted operation finish and binds the canonical verified terminal snapshot,
+snapshot digest/length, exact GET operation/start receipt, HTTP `200`,
+response-body and optional response-ID digests, finish time, and expected
+terminal Execution Receipt head/count. It is retained evidence and an
+admission barrier, not an alternate Authority state or external anchor.
+
+### Canonical OperationHeadSetV1
+
+The runner projects one closed-schema canonical object from the complete
+per-authorization capacity tree. The header binds:
+
+- schema and contract version;
+- environment, activation SHA-256, authorization ID SHA-256, claim digest and
+  operation-context SHA-256;
+- `capacityLimit=128`;
+- `operationCount`, `capacityReservationCount` and `markerOnlyCount`; and
+- entries sorted strictly by ascending marker slot.
+
+Each published marker contributes exactly one entry:
+
+| Chain state | Required entry fields | Forbidden fields |
+| --- | --- | --- |
+| `marker_only` | slot, marker-bound operation ID, `receiptCount=0` | start digest, head digest, outcome |
+| `terminal` | slot, operation ID, start digest, `receiptCount=2`, terminal head, outcome | absent or nonterminal finish |
+
+`entries.length == capacityReservationCount`,
+`capacityReservationCount == operationCount + markerOnlyCount`, and the count
+must not exceed 128. A complete marker with no start is retained as
+`marker_only`; interrupted private staging is not an entry. An operation
+directory without its matching marker, an unfinished start, duplicate or
+missing slot, unknown published object, identity drift, gap or noncanonical
+receipt is a conflict.
+
+The exact canonical bytes are written to private same-directory staging,
+verified, file-synced, published no-replace, parent-synced and read back. An
+existing head set is exact replay only when every byte matches. Publication is
+an admission barrier and permanently freezes the operation tree.
+
+### Canonical OperationHeadLocalSealV1
+
+The aggregate local seal repeats the environment, activation, authorization,
+claim and operation-context identities and binds:
+
+```text
+executionReceiptHeadSha256
+executionReceiptCount
+terminalStatus
+terminalStateVersion
+operationHeadSetSha256
+operationHeadSetBytes
+operationCount
+capacityReservationCount
+markerOnlyCount
+terminalSnapshotCandidateSha256
+terminalSnapshotCandidateBytes
+terminalCandidateOperationIdSha256
+terminalCandidateStartReceiptSha256
+```
+
+The execution values must come from an exactly verified terminal Execution
+Receipt V1 chain. The head-set digest, byte length and counts must come from
+the exact independently read-back `OperationHeadSetV1`. The local seal uses
+the same canonical create-new, sync, no-replace and readback protocol. Existing
+different bytes are a conflict. Full terminal typestate is returned only when
+the execution chain, head set and local seal all verify and all repeated
+identities and values agree. The four candidate fields are either all `null`
+or all populated. When populated, the candidate must still exist, its
+operation/start pair must identify an `accepted` terminal head-set entry, and
+its expected execution head/count and snapshot digest/length must match the
+installed terminal chain. Deleting or replacing it invalidates the closure.
+A candidate-less seal can remain structurally valid for older or non-claim
+terminal history, but it is not production claim-read promotion evidence.
+Execution Receipt V1 alone remains valid terminal history evidence but is not
+full aggregate closure.
+
+### Per-authorization flock protocol
+
+The current Linux lock object is the opened authorization-directory inode. Its
+contents are not evidence. The runner applies its current path/type checks and
+takes exclusive `flock(LOCK_EX)` for every operation-tree or closure mutation:
+
+1. reserve capacity and publish slot 1;
+2. publish slot 2, including local ambiguous recovery;
+3. install the terminal execution projection;
+4. publish or exactly replay the operation head set; and
+5. publish or exactly replay the aggregate local seal.
+
+After lock acquisition the runner re-verifies all relevant durable state
+before deciding an action. Reserve holds the lock through marker and start
+publication, sync and readback, then releases it before the single network
+exchange. Finish reacquires it and holds it through terminal publication and
+readback. Closure takes the lock once and uses internal non-relocking
+operations so no nested-lock assumption enters correctness.
+
+The lock is a local concurrency linearization point, not a receipt, durable
+permit, distributed lock or replacement for filesystem durability. Network
+I/O while the lock is held is prohibited. The current implementation locks
+the authorization-directory inode but later re-resolves some paths. It does
+not yet pin trusted parent/authorization dirfds, verify UID/GID/mode/inode
+continuity, or perform every scan/open/rename/fsync through contained
+`openat2`/`*at` operations. Directory rename/replacement therefore remains a
+production blocker. NFS or another filesystem with unreviewed
+`flock`/rename/fsync semantics is **NO-GO**.
+
+### Admission and recovery state machine
+
+After loading and locally binding only the fixed activation-scoped credential
+handles, every runner start performs local recovery before any remote identity
+proof or Authority/Cloudflare request:
+
+```text
+acquire authorization flock
+  -> verify paths, Execution Receipt V1 and complete operation tree
+  -> verify or recover closure objects
+  -> release flock
+  -> only then, if no barrier exists, consider identity/network work
+```
+
+The admission barriers are:
+
+- a committed terminal snapshot candidate, or indeterminate operation/closure
+  staging residue;
+- a terminally sealed Execution Receipt V1 chain; or
+- a published `OperationHeadSetV1`.
+
+Either barrier forbids a new marker, start, identity proof, credential proof or
+network request. A sealed execution chain permits only local completion of
+already published starts as `ambiguous`, head-set publication and local-seal
+publication. A published head set permits no reserve or finish; when its local
+seal is absent, recovery may only verify the frozen inputs and publish the
+uniquely implied seal. Before normal identity/network work is allowed, startup
+recovers the operation bound by a valid terminal candidate as its recorded
+`accepted` finish, finishes other unfinished starts as `ambiguous`, installs
+the candidate-implied terminal Execution Receipt chain and completes the
+aggregate closure. No old send capability is restored.
+
+| Durable crash point | Local recovery under flock | Authority/network effect |
+| --- | --- | --- |
+| Candidate/operation/closure staging without a committed target | Fail closed as indeterminate durability | None |
+| Published marker, no start | Preserve as marker-only capacity | None |
+| Published start, no finish | Append the first terminal `ambiguous` locally | None |
+| Published terminal candidate, no finish | Append the candidate-bound `accepted` finish and seal locally | None |
+| Published terminal finish | Reuse exact head | None |
+| Published head set, no local seal | Verify exact set and publish implied seal | None |
+| Published local seal | Verify and return full terminal typestate | None |
+| Candidate missing or changed after local seal | Quarantine because candidate binding cannot verify | None |
+| Process dies holding lock | Kernel releases lock; successor re-audits disk | No permit survives |
+| Conflict, unsafe path or impossible count | Quarantine authorization | None |
+
+Recovery never invents an absent start, reopens a terminal chain, restores a
+send permit, deletes a marker, reuses a slot or changes an outcome. If exact
+local convergence is impossible, the authorization is retained for audit and
+a new authorization is required.
+
+### Security boundary and remaining gates
+
+The local seal detects omission, reordering and races relative to the locally
+verified root, but cannot detect replacement of the entire execution chain,
+operation tree, head set and seal by a privileged local writer. External
+closure remains two independent future controls:
+
+1. an independently operated DSSE signer signs the exact local-seal digest and
+   immutable candidate identity; and
+2. a provider WORM write/readback proves the anchored object identity,
+   retention mode, retention deadline and deletion/overwrite resistance.
+
+DSSE proves neither retention nor deletion resistance. WORM retention proves
+neither signer identity nor approval. Both gates, plus independent
+verification, key custody, provider policy readback and recovery evidence, must
+pass separately.
+
+The independent JavaScript verifier proves only canonical structure and
+cross-binding of the supplied head-set/local-seal documents. It explicitly
+does not prove the execution chain, context preimage, operation receipt heads,
+marker completeness on disk, candidate content, filesystem completeness,
+DSSE or WORM retention.
+
+K7 local closure also requires mixed terminal/marker cross-runtime vectors;
+two-process reserve/finish/closure contention; kill-after-every-sync tests;
+fixed-path, symlink, hard-link, dirfd/inode, UID/GID/ACL and backup/restore
+checks; and ext4/XFS power-loss evidence with zero identity/network calls
+before local recovery. Published evidence is irreversible: rollback disables
+the candidate, preserves every receipt and aggregate object, returns new work
+to hot Go/VPS and uses a new authorization rather than editing history.
+
+The audited cinaVibeSDK and cinatoken Go sources have no direct parity for
+these aggregate objects, Linux `flock`, DSSE evidence or provider WORM
+retention. Go/VPS remains the traffic, scheduler and financial authority.
+Checked-in trust remains disabled and production remains **NO-GO**.

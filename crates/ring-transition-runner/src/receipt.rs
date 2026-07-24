@@ -11,12 +11,15 @@ use crate::release::{
 };
 use getrandom::getrandom;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 #[cfg(not(target_os = "linux"))]
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "linux"))]
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 pub const EXECUTION_RECEIPT_CONTRACT: &str =
     "cinatoken-ring-transition-runner-execution-receipt-v1";
@@ -28,14 +31,27 @@ pub const READ_OPERATION_RECOVERY_WINDOW_SECONDS: u64 = 600;
 const OPERATION_ID_CONTRACT: &str = "cinatoken-ring-transition-runner-operation-id-v1";
 const OPERATION_CAPACITY_RESERVATION_CONTRACT: &str =
     "cinatoken-ring-transition-runner-operation-capacity-reservation-v1";
+pub const OPERATION_HEAD_SET_CONTRACT: &str =
+    "cinatoken-ring-transition-runner-operation-head-set-v1";
+pub const OPERATION_HEAD_LOCAL_SEAL_CONTRACT: &str =
+    "cinatoken-ring-transition-runner-operation-head-local-seal-v1";
+pub const TERMINAL_SNAPSHOT_CANDIDATE_CONTRACT: &str =
+    "cinatoken-ring-transition-runner-terminal-snapshot-candidate-v1";
+const OPERATION_CONTEXT_DIGEST_CONTRACT: &str =
+    "cinatoken-ring-transition-runner-operation-context-digest-v1";
 const HISTORY_DIGEST_CONTRACT: &str =
     "cinatoken-ring-transition-runner-execution-receipt-history-v1";
 const RECEIPTS_DIRECTORY_NAME: &str = "execution-receipts";
 const OPERATION_RECEIPTS_DIRECTORY_NAME: &str = "execution-operation-receipts";
+const OPERATION_CLOSURES_DIRECTORY_NAME: &str = "execution-operation-closures";
 const RECEIPT_FILE_SUFFIX: &str = ".receipt.json";
 const OPERATION_RECEIPT_FILE_SUFFIX: &str = ".operation.json";
 const OPERATION_CAPACITY_FILE_SUFFIX: &str = ".operation-capacity.json";
+const OPERATION_HEAD_SET_FILE_NAME: &str = "operation-head-set.json";
+const OPERATION_HEAD_LOCAL_SEAL_FILE_NAME: &str = "operation-head-local-seal.json";
+const TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME: &str = "terminal-snapshot-candidate.json";
 const MAX_RECEIPT_BYTES: usize = 64 * 1024;
+const MAX_TERMINAL_SNAPSHOT_CANDIDATE_BYTES: usize = 320 * 1024;
 const MAX_RECEIPTS_PER_CHAIN: u64 = 128;
 const MAX_OPERATION_RECEIPTS_PER_CHAIN: u64 = 2;
 const MAX_OPERATION_CHAINS_PER_AUTHORIZATION: usize = 128;
@@ -226,6 +242,130 @@ struct VerifiedOperationReceiptChainInternal {
     operation: OperationIdentity,
     start_sha256: String,
     start_recorded_at: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct OperationHeadSetEntry {
+    slot: u16,
+    operation_id_sha256: String,
+    chain_state: OperationHeadSetChainState,
+    start_receipt_sha256: Option<String>,
+    receipt_count: u64,
+    head_sha256: Option<String>,
+    outcome: Option<OperationOutcome>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum OperationHeadSetChainState {
+    MarkerOnly,
+    Terminal,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct OperationHeadSetManifest {
+    schema_version: u8,
+    contract: String,
+    environment: String,
+    activation_sha256: String,
+    authorization_id_sha256: String,
+    claim_digest_sha256: String,
+    operation_context_sha256: String,
+    capacity_limit: u64,
+    operation_count: u64,
+    capacity_reservation_count: u64,
+    marker_only_count: u64,
+    entries: Vec<OperationHeadSetEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct VerifiedOperationHeadSet {
+    pub sha256: String,
+    pub bytes: u64,
+    pub operation_context_sha256: String,
+    pub operation_count: u64,
+    pub capacity_reservation_count: u64,
+    pub marker_only_count: u64,
+}
+
+struct CanonicalOperationHeadSet {
+    record: OperationHeadSetManifest,
+    bytes: Vec<u8>,
+    verified: VerifiedOperationHeadSet,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct OperationHeadLocalSeal {
+    schema_version: u8,
+    contract: String,
+    environment: String,
+    activation_sha256: String,
+    authorization_id_sha256: String,
+    claim_digest_sha256: String,
+    operation_context_sha256: String,
+    execution_receipt_head_sha256: String,
+    execution_receipt_count: u64,
+    terminal_status: ClaimStatus,
+    terminal_state_version: u8,
+    operation_head_set_sha256: String,
+    operation_head_set_bytes: u64,
+    operation_count: u64,
+    capacity_reservation_count: u64,
+    marker_only_count: u64,
+    terminal_snapshot_candidate_sha256: Option<String>,
+    terminal_snapshot_candidate_bytes: Option<u64>,
+    terminal_candidate_operation_id_sha256: Option<String>,
+    terminal_candidate_start_receipt_sha256: Option<String>,
+}
+
+struct CanonicalOperationHeadLocalSeal {
+    record: OperationHeadLocalSeal,
+    bytes: Vec<u8>,
+    sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct TerminalSnapshotCandidate {
+    schema_version: u8,
+    contract: String,
+    environment: String,
+    activation_sha256: String,
+    authorization_id_sha256: String,
+    claim_digest_sha256: String,
+    operation_context_sha256: String,
+    snapshot_sha256: String,
+    snapshot_bytes: u64,
+    operation_id_sha256: String,
+    operation_start_receipt_sha256: String,
+    operation_outcome: OperationOutcome,
+    operation_finished_at: u64,
+    operation_http_status: u16,
+    operation_response_body_sha256: String,
+    operation_response_id_sha256: Option<String>,
+    expected_execution_receipt_head_sha256: String,
+    expected_execution_receipt_count: u64,
+    snapshot: AuthoritySnapshot,
+}
+
+struct CanonicalTerminalSnapshotCandidate {
+    record: TerminalSnapshotCandidate,
+    bytes: Vec<u8>,
+    sha256: String,
+    snapshot: VerifiedSnapshot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct VerifiedTerminalClosure {
+    pub authorization_id_sha256: String,
+    pub terminal_status: ClaimStatus,
+    pub terminal_state_version: u8,
+    pub execution_receipt_head_sha256: String,
+    pub operation_head_set_sha256: String,
+    pub local_seal_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -501,6 +641,8 @@ pub struct VerifiedReceiptChain {
     pub receipt_count: u64,
     pub head_sha256: String,
     pub sealed: bool,
+    pub terminal_status: Option<ClaimStatus>,
+    pub terminal_state_version: Option<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -683,6 +825,25 @@ pub struct ReceiptStore {
     root: PathBuf,
 }
 
+#[cfg(target_os = "linux")]
+struct AuthorizationGuard(fs::File);
+
+#[cfg(target_os = "linux")]
+impl Drop for AuthorizationGuard {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+struct AuthorizationGuard {
+    _guard: MutexGuard<'static, ()>,
+}
+
 impl ReceiptStore {
     pub fn open(root: &Path) -> Result<Self, ReceiptError> {
         let metadata = fs::symlink_metadata(root)
@@ -695,20 +856,27 @@ impl ReceiptStore {
         Ok(Self { root: canonical })
     }
 
-    pub fn install_terminal_plan(
+    pub(crate) fn install_terminal_plan(
         &self,
         plan: &ReceiptPlan,
     ) -> Result<InstalledReceiptChain, ReceiptError> {
         if !plan.is_sealed() {
             return Err(ReceiptError::NotSealed);
         }
-        self.install_snapshot_plan(plan)
+        self.install_plan(plan)
     }
 
     pub fn install_snapshot_plan(
         &self,
         plan: &ReceiptPlan,
     ) -> Result<InstalledReceiptChain, ReceiptError> {
+        if plan.is_sealed() {
+            return Err(ReceiptError::InvalidField("terminal_closure_required"));
+        }
+        self.install_plan(plan)
+    }
+
+    fn install_plan(&self, plan: &ReceiptPlan) -> Result<InstalledReceiptChain, ReceiptError> {
         validate_planned_prefix(&plan.receipts)?;
         validate_lower_hex(&plan.authorization_id_sha256, "authorization_id_sha256")?;
         let chain_directory = self.ensure_chain_directory(&plan.authorization_id_sha256)?;
@@ -763,6 +931,165 @@ impl ReceiptStore {
         verify_chain_directory(&chain, authorization_id_sha256)
     }
 
+    pub(crate) fn install_terminal_closure(
+        &self,
+        plan: &ReceiptPlan,
+        publication: &PublicationIdentity,
+        credentials: &CredentialIdentity,
+        activation: &ExecutionActivationIdentity,
+    ) -> Result<VerifiedTerminalClosure, ReceiptError> {
+        if !plan.is_sealed() {
+            return Err(ReceiptError::NotSealed);
+        }
+        let context = project_operation_context(publication, credentials, activation)?;
+        if plan.authorization_id_sha256 != context.authorization_id_sha256 {
+            return Err(ReceiptError::Projection("authorization_id_sha256"));
+        }
+        let authorization =
+            self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
+        let _guard = lock_operation_authorization(&authorization)?;
+        if let Some(candidate) = self.read_terminal_snapshot_candidate(&context)? {
+            let candidate_plan =
+                plan_terminal_receipts(&candidate.snapshot, publication, credentials)?;
+            if candidate_plan != *plan {
+                return Err(ReceiptError::Conflict);
+            }
+        }
+        let operations = self.authorization_operations(&context)?;
+        if operations
+            .iter()
+            .any(|operation| operation.verified.outcome.is_none())
+        {
+            return Err(ReceiptError::InvalidField("unfinished_operation_chain"));
+        }
+        self.install_terminal_plan(plan)?;
+        self.install_terminal_closure_locked(&context)
+    }
+
+    pub(crate) fn install_terminal_snapshot_candidate(
+        &self,
+        snapshot: &VerifiedSnapshot,
+        publication: &PublicationIdentity,
+        credentials: &CredentialIdentity,
+        activation: &ExecutionActivationIdentity,
+        identity: &OperationIdentityInput,
+        finish: &OperationFinishInput,
+    ) -> Result<(), ReceiptError> {
+        let context = project_operation_context(publication, credentials, activation)?;
+        let operation = project_operation_identity(&context, identity)?;
+        let plan = plan_terminal_receipts(snapshot, publication, credentials)?;
+        if plan.authorization_id_sha256 != context.authorization_id_sha256 {
+            return Err(ReceiptError::Projection("authorization_id_sha256"));
+        }
+        let authorization =
+            self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
+        let _guard = lock_operation_authorization(&authorization)?;
+        if self.execution_chain_is_sealed(&context.authorization_id_sha256)?
+            || self.terminal_artifact_exists(&context.authorization_id_sha256)?
+        {
+            return Err(ReceiptError::AlreadySealed);
+        }
+        let operation_directory = self.operation_directory(
+            &context.authorization_id_sha256,
+            &operation.operation_id_sha256,
+        )?;
+        let verified_operation = verify_operation_directory(
+            &operation_directory,
+            &context.authorization_id_sha256,
+            &operation.operation_id_sha256,
+        )?;
+        require_operation_identity(&verified_operation, &context, &operation)?;
+        if verified_operation.verified.outcome.is_some() {
+            return Err(ReceiptError::Conflict);
+        }
+        validate_operation_finish_input(
+            operation.kind,
+            finish,
+            verified_operation.start_recorded_at,
+        )?;
+        if operation.kind != OperationKind::AuthorityClaimRead
+            || finish.outcome != OperationOutcome::Accepted
+            || finish.http_status != Some(200)
+            || finish.response_body_sha256.is_none()
+        {
+            return Err(ReceiptError::InvalidField("terminal_candidate_operation"));
+        }
+        let candidate = canonical_terminal_snapshot_candidate(
+            snapshot,
+            &context,
+            &verified_operation,
+            finish,
+            &plan,
+        )?;
+        let closure = self.ensure_operation_closure_directory(&context.authorization_id_sha256)?;
+        let path = closure.join(TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME);
+        publish_canonical_bytes_with_limit(
+            &closure,
+            &path,
+            1,
+            &candidate.bytes,
+            MAX_TERMINAL_SNAPSHOT_CANDIDATE_BYTES,
+            "terminal_snapshot_candidate",
+        )?;
+        let installed = read_terminal_snapshot_candidate(&path, &closure, &context)?;
+        if installed.bytes != candidate.bytes || installed.record != candidate.record {
+            return Err(ReceiptError::Conflict);
+        }
+        sync_directory(&closure, &candidate.sha256)
+    }
+
+    pub(crate) fn recover_terminal_closure(
+        &self,
+        publication: &PublicationIdentity,
+        credentials: &CredentialIdentity,
+        activation: &ExecutionActivationIdentity,
+    ) -> Result<Option<VerifiedTerminalClosure>, ReceiptError> {
+        let context = project_operation_context(publication, credentials, activation)?;
+        if self.read_terminal_snapshot_candidate(&context)?.is_some() {
+            let authorization =
+                self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
+            let _guard = lock_operation_authorization(&authorization)?;
+            let candidate = self
+                .read_terminal_snapshot_candidate(&context)?
+                .ok_or(ReceiptError::Conflict)?;
+            let operations = self.authorization_operations(&context)?;
+            if operations
+                .iter()
+                .any(|operation| operation.verified.outcome.is_none())
+            {
+                return Err(ReceiptError::InvalidField("unfinished_operation_chain"));
+            }
+            let plan = plan_terminal_receipts(&candidate.snapshot, publication, credentials)?;
+            self.install_terminal_plan(&plan)?;
+            return self.install_terminal_closure_locked(&context).map(Some);
+        }
+        let Some(chain) = self.find_execution_chain(&context.authorization_id_sha256)? else {
+            if self.terminal_artifact_exists(&context.authorization_id_sha256)? {
+                return Err(ReceiptError::Conflict);
+            }
+            return Ok(None);
+        };
+        let verified = verify_chain_directory(&chain, &context.authorization_id_sha256)?;
+        if !verified.sealed {
+            if self.terminal_artifact_exists(&context.authorization_id_sha256)? {
+                return Err(ReceiptError::Conflict);
+            }
+            return Ok(None);
+        }
+        require_execution_chain_identity(&chain, publication, credentials, &context)?;
+        let authorization =
+            self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
+        let _guard = lock_operation_authorization(&authorization)?;
+        let operations = self.authorization_operations(&context)?;
+        if operations
+            .iter()
+            .any(|operation| operation.verified.outcome.is_none())
+        {
+            return Err(ReceiptError::InvalidField("unfinished_operation_chain"));
+        }
+        self.install_terminal_closure_locked(&context).map(Some)
+    }
+
     pub(crate) fn reserve_operation(
         &self,
         publication: &PublicationIdentity,
@@ -773,8 +1100,17 @@ impl ReceiptStore {
         let context = project_operation_context(publication, credentials, activation)?;
         let operation = project_operation_identity(&context, &input.identity)?;
         validate_operation_start_input(&context, input)?;
+        if self.execution_chain_is_sealed(&context.authorization_id_sha256)?
+            || self.terminal_admission_artifact_exists(&context)?
+        {
+            return Err(ReceiptError::AlreadySealed);
+        }
         let authorization =
             self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
+        let _guard = lock_operation_authorization(&authorization)?;
+        if self.terminal_barrier_exists(&context, &authorization)? {
+            return Err(ReceiptError::AlreadySealed);
+        }
         reserve_operation_capacity(&authorization, &operation.operation_id_sha256)?;
         let directory = self.ensure_operation_directory(
             &context.authorization_id_sha256,
@@ -846,6 +1182,63 @@ impl ReceiptStore {
     ) -> Result<OperationOutcome, ReceiptError> {
         let context = project_operation_context(publication, credentials, activation)?;
         let operation = project_operation_identity(&context, identity)?;
+        let (_, authorization) = self
+            .find_operation_authorization_directory(&context.authorization_id_sha256)?
+            .ok_or(ReceiptError::PredecessorMissing)?;
+        let _guard = lock_operation_authorization(&authorization)?;
+        if self.terminal_barrier_exists(&context, &authorization)? {
+            return Err(ReceiptError::AlreadySealed);
+        }
+        self.finish_operation_locked(&context, &operation, input)
+    }
+
+    pub(crate) fn finish_operation_after_terminal_candidate(
+        &self,
+        publication: &PublicationIdentity,
+        credentials: &CredentialIdentity,
+        activation: &ExecutionActivationIdentity,
+        identity: &OperationIdentityInput,
+        input: &OperationFinishInput,
+    ) -> Result<OperationOutcome, ReceiptError> {
+        let context = project_operation_context(publication, credentials, activation)?;
+        let operation = project_operation_identity(&context, identity)?;
+        if operation.kind != OperationKind::AuthorityClaimRead
+            || input.outcome != OperationOutcome::Accepted
+        {
+            return Err(ReceiptError::InvalidField("terminal_candidate_operation"));
+        }
+        let (_, authorization) = self
+            .find_operation_authorization_directory(&context.authorization_id_sha256)?
+            .ok_or(ReceiptError::PredecessorMissing)?;
+        let _guard = lock_operation_authorization(&authorization)?;
+        if self.execution_chain_is_sealed(&context.authorization_id_sha256)?
+            || self.terminal_artifact_exists(&context.authorization_id_sha256)?
+        {
+            return Err(ReceiptError::AlreadySealed);
+        }
+        let candidate = self
+            .read_terminal_snapshot_candidate(&context)?
+            .ok_or(ReceiptError::PredecessorMissing)?;
+        if candidate.record.operation_id_sha256 != operation.operation_id_sha256
+            || candidate.record.operation_outcome != input.outcome
+            || candidate.record.operation_finished_at != input.finished_at
+            || Some(candidate.record.operation_http_status) != input.http_status
+            || Some(candidate.record.operation_response_body_sha256.as_str())
+                != input.response_body_sha256.as_deref()
+            || candidate.record.operation_response_id_sha256.as_deref()
+                != input.response_id_sha256.as_deref()
+        {
+            return Err(ReceiptError::Conflict);
+        }
+        self.finish_operation_locked(&context, &operation, input)
+    }
+
+    fn finish_operation_locked(
+        &self,
+        context: &OperationContextIdentity,
+        operation: &OperationIdentity,
+        input: &OperationFinishInput,
+    ) -> Result<OperationOutcome, ReceiptError> {
         let directory = self.operation_directory(
             &context.authorization_id_sha256,
             &operation.operation_id_sha256,
@@ -855,7 +1248,7 @@ impl ReceiptStore {
             &context.authorization_id_sha256,
             &operation.operation_id_sha256,
         )?;
-        require_operation_identity(&verified, &context, &operation)?;
+        require_operation_identity(&verified, context, operation)?;
         if let Some(outcome) = verified.verified.outcome {
             return Ok(outcome);
         }
@@ -880,7 +1273,7 @@ impl ReceiptStore {
                     &context.authorization_id_sha256,
                     &operation.operation_id_sha256,
                 )?;
-                require_operation_identity(&verified, &context, &operation)?;
+                require_operation_identity(&verified, context, operation)?;
                 verified.verified.outcome.ok_or(ReceiptError::Conflict)
             }
             Err(error) => Err(error),
@@ -946,40 +1339,85 @@ impl ReceiptStore {
             return Err(ReceiptError::InvalidField("operation_recovery_time"));
         }
         let context = project_operation_context(publication, credentials, activation)?;
+        let Some((_, authorization)) =
+            self.find_operation_authorization_directory(&context.authorization_id_sha256)?
+        else {
+            return Ok(OperationReceiptAudit {
+                operation_count: 0,
+                unfinished_count: 0,
+                recovered_ambiguous_count: 0,
+            });
+        };
+        let _guard = lock_operation_authorization(&authorization)?;
+        if self.terminal_artifact_exists(&context.authorization_id_sha256)? {
+            return Err(ReceiptError::AlreadySealed);
+        }
+        let candidate = self.read_terminal_snapshot_candidate(&context)?;
         let operations = self.authorization_operations(&context)?;
         let operation_count = operations.len();
         let unfinished_count = operations
             .iter()
             .filter(|operation| operation.verified.outcome.is_none())
             .count();
+        let candidate_already_finished = if let Some(candidate) = &candidate {
+            let operation = operations
+                .iter()
+                .find(|operation| {
+                    operation.verified.operation_id_sha256 == candidate.record.operation_id_sha256
+                })
+                .ok_or(ReceiptError::Conflict)?;
+            if operation.start_sha256 != candidate.record.operation_start_receipt_sha256
+                || operation.operation.kind != OperationKind::AuthorityClaimRead
+                || operation
+                    .verified
+                    .outcome
+                    .is_some_and(|outcome| outcome != OperationOutcome::Accepted)
+            {
+                return Err(ReceiptError::Conflict);
+            }
+            operation.verified.outcome == Some(OperationOutcome::Accepted)
+        } else {
+            false
+        };
         let mut recovered_ambiguous_count = 0_usize;
+        let mut recovered_candidate = candidate.is_none() || candidate_already_finished;
         for operation in operations {
             if operation.verified.outcome.is_some() {
                 continue;
             }
-            let identity = OperationIdentityInput {
-                kind: operation.operation.kind,
-                state_version: operation.operation.state_version,
-                target_sha256: operation.operation.target_sha256,
-                request_sha256: operation.operation.request_sha256,
-            };
-            let outcome = self.finish_operation(
-                publication,
-                credentials,
-                activation,
-                &identity,
-                &OperationFinishInput {
+            let candidate_matches = candidate.as_ref().is_some_and(|candidate| {
+                candidate.record.operation_id_sha256 == operation.verified.operation_id_sha256
+            });
+            let finish = if let Some(candidate) = candidate.as_ref().filter(|_| candidate_matches) {
+                recovered_candidate = true;
+                OperationFinishInput {
+                    outcome: candidate.record.operation_outcome,
+                    finished_at: candidate.record.operation_finished_at,
+                    http_status: Some(candidate.record.operation_http_status),
+                    response_body_sha256: Some(
+                        candidate.record.operation_response_body_sha256.clone(),
+                    ),
+                    response_id_sha256: candidate.record.operation_response_id_sha256.clone(),
+                }
+            } else {
+                OperationFinishInput {
                     outcome: OperationOutcome::Ambiguous,
                     finished_at: now.max(operation.start_recorded_at),
                     http_status: None,
                     response_body_sha256: None,
                     response_id_sha256: None,
-                },
-            )?;
-            if outcome != OperationOutcome::Ambiguous {
+                }
+            };
+            let outcome = self.finish_operation_locked(&context, &operation.operation, &finish)?;
+            if outcome != finish.outcome {
                 return Err(ReceiptError::Conflict);
             }
-            recovered_ambiguous_count += 1;
+            if !candidate_matches {
+                recovered_ambiguous_count += 1;
+            }
+        }
+        if !recovered_candidate {
+            return Err(ReceiptError::Conflict);
         }
         let verified = self.authorization_operations(&context)?;
         if verified.len() != operation_count
@@ -1036,7 +1474,7 @@ impl ReceiptStore {
     fn authorization_operation_ids(
         &self,
         authorization_id_sha256: &str,
-    ) -> Result<(PathBuf, Vec<String>, Vec<String>), ReceiptError> {
+    ) -> Result<(PathBuf, Vec<String>, Vec<OperationCapacityReservation>), ReceiptError> {
         validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
         let receipts = self.root.join(OPERATION_RECEIPTS_DIRECTORY_NAME);
         let authorization = receipts.join(authorization_id_sha256);
@@ -1075,7 +1513,8 @@ impl ReceiptStore {
             "operation_authorization_directory",
         )?;
         let mut operation_ids = Vec::new();
-        let mut capacity_operation_ids = Vec::new();
+        let mut directory_operation_ids = Vec::new();
+        let mut capacity_reservations = Vec::new();
         for entry in fs::read_dir(&authorization)
             .map_err(|_| ReceiptError::Io("operation_authorization_read"))?
         {
@@ -1087,10 +1526,13 @@ impl ReceiptStore {
             let valid_staging =
                 valid_staging_file_name(&name, MAX_OPERATION_CHAINS_PER_AUTHORIZATION as u64);
             if valid_staging {
-                if let Some(metadata) = read_directory_entry_metadata(&entry.path(), true)? {
-                    if metadata.file_type().is_symlink() || !metadata.is_file() {
-                        return Err(ReceiptError::UnsafeFilesystem("operation_capacity_staging"));
-                    }
+                return Err(ReceiptError::UnsafeFilesystem("operation_capacity_staging"));
+            }
+            if name == OPERATION_HEAD_SET_FILE_NAME {
+                let metadata = read_directory_entry_metadata(&entry.path(), false)?
+                    .ok_or(ReceiptError::UnsafeFilesystem("operation_head_set"))?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(ReceiptError::UnsafeFilesystem("operation_head_set"));
                 }
                 continue;
             }
@@ -1100,13 +1542,14 @@ impl ReceiptStore {
                 if usize::from(reservation.slot) != slot {
                     return Err(ReceiptError::InvalidField("operation_capacity_slot"));
                 }
-                capacity_operation_ids.push(reservation.operation_id_sha256);
+                capacity_reservations.push(reservation);
                 continue;
             }
             let operation_id = name;
             validate_lower_hex(&operation_id, "operation_id_sha256")?;
             require_fixed_directory(&entry.path(), &authorization, "operation_directory")?;
             validate_operation_directory_entries(&entry.path())?;
+            directory_operation_ids.push(operation_id.clone());
             let start_path = entry.path().join(operation_receipt_file_name(1));
             if !start_path
                 .try_exists()
@@ -1120,20 +1563,320 @@ impl ReceiptStore {
             operation_ids.push(operation_id);
         }
         operation_ids.sort();
-        capacity_operation_ids.sort();
-        if capacity_operation_ids.len() > MAX_OPERATION_CHAINS_PER_AUTHORIZATION
+        directory_operation_ids.sort();
+        capacity_reservations.sort_by_key(|reservation| reservation.slot);
+        let mut capacity_operation_ids = capacity_reservations
+            .iter()
+            .map(|reservation| reservation.operation_id_sha256.as_str())
+            .collect::<Vec<_>>();
+        capacity_operation_ids.sort_unstable();
+        if capacity_reservations.len() > MAX_OPERATION_CHAINS_PER_AUTHORIZATION
             || capacity_operation_ids
                 .windows(2)
                 .any(|window| window[0] == window[1])
-            || operation_ids
-                .iter()
-                .any(|operation_id| capacity_operation_ids.binary_search(operation_id).is_err())
+            || directory_operation_ids.iter().any(|operation_id| {
+                capacity_operation_ids
+                    .binary_search(&operation_id.as_str())
+                    .is_err()
+            })
         {
             return Err(ReceiptError::InvalidField(
                 "operation_capacity_reservations",
             ));
         }
-        Ok((authorization, operation_ids, capacity_operation_ids))
+        Ok((authorization, operation_ids, capacity_reservations))
+    }
+
+    fn install_terminal_closure_locked(
+        &self,
+        context: &OperationContextIdentity,
+    ) -> Result<VerifiedTerminalClosure, ReceiptError> {
+        let execution_chain = self.verify(&context.authorization_id_sha256)?;
+        require_execution_chain_identity_from_context(
+            &self.execution_chain(&context.authorization_id_sha256)?,
+            context,
+        )?;
+        let canonical_head_set = self.canonical_operation_head_set(context)?;
+        let authorization =
+            self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
+        let head_set_path = authorization.join(OPERATION_HEAD_SET_FILE_NAME);
+        publish_canonical_bytes(
+            &authorization,
+            &head_set_path,
+            MAX_OPERATION_CHAINS_PER_AUTHORIZATION as u64,
+            &canonical_head_set.bytes,
+            "operation_head_set",
+        )?;
+        let installed_head_set = read_operation_head_set(&head_set_path, &authorization)?;
+        if installed_head_set.bytes != canonical_head_set.bytes
+            || installed_head_set.record != canonical_head_set.record
+        {
+            return Err(ReceiptError::Conflict);
+        }
+        freeze_operation_directories(&authorization, &canonical_head_set.record)?;
+        set_chain_read_only(&authorization)?;
+        sync_directory(&authorization, &canonical_head_set.verified.sha256)?;
+
+        let terminal_candidate = self.read_terminal_snapshot_candidate(context)?;
+        let canonical_local_seal = canonical_operation_head_local_seal(
+            context,
+            &execution_chain,
+            &canonical_head_set,
+            terminal_candidate.as_ref(),
+        )?;
+        let closure = self.ensure_operation_closure_directory(&context.authorization_id_sha256)?;
+        let local_seal_path = closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME);
+        publish_canonical_bytes(
+            &closure,
+            &local_seal_path,
+            2,
+            &canonical_local_seal.bytes,
+            "operation_head_local_seal",
+        )?;
+        let installed_local_seal = read_operation_head_local_seal(&local_seal_path, &closure)?;
+        if installed_local_seal.bytes != canonical_local_seal.bytes
+            || installed_local_seal.record != canonical_local_seal.record
+        {
+            return Err(ReceiptError::Conflict);
+        }
+        set_chain_read_only(&closure)?;
+        sync_directory(&closure, &canonical_local_seal.sha256)?;
+        self.verify_terminal_closure(context)
+    }
+
+    fn verify_terminal_closure(
+        &self,
+        context: &OperationContextIdentity,
+    ) -> Result<VerifiedTerminalClosure, ReceiptError> {
+        let execution_chain = self.verify(&context.authorization_id_sha256)?;
+        let execution_path = self.execution_chain(&context.authorization_id_sha256)?;
+        require_execution_chain_identity_from_context(&execution_path, context)?;
+        let terminal_candidate = self.read_terminal_snapshot_candidate(context)?;
+        if let Some(candidate) = &terminal_candidate {
+            require_execution_chain_matches_terminal_candidate(
+                &execution_path,
+                &execution_chain,
+                candidate,
+            )?;
+        }
+        let expected_head_set = self.canonical_operation_head_set(context)?;
+        let authorization = self
+            .find_operation_authorization_directory(&context.authorization_id_sha256)?
+            .map(|(_, path)| path)
+            .ok_or(ReceiptError::PredecessorMissing)?;
+        let installed_head_set = read_operation_head_set(
+            &authorization.join(OPERATION_HEAD_SET_FILE_NAME),
+            &authorization,
+        )?;
+        if installed_head_set.bytes != expected_head_set.bytes {
+            return Err(ReceiptError::Conflict);
+        }
+        let expected_local_seal = canonical_operation_head_local_seal(
+            context,
+            &execution_chain,
+            &expected_head_set,
+            terminal_candidate.as_ref(),
+        )?;
+        let closure = self.operation_closure_directory(&context.authorization_id_sha256)?;
+        let installed_local_seal = read_operation_head_local_seal(
+            &closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME),
+            &closure,
+        )?;
+        if installed_local_seal.bytes != expected_local_seal.bytes {
+            return Err(ReceiptError::Conflict);
+        }
+        Ok(VerifiedTerminalClosure {
+            authorization_id_sha256: context.authorization_id_sha256.clone(),
+            terminal_status: execution_chain
+                .terminal_status
+                .ok_or(ReceiptError::NotSealed)?,
+            terminal_state_version: execution_chain
+                .terminal_state_version
+                .ok_or(ReceiptError::NotSealed)?,
+            execution_receipt_head_sha256: execution_chain.head_sha256,
+            operation_head_set_sha256: expected_head_set.verified.sha256,
+            local_seal_sha256: expected_local_seal.sha256,
+        })
+    }
+
+    fn canonical_operation_head_set(
+        &self,
+        context: &OperationContextIdentity,
+    ) -> Result<CanonicalOperationHeadSet, ReceiptError> {
+        let (_, operation_ids, capacity_reservations) =
+            self.authorization_operation_ids(&context.authorization_id_sha256)?;
+        let mut operations = BTreeMap::new();
+        for operation_id in operation_ids {
+            let operation = verify_operation_directory(
+                &self.operation_directory(&context.authorization_id_sha256, &operation_id)?,
+                &context.authorization_id_sha256,
+                &operation_id,
+            )?;
+            if operation.context != *context
+                || operation.verified.receipt_count != MAX_OPERATION_RECEIPTS_PER_CHAIN
+                || operation.verified.outcome.is_none()
+            {
+                return Err(ReceiptError::InvalidField("operation_head_set_chain"));
+            }
+            if operations.insert(operation_id, operation).is_some() {
+                return Err(ReceiptError::Conflict);
+            }
+        }
+        canonical_operation_head_set(context, capacity_reservations, operations)
+    }
+
+    fn execution_chain_is_sealed(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<bool, ReceiptError> {
+        let Some(chain) = self.find_execution_chain(authorization_id_sha256)? else {
+            return Ok(false);
+        };
+        verify_chain_directory(&chain, authorization_id_sha256).map(|chain| chain.sealed)
+    }
+
+    fn terminal_barrier_exists(
+        &self,
+        context: &OperationContextIdentity,
+        authorization: &Path,
+    ) -> Result<bool, ReceiptError> {
+        if self.execution_chain_is_sealed(&context.authorization_id_sha256)? {
+            return Ok(true);
+        }
+        let head_set = authorization.join(OPERATION_HEAD_SET_FILE_NAME);
+        if head_set
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_head_set_exists"))?
+        {
+            read_operation_head_set(&head_set, authorization)?;
+            return Ok(true);
+        }
+        if self.local_seal_exists(&context.authorization_id_sha256)? {
+            return Ok(true);
+        }
+        Ok(self.read_terminal_snapshot_candidate(context)?.is_some())
+    }
+
+    fn terminal_admission_artifact_exists(
+        &self,
+        context: &OperationContextIdentity,
+    ) -> Result<bool, ReceiptError> {
+        if self.terminal_artifact_exists(&context.authorization_id_sha256)? {
+            return Ok(true);
+        }
+        Ok(self.read_terminal_snapshot_candidate(context)?.is_some())
+    }
+
+    fn terminal_artifact_exists(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<bool, ReceiptError> {
+        if let Some((_, authorization)) =
+            self.find_operation_authorization_directory(authorization_id_sha256)?
+        {
+            let head_set = authorization.join(OPERATION_HEAD_SET_FILE_NAME);
+            if head_set
+                .try_exists()
+                .map_err(|_| ReceiptError::Io("operation_head_set_exists"))?
+            {
+                read_operation_head_set(&head_set, &authorization)?;
+                return Ok(true);
+            }
+        }
+        self.local_seal_exists(authorization_id_sha256)
+    }
+
+    fn local_seal_exists(&self, authorization_id_sha256: &str) -> Result<bool, ReceiptError> {
+        let Some(closure) = self.find_operation_closure_directory(authorization_id_sha256)? else {
+            return Ok(false);
+        };
+        let local_seal = closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME);
+        if !local_seal
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_head_local_seal_exists"))?
+        {
+            return Ok(false);
+        }
+        read_operation_head_local_seal(&local_seal, &closure)?;
+        Ok(true)
+    }
+
+    fn read_terminal_snapshot_candidate(
+        &self,
+        context: &OperationContextIdentity,
+    ) -> Result<Option<CanonicalTerminalSnapshotCandidate>, ReceiptError> {
+        let Some(closure) =
+            self.find_operation_closure_directory(&context.authorization_id_sha256)?
+        else {
+            return Ok(None);
+        };
+        let path = closure.join(TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME);
+        if !path
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("terminal_snapshot_candidate_exists"))?
+        {
+            return Ok(None);
+        }
+        read_terminal_snapshot_candidate(&path, &closure, context).map(Some)
+    }
+
+    fn find_operation_closure_directory(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<Option<PathBuf>, ReceiptError> {
+        validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
+        let closures = self.root.join(OPERATION_CLOSURES_DIRECTORY_NAME);
+        if !closures
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_closures_exists"))?
+        {
+            return Ok(None);
+        }
+        require_fixed_directory(&closures, &self.root, "operation_closures_directory")?;
+        validate_operation_closures_root(&closures)?;
+        let closure = closures.join(authorization_id_sha256);
+        if !closure
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_closure_exists"))?
+        {
+            return Ok(None);
+        }
+        require_fixed_directory(
+            &closure,
+            &closures,
+            "operation_authorization_closure_directory",
+        )?;
+        validate_operation_closure_directory_entries(&closure)?;
+        Ok(Some(closure))
+    }
+
+    fn find_execution_chain(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<Option<PathBuf>, ReceiptError> {
+        validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
+        let receipts = self.root.join(RECEIPTS_DIRECTORY_NAME);
+        if !receipts
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("receipts_exists"))?
+        {
+            return Ok(None);
+        }
+        require_fixed_directory(&receipts, &self.root, "receipts_directory")?;
+        let chain = receipts.join(authorization_id_sha256);
+        if !chain
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("chain_exists"))?
+        {
+            return Ok(None);
+        }
+        require_fixed_directory(&chain, &receipts, "chain_directory")?;
+        Ok(Some(chain))
+    }
+
+    fn execution_chain(&self, authorization_id_sha256: &str) -> Result<PathBuf, ReceiptError> {
+        self.find_execution_chain(authorization_id_sha256)?
+            .ok_or(ReceiptError::PredecessorMissing)
     }
 
     fn ensure_chain_directory(
@@ -1161,6 +1904,70 @@ impl ReceiptStore {
             "operation_authorization_directory",
         )?;
         Ok(authorization)
+    }
+
+    fn find_operation_authorization_directory(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<Option<(PathBuf, PathBuf)>, ReceiptError> {
+        validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
+        let receipts = self.root.join(OPERATION_RECEIPTS_DIRECTORY_NAME);
+        if !receipts
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_receipts_exists"))?
+        {
+            return Ok(None);
+        }
+        require_fixed_directory(&receipts, &self.root, "operation_receipts_directory")?;
+        let authorization = receipts.join(authorization_id_sha256);
+        if !authorization
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_authorization_exists"))?
+        {
+            return Ok(None);
+        }
+        require_fixed_directory(
+            &authorization,
+            &receipts,
+            "operation_authorization_directory",
+        )?;
+        Ok(Some((receipts, authorization)))
+    }
+
+    fn ensure_operation_closure_directory(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<PathBuf, ReceiptError> {
+        validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
+        let closures = self.root.join(OPERATION_CLOSURES_DIRECTORY_NAME);
+        let _ = create_fixed_directory(&closures, &self.root, "operation_closures_directory")?;
+        validate_operation_closures_root(&closures)?;
+        let closure = closures.join(authorization_id_sha256);
+        let _ = create_fixed_directory(
+            &closure,
+            &closures,
+            "operation_authorization_closure_directory",
+        )?;
+        validate_operation_closure_directory_entries(&closure)?;
+        Ok(closure)
+    }
+
+    fn operation_closure_directory(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<PathBuf, ReceiptError> {
+        validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
+        let closures = self.root.join(OPERATION_CLOSURES_DIRECTORY_NAME);
+        require_fixed_directory(&closures, &self.root, "operation_closures_directory")?;
+        validate_operation_closures_root(&closures)?;
+        let closure = closures.join(authorization_id_sha256);
+        require_fixed_directory(
+            &closure,
+            &closures,
+            "operation_authorization_closure_directory",
+        )?;
+        validate_operation_closure_directory_entries(&closure)?;
+        Ok(closure)
     }
 
     fn ensure_operation_directory(
@@ -1192,26 +1999,11 @@ impl ReceiptStore {
     ) -> Result<Option<PathBuf>, ReceiptError> {
         validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
         validate_lower_hex(operation_id_sha256, "operation_id_sha256")?;
-        let receipts = self.root.join(OPERATION_RECEIPTS_DIRECTORY_NAME);
-        if !receipts
-            .try_exists()
-            .map_err(|_| ReceiptError::Io("operation_receipts_exists"))?
-        {
+        let Some((_, authorization)) =
+            self.find_operation_authorization_directory(authorization_id_sha256)?
+        else {
             return Ok(None);
-        }
-        require_fixed_directory(&receipts, &self.root, "operation_receipts_directory")?;
-        let authorization = receipts.join(authorization_id_sha256);
-        if !authorization
-            .try_exists()
-            .map_err(|_| ReceiptError::Io("operation_authorization_exists"))?
-        {
-            return Ok(None);
-        }
-        require_fixed_directory(
-            &authorization,
-            &receipts,
-            "operation_authorization_directory",
-        )?;
+        };
         let operation = authorization.join(operation_id_sha256);
         if !operation
             .try_exists()
@@ -1278,6 +2070,14 @@ struct OperationCapacityReservation {
     contract: String,
     slot: u16,
     operation_id_sha256: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationContextDigestSubject<'a> {
+    schema_version: u8,
+    contract: &'static str,
+    context: &'a OperationContextIdentity,
 }
 
 pub(crate) fn read_operation_request_sha256(
@@ -1372,6 +2172,323 @@ fn project_operation_context(
     };
     validate_operation_context(&context)?;
     Ok(context)
+}
+
+fn operation_context_sha256(context: &OperationContextIdentity) -> Result<String, ReceiptError> {
+    canonical_json(&OperationContextDigestSubject {
+        schema_version: 1,
+        contract: OPERATION_CONTEXT_DIGEST_CONTRACT,
+        context,
+    })
+    .map(|subject| sha256_hex(subject.as_bytes()))
+    .map_err(|_| ReceiptError::InvalidField("operation_context_sha256"))
+}
+
+fn canonical_terminal_snapshot_candidate(
+    snapshot: &VerifiedSnapshot,
+    context: &OperationContextIdentity,
+    operation: &VerifiedOperationReceiptChainInternal,
+    finish: &OperationFinishInput,
+    plan: &ReceiptPlan,
+) -> Result<CanonicalTerminalSnapshotCandidate, ReceiptError> {
+    validate_terminal_snapshot_context(snapshot.receipt_snapshot(), context)?;
+    if !snapshot.status().is_terminal() {
+        return Err(ReceiptError::NotSealed);
+    }
+    let snapshot_bytes = canonical_json(snapshot.receipt_snapshot())
+        .map_err(|_| ReceiptError::InvalidField("terminal_snapshot_candidate"))?
+        .into_bytes();
+    let record = TerminalSnapshotCandidate {
+        schema_version: 1,
+        contract: TERMINAL_SNAPSHOT_CANDIDATE_CONTRACT.to_owned(),
+        environment: "staging".to_owned(),
+        activation_sha256: context.activation_sha256.clone(),
+        authorization_id_sha256: context.authorization_id_sha256.clone(),
+        claim_digest_sha256: context.claim_digest_sha256.clone(),
+        operation_context_sha256: operation_context_sha256(context)?,
+        snapshot_sha256: sha256_hex(&snapshot_bytes),
+        snapshot_bytes: u64::try_from(snapshot_bytes.len())
+            .map_err(|_| ReceiptError::InvalidField("terminal_snapshot_candidate_bytes"))?,
+        operation_id_sha256: operation.verified.operation_id_sha256.clone(),
+        operation_start_receipt_sha256: operation.start_sha256.clone(),
+        operation_outcome: finish.outcome,
+        operation_finished_at: finish.finished_at,
+        operation_http_status: finish
+            .http_status
+            .ok_or(ReceiptError::InvalidField("terminal_candidate_http_status"))?,
+        operation_response_body_sha256: finish.response_body_sha256.clone().ok_or(
+            ReceiptError::InvalidField("terminal_candidate_response_body_sha256"),
+        )?,
+        operation_response_id_sha256: finish.response_id_sha256.clone(),
+        expected_execution_receipt_head_sha256: plan.head_sha256().to_owned(),
+        expected_execution_receipt_count: u64::try_from(plan.receipts.len())
+            .map_err(|_| ReceiptError::InvalidField("terminal_candidate_receipt_count"))?,
+        snapshot: snapshot.receipt_snapshot().clone(),
+    };
+    validate_terminal_snapshot_candidate_record(&record, context)?;
+    let bytes = canonical_json(&record)
+        .map_err(|_| ReceiptError::InvalidField("terminal_snapshot_candidate"))?
+        .into_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_TERMINAL_SNAPSHOT_CANDIDATE_BYTES {
+        return Err(ReceiptError::InvalidField(
+            "terminal_snapshot_candidate_bytes",
+        ));
+    }
+    Ok(CanonicalTerminalSnapshotCandidate {
+        record,
+        sha256: sha256_hex(&bytes),
+        bytes,
+        snapshot: snapshot.clone(),
+    })
+}
+
+fn validate_terminal_snapshot_candidate_record(
+    record: &TerminalSnapshotCandidate,
+    context: &OperationContextIdentity,
+) -> Result<(), ReceiptError> {
+    if record.schema_version != 1
+        || record.contract != TERMINAL_SNAPSHOT_CANDIDATE_CONTRACT
+        || record.environment != "staging"
+        || record.activation_sha256 != context.activation_sha256
+        || record.authorization_id_sha256 != context.authorization_id_sha256
+        || record.claim_digest_sha256 != context.claim_digest_sha256
+        || record.operation_context_sha256 != operation_context_sha256(context)?
+        || record.snapshot_bytes == 0
+        || record.snapshot_bytes > MAX_TERMINAL_SNAPSHOT_CANDIDATE_BYTES as u64
+        || record.operation_outcome != OperationOutcome::Accepted
+        || record.operation_http_status != 200
+        || record.operation_finished_at > MAX_SAFE_INTEGER
+        || !valid_terminal_receipt_shape(
+            record.snapshot.state.status,
+            record.snapshot.state.state_version,
+            record.expected_execution_receipt_count,
+        )
+    {
+        return Err(ReceiptError::InvalidField("terminal_snapshot_candidate"));
+    }
+    for value in [
+        record.activation_sha256.as_str(),
+        record.authorization_id_sha256.as_str(),
+        record.claim_digest_sha256.as_str(),
+        record.operation_context_sha256.as_str(),
+        record.snapshot_sha256.as_str(),
+        record.operation_id_sha256.as_str(),
+        record.operation_start_receipt_sha256.as_str(),
+        record.operation_response_body_sha256.as_str(),
+        record.expected_execution_receipt_head_sha256.as_str(),
+    ] {
+        validate_lower_hex(value, "terminal_snapshot_candidate_sha256")?;
+    }
+    if let Some(response_id_sha256) = &record.operation_response_id_sha256 {
+        validate_lower_hex(
+            response_id_sha256,
+            "terminal_snapshot_candidate_response_id_sha256",
+        )?;
+    }
+    validate_terminal_snapshot_context(&record.snapshot, context)
+}
+
+fn validate_terminal_snapshot_context(
+    snapshot: &AuthoritySnapshot,
+    context: &OperationContextIdentity,
+) -> Result<(), ReceiptError> {
+    let claim = &snapshot.claim;
+    let matches = claim.environment == "staging"
+        && claim.authorization_id_sha256 == context.authorization_id_sha256
+        && claim.claim_digest_sha256 == context.claim_digest_sha256
+        && claim.ledger_identity_sha256 == context.ledger_identity_sha256
+        && claim.claim_owner_sha256 == context.claim_owner_sha256
+        && claim.account_id_sha256 == context.account_id_sha256
+        && claim.read_credential_id_sha256 == context.read_credential_id_sha256
+        && claim.claim_credential_id_sha256 == context.claim_credential_id_sha256
+        && claim.deploy_credential_id_sha256 == context.deploy_credential_id_sha256
+        && claim.runner_build_sha256 == context.artifact_sha256
+        && claim.runner_trust_config_sha256 == context.trust_config_sha256
+        && claim.controller.service_name == context.controller_service_name
+        && claim.edge.service_name == context.edge_service_name
+        && claim.generated_at == context.generated_at
+        && claim.expires_at == context.expires_at;
+    if !matches {
+        return Err(ReceiptError::Projection(
+            "terminal_snapshot_candidate_context",
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_operation_head_set(
+    context: &OperationContextIdentity,
+    mut capacity_reservations: Vec<OperationCapacityReservation>,
+    mut operations: BTreeMap<String, VerifiedOperationReceiptChainInternal>,
+) -> Result<CanonicalOperationHeadSet, ReceiptError> {
+    capacity_reservations.sort_by_key(|reservation| reservation.slot);
+    if capacity_reservations
+        .windows(2)
+        .any(|window| window[0].slot >= window[1].slot)
+    {
+        return Err(ReceiptError::InvalidField(
+            "operation_capacity_reservations",
+        ));
+    }
+    let mut entries = Vec::with_capacity(capacity_reservations.len());
+    let mut operation_count = 0_u64;
+    let mut marker_only_count = 0_u64;
+    for reservation in capacity_reservations {
+        let entry = match operations.remove(&reservation.operation_id_sha256) {
+            Some(operation) => {
+                let outcome = operation
+                    .verified
+                    .outcome
+                    .ok_or(ReceiptError::InvalidField("operation_head_outcome"))?;
+                if operation.verified.receipt_count != MAX_OPERATION_RECEIPTS_PER_CHAIN
+                    || operation.verified.operation_id_sha256 != reservation.operation_id_sha256
+                {
+                    return Err(ReceiptError::Conflict);
+                }
+                operation_count = operation_count
+                    .checked_add(1)
+                    .ok_or(ReceiptError::InvalidField("operation_count"))?;
+                OperationHeadSetEntry {
+                    slot: reservation.slot,
+                    operation_id_sha256: reservation.operation_id_sha256,
+                    chain_state: OperationHeadSetChainState::Terminal,
+                    start_receipt_sha256: Some(operation.start_sha256),
+                    receipt_count: operation.verified.receipt_count,
+                    head_sha256: Some(operation.verified.head_sha256),
+                    outcome: Some(outcome),
+                }
+            }
+            None => {
+                marker_only_count = marker_only_count
+                    .checked_add(1)
+                    .ok_or(ReceiptError::InvalidField("marker_only_count"))?;
+                OperationHeadSetEntry {
+                    slot: reservation.slot,
+                    operation_id_sha256: reservation.operation_id_sha256,
+                    chain_state: OperationHeadSetChainState::MarkerOnly,
+                    start_receipt_sha256: None,
+                    receipt_count: 0,
+                    head_sha256: None,
+                    outcome: None,
+                }
+            }
+        };
+        entries.push(entry);
+    }
+    if !operations.is_empty() {
+        return Err(ReceiptError::InvalidField(
+            "operation_capacity_reservations",
+        ));
+    }
+    let capacity_reservation_count = u64::try_from(entries.len())
+        .map_err(|_| ReceiptError::InvalidField("capacity_reservation_count"))?;
+    let record = OperationHeadSetManifest {
+        schema_version: 1,
+        contract: OPERATION_HEAD_SET_CONTRACT.to_owned(),
+        environment: "staging".to_owned(),
+        activation_sha256: context.activation_sha256.clone(),
+        authorization_id_sha256: context.authorization_id_sha256.clone(),
+        claim_digest_sha256: context.claim_digest_sha256.clone(),
+        operation_context_sha256: operation_context_sha256(context)?,
+        capacity_limit: u64::try_from(MAX_OPERATION_CHAINS_PER_AUTHORIZATION)
+            .map_err(|_| ReceiptError::InvalidField("capacity_limit"))?,
+        operation_count,
+        capacity_reservation_count,
+        marker_only_count,
+        entries,
+    };
+    validate_operation_head_set(&record)?;
+    let bytes = canonical_json(&record)
+        .map_err(|_| ReceiptError::InvalidField("operation_head_set"))?
+        .into_bytes();
+    let verified = VerifiedOperationHeadSet {
+        sha256: sha256_hex(&bytes),
+        bytes: u64::try_from(bytes.len())
+            .map_err(|_| ReceiptError::InvalidField("operation_head_set_bytes"))?,
+        operation_context_sha256: record.operation_context_sha256.clone(),
+        operation_count,
+        capacity_reservation_count,
+        marker_only_count,
+    };
+    Ok(CanonicalOperationHeadSet {
+        record,
+        bytes,
+        verified,
+    })
+}
+
+fn canonical_operation_head_local_seal(
+    context: &OperationContextIdentity,
+    execution_chain: &VerifiedReceiptChain,
+    head_set: &CanonicalOperationHeadSet,
+    terminal_candidate: Option<&CanonicalTerminalSnapshotCandidate>,
+) -> Result<CanonicalOperationHeadLocalSeal, ReceiptError> {
+    if !execution_chain.sealed
+        || execution_chain.authorization_id_sha256 != context.authorization_id_sha256
+        || head_set.record.authorization_id_sha256 != context.authorization_id_sha256
+        || head_set.record.activation_sha256 != context.activation_sha256
+        || head_set.record.claim_digest_sha256 != context.claim_digest_sha256
+    {
+        return Err(ReceiptError::Conflict);
+    }
+    if let Some(candidate) = terminal_candidate {
+        let operation_bound = head_set.record.entries.iter().any(|entry| {
+            entry.operation_id_sha256 == candidate.record.operation_id_sha256
+                && entry.chain_state == OperationHeadSetChainState::Terminal
+                && entry.start_receipt_sha256.as_deref()
+                    == Some(candidate.record.operation_start_receipt_sha256.as_str())
+                && entry.outcome == Some(OperationOutcome::Accepted)
+        });
+        if !operation_bound
+            || execution_chain.head_sha256
+                != candidate.record.expected_execution_receipt_head_sha256
+            || execution_chain.receipt_count != candidate.record.expected_execution_receipt_count
+        {
+            return Err(ReceiptError::Conflict);
+        }
+    }
+    let record = OperationHeadLocalSeal {
+        schema_version: 1,
+        contract: OPERATION_HEAD_LOCAL_SEAL_CONTRACT.to_owned(),
+        environment: "staging".to_owned(),
+        activation_sha256: context.activation_sha256.clone(),
+        authorization_id_sha256: context.authorization_id_sha256.clone(),
+        claim_digest_sha256: context.claim_digest_sha256.clone(),
+        operation_context_sha256: head_set.verified.operation_context_sha256.clone(),
+        execution_receipt_head_sha256: execution_chain.head_sha256.clone(),
+        execution_receipt_count: execution_chain.receipt_count,
+        terminal_status: execution_chain
+            .terminal_status
+            .ok_or(ReceiptError::NotSealed)?,
+        terminal_state_version: execution_chain
+            .terminal_state_version
+            .ok_or(ReceiptError::NotSealed)?,
+        operation_head_set_sha256: head_set.verified.sha256.clone(),
+        operation_head_set_bytes: head_set.verified.bytes,
+        operation_count: head_set.verified.operation_count,
+        capacity_reservation_count: head_set.verified.capacity_reservation_count,
+        marker_only_count: head_set.verified.marker_only_count,
+        terminal_snapshot_candidate_sha256: terminal_candidate
+            .map(|candidate| candidate.sha256.clone()),
+        terminal_snapshot_candidate_bytes: terminal_candidate
+            .map(|candidate| u64::try_from(candidate.bytes.len()))
+            .transpose()
+            .map_err(|_| ReceiptError::InvalidField("terminal_snapshot_candidate_bytes"))?,
+        terminal_candidate_operation_id_sha256: terminal_candidate
+            .map(|candidate| candidate.record.operation_id_sha256.clone()),
+        terminal_candidate_start_receipt_sha256: terminal_candidate
+            .map(|candidate| candidate.record.operation_start_receipt_sha256.clone()),
+    };
+    validate_operation_head_local_seal(&record)?;
+    let bytes = canonical_json(&record)
+        .map_err(|_| ReceiptError::InvalidField("operation_head_local_seal"))?
+        .into_bytes();
+    let sha256 = sha256_hex(&bytes);
+    Ok(CanonicalOperationHeadLocalSeal {
+        record,
+        bytes,
+        sha256,
+    })
 }
 
 fn project_operation_identity(
@@ -2660,11 +3777,21 @@ fn verify_chain_directory(
     if status.is_terminal() && !sealed {
         return Err(ReceiptError::NotSealed);
     }
+    let (terminal_status, terminal_state_version) = match &head.record.event {
+        ReceiptEvent::TerminalSeal {
+            status,
+            state_version,
+            ..
+        } => (Some(*status), Some(*state_version)),
+        _ => (None, None),
+    };
     Ok(VerifiedReceiptChain {
         authorization_id_sha256: authorization_id_sha256.to_owned(),
         receipt_count,
         head_sha256: head.sha256,
         sealed,
+        terminal_status,
+        terminal_state_version,
     })
 }
 
@@ -2897,6 +4024,485 @@ fn read_operation_capacity_reservation(
     Ok(record)
 }
 
+fn validate_operation_head_set(record: &OperationHeadSetManifest) -> Result<(), ReceiptError> {
+    let capacity_limit = u64::try_from(MAX_OPERATION_CHAINS_PER_AUTHORIZATION)
+        .map_err(|_| ReceiptError::InvalidField("capacity_limit"))?;
+    if record.schema_version != 1
+        || record.contract != OPERATION_HEAD_SET_CONTRACT
+        || record.environment != "staging"
+        || record.capacity_limit != capacity_limit
+        || record.capacity_reservation_count
+            != u64::try_from(record.entries.len())
+                .map_err(|_| ReceiptError::InvalidField("capacity_reservation_count"))?
+        || record
+            .operation_count
+            .checked_add(record.marker_only_count)
+            .ok_or(ReceiptError::InvalidField("capacity_reservation_count"))?
+            != record.capacity_reservation_count
+        || record.capacity_reservation_count > capacity_limit
+    {
+        return Err(ReceiptError::InvalidField("operation_head_set"));
+    }
+    for value in [
+        record.activation_sha256.as_str(),
+        record.authorization_id_sha256.as_str(),
+        record.claim_digest_sha256.as_str(),
+        record.operation_context_sha256.as_str(),
+    ] {
+        validate_lower_hex(value, "operation_head_set_sha256")?;
+    }
+    let mut terminal_count = 0_u64;
+    let mut marker_only_count = 0_u64;
+    let mut previous_slot = None;
+    let mut operation_ids = BTreeMap::new();
+    for entry in &record.entries {
+        if usize::from(entry.slot) >= MAX_OPERATION_CHAINS_PER_AUTHORIZATION
+            || previous_slot.is_some_and(|slot| slot >= entry.slot)
+        {
+            return Err(ReceiptError::InvalidField("operation_head_set_slot"));
+        }
+        previous_slot = Some(entry.slot);
+        validate_lower_hex(&entry.operation_id_sha256, "operation_id_sha256")?;
+        if operation_ids
+            .insert(entry.operation_id_sha256.as_str(), ())
+            .is_some()
+        {
+            return Err(ReceiptError::InvalidField("operation_head_set_operation"));
+        }
+        match entry.chain_state {
+            OperationHeadSetChainState::MarkerOnly => {
+                if entry.start_receipt_sha256.is_some()
+                    || entry.receipt_count != 0
+                    || entry.head_sha256.is_some()
+                    || entry.outcome.is_some()
+                {
+                    return Err(ReceiptError::InvalidField("operation_head_set_marker"));
+                }
+                marker_only_count = marker_only_count
+                    .checked_add(1)
+                    .ok_or(ReceiptError::InvalidField("marker_only_count"))?;
+            }
+            OperationHeadSetChainState::Terminal => {
+                validate_lower_hex(
+                    entry
+                        .start_receipt_sha256
+                        .as_deref()
+                        .ok_or(ReceiptError::InvalidField("start_receipt_sha256"))?,
+                    "start_receipt_sha256",
+                )?;
+                validate_lower_hex(
+                    entry
+                        .head_sha256
+                        .as_deref()
+                        .ok_or(ReceiptError::InvalidField("operation_head_sha256"))?,
+                    "operation_head_sha256",
+                )?;
+                if entry.receipt_count != MAX_OPERATION_RECEIPTS_PER_CHAIN
+                    || entry.outcome.is_none()
+                {
+                    return Err(ReceiptError::InvalidField("operation_head_set_terminal"));
+                }
+                terminal_count = terminal_count
+                    .checked_add(1)
+                    .ok_or(ReceiptError::InvalidField("operation_count"))?;
+            }
+        }
+    }
+    if terminal_count != record.operation_count || marker_only_count != record.marker_only_count {
+        return Err(ReceiptError::InvalidField("operation_head_set_count"));
+    }
+    Ok(())
+}
+
+fn validate_operation_head_local_seal(record: &OperationHeadLocalSeal) -> Result<(), ReceiptError> {
+    if record.schema_version != 1
+        || record.contract != OPERATION_HEAD_LOCAL_SEAL_CONTRACT
+        || record.environment != "staging"
+        || record.execution_receipt_count == 0
+        || record.execution_receipt_count > MAX_RECEIPTS_PER_CHAIN
+        || !valid_terminal_receipt_shape(
+            record.terminal_status,
+            record.terminal_state_version,
+            record.execution_receipt_count,
+        )
+        || record.operation_head_set_bytes == 0
+        || record.operation_head_set_bytes > MAX_RECEIPT_BYTES as u64
+        || record
+            .operation_count
+            .checked_add(record.marker_only_count)
+            .ok_or(ReceiptError::InvalidField("capacity_reservation_count"))?
+            != record.capacity_reservation_count
+        || record.capacity_reservation_count
+            > u64::try_from(MAX_OPERATION_CHAINS_PER_AUTHORIZATION)
+                .map_err(|_| ReceiptError::InvalidField("capacity_reservation_count"))?
+    {
+        return Err(ReceiptError::InvalidField("operation_head_local_seal"));
+    }
+    for value in [
+        record.activation_sha256.as_str(),
+        record.authorization_id_sha256.as_str(),
+        record.claim_digest_sha256.as_str(),
+        record.operation_context_sha256.as_str(),
+        record.execution_receipt_head_sha256.as_str(),
+        record.operation_head_set_sha256.as_str(),
+    ] {
+        validate_lower_hex(value, "operation_head_local_seal_sha256")?;
+    }
+    match (
+        &record.terminal_snapshot_candidate_sha256,
+        record.terminal_snapshot_candidate_bytes,
+        &record.terminal_candidate_operation_id_sha256,
+        &record.terminal_candidate_start_receipt_sha256,
+    ) {
+        (None, None, None, None) => {}
+        (Some(candidate_sha256), Some(candidate_bytes), Some(operation_id), Some(start_sha256))
+            if candidate_bytes > 0
+                && candidate_bytes <= MAX_TERMINAL_SNAPSHOT_CANDIDATE_BYTES as u64 =>
+        {
+            for value in [
+                candidate_sha256.as_str(),
+                operation_id.as_str(),
+                start_sha256.as_str(),
+            ] {
+                validate_lower_hex(value, "operation_head_local_seal_candidate_sha256")?;
+            }
+        }
+        _ => {
+            return Err(ReceiptError::InvalidField(
+                "operation_head_local_seal_candidate",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn valid_terminal_receipt_shape(
+    status: ClaimStatus,
+    state_version: u8,
+    receipt_count: u64,
+) -> bool {
+    let status_matches = matches!(
+        (status, state_version),
+        (ClaimStatus::Completed, 6)
+            | (ClaimStatus::RecoveryRequired, 3..=6)
+            | (ClaimStatus::Aborted | ClaimStatus::Expired, 1..=2)
+    );
+    status_matches && receipt_count == u64::from(state_version) + 2
+}
+
+fn read_operation_head_set(
+    path: &Path,
+    canonical_parent: &Path,
+) -> Result<CanonicalOperationHeadSet, ReceiptError> {
+    let bytes = read_stable_regular_file(
+        path,
+        MAX_RECEIPT_BYTES,
+        canonical_parent,
+        "operation_head_set",
+    )
+    .map_err(map_release_file_error)?;
+    let record: OperationHeadSetManifest =
+        parse_canonical_json(&bytes, MAX_RECEIPT_BYTES, "operation_head_set").map_err(|error| {
+            match error {
+                ReleaseVerificationError::InvalidJson(_) => ReceiptError::InvalidJson,
+                ReleaseVerificationError::NonCanonicalJson(_) => ReceiptError::NonCanonicalJson,
+                _ => ReceiptError::UnsafeFilesystem("operation_head_set"),
+            }
+        })?;
+    validate_operation_head_set(&record)?;
+    let verified = VerifiedOperationHeadSet {
+        sha256: sha256_hex(&bytes),
+        bytes: u64::try_from(bytes.len())
+            .map_err(|_| ReceiptError::InvalidField("operation_head_set_bytes"))?,
+        operation_context_sha256: record.operation_context_sha256.clone(),
+        operation_count: record.operation_count,
+        capacity_reservation_count: record.capacity_reservation_count,
+        marker_only_count: record.marker_only_count,
+    };
+    Ok(CanonicalOperationHeadSet {
+        record,
+        bytes,
+        verified,
+    })
+}
+
+fn read_operation_head_local_seal(
+    path: &Path,
+    canonical_parent: &Path,
+) -> Result<CanonicalOperationHeadLocalSeal, ReceiptError> {
+    let bytes = read_stable_regular_file(
+        path,
+        MAX_RECEIPT_BYTES,
+        canonical_parent,
+        "operation_head_local_seal",
+    )
+    .map_err(map_release_file_error)?;
+    let record: OperationHeadLocalSeal =
+        parse_canonical_json(&bytes, MAX_RECEIPT_BYTES, "operation_head_local_seal").map_err(
+            |error| match error {
+                ReleaseVerificationError::InvalidJson(_) => ReceiptError::InvalidJson,
+                ReleaseVerificationError::NonCanonicalJson(_) => ReceiptError::NonCanonicalJson,
+                _ => ReceiptError::UnsafeFilesystem("operation_head_local_seal"),
+            },
+        )?;
+    validate_operation_head_local_seal(&record)?;
+    let sha256 = sha256_hex(&bytes);
+    Ok(CanonicalOperationHeadLocalSeal {
+        record,
+        bytes,
+        sha256,
+    })
+}
+
+fn read_terminal_snapshot_candidate(
+    path: &Path,
+    canonical_parent: &Path,
+    context: &OperationContextIdentity,
+) -> Result<CanonicalTerminalSnapshotCandidate, ReceiptError> {
+    let bytes = read_stable_regular_file(
+        path,
+        MAX_TERMINAL_SNAPSHOT_CANDIDATE_BYTES,
+        canonical_parent,
+        "terminal_snapshot_candidate",
+    )
+    .map_err(map_release_file_error)?;
+    let record: TerminalSnapshotCandidate = parse_canonical_json(
+        &bytes,
+        MAX_TERMINAL_SNAPSHOT_CANDIDATE_BYTES,
+        "terminal_snapshot_candidate",
+    )
+    .map_err(|error| match error {
+        ReleaseVerificationError::InvalidJson(_) => ReceiptError::InvalidJson,
+        ReleaseVerificationError::NonCanonicalJson(_) => ReceiptError::NonCanonicalJson,
+        _ => ReceiptError::UnsafeFilesystem("terminal_snapshot_candidate"),
+    })?;
+    validate_terminal_snapshot_candidate_record(&record, context)?;
+    let snapshot_bytes = canonical_json(&record.snapshot)
+        .map_err(|_| ReceiptError::InvalidField("terminal_snapshot_candidate"))?
+        .into_bytes();
+    if sha256_hex(&snapshot_bytes) != record.snapshot_sha256
+        || u64::try_from(snapshot_bytes.len())
+            .map_err(|_| ReceiptError::InvalidField("terminal_snapshot_candidate_bytes"))?
+            != record.snapshot_bytes
+    {
+        return Err(ReceiptError::Conflict);
+    }
+    let snapshot = VerifiedSnapshot::from_json(&snapshot_bytes)
+        .map_err(|_| ReceiptError::InvalidField("terminal_snapshot_candidate_snapshot"))?;
+    if !snapshot.status().is_terminal() {
+        return Err(ReceiptError::NotSealed);
+    }
+    Ok(CanonicalTerminalSnapshotCandidate {
+        record,
+        sha256: sha256_hex(&bytes),
+        bytes,
+        snapshot,
+    })
+}
+
+fn require_execution_chain_matches_terminal_candidate(
+    chain_directory: &Path,
+    chain: &VerifiedReceiptChain,
+    candidate: &CanonicalTerminalSnapshotCandidate,
+) -> Result<(), ReceiptError> {
+    if chain.head_sha256 != candidate.record.expected_execution_receipt_head_sha256
+        || chain.receipt_count != candidate.record.expected_execution_receipt_count
+    {
+        return Err(ReceiptError::Conflict);
+    }
+    let canonical_parent = fs::canonicalize(chain_directory)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("chain_directory"))?;
+    let terminal = read_receipt(
+        &chain_directory.join(receipt_file_name(chain.receipt_count)),
+        &canonical_parent,
+    )?;
+    let ReceiptEvent::TerminalSeal {
+        status,
+        state_version,
+        final_snapshot_sha256,
+        final_snapshot_bytes,
+        ..
+    } = &terminal.record.event
+    else {
+        return Err(ReceiptError::NotSealed);
+    };
+    if *status != candidate.snapshot.status()
+        || *state_version != candidate.snapshot.state_version()
+        || final_snapshot_sha256 != &candidate.record.snapshot_sha256
+        || *final_snapshot_bytes != candidate.record.snapshot_bytes
+    {
+        return Err(ReceiptError::Conflict);
+    }
+    Ok(())
+}
+
+fn publish_canonical_bytes(
+    parent: &Path,
+    target: &Path,
+    staging_sequence: u64,
+    bytes: &[u8],
+    label: &'static str,
+) -> Result<AppendOutcome, ReceiptError> {
+    publish_canonical_bytes_with_limit(
+        parent,
+        target,
+        staging_sequence,
+        bytes,
+        MAX_RECEIPT_BYTES,
+        label,
+    )
+}
+
+fn publish_canonical_bytes_with_limit(
+    parent: &Path,
+    target: &Path,
+    staging_sequence: u64,
+    bytes: &[u8],
+    maximum_bytes: usize,
+    label: &'static str,
+) -> Result<AppendOutcome, ReceiptError> {
+    if bytes.is_empty() || bytes.len() > maximum_bytes {
+        return Err(ReceiptError::InvalidField("canonical_publication_bytes"));
+    }
+    let canonical_parent =
+        fs::canonicalize(parent).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    if target.try_exists().map_err(|_| ReceiptError::Io(label))? {
+        let existing = read_stable_regular_file(target, maximum_bytes, &canonical_parent, label)
+            .map_err(map_release_file_error)?;
+        if existing == bytes {
+            sync_directory(parent, &sha256_hex(bytes))?;
+            return Ok(AppendOutcome::ExistingExact);
+        }
+        return Err(ReceiptError::Conflict);
+    }
+    let stage = parent.join(staging_file_name(staging_sequence)?);
+    write_staging_with_limit(&stage, bytes, maximum_bytes)?;
+    if publish_noreplace(&stage, target).is_err() {
+        let _ = fs::remove_file(&stage);
+        match target.try_exists() {
+            Ok(true) => {
+                let existing =
+                    read_stable_regular_file(target, maximum_bytes, &canonical_parent, label)
+                        .map_err(map_release_file_error)?;
+                if existing == bytes {
+                    sync_directory(parent, &sha256_hex(bytes))?;
+                    return Ok(AppendOutcome::ExistingExact);
+                }
+                return Err(ReceiptError::Conflict);
+            }
+            Ok(false) | Err(_) => {
+                return Err(ReceiptError::DurabilityUnknown {
+                    expected_sha256: sha256_hex(bytes),
+                });
+            }
+        }
+    }
+    let sha256 = sha256_hex(bytes);
+    sync_directory(parent, &sha256)?;
+    let installed = read_stable_regular_file(target, maximum_bytes, &canonical_parent, label)
+        .map_err(map_release_file_error)?;
+    if installed != bytes {
+        return Err(ReceiptError::Conflict);
+    }
+    Ok(AppendOutcome::Created)
+}
+
+fn freeze_operation_directories(
+    authorization: &Path,
+    head_set: &OperationHeadSetManifest,
+) -> Result<(), ReceiptError> {
+    for entry in &head_set.entries {
+        let operation = authorization.join(&entry.operation_id_sha256);
+        if !operation
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_directory_exists"))?
+        {
+            continue;
+        }
+        require_fixed_directory(&operation, authorization, "operation_directory")?;
+        validate_operation_directory_entries(&operation)?;
+        set_chain_read_only(&operation)?;
+        sync_directory(&operation, &entry.operation_id_sha256)?;
+    }
+    Ok(())
+}
+
+fn require_execution_chain_identity(
+    chain_directory: &Path,
+    publication: &PublicationIdentity,
+    credentials: &CredentialIdentity,
+    context: &OperationContextIdentity,
+) -> Result<(), ReceiptError> {
+    let canonical_parent = fs::canonicalize(chain_directory)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("chain_directory"))?;
+    let first = read_receipt(
+        &chain_directory.join(receipt_file_name(1)),
+        &canonical_parent,
+    )?;
+    if first.record.release != ReceiptReleaseIdentity::from(publication)
+        || first.record.credential_identity != ReceiptCredentialIdentity::from(credentials)
+    {
+        return Err(ReceiptError::Projection("execution_receipt_identity"));
+    }
+    require_execution_receipt_context(&first.record, context)
+}
+
+fn require_execution_chain_identity_from_context(
+    chain_directory: &Path,
+    context: &OperationContextIdentity,
+) -> Result<(), ReceiptError> {
+    let canonical_parent = fs::canonicalize(chain_directory)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("chain_directory"))?;
+    let first = read_receipt(
+        &chain_directory.join(receipt_file_name(1)),
+        &canonical_parent,
+    )?;
+    require_execution_receipt_context(&first.record, context)
+}
+
+fn require_execution_receipt_context(
+    receipt: &ExecutionReceipt,
+    context: &OperationContextIdentity,
+) -> Result<(), ReceiptError> {
+    let release = &receipt.release;
+    let credential = &receipt.credential_identity;
+    let claim = &receipt.claim;
+    let matches = release.source_commit == context.source_commit
+        && release.git_tree_sha == context.git_tree_sha
+        && release.release_manifest_sha256 == context.release_manifest_sha256
+        && release.release_packet_sha256 == context.release_packet_sha256
+        && release.release_policy_sha256 == context.release_policy_sha256
+        && release.artifact_sha256 == context.artifact_sha256
+        && release.module_inventory_sha256 == context.module_inventory_sha256
+        && release.module_count == context.module_count
+        && release.publication_manifest_sha256 == context.publication_manifest_sha256
+        && release.publication_packet_sha256 == context.publication_packet_sha256
+        && release.generation_sha256 == context.generation_sha256
+        && release.activation_sequence == context.activation_sequence
+        && credential.account_id_sha256 == context.account_id_sha256
+        && credential.read_credential_id_sha256 == context.read_credential_id_sha256
+        && credential.claim_credential_id_sha256 == context.claim_credential_id_sha256
+        && credential.deploy_credential_id_sha256 == context.deploy_credential_id_sha256
+        && credential.access_client_id_sha256 == context.access_client_id_sha256
+        && credential.authority_version_id == context.authority_version_id
+        && credential.permit_spki_sha256 == context.permit_spki_sha256
+        && credential.trust_config_sha256 == context.trust_config_sha256
+        && credential.runner_build_sha256 == context.artifact_sha256
+        && credential.controller_service_name == context.controller_service_name
+        && credential.edge_service_name == context.edge_service_name
+        && claim.authorization_id_sha256 == context.authorization_id_sha256
+        && claim.claim_digest_sha256 == context.claim_digest_sha256
+        && claim.ledger_identity_sha256 == context.ledger_identity_sha256
+        && claim.claim_owner_sha256 == context.claim_owner_sha256
+        && claim.account_id_sha256 == context.account_id_sha256
+        && claim.generated_at == context.generated_at
+        && claim.expires_at == context.expires_at;
+    if !matches {
+        return Err(ReceiptError::Projection("execution_receipt_context"));
+    }
+    Ok(())
+}
+
 fn map_release_file_error(error: ReleaseVerificationError) -> ReceiptError {
     match error {
         ReleaseVerificationError::FileInvalid(_) => {
@@ -2945,6 +4551,15 @@ fn require_fixed_directory(
 
 #[cfg(target_os = "linux")]
 fn write_staging(path: &Path, bytes: &[u8]) -> Result<(), ReceiptError> {
+    write_staging_with_limit(path, bytes, MAX_RECEIPT_BYTES)
+}
+
+#[cfg(target_os = "linux")]
+fn write_staging_with_limit(
+    path: &Path,
+    bytes: &[u8],
+    maximum_bytes: usize,
+) -> Result<(), ReceiptError> {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
@@ -2971,21 +4586,37 @@ fn write_staging(path: &Path, bytes: &[u8]) -> Result<(), ReceiptError> {
         return Err(ReceiptError::Io("create_staging"));
     }
     let file = unsafe { fs::File::from_raw_fd(descriptor) };
-    write_staging_file(file, bytes)
+    write_staging_file(file, bytes, maximum_bytes)
 }
 
 #[cfg(not(target_os = "linux"))]
 fn write_staging(path: &Path, bytes: &[u8]) -> Result<(), ReceiptError> {
+    write_staging_with_limit(path, bytes, MAX_RECEIPT_BYTES)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_staging_with_limit(
+    path: &Path,
+    bytes: &[u8],
+    maximum_bytes: usize,
+) -> Result<(), ReceiptError> {
     let file = OpenOptions::new()
         .create_new(true)
         .read(true)
         .write(true)
         .open(path)
         .map_err(|_| ReceiptError::Io("create_staging"))?;
-    write_staging_file(file, bytes)
+    write_staging_file(file, bytes, maximum_bytes)
 }
 
-fn write_staging_file(mut file: fs::File, bytes: &[u8]) -> Result<(), ReceiptError> {
+fn write_staging_file(
+    mut file: fs::File,
+    bytes: &[u8],
+    maximum_bytes: usize,
+) -> Result<(), ReceiptError> {
+    if bytes.is_empty() || bytes.len() > maximum_bytes {
+        return Err(ReceiptError::InvalidField("staging_bytes"));
+    }
     file.write_all(bytes)
         .map_err(|_| ReceiptError::Io("write_staging"))?;
     file.flush()
@@ -2994,7 +4625,7 @@ fn write_staging_file(mut file: fs::File, bytes: &[u8]) -> Result<(), ReceiptErr
         .map_err(|_| ReceiptError::Io("seek_staging"))?;
     let mut readback = Vec::with_capacity(bytes.len());
     Read::by_ref(&mut file)
-        .take((MAX_RECEIPT_BYTES + 1) as u64)
+        .take((maximum_bytes + 1) as u64)
         .read_to_end(&mut readback)
         .map_err(|_| ReceiptError::Io("readback_staging"))?;
     if readback != bytes {
@@ -3142,6 +4773,29 @@ fn open_linux_directory(path: &Path) -> Result<fs::File, std::io::Error> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn lock_operation_authorization(path: &Path) -> Result<AuthorizationGuard, ReceiptError> {
+    use std::os::fd::AsRawFd;
+
+    let directory = open_linux_directory(path)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("operation_authorization_lock"))?;
+    let result = unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX) };
+    if result != 0 {
+        return Err(ReceiptError::Io("operation_authorization_lock"));
+    }
+    Ok(AuthorizationGuard(directory))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn lock_operation_authorization(_path: &Path) -> Result<AuthorizationGuard, ReceiptError> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .map(|guard| AuthorizationGuard { _guard: guard })
+        .map_err(|_| ReceiptError::Io("operation_authorization_lock"))
+}
+
 fn receipt_file_name(sequence: u64) -> String {
     format!("{sequence:020}{RECEIPT_FILE_SUFFIX}")
 }
@@ -3215,7 +4869,10 @@ fn validate_operation_directory_entries(directory: &Path) -> Result<(), ReceiptE
             .into_string()
             .map_err(|_| ReceiptError::UnsafeFilesystem("operation_entry_name"))?;
         let valid_staging = valid_staging_file_name(&file_name, MAX_OPERATION_RECEIPTS_PER_CHAIN);
-        let metadata = match read_directory_entry_metadata(&entry.path(), valid_staging)? {
+        if valid_staging {
+            return Err(ReceiptError::UnsafeFilesystem("operation_receipt_staging"));
+        }
+        let metadata = match read_directory_entry_metadata(&entry.path(), false)? {
             Some(metadata) => metadata,
             None => continue,
         };
@@ -3228,10 +4885,60 @@ fn validate_operation_directory_entries(directory: &Path) -> Result<(), ReceiptE
             }
             continue;
         }
+        return Err(ReceiptError::UnsafeFilesystem("operation_entry_name"));
+    }
+    Ok(())
+}
+
+fn validate_operation_closure_directory_entries(directory: &Path) -> Result<(), ReceiptError> {
+    for entry in
+        fs::read_dir(directory).map_err(|_| ReceiptError::Io("read_operation_closure_directory"))?
+    {
+        let entry = entry.map_err(|_| ReceiptError::Io("read_operation_closure_directory"))?;
+        let file_name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| ReceiptError::UnsafeFilesystem("operation_closure_entry_name"))?;
+        let valid_staging = valid_staging_file_name(&file_name, 2);
         if valid_staging {
+            return Err(ReceiptError::UnsafeFilesystem("operation_closure_staging"));
+        }
+        let metadata = match read_directory_entry_metadata(&entry.path(), false)? {
+            Some(metadata) => metadata,
+            None => continue,
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(ReceiptError::UnsafeFilesystem(
+                "operation_closure_entry_type",
+            ));
+        }
+        if file_name == OPERATION_HEAD_LOCAL_SEAL_FILE_NAME
+            || file_name == TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME
+        {
             continue;
         }
-        return Err(ReceiptError::UnsafeFilesystem("operation_entry_name"));
+        return Err(ReceiptError::UnsafeFilesystem(
+            "operation_closure_entry_name",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_operation_closures_root(directory: &Path) -> Result<(), ReceiptError> {
+    for entry in fs::read_dir(directory)
+        .map_err(|_| ReceiptError::Io("read_operation_closures_directory"))?
+    {
+        let entry = entry.map_err(|_| ReceiptError::Io("read_operation_closures_directory"))?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| ReceiptError::UnsafeFilesystem("operation_closure_name"))?;
+        validate_lower_hex(&name, "operation_closure_authorization_id")?;
+        require_fixed_directory(
+            &entry.path(),
+            directory,
+            "operation_authorization_closure_directory",
+        )?;
     }
     Ok(())
 }
@@ -3852,7 +5559,7 @@ mod tests {
     }
 
     #[test]
-    fn stranded_capacity_reservations_never_create_an_over_limit_operation_directory() {
+    fn stranded_capacity_staging_fails_closed_before_creating_an_operation_directory() {
         let root = temporary_root("operation-capacity-crash");
         let store = ReceiptStore::open(&root).unwrap();
         let (publication, credentials, activation) = operation_context();
@@ -3880,21 +5587,15 @@ mod tests {
                 &operation_start("a", NOW),
             ),
             Err(ReceiptError::InvalidField("operation_chain_count"))
+                | Err(ReceiptError::UnsafeFilesystem("operation_capacity_staging"))
         ));
-        let (_, operation_ids, capacity_operation_ids) = store
-            .authorization_operation_ids(activation.authorization_id_sha256())
-            .unwrap();
-        assert!(operation_ids.is_empty());
         assert_eq!(
-            capacity_operation_ids.len(),
-            MAX_OPERATION_CHAINS_PER_AUTHORIZATION
+            store.authorization_operation_ids(activation.authorization_id_sha256()),
+            Err(ReceiptError::UnsafeFilesystem("operation_capacity_staging"))
         );
         assert_eq!(
-            store
-                .audit_authorization_operations(&publication, &credentials, &activation)
-                .unwrap()
-                .operation_count,
-            0
+            store.audit_authorization_operations(&publication, &credentials, &activation),
+            Err(ReceiptError::UnsafeFilesystem("operation_capacity_staging"))
         );
         cleanup(&root);
 
@@ -4368,6 +6069,628 @@ mod tests {
         );
     }
 
+    #[test]
+    fn terminal_closure_binds_terminal_operations_and_marker_only_capacity() {
+        let root = temporary_root("terminal-closure");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let start = operation_start("a", NOW);
+        assert_eq!(
+            store
+                .reserve_operation(&publication, &credentials, &activation, &start)
+                .unwrap(),
+            OperationReservation::Fresh
+        );
+        assert_eq!(
+            store
+                .finish_operation(
+                    &publication,
+                    &credentials,
+                    &activation,
+                    &start.identity,
+                    &OperationFinishInput {
+                        outcome: OperationOutcome::Accepted,
+                        finished_at: NOW + 1,
+                        http_status: Some(200),
+                        response_body_sha256: Some("a".repeat(64)),
+                        response_id_sha256: Some("b".repeat(64)),
+                    },
+                )
+                .unwrap(),
+            OperationOutcome::Accepted
+        );
+        let authorization = store
+            .ensure_operation_authorization_directory(activation.authorization_id_sha256())
+            .unwrap();
+        let mut marker_only_start = operation_start("b", NOW + 2);
+        marker_only_start.identity.target_sha256 = "e".repeat(64);
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let marker_only_operation =
+            project_operation_identity(&context, &marker_only_start.identity).unwrap();
+        reserve_operation_capacity(&authorization, &marker_only_operation.operation_id_sha256)
+            .unwrap();
+        let _marker_only_directory = store
+            .ensure_operation_directory(
+                activation.authorization_id_sha256(),
+                &marker_only_operation.operation_id_sha256,
+            )
+            .unwrap();
+
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        let closure = store
+            .install_terminal_closure(&plan, &publication, &credentials, &activation)
+            .unwrap();
+        assert_eq!(closure.terminal_status, ClaimStatus::Aborted);
+        assert_eq!(closure.terminal_state_version, 1);
+        assert_eq!(closure.execution_receipt_head_sha256, plan.head_sha256());
+
+        let head_set = read_operation_head_set(
+            &authorization.join(OPERATION_HEAD_SET_FILE_NAME),
+            &authorization,
+        )
+        .unwrap();
+        assert_eq!(head_set.record.operation_count, 1);
+        assert_eq!(head_set.record.capacity_reservation_count, 2);
+        assert_eq!(head_set.record.marker_only_count, 1);
+        assert!(head_set
+            .record
+            .entries
+            .windows(2)
+            .all(|window| window[0].slot < window[1].slot));
+        assert!(head_set.record.entries.iter().any(|entry| {
+            entry.chain_state == OperationHeadSetChainState::Terminal
+                && entry.receipt_count == 2
+                && entry.start_receipt_sha256.is_some()
+                && entry.head_sha256.is_some()
+                && entry.outcome == Some(OperationOutcome::Accepted)
+        }));
+        assert!(head_set.record.entries.iter().any(|entry| {
+            entry.chain_state == OperationHeadSetChainState::MarkerOnly
+                && entry.receipt_count == 0
+                && entry.start_receipt_sha256.is_none()
+                && entry.head_sha256.is_none()
+                && entry.outcome.is_none()
+        }));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&_marker_only_directory)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o555
+            );
+        }
+
+        let replay = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(replay, closure);
+        assert_eq!(
+            store.reserve_operation(&publication, &credentials, &activation, &start),
+            Err(ReceiptError::AlreadySealed)
+        );
+        assert_eq!(
+            store.reserve_operation(&publication, &credentials, &activation, &marker_only_start),
+            Err(ReceiptError::AlreadySealed)
+        );
+        assert_eq!(
+            store.finish_operation(
+                &publication,
+                &credentials,
+                &activation,
+                &start.identity,
+                &OperationFinishInput {
+                    outcome: OperationOutcome::Accepted,
+                    finished_at: NOW + 2,
+                    http_status: Some(200),
+                    response_body_sha256: Some("a".repeat(64)),
+                    response_id_sha256: Some("b".repeat(64)),
+                },
+            ),
+            Err(ReceiptError::AlreadySealed)
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn terminal_snapshot_candidate_closes_the_accepted_read_crash_window_locally() {
+        let root = temporary_root("terminal-candidate-recovery");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
+        let mut read = operation_start("a", NOW);
+        read.identity.kind = OperationKind::AuthorityClaimRead;
+        read.identity.state_version = 0;
+        read.identity.request_sha256 =
+            read_operation_request_sha256(&read.identity.target_sha256, &read.request_id_sha256)
+                .unwrap();
+        store
+            .reserve_operation(&publication, &credentials, &activation, &read)
+            .unwrap();
+        let accepted = OperationFinishInput {
+            outcome: OperationOutcome::Accepted,
+            finished_at: NOW + 1,
+            http_status: Some(200),
+            response_body_sha256: Some("a".repeat(64)),
+            response_id_sha256: Some("b".repeat(64)),
+        };
+        store
+            .install_terminal_snapshot_candidate(
+                &snapshot,
+                &publication,
+                &credentials,
+                &activation,
+                &read.identity,
+                &accepted,
+            )
+            .unwrap();
+        assert_eq!(
+            store.reserve_operation(
+                &publication,
+                &credentials,
+                &activation,
+                &operation_start("b", NOW + 1),
+            ),
+            Err(ReceiptError::AlreadySealed)
+        );
+        assert_eq!(
+            store.finish_operation(
+                &publication,
+                &credentials,
+                &activation,
+                &read.identity,
+                &accepted,
+            ),
+            Err(ReceiptError::AlreadySealed)
+        );
+
+        let recovery = store
+            .recover_unfinished_operations(&publication, &credentials, &activation, NOW + 2)
+            .unwrap();
+        assert_eq!(recovery.unfinished_count, 1);
+        assert_eq!(recovery.recovered_ambiguous_count, 0);
+        let closure = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+        let plan = plan_terminal_receipts(&snapshot, &publication, &credentials).unwrap();
+        assert_eq!(closure.execution_receipt_head_sha256, plan.head_sha256());
+        assert_eq!(closure.terminal_status, ClaimStatus::Aborted);
+        assert_eq!(closure.terminal_state_version, 1);
+        assert_eq!(
+            store
+                .verify_operation(
+                    activation.authorization_id_sha256(),
+                    &project_operation_identity(
+                        &project_operation_context(&publication, &credentials, &activation)
+                            .unwrap(),
+                        &read.identity,
+                    )
+                    .unwrap()
+                    .operation_id_sha256,
+                )
+                .unwrap()
+                .outcome,
+            Some(OperationOutcome::Accepted)
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn terminal_snapshot_candidate_finishes_only_the_accepted_claim_read() {
+        let root = temporary_root("terminal-candidate-finish");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
+        let mut read = operation_start("a", NOW);
+        read.identity.kind = OperationKind::AuthorityClaimRead;
+        read.identity.state_version = 0;
+        read.identity.request_sha256 =
+            read_operation_request_sha256(&read.identity.target_sha256, &read.request_id_sha256)
+                .unwrap();
+        store
+            .reserve_operation(&publication, &credentials, &activation, &read)
+            .unwrap();
+        let accepted = OperationFinishInput {
+            outcome: OperationOutcome::Accepted,
+            finished_at: NOW + 1,
+            http_status: Some(200),
+            response_body_sha256: Some("a".repeat(64)),
+            response_id_sha256: Some("b".repeat(64)),
+        };
+        store
+            .install_terminal_snapshot_candidate(
+                &snapshot,
+                &publication,
+                &credentials,
+                &activation,
+                &read.identity,
+                &accepted,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .finish_operation_after_terminal_candidate(
+                    &publication,
+                    &credentials,
+                    &activation,
+                    &read.identity,
+                    &accepted,
+                )
+                .unwrap(),
+            OperationOutcome::Accepted
+        );
+        let plan = plan_terminal_receipts(&snapshot, &publication, &credentials).unwrap();
+        let closure = store
+            .install_terminal_closure(&plan, &publication, &credentials, &activation)
+            .unwrap();
+        assert_eq!(closure.execution_receipt_head_sha256, plan.head_sha256());
+        let closure_directory = root
+            .join(OPERATION_CLOSURES_DIRECTORY_NAME)
+            .join(activation.authorization_id_sha256());
+        let canonical_closure_directory = fs::canonicalize(&closure_directory).unwrap();
+        let candidate = read_terminal_snapshot_candidate(
+            &closure_directory.join(TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME),
+            &canonical_closure_directory,
+            &project_operation_context(&publication, &credentials, &activation).unwrap(),
+        )
+        .unwrap();
+        let local_seal = read_operation_head_local_seal(
+            &closure_directory.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME),
+            &canonical_closure_directory,
+        )
+        .unwrap();
+        assert_eq!(
+            local_seal.record.terminal_snapshot_candidate_sha256,
+            Some(candidate.sha256)
+        );
+        assert_eq!(
+            local_seal.record.terminal_candidate_operation_id_sha256,
+            Some(candidate.record.operation_id_sha256)
+        );
+
+        make_directory_writable(&closure_directory);
+        let candidate_path = closure_directory.join(TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME);
+        make_writable(&candidate_path);
+        fs::remove_file(candidate_path).unwrap();
+        assert_eq!(
+            store.recover_terminal_closure(&publication, &credentials, &activation),
+            Err(ReceiptError::Conflict)
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn terminal_candidate_staging_residue_is_a_fail_closed_admission_barrier() {
+        let root = temporary_root("terminal-candidate-staging");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let closure = store
+            .ensure_operation_closure_directory(activation.authorization_id_sha256())
+            .unwrap();
+        let staging = closure.join(staging_file_name(1).unwrap());
+        fs::write(&staging, b"indeterminate").unwrap();
+
+        assert_eq!(
+            store.reserve_operation(
+                &publication,
+                &credentials,
+                &activation,
+                &operation_start("a", NOW),
+            ),
+            Err(ReceiptError::UnsafeFilesystem("operation_closure_staging"))
+        );
+        assert_eq!(
+            store.recover_terminal_closure(&publication, &credentials, &activation),
+            Err(ReceiptError::UnsafeFilesystem("operation_closure_staging"))
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn terminal_execution_receipt_crash_recovers_local_closure_without_new_operations() {
+        let root = temporary_root("terminal-closure-recovery");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        let unfinished = operation_start("a", NOW - 1);
+        store
+            .reserve_operation(&publication, &credentials, &activation, &unfinished)
+            .unwrap();
+
+        store.install_terminal_plan(&plan).unwrap();
+        let authorization = activation.authorization_id_sha256().to_owned();
+        assert_eq!(
+            store.reserve_operation(
+                &publication,
+                &credentials,
+                &activation,
+                &operation_start("a", NOW),
+            ),
+            Err(ReceiptError::AlreadySealed)
+        );
+        let recovery = store
+            .recover_unfinished_operations(&publication, &credentials, &activation, NOW + 1)
+            .unwrap();
+        assert_eq!(recovery.operation_count, 1);
+        assert_eq!(recovery.unfinished_count, 1);
+        assert_eq!(recovery.recovered_ambiguous_count, 1);
+        let closure = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(closure.authorization_id_sha256, authorization);
+        assert_eq!(closure.execution_receipt_head_sha256, plan.head_sha256());
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let head_set = store.canonical_operation_head_set(&context).unwrap();
+        assert_eq!(head_set.verified.operation_count, 1);
+        assert_eq!(head_set.verified.capacity_reservation_count, 1);
+        assert_eq!(head_set.verified.marker_only_count, 0);
+        assert_eq!(
+            head_set.record.entries[0].outcome,
+            Some(OperationOutcome::Ambiguous)
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn orphaned_local_seal_remains_an_admission_barrier_and_fails_recovery_closed() {
+        let root = temporary_root("orphaned-local-seal");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        store
+            .install_terminal_closure(&plan, &publication, &credentials, &activation)
+            .unwrap();
+
+        let authorization = root
+            .join(OPERATION_RECEIPTS_DIRECTORY_NAME)
+            .join(activation.authorization_id_sha256());
+        make_directory_writable(&authorization);
+        let head_set = authorization.join(OPERATION_HEAD_SET_FILE_NAME);
+        make_writable(&head_set);
+        fs::remove_file(head_set).unwrap();
+        let execution_chain = root
+            .join(RECEIPTS_DIRECTORY_NAME)
+            .join(activation.authorization_id_sha256());
+        make_tree_writable(&execution_chain);
+        fs::remove_dir_all(execution_chain).unwrap();
+
+        let start = operation_start("a", NOW);
+        assert_eq!(
+            store.reserve_operation(&publication, &credentials, &activation, &start),
+            Err(ReceiptError::AlreadySealed)
+        );
+        assert_eq!(
+            store.recover_terminal_closure(&publication, &credentials, &activation),
+            Err(ReceiptError::Conflict)
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn terminal_closure_rejects_operation_head_and_manifest_tampering() {
+        let root = temporary_root("terminal-closure-tamper");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let start = operation_start("a", NOW);
+        store
+            .reserve_operation(&publication, &credentials, &activation, &start)
+            .unwrap();
+        store
+            .finish_operation(
+                &publication,
+                &credentials,
+                &activation,
+                &start.identity,
+                &OperationFinishInput {
+                    outcome: OperationOutcome::Accepted,
+                    finished_at: NOW + 1,
+                    http_status: Some(200),
+                    response_body_sha256: Some("a".repeat(64)),
+                    response_id_sha256: Some("b".repeat(64)),
+                },
+            )
+            .unwrap();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        store
+            .install_terminal_closure(&plan, &publication, &credentials, &activation)
+            .unwrap();
+
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let operation = project_operation_identity(&context, &start.identity).unwrap();
+        let operation_directory = store
+            .operation_directory(
+                activation.authorization_id_sha256(),
+                &operation.operation_id_sha256,
+            )
+            .unwrap();
+        let operation_head = operation_directory.join(operation_receipt_file_name(2));
+        make_directory_writable(&operation_directory);
+        make_writable(&operation_head);
+        let mut mutated_operation: serde_json::Value =
+            serde_json::from_slice(&fs::read(&operation_head).unwrap()).unwrap();
+        mutated_operation["event"]["response_id_sha256"] =
+            serde_json::Value::String("c".repeat(64));
+        fs::write(&operation_head, canonical_json(&mutated_operation).unwrap()).unwrap();
+        assert_eq!(
+            store.recover_terminal_closure(&publication, &credentials, &activation),
+            Err(ReceiptError::Conflict)
+        );
+
+        cleanup(&root);
+
+        let root = temporary_root("terminal-closure-manifest-tamper");
+        let store = ReceiptStore::open(&root).unwrap();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        store
+            .install_terminal_closure(&plan, &publication, &credentials, &activation)
+            .unwrap();
+        let authorization = root
+            .join(OPERATION_RECEIPTS_DIRECTORY_NAME)
+            .join(activation.authorization_id_sha256());
+        let head_set = authorization.join(OPERATION_HEAD_SET_FILE_NAME);
+        make_directory_writable(&authorization);
+        make_writable(&head_set);
+        let mut mutated_head_set: serde_json::Value =
+            serde_json::from_slice(&fs::read(&head_set).unwrap()).unwrap();
+        mutated_head_set["operationContextSha256"] = serde_json::Value::String("f".repeat(64));
+        fs::write(&head_set, canonical_json(&mutated_head_set).unwrap()).unwrap();
+        assert_eq!(
+            store.recover_terminal_closure(&publication, &credentials, &activation),
+            Err(ReceiptError::Conflict)
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn operation_head_closure_matches_the_javascript_fixed_vector() {
+        let head_set = OperationHeadSetManifest {
+            schema_version: 1,
+            contract: OPERATION_HEAD_SET_CONTRACT.to_owned(),
+            environment: "staging".to_owned(),
+            activation_sha256: "1".repeat(64),
+            authorization_id_sha256: "2".repeat(64),
+            claim_digest_sha256: "3".repeat(64),
+            operation_context_sha256: "4".repeat(64),
+            capacity_limit: 128,
+            operation_count: 0,
+            capacity_reservation_count: 0,
+            marker_only_count: 0,
+            entries: Vec::new(),
+        };
+        validate_operation_head_set(&head_set).unwrap();
+        let head_set_bytes = canonical_json(&head_set).unwrap().into_bytes();
+        let head_set_sha256 = sha256_hex(&head_set_bytes);
+        assert_eq!(head_set_bytes.len(), 568);
+        assert_eq!(
+            head_set_sha256,
+            "5c70cdf03cfdc9f00878b20bffe3e4e790dedbb593bef4c5929713d33a601564"
+        );
+
+        let local_seal = OperationHeadLocalSeal {
+            schema_version: 1,
+            contract: OPERATION_HEAD_LOCAL_SEAL_CONTRACT.to_owned(),
+            environment: "staging".to_owned(),
+            activation_sha256: head_set.activation_sha256,
+            authorization_id_sha256: head_set.authorization_id_sha256,
+            claim_digest_sha256: head_set.claim_digest_sha256,
+            operation_context_sha256: head_set.operation_context_sha256,
+            execution_receipt_head_sha256: "5".repeat(64),
+            execution_receipt_count: 8,
+            terminal_status: ClaimStatus::Completed,
+            terminal_state_version: 6,
+            operation_head_set_sha256: head_set_sha256,
+            operation_head_set_bytes: 568,
+            operation_count: 0,
+            capacity_reservation_count: 0,
+            marker_only_count: 0,
+            terminal_snapshot_candidate_sha256: None,
+            terminal_snapshot_candidate_bytes: None,
+            terminal_candidate_operation_id_sha256: None,
+            terminal_candidate_start_receipt_sha256: None,
+        };
+        validate_operation_head_local_seal(&local_seal).unwrap();
+        let local_seal_bytes = canonical_json(&local_seal).unwrap().into_bytes();
+        assert_eq!(local_seal_bytes.len(), 1000);
+        assert_eq!(
+            sha256_hex(&local_seal_bytes),
+            "5875614a4d23597ccf6406c013a8aaab99f9f3cb762d2c793ad4ab7b89fbe9b3"
+        );
+    }
+
+    #[test]
+    fn reserve_and_terminal_closure_linearize_under_one_authorization_lock() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let root = temporary_root("terminal-closure-race");
+        let (publication, credentials, activation) = operation_context();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        let barrier = Arc::new(Barrier::new(2));
+
+        let reserve_root = root.clone();
+        let reserve_publication = publication.clone();
+        let reserve_credentials = credentials.clone();
+        let reserve_activation = activation.clone();
+        let reserve_barrier = Arc::clone(&barrier);
+        let reserve = thread::spawn(move || {
+            let store = ReceiptStore::open(&reserve_root).unwrap();
+            let start = operation_start("a", NOW);
+            reserve_barrier.wait();
+            let result = store.reserve_operation(
+                &reserve_publication,
+                &reserve_credentials,
+                &reserve_activation,
+                &start,
+            );
+            if result == Ok(OperationReservation::Fresh) {
+                store
+                    .finish_operation(
+                        &reserve_publication,
+                        &reserve_credentials,
+                        &reserve_activation,
+                        &start.identity,
+                        &OperationFinishInput {
+                            outcome: OperationOutcome::Accepted,
+                            finished_at: NOW + 1,
+                            http_status: Some(200),
+                            response_body_sha256: Some("a".repeat(64)),
+                            response_id_sha256: Some("b".repeat(64)),
+                        },
+                    )
+                    .unwrap();
+            }
+            result
+        });
+
+        let close_root = root.clone();
+        let close_publication = publication.clone();
+        let close_credentials = credentials.clone();
+        let close_activation = activation.clone();
+        let close_barrier = Arc::clone(&barrier);
+        let close = thread::spawn(move || {
+            let store = ReceiptStore::open(&close_root).unwrap();
+            close_barrier.wait();
+            loop {
+                match store.install_terminal_closure(
+                    &plan,
+                    &close_publication,
+                    &close_credentials,
+                    &close_activation,
+                ) {
+                    Ok(closure) => break closure,
+                    Err(ReceiptError::InvalidField("unfinished_operation_chain")) => {
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("unexpected closure failure: {error}"),
+                }
+            }
+        });
+
+        let reservation = reserve.join().unwrap();
+        let closure = close.join().unwrap();
+        let store = ReceiptStore::open(&root).unwrap();
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let verified = store.verify_terminal_closure(&context).unwrap();
+        assert_eq!(verified, closure);
+        let head_set = store.canonical_operation_head_set(&context).unwrap();
+        match reservation {
+            Ok(OperationReservation::Fresh) => {
+                assert_eq!(head_set.verified.operation_count, 1);
+                assert_eq!(head_set.verified.capacity_reservation_count, 1);
+            }
+            Err(ReceiptError::AlreadySealed) => {
+                assert_eq!(head_set.verified.operation_count, 0);
+                assert_eq!(head_set.verified.capacity_reservation_count, 0);
+            }
+            result => panic!("unexpected reservation result: {result:?}"),
+        }
+        cleanup(&root);
+    }
+
     fn synthetic_plan() -> ReceiptPlan {
         let release = ReceiptReleaseIdentity {
             source_commit: "a".repeat(40),
@@ -4486,6 +6809,129 @@ mod tests {
         }
     }
 
+    fn terminal_snapshot_context() -> (
+        PublicationIdentity,
+        CredentialIdentity,
+        ExecutionActivationIdentity,
+        VerifiedSnapshot,
+    ) {
+        let (publication, credentials, _) = operation_context();
+        let generated_at = NOW - 100;
+        let expires_at = NOW + 300;
+        let mut claim = crate::orchestrator::SnapshotClaim {
+            schema_version: 1,
+            claim_authority: "d1-unique-claim-v1".to_owned(),
+            claim_scope: "staging-worker-ring-transition".to_owned(),
+            environment: "staging".to_owned(),
+            authorization_id_sha256: "1".repeat(64),
+            execution_nonce_sha256: "2".repeat(64),
+            authorization_manifest_sha256: "3".repeat(64),
+            authorization_subject_sha256: "4".repeat(64),
+            authorization_policy_sha256: "5".repeat(64),
+            transition_manifest_sha256: "6".repeat(64),
+            transition_subject_sha256: "7".repeat(64),
+            transition_policy_sha256: "8".repeat(64),
+            transition_plan_sha256: "9".repeat(64),
+            candidate_sha256: "a".repeat(64),
+            execution_plan_sha256: "b".repeat(64),
+            account_id_sha256: credentials.account_id_sha256.clone(),
+            ledger_identity_sha256: "d".repeat(64),
+            read_credential_id_sha256: credentials.read_credential_id_sha256.clone(),
+            claim_credential_id_sha256: credentials.claim_credential_id_sha256.clone(),
+            deploy_credential_id_sha256: credentials.deploy_credential_id_sha256.clone(),
+            controller: crate::orchestrator::ServiceTarget {
+                service_name: credentials.controller_service_name.clone(),
+                previous_version_id: "controller-version-001".to_owned(),
+                previous_deployment_set_sha256: "1".repeat(64),
+                target_version_id: "controller-version-002".to_owned(),
+            },
+            edge: crate::orchestrator::ServiceTarget {
+                service_name: credentials.edge_service_name.clone(),
+                previous_version_id: "edge-version-001".to_owned(),
+                previous_deployment_set_sha256: "2".repeat(64),
+                target_version_id: "edge-version-002".to_owned(),
+            },
+            runner_build_sha256: credentials.runner_build_sha256.clone(),
+            runner_trust_config_sha256: credentials.trust_config_sha256.clone(),
+            claim_owner_sha256: "5".repeat(64),
+            claim_digest_sha256: String::new(),
+            generated_at,
+            expires_at,
+        };
+        claim.claim_digest_sha256 = crate::orchestrator::activation_claim_digest(&claim).unwrap();
+        let receipt_claim = ReceiptClaimIdentity {
+            authorization_id_sha256: claim.authorization_id_sha256.clone(),
+            claim_digest_sha256: claim.claim_digest_sha256.clone(),
+            ledger_identity_sha256: claim.ledger_identity_sha256.clone(),
+            claim_owner_sha256: claim.claim_owner_sha256.clone(),
+            account_id_sha256: claim.account_id_sha256.clone(),
+            generated_at,
+            claimed_at: generated_at + 1,
+            expires_at,
+        };
+        let mut receipt_step = ReceiptStepEvent {
+            state_version: 1,
+            step_code: StepCode::Terminal,
+            from_status: ClaimStatus::Claimed,
+            to_status: ClaimStatus::Aborted,
+            actor_execution_id_sha256: claim.claim_owner_sha256.clone(),
+            mutation_request_sha256: None,
+            cloudflare_request_id_sha256: None,
+            deployment_set_sha256: None,
+            evidence_sha256: "a".repeat(64),
+            failure_class: FailureClass::OperatorAbort,
+            transport_outcome: TransportOutcome::NotApplicable,
+            step_digest_sha256: String::new(),
+        };
+        receipt_step.step_digest_sha256 =
+            receipt_step_digest(&receipt_claim, &receipt_step).unwrap();
+        let snapshot_record = AuthoritySnapshot {
+            claim: claim.clone(),
+            state: crate::orchestrator::SnapshotState {
+                authorization_id_sha256: claim.authorization_id_sha256.clone(),
+                claim_digest_sha256: claim.claim_digest_sha256.clone(),
+                claim_owner_sha256: claim.claim_owner_sha256.clone(),
+                ledger_identity_sha256: claim.ledger_identity_sha256.clone(),
+                claim_credential_id_sha256: claim.claim_credential_id_sha256.clone(),
+                status: ClaimStatus::Aborted,
+                state_version: 1,
+                generated_at,
+                claimed_at: generated_at + 1,
+                expires_at,
+                updated_at: NOW,
+                terminal_at: Some(NOW),
+            },
+            steps: vec![SnapshotStep {
+                state_version: receipt_step.state_version,
+                step_code: receipt_step.step_code,
+                from_status: receipt_step.from_status,
+                to_status: receipt_step.to_status,
+                actor_execution_id_sha256: receipt_step.actor_execution_id_sha256,
+                mutation_request_sha256: receipt_step.mutation_request_sha256,
+                cloudflare_request_id_sha256: receipt_step.cloudflare_request_id_sha256,
+                deployment_set_sha256: receipt_step.deployment_set_sha256,
+                evidence_sha256: receipt_step.evidence_sha256,
+                failure_class: receipt_step.failure_class,
+                transport_outcome: receipt_step.transport_outcome,
+                step_digest_sha256: receipt_step.step_digest_sha256,
+                recorded_at: NOW,
+            }],
+            expiry_events: Vec::new(),
+        };
+        let snapshot_bytes = canonical_json(&snapshot_record).unwrap().into_bytes();
+        let snapshot = VerifiedSnapshot::from_json(&snapshot_bytes).unwrap();
+        let activation = ExecutionActivationIdentity::for_transport_test(
+            br#"{"claim":"terminal-candidate"}"#.to_vec(),
+            claim.authorization_id_sha256,
+            claim.claim_digest_sha256,
+            claim.claim_owner_sha256,
+            claim.ledger_identity_sha256,
+            generated_at,
+            expires_at,
+        );
+        (publication, credentials, activation, snapshot)
+    }
+
     fn operation_context() -> (
         PublicationIdentity,
         CredentialIdentity,
@@ -4549,6 +6995,84 @@ mod tests {
             activation_sequence: 1,
         };
         (publication, credentials, activation)
+    }
+
+    fn terminal_plan_for_operation_context(
+        publication: &PublicationIdentity,
+        credentials: &CredentialIdentity,
+        activation: &ExecutionActivationIdentity,
+    ) -> ReceiptPlan {
+        let release = ReceiptReleaseIdentity::from(publication);
+        let credential_identity = ReceiptCredentialIdentity::from(credentials);
+        let claim = ReceiptClaimIdentity {
+            authorization_id_sha256: activation.authorization_id_sha256().to_owned(),
+            claim_digest_sha256: activation.claim_digest_sha256().to_owned(),
+            ledger_identity_sha256: activation.ledger_identity_sha256().to_owned(),
+            claim_owner_sha256: activation.claim_owner_sha256().to_owned(),
+            account_id_sha256: credentials.account_id_sha256.clone(),
+            generated_at: activation.claim_generated_at(),
+            claimed_at: NOW - 90,
+            expires_at: activation.claim_expires_at(),
+        };
+        let mut receipts = Vec::new();
+        push_receipt(
+            &mut receipts,
+            release.clone(),
+            credential_identity.clone(),
+            claim.clone(),
+            claim.claimed_at,
+            ReceiptEvent::ClaimObserved {
+                status: ClaimStatus::Claimed,
+                state_version: 0,
+            },
+        )
+        .unwrap();
+        let mut step = ReceiptStepEvent {
+            state_version: 1,
+            step_code: StepCode::Terminal,
+            from_status: ClaimStatus::Claimed,
+            to_status: ClaimStatus::Aborted,
+            actor_execution_id_sha256: activation.claim_owner_sha256().to_owned(),
+            mutation_request_sha256: None,
+            cloudflare_request_id_sha256: None,
+            deployment_set_sha256: None,
+            evidence_sha256: "a".repeat(64),
+            failure_class: FailureClass::OperatorAbort,
+            transport_outcome: TransportOutcome::NotApplicable,
+            step_digest_sha256: String::new(),
+        };
+        step.step_digest_sha256 = receipt_step_digest(&claim, &step).unwrap();
+        push_receipt(
+            &mut receipts,
+            release.clone(),
+            credential_identity.clone(),
+            claim.clone(),
+            NOW,
+            ReceiptEvent::AuthorityStep { step },
+        )
+        .unwrap();
+        push_receipt(
+            &mut receipts,
+            release,
+            credential_identity,
+            claim,
+            NOW,
+            ReceiptEvent::TerminalSeal {
+                status: ClaimStatus::Aborted,
+                state_version: 1,
+                terminal_at: NOW,
+                final_snapshot_sha256: "b".repeat(64),
+                final_snapshot_bytes: 256,
+                history_sha256: "c".repeat(64),
+                chain_length: 3,
+            },
+        )
+        .unwrap();
+        validate_planned_chain(&receipts).unwrap();
+        ReceiptPlan {
+            authorization_id_sha256: activation.authorization_id_sha256().to_owned(),
+            receipts,
+        }
     }
 
     fn temporary_root(label: &str) -> PathBuf {

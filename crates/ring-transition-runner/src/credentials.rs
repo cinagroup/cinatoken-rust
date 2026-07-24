@@ -798,6 +798,62 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn verified_credentials_for_transport_test() -> VerifiedCredentials {
+    VerifiedCredentials {
+        material: CredentialMaterial {
+            account_id: SecretBytes::from_string("0123456789abcdef0123456789abcdef".to_owned()),
+            read_token: SecretBytes::from_string("read-token-secret-material-00000001".to_owned()),
+            claim_hmac_secret: SecretBytes::from_string(
+                "claim-hmac-secret-material-00000001".to_owned(),
+            ),
+            deploy_token: SecretBytes::from_string("deploy-token-secret-material-00001".to_owned()),
+            access_client_id: SecretBytes::from_string(
+                "access-client-id-secret-material-01".to_owned(),
+            ),
+            access_client_secret: SecretBytes::from_string(
+                "access-client-secret-material-0001".to_owned(),
+            ),
+        },
+        identity: CredentialIdentity {
+            account_id_sha256: "c".repeat(64),
+            read_credential_id_sha256: "e".repeat(64),
+            claim_credential_id_sha256: "f".repeat(64),
+            deploy_credential_id_sha256: "0".repeat(64),
+            access_client_id_sha256: "a".repeat(64),
+            authority_version_id: "authority-version-001".to_owned(),
+            permit_spki_sha256: "6".repeat(64),
+            trust_config_sha256: "4".repeat(64),
+            publication_manifest_sha256: "7".repeat(64),
+            runner_build_sha256: "3".repeat(64),
+            controller_service_name: "controller-staging".to_owned(),
+            edge_service_name: "edge-staging".to_owned(),
+            stable_readback_observation_seconds: 5,
+            activation_sequence: 1,
+        },
+        trust: ValidatedCredentialTrust {
+            authority_version_id: "authority-version-001",
+            authority_issuer: "runner-staging",
+            authority_audience: "authority-staging",
+            authority_hmac_key_id: "current-v1",
+            permit_spki_sha256: "6666666666666666666666666666666666666666666666666666666666666666",
+            trust_config_sha256: "4444444444444444444444444444444444444444444444444444444444444444",
+            account_id_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            read_credential_id_sha256:
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            claim_credential_id_sha256:
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            deploy_credential_id_sha256:
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            access_client_id_sha256:
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            controller_service_name: "controller-staging",
+            edge_service_name: "edge-staging",
+            stable_readback_observation_seconds: 5,
+        },
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::publication::PublicationIdentity;

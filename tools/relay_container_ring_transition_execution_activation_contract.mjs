@@ -16,6 +16,8 @@ export const RING_TRANSITION_CLAIM_PERMIT_CONTRACT =
   "cinatoken-ring-transition-claim-permit-v1";
 export const RING_TRANSITION_CLAIM_PERMIT_DOMAIN =
   "cinatoken-ring-transition-claim-permit-v1\n";
+export const RING_TRANSITION_CLAIM_DISPATCH_CONTRACT =
+  "cinatoken-ring-transition-runner-claim-dispatch-v1";
 export const RING_TRANSITION_AUTHORITY_ORIGIN =
   "https://ring-transition-authority-staging.cinatoken.com";
 export const RING_TRANSITION_CLAIMS_PATH =
@@ -177,6 +179,20 @@ const RELEASE_KEYS = [
   "issuedAt",
   "expiresAt",
 ];
+const CLAIM_DISPATCH_KEYS = [
+  "schemaVersion",
+  "contract",
+  "environment",
+  "activationSha256",
+  "publicationManifestSha256",
+  "activationSequence",
+  "authorizationIdSha256",
+  "claimDigestSha256",
+  "claimOwnerSha256",
+  "claimRequestSha256",
+  "postRequestIdSha256",
+  "reservedAt",
+];
 
 export function describeRingTransitionExecutionActivationContract() {
   return {
@@ -264,14 +280,130 @@ export function verifyRingTransitionExecutionActivation({
     activationSha256: sha256Hex(bytes),
     publicationManifestSha256:
       verifiedPublication.publicationManifestSha256,
+    activationSequence: verifiedPublication.activationSequence,
     authorizationIdSha256: claim.authorizationIdSha256,
     executionNonceSha256: claim.executionNonceSha256,
     claimDigestSha256: claim.claimDigestSha256,
     claimOwnerSha256: claim.claimOwnerSha256,
     claimRequestSha256: sha256Hex(requestBytes),
     claimRequestBytes: Uint8Array.from(requestBytes),
+    claimGeneratedAt: claim.generatedAt,
     permitExpiresAt: activation.claimRequest.permit.expiresAt,
     claimExpiresAt: claim.expiresAt,
+  };
+}
+
+export function verifyRingTransitionClaimDispatch({
+  dispatchBytes,
+  activation,
+}) {
+  const identity = requireObject(
+    activation,
+    "[claim dispatch] activation identity",
+  );
+  const bytes = requireByteArray(
+    dispatchBytes,
+    "[claim dispatch] canonical bytes",
+  );
+  if (
+    bytes.byteLength === 0 ||
+    bytes.byteLength > MAX_EXECUTION_ACTIVATION_BYTES
+  ) {
+    throw new Error("[claim dispatch] byte length is invalid");
+  }
+  let text;
+  try {
+    text = textDecoder.decode(bytes);
+  } catch {
+    throw new Error("[claim dispatch] JSON must be valid UTF-8");
+  }
+  rejectDuplicateJsonFields(text, "[claim dispatch]");
+  let record;
+  try {
+    record = JSON.parse(text);
+  } catch {
+    throw new Error("[claim dispatch] JSON is invalid");
+  }
+  if (text !== canonicalJson(record)) {
+    throw new Error("[claim dispatch] JSON must be canonical");
+  }
+  const value = requireObject(record, "[claim dispatch] record");
+  exactKeys(value, CLAIM_DISPATCH_KEYS, "[claim dispatch] record");
+  requireExact(value.schemaVersion, 1, "[claim dispatch] schema version");
+  requireExact(
+    value.contract,
+    RING_TRANSITION_CLAIM_DISPATCH_CONTRACT,
+    "[claim dispatch] contract",
+  );
+  requireExact(value.environment, "staging", "[claim dispatch] environment");
+  for (const [field, expected] of [
+    ["activationSha256", identity.activationSha256],
+    [
+      "publicationManifestSha256",
+      identity.publicationManifestSha256,
+    ],
+    ["authorizationIdSha256", identity.authorizationIdSha256],
+    ["claimDigestSha256", identity.claimDigestSha256],
+    ["claimOwnerSha256", identity.claimOwnerSha256],
+    ["claimRequestSha256", identity.claimRequestSha256],
+  ]) {
+    requireSha256(value[field], `[claim dispatch] ${field}`);
+    requireExact(value[field], expected, `[claim dispatch] ${field}`);
+  }
+  requireSha256(
+    value.postRequestIdSha256,
+    "[claim dispatch] postRequestIdSha256",
+  );
+  requireExact(
+    value.activationSequence,
+    requireInteger(
+      identity.activationSequence,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      "[claim dispatch] activation identity sequence",
+    ),
+    "[claim dispatch] activationSequence",
+  );
+  const reservedAt = requireInteger(
+    value.reservedAt,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    "[claim dispatch] reservedAt",
+  );
+  if (
+    reservedAt <
+      requireInteger(
+        identity.claimGeneratedAt,
+        1,
+        Number.MAX_SAFE_INTEGER,
+        "[claim dispatch] claim generatedAt",
+      ) ||
+    reservedAt >=
+      requireInteger(
+        identity.permitExpiresAt,
+        1,
+        Number.MAX_SAFE_INTEGER,
+        "[claim dispatch] permit expiresAt",
+      ) ||
+    reservedAt >=
+      requireInteger(
+        identity.claimExpiresAt,
+        1,
+        Number.MAX_SAFE_INTEGER,
+        "[claim dispatch] claim expiresAt",
+      )
+  ) {
+    throw new Error("[claim dispatch] reservation window is invalid");
+  }
+  return {
+    ok: true,
+    contract: value.contract,
+    activationSha256: value.activationSha256,
+    authorizationIdSha256: value.authorizationIdSha256,
+    claimDigestSha256: value.claimDigestSha256,
+    postRequestIdSha256: value.postRequestIdSha256,
+    reservedAt,
+    dispatchSha256: sha256Hex(bytes),
   };
 }
 

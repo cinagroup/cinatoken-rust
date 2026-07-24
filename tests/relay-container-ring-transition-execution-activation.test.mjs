@@ -10,6 +10,7 @@ import { canonicalJson } from "../tools/relay_container_p5_evidence_contract.mjs
 import {
   RING_TRANSITION_AUTHORITY_ORIGIN,
   RING_TRANSITION_CLAIM_PERMIT_CONTRACT,
+  RING_TRANSITION_CLAIM_DISPATCH_CONTRACT,
   RING_TRANSITION_CLAIM_REQUEST_CONTRACT,
   RING_TRANSITION_CLAIMS_PATH,
   RING_TRANSITION_EXECUTION_ACTIVATION_CONTRACT,
@@ -18,6 +19,7 @@ import {
   computeRingTransitionExecutionClaimDigest,
   describeRingTransitionExecutionActivationContract,
   ringTransitionClaimPermitMessage,
+  verifyRingTransitionClaimDispatch,
   verifyRingTransitionExecutionActivation,
 } from "../tools/relay_container_ring_transition_execution_activation_contract.mjs";
 
@@ -52,11 +54,13 @@ describe("ring-transition fixed execution activation", () => {
       ok: true,
       activationSha256: ACTIVATION_SHA256,
       publicationManifestSha256: "b".repeat(64),
+      activationSequence: 1,
       authorizationIdSha256: "1".repeat(64),
       executionNonceSha256: "2".repeat(64),
       claimDigestSha256: CLAIM_DIGEST,
       claimOwnerSha256: "6".repeat(64),
       claimRequestSha256: CLAIM_REQUEST_SHA256,
+      claimGeneratedAt: NOW - 1,
       permitExpiresAt: NOW + 59,
       claimExpiresAt: NOW + 120,
     });
@@ -218,6 +222,97 @@ describe("ring-transition fixed execution activation", () => {
       networkRequestsPerformed: false,
       remoteMutationAuthorized: false,
     });
+  });
+
+  test("independently verifies the create-new claim dispatch guard", () => {
+    const value = fixture();
+    const activation = verify(value);
+    const dispatch = {
+      schemaVersion: 1,
+      contract: RING_TRANSITION_CLAIM_DISPATCH_CONTRACT,
+      environment: "staging",
+      activationSha256: activation.activationSha256,
+      publicationManifestSha256:
+        activation.publicationManifestSha256,
+      activationSequence: activation.activationSequence,
+      authorizationIdSha256: activation.authorizationIdSha256,
+      claimDigestSha256: activation.claimDigestSha256,
+      claimOwnerSha256: activation.claimOwnerSha256,
+      claimRequestSha256: activation.claimRequestSha256,
+      postRequestIdSha256: sha256(
+        Buffer.from("claim-post-request-001", "utf8"),
+      ),
+      reservedAt: NOW,
+    };
+    const bytes = Buffer.from(canonicalJson(dispatch), "utf8");
+    expect(
+      verifyRingTransitionClaimDispatch({
+        dispatchBytes: bytes,
+        activation,
+      }),
+    ).toMatchObject({
+      ok: true,
+      contract: RING_TRANSITION_CLAIM_DISPATCH_CONTRACT,
+      activationSha256: ACTIVATION_SHA256,
+      authorizationIdSha256: "1".repeat(64),
+      claimDigestSha256: CLAIM_DIGEST,
+      postRequestIdSha256: dispatch.postRequestIdSha256,
+      reservedAt: NOW,
+      dispatchSha256: sha256(bytes),
+    });
+
+    const unknown = { ...dispatch, retry: true };
+    expect(() =>
+      verifyRingTransitionClaimDispatch({
+        dispatchBytes: Buffer.from(canonicalJson(unknown), "utf8"),
+        activation,
+      }),
+    ).toThrow("unknown field retry");
+
+    const drift = {
+      ...dispatch,
+      claimRequestSha256: "0".repeat(64),
+    };
+    expect(() =>
+      verifyRingTransitionClaimDispatch({
+        dispatchBytes: Buffer.from(canonicalJson(drift), "utf8"),
+        activation,
+      }),
+    ).toThrow("claimRequestSha256 mismatch");
+
+    const late = {
+      ...dispatch,
+      reservedAt: activation.permitExpiresAt,
+    };
+    expect(() =>
+      verifyRingTransitionClaimDispatch({
+        dispatchBytes: Buffer.from(canonicalJson(late), "utf8"),
+        activation,
+      }),
+    ).toThrow("reservation window is invalid");
+
+    expect(() =>
+      verifyRingTransitionClaimDispatch({
+        dispatchBytes: Buffer.from(
+          JSON.stringify(dispatch, null, 2),
+          "utf8",
+        ),
+        activation,
+      }),
+    ).toThrow("must be canonical");
+
+    expect(() =>
+      verifyRingTransitionClaimDispatch({
+        dispatchBytes: Buffer.from(
+          canonicalJson(dispatch).replace(
+            /^\{/,
+            '{"schemaVersion":1,',
+          ),
+          "utf8",
+        ),
+        activation,
+      }),
+    ).toThrow("duplicate fields");
   });
 });
 

@@ -18775,3 +18775,164 @@ The remaining P0 work is:
 Until these P0 items, the exact signed Linux release ceremony, remote identity
 and scope evidence, and G1-G8 approvals pass, Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.280 At-Most-Once Authority Claim Dispatch And Exact Recovery Overlay (2026-07-24)
+
+This overlay closes the local implementation portion of section 22.279 item 1.
+It does not claim that the staging Authority, Access application, D1 binding,
+credentials, route, or Cloudflare account has been exercised. Checked-in
+release, execution-activation, and credential trust remain disabled. No
+credential was read and no remote request, deployment, DNS change, customer
+traffic change, or Go/VPS authority change was performed.
+
+### Precise delivery guarantee
+
+The production claim guarantee is:
+
+> Across threads, processes, and restarts, the installed publication may
+> authorize at most one claim POST. Authority may create at most one matching
+> claim effect. Every uncertain result permanently removes POST authority and
+> permits only exact claim GET recovery.
+
+This is intentionally not described as distributed exactly-once delivery. A
+process can stop after the durable dispatch guard is published but before any
+socket bytes leave the host. That execution produces zero POSTs and must
+remain in GET-only recovery or require a new reviewed publication and
+authorization. Guaranteeing both eventual delivery and no duplicate send
+would require an idempotent POST replay policy, which the current signed
+zero-retry contract forbids.
+
+### Create-new dispatch guard
+
+The runner derives one additional fixed path from the verified publication:
+
+```text
+<installation-root>/
+  execution-activations/
+    <publication-manifest-sha>.execution-activation.json
+    <publication-manifest-sha>.claim-dispatch.json
+```
+
+After credential identity proof and Authority preflight, but before the claim
+POST, `create_claim_once(self)` creates the dispatch record with create-new
+semantics. The bounded canonical record binds:
+
+- activation and publication manifest digests plus activation sequence;
+- authorization ID, claim digest, and claim owner;
+- the frozen canonical claim-request digest;
+- SHA-256 of the fresh POST request ID, never the raw request ID; and
+- the reservation time inside both permit and claim validity windows.
+
+The writer uses one fixed directory and filename, no caller-selected path or
+overwrite mode, same-handle write/readback, read-only final permissions, file
+sync, directory sync on Unix, and an independent canonical readback. An
+existing record is accepted only when all immutable activation identities and
+time bounds verify. Different, partial, writable, linked, noncanonical, or
+identity-drifted content fails closed. An uncertain create or directory-sync
+result never authorizes the POST. On the next start, any valid existing guard
+skips POST unconditionally and performs only exact GET.
+
+Linux still requires the dedicated directory-FD, ACL, concurrent kill, and
+ext4/XFS power-loss campaign. Windows proves canonical identity, create-new,
+restart, and concurrency semantics only.
+
+### Claim typestate and response classification
+
+The library-owned capability transition is now:
+
+```text
+PreparedControlPlane
+  -- durable guard Fresh --> exactly one fixed claim POST
+  -- durable guard Existing ------------------------------\
+                                                            \
+POST accepted or uncertain --> exactly one exact claim GET --> ClaimedControlPlane
+                                                    failure --> ClaimRecoveryControlPlane
+```
+
+`PreparedControlPlane` is consumed. `ClaimRecoveryControlPlane` exposes only
+`recover_exact_claim(self)` and can never create a claim, append a step, or
+deploy. Repeated recovery attempts are GET-only. Only
+`ClaimedControlPlane` owns append, deployment, and observation methods, and
+all three paths bind authorization ID and claim digest to its verified
+snapshot. A restored inflight state still cannot recreate a deployment
+permit.
+
+The POST uses the exact canonical bytes retained by the signed execution
+activation, rehashes them immediately before send, and targets only
+`POST /internal/v1/ring-transition/claims`. Hyper canceled-request retry is
+disabled, redirects are not followed, ambient proxy configuration is unused,
+and the bounded exchange has one call site.
+
+Success is exact:
+
+| HTTP | Required result | Local classification |
+|---|---|---|
+| `201` | `created` | `Created` |
+| `200` | `exact_replay` | `ExactReplay` |
+
+The response must be duplicate-free strict JSON, match request ID and compiled
+Authority version, and contain an initial `claimed/0` public state with exact
+authorization, digest, owner, ledger, claim credential, generated/expiry, and
+nonterminal timestamps. A swapped status/result pair, malformed success,
+identity drift, redirect, `408`, `409`, `425`, `429`, any `5xx`, transport
+error, truncation, or `outcome_unknown=true` is uncertain. It never causes a
+second POST and proceeds only to exact GET. Other deterministic `4xx`
+responses stop as rejection without GET or retry.
+
+Even exact POST success is not reducer input. The public claim state has no
+ordered step or expiry history, and Authority INSERT plus readback is not one
+transaction snapshot. The runner therefore always follows POST with a new
+HMAC-authenticated exact GET. Only a bounded `200 exact_claim` whose full
+snapshot passes duplicate rejection, canonical history/digest reconstruction,
+credential/build/trust/service joins, and authorization/digest/owner binding
+can mint `ClaimedControlPlane`. GET `404`, `409`, throttling, `5xx`, mixed
+sequential-query history, invalid JSON, or transport loss stays read-only.
+
+### Independent contract and retained evidence
+
+The existing 28-module signed source closure is unchanged in path count. The
+Rust activation module now contains the dispatch record and writer, while the
+already-required independent JavaScript activation contract verifies the
+same closed dispatch schema, identities, time window, canonical bytes, and
+record digest. The already-required activation tests cover both contracts, so
+omitting or changing either implementation still changes the signed source
+inventory.
+
+Focused local evidence on the final source for this overlay includes:
+
+- 82 Rust library tests, one binary test, and two CLI tests;
+- strict all-target runner Clippy with warnings denied;
+- eight concurrent dispatch openers with exactly one fresh capability;
+- created, exact replay, response-loss, invalid-success, `409`,
+  `outcome_unknown`, deterministic rejection, expiry, and repeated GET-only
+  recovery cases;
+- 39 runner JavaScript tests with 146 expectations; and
+- 65 broader ring-transition tests with 728 expectations.
+
+The complete repository `bun run check` also exited successfully after
+719.5 seconds, including Worker, Authority, Container, WFP, frontend,
+workspace, and WASM gates. These are local deterministic, loopback, build, and
+static results, not remote production evidence.
+
+### Remaining P0 sequence
+
+The next K7 implementation order is now:
+
+1. typed authenticated T1 and Edge-previous stable read/append phases;
+2. live receipt append before and after every Authority request, deployment
+   boundary, stable readback, and recovery transition;
+3. a library-owned resumable `execute_current()` driver that re-verifies the
+   release, publication, activation, dispatch guard, credentials, receipt
+   chain, and exact Authority state on every start;
+4. full revalidation of all four independent authorization approvals;
+5. an independent external/WORM terminal receipt-chain anchor;
+6. exact Rust 1.78 Linux reproducible builds plus two-process path/link,
+   response-loss, kill, sync, ACL, backup/restore, and ext4/XFS power-loss
+   campaigns;
+7. isolated staging Access, route, D1 migration/catalog, version, key-rotation,
+   scope, concurrency, and fault evidence; and
+8. actual revocation and replacement evidence for the exposed credential
+   before any remote use.
+
+Until those items and G1-G8 pass, Go/VPS remains authoritative and production
+remains **NO-GO**.

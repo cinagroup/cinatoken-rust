@@ -7,11 +7,15 @@ use crate::credentials::{
     ACCESS_CLIENT_SECRET_ENV, AUTHORITY_HEADER_NAME, AUTHORITY_PREFLIGHT_PATH,
     CLOUDFLARE_API_ORIGIN,
 };
-use crate::execution_activation::ExecutionActivationIdentity;
+use crate::execution_activation::{
+    reserve_claim_dispatch, ClaimDispatchLocation, ClaimDispatchReservation,
+    ExecutionActivationIdentity, CLAIMS_PATH,
+};
 use crate::orchestrator::{
-    self, AuthorityAppendAttempt, AuthorizedMutation, FreshIntentPermit, MutationPhase,
-    ObservationAppendAttempt, ObservationPhase, ObservationRecordInput, ObservationStability,
-    PreparedObservation, RecordedObservation, TransportOutcome, VerifiedSnapshot,
+    self, AuthorityAppendAttempt, AuthorizedMutation, ClaimStatus, FreshIntentPermit,
+    MutationPhase, ObservationAppendAttempt, ObservationPhase, ObservationRecordInput,
+    ObservationStability, PreparedObservation, RecordedObservation, TransportOutcome,
+    VerifiedSnapshot,
 };
 use crate::readback::{
     ReadbackClassification, ReadbackError, ReadbackSnapshot, StableReadbackPair,
@@ -65,6 +69,38 @@ type ProductionHttpClient = Client<ProductionConnector, Full<Bytes>>;
 pub struct PreparedControlPlane {
     core: ControlPlaneCore<HyperHttpsExchange>,
     execution_activation: ExecutionActivationIdentity,
+    dispatch_location: ClaimDispatchLocation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaimCreationClassification {
+    Created,
+    ExactReplay,
+    RecoveredAfterAmbiguous,
+}
+
+pub enum ClaimCreationOutcome {
+    Claimed(ClaimedControlPlane),
+    Recovery(ClaimRecoveryControlPlane),
+}
+
+pub enum ClaimRecoveryOutcome {
+    Claimed(ClaimedControlPlane),
+    Pending(ClaimRecoveryControlPlane),
+}
+
+pub struct ClaimedControlPlane {
+    core: ControlPlaneCore<HyperHttpsExchange>,
+    execution_activation: ExecutionActivationIdentity,
+    snapshot: Box<VerifiedSnapshot>,
+    classification: ClaimCreationClassification,
+}
+
+pub struct ClaimRecoveryControlPlane {
+    core: ControlPlaneCore<HyperHttpsExchange>,
+    execution_activation: ExecutionActivationIdentity,
+    classification: ClaimCreationClassification,
+    last_error: ControlPlaneError,
 }
 
 impl PreparedControlPlane {
@@ -78,6 +114,89 @@ impl PreparedControlPlane {
 
     pub fn execution_activation(&self) -> &ExecutionActivationIdentity {
         &self.execution_activation
+    }
+
+    pub async fn create_claim_once(self) -> Result<ClaimCreationOutcome, ControlPlaneError> {
+        let now = system_time_seconds()?;
+        let post_request_id = random_request_id()?;
+        let read_request_id = random_request_id()?;
+        let reservation = reserve_claim_dispatch(
+            &self.dispatch_location,
+            &self.execution_activation,
+            &post_request_id,
+            now,
+        )
+        .map_err(ControlPlaneError::ExecutionActivation)?;
+        let establishment = match reservation {
+            ClaimDispatchReservation::Fresh => {
+                self.core
+                    .establish_claim_once_at(
+                        &self.execution_activation,
+                        now,
+                        &post_request_id,
+                        &read_request_id,
+                    )
+                    .await?
+            }
+            ClaimDispatchReservation::Existing => {
+                match self
+                    .core
+                    .read_activated_claim_at(&self.execution_activation, now, &read_request_id)
+                    .await
+                {
+                    Ok(snapshot) => ClaimEstablishment::Claimed {
+                        snapshot: Box::new(snapshot),
+                        classification: ClaimCreationClassification::RecoveredAfterAmbiguous,
+                    },
+                    Err(error) => ClaimEstablishment::Recovery {
+                        error,
+                        classification: ClaimCreationClassification::RecoveredAfterAmbiguous,
+                    },
+                }
+            }
+        };
+        match establishment {
+            ClaimEstablishment::Claimed {
+                snapshot,
+                classification,
+            } => Ok(ClaimCreationOutcome::Claimed(ClaimedControlPlane {
+                core: self.core,
+                execution_activation: self.execution_activation,
+                snapshot,
+                classification,
+            })),
+            ClaimEstablishment::Recovery {
+                error: last_error,
+                classification,
+            } => Ok(ClaimCreationOutcome::Recovery(ClaimRecoveryControlPlane {
+                core: self.core,
+                execution_activation: self.execution_activation,
+                classification,
+                last_error,
+            })),
+        }
+    }
+}
+
+impl ClaimedControlPlane {
+    pub fn identity(&self) -> &CredentialIdentity {
+        self.core.credentials.identity()
+    }
+
+    pub fn access_service_token_verified(&self) -> bool {
+        true
+    }
+
+    pub fn execution_activation(&self) -> &ExecutionActivationIdentity {
+        &self.execution_activation
+    }
+
+    pub fn snapshot(&self) -> &VerifiedSnapshot {
+        &self.snapshot
+    }
+
+    pub fn classification(&self) -> ClaimCreationClassification {
+        self.classification
     }
 
     pub(crate) async fn read_exact_claim(
@@ -103,6 +222,10 @@ impl PreparedControlPlane {
         &self,
         attempt: AuthorityAppendAttempt<P>,
     ) -> Result<FreshIntentPermit<P>, ControlPlaneError> {
+        self.require_claim_binding(
+            attempt.authorization_id_sha256(),
+            attempt.claim_digest_sha256(),
+        )?;
         let now = system_time_seconds()?;
         self.core.append_intent_at(attempt, now).await
     }
@@ -111,6 +234,15 @@ impl PreparedControlPlane {
         &self,
         mutation: AuthorizedMutation<P>,
     ) -> MutationAttemptOutcome {
+        if self
+            .require_claim_binding(
+                mutation.authorization_id_sha256(),
+                mutation.claim_digest_sha256(),
+            )
+            .is_err()
+        {
+            return MutationAttemptOutcome::ambiguous(None, None, None);
+        }
         let now = match system_time_seconds() {
             Ok(now) => now,
             Err(_) => return MutationAttemptOutcome::ambiguous(None, None, None),
@@ -123,6 +255,10 @@ impl PreparedControlPlane {
         observation: PreparedObservation<P>,
         outcome: MutationAttemptOutcome,
     ) -> Result<RecordedObservation<P>, ControlPlaneError> {
+        self.require_claim_binding(
+            observation.authorization_id_sha256(),
+            observation.claim_digest_sha256(),
+        )?;
         self.core
             .observe_once_at(observation, outcome, &SystemObservationSchedule)
             .await
@@ -135,11 +271,71 @@ impl PreparedControlPlane {
         self.observe_once(observation, MutationAttemptOutcome::restored_ambiguous())
             .await
     }
+
+    fn require_claim_binding(
+        &self,
+        authorization_id_sha256: &str,
+        claim_digest_sha256: &str,
+    ) -> Result<(), ControlPlaneError> {
+        if authorization_id_sha256 != self.snapshot.authorization_id_sha256()
+            || claim_digest_sha256 != self.snapshot.claim_digest_sha256()
+        {
+            return Err(ControlPlaneError::ClaimIdentityMismatch);
+        }
+        Ok(())
+    }
+}
+
+impl ClaimRecoveryControlPlane {
+    pub fn identity(&self) -> &CredentialIdentity {
+        self.core.credentials.identity()
+    }
+
+    pub fn execution_activation(&self) -> &ExecutionActivationIdentity {
+        &self.execution_activation
+    }
+
+    pub fn last_error(&self) -> &ControlPlaneError {
+        &self.last_error
+    }
+
+    pub fn classification(&self) -> ClaimCreationClassification {
+        self.classification
+    }
+
+    pub async fn recover_exact_claim(self) -> ClaimRecoveryOutcome {
+        let now = match system_time_seconds() {
+            Ok(now) => now,
+            Err(last_error) => {
+                return ClaimRecoveryOutcome::Pending(Self { last_error, ..self });
+            }
+        };
+        let request_id = match random_request_id() {
+            Ok(request_id) => request_id,
+            Err(last_error) => {
+                return ClaimRecoveryOutcome::Pending(Self { last_error, ..self });
+            }
+        };
+        match self
+            .core
+            .read_activated_claim_at(&self.execution_activation, now, &request_id)
+            .await
+        {
+            Ok(snapshot) => ClaimRecoveryOutcome::Claimed(ClaimedControlPlane {
+                core: self.core,
+                execution_activation: self.execution_activation,
+                snapshot: Box::new(snapshot),
+                classification: self.classification,
+            }),
+            Err(last_error) => ClaimRecoveryOutcome::Pending(Self { last_error, ..self }),
+        }
+    }
 }
 
 pub(crate) async fn verify_loaded_credentials(
     loaded: LoadedCredentials,
     execution_activation: ExecutionActivationIdentity,
+    dispatch_location: ClaimDispatchLocation,
 ) -> Result<PreparedControlPlane, ControlPlaneError> {
     execution_activation
         .validate_credential_identity(loaded.identity())
@@ -151,6 +347,7 @@ pub(crate) async fn verify_loaded_credentials(
     Ok(PreparedControlPlane {
         core,
         execution_activation,
+        dispatch_location,
     })
 }
 
@@ -172,6 +369,116 @@ impl<E: HttpExchange> ControlPlaneCore<E> {
             credentials,
             exchange,
         })
+    }
+
+    async fn establish_claim_once_at(
+        &self,
+        activation: &ExecutionActivationIdentity,
+        now: u64,
+        post_request_id: &str,
+        read_request_id: &str,
+    ) -> Result<ClaimEstablishment, ControlPlaneError> {
+        let post = self
+            .create_claim_once_at(activation, now, post_request_id)
+            .await?;
+        let classification = match post {
+            ClaimPostDisposition::Accepted(classification) => classification,
+            ClaimPostDisposition::Ambiguous => ClaimCreationClassification::RecoveredAfterAmbiguous,
+        };
+        Ok(
+            match self
+                .read_activated_claim_at(activation, now, read_request_id)
+                .await
+            {
+                Ok(snapshot) => ClaimEstablishment::Claimed {
+                    snapshot: Box::new(snapshot),
+                    classification,
+                },
+                Err(error) => ClaimEstablishment::Recovery {
+                    error,
+                    classification,
+                },
+            },
+        )
+    }
+
+    async fn create_claim_once_at(
+        &self,
+        activation: &ExecutionActivationIdentity,
+        now: u64,
+        request_id: &str,
+    ) -> Result<ClaimPostDisposition, ControlPlaneError> {
+        require_request_id(request_id)?;
+        if now < activation.claim_generated_at()
+            || now >= activation.permit_expires_at()
+            || now >= activation.claim_expires_at()
+        {
+            return Err(ControlPlaneError::ClaimActivationExpired);
+        }
+        let body = activation.claim_request_bytes();
+        if body.is_empty()
+            || body.len() > 64 * 1024
+            || sha256_hex(body) != activation.claim_request_sha256()
+        {
+            return Err(ControlPlaneError::ClaimRequestIdentityMismatch);
+        }
+        let request = authority_request(
+            &self.credentials,
+            Method::POST,
+            CLAIMS_PATH,
+            Bytes::copy_from_slice(body),
+            request_id,
+            now,
+        )?;
+        let response = match self
+            .exchange
+            .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => return Ok(ClaimPostDisposition::Ambiguous),
+        };
+        if response.status == StatusCode::CREATED || response.status == StatusCode::OK {
+            return Ok(
+                match verify_claim_create_response(
+                    &response.body,
+                    response.status,
+                    request_id,
+                    activation,
+                    self.credentials.identity(),
+                ) {
+                    Ok(classification) => ClaimPostDisposition::Accepted(classification),
+                    Err(_) => ClaimPostDisposition::Ambiguous,
+                },
+            );
+        }
+        if response.status.is_success()
+            || response.status.is_redirection()
+            || response.status == StatusCode::REQUEST_TIMEOUT
+            || response.status == StatusCode::CONFLICT
+            || response.status == StatusCode::TOO_EARLY
+            || response.status == StatusCode::TOO_MANY_REQUESTS
+            || response.status.is_server_error()
+        {
+            return Ok(ClaimPostDisposition::Ambiguous);
+        }
+        Err(ControlPlaneError::AuthorityMutationRejected)
+    }
+
+    async fn read_activated_claim_at(
+        &self,
+        activation: &ExecutionActivationIdentity,
+        now: u64,
+        request_id: &str,
+    ) -> Result<VerifiedSnapshot, ControlPlaneError> {
+        self.read_exact_claim_at(
+            activation.authorization_id_sha256(),
+            activation.claim_digest_sha256(),
+            activation.claim_owner_sha256(),
+            now,
+            request_id,
+        )
+        .await
     }
 
     async fn read_exact_claim_at(
@@ -206,8 +513,14 @@ impl<E: HttpExchange> ControlPlaneCore<E> {
             .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
             .await
             .map_err(|_| ControlPlaneError::Exchange)?;
-        if response.status != StatusCode::OK {
-            return Err(ControlPlaneError::AuthorityRejected);
+        match response.status {
+            StatusCode::OK => {}
+            StatusCode::NOT_FOUND => return Err(ControlPlaneError::AuthorityClaimNotFound),
+            StatusCode::CONFLICT => return Err(ControlPlaneError::AuthorityClaimConflict),
+            status if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
+                return Err(ControlPlaneError::AuthorityReadUnavailable);
+            }
+            _ => return Err(ControlPlaneError::AuthorityRejected),
         }
         verify_exact_claim_response(
             &response.body,
@@ -649,6 +962,96 @@ fn verify_exact_claim_response(
         return Err(ControlPlaneError::ClaimIdentityMismatch);
     }
     Ok(snapshot)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClaimPostDisposition {
+    Accepted(ClaimCreationClassification),
+    Ambiguous,
+}
+
+enum ClaimEstablishment {
+    Claimed {
+        snapshot: Box<VerifiedSnapshot>,
+        classification: ClaimCreationClassification,
+    },
+    Recovery {
+        error: ControlPlaneError,
+        classification: ClaimCreationClassification,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ClaimCreateResult {
+    Created,
+    ExactReplay,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClaimCreateResponse {
+    result: ClaimCreateResult,
+    request_id: String,
+    claim: ClaimCreateState,
+    authority_version_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClaimCreateState {
+    authorization_id_sha256: String,
+    claim_digest_sha256: String,
+    claim_owner_sha256: String,
+    ledger_identity_sha256: String,
+    claim_credential_id_sha256: String,
+    status: ClaimStatus,
+    state_version: u8,
+    generated_at: u64,
+    claimed_at: u64,
+    expires_at: u64,
+    updated_at: u64,
+    terminal_at: Option<u64>,
+}
+
+fn verify_claim_create_response(
+    response_body: &[u8],
+    status: StatusCode,
+    request_id: &str,
+    activation: &ExecutionActivationIdentity,
+    identity: &CredentialIdentity,
+) -> Result<ClaimCreationClassification, ControlPlaneError> {
+    reject_duplicate_json(response_body, IDENTITY_RESPONSE_LIMIT)
+        .map_err(|_| ControlPlaneError::InvalidAuthorityResponse)?;
+    let response: ClaimCreateResponse = serde_json::from_slice(response_body)
+        .map_err(|_| ControlPlaneError::InvalidAuthorityResponse)?;
+    let classification = match (status, response.result) {
+        (StatusCode::CREATED, ClaimCreateResult::Created) => ClaimCreationClassification::Created,
+        (StatusCode::OK, ClaimCreateResult::ExactReplay) => {
+            ClaimCreationClassification::ExactReplay
+        }
+        _ => return Err(ControlPlaneError::InvalidAuthorityResponse),
+    };
+    let claim = response.claim;
+    if response.request_id != request_id
+        || response.authority_version_id != identity.authority_version_id
+        || claim.authorization_id_sha256 != activation.authorization_id_sha256()
+        || claim.claim_digest_sha256 != activation.claim_digest_sha256()
+        || claim.claim_owner_sha256 != activation.claim_owner_sha256()
+        || claim.ledger_identity_sha256 != activation.ledger_identity_sha256()
+        || claim.claim_credential_id_sha256 != identity.claim_credential_id_sha256
+        || claim.status != ClaimStatus::Claimed
+        || claim.state_version != 0
+        || claim.generated_at != activation.claim_generated_at()
+        || claim.expires_at != activation.claim_expires_at()
+        || claim.claimed_at < claim.generated_at
+        || claim.claimed_at >= claim.expires_at
+        || claim.updated_at != claim.claimed_at
+        || claim.terminal_at.is_some()
+    {
+        return Err(ControlPlaneError::ClaimIdentityMismatch);
+    }
+    Ok(classification)
 }
 
 async fn deploy_authorized_once<E: HttpExchange, P: MutationPhase>(
@@ -1195,6 +1598,11 @@ pub enum ControlPlaneError {
     AuthorityIdentityMismatch,
     InvalidAuthorityResponse,
     ClaimIdentityMismatch,
+    ClaimRequestIdentityMismatch,
+    ClaimActivationExpired,
+    AuthorityClaimNotFound,
+    AuthorityClaimConflict,
+    AuthorityReadUnavailable,
     Readback(ReadbackError),
     ReadbackRejected,
     AuthorityMutationRejected,
@@ -1229,6 +1637,21 @@ impl fmt::Display for ControlPlaneError {
             Self::InvalidAuthorityResponse => formatter.write_str("Authority response is invalid"),
             Self::ClaimIdentityMismatch => {
                 formatter.write_str("Authority claim does not match activated identities")
+            }
+            Self::ClaimRequestIdentityMismatch => {
+                formatter.write_str("activated claim request bytes do not match their digest")
+            }
+            Self::ClaimActivationExpired => {
+                formatter.write_str("activated claim or permit is outside its execution window")
+            }
+            Self::AuthorityClaimNotFound => {
+                formatter.write_str("Authority exact claim was not found")
+            }
+            Self::AuthorityClaimConflict => {
+                formatter.write_str("Authority exact claim identity conflicts")
+            }
+            Self::AuthorityReadUnavailable => {
+                formatter.write_str("Authority exact claim read is temporarily unavailable")
             }
             Self::Readback(error) => error.fmt(formatter),
             Self::ReadbackRejected => {
@@ -1345,6 +1768,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credentials::verified_credentials_for_transport_test;
     use crate::orchestrator::{
         authorize_mutation, begin_authority_append, plan_controller_deployment,
         prepare_controller_intent, verify_fresh_append, ControllerMutation,
@@ -1709,6 +2133,263 @@ mod tests {
             ),
             Err(ControlPlaneError::AuthorityIdentityMismatch)
         ));
+    }
+
+    #[tokio::test]
+    async fn claim_creation_posts_frozen_bytes_once_then_requires_exact_readback() {
+        let activation = transport_activation();
+        let identity = matching_identity();
+        let snapshot = claimed_snapshot_value();
+        let exchange = ScriptedExchange::new(vec![
+            Ok(claim_create_response(
+                StatusCode::CREATED,
+                "created",
+                "claim-create-001",
+                &activation,
+                &identity,
+            )),
+            Ok(scripted_json(
+                StatusCode::OK,
+                serde_json::from_slice(&exact_claim_response(
+                    &snapshot,
+                    &identity,
+                    "claim-read-001",
+                ))
+                .unwrap(),
+            )),
+        ]);
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+        };
+
+        let result = core
+            .establish_claim_once_at(&activation, NOW, "claim-create-001", "claim-read-001")
+            .await
+            .expect("created claim must establish");
+        let ClaimEstablishment::Claimed {
+            snapshot,
+            classification,
+        } = result
+        else {
+            panic!("exact readback must establish the claim");
+        };
+        assert_eq!(classification, ClaimCreationClassification::Created);
+        assert_eq!(snapshot.status(), ClaimStatus::Claimed);
+        assert_eq!(snapshot.state_version(), 0);
+
+        let observed = exchange.observed();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|request| request.method == Method::POST)
+                .count(),
+            1
+        );
+        assert_eq!(observed[0].method, Method::POST);
+        assert_eq!(
+            observed[0].uri,
+            format!("{STAGING_AUTHORITY_ORIGIN}{CLAIMS_PATH}")
+        );
+        assert_eq!(observed[0].body.as_ref(), activation.claim_request_bytes());
+        assert_eq!(
+            observed[0].headers.get(CONTENT_TYPE),
+            Some(&HeaderValue::from_static("application/json"))
+        );
+        assert_eq!(observed[1].method, Method::GET);
+        assert_eq!(
+            observed[1].uri,
+            format!(
+                "{STAGING_AUTHORITY_ORIGIN}{CLAIMS_PATH}/{}?claimDigestSha256={}&claimOwnerSha256={}",
+                activation.authorization_id_sha256(),
+                activation.claim_digest_sha256(),
+                activation.claim_owner_sha256()
+            )
+        );
+        assert!(observed[1].body.is_empty());
+        assert!(observed
+            .iter()
+            .all(|request| request.maximum_response_bytes == IDENTITY_RESPONSE_LIMIT));
+        assert!(observed
+            .iter()
+            .all(|request| request.timeout == REQUEST_TIMEOUT));
+    }
+
+    #[tokio::test]
+    async fn claim_response_loss_and_invalid_success_recover_only_through_get() {
+        for first_response in [
+            Err(ExchangeError::Connection),
+            Ok(claim_create_response(
+                StatusCode::CREATED,
+                "exact_replay",
+                "claim-create-ambiguous",
+                &transport_activation(),
+                &matching_identity(),
+            )),
+            Ok(scripted_json(
+                StatusCode::ACCEPTED,
+                serde_json::json!({"result": "queued"}),
+            )),
+            Ok(scripted_json(
+                StatusCode::CONFLICT,
+                serde_json::json!({"error": "claim_conflict"}),
+            )),
+            Ok(scripted_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({
+                    "error": "outcome_unknown",
+                    "outcomeUnknown": true,
+                }),
+            )),
+        ] {
+            let activation = transport_activation();
+            let identity = matching_identity();
+            let snapshot = claimed_snapshot_value();
+            let exchange = ScriptedExchange::new(vec![
+                first_response,
+                Ok(scripted_json(
+                    StatusCode::OK,
+                    serde_json::from_slice(&exact_claim_response(
+                        &snapshot,
+                        &identity,
+                        "claim-read-ambiguous",
+                    ))
+                    .unwrap(),
+                )),
+            ]);
+            let core = ControlPlaneCore {
+                credentials: verified_credentials_for_transport_test(),
+                exchange: exchange.clone(),
+            };
+            let result = core
+                .establish_claim_once_at(
+                    &activation,
+                    NOW,
+                    "claim-create-ambiguous",
+                    "claim-read-ambiguous",
+                )
+                .await
+                .expect("ambiguous POST with exact readback must recover");
+            assert!(matches!(
+                result,
+                ClaimEstablishment::Claimed {
+                    classification: ClaimCreationClassification::RecoveredAfterAmbiguous,
+                    ..
+                }
+            ));
+            let observed = exchange.observed();
+            assert_eq!(observed.len(), 2);
+            assert_eq!(
+                observed
+                    .iter()
+                    .filter(|request| request.method == Method::POST)
+                    .count(),
+                1
+            );
+            assert_eq!(observed[1].method, Method::GET);
+            assert_eq!(exchange.remaining(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn unresolved_claim_recovery_never_restores_post_capability() {
+        let activation = transport_activation();
+        let identity = matching_identity();
+        let snapshot = claimed_snapshot_value();
+        let exchange = ScriptedExchange::new(vec![
+            Err(ExchangeError::Timeout),
+            Err(ExchangeError::Connection),
+            Ok(scripted_json(
+                StatusCode::OK,
+                serde_json::from_slice(&exact_claim_response(
+                    &snapshot,
+                    &identity,
+                    "claim-read-recovery-002",
+                ))
+                .unwrap(),
+            )),
+        ]);
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+        };
+        let first = core
+            .establish_claim_once_at(
+                &activation,
+                NOW,
+                "claim-create-recovery",
+                "claim-read-recovery-001",
+            )
+            .await
+            .expect("ambiguous establishment returns recovery state");
+        assert!(matches!(
+            first,
+            ClaimEstablishment::Recovery {
+                error: ControlPlaneError::Exchange,
+                classification: ClaimCreationClassification::RecoveredAfterAmbiguous,
+            }
+        ));
+
+        let recovered = core
+            .read_activated_claim_at(&activation, NOW, "claim-read-recovery-002")
+            .await
+            .expect("later exact GET may recover");
+        assert_eq!(recovered.status(), ClaimStatus::Claimed);
+        let observed = exchange.observed();
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|request| request.method == Method::POST)
+                .count(),
+            1
+        );
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|request| request.method == Method::GET)
+                .count(),
+            2
+        );
+        assert_eq!(exchange.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn deterministic_claim_rejection_and_expiry_do_not_read_or_retry() {
+        let activation = transport_activation();
+        let exchange = ScriptedExchange::new(vec![Ok(scripted_json(
+            StatusCode::FORBIDDEN,
+            serde_json::json!({"error": "invalid_permit"}),
+        ))]);
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+        };
+        assert!(matches!(
+            core.establish_claim_once_at(
+                &activation,
+                NOW,
+                "claim-create-rejected",
+                "claim-read-forbidden",
+            )
+            .await,
+            Err(ControlPlaneError::AuthorityMutationRejected)
+        ));
+        assert_eq!(exchange.observed().len(), 1);
+        assert_eq!(exchange.observed()[0].method, Method::POST);
+
+        let expired_exchange = ScriptedExchange::new(Vec::new());
+        let expired_core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: expired_exchange.clone(),
+        };
+        assert!(matches!(
+            expired_core
+                .create_claim_once_at(&activation, NOW + 60, "claim-create-expired",)
+                .await,
+            Err(ControlPlaneError::ClaimActivationExpired)
+        ));
+        assert!(expired_exchange.observed().is_empty());
     }
 
     #[tokio::test]
@@ -2147,6 +2828,70 @@ mod tests {
         }
     }
 
+    fn transport_activation() -> ExecutionActivationIdentity {
+        let snapshot = claimed_snapshot_value();
+        let claim = snapshot["claim"].as_object().expect("test claim object");
+        let authorization_id_sha256 = claim["authorizationIdSha256"].as_str().unwrap().to_owned();
+        let claim_digest_sha256 = claim["claimDigestSha256"].as_str().unwrap().to_owned();
+        let claim_owner_sha256 = claim["claimOwnerSha256"].as_str().unwrap().to_owned();
+        let ledger_identity_sha256 = claim["ledgerIdentitySha256"].as_str().unwrap().to_owned();
+        let request = canonical_json(&serde_json::json!({
+            "schemaVersion": 1,
+            "contract": "cinatoken-ring-transition-claim-request-v1",
+            "claim": {
+                "authorizationIdSha256": authorization_id_sha256,
+                "claimDigestSha256": claim_digest_sha256,
+                "claimOwnerSha256": claim_owner_sha256,
+                "ledgerIdentitySha256": ledger_identity_sha256,
+            },
+            "permit": {
+                "marker": "transport-fixture-only",
+            },
+        }))
+        .expect("canonical frozen claim request")
+        .into_bytes();
+        ExecutionActivationIdentity::for_transport_test(
+            request,
+            authorization_id_sha256,
+            claim_digest_sha256,
+            claim_owner_sha256,
+            ledger_identity_sha256,
+            NOW,
+            NOW + 300,
+        )
+    }
+
+    fn claim_create_response(
+        status: StatusCode,
+        result: &str,
+        request_id: &str,
+        activation: &ExecutionActivationIdentity,
+        identity: &CredentialIdentity,
+    ) -> BoundedHttpResponse {
+        scripted_json(
+            status,
+            serde_json::json!({
+                "result": result,
+                "requestId": request_id,
+                "claim": {
+                    "authorizationIdSha256": activation.authorization_id_sha256(),
+                    "claimDigestSha256": activation.claim_digest_sha256(),
+                    "claimOwnerSha256": activation.claim_owner_sha256(),
+                    "ledgerIdentitySha256": activation.ledger_identity_sha256(),
+                    "claimCredentialIdSha256": identity.claim_credential_id_sha256,
+                    "status": "claimed",
+                    "stateVersion": 0,
+                    "generatedAt": activation.claim_generated_at(),
+                    "claimedAt": NOW,
+                    "expiresAt": activation.claim_expires_at(),
+                    "updatedAt": NOW,
+                    "terminalAt": null,
+                },
+                "authorityVersionId": identity.authority_version_id,
+            }),
+        )
+    }
+
     fn exact_claim_response(
         snapshot: &Value,
         identity: &CredentialIdentity,
@@ -2165,6 +2910,17 @@ mod tests {
     fn verified_snapshot(snapshot: &Value) -> VerifiedSnapshot {
         let json = canonical_json(snapshot).expect("canonical snapshot");
         VerifiedSnapshot::from_json(json.as_bytes()).expect("verified test snapshot")
+    }
+
+    fn claimed_snapshot_value() -> Value {
+        let mut snapshot = t1_snapshot_value();
+        snapshot["state"]["status"] = Value::String("claimed".to_owned());
+        snapshot["state"]["stateVersion"] = Value::from(0);
+        snapshot["state"]["updatedAt"] = Value::from(NOW);
+        snapshot["state"]["terminalAt"] = Value::Null;
+        snapshot["steps"] = Value::Array(Vec::new());
+        snapshot["expiryEvents"] = Value::Array(Vec::new());
+        snapshot
     }
 
     fn authorized_controller_mutation() -> (AuthorizedMutation<ControllerMutation>, Vec<u8>) {

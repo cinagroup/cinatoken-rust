@@ -3254,3 +3254,34 @@ receipt append at every network boundary, the resumable driver, Linux
 adversarial and power-loss tests, full four-approval revalidation, an external
 receipt-chain anchor, and the exposed-credential revocation gate. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-24 At-Most-Once Claim Dispatch And Recovery
+
+Phase 1 now contains the local native Authority claim-create path. Before the
+one fixed POST, the runner creates and durably reads back a publication-bound
+`claim-dispatch.json` record. Exactly one concurrent process receives the
+fresh in-memory capability; restart sees the record and is permanently
+GET-only. A crash after guard publication but before socket write may produce
+zero POSTs, so the guarantee is at-most-once authorization rather than
+distributed exactly-once delivery.
+
+Only exact `201/created` and `200/exact_replay` responses are accepted, and
+even those require a full exact Authority GET before the runner becomes
+claimed. Response loss, invalid success, `409`, throttling, `5xx`, and
+`outcome_unknown` never retry POST. Recovery consumes and returns a GET-only
+typestate until a complete snapshot passes identity and history verification.
+Only the claimed typestate exposes later append/deploy/observe operations,
+all bound to the same authorization and claim digest.
+
+The dispatch schema is independently verified by the already signed
+JavaScript activation verifier, so the release closure remains 28 modules.
+Focused gates pass with 82 Rust library tests, one binary test, two CLI tests,
+strict Clippy, 39 runner JavaScript tests/146 expectations, and 65 broader
+ring-transition tests/728 expectations. The complete repository
+`bun run check` passed in 719.5 seconds.
+
+No checked-in trust was enabled and no credential or remote API was used.
+Next are typed T1 and Edge-previous phases, live receipt integration, the
+resumable driver, Linux crash/power-loss proof, full approval revalidation,
+external receipt anchoring, isolated staging proof, and exposed-credential
+revocation. Go/VPS remains authoritative and production remains **NO-GO**.

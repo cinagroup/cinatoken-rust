@@ -567,3 +567,63 @@ resumable driver, Linux adversarial/concurrency/power-loss tests, full
 four-approval revalidation, an external receipt-chain anchor, and the
 exposed-credential revocation gate. No remote action was performed and
 production remains **NO-GO**.
+
+## At-Most-Once Claim Dispatch And Exact Recovery
+
+The native runner now implements the local claim-create boundary without
+enabling checked-in trust or performing a remote request.
+
+`PreparedControlPlane::create_claim_once(self)` is a consuming operation. It
+first publishes a create-new, read-only dispatch guard at:
+
+```text
+execution-activations/<publication-manifest-sha>.claim-dispatch.json
+```
+
+The guard binds the activation, publication sequence, authorization, claim,
+owner, frozen request digest, POST request-ID digest, and reservation time.
+Only the first process that durably creates and reads back the exact record
+receives the in-memory POST capability. Every later process observes the
+guard and skips directly to exact GET. Uncertain persistence authorizes
+nothing.
+
+The guarantee is at-most-once authorization, not exactly-once delivery. A
+crash between guard durability and socket write can produce zero POSTs. That
+case remains GET-only and requires a new reviewed publication to regain send
+authority.
+
+The claim POST has one fixed path, body, response bound, timeout, HMAC
+credential, and Access workload identity. It is never retried. Only
+`201/created` and `200/exact_replay` with an exact initial claim state are
+accepted. Malformed or identity-drifted success, redirects, timeout-like
+statuses, `409`, throttling, all `5xx`, transport loss, and explicit
+`outcome_unknown` are ambiguous and transition only to exact GET.
+
+POST success is not enough. The runner always performs an exact GET with a new
+request ID and accepts only a fully verified Authority snapshot. The resulting
+types are:
+
+```text
+ClaimedControlPlane
+  snapshot + Created | ExactReplay | RecoveredAfterAmbiguous
+
+ClaimRecoveryControlPlane
+  last error + prior classification + recover_exact_claim(self)
+```
+
+The recovery type has no POST, append, deployment, or observation method.
+Only the claimed type owns later capabilities, and its append, deploy, and
+observation paths bind the current authorization ID and claim digest.
+
+The dispatch schema has an independent verifier in the existing signed
+execution-activation JavaScript module. The signed source closure remains 28
+modules. Local evidence is 82 Rust library tests, one binary test, two CLI
+tests, strict all-target Clippy, 39 runner JavaScript tests with 146
+expectations, and 65 broader ring-transition tests with 728 expectations. The
+complete repository `bun run check` passed in 719.5 seconds.
+
+Remaining P0 starts with typed T1 and Edge-previous phases, live receipt
+integration, and the resumable driver, followed by exact Linux crash,
+concurrency, ACL, sync and power-loss evidence, full approval revalidation,
+external receipt anchoring, isolated staging proof, and exposed-credential
+revocation. Go/VPS remains authoritative and production remains **NO-GO**.

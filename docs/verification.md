@@ -8343,6 +8343,7 @@ cargo test -p cinatoken-ring-transition-runner
 bun run check:ring-transition-authority
 bun run check:ring-transition-runner
 bun run check:relay-container:ring-transition
+bun run check
 cargo fmt --all --check
 bun run check
 ```
@@ -8822,3 +8823,52 @@ phases, live receipt append, the resumable driver, Linux adversarial tests,
 full four-approval revalidation, an external receipt-chain anchor, and the
 exposed-credential revocation gate. Checked-in trust and `--execute` remain
 fail-closed; production remains **NO-GO**.
+
+## 2026-07-24 Claim Dispatch And Exact Recovery Verification
+
+The local at-most-once claim increment was verified without credentials or
+remote network access:
+
+```powershell
+cargo fmt --all --check
+cargo test -p cinatoken-ring-transition-runner --no-fail-fast
+cargo clippy -p cinatoken-ring-transition-runner --all-targets -- -D warnings
+bun run check:ring-transition-runner
+bun run check:relay-container:ring-transition
+```
+
+Observed results:
+
+- Rust runner: 82 library tests, one binary test, two CLI tests;
+- strict all-target runner Clippy: PASS;
+- runner JavaScript: 39 tests, 146 expectations;
+- broader ring-transition JavaScript: 65 tests, 728 expectations; and
+- signed source/release descriptions: 28 fixed modules;
+- complete repository gate: PASS in 719.5 seconds, exit code 0.
+
+The new Rust cases prove:
+
+- a create-new dispatch guard mints exactly one fresh capability across eight
+  concurrent openers;
+- exact restart replay never restores POST authority;
+- the frozen activation body is rehashed and sent once to the fixed path;
+- `201/created` and `200/exact_replay` are status/result paired;
+- transport loss, invalid 2xx, `409`, `503 outcome_unknown`, throttling,
+  timeout-like and server failures proceed only to exact GET;
+- deterministic claim rejection and expired activation do not GET or retry;
+- unresolved recovery can perform repeated GETs while the total POST count
+  remains one;
+- exact GET validates Authority version, request ID, authorization, digest,
+  owner, credentials, build, trust, services, and complete history; and
+- append, deploy, and observation capabilities remain claimed-snapshot bound.
+
+The independent JavaScript case verifies the same closed dispatch schema,
+canonical bytes, activation/publication/claim joins, request-ID digest,
+reservation window, and dispatch digest. Unknown fields, identity drift,
+late reservation, and noncanonical bytes fail closed.
+
+These results do not prove the Linux directory-FD, same-UID attack,
+two-process kill, ext4/XFS power-loss, remote Access/D1/version, or credential
+revocation gates. Checked-in trust remains disabled. No Authority claim,
+Cloudflare request, deployment, route, DNS, traffic, or Go/VPS change occurred.
+Production remains **NO-GO**.

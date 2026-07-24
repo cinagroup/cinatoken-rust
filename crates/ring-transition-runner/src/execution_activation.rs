@@ -24,9 +24,11 @@ pub const CLAIM_REQUEST_CONTRACT: &str = "cinatoken-ring-transition-claim-reques
 pub const CLAIM_PERMIT_CONTRACT: &str = "cinatoken-ring-transition-claim-permit-v1";
 pub const CLAIM_PERMIT_DOMAIN: &[u8] = b"cinatoken-ring-transition-claim-permit-v1\n";
 pub const CLAIMS_PATH: &str = "/internal/v1/ring-transition/claims";
+pub const CLAIM_DISPATCH_CONTRACT: &str = "cinatoken-ring-transition-runner-claim-dispatch-v1";
 
 const EXECUTION_ACTIVATIONS_DIRECTORY_NAME: &str = "execution-activations";
 const EXECUTION_ACTIVATION_FILE_SUFFIX: &str = ".execution-activation.json";
+const CLAIM_DISPATCH_FILE_SUFFIX: &str = ".claim-dispatch.json";
 const MAX_EXECUTION_ACTIVATION_BYTES: usize = 128 * 1024;
 const MAX_CLAIM_REQUEST_BYTES: usize = 64 * 1024;
 const MAXIMUM_RESPONSE_BYTES: u64 = 256 * 1024;
@@ -351,7 +353,7 @@ struct UnsignedClaimPermit<'a> {
     expires_at: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ExecutionActivationIdentity {
     activation_sha256: String,
     activation_file_name: String,
@@ -363,6 +365,7 @@ pub struct ExecutionActivationIdentity {
     execution_nonce_sha256: String,
     claim_digest_sha256: String,
     claim_owner_sha256: String,
+    ledger_identity_sha256: String,
     account_id_sha256: String,
     read_credential_id_sha256: String,
     claim_credential_id_sha256: String,
@@ -372,6 +375,7 @@ pub struct ExecutionActivationIdentity {
     edge_service_name: String,
     claim_request_sha256: String,
     claim_request_bytes: Vec<u8>,
+    claim_generated_at: u64,
     permit_expires_at: u64,
     claim_expires_at: u64,
 }
@@ -397,6 +401,10 @@ impl ExecutionActivationIdentity {
         &self.claim_owner_sha256
     }
 
+    pub fn ledger_identity_sha256(&self) -> &str {
+        &self.ledger_identity_sha256
+    }
+
     pub fn claim_request_sha256(&self) -> &str {
         &self.claim_request_sha256
     }
@@ -409,8 +417,49 @@ impl ExecutionActivationIdentity {
         self.claim_expires_at
     }
 
-    pub fn claim_request_bytes(&self) -> &[u8] {
+    pub(crate) fn claim_request_bytes(&self) -> &[u8] {
         &self.claim_request_bytes
+    }
+
+    pub fn claim_generated_at(&self) -> u64 {
+        self.claim_generated_at
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_transport_test(
+        claim_request_bytes: Vec<u8>,
+        authorization_id_sha256: String,
+        claim_digest_sha256: String,
+        claim_owner_sha256: String,
+        ledger_identity_sha256: String,
+        generated_at: u64,
+        expires_at: u64,
+    ) -> Self {
+        Self {
+            activation_sha256: "8".repeat(64),
+            activation_file_name: format!("{}.execution-activation.json", "7".repeat(64)),
+            publication_manifest_sha256: "7".repeat(64),
+            activation_sequence: 1,
+            runner_build_sha256: "3".repeat(64),
+            runner_trust_config_sha256: "4".repeat(64),
+            authorization_id_sha256,
+            execution_nonce_sha256: "2".repeat(64),
+            claim_digest_sha256,
+            claim_owner_sha256,
+            ledger_identity_sha256,
+            account_id_sha256: "c".repeat(64),
+            read_credential_id_sha256: "e".repeat(64),
+            claim_credential_id_sha256: "f".repeat(64),
+            deploy_credential_id_sha256: "0".repeat(64),
+            permit_spki_sha256: "6".repeat(64),
+            controller_service_name: "controller-staging".to_owned(),
+            edge_service_name: "edge-staging".to_owned(),
+            claim_request_sha256: sha256_hex(&claim_request_bytes),
+            claim_request_bytes,
+            claim_generated_at: generated_at,
+            permit_expires_at: generated_at + 60,
+            claim_expires_at: expires_at,
+        }
     }
 
     pub(crate) fn validate_credential_identity(
@@ -482,6 +531,26 @@ impl ExecutionActivationIdentity {
     }
 }
 
+impl fmt::Debug for ExecutionActivationIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExecutionActivationIdentity")
+            .field("activation_sha256", &self.activation_sha256)
+            .field(
+                "publication_manifest_sha256",
+                &self.publication_manifest_sha256,
+            )
+            .field("activation_sequence", &self.activation_sequence)
+            .field("authorization_id_sha256", &self.authorization_id_sha256)
+            .field("claim_digest_sha256", &self.claim_digest_sha256)
+            .field("claim_owner_sha256", &self.claim_owner_sha256)
+            .field("claim_request_sha256", &self.claim_request_sha256)
+            .field("permit_expires_at", &self.permit_expires_at)
+            .field("claim_expires_at", &self.claim_expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct VerifiedExecutionActivation {
     identity: ExecutionActivationIdentity,
     publication: PublicationIdentity,
@@ -512,12 +581,47 @@ impl fmt::Debug for VerifiedExecutionActivation {
 pub(crate) struct ActivatedExecution {
     publication: PublicationIdentity,
     identity: ExecutionActivationIdentity,
+    dispatch_location: ClaimDispatchLocation,
 }
 
 impl ActivatedExecution {
-    pub(crate) fn into_parts(self) -> (PublicationIdentity, ExecutionActivationIdentity) {
-        (self.publication, self.identity)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        PublicationIdentity,
+        ExecutionActivationIdentity,
+        ClaimDispatchLocation,
+    ) {
+        (self.publication, self.identity, self.dispatch_location)
     }
+}
+
+pub(crate) struct ClaimDispatchLocation {
+    installation_root: PathBuf,
+    directory: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ClaimDispatchReservation {
+    Fresh,
+    Existing,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ClaimDispatchRecord {
+    schema_version: u8,
+    contract: String,
+    environment: String,
+    activation_sha256: String,
+    publication_manifest_sha256: String,
+    activation_sequence: u64,
+    authorization_id_sha256: String,
+    claim_digest_sha256: String,
+    claim_owner_sha256: String,
+    claim_request_sha256: String,
+    post_request_id_sha256: String,
+    reserved_at: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -656,6 +760,7 @@ pub fn verify_execution_activation_bytes(
         execution_nonce_sha256: claim.execution_nonce_sha256.clone(),
         claim_digest_sha256: claim.claim_digest_sha256.clone(),
         claim_owner_sha256: claim.claim_owner_sha256.clone(),
+        ledger_identity_sha256: claim.ledger_identity_sha256.clone(),
         account_id_sha256: claim.account_id_sha256.clone(),
         read_credential_id_sha256: claim.read_credential_id_sha256.clone(),
         claim_credential_id_sha256: claim.claim_credential_id_sha256.clone(),
@@ -665,6 +770,7 @@ pub fn verify_execution_activation_bytes(
         edge_service_name: claim.edge.service_name.clone(),
         claim_request_sha256: sha256_hex(&claim_request_bytes),
         claim_request_bytes,
+        claim_generated_at: claim.generated_at,
         permit_expires_at: record.claim_request.permit.expires_at,
         claim_expires_at: claim.expires_at,
     };
@@ -791,7 +897,132 @@ pub(crate) fn verify_current_execution_activation(
     Ok(ActivatedExecution {
         publication,
         identity: verified.identity,
+        dispatch_location: ClaimDispatchLocation {
+            installation_root: fs::canonicalize(root)
+                .map_err(|_| ExecutionActivationError::FileInvalid("installation_root"))?,
+            directory: fs::canonicalize(&directory)
+                .map_err(|_| ExecutionActivationError::FileInvalid("execution_activations"))?,
+        },
     })
+}
+
+pub(crate) fn reserve_claim_dispatch(
+    location: &ClaimDispatchLocation,
+    identity: &ExecutionActivationIdentity,
+    post_request_id: &str,
+    now: u64,
+) -> Result<ClaimDispatchReservation, ExecutionActivationError> {
+    require_fixed_directory(
+        &location.directory,
+        &location.installation_root,
+        "execution_activations",
+    )?;
+    validate_activation_directory_entries(&location.directory)?;
+    let target = location.directory.join(format!(
+        "{}{CLAIM_DISPATCH_FILE_SUFFIX}",
+        identity.publication_manifest_sha256
+    ));
+    if target
+        .try_exists()
+        .map_err(|_| ExecutionActivationError::Io("claim_dispatch_exists"))?
+    {
+        verify_claim_dispatch_file(&target, &location.directory, identity)?;
+        return Ok(ClaimDispatchReservation::Existing);
+    }
+    if now < identity.claim_generated_at
+        || now >= identity.permit_expires_at
+        || now >= identity.claim_expires_at
+        || post_request_id.is_empty()
+        || post_request_id.len() > 128
+        || !post_request_id.is_ascii()
+        || post_request_id
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return Err(ExecutionActivationError::InvalidField(
+            "claim_dispatch_window",
+        ));
+    }
+    if identity.claim_request_bytes.is_empty()
+        || identity.claim_request_bytes.len() > MAX_CLAIM_REQUEST_BYTES
+        || sha256_hex(&identity.claim_request_bytes) != identity.claim_request_sha256
+    {
+        return Err(ExecutionActivationError::DigestMismatch(
+            "claim_request_sha256",
+        ));
+    }
+    let record = ClaimDispatchRecord {
+        schema_version: 1,
+        contract: CLAIM_DISPATCH_CONTRACT.to_owned(),
+        environment: "staging".to_owned(),
+        activation_sha256: identity.activation_sha256.clone(),
+        publication_manifest_sha256: identity.publication_manifest_sha256.clone(),
+        activation_sequence: identity.activation_sequence,
+        authorization_id_sha256: identity.authorization_id_sha256.clone(),
+        claim_digest_sha256: identity.claim_digest_sha256.clone(),
+        claim_owner_sha256: identity.claim_owner_sha256.clone(),
+        claim_request_sha256: identity.claim_request_sha256.clone(),
+        post_request_id_sha256: sha256_hex(post_request_id.as_bytes()),
+        reserved_at: now,
+    };
+    let bytes = canonical_json(&record)
+        .map_err(|_| ExecutionActivationError::InvalidField("claim_dispatch"))?
+        .into_bytes();
+    let expected_sha256 = sha256_hex(&bytes);
+    if let Err(_error) = write_staging(&target, &bytes) {
+        if target.try_exists().unwrap_or(false) {
+            verify_claim_dispatch_file(&target, &location.directory, identity)?;
+            return Ok(ClaimDispatchReservation::Existing);
+        }
+        return Err(ExecutionActivationError::DurabilityUnknown { expected_sha256 });
+    }
+    sync_directory(&location.directory, &expected_sha256)?;
+    let installed = read_activation_file(&target, &location.directory)?;
+    if installed != bytes || sha256_hex(&installed) != expected_sha256 {
+        return Err(ExecutionActivationError::InstallConflict(
+            "claim_dispatch_readback",
+        ));
+    }
+    verify_claim_dispatch_bytes(&installed, identity)?;
+    Ok(ClaimDispatchReservation::Fresh)
+}
+
+fn verify_claim_dispatch_file(
+    path: &Path,
+    directory: &Path,
+    identity: &ExecutionActivationIdentity,
+) -> Result<(), ExecutionActivationError> {
+    let bytes = read_activation_file(path, directory)?;
+    verify_claim_dispatch_bytes(&bytes, identity)
+}
+
+fn verify_claim_dispatch_bytes(
+    bytes: &[u8],
+    identity: &ExecutionActivationIdentity,
+) -> Result<(), ExecutionActivationError> {
+    let record: ClaimDispatchRecord =
+        parse_canonical_json(bytes, MAX_EXECUTION_ACTIVATION_BYTES, "claim_dispatch")
+            .map_err(map_canonical_error)?;
+    if record.schema_version != 1
+        || record.contract != CLAIM_DISPATCH_CONTRACT
+        || record.environment != "staging"
+        || record.activation_sha256 != identity.activation_sha256
+        || record.publication_manifest_sha256 != identity.publication_manifest_sha256
+        || record.activation_sequence != identity.activation_sequence
+        || record.authorization_id_sha256 != identity.authorization_id_sha256
+        || record.claim_digest_sha256 != identity.claim_digest_sha256
+        || record.claim_owner_sha256 != identity.claim_owner_sha256
+        || record.claim_request_sha256 != identity.claim_request_sha256
+        || !valid_sha256(&record.post_request_id_sha256)
+        || record.reserved_at < identity.claim_generated_at
+        || record.reserved_at >= identity.permit_expires_at
+        || record.reserved_at >= identity.claim_expires_at
+    {
+        return Err(ExecutionActivationError::InstallConflict(
+            "claim_dispatch_identity",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_record(
@@ -1165,7 +1396,10 @@ fn validate_activation_directory_entries(directory: &Path) -> Result<(), Executi
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return Err(ExecutionActivationError::FileInvalid("activation_entry"));
         }
-        if valid_activation_file_name(&file_name) || valid_staging_file_name(&file_name) {
+        if valid_activation_file_name(&file_name)
+            || valid_claim_dispatch_file_name(&file_name)
+            || valid_staging_file_name(&file_name)
+        {
             continue;
         }
         return Err(ExecutionActivationError::FileInvalid(
@@ -1178,6 +1412,12 @@ fn validate_activation_directory_entries(directory: &Path) -> Result<(), Executi
 fn valid_activation_file_name(file_name: &str) -> bool {
     file_name
         .strip_suffix(EXECUTION_ACTIVATION_FILE_SUFFIX)
+        .is_some_and(valid_sha256)
+}
+
+fn valid_claim_dispatch_file_name(file_name: &str) -> bool {
+    file_name
+        .strip_suffix(CLAIM_DISPATCH_FILE_SUFFIX)
         .is_some_and(valid_sha256)
 }
 
@@ -1611,6 +1851,109 @@ mod tests {
     }
 
     #[test]
+    fn claim_dispatch_guard_is_create_new_exact_and_restart_read_only() {
+        let root = TemporaryDirectory::new("claim-dispatch");
+        let fixture = fixture();
+        let installed = install_verified_execution_activation(
+            root.path(),
+            verify_execution_activation_bytes(
+                &fixture.trust,
+                &fixture.publication,
+                &fixture.bytes,
+                NOW,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let location = claim_dispatch_location(root.path());
+        assert_eq!(
+            reserve_claim_dispatch(
+                &location,
+                &installed.identity,
+                "claim-post-request-001",
+                NOW,
+            )
+            .unwrap(),
+            ClaimDispatchReservation::Fresh
+        );
+        assert_eq!(
+            reserve_claim_dispatch(
+                &location,
+                &installed.identity,
+                "claim-post-request-after-restart",
+                NOW + 1,
+            )
+            .unwrap(),
+            ClaimDispatchReservation::Existing
+        );
+
+        let guard = location.directory.join(format!(
+            "{}{CLAIM_DISPATCH_FILE_SUFFIX}",
+            installed.identity.publication_manifest_sha256
+        ));
+        let bytes = read_activation_file(&guard, &location.directory).unwrap();
+        verify_claim_dispatch_bytes(&bytes, &installed.identity).unwrap();
+        let rendered = format!("{:?}", installed.identity);
+        assert!(!rendered.contains("signatureBase64url"));
+        assert!(!rendered.contains("claim-post-request"));
+        assert!(!rendered
+            .contains(std::str::from_utf8(installed.identity.claim_request_bytes()).unwrap()));
+    }
+
+    #[test]
+    fn concurrent_claim_dispatch_reservations_mint_at_most_one_post_capability() {
+        let root = TemporaryDirectory::new("claim-dispatch-race");
+        let fixture = fixture();
+        let installed = install_verified_execution_activation(
+            root.path(),
+            verify_execution_activation_bytes(
+                &fixture.trust,
+                &fixture.publication,
+                &fixture.bytes,
+                NOW,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let identity = std::sync::Arc::new(installed.identity);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut threads = Vec::new();
+        for index in 0..8 {
+            let root_path = root_path.clone();
+            let identity = identity.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                let location = claim_dispatch_location(&root_path);
+                barrier.wait();
+                reserve_claim_dispatch(
+                    &location,
+                    &identity,
+                    &format!("claim-post-race-{index}"),
+                    NOW,
+                )
+            }));
+        }
+        let results = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| { matches!(result, Ok(ClaimDispatchReservation::Fresh)) })
+                .count(),
+            1
+        );
+        let final_location = claim_dispatch_location(&root_path);
+        assert_eq!(
+            reserve_claim_dispatch(&final_location, &identity, "claim-post-after-race", NOW + 1,)
+                .unwrap(),
+            ClaimDispatchReservation::Existing
+        );
+    }
+
+    #[test]
     fn rejects_noncanonical_duplicate_unknown_and_signature_drift() {
         let fixture = fixture();
         let value: Value = serde_json::from_slice(&fixture.bytes).unwrap();
@@ -2030,6 +2373,13 @@ mod tests {
         let mut value: Value = serde_json::from_slice(bytes).unwrap();
         mutate(&mut value);
         canonical_json(&value).unwrap().into_bytes()
+    }
+
+    fn claim_dispatch_location(root: &Path) -> ClaimDispatchLocation {
+        ClaimDispatchLocation {
+            installation_root: fs::canonicalize(root).unwrap(),
+            directory: fs::canonicalize(root.join(EXECUTION_ACTIVATIONS_DIRECTORY_NAME)).unwrap(),
+        }
     }
 
     fn leaked(value: String) -> &'static str {

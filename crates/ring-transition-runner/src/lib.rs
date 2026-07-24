@@ -206,10 +206,10 @@ pub async fn authorize_execution(
         .map_err(ExecutionAuthorizationError::PublicationVerification)?;
     let execution = execution_activation::verify_current_execution_activation(activation, now)
         .map_err(ExecutionAuthorizationError::ExecutionActivation)?;
-    let (publication, execution_identity) = execution.into_parts();
+    let (publication, execution_identity, dispatch_location) = execution.into_parts();
     let credentials = credentials::load_activated_credentials(publication)
         .map_err(ExecutionAuthorizationError::Credentials)?;
-    transport::verify_loaded_credentials(credentials, execution_identity)
+    transport::verify_loaded_credentials(credentials, execution_identity, dispatch_location)
         .await
         .map_err(ExecutionAuthorizationError::ControlPlane)
 }

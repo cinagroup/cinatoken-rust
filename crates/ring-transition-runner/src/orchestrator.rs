@@ -253,6 +253,18 @@ impl VerifiedSnapshot {
                 })
     }
 
+    pub(crate) fn current_step_evidence_sha256(&self) -> Result<&str, OrchestratorError> {
+        if self.snapshot.state.state_version == 0 {
+            return Err(OrchestratorError::InvalidHistory);
+        }
+        self.snapshot
+            .steps
+            .iter()
+            .find(|step| step.state_version == self.snapshot.state.state_version)
+            .map(|step| step.evidence_sha256.as_str())
+            .ok_or(OrchestratorError::InvalidHistory)
+    }
+
     pub fn controller_service_name(&self) -> &str {
         &self.snapshot.claim.controller.service_name
     }

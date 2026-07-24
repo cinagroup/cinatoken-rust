@@ -2853,3 +2853,30 @@ Remaining P0 is:
 Until all eight items and the broader production gates pass, the activation is
 local fail-closed evidence only, Go/VPS remains authoritative, and production
 remains **NO-GO**.
+
+## 2026-07-24 Single-Action Driver Addendum
+
+Phase K now has a compiled local reducer boundary. This changes the
+implementation status, not the production decision.
+
+| K subphase | Current status | Required production evidence | Abort and retain |
+| --- | --- | --- | --- |
+| K1 startup authorization | Implemented locally: every call re-verifies release, publication, signed activation, credential identities, operation chains and exact Authority state | Signed Linux candidate trace proving fixed ordering and no credential proof network request before local receipt audit | Any caller-injected state, skipped verification, ambient handle or mixed generation |
+| K2 crash recovery | Implemented locally: every real unfinished mutation start is sealed ambiguous; no existing start restores send authority | Two-process kill/response-loss matrix on exact Linux artifact, including parent sync and backup/restore | Any second POST, synthetic start, overwritten finish or restored permit |
+| K3 one-action reducer | Implemented locally: fresh claim stops; each state performs one legal reduction; inflight restart is deployment-read-only | Isolated staging lifetime counters proving at most one Controller and one Edge deployment across restarts/failover | Two reductions per invocation, second deployment, HTTP success treated as state, skipped readback |
+| K4 complete receipt closure | Open | Read-only GET operation evidence plus every operation head bound to terminal seal and independent WORM/signed anchor | Missing request boundary, locally replaceable whole history or observation treated as authority |
+| K5 durable owner and execution adapter | Open | Versioned DO supervisor owns state/fencing/alarms/drain; disposable Container adapter survives crash/fault/load/cost campaigns | Container memory becomes authority, split generation, unfenced alarm or provider retry |
+
+The local reducer model is consistent with the source migration boundary:
+cinaVibeSDK places durable state in a Durable Object and delegates disposable
+execution, while cinatoken Go requires CAS ownership before winner-only side
+effects. Cloudflare production must preserve both: the DO/Authority is the
+durable owner; Container and native runner capabilities are ephemeral and
+rederived from exact persisted state.
+
+K1-K3 local completion cannot start phase L. Phase L still requires
+replacement-credential revocation evidence, secure Linux receipt
+installation, K4-K5 completion, remote default-disabled resource/config
+readback, the complete fault/load/cost/SLO/rollback packet, remaining Go
+compatibility, Go/VPS hot fallback/drain and G1-G8 against one immutable
+candidate. Production remains **NO-GO**.

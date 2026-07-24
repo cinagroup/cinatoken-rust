@@ -16,7 +16,7 @@ use crate::orchestrator::{
     BaselineReadbackPhase, BaselineReadbackRecordInput, BaselineReadbackStability, ClaimStatus,
     FreshIntentPermit, MutationPhase, ObservationAppendAttempt, ObservationPhase,
     ObservationRecordInput, ObservationStability, PreparedBaselineReadback, PreparedObservation,
-    RecordedObservation, TransportOutcome, VerifiedSnapshot,
+    RecordedObservation, RunnerDecision, TransportOutcome, VerifiedSnapshot,
 };
 use crate::publication::PublicationIdentity;
 use crate::readback::{
@@ -26,7 +26,8 @@ use crate::readback::{
 };
 use crate::receipt::{
     plan_snapshot_receipts, OperationFinishInput, OperationIdentityInput, OperationKind,
-    OperationOutcome, OperationReservation, OperationStartInput, ReceiptError, ReceiptStore,
+    OperationOutcome, OperationReceiptAudit, OperationReservation, OperationStartInput,
+    ReceiptError, ReceiptStore,
 };
 use crate::release::{canonical_json, reject_duplicate_json, MAX_SAFE_INTEGER};
 use crate::STAGING_AUTHORITY_ORIGIN;
@@ -78,7 +79,8 @@ pub struct PreparedControlPlane {
     dispatch_location: ClaimDispatchLocation,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ClaimCreationClassification {
     Created,
     ExactReplay,
@@ -95,18 +97,99 @@ pub enum ClaimRecoveryOutcome {
     Pending(ClaimRecoveryControlPlane),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecuteCurrentAction {
+    ClaimEstablished,
+    ClaimRecoveryPending,
+    T1ReadbackRecorded,
+    ControllerMutationDispatched,
+    ControllerObservationRecorded,
+    EdgePreviousReadbackRecorded,
+    EdgeMutationDispatched,
+    EdgeObservationRecorded,
+    AuthorityAppendRecoveryPending,
+    AwaitAuthorityExpiry,
+    AwaitAuthorityRecovery,
+    ReceiptSealed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteCurrentOutcome {
+    pub action: ExecuteCurrentAction,
+    pub authorization_id_sha256: String,
+    pub status: Option<ClaimStatus>,
+    pub state_version: Option<u8>,
+    pub claim_classification: Option<ClaimCreationClassification>,
+    pub mutation_transport_outcome: Option<MutationTransportOutcome>,
+}
+
 pub struct ClaimedControlPlane {
     core: ControlPlaneCore<HyperHttpsExchange, PersistentReceiptRecorder>,
     execution_activation: ExecutionActivationIdentity,
     snapshot: Box<VerifiedSnapshot>,
     classification: ClaimCreationClassification,
+    claim_send_authorized: bool,
 }
 
 pub struct ClaimRecoveryControlPlane {
     core: ControlPlaneCore<HyperHttpsExchange, PersistentReceiptRecorder>,
     execution_activation: ExecutionActivationIdentity,
     classification: ClaimCreationClassification,
+    claim_send_authorized: bool,
     last_error: ControlPlaneError,
+}
+
+impl ExecuteCurrentOutcome {
+    fn from_snapshot(
+        action: ExecuteCurrentAction,
+        snapshot: &VerifiedSnapshot,
+        claim_classification: Option<ClaimCreationClassification>,
+        mutation_transport_outcome: Option<MutationTransportOutcome>,
+    ) -> Self {
+        Self {
+            action,
+            authorization_id_sha256: snapshot.authorization_id_sha256().to_owned(),
+            status: Some(snapshot.status()),
+            state_version: Some(snapshot.state_version()),
+            claim_classification,
+            mutation_transport_outcome,
+        }
+    }
+
+    fn from_recorded_observation<P: ObservationPhase>(
+        action: ExecuteCurrentAction,
+        observation: &RecordedObservation<P>,
+        claim_classification: ClaimCreationClassification,
+    ) -> Self {
+        Self {
+            action,
+            authorization_id_sha256: observation.authorization_id_sha256().to_owned(),
+            status: Some(observation.status()),
+            state_version: Some(observation.state_version()),
+            claim_classification: Some(claim_classification),
+            mutation_transport_outcome: None,
+        }
+    }
+
+    fn mutation_dispatched(
+        action: ExecuteCurrentAction,
+        snapshot: &VerifiedSnapshot,
+        claim_classification: ClaimCreationClassification,
+        status: ClaimStatus,
+        state_version: u8,
+        mutation_transport_outcome: MutationTransportOutcome,
+    ) -> Self {
+        Self {
+            action,
+            authorization_id_sha256: snapshot.authorization_id_sha256().to_owned(),
+            status: Some(status),
+            state_version: Some(state_version),
+            claim_classification: Some(claim_classification),
+            mutation_transport_outcome: Some(mutation_transport_outcome),
+        }
+    }
 }
 
 impl PreparedControlPlane {
@@ -133,6 +216,7 @@ impl PreparedControlPlane {
             now,
         )
         .map_err(ControlPlaneError::ExecutionActivation)?;
+        let claim_send_authorized = matches!(reservation, ClaimDispatchReservation::Fresh);
         let establishment = match reservation {
             ClaimDispatchReservation::Fresh => {
                 self.core
@@ -179,6 +263,7 @@ impl PreparedControlPlane {
                 execution_activation: self.execution_activation,
                 snapshot,
                 classification,
+                claim_send_authorized,
             })),
             ClaimEstablishment::Recovery {
                 error: last_error,
@@ -187,8 +272,34 @@ impl PreparedControlPlane {
                 core: self.core,
                 execution_activation: self.execution_activation,
                 classification,
+                claim_send_authorized,
                 last_error,
             })),
+        }
+    }
+
+    pub async fn execute_current(self) -> Result<ExecuteCurrentOutcome, ControlPlaneError> {
+        match self.create_claim_once().await? {
+            ClaimCreationOutcome::Claimed(claimed) if claimed.claim_send_authorized => {
+                Ok(ExecuteCurrentOutcome::from_snapshot(
+                    ExecuteCurrentAction::ClaimEstablished,
+                    &claimed.snapshot,
+                    Some(claimed.classification),
+                    None,
+                ))
+            }
+            ClaimCreationOutcome::Claimed(claimed) => claimed.execute_current_action().await,
+            ClaimCreationOutcome::Recovery(recovery) => Ok(ExecuteCurrentOutcome {
+                action: ExecuteCurrentAction::ClaimRecoveryPending,
+                authorization_id_sha256: recovery
+                    .execution_activation
+                    .authorization_id_sha256()
+                    .to_owned(),
+                status: None,
+                state_version: None,
+                claim_classification: Some(recovery.classification),
+                mutation_transport_outcome: None,
+            }),
         }
     }
 }
@@ -212,6 +323,17 @@ impl ClaimedControlPlane {
 
     pub fn classification(&self) -> ClaimCreationClassification {
         self.classification
+    }
+
+    async fn execute_current_action(self) -> Result<ExecuteCurrentOutcome, ControlPlaneError> {
+        execute_claimed_action_at(
+            &self.core,
+            &self.snapshot,
+            self.classification,
+            &SystemObservationSchedule,
+            &RandomRequestIdSource,
+        )
+        .await
     }
 
     pub(crate) async fn record_t1_readback(mut self) -> Result<Self, ControlPlaneError> {
@@ -320,8 +442,14 @@ impl ClaimedControlPlane {
             observation.authorization_id_sha256(),
             observation.claim_digest_sha256(),
         )?;
+        let append_request_id = random_request_id()?;
         self.core
-            .observe_once_at(observation, outcome, &SystemObservationSchedule)
+            .observe_once_at(
+                observation,
+                outcome,
+                &SystemObservationSchedule,
+                &append_request_id,
+            )
             .await
     }
 
@@ -398,6 +526,7 @@ impl ClaimRecoveryControlPlane {
                 execution_activation: self.execution_activation,
                 snapshot: Box::new(snapshot),
                 classification: self.classification,
+                claim_send_authorized: self.claim_send_authorized,
             }),
             Err(last_error) => ClaimRecoveryOutcome::Pending(Self { last_error, ..self }),
         }
@@ -421,9 +550,15 @@ pub(crate) async fn verify_loaded_credentials(
     )
     .map_err(ControlPlaneError::Receipt)?;
     let now = system_time_seconds()?;
+    receipt_recorder
+        .audit_operations(loaded.identity())
+        .map_err(ControlPlaneError::Receipt)?;
     let request_id = random_request_id()?;
     let core =
         ControlPlaneCore::verify(loaded, exchange, receipt_recorder, now, &request_id).await?;
+    core.receipt_recorder
+        .recover_unfinished_operations(core.credentials.identity(), now)
+        .map_err(ControlPlaneError::Receipt)?;
     Ok(PreparedControlPlane {
         core,
         execution_activation,
@@ -462,6 +597,25 @@ trait ReceiptRecorder: Send + Sync {
         _input: &OperationFinishInput,
     ) -> Result<Option<OperationOutcome>, ReceiptError> {
         Ok(None)
+    }
+
+    fn audit_operations(
+        &self,
+        _credentials: &CredentialIdentity,
+    ) -> Result<OperationReceiptAudit, ReceiptError> {
+        Ok(OperationReceiptAudit {
+            operation_count: 0,
+            unfinished_count: 0,
+            recovered_ambiguous_count: 0,
+        })
+    }
+
+    fn recover_unfinished_operations(
+        &self,
+        credentials: &CredentialIdentity,
+        _now: u64,
+    ) -> Result<OperationReceiptAudit, ReceiptError> {
+        self.audit_operations(credentials)
     }
 }
 
@@ -532,6 +686,27 @@ impl ReceiptRecorder for PersistentReceiptRecorder {
             &self.activation,
             identity,
             input,
+        )
+    }
+
+    fn audit_operations(
+        &self,
+        credentials: &CredentialIdentity,
+    ) -> Result<OperationReceiptAudit, ReceiptError> {
+        self.store
+            .audit_authorization_operations(&self.publication, credentials, &self.activation)
+    }
+
+    fn recover_unfinished_operations(
+        &self,
+        credentials: &CredentialIdentity,
+        now: u64,
+    ) -> Result<OperationReceiptAudit, ReceiptError> {
+        self.store.recover_unfinished_operations(
+            &self.publication,
+            credentials,
+            &self.activation,
+            now,
         )
     }
 }
@@ -1100,6 +1275,7 @@ impl<E: HttpExchange, R: ReceiptRecorder> ControlPlaneCore<E, R> {
         observation: PreparedObservation<P>,
         outcome: MutationAttemptOutcome,
         schedule: &S,
+        append_request_id: &str,
     ) -> Result<RecordedObservation<P>, ControlPlaneError> {
         outcome.validate_for_observation()?;
         let binding = observation.binding();
@@ -1127,8 +1303,7 @@ impl<E: HttpExchange, R: ReceiptRecorder> ControlPlaneCore<E, R> {
             transport_outcome,
             stability: readback.stability,
         };
-        let request_id = random_request_id()?;
-        let attempt = orchestrator::begin_observation_append(observation, input, &request_id)
+        let attempt = orchestrator::begin_observation_append(observation, input, append_request_id)
             .map_err(ControlPlaneError::Orchestrator)?;
         let now = schedule.now_seconds()?;
         self.append_observation_at(attempt, now).await
@@ -1195,6 +1370,224 @@ impl<E: HttpExchange, R: ReceiptRecorder> ControlPlaneCore<E, R> {
             return Err(ControlPlaneError::AuthorityClaimConflict);
         }
         Ok(snapshot)
+    }
+}
+
+trait RequestIdSource: Sync {
+    fn next_request_id(&self) -> Result<String, ControlPlaneError>;
+}
+
+struct RandomRequestIdSource;
+
+impl RequestIdSource for RandomRequestIdSource {
+    fn next_request_id(&self) -> Result<String, ControlPlaneError> {
+        random_request_id()
+    }
+}
+
+async fn execute_claimed_action_at<
+    E: HttpExchange,
+    R: ReceiptRecorder,
+    S: ObservationSchedule,
+    I: RequestIdSource,
+>(
+    core: &ControlPlaneCore<E, R>,
+    snapshot: &VerifiedSnapshot,
+    claim_classification: ClaimCreationClassification,
+    schedule: &S,
+    request_ids: &I,
+) -> Result<ExecuteCurrentOutcome, ControlPlaneError> {
+    let now = schedule.now_seconds()?;
+    match snapshot
+        .decision(now)
+        .map_err(ControlPlaneError::Orchestrator)?
+    {
+        RunnerDecision::ReadT1 => {
+            let prepared = orchestrator::prepare_t1_readback(snapshot, now)
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let append_request_id = request_ids.next_request_id()?;
+            let read_request_id = request_ids.next_request_id()?;
+            let updated = core
+                .record_baseline_readback_once_at(
+                    prepared,
+                    schedule,
+                    &append_request_id,
+                    &read_request_id,
+                )
+                .await?;
+            Ok(ExecuteCurrentOutcome::from_snapshot(
+                ExecuteCurrentAction::T1ReadbackRecorded,
+                &updated,
+                Some(claim_classification),
+                None,
+            ))
+        }
+        RunnerDecision::AppendControllerIntent => {
+            let request = orchestrator::plan_controller_deployment(snapshot)
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let evidence = snapshot
+                .current_step_evidence_sha256()
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let intent = orchestrator::prepare_controller_intent(snapshot, request, evidence, now)
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let attempt =
+                orchestrator::begin_authority_append(intent, &request_ids.next_request_id()?)
+                    .map_err(ControlPlaneError::Orchestrator)?;
+            let permit = match core.append_intent_at(attempt, now).await {
+                Ok(permit) => permit,
+                Err(ControlPlaneError::AuthorityMutationAmbiguous) => {
+                    return Ok(ExecuteCurrentOutcome::from_snapshot(
+                        ExecuteCurrentAction::AuthorityAppendRecoveryPending,
+                        snapshot,
+                        Some(claim_classification),
+                        None,
+                    ));
+                }
+                Err(error) => return Err(error),
+            };
+            let mutation = orchestrator::authorize_mutation(permit, schedule.now_seconds()?)
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let outcome = core.deploy_once_at(mutation, schedule.now_seconds()?).await;
+            Ok(ExecuteCurrentOutcome::mutation_dispatched(
+                ExecuteCurrentAction::ControllerMutationDispatched,
+                snapshot,
+                claim_classification,
+                ClaimStatus::ControllerInflight,
+                2,
+                outcome.transport_outcome,
+            ))
+        }
+        RunnerDecision::ObserveController => {
+            let observation = orchestrator::prepare_controller_observation(snapshot, now)
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let append_request_id = request_ids.next_request_id()?;
+            match core
+                .observe_once_at(
+                    observation,
+                    MutationAttemptOutcome::restored_ambiguous(),
+                    schedule,
+                    &append_request_id,
+                )
+                .await
+            {
+                Ok(recorded) => Ok(ExecuteCurrentOutcome::from_recorded_observation(
+                    ExecuteCurrentAction::ControllerObservationRecorded,
+                    &recorded,
+                    claim_classification,
+                )),
+                Err(ControlPlaneError::AuthorityMutationAmbiguous) => {
+                    Ok(ExecuteCurrentOutcome::from_snapshot(
+                        ExecuteCurrentAction::AuthorityAppendRecoveryPending,
+                        snapshot,
+                        Some(claim_classification),
+                        None,
+                    ))
+                }
+                Err(error) => Err(error),
+            }
+        }
+        RunnerDecision::ReadEdgePrevious => {
+            let prepared = orchestrator::prepare_edge_previous_readback(snapshot, now)
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let append_request_id = request_ids.next_request_id()?;
+            let read_request_id = request_ids.next_request_id()?;
+            let updated = core
+                .record_baseline_readback_once_at(
+                    prepared,
+                    schedule,
+                    &append_request_id,
+                    &read_request_id,
+                )
+                .await?;
+            Ok(ExecuteCurrentOutcome::from_snapshot(
+                ExecuteCurrentAction::EdgePreviousReadbackRecorded,
+                &updated,
+                Some(claim_classification),
+                None,
+            ))
+        }
+        RunnerDecision::AppendEdgeIntent => {
+            let request = orchestrator::plan_edge_deployment(snapshot)
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let evidence = snapshot
+                .current_step_evidence_sha256()
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let intent = orchestrator::prepare_edge_intent(snapshot, request, evidence, now)
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let attempt =
+                orchestrator::begin_authority_append(intent, &request_ids.next_request_id()?)
+                    .map_err(ControlPlaneError::Orchestrator)?;
+            let permit = match core.append_intent_at(attempt, now).await {
+                Ok(permit) => permit,
+                Err(ControlPlaneError::AuthorityMutationAmbiguous) => {
+                    return Ok(ExecuteCurrentOutcome::from_snapshot(
+                        ExecuteCurrentAction::AuthorityAppendRecoveryPending,
+                        snapshot,
+                        Some(claim_classification),
+                        None,
+                    ));
+                }
+                Err(error) => return Err(error),
+            };
+            let mutation = orchestrator::authorize_mutation(permit, schedule.now_seconds()?)
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let outcome = core.deploy_once_at(mutation, schedule.now_seconds()?).await;
+            Ok(ExecuteCurrentOutcome::mutation_dispatched(
+                ExecuteCurrentAction::EdgeMutationDispatched,
+                snapshot,
+                claim_classification,
+                ClaimStatus::EdgeInflight,
+                5,
+                outcome.transport_outcome,
+            ))
+        }
+        RunnerDecision::ObserveEdge => {
+            let observation = orchestrator::prepare_edge_observation(snapshot, now)
+                .map_err(ControlPlaneError::Orchestrator)?;
+            let append_request_id = request_ids.next_request_id()?;
+            match core
+                .observe_once_at(
+                    observation,
+                    MutationAttemptOutcome::restored_ambiguous(),
+                    schedule,
+                    &append_request_id,
+                )
+                .await
+            {
+                Ok(recorded) => Ok(ExecuteCurrentOutcome::from_recorded_observation(
+                    ExecuteCurrentAction::EdgeObservationRecorded,
+                    &recorded,
+                    claim_classification,
+                )),
+                Err(ControlPlaneError::AuthorityMutationAmbiguous) => {
+                    Ok(ExecuteCurrentOutcome::from_snapshot(
+                        ExecuteCurrentAction::AuthorityAppendRecoveryPending,
+                        snapshot,
+                        Some(claim_classification),
+                        None,
+                    ))
+                }
+                Err(error) => Err(error),
+            }
+        }
+        RunnerDecision::AwaitAuthorityExpiry => Ok(ExecuteCurrentOutcome::from_snapshot(
+            ExecuteCurrentAction::AwaitAuthorityExpiry,
+            snapshot,
+            Some(claim_classification),
+            None,
+        )),
+        RunnerDecision::AwaitAuthorityRecovery => Ok(ExecuteCurrentOutcome::from_snapshot(
+            ExecuteCurrentAction::AwaitAuthorityRecovery,
+            snapshot,
+            Some(claim_classification),
+            None,
+        )),
+        RunnerDecision::SealReceipt => Ok(ExecuteCurrentOutcome::from_snapshot(
+            ExecuteCurrentAction::ReceiptSealed,
+            snapshot,
+            Some(claim_classification),
+            None,
+        )),
     }
 }
 
@@ -2700,6 +3093,33 @@ mod tests {
         }
     }
 
+    struct ScriptedRequestIdSource {
+        request_ids: Mutex<VecDeque<String>>,
+    }
+
+    impl ScriptedRequestIdSource {
+        fn new(request_ids: impl IntoIterator<Item = &'static str>) -> Self {
+            Self {
+                request_ids: Mutex::new(
+                    request_ids
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect::<VecDeque<_>>(),
+                ),
+            }
+        }
+    }
+
+    impl RequestIdSource for ScriptedRequestIdSource {
+        fn next_request_id(&self) -> Result<String, ControlPlaneError> {
+            self.request_ids
+                .lock()
+                .expect("request id source lock")
+                .pop_front()
+                .ok_or(ControlPlaneError::InvalidRequest("request_id_fixture"))
+        }
+    }
+
     #[async_trait]
     impl ObservationSchedule for ScriptedObservationSchedule {
         fn now_seconds(&self) -> Result<u64, ControlPlaneError> {
@@ -3226,6 +3646,154 @@ mod tests {
             deploy_recorder.finishes()[0].outcome,
             OperationOutcome::Ambiguous
         );
+    }
+
+    #[tokio::test]
+    async fn execute_current_wait_state_performs_zero_network_and_zero_mutation() {
+        let snapshot = verified_snapshot(&claimed_snapshot_value());
+        let exchange = ScriptedExchange::new(Vec::new());
+        let recorder = OperationGateRecorder::new(OperationReservation::Fresh);
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+            receipt_recorder: recorder.clone(),
+        };
+        let schedule = ScriptedObservationSchedule::new([NOW + 301]);
+        let request_ids = ScriptedRequestIdSource::new([]);
+
+        let outcome = execute_claimed_action_at(
+            &core,
+            &snapshot,
+            ClaimCreationClassification::ExactReplay,
+            &schedule,
+            &request_ids,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.action, ExecuteCurrentAction::AwaitAuthorityExpiry);
+        assert_eq!(outcome.status, Some(ClaimStatus::Claimed));
+        assert_eq!(outcome.state_version, Some(0));
+        assert!(outcome.mutation_transport_outcome.is_none());
+        assert!(exchange.observed().is_empty());
+        assert!(recorder.starts().is_empty());
+        assert!(recorder.finishes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn execute_current_dispatches_one_controller_mutation_after_one_fresh_intent() {
+        let snapshot = verified_snapshot(&t1_snapshot_value());
+        let request = plan_controller_deployment(&snapshot).unwrap();
+        let intent = prepare_controller_intent(&snapshot, request, EVIDENCE_DIGEST, NOW).unwrap();
+        let append_response = scripted_json(
+            StatusCode::CREATED,
+            serde_json::json!({
+                "result": "step_appended",
+                "requestId": "driver-controller-intent",
+                "authorizationIdSha256": snapshot.authorization_id_sha256(),
+                "claimDigestSha256": snapshot.claim_digest_sha256(),
+                "status": "controller_inflight",
+                "stateVersion": 2,
+                "stepDigestSha256": intent.step().step_digest_sha256,
+                "authorityVersionId": "authority-version-001",
+            }),
+        );
+        let deployment_response = scripted_json(
+            StatusCode::OK,
+            serde_json::json!({
+                "success": true,
+                "result": {"id": "driver-deployment-001"},
+            }),
+        );
+        let exchange = ScriptedExchange::new(vec![Ok(append_response), Ok(deployment_response)]);
+        let recorder = OperationGateRecorder::new(OperationReservation::Fresh);
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+            receipt_recorder: recorder.clone(),
+        };
+        let schedule = ScriptedObservationSchedule::new([NOW, NOW, NOW]);
+        let request_ids = ScriptedRequestIdSource::new(["driver-controller-intent"]);
+
+        let outcome = execute_claimed_action_at(
+            &core,
+            &snapshot,
+            ClaimCreationClassification::ExactReplay,
+            &schedule,
+            &request_ids,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome.action,
+            ExecuteCurrentAction::ControllerMutationDispatched
+        );
+        assert_eq!(outcome.status, Some(ClaimStatus::ControllerInflight));
+        assert_eq!(outcome.state_version, Some(2));
+        assert_eq!(
+            outcome.mutation_transport_outcome,
+            Some(MutationTransportOutcome::Success)
+        );
+        assert_eq!(exchange.remaining(), 0);
+        let observed = exchange.observed();
+        assert_eq!(observed.len(), 2);
+        assert!(observed
+            .iter()
+            .all(|request| request.method == Method::POST));
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|request| request.uri.starts_with(CLOUDFLARE_API_ORIGIN))
+                .count(),
+            1
+        );
+        assert_eq!(recorder.starts().len(), 2);
+        assert_eq!(recorder.finishes().len(), 2);
+        assert_eq!(
+            recorder.starts()[0].identity.kind,
+            OperationKind::AuthorityStepAppend
+        );
+        assert_eq!(
+            recorder.starts()[1].identity.kind,
+            OperationKind::CloudflareDeployment
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_current_never_replays_an_existing_authority_intent_operation() {
+        let snapshot = verified_snapshot(&t1_snapshot_value());
+        let exchange = ScriptedExchange::new(Vec::new());
+        let recorder = OperationGateRecorder::new(OperationReservation::ExistingFinished(
+            OperationOutcome::Ambiguous,
+        ));
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+            receipt_recorder: recorder.clone(),
+        };
+        let schedule = ScriptedObservationSchedule::new([NOW]);
+        let request_ids = ScriptedRequestIdSource::new(["existing-controller-intent"]);
+
+        let outcome = execute_claimed_action_at(
+            &core,
+            &snapshot,
+            ClaimCreationClassification::ExactReplay,
+            &schedule,
+            &request_ids,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome.action,
+            ExecuteCurrentAction::AuthorityAppendRecoveryPending
+        );
+        assert_eq!(outcome.status, Some(ClaimStatus::T1Verified));
+        assert!(outcome.mutation_transport_outcome.is_none());
+        assert!(exchange.observed().is_empty());
+        assert_eq!(recorder.starts().len(), 1);
+        assert!(recorder.finishes().is_empty());
     }
 
     #[tokio::test]

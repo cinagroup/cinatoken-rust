@@ -796,3 +796,55 @@ read-only request-boundary receipts, terminal operation-head anchoring,
 exact Linux crash/durability campaigns, approval revalidation, isolated
 staging, credential revocation and G1-G8. Checked-in trust remains disabled;
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Library-Owned Single-Action Resume Driver
+
+`cinatoken_ring_transition_runner::execute_current()` is now the sole public
+library reducer entry. It calls `authorize_execution()` on every invocation,
+so release, publication, activation, credentials, operation chains, receipt
+prefix and exact Authority state are never trusted from prior process memory.
+
+Before credential proof traffic, the runner enumerates and verifies the fixed
+operation-receipt subtree for the current authorization. Unknown or linked
+entries, context drift, malformed chains, more than 16 operations, gaps or
+noncanonical content stop execution. After credential proof, every discovered
+unfinished start is finished ambiguous and the directory is re-audited. An
+absent start is never created by recovery.
+
+The reducer maps the exact snapshot to one action:
+
+```text
+claimed -> T1 stable baseline
+t1_verified -> fresh Controller intent + one deployment
+controller_inflight -> stable readback + Authority observation
+controller_verified -> Edge previous baseline
+edge_prechecked -> fresh Edge intent + one deployment
+edge_inflight -> stable readback + Authority observation
+expired/wait -> no network
+terminal -> verified sealed prefix, no mutation
+```
+
+A newly posted claim stops at `claim_established`. An ambiguous Authority
+append stops at `authority_append_recovery_pending`. Restored inflight states
+never receive a deployment permit. The only deployment permit is the private
+nonserializable value returned by an exact fresh Authority intent append in
+the same process.
+
+One reducer action may include one Authority CAS and one Cloudflare deployment
+POST; it never includes two reductions, a deployment retry or caller-selected
+continuation. The returned `ExecuteCurrentOutcome` contains only action,
+authorization digest, status/version, claim classification and redacted
+transport classification.
+
+Local gates pass with 105 Rust library tests, one binary test, two CLI tests,
+strict Clippy, 46 runner JavaScript tests/169 expectations and 66 broader
+ring-transition tests/729 expectations. The complete repository
+`bun run check` passes with exit code 0 in 639.9 seconds. The fixed source
+closure remains 28 modules. Checked-in trust and CLI execution remain
+disabled.
+
+Remaining P0 is read-only request receipt coverage, terminal operation-head
+and external anchoring, exact Linux process/power-loss/ACL proof, the DO shard
+supervisor and disposable Container adapter, replacement-credential isolated
+staging, remaining Go compatibility, revocation and G1-G8. Go/VPS remains
+authoritative and production remains **NO-GO**.

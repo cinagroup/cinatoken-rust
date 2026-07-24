@@ -220,6 +220,15 @@ pub async fn authorize_execution(
     .map_err(ExecutionAuthorizationError::ControlPlane)
 }
 
+pub async fn execute_current(
+) -> Result<transport::ExecuteCurrentOutcome, ExecutionAuthorizationError> {
+    authorize_execution()
+        .await?
+        .execute_current()
+        .await
+        .map_err(ExecutionAuthorizationError::ControlPlane)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +241,12 @@ mod tests {
         assert!(!describe().network_requests_performed);
         assert!(matches!(
             authorize_execution().await,
+            Err(ExecutionAuthorizationError::ReleaseTrust(
+                ReleaseValidationError::Disabled
+            ))
+        ));
+        assert!(matches!(
+            execute_current().await,
             Err(ExecutionAuthorizationError::ReleaseTrust(
                 ReleaseValidationError::Disabled
             ))

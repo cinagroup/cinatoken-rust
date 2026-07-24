@@ -9030,3 +9030,53 @@ external anchoring, remote Authority/Cloudflare state, credential revocation
 or Go/VPS fallback. Read-only GET request boundaries and a library-owned
 one-action resumable driver also remain P0. Checked-in trust remains disabled;
 production remains **NO-GO**.
+
+## 2026-07-24 Single-Action Resume Driver Verification
+
+The library-owned `execute_current()` increment was verified locally without
+loading a live credential or performing a remote request:
+
+```powershell
+cargo fmt --all -- --check
+cargo test -p cinatoken-ring-transition-runner
+cargo clippy -p cinatoken-ring-transition-runner --all-targets -- -D warnings
+bun run check:ring-transition-runner
+bun run check:relay-container:ring-transition
+```
+
+Observed focused results:
+
+- runner Rust: 105 library tests, one binary test and two CLI tests;
+- strict all-target Clippy: PASS;
+- runner JavaScript: 46 tests and 169 expectations;
+- broader ring-transition JavaScript: 66 tests and 729 expectations; and
+- signed release/source description: unchanged fixed 28-module closure; and
+- complete repository `bun run check`: PASS with exit code 0 in 639.9
+  seconds.
+
+The new and retained cases jointly prove:
+
+- public `execute_current()` reuses the full authorization path and still
+  fails before credentials/network under checked-in disabled trust;
+- operation trees are audited before credential proof traffic;
+- one finished plus one unfinished operation is recovered to two terminal
+  chains, with the unfinished start sealed ambiguous exactly once;
+- a second recovery finds zero unfinished operations and creates no new slot;
+- eight concurrent reservations mint exactly one fresh send capability;
+- an expired pre-mutation state returns the wait action with zero request and
+  zero operation reservation;
+- an existing Authority-intent operation returns recovery-pending with zero
+  network and no deployment;
+- a fresh Controller action performs exactly one Authority intent POST and
+  exactly one Cloudflare deployment POST;
+- no deployment retry or second state reduction occurs in that invocation;
+  and
+- inflight typestates remain readback-only after restart.
+
+This evidence is local state-machine and Windows filesystem-contract evidence.
+It does not establish secure installed-chain enumeration on Linux, read-only
+GET operation receipts, terminal operation-head anchoring, ext4/XFS
+power-loss durability, real Durable Object/Container supervision, remote
+Authority/Access/D1/version behavior, credential revocation, provider
+exactly-once behavior, rollback or Go/VPS drain. Checked-in trust and CLI
+execution remain disabled; production remains **NO-GO**.

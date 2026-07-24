@@ -32,6 +32,7 @@ const OPERATION_RECEIPT_FILE_SUFFIX: &str = ".operation.json";
 const MAX_RECEIPT_BYTES: usize = 64 * 1024;
 const MAX_RECEIPTS_PER_CHAIN: u64 = 128;
 const MAX_OPERATION_RECEIPTS_PER_CHAIN: u64 = 2;
+const MAX_OPERATION_CHAINS_PER_AUTHORIZATION: usize = 16;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -86,6 +87,13 @@ pub(crate) struct VerifiedOperationReceiptChain {
     pub receipt_count: u64,
     pub head_sha256: String,
     pub outcome: Option<OperationOutcome>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OperationReceiptAudit {
+    pub operation_count: usize,
+    pub unfinished_count: usize,
+    pub recovered_ambiguous_count: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -858,6 +866,85 @@ impl ReceiptStore {
             .map(Some)
     }
 
+    pub(crate) fn audit_authorization_operations(
+        &self,
+        publication: &PublicationIdentity,
+        credentials: &CredentialIdentity,
+        activation: &ExecutionActivationIdentity,
+    ) -> Result<OperationReceiptAudit, ReceiptError> {
+        let context = project_operation_context(publication, credentials, activation)?;
+        let operations = self.authorization_operations(&context)?;
+        Ok(OperationReceiptAudit {
+            operation_count: operations.len(),
+            unfinished_count: operations
+                .iter()
+                .filter(|operation| operation.verified.outcome.is_none())
+                .count(),
+            recovered_ambiguous_count: 0,
+        })
+    }
+
+    pub(crate) fn recover_unfinished_operations(
+        &self,
+        publication: &PublicationIdentity,
+        credentials: &CredentialIdentity,
+        activation: &ExecutionActivationIdentity,
+        now: u64,
+    ) -> Result<OperationReceiptAudit, ReceiptError> {
+        if now > MAX_SAFE_INTEGER {
+            return Err(ReceiptError::InvalidField("operation_recovery_time"));
+        }
+        let context = project_operation_context(publication, credentials, activation)?;
+        let operations = self.authorization_operations(&context)?;
+        let operation_count = operations.len();
+        let unfinished_count = operations
+            .iter()
+            .filter(|operation| operation.verified.outcome.is_none())
+            .count();
+        let mut recovered_ambiguous_count = 0_usize;
+        for operation in operations {
+            if operation.verified.outcome.is_some() {
+                continue;
+            }
+            let identity = OperationIdentityInput {
+                kind: operation.operation.kind,
+                state_version: operation.operation.state_version,
+                target_sha256: operation.operation.target_sha256,
+                request_sha256: operation.operation.request_sha256,
+            };
+            let outcome = self.finish_operation(
+                publication,
+                credentials,
+                activation,
+                &identity,
+                &OperationFinishInput {
+                    outcome: OperationOutcome::Ambiguous,
+                    finished_at: now.max(operation.start_recorded_at),
+                    http_status: None,
+                    response_body_sha256: None,
+                    response_id_sha256: None,
+                },
+            )?;
+            if outcome != OperationOutcome::Ambiguous {
+                return Err(ReceiptError::Conflict);
+            }
+            recovered_ambiguous_count += 1;
+        }
+        let verified = self.authorization_operations(&context)?;
+        if verified.len() != operation_count
+            || verified
+                .iter()
+                .any(|operation| operation.verified.outcome.is_none())
+        {
+            return Err(ReceiptError::Conflict);
+        }
+        Ok(OperationReceiptAudit {
+            operation_count,
+            unfinished_count,
+            recovered_ambiguous_count,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn verify_operation(
         &self,
@@ -869,6 +956,78 @@ impl ReceiptStore {
             verify_operation_directory(&directory, authorization_id_sha256, operation_id_sha256)?
                 .verified,
         )
+    }
+
+    fn authorization_operations(
+        &self,
+        context: &OperationContextIdentity,
+    ) -> Result<Vec<VerifiedOperationReceiptChainInternal>, ReceiptError> {
+        let receipts = self.root.join(OPERATION_RECEIPTS_DIRECTORY_NAME);
+        if !receipts
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_receipts_exists"))?
+        {
+            return Ok(Vec::new());
+        }
+        require_fixed_directory(&receipts, &self.root, "operation_receipts_directory")?;
+        for entry in
+            fs::read_dir(&receipts).map_err(|_| ReceiptError::Io("operation_receipts_read"))?
+        {
+            let entry = entry.map_err(|_| ReceiptError::Io("operation_receipts_entry"))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| ReceiptError::UnsafeFilesystem("operation_authorization_name"))?;
+            validate_lower_hex(&name, "operation_authorization_id")?;
+            require_fixed_directory(
+                &entry.path(),
+                &receipts,
+                "operation_authorization_directory",
+            )?;
+        }
+
+        let authorization = receipts.join(&context.authorization_id_sha256);
+        if !authorization
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("operation_authorization_exists"))?
+        {
+            return Ok(Vec::new());
+        }
+        require_fixed_directory(
+            &authorization,
+            &receipts,
+            "operation_authorization_directory",
+        )?;
+        let mut operation_ids = Vec::new();
+        for entry in fs::read_dir(&authorization)
+            .map_err(|_| ReceiptError::Io("operation_authorization_read"))?
+        {
+            let entry = entry.map_err(|_| ReceiptError::Io("operation_authorization_entry"))?;
+            let operation_id = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| ReceiptError::UnsafeFilesystem("operation_directory_name"))?;
+            validate_lower_hex(&operation_id, "operation_id_sha256")?;
+            require_fixed_directory(&entry.path(), &authorization, "operation_directory")?;
+            operation_ids.push(operation_id);
+        }
+        operation_ids.sort();
+        if operation_ids.len() > MAX_OPERATION_CHAINS_PER_AUTHORIZATION {
+            return Err(ReceiptError::InvalidField("operation_chain_count"));
+        }
+        let mut verified = Vec::with_capacity(operation_ids.len());
+        for operation_id in operation_ids {
+            let operation = verify_operation_directory(
+                &authorization.join(&operation_id),
+                &context.authorization_id_sha256,
+                &operation_id,
+            )?;
+            if operation.context != *context {
+                return Err(ReceiptError::Conflict);
+            }
+            verified.push(operation);
+        }
+        Ok(verified)
     }
 
     fn ensure_chain_directory(
@@ -3306,6 +3465,95 @@ mod tests {
         assert_eq!(
             store.verify_operation(activation.authorization_id_sha256(), &absent_id),
             Err(ReceiptError::PredecessorMissing)
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn authorization_operation_audit_recovers_every_unfinished_start_once() {
+        let root = temporary_root("operation-authorization-recovery");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        assert_eq!(
+            store
+                .audit_authorization_operations(&publication, &credentials, &activation)
+                .unwrap(),
+            OperationReceiptAudit {
+                operation_count: 0,
+                unfinished_count: 0,
+                recovered_ambiguous_count: 0,
+            }
+        );
+
+        let finished = operation_start("a", NOW);
+        store
+            .reserve_operation(&publication, &credentials, &activation, &finished)
+            .unwrap();
+        store
+            .finish_operation(
+                &publication,
+                &credentials,
+                &activation,
+                &finished.identity,
+                &OperationFinishInput {
+                    outcome: OperationOutcome::Accepted,
+                    finished_at: NOW + 1,
+                    http_status: Some(201),
+                    response_body_sha256: Some("c".repeat(64)),
+                    response_id_sha256: Some("d".repeat(64)),
+                },
+            )
+            .unwrap();
+
+        let mut unfinished = operation_start("e", NOW + 2);
+        unfinished.identity.state_version = 2;
+        unfinished.identity.request_sha256 = "f".repeat(64);
+        store
+            .reserve_operation(&publication, &credentials, &activation, &unfinished)
+            .unwrap();
+        assert_eq!(
+            store
+                .audit_authorization_operations(&publication, &credentials, &activation)
+                .unwrap(),
+            OperationReceiptAudit {
+                operation_count: 2,
+                unfinished_count: 1,
+                recovered_ambiguous_count: 0,
+            }
+        );
+
+        assert_eq!(
+            store
+                .recover_unfinished_operations(&publication, &credentials, &activation, NOW + 3,)
+                .unwrap(),
+            OperationReceiptAudit {
+                operation_count: 2,
+                unfinished_count: 1,
+                recovered_ambiguous_count: 1,
+            }
+        );
+        assert_eq!(
+            store
+                .recover_unfinished_operations(&publication, &credentials, &activation, NOW + 4,)
+                .unwrap(),
+            OperationReceiptAudit {
+                operation_count: 2,
+                unfinished_count: 0,
+                recovered_ambiguous_count: 0,
+            }
+        );
+
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let operation = project_operation_identity(&context, &unfinished.identity).unwrap();
+        assert_eq!(
+            store
+                .verify_operation(
+                    activation.authorization_id_sha256(),
+                    &operation.operation_id_sha256,
+                )
+                .unwrap()
+                .outcome,
+            Some(OperationOutcome::Ambiguous)
         );
         cleanup(&root);
     }

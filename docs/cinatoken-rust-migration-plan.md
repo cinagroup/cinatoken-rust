@@ -19491,3 +19491,145 @@ remaining order is:
 
 Checked-in runner trust remains disabled. Go/VPS remains the traffic,
 scheduler and financial authority. Production remains **NO-GO**.
+
+## 22.284 Library-Owned Single-Action Resume Driver Overlay (2026-07-24)
+
+This overlay completes section 22.283 remaining-P0 item 1 locally. The Rust
+library now exposes `execute_current()`. Each invocation starts from the fixed
+installed trust root; no caller may inject an authorization ID, state, phase,
+service, URL, request body, receipt result, retry policy or mutation
+capability.
+
+No checked-in trust was enabled. No credential value, live Authority,
+Cloudflare API, deployment, route, DNS, provider, customer traffic, billing
+state or Go/VPS state was read or mutated.
+
+### Invocation and recovery contract
+
+Every call executes this fixed order:
+
+```text
+verify compiled release trust
+  -> verify installed publication and signed execution activation
+  -> load only fixed credential handles
+  -> verify every local Operation Receipt chain for this authorization
+  -> prove read/deploy/Authority/Access identities
+  -> seal every pre-existing unfinished operation ambiguous
+  -> create or recover the claim through the persistent dispatch guard
+  -> persist and verify the exact current Authority snapshot prefix
+  -> derive one RunnerDecision from that snapshot and current time
+  -> perform at most one reducer action
+  -> return a typed, redacted outcome
+```
+
+The pre-proof operation audit is intentional. A malformed, linked, unknown,
+foreign-context, noncanonical or over-limit operation tree fails before
+credential proof network traffic. Recovery finishes only real slot-1 starts;
+it never synthesizes an absent operation. It then re-audits the complete
+authorization directory and requires every discovered chain to be terminal.
+The fixed bound is 16 operation chains per authorization.
+
+`execute_current()` calls `authorize_execution()` anew on every invocation.
+Process memory is therefore never the durable state owner. Exact Authority
+history and local create-new receipt chains are rehydrated and reverified;
+private typestate values exist only for the current invocation.
+
+### One reducer action
+
+“One action” means one legal state-machine reduction, not necessarily one HTTP
+request. Stable readback actions contain their bounded GET sequence and one
+Authority append. A fresh deployment action contains one Authority intent CAS
+and, only when that exact append returns a fresh nonserializable permit, one
+Cloudflare deployment POST. The invocation stops after that action.
+
+| Exact starting state | Current action | Returned state/action | Mutation ceiling |
+|---|---|---|---:|
+| no dispatch guard | create claim, exact GET | `claim_established` | one Authority claim POST |
+| existing guard, `claimed/0` | stable T1 baseline plus append and exact GET | `t1_readback_recorded` | one Authority step POST |
+| `t1_verified/1` | fresh Controller intent CAS plus deployment | `controller_mutation_dispatched` | one Authority step POST plus one Controller POST |
+| `controller_inflight/2` | stable target readback plus observation append | `controller_observation_recorded` | one Authority step POST; zero deployment POST |
+| `controller_verified/3` | stable Edge-previous baseline plus append and exact GET | `edge_previous_readback_recorded` | one Authority step POST |
+| `edge_prechecked/4` | fresh Edge intent CAS plus deployment | `edge_mutation_dispatched` | one Authority step POST plus one Edge POST |
+| `edge_inflight/5` | stable target readback plus observation append | `edge_observation_recorded` | one Authority step POST; zero deployment POST |
+| pre-mutation expired | wait for Authority expiry | `await_authority_expiry` | zero |
+| post-mutation expired | wait for Authority recovery | `await_authority_recovery` | zero |
+| terminal exact snapshot | verify installed sealed prefix | `receipt_sealed` | zero |
+
+A fresh claim reservation always stops at `claim_established`; it cannot also
+run T1 in the same invocation. An ambiguous Authority append returns
+`authority_append_recovery_pending`; it never falls through to deployment.
+Existing or recovered operation starts cannot recreate a send capability.
+
+Restarted `controller_inflight` and `edge_inflight` states are permanently
+readback-only with respect to Cloudflare deployment. The fresh
+`FreshIntentPermit<S>` is private, non-cloneable, nonserializable and created
+only by the exact current-process `step_appended` response. Receipt content,
+HTTP success alone or a restored Authority snapshot cannot construct it.
+
+### Source-audit alignment
+
+The design is intentionally aligned with both source systems:
+
+- cinaVibeSDK keeps durable agent state in a Durable Object and delegates work
+  to services and disposable sandbox/container execution. The relevant local
+  source audit covered
+  `C:\cinagroup\cinaVibeSDK\worker\agents\core\codingAgent.ts`,
+  `worker\agents\services\implementations\DeploymentManager.ts` and
+  `space\src\space\durable-object.ts`. cinatoken therefore keeps Authority/DO
+  state durable and treats runner/container capabilities as ephemeral.
+- cinatoken Go uses per-task compare-and-swap before terminal billing or other
+  winner-only effects. The relevant audit covered
+  `C:\cinagroup\cinatoken\model\task.go` and
+  `service\task_polling.go`. The Rust path preserves that rule as create-new
+  dispatch/operation records plus exact Authority state transitions before a
+  remote mutation.
+
+These are design inputs, not evidence that cinaVibeSDK or Go production
+results transfer to the Rust deployment.
+
+### Local evidence
+
+Current focused local results are:
+
+- 105 Rust library tests, one binary test and two CLI tests: PASS;
+- strict all-target Clippy with warnings denied: PASS;
+- runner JavaScript aggregate: 46 tests/169 expectations: PASS;
+- broader ring-transition JavaScript: 66 tests/729 expectations: PASS;
+- complete repository `bun run check`: PASS with exit code 0 in 639.9
+  seconds;
+- checked-in release/source description: unchanged fixed 28-module closure;
+- eight concurrent claim and operation reservations: one fresh capability;
+- unfinished operation restart: every real start sealed ambiguous once, then
+  zero unfinished starts;
+- expired wait action: zero network and zero operation reservation;
+- existing Authority intent operation: zero network and no deployment; and
+- fresh Controller intent action: one Authority POST and exactly one
+  Cloudflare deployment POST.
+
+The public entry remains fail-closed under checked-in trust, including when
+called directly from Rust. The CLI remains describe-only; this overlay does
+not introduce an operator bypass or mutable `--execute` command.
+
+### Remaining production gates
+
+This local driver closes orchestration construction, not K7 or production.
+The next required order is:
+
+1. add bounded Operation Receipt evidence for read-only Authority and
+   Cloudflare GET boundaries without turning observations into authority;
+2. bind the complete set of operation-chain heads into the terminal evidence
+   seal and an independently signed or reviewed WORM anchor;
+3. prove exact Rust 1.78 Linux path confinement, no-replace publication,
+   parent sync, UID/GID/ACL, two-process kill matrix, response loss, backup/
+   restore and ext4/XFS power-loss behavior;
+4. implement the versioned Durable Object shard supervisor, generation
+   fencing, alarms, drain/recovery and disposable Container adapter;
+5. run the replacement-credential, default-disabled isolated-staging
+   Authority/Access/D1/version/route/fault/load/cost/SLO/rollback campaign;
+6. close cached-channel, billing-expression DST/golden, paid SSE terminal
+   handoff, task/provider and financial Go-compatibility gates; and
+7. retain exposed-credential revocation, Go/VPS hot-fallback/drain and G1-G8
+   approvals for one immutable candidate before traffic movement.
+
+Go/VPS remains the traffic, scheduler and financial authority. Production
+remains **NO-GO**.

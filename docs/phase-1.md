@@ -3405,3 +3405,44 @@ exact Linux crash/power-loss proof, approval revalidation, isolated staging,
 credential revocation and remaining Go compatibility work. No remote action
 or credential read occurred. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-24 Library-Owned Single-Action Resume Driver
+
+Phase 1 now has a public Rust `execute_current()` library boundary. Every
+invocation re-enters through release, publication, signed activation,
+credential and control-plane authorization. It audits the complete local
+operation directory before credential proof network traffic, seals every real
+unfinished start ambiguous after proof, recovers the exact Authority claim,
+installs its receipt prefix, derives one state-machine decision, performs at
+most one reducer action and stops.
+
+The action model is deliberately bounded. A fresh claim stops after claim
+establishment. `claimed` records T1. `t1_verified` can append one fresh
+Controller intent and perform one Controller deployment. Controller inflight
+can only read back and append its observation. The Edge half follows the same
+baseline, fresh-intent and readback-only-inflight sequence. Expired wait and
+terminal states perform no new operation.
+
+An action may contain one Authority state CAS and one Cloudflare deployment;
+it cannot contain two state reductions or a deployment retry. Existing or
+recovered operation starts return a typed recovery-pending result with no
+network. A process restart never reconstructs `FreshIntentPermit<S>`.
+
+The architecture follows the audited source boundaries: cinaVibeSDK keeps
+durable state in its Durable Object while treating sandbox/container work as
+disposable, and cinatoken Go uses CAS before winner-only terminal effects.
+The Rust driver therefore rehydrates durable Authority/receipt state each
+time and keeps write capabilities process-local.
+
+Focused gates pass with 105 Rust library tests, one binary test, two CLI
+tests, strict Clippy, 46 runner JavaScript tests/169 expectations and 66
+broader ring-transition tests/729 expectations. The signed source closure
+remains 28 modules. The complete repository `bun run check` passes with exit
+code 0 in 639.9 seconds. Checked-in trust and the CLI execution path remain
+disabled.
+
+Next are read-only request receipts, terminal operation-head anchoring, exact
+Linux crash/power-loss and ACL proof, the DO shard supervisor/Container
+adapter, replacement-credential isolated staging, remaining Go compatibility
+and G1-G8. No credential or remote action was used. Go/VPS remains
+authoritative and production remains **NO-GO**.

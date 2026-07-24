@@ -18,6 +18,7 @@ import {
 import {
   DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
   RING_TRANSITION_ACCESS_SERVICE_TOKEN_MODE,
+  RING_TRANSITION_READBACK_OBSERVATION_SECONDS_DEFAULT,
   RING_TRANSITION_EXECUTION_CLAIM_CONTRACT,
   RING_TRANSITION_AUTHORITY_HEADER,
   RING_TRANSITION_EXECUTION_STEP_CONTRACT,
@@ -32,6 +33,7 @@ import {
   classifyDeploymentMutationAttempt,
   describeRingTransitionMutationRunner,
   nextRingTransitionRunnerAction,
+  ringTransitionDeploymentMutationBinding,
   ringTransitionTrustConfigDigestSha256,
   validatePublishedRingTransitionTrust,
 } from "../tools/relay_container_ring_transition_execution_contract.mjs";
@@ -427,6 +429,9 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
     expect(first.networkRequestsPerformed).toBe(false);
     expect(first.mutationPerformed).toBe(false);
     expect(first.credentialClasses).toContain("access-service-token");
+    expect(first.readbackObservationSeconds).toBe(
+      RING_TRANSITION_READBACK_OBSERVATION_SECONDS_DEFAULT,
+    );
     expect(() =>
       validatePublishedRingTransitionTrust(
         DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
@@ -654,59 +659,229 @@ describe("Relay Container deployment-pinned mutation runner contract", () => {
         claimAuthorityHmacKeyId: "k".repeat(33),
       }),
     ).toThrow(/HMAC key ID/);
+    for (const observationSeconds of [4, 121]) {
+      expect(() =>
+        validatePublishedRingTransitionTrust({
+          ...anchors,
+          observationSeconds,
+        }),
+      ).toThrow(/observationSeconds/);
+    }
   });
 
-  test("classifies response loss only by stable authenticated target readback", () => {
+  test("classifies mutation outcomes only by the binding and stable canonical readback", () => {
+    const anchors = publishedAnchors();
+    const claim = buildRingTransitionExecutionClaim({
+      authorization: authorizationFixture(anchors),
+      anchors,
+      actorExecutionIdSha256: "e".repeat(64),
+      ledgerIdentitySha256: anchors.ledgerIdentitySha256,
+    });
+    const binding = ringTransitionDeploymentMutationBinding({
+      anchors,
+      claim,
+      phase: "controller",
+      stateVersion: 2,
+    });
     const target = "controller-version-002";
     const appliedReadback = {
+      observedAtUnixMilliseconds: 1_800_000_000_000,
       deploymentSetSha256: "1".repeat(64),
       activeVersions: [{ versionId: target, percentage: 100 }],
-      mutationAnnotation:
-        "cinatoken staging ring transition 1111111111111111",
+      mutationAnnotation: binding.mutationAnnotation,
+      versionDetailSha256: "2".repeat(64),
     };
-    expect(
-      classifyDeploymentMutationAttempt({
-        transportOutcome: "ambiguous",
-        targetVersionId: target,
-        authorizationIdSha256: "1".repeat(64),
-        readbacks: [appliedReadback, appliedReadback],
-      }),
-    ).toEqual({
+    const confirmed = classifyDeploymentMutationAttempt({
+      transportOutcome: "ambiguous",
+      binding,
+      observationSeconds: 5,
+      readbacks: [
+        appliedReadback,
+        {
+          ...appliedReadback,
+          observedAtUnixMilliseconds: 1_800_000_005_000,
+        },
+      ],
+    });
+    expect(confirmed).toMatchObject({
       classification: "confirmed-applied-after-response-loss",
       terminalState: "verified",
       retryMutation: false,
       forwardRepairRequired: false,
     });
-    const drifted = {
-      deploymentSetSha256: "2".repeat(64),
-      activeVersions: [{ versionId: "controller-version-001", percentage: 100 }],
+    expect(canonicalJson(confirmed.readbackPair.snapshots[0])).toBe(
+      canonicalJson(confirmed.readbackPair.snapshots[1]),
+    );
+    expect(confirmed.readbackPair.snapshots[0]).toEqual({
+      deploymentSetSha256: "1".repeat(64),
+      activeVersions: [{ versionId: target, percentage: 100 }],
+      mutationAnnotation: binding.mutationAnnotation,
+      versionDetailSha256: "2".repeat(64),
+    });
+
+    expect(
+      classifyDeploymentMutationAttempt({
+        transportOutcome: "success",
+        binding,
+        observationSeconds: 5,
+        readbacks: [
+          appliedReadback,
+          {
+            ...appliedReadback,
+            observedAtUnixMilliseconds: 1_800_000_005_000,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      classification: "confirmed-applied",
+      terminalState: "verified",
+    });
+    expect(
+      classifyDeploymentMutationAttempt({
+        transportOutcome: "rejected",
+        binding,
+        observationSeconds: 5,
+        readbacks: [
+          appliedReadback,
+          {
+            ...appliedReadback,
+            observedAtUnixMilliseconds: 1_800_000_005_000,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      classification: "recovery-required-transport-rejected",
+      terminalState: "recovery_required",
+      retryMutation: false,
+    });
+  });
+
+  test("rejects annotation, version-detail, and observation-window drift", () => {
+    const binding = {
+      authorizationIdSha256: "1".repeat(64),
+      mutationIntentSha256: "2".repeat(64),
+      targetVersionId: "controller-version-002",
+      mutationAnnotation:
+        `cinatoken-ring-v1:${"1".repeat(64)}:2:${"2".repeat(64)}`,
+    };
+    const first = {
+      observedAtUnixMilliseconds: 1_800_000_000_000,
+      deploymentSetSha256: "3".repeat(64),
+      activeVersions: [
+        { versionId: "controller-version-002", percentage: 100 },
+      ],
+      mutationAnnotation: binding.mutationAnnotation,
+      versionDetailSha256: "4".repeat(64),
+    };
+    const classify = (second) =>
+      classifyDeploymentMutationAttempt({
+        transportOutcome: "ambiguous",
+        binding,
+        observationSeconds: 5,
+        readbacks: [first, second],
+      });
+    expect(
+      classify({
+        ...first,
+        observedAtUnixMilliseconds: 1_800_000_005_000,
+        mutationAnnotation: "cinatoken-ring-v1:annotation-drift",
+      }),
+    ).toMatchObject({
+      classification: "recovery-required-readback-drift",
+      terminalState: "recovery_required",
+    });
+    expect(
+      classify({
+        ...first,
+        observedAtUnixMilliseconds: 1_800_000_005_000,
+        versionDetailSha256: "5".repeat(64),
+      }),
+    ).toMatchObject({
+      classification: "recovery-required-readback-drift",
+    });
+    for (const observedAtUnixMilliseconds of [
+      1_800_000_004_999,
+      1_800_000_120_001,
+    ]) {
+      expect(
+        classify({ ...first, observedAtUnixMilliseconds }),
+      ).toMatchObject({
+        classification: "recovery-required-observation-window",
+        retryMutation: false,
+        forwardRepairRequired: true,
+      });
+    }
+    const oldAnnotation = {
+      ...first,
       mutationAnnotation:
         "cinatoken staging ring transition 1111111111111111",
     };
-    const unresolved = classifyDeploymentMutationAttempt({
-      transportOutcome: "ambiguous",
-      targetVersionId: target,
-      authorizationIdSha256: "1".repeat(64),
-      readbacks: [drifted, { ...drifted, deploymentSetSha256: "3".repeat(64) }],
+    expect(
+      classify({
+        ...oldAnnotation,
+        observedAtUnixMilliseconds: 1_800_000_005_000,
+      }),
+    ).toMatchObject({
+      classification: "recovery-required-readback-drift",
     });
-    expect(unresolved.terminalState).toBe("recovery_required");
-    expect(unresolved.retryMutation).toBe(false);
-    expect(unresolved.forwardRepairRequired).toBe(true);
     expect(
       classifyDeploymentMutationAttempt({
         transportOutcome: "ambiguous",
-        targetVersionId: target,
-        authorizationIdSha256: "1".repeat(64),
+        binding,
+        observationSeconds: 5,
         readbacks: [
-          { ...appliedReadback, mutationAnnotation: "unrelated deployment" },
-          { ...appliedReadback, mutationAnnotation: "unrelated deployment" },
+          oldAnnotation,
+          {
+            ...oldAnnotation,
+            observedAtUnixMilliseconds: 1_800_000_005_000,
+          },
         ],
       }),
-    ).toEqual({
+    ).toMatchObject({
       classification: "recovery-required-target-not-confirmed",
-      terminalState: "recovery_required",
+    });
+    expect(
+      classifyDeploymentMutationAttempt({
+        transportOutcome: "ambiguous",
+        binding,
+        observationSeconds: 5,
+        readbacks: [
+          {
+            ...first,
+            activeVersions: [
+              { versionId: "z-version", percentage: 50 },
+              { versionId: "a-version", percentage: 50 },
+            ],
+          },
+          {
+            ...first,
+            observedAtUnixMilliseconds: 1_800_000_005_000,
+            activeVersions: [
+              { versionId: "a-version", percentage: 50 },
+              { versionId: "z-version", percentage: 50 },
+            ],
+          },
+        ],
+      }).readbackPair.snapshots[0].activeVersions,
+    ).toEqual([
+      { versionId: "a-version", percentage: 50 },
+      { versionId: "z-version", percentage: 50 },
+    ]);
+    expect(
+      classifyDeploymentMutationAttempt({
+        transportOutcome: "ambiguous",
+        binding,
+        observationSeconds: 5,
+        readbacks: [
+          first,
+          { ...first, observedAtUnixMilliseconds: 1_800_000_005_000 },
+        ],
+      }),
+    ).toMatchObject({
+      classification: "confirmed-applied-after-response-loss",
+      terminalState: "verified",
       retryMutation: false,
-      forwardRepairRequired: true,
+      forwardRepairRequired: false,
     });
   });
 

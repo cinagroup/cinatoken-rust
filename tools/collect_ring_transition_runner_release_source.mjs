@@ -35,6 +35,7 @@ const REQUIRED_MODULE_PATHS = Object.freeze([
   "crates/ring-transition-runner/src/main.rs",
   "crates/ring-transition-runner/src/orchestrator.rs",
   "crates/ring-transition-runner/src/publication.rs",
+  "crates/ring-transition-runner/src/readback.rs",
   "crates/ring-transition-runner/src/release.rs",
   "crates/ring-transition-runner/src/transport.rs",
   "crates/ring-transition-runner/tests/cli.rs",

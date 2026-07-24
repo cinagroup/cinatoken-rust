@@ -18379,3 +18379,103 @@ but claim execution remains deliberately unreachable from the public CLI until
 stable readback and receipt durability are joined. No real credential,
 Cloudflare API, remote resource, customer traffic, provider call, financial
 mutation, or Go/VPS authority changed. Production remains **NO-GO**.
+
+## 22.277 Stable Deployment Readback And Authority Observation Overlay (2026-07-24)
+
+This overlay supersedes section 22.276 only where stable post-mutation
+readback, Authority observation append, and the signed module count were still
+open. It closes the local K6 implementation boundary. It does not enable
+checked-in trust, expose the public execution CLI, provision Cloudflare
+resources, or authorize staging or production mutation.
+
+### Policy-timed read-only proof
+
+An enabled release must compile one observation interval from 5 through 120
+seconds. Runtime input cannot shorten, lengthen, or disable it. For either an
+inflight Controller or Edge mutation the runner performs exactly:
+
+```text
+deployment GET with the read token
+target-version GET with the read token
+compiled wait
+deployment GET with the read token
+target-version GET with the read token
+```
+
+These requests use the fixed account, service, and target from the verified
+claim and canonical mutation request. They contain only the read-token
+Authorization header. Access service-token and Authority HMAC headers cannot
+reach Cloudflare API requests. The native client still has no proxy, redirect,
+retry, connection reuse, caller origin, caller path, or SDK/subprocess
+fallback.
+
+Each response is duplicate-key checked and bounded to 2 MiB. The active
+deployment must use the percentage strategy, contain one or two distinct
+nonzero versions totaling 100, and is sorted in ASCII byte order before
+hashing. Both `version_id` and `versionId` are accepted only when exactly one
+is present. The deployment-set digest matches the JavaScript reference
+contract. The target-version response must be successful and bind the exact
+target ID; its complete canonical result is hashed, including version
+configuration details but excluding raw response retention.
+
+The two normalized snapshots must bind the same service and target. Their
+timestamps must be monotonic, at least the compiled interval apart, and no
+more than 120 seconds apart. Stable exact target, 100 percent allocation,
+canonical `cinatoken-ring-v1` annotation, and identical target-version detail
+produce `confirmed`. A stable non-target state produces
+`target_not_stable`; any normalized snapshot drift produces `drift`. The
+evidence digest binds the persisted mutation request digest, service, target,
+annotation, interval, both timestamps, and both snapshots.
+
+The Rust digest uses the
+`cinatoken-ring-transition-runner-stable-readback-evidence-v1` object. The
+JavaScript reference coordinator uses its own
+`cinatoken-relay-container-ring-transition-stable-readback-evidence-v1`
+object because it also records transport classification and terminal-policy
+fields. The two implementations share deployment-set and version-detail
+normalization plus decision semantics; their outer evidence digests are
+deliberately not interchangeable.
+
+### Readback-only Authority join
+
+`ControllerObservation` and `EdgeObservation` are sealed Rust phases distinct
+from mutation phases. Preparing one requires a verified inflight snapshot,
+re-derives the canonical deployment request, and requires its digest to equal
+the persisted intent digest. The caller cannot supply or replace that digest.
+The resulting capability exposes no deployment body, deploy token, fresh
+intent permit, or mutation method.
+
+After a complete stable pair, the runner constructs state 3 or state 6 from
+the normalized evidence:
+
+- confirmed success or ambiguity advances to `controller_verified` or
+  `completed`;
+- rejected transport records `recovery_required/http_rejected`;
+- readback drift records `recovery_required/readback_drift`; and
+- stable non-target records `recovery_required/target_not_stable`.
+
+The runner then sends one fixed Access-service-token and HMAC-authenticated
+Authority `/steps` POST. Only an exact `step_appended` or exact
+`step_replayed` response is accepted. A Cloudflare GET, wait, clock,
+normalization, or Authority transport failure leaves the claim inflight and
+does not fabricate a step. A restarted inflight process can perform readback
+only with an ambiguous transport outcome; it cannot recreate the deployment
+POST capability.
+
+The JavaScript reference classifier now derives the expected annotation only
+from the canonical mutation binding. The legacy shortened annotation is
+rejected. Its observation ceiling and ASCII sorting now match Rust.
+
+### Release and remaining gates
+
+The detached source closure is now 22 paths and includes both `transport.rs`
+and `readback.rs`. Rust and JavaScript release inventory, manifest, DSSE,
+publication, signature, and activation vectors advance together. Omitting or
+digest-drifting `readback.rs` invalidates both independent verifiers.
+
+The next P0 work is create-new predecessor-bound execution receipts, a public
+driver that resumes every state without restoring write authority, the exact
+Rust 1.78 Linux two-build/sign/install proof, the two-process crash and
+response-loss campaign, actual exposed-credential revocation evidence,
+deployed Access/token-scope evidence, and isolated remote staging validation.
+Go/VPS remains authoritative and production remains **NO-GO**.

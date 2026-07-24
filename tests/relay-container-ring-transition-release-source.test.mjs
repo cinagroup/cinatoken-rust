@@ -82,7 +82,14 @@ describe("ring-transition runner release source collector", () => {
     expect(first.moduleInventory.files.map((record) => record.path)).toEqual(
       [...first.moduleInventory.files.map((record) => record.path)].sort(),
     );
-    expect(first.moduleCount).toBe(21);
+    expect(first.moduleCount).toBe(22);
+    expect(first.moduleInventory.files).toContainEqual({
+      path: "crates/ring-transition-runner/src/readback.rs",
+      byteLength: Buffer.byteLength("pub fn readback_fixture() {}\n"),
+      sha256: sha256Hex(
+        Buffer.from("pub fn readback_fixture() {}\n", "utf8"),
+      ),
+    });
     expect(first.moduleInventory.files).toContainEqual({
       path: "crates/ring-transition-runner/src/transport.rs",
       byteLength: Buffer.byteLength("pub fn transport_fixture() {}\n"),
@@ -113,6 +120,15 @@ describe("ring-transition runner release source collector", () => {
   test("rejects a missing required transport module", async () => {
     const repository = await fixtureRepository({
       omit: "crates/ring-transition-runner/src/transport.rs",
+    });
+    await expect(
+      collectRingTransitionRunnerReleaseSource({ repositoryRoot: repository }),
+    ).rejects.toThrow(/required module missing/);
+  });
+
+  test("rejects a missing required stable-readback module", async () => {
+    const repository = await fixtureRepository({
+      omit: "crates/ring-transition-runner/src/readback.rs",
     });
     await expect(
       collectRingTransitionRunnerReleaseSource({ repositoryRoot: repository }),
@@ -198,6 +214,10 @@ async function fixtureRepository({ omit = null } = {}) {
     [
       "crates/ring-transition-runner/src/publication.rs",
       "pub fn publication_fixture() {}\n",
+    ],
+    [
+      "crates/ring-transition-runner/src/readback.rs",
+      "pub fn readback_fixture() {}\n",
     ],
     [
       "crates/ring-transition-runner/src/release.rs",

@@ -24,6 +24,8 @@ pub const DEPLOY_TOKEN_ENV: &str = "CINATOKEN_RING_TRANSITION_DEPLOY_TOKEN";
 pub const ACCESS_CLIENT_ID_ENV: &str = "CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_ID";
 pub const ACCESS_CLIENT_SECRET_ENV: &str = "CINATOKEN_RING_TRANSITION_ACCESS_CLIENT_SECRET";
 pub const ACCESS_MODE_SERVICE_TOKEN_V1: &str = "service-token-v1";
+pub const MINIMUM_STABLE_READBACK_OBSERVATION_SECONDS: u16 = 5;
+pub const MAXIMUM_STABLE_READBACK_OBSERVATION_SECONDS: u16 = 120;
 
 const AUTHORITY_HMAC_DOMAIN: &[u8] = b"cinatoken-ring-transition-authority-v1\n";
 const AUTHORITY_TOKEN_LIFETIME_SECONDS: u64 = 30;
@@ -54,6 +56,7 @@ pub struct EmbeddedCredentialTrust {
     pub access_client_id_sha256: Option<&'static str>,
     pub controller_service_name: Option<&'static str>,
     pub edge_service_name: Option<&'static str>,
+    pub stable_readback_observation_seconds: u16,
 }
 
 impl EmbeddedCredentialTrust {
@@ -79,6 +82,7 @@ impl EmbeddedCredentialTrust {
             access_client_id_sha256: None,
             controller_service_name: None,
             edge_service_name: None,
+            stable_readback_observation_seconds: 0,
         }
     }
 
@@ -136,6 +140,14 @@ impl EmbeddedCredentialTrust {
         if controller_service_name == edge_service_name {
             return Err(CredentialError::InvalidTrustField("service_separation"));
         }
+        if !(MINIMUM_STABLE_READBACK_OBSERVATION_SECONDS
+            ..=MAXIMUM_STABLE_READBACK_OBSERVATION_SECONDS)
+            .contains(&self.stable_readback_observation_seconds)
+        {
+            return Err(CredentialError::InvalidTrustField(
+                "stable_readback_observation_seconds",
+            ));
+        }
         if read_credential_id_sha256 == claim_credential_id_sha256
             || read_credential_id_sha256 == deploy_credential_id_sha256
             || claim_credential_id_sha256 == deploy_credential_id_sha256
@@ -163,6 +175,7 @@ impl EmbeddedCredentialTrust {
             access_client_id_sha256,
             controller_service_name,
             edge_service_name,
+            stable_readback_observation_seconds: self.stable_readback_observation_seconds,
         })
     }
 }
@@ -182,6 +195,7 @@ pub struct CredentialIdentity {
     pub runner_build_sha256: String,
     pub controller_service_name: String,
     pub edge_service_name: String,
+    pub stable_readback_observation_seconds: u16,
     pub activation_sequence: u64,
 }
 
@@ -524,6 +538,7 @@ fn load_from_source(
         runner_build_sha256: publication.release.artifact_sha256,
         controller_service_name: validated.controller_service_name.to_owned(),
         edge_service_name: validated.edge_service_name.to_owned(),
+        stable_readback_observation_seconds: validated.stable_readback_observation_seconds,
         activation_sequence: publication.activation_sequence,
     };
     Ok(LoadedCredentials {
@@ -595,6 +610,7 @@ pub(crate) struct ValidatedCredentialTrust {
     pub(crate) access_client_id_sha256: &'static str,
     pub(crate) controller_service_name: &'static str,
     pub(crate) edge_service_name: &'static str,
+    pub(crate) stable_readback_observation_seconds: u16,
 }
 
 #[derive(Deserialize)]
@@ -850,6 +866,7 @@ mod tests {
             "controller-staging"
         );
         assert_eq!(loaded.identity().edge_service_name, "edge-staging");
+        assert_eq!(loaded.identity().stable_readback_observation_seconds, 5);
         assert_eq!(loaded.identity().activation_sequence, 7);
     }
 
@@ -925,6 +942,30 @@ mod tests {
             .err(),
             Some(CredentialError::SecretMaterialNotDistinct)
         );
+    }
+
+    #[test]
+    fn stable_readback_timing_is_compiled_and_bounded() {
+        for invalid in [0, 4, 121, u16::MAX] {
+            let mut trust = fully_pinned_trust();
+            trust.stable_readback_observation_seconds = invalid;
+            let mut source = FakeSource::valid();
+            assert_eq!(
+                load_from_source(publication_identity(), &trust, &mut source).err(),
+                Some(CredentialError::InvalidTrustField(
+                    "stable_readback_observation_seconds"
+                ))
+            );
+            assert!(source.reads.is_empty());
+        }
+
+        for valid in [5, 120] {
+            let mut trust = fully_pinned_trust();
+            trust.stable_readback_observation_seconds = valid;
+            let loaded =
+                load_from_source(publication_identity(), &trust, &mut FakeSource::valid()).unwrap();
+            assert_eq!(loaded.identity().stable_readback_observation_seconds, valid);
+        }
     }
 
     #[test]
@@ -1081,6 +1122,7 @@ mod tests {
             access_client_id_sha256: Some(ACCESS_CLIENT_ID_SHA256),
             controller_service_name: Some("controller-staging"),
             edge_service_name: Some("edge-staging"),
+            stable_readback_observation_seconds: 5,
             ..EmbeddedCredentialTrust::checked_in()
         }
     }
@@ -1101,7 +1143,7 @@ mod tests {
                 artifact_byte_length: 64,
                 artifact_sha256: "7".repeat(64),
                 module_inventory_sha256: "8".repeat(64),
-                module_count: 21,
+                module_count: 22,
                 module_bytes: 4096,
                 authority_version_id: AUTHORITY_VERSION_ID.to_owned(),
                 permit_spki_sha256: PERMIT_SPKI_SHA256.to_owned(),

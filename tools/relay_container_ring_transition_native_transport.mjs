@@ -2,6 +2,9 @@ import {
   CLOUDFLARE_API_ORIGIN,
   RING_TRANSITION_AUTHORITY_HEADER,
   RING_TRANSITION_CLAIM_AUTHORITY_PATH,
+  RING_TRANSITION_READBACK_OBSERVATION_SECONDS_DEFAULT,
+  RING_TRANSITION_STABLE_READBACK_EVIDENCE_CONTRACT,
+  classifyDeploymentMutationAttempt,
   ringTransitionDeploymentMutationBinding,
   validateRingTransitionExecutionClaim,
   validateRingTransitionExecutionStep,
@@ -65,6 +68,8 @@ export function describeRingTransitionNativeTransport() {
     requestTimeoutMilliseconds: REQUEST_TIMEOUT_MILLISECONDS,
     authorityMaximumResponseBytes: AUTHORITY_RESPONSE_LIMIT,
     cloudflareMaximumResponseBytes: CLOUDFLARE_RESPONSE_LIMIT,
+    readbackObservationSeconds:
+      RING_TRANSITION_READBACK_OBSERVATION_SECONDS_DEFAULT,
     redirectsFollowed: false,
     postRetries: 0,
     credentialsRead: false,
@@ -88,6 +93,7 @@ class RingTransitionNativeTransport {
   #accessClientSecret;
   #fetch;
   #clock;
+  #sleep;
   #requestIdFactory;
   #freshIntentPermits = new WeakMap();
   #readCredentialVerified = false;
@@ -101,6 +107,7 @@ class RingTransitionNativeTransport {
     environment,
     fetchImpl = fetch,
     clockImpl = () => new Date(),
+    sleepImpl = sleep,
     requestIdFactory = () => crypto.randomUUID(),
   }) {
     this.#trust = validatePublishedRingTransitionTrust(anchors);
@@ -166,12 +173,14 @@ class RingTransitionNativeTransport {
     if (
       typeof fetchImpl !== "function" ||
       typeof clockImpl !== "function" ||
+      typeof sleepImpl !== "function" ||
       typeof requestIdFactory !== "function"
     ) {
       throw new RingTransitionTransportError("invalid_transport_dependency");
     }
     this.#fetch = fetchImpl;
     this.#clock = clockImpl;
+    this.#sleep = sleepImpl;
     this.#requestIdFactory = requestIdFactory;
   }
 
@@ -185,6 +194,7 @@ class RingTransitionNativeTransport {
       deployCredentialVerified: this.#deployCredentialVerified,
       accessClientIdentityMatched: true,
       accessServiceTokenVerified: this.#accessServiceTokenVerified,
+      readbackObservationSeconds: this.#trust.observationSeconds,
     };
   }
 
@@ -363,6 +373,98 @@ class RingTransitionNativeTransport {
     };
   }
 
+  async classifyDeploymentMutationReadback(input) {
+    this.#requireReadCredential();
+    const request = requireObject(input, "invalid_readback_coordination");
+    assertExactObjectKeys(
+      request,
+      ["claim", "phase", "stateVersion", "transportOutcome"],
+      "invalid_readback_coordination",
+    );
+    if (!["success", "ambiguous", "rejected"].includes(request.transportOutcome)) {
+      throw new RingTransitionTransportError("invalid_mutation_transport_outcome");
+    }
+    const binding = ringTransitionDeploymentMutationBinding({
+      anchors: this.#trust,
+      claim: request.claim,
+      phase: request.phase,
+      stateVersion: request.stateVersion,
+    });
+    const first = await this.#readMutationSnapshot(binding, "first");
+    if (first.failureStage !== null) {
+      return stableReadbackFailureEvidence({
+        binding,
+        transportOutcome: request.transportOutcome,
+        observationSeconds: this.#trust.observationSeconds,
+        failureStage: first.failureStage,
+      });
+    }
+    try {
+      await this.#sleep(this.#trust.observationSeconds * 1_000);
+    } catch {
+      return stableReadbackFailureEvidence({
+        binding,
+        transportOutcome: request.transportOutcome,
+        observationSeconds: this.#trust.observationSeconds,
+        failureStage: "observation_sleep",
+      });
+    }
+    const second = await this.#readMutationSnapshot(binding, "second");
+    if (second.failureStage !== null) {
+      return stableReadbackFailureEvidence({
+        binding,
+        transportOutcome: request.transportOutcome,
+        observationSeconds: this.#trust.observationSeconds,
+        failureStage: second.failureStage,
+      });
+    }
+    const classified = classifyDeploymentMutationAttempt({
+      transportOutcome: request.transportOutcome,
+      binding,
+      observationSeconds: this.#trust.observationSeconds,
+      readbacks: [first.readback, second.readback],
+    });
+    return stableReadbackEvidence({
+      binding,
+      transportOutcome: request.transportOutcome,
+      classified,
+    });
+  }
+
+  async #readMutationSnapshot(binding, ordinal) {
+    let deployment;
+    try {
+      deployment = await this.readDeployment(binding.serviceName);
+    } catch {
+      return { failureStage: `${ordinal}_deployment`, readback: null };
+    }
+    let version;
+    try {
+      version = await this.readVersion(
+        binding.serviceName,
+        binding.targetVersionId,
+      );
+    } catch {
+      return { failureStage: `${ordinal}_target_version`, readback: null };
+    }
+    let observedAtUnixMilliseconds;
+    try {
+      observedAtUnixMilliseconds = transportClockMilliseconds(this.#clock);
+    } catch {
+      return { failureStage: `${ordinal}_observation_clock`, readback: null };
+    }
+    return {
+      failureStage: null,
+      readback: {
+        observedAtUnixMilliseconds,
+        deploymentSetSha256: deployment.deploymentSetSha256,
+        activeVersions: deployment.activeVersions,
+        mutationAnnotation: deployment.mutationAnnotation,
+        versionDetailSha256: version.versionDetailSha256,
+      },
+    };
+  }
+
   async deployOnce(input) {
     this.#requireDeployCredential();
     const deployment = requireObject(input, "invalid_deployment_authorization");
@@ -527,6 +629,99 @@ class RingTransitionNativeTransport {
     this.#deployCredentialVerified = false;
     this.#accessServiceTokenVerified = false;
   }
+}
+
+function stableReadbackEvidence({
+  binding,
+  transportOutcome,
+  classified,
+}) {
+  const evidence = {
+    schemaVersion: 1,
+    contract: RING_TRANSITION_STABLE_READBACK_EVIDENCE_CONTRACT,
+    binding: canonicalReadbackBinding(binding),
+    transportOutcome,
+    classification: classified.classification,
+    terminalState: classified.terminalState,
+    retryMutation: classified.retryMutation,
+    forwardRepairRequired: classified.forwardRepairRequired,
+    failureStage: null,
+    readbackPair: classified.readbackPair,
+  };
+  return Object.freeze({
+    classification: classified.classification,
+    terminalState: classified.terminalState,
+    retryMutation: classified.retryMutation,
+    forwardRepairRequired: classified.forwardRepairRequired,
+    transportOutcome,
+    failureStage: null,
+    readbackPair: classified.readbackPair,
+    evidenceContract: RING_TRANSITION_STABLE_READBACK_EVIDENCE_CONTRACT,
+    evidenceSha256: sha256Hex(
+      Buffer.from(canonicalJson(evidence), "utf8"),
+    ),
+  });
+}
+
+function stableReadbackFailureEvidence({
+  binding,
+  transportOutcome,
+  observationSeconds,
+  failureStage,
+}) {
+  const result = {
+    classification: "recovery-required-readback-failed",
+    terminalState: "recovery_required",
+    retryMutation: false,
+    forwardRepairRequired: true,
+    transportOutcome,
+    failureStage,
+    readbackPair: null,
+  };
+  const evidence = {
+    schemaVersion: 1,
+    contract: RING_TRANSITION_STABLE_READBACK_EVIDENCE_CONTRACT,
+    binding: canonicalReadbackBinding(binding),
+    transportOutcome,
+    classification: result.classification,
+    terminalState: result.terminalState,
+    retryMutation: result.retryMutation,
+    forwardRepairRequired: result.forwardRepairRequired,
+    failureStage,
+    observationSeconds,
+    readbackPair: null,
+  };
+  return Object.freeze({
+    ...result,
+    evidenceContract: RING_TRANSITION_STABLE_READBACK_EVIDENCE_CONTRACT,
+    evidenceSha256: sha256Hex(
+      Buffer.from(canonicalJson(evidence), "utf8"),
+    ),
+  });
+}
+
+function canonicalReadbackBinding(binding) {
+  return {
+    authorizationIdSha256: binding.authorizationIdSha256,
+    claimDigestSha256: binding.claimDigestSha256,
+    mutationIntentSha256: binding.mutationIntentSha256,
+    stateVersion: binding.stateVersion,
+    serviceName: binding.serviceName,
+    targetVersionId: binding.targetVersionId,
+    mutationAnnotation: binding.mutationAnnotation,
+  };
+}
+
+function transportClockMilliseconds(clock) {
+  const now = clock();
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    throw new RingTransitionTransportError("invalid_readback_observation_time");
+  }
+  return Math.floor(now.getTime());
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 export async function createRingTransitionAuthorityToken({

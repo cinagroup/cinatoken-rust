@@ -77,6 +77,7 @@ describe("Relay Container ring-transition runner release contract", () => {
       "crates/ring-transition-runner/src/main.rs",
       "crates/ring-transition-runner/src/orchestrator.rs",
       "crates/ring-transition-runner/src/publication.rs",
+      "crates/ring-transition-runner/src/readback.rs",
       "crates/ring-transition-runner/src/release.rs",
       "crates/ring-transition-runner/src/transport.rs",
       "crates/ring-transition-runner/tests/cli.rs",
@@ -134,7 +135,7 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.moduleCount).toBe(21);
+    expect(result.moduleCount).toBe(22);
   });
 
   test("matches the deterministic Rust DSSE release vector", () => {
@@ -144,23 +145,23 @@ describe("Relay Container ring-transition runner release contract", () => {
       policySha256:
         "9b12c3dd50812180f2122311480876bd6508a81618082c615ca52d4701ec3856",
       inventorySha256:
-        "8886f7c77cd4fff095768c8444a27c2738d6cb8595668828554bd09e73b92039",
+        "82ac2d0a4362a02f1d7ffab2b38b2cf63ce9a74977a4c188897807d8c44f5eab",
       manifestSha256:
-        "538f997aa1757626f60b58e899f079c109d36d34109690b90296abc05a8e9fd3",
+        "1168cce51fdabef7ac1e9e2653e3ef192b1b005d6b0965ef91f15dc3ebbe437c",
       packetSha256:
-        "2bdc37993f2c651b698b7d1756beeb70895c9ac26af40b796f6062a70bf7f28a",
+        "2f777d82267fcac73dc059aef2c80ae781f34086422ad201231f6e3fa24f4cf2",
       signatureBase64:
-        "7l12y4S9xjKu6gmDc7cUJd2+JkH18ZpZO+pRP82SatTgtddTT4H0nPLTyAkKtKEM3Ksd+Ln68kypSieaPrO7DA==",
+        "GzYVKjycMavPFuiSw5/B+WZJDlCjUPF5h1xZg05xpDO/Ddgp7FUfSQ6vHkuJsa3XJ6xwuYbsffFH7fXowROVBg==",
       publicationGenerationSha256:
-        "2acea1f7722178da8ecb786590f5bf4347e338a8358f984bbd9ffdd79fd4563b",
+        "a619272a9e04bde56cce0d966f700270604e472b707414f4b73fad0f6220f6e3",
       publicationManifestSha256:
-        "d326b78b08bc2ad51a7bf26bb2ccc93e2335d00c6e4b5f632b63533361e4edfa",
+        "c0e512b6000d48d8e191fba3a8896fbc983791b45dea860b03a238d5920eb648",
       publicationPacketSha256:
-        "7731207b5a95f057bda7cb5c3455ce81925dcb108d627f6ee920bcef5e194ad9",
+        "d4250595a3b5250754f7239b9224793fd26b8d27cb5fd7c430a5972faeb64f93",
       publicationSignatureBase64:
-        "+hHPYIYnFkjubmtcQohVRS8pNlDOm8LqpJOBD6o70BzejITR0ZMbo1TpwptZTso6/NMAJAwwF9+kZl9YSFiGBw==",
+        "QwhHFb8f2HrIs6AAoGycfkaoqjWCxdVRkuuGI3Ob1rXQNqa+FVqfFzSa32HBRjwOlt7os7aW8OdEPPlmKMcfBQ==",
       activationSha256:
-        "e4e23a885959ccc110af716395d5b5a85752f7c73493de3498d187a55521cbfc",
+        "6dd7e5c004e0e10339bb7d3f50583036f3e4fff9e844e09cf9a8d211dc379575",
     });
   });
 
@@ -325,18 +326,32 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     await expectReleaseFailure(missing, /file count is invalid|required path missing/);
 
-    const transportDigestDrift = await releaseFixture({
-      packetMutator: (packet) => {
-        const transport = packet.moduleInventory.files.find(
+    const missingReadback = await releaseFixture({
+      inventoryMutator: (inventory) => {
+        inventory.files = inventory.files.filter(
           (record) =>
-            record.path ===
-            "crates/ring-transition-runner/src/transport.rs",
+            record.path !==
+            "crates/ring-transition-runner/src/readback.rs",
         );
-        transport.sha256 = "f".repeat(64);
       },
     });
     await expectReleaseFailure(
-      transportDigestDrift,
+      missingReadback,
+      /file count is invalid|required path missing/,
+    );
+
+    const readbackDigestDrift = await releaseFixture({
+      packetMutator: (packet) => {
+        const readback = packet.moduleInventory.files.find(
+          (record) =>
+            record.path ===
+            "crates/ring-transition-runner/src/readback.rs",
+        );
+        readback.sha256 = "f".repeat(64);
+      },
+    });
+    await expectReleaseFailure(
+      readbackDigestDrift,
       /module inventory digest mismatch/,
     );
   });
@@ -760,6 +775,10 @@ async function releaseFixture({
     [
       "crates/ring-transition-runner/src/publication.rs",
       "runner-publication-fixture",
+    ],
+    [
+      "crates/ring-transition-runner/src/readback.rs",
+      "runner-readback-fixture",
     ],
     [
       "crates/ring-transition-runner/src/release.rs",

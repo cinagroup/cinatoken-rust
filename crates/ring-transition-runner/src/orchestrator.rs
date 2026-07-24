@@ -292,6 +292,8 @@ pub enum RunnerDecision {
 
 pub struct ControllerMutation;
 pub struct EdgeMutation;
+pub struct ControllerObservation;
+pub struct EdgeObservation;
 
 mod sealed {
     pub trait Sealed {}
@@ -302,6 +304,16 @@ pub trait MutationPhase: sealed::Sealed {
     const STEP_CODE: StepCode;
     const FROM_STATUS: ClaimStatus;
     const TO_STATUS: ClaimStatus;
+    const DECISION: RunnerDecision;
+}
+
+pub trait ObservationPhase: sealed::Sealed {
+    type Mutation: MutationPhase;
+
+    const STATE_VERSION: u8;
+    const STEP_CODE: StepCode;
+    const FROM_STATUS: ClaimStatus;
+    const CONFIRMED_STATUS: ClaimStatus;
     const DECISION: RunnerDecision;
 }
 
@@ -321,6 +333,28 @@ impl MutationPhase for EdgeMutation {
     const FROM_STATUS: ClaimStatus = ClaimStatus::EdgePrechecked;
     const TO_STATUS: ClaimStatus = ClaimStatus::EdgeInflight;
     const DECISION: RunnerDecision = RunnerDecision::AppendEdgeIntent;
+}
+
+impl sealed::Sealed for ControllerObservation {}
+impl ObservationPhase for ControllerObservation {
+    type Mutation = ControllerMutation;
+
+    const STATE_VERSION: u8 = 3;
+    const STEP_CODE: StepCode = StepCode::ControllerPostReadback;
+    const FROM_STATUS: ClaimStatus = ClaimStatus::ControllerInflight;
+    const CONFIRMED_STATUS: ClaimStatus = ClaimStatus::ControllerVerified;
+    const DECISION: RunnerDecision = RunnerDecision::ObserveController;
+}
+
+impl sealed::Sealed for EdgeObservation {}
+impl ObservationPhase for EdgeObservation {
+    type Mutation = EdgeMutation;
+
+    const STATE_VERSION: u8 = 6;
+    const STEP_CODE: StepCode = StepCode::EdgePostReadback;
+    const FROM_STATUS: ClaimStatus = ClaimStatus::EdgeInflight;
+    const CONFIRMED_STATUS: ClaimStatus = ClaimStatus::Completed;
+    const DECISION: RunnerDecision = RunnerDecision::ObserveEdge;
 }
 
 #[derive(Serialize)]
@@ -355,6 +389,7 @@ pub struct CanonicalDeploymentRequest<P: MutationPhase> {
     request_digest_sha256: String,
     service_name: String,
     target_version_id: String,
+    mutation_annotation: String,
     phase: PhantomData<P>,
 }
 
@@ -369,6 +404,10 @@ impl<P: MutationPhase> CanonicalDeploymentRequest<P> {
 
     pub fn target_version_id(&self) -> &str {
         &self.target_version_id
+    }
+
+    pub fn mutation_annotation(&self) -> &str {
+        &self.mutation_annotation
     }
 
     pub(crate) fn body(&self) -> &[u8] {
@@ -404,13 +443,13 @@ fn plan_deployment<P: MutationPhase>(
         target_version_id: &service.target_version_id,
     };
     let intent_sha256 = canonical_sha256(&intent)?;
-    let annotation = format!(
+    let mutation_annotation = format!(
         "cinatoken-ring-v1:{}:{}:{intent_sha256}",
         snapshot.authorization_id_sha256(),
         P::STATE_VERSION
     );
     let body = DeploymentBody {
-        annotations: BTreeMap::from([("workers/message", annotation)]),
+        annotations: BTreeMap::from([("workers/message", mutation_annotation.clone())]),
         strategy: "percentage",
         versions: [DeploymentVersion {
             percentage: 100,
@@ -423,6 +462,7 @@ fn plan_deployment<P: MutationPhase>(
         body: canonical.into_bytes(),
         service_name: service.service_name.clone(),
         target_version_id: service.target_version_id.clone(),
+        mutation_annotation,
         phase: PhantomData,
     })
 }
@@ -699,6 +739,302 @@ pub fn authorize_mutation<P: MutationPhase>(
         request: permit.request,
         generated_at: permit.generated_at,
         expires_at: permit.expires_at,
+        phase: PhantomData,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObservationStability {
+    Confirmed,
+    TargetNotStable,
+    Drift,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ObservationRecordInput {
+    pub deployment_set_sha256: String,
+    pub cloudflare_request_id_sha256: Option<String>,
+    pub evidence_sha256: String,
+    pub transport_outcome: TransportOutcome,
+    pub stability: ObservationStability,
+}
+
+pub struct ObservationBinding<P: ObservationPhase> {
+    service_name: String,
+    target_version_id: String,
+    canonical_request_digest_sha256: String,
+    mutation_annotation: String,
+    phase: PhantomData<P>,
+}
+
+impl<P: ObservationPhase> ObservationBinding<P> {
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+
+    pub fn target_version_id(&self) -> &str {
+        &self.target_version_id
+    }
+
+    pub fn canonical_request_digest_sha256(&self) -> &str {
+        &self.canonical_request_digest_sha256
+    }
+
+    pub fn mutation_annotation(&self) -> &str {
+        &self.mutation_annotation
+    }
+}
+
+pub struct PreparedObservation<P: ObservationPhase> {
+    binding: ObservationBinding<P>,
+    authorization_id_sha256: String,
+    claim_digest_sha256: String,
+    ledger_identity_sha256: String,
+    phase: PhantomData<P>,
+}
+
+impl<P: ObservationPhase> PreparedObservation<P> {
+    pub fn binding(&self) -> &ObservationBinding<P> {
+        &self.binding
+    }
+
+    pub fn authorization_id_sha256(&self) -> &str {
+        &self.authorization_id_sha256
+    }
+
+    pub fn claim_digest_sha256(&self) -> &str {
+        &self.claim_digest_sha256
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservationStep {
+    pub schema_version: u8,
+    pub contract: &'static str,
+    pub ledger_identity_sha256: String,
+    pub claim_digest_sha256: String,
+    pub state_version: u8,
+    pub step_code: StepCode,
+    pub from_status: ClaimStatus,
+    pub to_status: ClaimStatus,
+    pub mutation_request_sha256: Option<String>,
+    pub cloudflare_request_id_sha256: Option<String>,
+    pub deployment_set_sha256: Option<String>,
+    pub evidence_sha256: String,
+    pub failure_class: FailureClass,
+    pub transport_outcome: TransportOutcome,
+    pub step_digest_sha256: String,
+}
+
+pub struct ObservationAppendAttempt<P: ObservationPhase> {
+    step: ObservationStep,
+    authorization_id_sha256: String,
+    request_id: String,
+    phase: PhantomData<P>,
+}
+
+impl<P: ObservationPhase> ObservationAppendAttempt<P> {
+    pub fn step(&self) -> &ObservationStep {
+        &self.step
+    }
+
+    pub fn canonical_step_json(&self) -> Result<String, OrchestratorError> {
+        canonical_json(&self.step)
+    }
+
+    pub fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
+    pub fn authorization_id_sha256(&self) -> &str {
+        &self.authorization_id_sha256
+    }
+
+    pub fn claim_digest_sha256(&self) -> &str {
+        &self.step.claim_digest_sha256
+    }
+}
+
+pub struct RecordedObservation<P: ObservationPhase> {
+    replayed: bool,
+    authorization_id_sha256: String,
+    claim_digest_sha256: String,
+    status: ClaimStatus,
+    state_version: u8,
+    step_digest_sha256: String,
+    phase: PhantomData<P>,
+}
+
+impl<P: ObservationPhase> RecordedObservation<P> {
+    pub fn was_replayed(&self) -> bool {
+        self.replayed
+    }
+
+    pub fn authorization_id_sha256(&self) -> &str {
+        &self.authorization_id_sha256
+    }
+
+    pub fn claim_digest_sha256(&self) -> &str {
+        &self.claim_digest_sha256
+    }
+
+    pub fn status(&self) -> ClaimStatus {
+        self.status
+    }
+
+    pub fn state_version(&self) -> u8 {
+        self.state_version
+    }
+
+    pub fn step_digest_sha256(&self) -> &str {
+        &self.step_digest_sha256
+    }
+}
+
+pub fn prepare_controller_observation(
+    snapshot: &VerifiedSnapshot,
+    now: u64,
+) -> Result<PreparedObservation<ControllerObservation>, OrchestratorError> {
+    prepare_observation::<ControllerObservation>(snapshot, now)
+}
+
+pub fn prepare_edge_observation(
+    snapshot: &VerifiedSnapshot,
+    now: u64,
+) -> Result<PreparedObservation<EdgeObservation>, OrchestratorError> {
+    prepare_observation::<EdgeObservation>(snapshot, now)
+}
+
+fn prepare_observation<P: ObservationPhase>(
+    snapshot: &VerifiedSnapshot,
+    now: u64,
+) -> Result<PreparedObservation<P>, OrchestratorError> {
+    if snapshot.decision(now)? != P::DECISION {
+        return Err(OrchestratorError::DecisionMismatch);
+    }
+    let mutation_state_version = <P::Mutation as MutationPhase>::STATE_VERSION;
+    let mutation_step_code = <P::Mutation as MutationPhase>::STEP_CODE;
+    let persisted_intent = snapshot
+        .snapshot
+        .steps
+        .iter()
+        .find(|step| step.state_version == mutation_state_version)
+        .ok_or(OrchestratorError::InvalidHistory)?;
+    if persisted_intent.step_code != mutation_step_code
+        || persisted_intent.to_status != P::FROM_STATUS
+    {
+        return Err(OrchestratorError::InvalidHistory);
+    }
+    let persisted_request_digest = persisted_intent
+        .mutation_request_sha256
+        .as_deref()
+        .ok_or(OrchestratorError::InvalidHistory)?;
+    let canonical_request = plan_deployment::<P::Mutation>(snapshot)?;
+    if canonical_request.request_digest_sha256 != persisted_request_digest {
+        return Err(OrchestratorError::RequestBindingMismatch);
+    }
+    let binding = ObservationBinding {
+        service_name: canonical_request.service_name,
+        target_version_id: canonical_request.target_version_id,
+        canonical_request_digest_sha256: persisted_request_digest.to_owned(),
+        mutation_annotation: canonical_request.mutation_annotation,
+        phase: PhantomData,
+    };
+    Ok(PreparedObservation {
+        binding,
+        authorization_id_sha256: snapshot.authorization_id_sha256().to_owned(),
+        claim_digest_sha256: snapshot.claim_digest_sha256().to_owned(),
+        ledger_identity_sha256: snapshot.snapshot.claim.ledger_identity_sha256.clone(),
+        phase: PhantomData,
+    })
+}
+
+pub fn begin_observation_append<P: ObservationPhase>(
+    observation: PreparedObservation<P>,
+    input: ObservationRecordInput,
+    request_id: &str,
+) -> Result<ObservationAppendAttempt<P>, OrchestratorError> {
+    require_token(request_id, 1, 128, "request_id")?;
+    require_sha256(&input.deployment_set_sha256, "deployment_set_sha256")?;
+    if let Some(request_id_sha256) = input.cloudflare_request_id_sha256.as_deref() {
+        require_sha256(request_id_sha256, "cloudflare_request_id_sha256")?;
+    }
+    require_sha256(&input.evidence_sha256, "evidence_sha256")?;
+
+    let (to_status, failure_class) = match input.transport_outcome {
+        TransportOutcome::Rejected => (ClaimStatus::RecoveryRequired, FailureClass::HttpRejected),
+        TransportOutcome::Success | TransportOutcome::Ambiguous => match input.stability {
+            ObservationStability::Confirmed => (P::CONFIRMED_STATUS, FailureClass::None),
+            ObservationStability::TargetNotStable => {
+                (ClaimStatus::RecoveryRequired, FailureClass::TargetNotStable)
+            }
+            ObservationStability::Drift => {
+                (ClaimStatus::RecoveryRequired, FailureClass::ReadbackDrift)
+            }
+        },
+        TransportOutcome::NotApplicable => {
+            return Err(OrchestratorError::InvalidField("transport_outcome"));
+        }
+    };
+
+    let mut step = ObservationStep {
+        schema_version: 1,
+        contract: STEP_CONTRACT,
+        ledger_identity_sha256: observation.ledger_identity_sha256,
+        claim_digest_sha256: observation.claim_digest_sha256,
+        state_version: P::STATE_VERSION,
+        step_code: P::STEP_CODE,
+        from_status: P::FROM_STATUS,
+        to_status,
+        mutation_request_sha256: Some(observation.binding.canonical_request_digest_sha256),
+        cloudflare_request_id_sha256: input.cloudflare_request_id_sha256,
+        deployment_set_sha256: Some(input.deployment_set_sha256),
+        evidence_sha256: input.evidence_sha256,
+        failure_class,
+        transport_outcome: input.transport_outcome,
+        step_digest_sha256: String::new(),
+    };
+    step.step_digest_sha256 = observation_step_digest(&step)?;
+    Ok(ObservationAppendAttempt {
+        step,
+        authorization_id_sha256: observation.authorization_id_sha256,
+        request_id: request_id.to_owned(),
+        phase: PhantomData,
+    })
+}
+
+pub fn verify_observation_append<P: ObservationPhase>(
+    attempt: ObservationAppendAttempt<P>,
+    response_json: &[u8],
+    expected_authority_version_id: &str,
+) -> Result<RecordedObservation<P>, OrchestratorError> {
+    require_token(
+        expected_authority_version_id,
+        1,
+        128,
+        "authority_version_id",
+    )?;
+    reject_duplicate_json(response_json, MAX_APPEND_RESPONSE_BYTES)?;
+    let response: AuthorityStepAppendResponse =
+        serde_json::from_slice(response_json).map_err(|_| OrchestratorError::InvalidJson)?;
+    if response.request_id != attempt.request_id
+        || response.authority_version_id != expected_authority_version_id
+        || response.authorization_id_sha256 != attempt.authorization_id_sha256
+        || response.claim_digest_sha256 != attempt.step.claim_digest_sha256
+        || response.status != attempt.step.to_status
+        || response.state_version != P::STATE_VERSION
+        || response.step_digest_sha256 != attempt.step.step_digest_sha256
+    {
+        return Err(OrchestratorError::AppendMismatch);
+    }
+    Ok(RecordedObservation {
+        replayed: response.result == AppendResult::StepReplayed,
+        authorization_id_sha256: attempt.authorization_id_sha256,
+        claim_digest_sha256: attempt.step.claim_digest_sha256,
+        status: attempt.step.to_status,
+        state_version: P::STATE_VERSION,
+        step_digest_sha256: attempt.step.step_digest_sha256,
         phase: PhantomData,
     })
 }
@@ -1388,6 +1724,25 @@ fn mutation_step_digest(step: &MutationIntentStep) -> Result<String, Orchestrato
     })
 }
 
+fn observation_step_digest(step: &ObservationStep) -> Result<String, OrchestratorError> {
+    canonical_sha256(&StepDigestInput {
+        schema_version: step.schema_version,
+        contract: step.contract,
+        ledger_identity_sha256: &step.ledger_identity_sha256,
+        claim_digest_sha256: &step.claim_digest_sha256,
+        state_version: step.state_version,
+        step_code: step.step_code,
+        from_status: step.from_status,
+        to_status: step.to_status,
+        mutation_request_sha256: step.mutation_request_sha256.as_deref(),
+        cloudflare_request_id_sha256: step.cloudflare_request_id_sha256.as_deref(),
+        deployment_set_sha256: step.deployment_set_sha256.as_deref(),
+        evidence_sha256: &step.evidence_sha256,
+        failure_class: step.failure_class,
+        transport_outcome: step.transport_outcome,
+    })
+}
+
 fn snapshot_step_digest(
     claim: &SnapshotClaim,
     step: &SnapshotStep,
@@ -1662,6 +2017,292 @@ mod tests {
     }
 
     #[test]
+    fn post_readback_binding_is_canonical_snapshot_owned_and_survives_expiry() {
+        let snapshot = controller_inflight_snapshot();
+        let observation = prepare_controller_observation(&snapshot, NOW).unwrap();
+        let binding = observation.binding();
+        assert_eq!(binding.service_name(), "controller-staging");
+        assert_eq!(binding.target_version_id(), "controller-version-002");
+        assert_eq!(binding.canonical_request_digest_sha256(), REQUEST_DIGEST);
+        assert_eq!(
+            binding.mutation_annotation(),
+            "cinatoken-ring-v1:1111111111111111111111111111111111111111111111111111111111111111:2:f129da426a8b40e5fa9f8f8ffb53747a0ed6b4feda21093ef570b8fe847aa293"
+        );
+
+        assert!(prepare_controller_observation(&snapshot, NOW + 301).is_ok());
+        assert!(matches!(
+            prepare_controller_observation(&snapshot, NOW - 1),
+            Err(OrchestratorError::ClockBeforeClaim)
+        ));
+        assert!(matches!(
+            prepare_edge_observation(&snapshot, NOW),
+            Err(OrchestratorError::DecisionMismatch)
+        ));
+        assert!(matches!(
+            prepare_controller_observation(&verified(base_snapshot()), NOW),
+            Err(OrchestratorError::DecisionMismatch)
+        ));
+    }
+
+    #[test]
+    fn post_readback_rejects_persisted_request_digest_drift() {
+        let mut raw = base_snapshot();
+        append_t1(&mut raw);
+        append_controller_intent(&mut raw);
+        raw.steps[1].mutation_request_sha256 = Some("a".repeat(64));
+        raw.steps[1].step_digest_sha256 = snapshot_step_digest(&raw.claim, &raw.steps[1]).unwrap();
+        let snapshot = verified(raw);
+        assert!(matches!(
+            prepare_controller_observation(&snapshot, NOW),
+            Err(OrchestratorError::RequestBindingMismatch)
+        ));
+
+        let mut raw = base_snapshot();
+        append_t1(&mut raw);
+        append_controller_intent(&mut raw);
+        append_controller_post_readback(&mut raw);
+        append_edge_pre_readback(&mut raw);
+        append_edge_intent(&mut raw);
+        raw.steps[4].mutation_request_sha256 = Some("a".repeat(64));
+        raw.steps[4].step_digest_sha256 = snapshot_step_digest(&raw.claim, &raw.steps[4]).unwrap();
+        let snapshot = verified(raw);
+        assert!(matches!(
+            prepare_edge_observation(&snapshot, NOW),
+            Err(OrchestratorError::RequestBindingMismatch)
+        ));
+    }
+
+    #[test]
+    fn observation_input_cannot_inject_the_snapshot_owned_request_digest() {
+        let snapshot = controller_inflight_snapshot();
+        let observation = prepare_controller_observation(&snapshot, NOW).unwrap();
+        let attempt = begin_observation_append(
+            observation,
+            ObservationRecordInput {
+                deployment_set_sha256: "a".repeat(64),
+                cloudflare_request_id_sha256: Some("c".repeat(64)),
+                evidence_sha256: "b".repeat(64),
+                transport_outcome: TransportOutcome::Success,
+                stability: ObservationStability::Confirmed,
+            },
+            "observation-request-001",
+        )
+        .unwrap();
+        assert_eq!(
+            attempt.step().mutation_request_sha256.as_deref(),
+            Some(REQUEST_DIGEST)
+        );
+        assert_eq!(
+            attempt.step().deployment_set_sha256.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            attempt.step().cloudflare_request_id_sha256.as_deref(),
+            Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+        );
+
+        let persisted_shape = snapshot_step_from_observation(&snapshot, attempt.step());
+        assert!(valid_post_readback(&persisted_shape));
+        assert_eq!(
+            snapshot_step_digest(&snapshot.snapshot.claim, &persisted_shape).unwrap(),
+            attempt.step().step_digest_sha256
+        );
+    }
+
+    #[test]
+    fn observation_outcomes_map_to_the_existing_post_readback_rules() {
+        let success = controller_observation_attempt(
+            TransportOutcome::Success,
+            ObservationStability::Confirmed,
+        );
+        assert_observation_shape(
+            success.step(),
+            ClaimStatus::ControllerVerified,
+            FailureClass::None,
+        );
+
+        let ambiguous = controller_observation_attempt(
+            TransportOutcome::Ambiguous,
+            ObservationStability::Confirmed,
+        );
+        assert_observation_shape(
+            ambiguous.step(),
+            ClaimStatus::ControllerVerified,
+            FailureClass::None,
+        );
+
+        let rejected =
+            controller_observation_attempt(TransportOutcome::Rejected, ObservationStability::Drift);
+        assert_observation_shape(
+            rejected.step(),
+            ClaimStatus::RecoveryRequired,
+            FailureClass::HttpRejected,
+        );
+
+        let drift =
+            controller_observation_attempt(TransportOutcome::Success, ObservationStability::Drift);
+        assert_observation_shape(
+            drift.step(),
+            ClaimStatus::RecoveryRequired,
+            FailureClass::ReadbackDrift,
+        );
+
+        let unstable = controller_observation_attempt(
+            TransportOutcome::Ambiguous,
+            ObservationStability::TargetNotStable,
+        );
+        assert_observation_shape(
+            unstable.step(),
+            ClaimStatus::RecoveryRequired,
+            FailureClass::TargetNotStable,
+        );
+
+        let snapshot = controller_inflight_snapshot();
+        let observation = prepare_controller_observation(&snapshot, NOW).unwrap();
+        assert!(matches!(
+            begin_observation_append(
+                observation,
+                observation_input(
+                    TransportOutcome::NotApplicable,
+                    ObservationStability::Confirmed
+                ),
+                "observation-request-invalid"
+            ),
+            Err(OrchestratorError::InvalidField("transport_outcome"))
+        ));
+
+        let snapshot = controller_inflight_snapshot();
+        let observation = prepare_controller_observation(&snapshot, NOW).unwrap();
+        let mut input =
+            observation_input(TransportOutcome::Success, ObservationStability::Confirmed);
+        input.cloudflare_request_id_sha256 = None;
+        let no_cloudflare_request_id =
+            begin_observation_append(observation, input, "observation-request-without-cf-id")
+                .unwrap();
+        assert_eq!(
+            no_cloudflare_request_id.step().cloudflare_request_id_sha256,
+            None
+        );
+    }
+
+    #[test]
+    fn observation_append_response_is_exact_and_replay_is_readback_only() {
+        let appended_attempt = controller_observation_attempt(
+            TransportOutcome::Success,
+            ObservationStability::Confirmed,
+        );
+        let appended_response = observation_response(
+            &appended_attempt,
+            "step_appended",
+            "observation-request-001",
+        );
+        let appended = verify_observation_append(
+            appended_attempt,
+            appended_response.as_bytes(),
+            "authority-version-001",
+        )
+        .unwrap();
+        assert!(!appended.was_replayed());
+        assert_eq!(appended.status(), ClaimStatus::ControllerVerified);
+        assert_eq!(appended.state_version(), 3);
+
+        let replay_attempt = controller_observation_attempt(
+            TransportOutcome::Ambiguous,
+            ObservationStability::Confirmed,
+        );
+        let replay_response =
+            observation_response(&replay_attempt, "step_replayed", "observation-request-001");
+        let replay = verify_observation_append(
+            replay_attempt,
+            replay_response.as_bytes(),
+            "authority-version-001",
+        )
+        .unwrap();
+        assert!(replay.was_replayed());
+        assert_eq!(replay.status(), ClaimStatus::ControllerVerified);
+        assert_eq!(replay.state_version(), 3);
+
+        for field in [
+            "requestId",
+            "authorizationIdSha256",
+            "claimDigestSha256",
+            "status",
+            "stateVersion",
+            "stepDigestSha256",
+            "authorityVersionId",
+        ] {
+            let attempt = controller_observation_attempt(
+                TransportOutcome::Success,
+                ObservationStability::Confirmed,
+            );
+            let mut response: Value = serde_json::from_str(&observation_response(
+                &attempt,
+                "step_replayed",
+                "observation-request-001",
+            ))
+            .unwrap();
+            response[field] = match field {
+                "requestId" | "authorityVersionId" => Value::from("wrong-value"),
+                "status" => Value::from("completed"),
+                "stateVersion" => Value::from(6),
+                _ => Value::from("a".repeat(64)),
+            };
+            assert!(matches!(
+                verify_observation_append(
+                    attempt,
+                    serde_json::to_string(&response).unwrap().as_bytes(),
+                    "authority-version-001"
+                ),
+                Err(OrchestratorError::AppendMismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn controller_and_edge_observation_capabilities_are_isolated() {
+        let controller_snapshot = controller_inflight_snapshot();
+        let controller = prepare_controller_observation(&controller_snapshot, NOW).unwrap();
+
+        let edge_snapshot = edge_inflight_snapshot();
+        let edge = prepare_edge_observation(&edge_snapshot, NOW).unwrap();
+        assert_eq!(edge.binding().service_name(), "edge-staging");
+        assert_eq!(edge.binding().target_version_id(), "edge-version-002");
+        assert_eq!(
+            edge.binding().canonical_request_digest_sha256(),
+            EDGE_REQUEST_DIGEST
+        );
+        assert!(edge.binding().mutation_annotation().contains(":5:"));
+        assert_ne!(
+            controller.binding().canonical_request_digest_sha256(),
+            edge.binding().canonical_request_digest_sha256()
+        );
+        assert!(matches!(
+            prepare_controller_observation(&edge_snapshot, NOW),
+            Err(OrchestratorError::DecisionMismatch)
+        ));
+
+        let edge_attempt = begin_observation_append(
+            edge,
+            observation_input(TransportOutcome::Ambiguous, ObservationStability::Confirmed),
+            "edge-observation-request-001",
+        )
+        .unwrap();
+        assert_eq!(edge_attempt.step().state_version, 6);
+        assert_eq!(edge_attempt.step().step_code, StepCode::EdgePostReadback);
+        assert_eq!(edge_attempt.step().to_status, ClaimStatus::Completed);
+        assert_eq!(
+            edge_attempt.step().mutation_request_sha256.as_deref(),
+            Some(EDGE_REQUEST_DIGEST)
+        );
+        let persisted_shape = snapshot_step_from_observation(&edge_snapshot, edge_attempt.step());
+        assert!(valid_post_readback(&persisted_shape));
+        assert_eq!(
+            snapshot_step_digest(&edge_snapshot.snapshot.claim, &persisted_shape).unwrap(),
+            edge_attempt.step().step_digest_sha256
+        );
+    }
+
+    #[test]
     fn only_exact_step_appended_mints_a_single_use_typed_permit() {
         let mut raw = base_snapshot();
         append_t1(&mut raw);
@@ -1867,6 +2508,106 @@ mod tests {
         let completed = verified(raw);
         assert_eq!(completed.status(), ClaimStatus::Completed);
         assert_eq!(completed.decision(NOW), Ok(RunnerDecision::SealReceipt));
+    }
+
+    fn controller_inflight_snapshot() -> VerifiedSnapshot {
+        let mut raw = base_snapshot();
+        append_t1(&mut raw);
+        append_controller_intent(&mut raw);
+        verified(raw)
+    }
+
+    fn edge_inflight_snapshot() -> VerifiedSnapshot {
+        let mut raw = base_snapshot();
+        append_t1(&mut raw);
+        append_controller_intent(&mut raw);
+        append_controller_post_readback(&mut raw);
+        append_edge_pre_readback(&mut raw);
+        append_edge_intent(&mut raw);
+        verified(raw)
+    }
+
+    fn observation_input(
+        transport_outcome: TransportOutcome,
+        stability: ObservationStability,
+    ) -> ObservationRecordInput {
+        ObservationRecordInput {
+            deployment_set_sha256: "7".repeat(64),
+            cloudflare_request_id_sha256: Some("c".repeat(64)),
+            evidence_sha256: EVIDENCE_DIGEST.to_owned(),
+            transport_outcome,
+            stability,
+        }
+    }
+
+    fn controller_observation_attempt(
+        transport_outcome: TransportOutcome,
+        stability: ObservationStability,
+    ) -> ObservationAppendAttempt<ControllerObservation> {
+        let snapshot = controller_inflight_snapshot();
+        let observation = prepare_controller_observation(&snapshot, NOW).unwrap();
+        begin_observation_append(
+            observation,
+            observation_input(transport_outcome, stability),
+            "observation-request-001",
+        )
+        .unwrap()
+    }
+
+    fn assert_observation_shape(
+        step: &ObservationStep,
+        expected_status: ClaimStatus,
+        expected_failure: FailureClass,
+    ) {
+        assert_eq!(step.state_version, 3);
+        assert_eq!(step.step_code, StepCode::ControllerPostReadback);
+        assert_eq!(step.from_status, ClaimStatus::ControllerInflight);
+        assert_eq!(step.to_status, expected_status);
+        assert_eq!(step.failure_class, expected_failure);
+        assert_eq!(
+            step.mutation_request_sha256.as_deref(),
+            Some(REQUEST_DIGEST)
+        );
+        assert!(step.deployment_set_sha256.is_some());
+    }
+
+    fn snapshot_step_from_observation(
+        snapshot: &VerifiedSnapshot,
+        step: &ObservationStep,
+    ) -> SnapshotStep {
+        SnapshotStep {
+            state_version: step.state_version,
+            step_code: step.step_code,
+            from_status: step.from_status,
+            to_status: step.to_status,
+            actor_execution_id_sha256: snapshot.snapshot.claim.claim_owner_sha256.clone(),
+            mutation_request_sha256: step.mutation_request_sha256.clone(),
+            cloudflare_request_id_sha256: step.cloudflare_request_id_sha256.clone(),
+            deployment_set_sha256: step.deployment_set_sha256.clone(),
+            evidence_sha256: step.evidence_sha256.clone(),
+            failure_class: step.failure_class,
+            transport_outcome: step.transport_outcome,
+            step_digest_sha256: step.step_digest_sha256.clone(),
+            recorded_at: NOW + u64::from(step.state_version),
+        }
+    }
+
+    fn observation_response<P: ObservationPhase>(
+        attempt: &ObservationAppendAttempt<P>,
+        result: &str,
+        request_id: &str,
+    ) -> String {
+        serde_json::json!({
+            "result": result,
+            "requestId": request_id,
+            "authorizationIdSha256": attempt.authorization_id_sha256,
+            "claimDigestSha256": attempt.step.claim_digest_sha256,
+            "status": attempt.step.to_status,
+            "stateVersion": attempt.step.state_version,
+            "stepDigestSha256": attempt.step.step_digest_sha256,
+            "authorityVersionId": "authority-version-001"
+        })
+        .to_string()
     }
 
     fn base_snapshot() -> AuthoritySnapshot {

@@ -3,9 +3,11 @@ import { describe, expect, test } from "bun:test";
 import {
   DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
   RING_TRANSITION_ACCESS_SERVICE_TOKEN_MODE,
+  RING_TRANSITION_STABLE_READBACK_EVIDENCE_CONTRACT,
   buildClaimAuthorityReadRequest,
   buildClaimAuthorityStepRequest,
   buildCloudflareDeploymentMutationRequest,
+  ringTransitionDeploymentMutationBinding,
   ringTransitionTrustConfigDigestSha256,
   validatePublishedRingTransitionTrust,
 } from "../tools/relay_container_ring_transition_execution_contract.mjs";
@@ -32,6 +34,8 @@ const ACCESS_CLIENT_SECRET = "access-client-secret-00000000000001";
 const READ_TOKEN_ID = "read-token-identity-v1";
 const DEPLOY_TOKEN_ID = "deploy-token-identity-v1";
 const CLAIM_CREDENTIAL_ID = "b".repeat(64);
+const FIXED_MUTATION_ANNOTATION =
+  `cinatoken-ring-v1:${"1".repeat(64)}:2:${"2".repeat(64)}`;
 const RUST_HMAC_VECTOR =
   "eyJhbGciOiJIUzI1NiIsImtpZCI6ImN1cnJlbnQtdjEiLCJ0eXAiOiJDSU5BVE9LRU4tUklORy1BVVRIT1JJVFkifQ.eyJhdWRpZW5jZSI6ImF1dGhvcml0eS1zdGFnaW5nIiwiYm9keV9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiY3JlZGVudGlhbF9pZF9zaGEyNTYiOiJhMDFiZmVmZDZhMjVkOTEwN2U5NDcyODA5OTczMDUyYTdlM2YwOTI2NjYxNmVhZTJkZTBhZTVjZjA5ZmIyYmYzIiwiZXhwaXJlc19hdCI6MTgwMDAwMDAzMCwiaXNzdWVkX2F0IjoxODAwMDAwMDAwLCJpc3N1ZXIiOiJydW5uZXItc3RhZ2luZyIsIm1ldGhvZCI6IkdFVCIsInBhdGhfYW5kX3F1ZXJ5IjoiL2ludGVybmFsL3YxL3JpbmctdHJhbnNpdGlvbi9wcmVmbGlnaHQiLCJyZXF1ZXN0X2lkIjoicmVxdWVzdC0xIn0.ar2B2dDPZLGvIOwK930i5TOHmv8EBKgF1HQWowJxq2c";
 
@@ -91,6 +95,7 @@ describe("Relay Container native ring-transition transport", () => {
       credentialsRead: false,
       networkRequestsPerformed: false,
       mutationPerformed: false,
+      readbackObservationSeconds: 5,
     });
     expect(result.credentialEnvironmentBindings).toEqual(
       Object.values(RING_TRANSITION_TRANSPORT_ENV),
@@ -396,7 +401,7 @@ describe("Relay Container native ring-transition transport", () => {
     );
     expect(deployment).toMatchObject({
       serviceName: anchors.controllerServiceName,
-      mutationAnnotation: "cinatoken staging ring transition 1111111111111111",
+      mutationAnnotation: FIXED_MUTATION_ANNOTATION,
       activeVersions: [
         { versionId: "controller-version-002", percentage: 100 },
       ],
@@ -470,6 +475,208 @@ describe("Relay Container native ring-transition transport", () => {
     expect(calls.every(({ options }) => options.signal instanceof AbortSignal)).toBe(
       true,
     );
+  });
+
+  test("coordinates stable deployment and target-version pairs without recovering POST capability", async () => {
+    const expected = {
+      success: "confirmed-applied",
+      ambiguous: "confirmed-applied-after-response-loss",
+      rejected: "recovery-required-transport-rejected",
+    };
+    for (const transportOutcome of Object.keys(expected)) {
+      const harness = createStableReadbackHarness();
+      await harness.transport.verifyCredentialIdentities();
+      const result =
+        await harness.transport.classifyDeploymentMutationReadback({
+          claim: harness.claim,
+          phase: "controller",
+          stateVersion: 2,
+          transportOutcome,
+        });
+      expect(result).toMatchObject({
+        classification: expected[transportOutcome],
+        terminalState:
+          transportOutcome === "rejected" ? "recovery_required" : "verified",
+        retryMutation: false,
+        forwardRepairRequired: transportOutcome === "rejected",
+        transportOutcome,
+        failureStage: null,
+        evidenceContract: RING_TRANSITION_STABLE_READBACK_EVIDENCE_CONTRACT,
+      });
+      expect(result.evidenceSha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(harness.events).toEqual([
+        "deployment-get",
+        "target-version-get",
+        "sleep:5000",
+        "deployment-get",
+        "target-version-get",
+      ]);
+      expect(result.readbackPair).toMatchObject({
+        observationSeconds: 5,
+        observedIntervalMilliseconds: 5_000,
+      });
+      expect(canonicalJson(result.readbackPair.snapshots[0])).toBe(
+        canonicalJson(result.readbackPair.snapshots[1]),
+      );
+      expect(result.readbackPair.snapshots[0]).toEqual({
+        deploymentSetSha256:
+          result.readbackPair.snapshots[1].deploymentSetSha256,
+        activeVersions: [
+          {
+            versionId: harness.binding.targetVersionId,
+            percentage: 100,
+          },
+        ],
+        mutationAnnotation: harness.binding.mutationAnnotation,
+        versionDetailSha256:
+          result.readbackPair.snapshots[1].versionDetailSha256,
+      });
+      const serialized = JSON.stringify(result);
+      for (const forbidden of [
+        READ_TOKEN,
+        CLAIM_SECRET,
+        DEPLOY_TOKEN,
+        ACCESS_CLIENT_ID,
+        ACCESS_CLIENT_SECRET,
+        "freshIntentPermit",
+        "\"request\"",
+        "\"payload\"",
+        "\"rawResponse\"",
+      ]) {
+        expect(serialized).not.toContain(forbidden);
+      }
+      const readCalls = cloudflareReadCalls(harness.calls);
+      expect(readCalls).toHaveLength(4);
+      expect(cloudflareDeploymentPosts(harness.calls)).toHaveLength(0);
+      for (const call of readCalls) {
+        expect(call.options.method).toBe("GET");
+        expect(call.options.redirect).toBe("error");
+        expect(call.options.headers.authorization).toBe(`Bearer ${READ_TOKEN}`);
+        expect(call.options.headers["CF-Access-Client-Id"]).toBeUndefined();
+        expect(call.options.headers["CF-Access-Client-Secret"]).toBeUndefined();
+      }
+    }
+
+    const first = createStableReadbackHarness();
+    const second = createStableReadbackHarness();
+    await first.transport.verifyCredentialIdentities();
+    await second.transport.verifyCredentialIdentities();
+    const input = {
+      phase: "controller",
+      stateVersion: 2,
+      transportOutcome: "ambiguous",
+    };
+    const [left, right] = await Promise.all([
+      first.transport.classifyDeploymentMutationReadback({
+        ...input,
+        claim: first.claim,
+      }),
+      second.transport.classifyDeploymentMutationReadback({
+        ...input,
+        claim: second.claim,
+      }),
+    ]);
+    expect(left.evidenceSha256).toBe(right.evidenceSha256);
+  });
+
+  test("routes annotation, version-detail, and observation-time drift to recovery", async () => {
+    for (const scenario of [
+      {
+        deploymentAnnotationDrift: true,
+        classification: "recovery-required-readback-drift",
+      },
+      {
+        versionDetailDrift: true,
+        classification: "recovery-required-readback-drift",
+      },
+      {
+        sleepAdvanceMilliseconds: 4_999,
+        classification: "recovery-required-observation-window",
+      },
+      {
+        sleepAdvanceMilliseconds: 120_001,
+        classification: "recovery-required-observation-window",
+      },
+    ]) {
+      const harness = createStableReadbackHarness(scenario);
+      await harness.transport.verifyCredentialIdentities();
+      const result =
+        await harness.transport.classifyDeploymentMutationReadback({
+          claim: harness.claim,
+          phase: "controller",
+          stateVersion: 2,
+          transportOutcome: "ambiguous",
+        });
+      expect(result).toMatchObject({
+        classification: scenario.classification,
+        terminalState: "recovery_required",
+        retryMutation: false,
+        forwardRepairRequired: true,
+      });
+      expect(harness.events).toEqual([
+        "deployment-get",
+        "target-version-get",
+        "sleep:5000",
+        "deployment-get",
+        "target-version-get",
+      ]);
+      expect(cloudflareDeploymentPosts(harness.calls)).toHaveLength(0);
+    }
+  });
+
+  test("fails closed at every GET boundary without redirect, proxy, or retry recovery", async () => {
+    for (let failReadIndex = 0; failReadIndex < 4; failReadIndex += 1) {
+      const harness = createStableReadbackHarness({
+        failReadIndex,
+        redirectFailure: failReadIndex === 0,
+        poisonProxy: true,
+      });
+      await harness.transport.verifyCredentialIdentities();
+      const result =
+        await harness.transport.classifyDeploymentMutationReadback({
+          claim: harness.claim,
+          phase: "controller",
+          stateVersion: 2,
+          transportOutcome: "ambiguous",
+        });
+      expect(result).toMatchObject({
+        classification: "recovery-required-readback-failed",
+        terminalState: "recovery_required",
+        retryMutation: false,
+        forwardRepairRequired: true,
+        failureStage: [
+          "first_deployment",
+          "first_target_version",
+          "second_deployment",
+          "second_target_version",
+        ][failReadIndex],
+        readbackPair: null,
+      });
+      expect(result.evidenceSha256).toMatch(/^[0-9a-f]{64}$/);
+      const readCalls = cloudflareReadCalls(harness.calls);
+      expect(readCalls).toHaveLength(failReadIndex + 1);
+      expect(cloudflareDeploymentPosts(harness.calls)).toHaveLength(0);
+      expect(
+        harness.events.filter((event) => event.startsWith("sleep:")),
+      ).toHaveLength(failReadIndex >= 2 ? 1 : 0);
+      for (const call of readCalls) {
+        expect(call.options.redirect).toBe("error");
+        expect(call.options.headers.authorization).toBe(`Bearer ${READ_TOKEN}`);
+        expect(call.options.headers["CF-Access-Client-Id"]).toBeUndefined();
+        expect(call.options.headers["CF-Access-Client-Secret"]).toBeUndefined();
+      }
+      const serialized = JSON.stringify(result);
+      for (const secret of [
+        READ_TOKEN,
+        CLAIM_SECRET,
+        DEPLOY_TOKEN,
+        ACCESS_CLIENT_ID,
+        ACCESS_CLIENT_SECRET,
+        "proxy-poison.invalid",
+      ]) {
+        expect(serialized).not.toContain(secret);
+      }
+    }
   });
 
   test("clears every proof after read, deploy, or preflight revalidation failure", async () => {
@@ -975,6 +1182,132 @@ describe("Relay Container native ring-transition transport", () => {
   });
 });
 
+function createStableReadbackHarness({
+  deploymentAnnotationDrift = false,
+  versionDetailDrift = false,
+  sleepAdvanceMilliseconds = 5_000,
+  failReadIndex = null,
+  redirectFailure = false,
+  poisonProxy = false,
+} = {}) {
+  const anchors = publishedAnchors();
+  const claim = mutationClaim(anchors, 1_750_000_000);
+  const binding = ringTransitionDeploymentMutationBinding({
+    anchors,
+    claim,
+    phase: "controller",
+    stateVersion: 2,
+  });
+  const calls = [];
+  const events = [];
+  let readCallIndex = 0;
+  let deploymentReadIndex = 0;
+  let versionReadIndex = 0;
+  let nowMilliseconds = 1_800_000_000_000;
+  const environment = credentialEnvironment();
+  if (poisonProxy) {
+    environment.HTTPS_PROXY =
+      `https://${ACCESS_CLIENT_ID}:${ACCESS_CLIENT_SECRET}` +
+      "@proxy-poison.invalid";
+    environment.HTTP_PROXY = environment.HTTPS_PROXY;
+    environment.ALL_PROXY = environment.HTTPS_PROXY;
+  }
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    if (url.endsWith("/tokens/verify")) {
+      const id = options.headers.authorization.includes(READ_TOKEN)
+        ? READ_TOKEN_ID
+        : DEPLOY_TOKEN_ID;
+      return jsonResponse({ success: true, result: { id, status: "active" } });
+    }
+    if (url.endsWith("/preflight")) {
+      return authorityPreflightResponse(options, anchors);
+    }
+    const parsed = new URL(url);
+    const isDeployment = parsed.pathname.endsWith("/deployments");
+    const isTargetVersion = parsed.pathname.includes("/versions/");
+    if (isDeployment || isTargetVersion) {
+      events.push(isDeployment ? "deployment-get" : "target-version-get");
+      const currentReadIndex = readCallIndex;
+      readCallIndex += 1;
+      if (currentReadIndex === failReadIndex) {
+        if (redirectFailure) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              errors: [{ code: 10_001, message: ACCESS_CLIENT_SECRET }],
+            }),
+            {
+              status: 302,
+              headers: {
+                "content-type": "application/json",
+                location: "https://proxy-poison.invalid/credential-capture",
+              },
+            },
+          );
+        }
+        throw new Error(
+          `${READ_TOKEN}:${CLAIM_SECRET}:${DEPLOY_TOKEN}:` +
+            `${ACCESS_CLIENT_ID}:${ACCESS_CLIENT_SECRET}`,
+        );
+      }
+      if (isDeployment) {
+        const annotation =
+          deploymentAnnotationDrift && deploymentReadIndex === 1
+            ? `${binding.mutationAnnotation}:drift`
+            : binding.mutationAnnotation;
+        deploymentReadIndex += 1;
+        return jsonResponse({
+          success: true,
+          result: {
+            deployments: [
+              {
+                id: "deployment-controller-002",
+                strategy: "percentage",
+                versions: [
+                  {
+                    version_id: binding.targetVersionId,
+                    percentage: 100,
+                  },
+                ],
+                annotations: { "workers/message": annotation },
+              },
+            ],
+          },
+        });
+      }
+      const compatibilityDate =
+        versionDetailDrift && versionReadIndex === 1
+          ? "2026-07-24"
+          : "2026-07-23";
+      versionReadIndex += 1;
+      return jsonResponse({
+        success: true,
+        result: {
+          id: binding.targetVersionId,
+          compatibility_date: compatibilityDate,
+        },
+      });
+    }
+    throw new Error("unexpected local test request");
+  };
+  const transport = createRingTransitionNativeTransport({
+    anchors,
+    credentialIds: credentialIds(),
+    environment,
+    fetchImpl,
+    clockImpl: () => new Date(nowMilliseconds),
+    sleepImpl: async (milliseconds) => {
+      events.push(`sleep:${milliseconds}`);
+      nowMilliseconds += sleepAdvanceMilliseconds;
+    },
+    requestIdFactory: sequentialRequestIds([
+      "readback-preflight-request",
+    ]),
+  });
+  return { anchors, binding, calls, claim, events, transport };
+}
+
 function publishedAnchors(overrides = {}) {
   const anchors = {
     ...DEPLOYMENT_PINNED_RING_TRANSITION_TRUST,
@@ -1083,8 +1416,10 @@ function mutationAuthorization(anchors, phase) {
   };
 }
 
-function mutationClaim(anchors) {
-  const now = Math.floor(Date.now() / 1000);
+function mutationClaim(
+  anchors,
+  now = Math.floor(Date.now() / 1000),
+) {
   const claim = {
     schemaVersion: 1,
     contract: "cinatoken-relay-container-ring-transition-execution-claim-v1",
@@ -1172,8 +1507,7 @@ function successfulFetch(calls, anchors) {
               { version_id: "controller-version-002", percentage: 100 },
             ],
             annotations: {
-              "workers/message":
-                "cinatoken staging ring transition 1111111111111111",
+              "workers/message": FIXED_MUTATION_ANNOTATION,
             },
           },
         ],
@@ -1188,6 +1522,15 @@ function cloudflareDeploymentPosts(calls) {
       options.method === "POST" &&
       url.startsWith("https://api.cloudflare.com/") &&
       url.endsWith("/deployments"),
+  );
+}
+
+function cloudflareReadCalls(calls) {
+  return calls.filter(
+    ({ url, options }) =>
+      options.method === "GET" &&
+      url.startsWith("https://api.cloudflare.com/") &&
+      url.includes("/workers/scripts/"),
   );
 }
 

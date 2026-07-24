@@ -19,7 +19,12 @@ export const RING_TRANSITION_EXPIRY_EVENT_CONTRACT =
   "cinatoken-relay-container-ring-transition-expiry-event-v1";
 export const RING_TRANSITION_DEPLOYMENT_MUTATION_INTENT_CONTRACT =
   "cinatoken-relay-container-ring-transition-deployment-mutation-intent-v1";
+export const RING_TRANSITION_STABLE_READBACK_EVIDENCE_CONTRACT =
+  "cinatoken-relay-container-ring-transition-stable-readback-evidence-v1";
 export const RING_TRANSITION_ACCESS_SERVICE_TOKEN_MODE = "service-token-v1";
+export const RING_TRANSITION_READBACK_OBSERVATION_SECONDS_MINIMUM = 5;
+export const RING_TRANSITION_READBACK_OBSERVATION_SECONDS_MAXIMUM = 120;
+export const RING_TRANSITION_READBACK_OBSERVATION_SECONDS_DEFAULT = 5;
 export const RING_TRANSITION_AUTHORITY_HEADER =
   "x-cinatoken-ring-authority";
 export const RING_TRANSITION_CLAIM_AUTHORITY_PATH =
@@ -38,6 +43,7 @@ export const DEPLOYMENT_PINNED_RING_TRANSITION_TRUST = deepFreeze({
   enabled: false,
   environment: "staging",
   cloudflareApiOrigin: CLOUDFLARE_API_ORIGIN,
+  observationSeconds: RING_TRANSITION_READBACK_OBSERVATION_SECONDS_DEFAULT,
   accessServiceTokenMode: "disabled",
   accessClientIdSha256: null,
   claimAuthorityOrigin: null,
@@ -91,6 +97,8 @@ export function describeRingTransitionMutationRunner() {
       "seal-redacted-receipt",
     ],
     mutationTransport: "native-bounded-fetch-zero-retry",
+    readbackObservationSeconds:
+      RING_TRANSITION_READBACK_OBSERVATION_SECONDS_DEFAULT,
     nativeTransportImplemented: true,
     immutableReleaseArtifactPublished: false,
     ambiguousMutationResponsePolicy:
@@ -125,6 +133,12 @@ export function validatePublishedRingTransitionTrust(
     trust.cloudflareApiOrigin,
     CLOUDFLARE_API_ORIGIN,
     "[trust] Cloudflare API origin",
+  );
+  requireInteger(
+    trust.observationSeconds,
+    RING_TRANSITION_READBACK_OBSERVATION_SECONDS_MINIMUM,
+    RING_TRANSITION_READBACK_OBSERVATION_SECONDS_MAXIMUM,
+    "[trust] observationSeconds",
   );
   requireExact(
     trust.accessServiceTokenMode,
@@ -717,55 +731,84 @@ export function validateRingTransitionExecutionStep(value) {
 
 export function classifyDeploymentMutationAttempt({
   transportOutcome,
-  targetVersionId,
-  authorizationIdSha256,
+  binding,
   readbacks,
+  observationSeconds,
 }) {
   if (!["success", "ambiguous", "rejected"].includes(transportOutcome)) {
     throw new Error("[mutation] transport outcome is invalid");
   }
-  requireToken(targetVersionId, versionIdPattern, "[mutation] target version");
-  requireSha256(authorizationIdSha256, "[mutation] authorization ID");
-  const expectedAnnotation =
-    `cinatoken staging ring transition ${authorizationIdSha256.slice(0, 16)}`;
+  const expected = normalizeMutationReadbackBinding(binding);
+  requireInteger(
+    observationSeconds,
+    RING_TRANSITION_READBACK_OBSERVATION_SECONDS_MINIMUM,
+    RING_TRANSITION_READBACK_OBSERVATION_SECONDS_MAXIMUM,
+    "[mutation] observationSeconds",
+  );
   if (!Array.isArray(readbacks) || readbacks.length !== 2) {
     throw new Error("[mutation] exactly two authenticated readbacks are required");
   }
   const normalized = readbacks.map((item, index) =>
-    normalizeTargetReadback(item, targetVersionId, index),
+    normalizeTargetReadback(item, index),
   );
+  const snapshots = normalized.map(({ snapshot }) => snapshot);
   const stable =
-    canonicalJson(normalized[0]) === canonicalJson(normalized[1]);
+    canonicalJson(snapshots[0]) === canonicalJson(snapshots[1]);
+  const observedIntervalMilliseconds =
+    normalized[1].observedAtUnixMilliseconds -
+    normalized[0].observedAtUnixMilliseconds;
+  const minimumIntervalMilliseconds = observationSeconds * 1_000;
+  const maximumIntervalMilliseconds =
+    RING_TRANSITION_READBACK_OBSERVATION_SECONDS_MAXIMUM * 1_000;
+  const observationWindowValid =
+    observedIntervalMilliseconds >= minimumIntervalMilliseconds &&
+    observedIntervalMilliseconds <= maximumIntervalMilliseconds;
   const targetConfirmed =
     stable &&
-    normalized[0].activeVersions.length === 1 &&
-    normalized[0].activeVersions[0].versionId === targetVersionId &&
-    normalized[0].activeVersions[0].percentage === 100 &&
-    normalized[0].mutationAnnotation === expectedAnnotation;
+    observationWindowValid &&
+    snapshots[0].activeVersions.length === 1 &&
+    snapshots[0].activeVersions[0].versionId === expected.targetVersionId &&
+    snapshots[0].activeVersions[0].percentage === 100 &&
+    snapshots[0].mutationAnnotation === expected.mutationAnnotation;
+  const readbackPair = deepFreeze({
+    observationSeconds,
+    observedIntervalMilliseconds,
+    firstObservedAtUnixMilliseconds: normalized[0].observedAtUnixMilliseconds,
+    secondObservedAtUnixMilliseconds: normalized[1].observedAtUnixMilliseconds,
+    snapshots,
+  });
   if (targetConfirmed && transportOutcome === "success") {
-    return {
+    return deepFreeze({
       classification: "confirmed-applied",
       terminalState: "verified",
       retryMutation: false,
       forwardRepairRequired: false,
-    };
+      readbackPair,
+    });
   }
   if (targetConfirmed && transportOutcome === "ambiguous") {
-    return {
+    return deepFreeze({
       classification: "confirmed-applied-after-response-loss",
       terminalState: "verified",
       retryMutation: false,
       forwardRepairRequired: false,
-    };
+      readbackPair,
+    });
   }
-  return {
-    classification: stable
-      ? "recovery-required-target-not-confirmed"
-      : "recovery-required-readback-drift",
+  return deepFreeze({
+    classification:
+      transportOutcome === "rejected"
+        ? "recovery-required-transport-rejected"
+        : !stable
+          ? "recovery-required-readback-drift"
+          : !observationWindowValid
+            ? "recovery-required-observation-window"
+            : "recovery-required-target-not-confirmed",
     terminalState: "recovery_required",
     retryMutation: false,
     forwardRepairRequired: true,
-  };
+    readbackPair,
+  });
 }
 
 export function nextRingTransitionRunnerAction(status) {
@@ -812,12 +855,45 @@ function normalizeServiceClaim(value, label) {
   };
 }
 
-function normalizeTargetReadback(
-  value,
-  targetVersionId,
-  index,
-) {
+function normalizeMutationReadbackBinding(value) {
+  const binding = requireObject(value, "[mutation] binding");
+  requireSha256(
+    binding.authorizationIdSha256,
+    "[mutation] binding authorization ID",
+  );
+  requireSha256(
+    binding.mutationIntentSha256,
+    "[mutation] binding intent digest",
+  );
+  requireToken(
+    binding.targetVersionId,
+    versionIdPattern,
+    "[mutation] binding target version",
+  );
+  if (
+    typeof binding.mutationAnnotation !== "string" ||
+    binding.mutationAnnotation.length < 1 ||
+    binding.mutationAnnotation.length > 256 ||
+    /[\u0000-\u001f\u007f]/.test(binding.mutationAnnotation)
+  ) {
+    throw new Error("[mutation] binding annotation is invalid");
+  }
+  return {
+    authorizationIdSha256: binding.authorizationIdSha256,
+    mutationIntentSha256: binding.mutationIntentSha256,
+    targetVersionId: binding.targetVersionId,
+    mutationAnnotation: binding.mutationAnnotation,
+  };
+}
+
+function normalizeTargetReadback(value, index) {
   const readback = requireObject(value, `[mutation] readback ${index + 1}`);
+  const observedAtUnixMilliseconds = requireInteger(
+    readback.observedAtUnixMilliseconds,
+    0,
+    Number.MAX_SAFE_INTEGER,
+    `[mutation] readback ${index + 1} observation time`,
+  );
   requireSha256(
     readback.deploymentSetSha256,
     `[mutation] readback ${index + 1} deployment set`,
@@ -833,10 +909,14 @@ function normalizeTargetReadback(
     ),
     percentage: version.percentage,
   }));
+  activeVersions.sort((left, right) =>
+    compareAsciiTokens(left.versionId, right.versionId),
+  );
   if (
-    typeof readback.mutationAnnotation !== "string" ||
-    readback.mutationAnnotation.length > 256 ||
-    /[\u0000-\u001f\u007f]/.test(readback.mutationAnnotation)
+    readback.mutationAnnotation !== null &&
+    (typeof readback.mutationAnnotation !== "string" ||
+      readback.mutationAnnotation.length > 256 ||
+      /[\u0000-\u001f\u007f]/.test(readback.mutationAnnotation))
   ) {
     throw new Error(`[mutation] readback ${index + 1} annotation is invalid`);
   }
@@ -850,19 +930,27 @@ function normalizeTargetReadback(
     }
   }
   if (
-    activeVersions.some((version) => version.versionId === targetVersionId) &&
-    activeVersions.length !== 1
+    activeVersions.length < 1 ||
+    activeVersions.length > 2 ||
+    new Set(activeVersions.map(({ versionId }) => versionId)).size !==
+      activeVersions.length ||
+    activeVersions.reduce((sum, version) => sum + version.percentage, 0) !== 100
   ) {
-    return {
+    throw new Error(
+      `[mutation] readback ${index + 1} active versions are invalid`,
+    );
+  }
+  return {
+    observedAtUnixMilliseconds,
+    snapshot: {
       deploymentSetSha256: readback.deploymentSetSha256,
       activeVersions,
       mutationAnnotation: readback.mutationAnnotation,
-    };
-  }
-  return {
-    deploymentSetSha256: readback.deploymentSetSha256,
-    activeVersions,
-    mutationAnnotation: readback.mutationAnnotation,
+      versionDetailSha256: requireSha256(
+        readback.versionDetailSha256,
+        `[mutation] readback ${index + 1} target version detail`,
+      ),
+    },
   };
 }
 
@@ -878,6 +966,12 @@ function validateFingerprintSet(value, label) {
   if (canonicalJson(sorted) !== canonicalJson(value)) {
     throw new Error(`${label} must be sorted`);
   }
+}
+
+function compareAsciiTokens(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
 
 function approvalFingerprints(value) {

@@ -416,7 +416,7 @@ function normalizeActiveVersions(value) {
     }
     return { versionId, percentage };
   });
-  versions.sort((left, right) => left.versionId.localeCompare(right.versionId));
+  versions.sort((left, right) => compareAsciiTokens(left.versionId, right.versionId));
   if (new Set(versions.map((item) => item.versionId)).size !== versions.length) {
     throw new Error("[deployment] active version IDs must be distinct");
   }
@@ -428,6 +428,12 @@ function normalizeActiveVersions(value) {
 
 function canonicalApiJson(value) {
   return JSON.stringify(canonicalApiValue(value));
+}
+
+function compareAsciiTokens(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
 
 function canonicalApiValue(value) {

@@ -1688,6 +1688,40 @@ audit/outbox, followed by exact R2 client-response replay and the deterministic
 Linux canary. No public route or production flag is enabled; Go/VPS remains
 authoritative and production remains **NO-GO**.
 
+## 2026-07-24 Stable Readback And Authority Observation
+
+Phase 1 now includes the local post-mutation proof boundary. The activated
+credential identity compiles a 5-120 second observation interval. A verified
+Controller or Edge inflight snapshot re-derives the persisted canonical
+request and annotation, then performs exactly two read-token-only deployment
+and target-version snapshots separated by that interval. No caller can choose
+the account, service, target, annotation, request digest, interval, origin, or
+path.
+
+Deployment responses are bounded, duplicate-free, percentage-only, and
+normalized into one or two distinct nonzero ASCII-sorted versions totaling
+100. The deployment-set digest is cross-checked against the JavaScript
+contract. The complete target-version result is canonicalized and hashed.
+Stable exact target, 100 percent allocation, matching canonical annotation,
+matching version detail, and a valid 5-120 second window are required for a
+confirmed observation.
+
+The Rust orchestrator separates observation capabilities from mutation
+capabilities. State 3 and state 6 steps obtain their mutation request digest
+only from the verified inflight history. Confirmed success or response loss
+advances; rejected transport, drift, or a stable non-target state enters
+`recovery_required` with the existing exact failure class. One fixed
+Access/HMAC Authority append accepts only exact append or replay. Failed reads
+or append ambiguity remain inflight. Restarts are permanently readback-only
+and cannot recreate the deployment POST.
+
+The release closure is 22 paths and now requires `readback.rs`. The checked-in
+trust remains disabled and the public CLI still stops before claim execution.
+Create-new execution receipts, full restart driver, exact Rust 1.78 Linux
+reproducible release, remote Access/token/revocation evidence, isolated
+staging, and the fault campaign remain P0. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
 ## 2026-07-22 Ordinary HTTP SSE Client-Abort Watchdog v1
 
 At this historical checkpoint, migration 0058 was the local head at 58

@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub mod credentials;
 pub mod orchestrator;
 pub mod publication;
+pub mod readback;
 pub mod release;
 pub mod transport;
 
@@ -122,6 +123,7 @@ pub struct RunnerDescription {
     pub execution_mode: &'static str,
     pub immutable_launcher_compiled: bool,
     pub bounded_native_transport_compiled: bool,
+    pub stable_readback_compiled: bool,
     pub access_service_token_compiled: bool,
     pub release_published: bool,
     pub credentials_read: bool,
@@ -144,6 +146,7 @@ pub fn describe() -> RunnerDescription {
         execution_mode: "compiled-release-only",
         immutable_launcher_compiled: true,
         bounded_native_transport_compiled: true,
+        stable_readback_compiled: true,
         access_service_token_compiled: true,
         release_published: release_trust.enabled,
         credentials_read: false,

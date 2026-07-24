@@ -9,7 +9,13 @@ use crate::credentials::{
 };
 use crate::orchestrator::{
     self, AuthorityAppendAttempt, AuthorizedMutation, FreshIntentPermit, MutationPhase,
-    VerifiedSnapshot,
+    ObservationAppendAttempt, ObservationPhase, ObservationRecordInput, ObservationStability,
+    PreparedObservation, RecordedObservation, TransportOutcome, VerifiedSnapshot,
+};
+use crate::readback::{
+    ReadbackClassification, ReadbackError, ReadbackSnapshot, StableReadbackPair,
+    MAX_DEPLOYMENTS_RESPONSE_BYTES, MAX_OBSERVATION_SECONDS, MAX_TARGET_VERSION_RESPONSE_BYTES,
+    MIN_OBSERVATION_SECONDS,
 };
 use crate::release::{canonical_json, reject_duplicate_json, MAX_SAFE_INTEGER};
 use crate::STAGING_AUTHORITY_ORIGIN;
@@ -104,6 +110,24 @@ impl PreparedControlPlane {
             Err(_) => return MutationAttemptOutcome::ambiguous(None, None, None),
         };
         self.core.deploy_once_at(mutation, now).await
+    }
+
+    pub(crate) async fn observe_once<P: ObservationPhase>(
+        &self,
+        observation: PreparedObservation<P>,
+        outcome: MutationAttemptOutcome,
+    ) -> Result<RecordedObservation<P>, ControlPlaneError> {
+        self.core
+            .observe_once_at(observation, outcome, &SystemObservationSchedule)
+            .await
+    }
+
+    pub(crate) async fn observe_restored_once<P: ObservationPhase>(
+        &self,
+        observation: PreparedObservation<P>,
+    ) -> Result<RecordedObservation<P>, ControlPlaneError> {
+        self.observe_once(observation, MutationAttemptOutcome::restored_ambiguous())
+            .await
     }
 }
 
@@ -220,6 +244,44 @@ impl<E: HttpExchange> ControlPlaneCore<E> {
         .map_err(ControlPlaneError::Orchestrator)
     }
 
+    async fn append_observation_at<P: ObservationPhase>(
+        &self,
+        attempt: ObservationAppendAttempt<P>,
+        now: u64,
+    ) -> Result<RecordedObservation<P>, ControlPlaneError> {
+        let path = format!(
+            "/internal/v1/ring-transition/claims/{}/steps",
+            attempt.authorization_id_sha256()
+        );
+        let request_id = attempt.request_id().to_owned();
+        let body = attempt
+            .canonical_step_json()
+            .map_err(ControlPlaneError::Orchestrator)?
+            .into_bytes();
+        let request = authority_request(
+            &self.credentials,
+            Method::POST,
+            &path,
+            Bytes::from(body),
+            &request_id,
+            now,
+        )?;
+        let response = self
+            .exchange
+            .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
+            .await
+            .map_err(|_| ControlPlaneError::AuthorityMutationAmbiguous)?;
+        if response.status != StatusCode::CREATED && response.status != StatusCode::OK {
+            return Err(ControlPlaneError::AuthorityMutationRejected);
+        }
+        orchestrator::verify_observation_append(
+            attempt,
+            &response.body,
+            &self.credentials.identity().authority_version_id,
+        )
+        .map_err(ControlPlaneError::Orchestrator)
+    }
+
     async fn deploy_once_at<P: MutationPhase>(
         &self,
         mutation: AuthorizedMutation<P>,
@@ -235,6 +297,194 @@ impl<E: HttpExchange> ControlPlaneCore<E> {
         )
         .await
     }
+
+    async fn observe_once_at<P: ObservationPhase, S: ObservationSchedule>(
+        &self,
+        observation: PreparedObservation<P>,
+        outcome: MutationAttemptOutcome,
+        schedule: &S,
+    ) -> Result<RecordedObservation<P>, ControlPlaneError> {
+        outcome.validate_for_observation()?;
+        let binding = observation.binding();
+        let readback = read_stable_observation(
+            &self.exchange,
+            self.credentials.account_id(),
+            self.credentials.read_token(),
+            binding.service_name(),
+            binding.target_version_id(),
+            binding.canonical_request_digest_sha256(),
+            binding.mutation_annotation(),
+            u64::from(
+                self.credentials
+                    .identity()
+                    .stable_readback_observation_seconds,
+            ),
+            schedule,
+        )
+        .await?;
+        let transport_outcome = outcome.orchestrator_outcome();
+        let input = ObservationRecordInput {
+            deployment_set_sha256: readback.deployment_set_sha256,
+            cloudflare_request_id_sha256: outcome.response_id_sha256,
+            evidence_sha256: readback.evidence_sha256,
+            transport_outcome,
+            stability: readback.stability,
+        };
+        let request_id = random_request_id()?;
+        let attempt = orchestrator::begin_observation_append(observation, input, &request_id)
+            .map_err(ControlPlaneError::Orchestrator)?;
+        let now = schedule.now_seconds()?;
+        self.append_observation_at(attempt, now).await
+    }
+}
+
+#[async_trait]
+trait ObservationSchedule: Sync {
+    fn now_seconds(&self) -> Result<u64, ControlPlaneError>;
+
+    async fn wait(&self, duration: Duration) -> Result<(), ControlPlaneError>;
+}
+
+struct SystemObservationSchedule;
+
+#[async_trait]
+impl ObservationSchedule for SystemObservationSchedule {
+    fn now_seconds(&self) -> Result<u64, ControlPlaneError> {
+        system_time_seconds()
+    }
+
+    async fn wait(&self, duration: Duration) -> Result<(), ControlPlaneError> {
+        tokio::time::sleep(duration).await;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct StableObservation {
+    deployment_set_sha256: String,
+    evidence_sha256: String,
+    stability: ObservationStability,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn read_stable_observation<E: HttpExchange, S: ObservationSchedule>(
+    exchange: &E,
+    account_id: &str,
+    read_token: &str,
+    service_name: &str,
+    target_version_id: &str,
+    expected_request_digest_sha256: &str,
+    expected_annotation: &str,
+    observation_seconds: u64,
+    schedule: &S,
+) -> Result<StableObservation, ControlPlaneError> {
+    if !(MIN_OBSERVATION_SECONDS..=MAX_OBSERVATION_SECONDS).contains(&observation_seconds) {
+        return Err(ControlPlaneError::Readback(
+            ReadbackError::InvalidObservationSeconds,
+        ));
+    }
+    let first = read_observation_snapshot(
+        exchange,
+        account_id,
+        read_token,
+        service_name,
+        target_version_id,
+    )
+    .await?;
+    let first = crate::readback::ObservedReadback::new(schedule.now_seconds()?, first)
+        .map_err(ControlPlaneError::Readback)?;
+
+    schedule
+        .wait(Duration::from_secs(observation_seconds))
+        .await?;
+
+    let second = read_observation_snapshot(
+        exchange,
+        account_id,
+        read_token,
+        service_name,
+        target_version_id,
+    )
+    .await?;
+    let second = crate::readback::ObservedReadback::new(schedule.now_seconds()?, second)
+        .map_err(ControlPlaneError::Readback)?;
+
+    let decision = StableReadbackPair::new(
+        expected_request_digest_sha256,
+        service_name,
+        target_version_id,
+        expected_annotation,
+        observation_seconds,
+        first,
+        second,
+    )
+    .map_err(ControlPlaneError::Readback)?
+    .evaluate()
+    .map_err(ControlPlaneError::Readback)?;
+    let stability = match decision.classification() {
+        ReadbackClassification::Confirmed => ObservationStability::Confirmed,
+        ReadbackClassification::TargetNotStable => ObservationStability::TargetNotStable,
+        ReadbackClassification::Drift => ObservationStability::Drift,
+    };
+    Ok(StableObservation {
+        deployment_set_sha256: decision.deployment_set_sha256().to_owned(),
+        evidence_sha256: decision.evidence_digest_sha256().to_owned(),
+        stability,
+    })
+}
+
+async fn read_observation_snapshot<E: HttpExchange>(
+    exchange: &E,
+    account_id: &str,
+    read_token: &str,
+    service_name: &str,
+    target_version_id: &str,
+) -> Result<ReadbackSnapshot, ControlPlaneError> {
+    let base = format!("/client/v4/accounts/{account_id}/workers/scripts/{service_name}");
+    let deployments = read_cloudflare_json(
+        exchange,
+        read_token,
+        &format!("{base}/deployments"),
+        MAX_DEPLOYMENTS_RESPONSE_BYTES,
+    )
+    .await?;
+    let target_version = read_cloudflare_json(
+        exchange,
+        read_token,
+        &format!("{base}/versions/{target_version_id}"),
+        MAX_TARGET_VERSION_RESPONSE_BYTES,
+    )
+    .await?;
+    ReadbackSnapshot::from_json(
+        service_name,
+        target_version_id,
+        &deployments,
+        &target_version,
+    )
+    .map_err(ControlPlaneError::Readback)
+}
+
+async fn read_cloudflare_json<E: HttpExchange>(
+    exchange: &E,
+    read_token: &str,
+    path: &str,
+    maximum_response_bytes: usize,
+) -> Result<Bytes, ControlPlaneError> {
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(cloudflare_uri(path)?)
+        .header(ACCEPT, "application/json")
+        .header(AUTHORIZATION, bearer_header(read_token)?)
+        .body(Full::new(Bytes::new()))
+        .map_err(|_| ControlPlaneError::InvalidRequest("cloudflare_readback"))?;
+    let response = exchange
+        .send(request, maximum_response_bytes, REQUEST_TIMEOUT)
+        .await
+        .map_err(|_| ControlPlaneError::Exchange)?;
+    if response.status != StatusCode::OK {
+        return Err(ControlPlaneError::ReadbackRejected);
+    }
+    Ok(response.body)
 }
 
 trait IdentityProofMachine: Sized {
@@ -797,6 +1047,36 @@ impl MutationAttemptOutcome {
             retry: false,
         }
     }
+
+    fn restored_ambiguous() -> Self {
+        Self::ambiguous(None, None, None)
+    }
+
+    fn validate_for_observation(&self) -> Result<(), ControlPlaneError> {
+        if self.retry {
+            return Err(ControlPlaneError::InvalidRequest(
+                "mutation_retry_forbidden",
+            ));
+        }
+        for digest in [
+            self.response_body_sha256.as_deref(),
+            self.response_id_sha256.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            require_sha256(digest, "mutation_response_digest")?;
+        }
+        Ok(())
+    }
+
+    fn orchestrator_outcome(&self) -> TransportOutcome {
+        match self.transport_outcome {
+            MutationTransportOutcome::Success => TransportOutcome::Success,
+            MutationTransportOutcome::Rejected => TransportOutcome::Rejected,
+            MutationTransportOutcome::Ambiguous => TransportOutcome::Ambiguous,
+        }
+    }
 }
 
 fn classify_deployment_response(response: BoundedHttpResponse) -> MutationAttemptOutcome {
@@ -901,6 +1181,8 @@ pub enum ControlPlaneError {
     AuthorityIdentityMismatch,
     InvalidAuthorityResponse,
     ClaimIdentityMismatch,
+    Readback(ReadbackError),
+    ReadbackRejected,
     AuthorityMutationRejected,
     AuthorityMutationAmbiguous,
 }
@@ -932,6 +1214,10 @@ impl fmt::Display for ControlPlaneError {
             Self::InvalidAuthorityResponse => formatter.write_str("Authority response is invalid"),
             Self::ClaimIdentityMismatch => {
                 formatter.write_str("Authority claim does not match activated identities")
+            }
+            Self::Readback(error) => error.fmt(formatter),
+            Self::ReadbackRejected => {
+                formatter.write_str("Cloudflare deployment readback was rejected")
             }
             Self::AuthorityMutationRejected => {
                 formatter.write_str("Authority mutation was rejected")
@@ -1065,6 +1351,8 @@ mod tests {
     const ACCESS_CLIENT_SECRET: &str = "access-client-secret-material-0001";
     const EVIDENCE_DIGEST: &str =
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const MUTATION_REQUEST_DIGEST: &str =
+        "4f75767d59d027a0ed9fc763954ac1b128c08732ac46bd1f19a274595a5225e2";
 
     struct ObservedRequest {
         method: Method,
@@ -1095,6 +1383,49 @@ mod tests {
 
         fn remaining(&self) -> usize {
             self.responses.lock().expect("response script lock").len()
+        }
+    }
+
+    struct ScriptedObservationSchedule {
+        times: Mutex<VecDeque<u64>>,
+        waits: Mutex<Vec<Duration>>,
+        fail_wait: bool,
+    }
+
+    impl ScriptedObservationSchedule {
+        fn new(times: impl IntoIterator<Item = u64>) -> Self {
+            Self {
+                times: Mutex::new(times.into_iter().collect()),
+                waits: Mutex::new(Vec::new()),
+                fail_wait: false,
+            }
+        }
+
+        fn waits(&self) -> Vec<Duration> {
+            self.waits.lock().expect("wait observation lock").clone()
+        }
+    }
+
+    #[async_trait]
+    impl ObservationSchedule for ScriptedObservationSchedule {
+        fn now_seconds(&self) -> Result<u64, ControlPlaneError> {
+            self.times
+                .lock()
+                .expect("time observation lock")
+                .pop_front()
+                .ok_or(ControlPlaneError::ClockUnavailable)
+        }
+
+        async fn wait(&self, duration: Duration) -> Result<(), ControlPlaneError> {
+            self.waits
+                .lock()
+                .expect("wait observation lock")
+                .push(duration);
+            if self.fail_wait {
+                Err(ControlPlaneError::ClockUnavailable)
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -1418,6 +1749,158 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stable_readback_uses_four_ordered_read_only_requests_and_compiled_wait() {
+        let annotation = controller_mutation_annotation();
+        let exchange = ScriptedExchange::new(stable_readback_responses(&annotation));
+        let schedule = ScriptedObservationSchedule::new([1_000, 1_005]);
+
+        let observation = read_stable_observation(
+            &exchange,
+            ACCOUNT_ID,
+            READ_TOKEN,
+            "controller-staging",
+            "controller-version-002",
+            MUTATION_REQUEST_DIGEST,
+            &annotation,
+            5,
+            &schedule,
+        )
+        .await
+        .expect("stable readback");
+
+        assert_eq!(observation.stability, ObservationStability::Confirmed);
+        assert_eq!(observation.deployment_set_sha256.len(), 64);
+        assert_eq!(observation.evidence_sha256.len(), 64);
+        assert_eq!(schedule.waits(), [Duration::from_secs(5)]);
+        assert_eq!(exchange.remaining(), 0);
+
+        let observed = exchange.observed();
+        assert_eq!(observed.len(), 4);
+        let expected_paths = [
+            "deployments",
+            "versions/controller-version-002",
+            "deployments",
+            "versions/controller-version-002",
+        ];
+        for (request, suffix) in observed.iter().zip(expected_paths) {
+            assert_eq!(request.method, Method::GET);
+            assert!(request.uri.ends_with(suffix));
+            assert_eq!(
+                request.headers.get(AUTHORIZATION),
+                Some(&HeaderValue::from_static(
+                    "Bearer read-token-secret-material-00000001"
+                ))
+            );
+            assert_authority_headers_absent(&request.headers);
+            assert!(request.body.is_empty());
+            assert_eq!(request.timeout, REQUEST_TIMEOUT);
+        }
+        assert_eq!(
+            observed[0].maximum_response_bytes,
+            MAX_DEPLOYMENTS_RESPONSE_BYTES
+        );
+        assert_eq!(
+            observed[1].maximum_response_bytes,
+            MAX_TARGET_VERSION_RESPONSE_BYTES
+        );
+        assert!(observed
+            .iter()
+            .all(|request| request.method != Method::POST));
+        assert_secret_absent(&format!("{observation:?}"));
+    }
+
+    #[tokio::test]
+    async fn each_readback_failure_stops_without_retry_or_authority_append() {
+        let annotation = controller_mutation_annotation();
+        for failed_request in 0..4 {
+            let mut responses = stable_readback_responses(&annotation);
+            responses[failed_request] = Ok(scripted_json(
+                StatusCode::BAD_GATEWAY,
+                serde_json::json!({"success": false}),
+            ));
+            let exchange = ScriptedExchange::new(responses);
+            let schedule = ScriptedObservationSchedule::new([1_000, 1_005]);
+
+            assert!(matches!(
+                read_stable_observation(
+                    &exchange,
+                    ACCOUNT_ID,
+                    READ_TOKEN,
+                    "controller-staging",
+                    "controller-version-002",
+                    MUTATION_REQUEST_DIGEST,
+                    &annotation,
+                    5,
+                    &schedule,
+                )
+                .await,
+                Err(ControlPlaneError::ReadbackRejected)
+            ));
+            let observed = exchange.observed();
+            assert_eq!(observed.len(), failed_request + 1);
+            assert!(observed.iter().all(|request| request.method == Method::GET));
+            assert!(observed
+                .iter()
+                .all(|request| request.uri.starts_with(CLOUDFLARE_API_ORIGIN)));
+            assert_eq!(schedule.waits().len(), usize::from(failed_request >= 2));
+        }
+    }
+
+    #[tokio::test]
+    async fn readback_time_drift_fails_closed_after_one_pair_without_post() {
+        for times in [[1_000, 1_004], [1_000, 1_121], [1_005, 1_000]] {
+            let annotation = controller_mutation_annotation();
+            let exchange = ScriptedExchange::new(stable_readback_responses(&annotation));
+            let schedule = ScriptedObservationSchedule::new(times);
+            let result = read_stable_observation(
+                &exchange,
+                ACCOUNT_ID,
+                READ_TOKEN,
+                "controller-staging",
+                "controller-version-002",
+                MUTATION_REQUEST_DIGEST,
+                &annotation,
+                5,
+                &schedule,
+            )
+            .await;
+            assert!(matches!(result, Err(ControlPlaneError::Readback(_))));
+            assert_eq!(exchange.observed().len(), 4);
+            assert!(exchange
+                .observed()
+                .iter()
+                .all(|request| request.method == Method::GET));
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_compiled_readback_window_performs_no_network_or_wait() {
+        for observation_seconds in [0, 4, 121, u64::MAX] {
+            let exchange = ScriptedExchange::new(Vec::new());
+            let schedule = ScriptedObservationSchedule::new([]);
+            assert!(matches!(
+                read_stable_observation(
+                    &exchange,
+                    ACCOUNT_ID,
+                    READ_TOKEN,
+                    "controller-staging",
+                    "controller-version-002",
+                    MUTATION_REQUEST_DIGEST,
+                    &controller_mutation_annotation(),
+                    observation_seconds,
+                    &schedule,
+                )
+                .await,
+                Err(ControlPlaneError::Readback(
+                    ReadbackError::InvalidObservationSeconds
+                ))
+            ));
+            assert!(exchange.observed().is_empty());
+            assert!(schedule.waits().is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn uncertain_deployment_statuses_and_connection_loss_are_ambiguous_without_retry() {
         for status in [
             StatusCode::REQUEST_TIMEOUT,
@@ -1644,6 +2127,7 @@ mod tests {
             runner_build_sha256: "3".repeat(64),
             controller_service_name: "controller-staging".to_owned(),
             edge_service_name: "edge-staging".to_owned(),
+            stable_readback_observation_seconds: 5,
             activation_sequence: 1,
         }
     }
@@ -1691,6 +2175,53 @@ mod tests {
             .expect("fresh append permit");
         let mutation = authorize_mutation(permit, NOW).expect("authorized mutation");
         (mutation, expected_body)
+    }
+
+    fn controller_mutation_annotation() -> String {
+        format!(
+            "cinatoken-ring-v1:{}:2:f129da426a8b40e5fa9f8f8ffb53747a0ed6b4feda21093ef570b8fe847aa293",
+            "1".repeat(64)
+        )
+    }
+
+    fn stable_readback_responses(
+        annotation: &str,
+    ) -> Vec<Result<BoundedHttpResponse, ExchangeError>> {
+        let deployment = || {
+            Ok(scripted_json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "success": true,
+                    "result": {
+                        "deployments": [{
+                            "id": "deployment-controller-002",
+                            "strategy": "percentage",
+                            "versions": [{
+                                "version_id": "controller-version-002",
+                                "percentage": 100,
+                            }],
+                            "annotations": {
+                                "workers/message": annotation,
+                            },
+                        }],
+                    },
+                }),
+            ))
+        };
+        let version = || {
+            Ok(scripted_json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "success": true,
+                    "result": {
+                        "id": "controller-version-002",
+                        "compatibility_date": "2026-07-01",
+                        "usage_model": "standard",
+                    },
+                }),
+            ))
+        };
+        vec![deployment(), version(), deployment(), version()]
     }
 
     fn t1_snapshot_value() -> Value {

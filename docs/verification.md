@@ -8660,3 +8660,60 @@ authority was used. Stable double readback, execution receipts, exact Linux
 Rust 1.78 reproducible builds, independent signing/installation, remote
 scope/revocation/Access evidence and the crash campaign remain open.
 Production remains **NO-GO**.
+
+## 2026-07-24 Stable Readback And Authority Observation Verification
+
+The local K6 implementation was verified without credentials or remote
+network access:
+
+```text
+cargo test -p cinatoken-ring-transition-runner --locked
+65 library tests: PASS
+1 binary test: PASS
+2 CLI integration tests: PASS
+
+cargo clippy -p cinatoken-ring-transition-runner --all-targets --locked -- -D warnings
+PASS
+
+bun run check:ring-transition-runner
+65 + 1 + 2 Rust tests, 18 release/source tests, both describe verifiers: PASS
+
+bun run check:relay-container:ring-transition
+65 tests, 728 expectations, three credential-free describe verifiers: PASS
+
+bun run check
+complete repository gate, 632.3 seconds, exit code 0: PASS
+```
+
+The new Rust cases prove:
+
+- trust-pinned observation intervals accept only 5-120 seconds;
+- deployment and target-version snapshots are bounded, duplicate-free, and
+  normalized with the JavaScript-compatible deployment-set vector;
+- complete target-version details, annotation, active versions, request
+  digest, and both observation times alter the evidence digest;
+- every one of the four GET boundaries stops immediately on failure;
+- requests occur only as deployment GET, version GET, wait, deployment GET,
+  version GET, with the read token and no Access/Authority headers;
+- short, over-120-second, and nonmonotonic windows fail closed;
+- observation step state, failure class, request digest, append response, and
+  replay identity are exact; and
+- Controller/Edge observation types and restored inflight paths expose no
+  fresh mutation permit.
+
+The JavaScript cases prove the canonical annotation no longer accepts the
+legacy shortened form, the stable window uses the global 120-second ceiling,
+ASCII version order is deterministic, version-detail/annotation drift enters
+recovery, and readback never restores a deployment POST capability.
+
+The detached closure is now 22 modules. Both collectors reject a missing or
+digest-drifted `readback.rs`; Rust and JavaScript inventory, manifest, DSSE,
+publication, signature, and activation vectors match.
+
+These results are local scripted exchanges, loopback transport, and
+deterministic fixtures. The checked-in release and credential roots remain
+disabled. No Cloudflare API, Access application, D1 state, deployment,
+credential, customer traffic, provider call, financial state, or Go/VPS
+authority changed. Full repository gates, exact Rust 1.78 Linux reproducible
+builds, execution receipts, remote identity/scope/revocation evidence, and
+the crash campaign remain production blockers. Production remains **NO-GO**.

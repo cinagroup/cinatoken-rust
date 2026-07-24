@@ -2665,3 +2665,28 @@ remote request was used. The exposed-credential revocation proof, isolated
 control resources, Access policy, stable readback, receipts, P5-B,
 accounting/SLO/cost, rollback, G1-G8 approval, and Go/VPS drain remain hard
 blockers. Production remains **NO-GO**.
+
+## 2026-07-24 Stable Readback And Observation Append Addendum
+
+This addendum supersedes the K6 local-status row above. K6 is implemented
+locally; no remote acceptance evidence has been produced.
+
+| Phase | Implemented local boundary | Required production evidence | Abort and retain Go/VPS |
+| --- | --- | --- | --- |
+| K6 stable proof | Trust-pinned 5-120 second interval; fixed deployment/version GET pair, wait, second GET pair; strict normalized deployment and complete target-version hashes; sealed Controller/Edge observation phases; exact Access/HMAC Authority append or replay | Two independent reads against the exact isolated staging account/services, deployed Access policy identity, exact Authority version, deployment history, redacted evidence digest, and state 3/6 readback | Any Access header on Cloudflare API, mutable interval, retry, redirect, unstable pair, annotation/version drift, fabricated evidence, or HTTP response alone advancing state |
+| K6 restart | Restored inflight claims can construct readback-only ambiguity and cannot mint a fresh intent permit or deployment request | Kill before/after each of four GETs and before/during/after Authority append; restart from exact claim; prove no second deployment POST | Any restart path that accepts caller body/digest, reuses deploy authority, or advances without exact current state |
+| K7 receipt/restart | Still open | Create-new predecessor-bound digest-only execution receipt, independent replay verifier, retention/ACL evidence, and power-loss recovery | Mutable or replaceable receipt, missing predecessor, secret/raw body retention, or unrecoverable ambiguous append |
+
+The fixed network order is deployment GET, target-version GET, compiled wait,
+deployment GET, target-version GET, then at most one Authority step POST. The
+four Cloudflare reads use only the least-privilege read token. The Authority
+POST alone uses the Access service token plus claim-HMAC proof. Any failed
+read, invalid clock window, parse drift, or failed append leaves the claim
+inflight and schedules no write retry.
+
+The signed source closure is 22 paths including `transport.rs` and
+`readback.rs`. The exact Rust 1.78 Linux reproducible artifact, independent
+signature and append-only installation, remote token scope/owner/revocation
+packet, deployed Access readback, crash campaign, execution receipts, P5-B,
+accounting/SLO/cost, rollback, G1-G8 approval, and Go/VPS drain remain hard
+gates. Production remains **NO-GO**.

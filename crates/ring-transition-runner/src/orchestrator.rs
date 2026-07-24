@@ -1267,6 +1267,15 @@ enum HistoryEntry<'a> {
     Expiry(&'a SnapshotExpiryEvent),
 }
 
+pub(crate) fn validate_activation_claim(claim: &SnapshotClaim) -> Result<(), OrchestratorError> {
+    validate_claim(claim)
+}
+
+#[cfg(test)]
+pub(crate) fn activation_claim_digest(claim: &SnapshotClaim) -> Result<String, OrchestratorError> {
+    claim_digest(claim)
+}
+
 fn validate_claim(claim: &SnapshotClaim) -> Result<(), OrchestratorError> {
     if claim.schema_version != 1
         || claim.claim_authority != "d1-unique-claim-v1"

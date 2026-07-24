@@ -8758,3 +8758,67 @@ durability, single-link enforcement under attack, ext4/XFS power loss, exact
 ACLs, concurrent process death, external chain-head anchor, and real-time
 driver integration remain open. Checked-in trust and `--execute` remain
 fail-closed; production remains **NO-GO**.
+
+## 2026-07-24 Signed Execution Activation Verification
+
+The execution-activation increment is verified locally with credential-free,
+network-free gates:
+
+```powershell
+cargo fmt --all --check
+cargo test -p cinatoken-ring-transition-runner --no-fail-fast
+cargo clippy -p cinatoken-ring-transition-runner --all-targets -- -D warnings
+bun run check:ring-transition-runner
+bun run check:relay-container:ring-transition
+bun run check
+```
+
+The merged local verification record is:
+
+- runner Rust: 76 library tests, one binary test and two CLI tests;
+- runner JavaScript: 38 tests across four files;
+- broader ring-transition JavaScript: 65 tests across three files;
+- Worker library: 859 tests;
+- frontend: 71 tests, zero bundle-redaction findings and zero budget failures;
+- signed release/source closure: both implementations agree on all 28 modules;
+- repository-wide `bun run check`: exit code 0, including the Worker,
+  WFP tenant and WFP outbound WASM target checks.
+
+Activation-focused cases must prove:
+
+- checked-in activation trust is disabled and fails before credential or
+  network access;
+- the only installed path is
+  `execution-activations/<publication-manifest-sha>.execution-activation.json`;
+- strict canonical parsing rejects duplicate, unknown, noncanonical,
+  oversized and trailing content;
+- the claim digest is recomputed and the domain-separated Ed25519 permit
+  rejects signature, issuer, key, SPKI, identity and validity-window drift;
+- publication manifest/packet/generation/sequence/build/trust identities join
+  the transition/authorization policies, account, ledger, credentials,
+  services, authorization, nonce, owner and claim;
+- create-new installation accepts exact replay, rejects different existing
+  bytes, and never offers overwrite/delete/repair behavior;
+- publication verification precedes activation, activation precedes
+  credential loading, and credential proof precedes Authority preflight; and
+- the verified activation identity survives into the prepared control plane.
+
+The independent JavaScript verifier and its adversarial tests must be included
+with the Rust activation module in both signed source collectors. The release
+inventory, manifest, DSSE, publication packet/signature and activation vectors
+must agree across Rust and JavaScript for all 28 target modules. Missing or
+digest-drifted activation code, verifier code or verifier tests must invalidate
+the closure.
+
+Windows results establish only canonical, signature, identity, create-new,
+exact-replay and conflict semantics. Production acceptance still requires
+Linux adversarial path/link and two-process tests, no-replace and parent-sync
+fault injection, ext4/XFS power-loss evidence and exact UID/GID/ACL readback.
+
+No live Authority claim, Cloudflare request, credential read, deployment,
+route, DNS, customer traffic or Go/VPS authority change is part of this local
+verification. Remaining P0 is live Authority claim creation, typed T1 and Edge
+phases, live receipt append, the resumable driver, Linux adversarial tests,
+full four-approval revalidation, an external receipt-chain anchor, and the
+exposed-credential revocation gate. Checked-in trust and `--execute` remain
+fail-closed; production remains **NO-GO**.

@@ -82,7 +82,19 @@ describe("ring-transition runner release source collector", () => {
     expect(first.moduleInventory.files.map((record) => record.path)).toEqual(
       [...first.moduleInventory.files.map((record) => record.path)].sort(),
     );
-    expect(first.moduleCount).toBe(25);
+    expect(first.moduleCount).toBe(28);
+    expect(first.moduleInventory.files).toContainEqual({
+      path: "crates/ring-transition-runner/src/execution_activation.rs",
+      byteLength: Buffer.byteLength(
+        "pub fn execution_activation_fixture() {}\n",
+      ),
+      sha256: sha256Hex(
+        Buffer.from(
+          "pub fn execution_activation_fixture() {}\n",
+          "utf8",
+        ),
+      ),
+    });
     expect(first.moduleInventory.files).toContainEqual({
       path: "crates/ring-transition-runner/src/readback.rs",
       byteLength: Buffer.byteLength("pub fn readback_fixture() {}\n"),
@@ -147,6 +159,21 @@ describe("ring-transition runner release source collector", () => {
       "crates/ring-transition-runner/src/receipt.rs",
       "tools/relay_container_ring_transition_receipt_contract.mjs",
       "tests/relay-container-ring-transition-receipt.test.mjs",
+    ]) {
+      const repository = await fixtureRepository({ omit });
+      await expect(
+        collectRingTransitionRunnerReleaseSource({
+          repositoryRoot: repository,
+        }),
+      ).rejects.toThrow(/required module missing/);
+    }
+  });
+
+  test("rejects a missing execution activation module, verifier, or verifier test", async () => {
+    for (const omit of [
+      "crates/ring-transition-runner/src/execution_activation.rs",
+      "tools/relay_container_ring_transition_execution_activation_contract.mjs",
+      "tests/relay-container-ring-transition-execution-activation.test.mjs",
     ]) {
       const repository = await fixtureRepository({ omit });
       await expect(
@@ -222,6 +249,10 @@ async function fixtureRepository({ omit = null } = {}) {
       "pub fn credentials_fixture() {}\n",
     ],
     [
+      "crates/ring-transition-runner/src/execution_activation.rs",
+      "pub fn execution_activation_fixture() {}\n",
+    ],
+    [
       "crates/ring-transition-runner/src/lib.rs",
       "pub fn fixture() {}\n",
     ],
@@ -258,6 +289,10 @@ async function fixtureRepository({ omit = null } = {}) {
       "#[test] fn fixture() {}\n",
     ],
     [
+      "tests/relay-container-ring-transition-execution-activation.test.mjs",
+      "export const executionActivationFixture = true;\n",
+    ],
+    [
       "tests/relay-container-ring-transition-receipt.test.mjs",
       "export const receiptFixture = true;\n",
     ],
@@ -280,6 +315,10 @@ async function fixtureRepository({ omit = null } = {}) {
     [
       "tools/relay_container_ring_transition_contract.mjs",
       "export const ring = true;\n",
+    ],
+    [
+      "tools/relay_container_ring_transition_execution_activation_contract.mjs",
+      "export const executionActivationContract = true;\n",
     ],
     [
       "tools/relay_container_ring_transition_receipt_contract.mjs",

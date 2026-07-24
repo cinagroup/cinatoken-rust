@@ -2807,3 +2807,49 @@ Local hashes and read-only mode alone do not satisfy the external-anchor or
 deletion-resistance requirement. Until the writer, verifier, ACL, external
 chain head, retention and real Linux power-loss evidence pass, K7 remains a
 hard blocker, Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## 2026-07-24 Signed Execution Activation Addendum
+
+This addendum inserts a required execution authorization between signed
+publication activation and all credential access. It is a local production
+boundary only. Checked-in trust is disabled, no live Authority claim was
+created, and no Cloudflare API, deployment, route, DNS, customer traffic or
+Go/VPS authority changed.
+
+| Boundary | Local contract | Production evidence required | Abort and retain Go/VPS |
+| --- | --- | --- | --- |
+| Fixed activation | `execution-activations/<publication-manifest-sha>.execution-activation.json`; runner-derived path and identity; no caller target or replace option | Operator-owned installation root, exact signed publication/activation inventory, UID/GID and ACL readback | Caller-selected path/ID/service, mutable current pointer, overwrite, symlink/link/path escape |
+| Signed claim request | Strict canonical closed JSON; recomputed claim digest; domain-separated Ed25519 permit; fixed issuer/key/SPKI, locator and bounded validity | Independent verifier agreement, permit-key custody/rotation packet, exact Authority origin/version and Access policy readback | Unknown/duplicate/noncanonical fields, key reuse, locator/retry drift, invalid clock or signature |
+| Identity join | Publication manifest/packet/generation/sequence/build/trust joined to policies, account, ledger, three credential IDs, services, authorization, nonce, owner and claim | Redacted cross-system identity packet from release, Authority, Cloudflare token verification and installed generation | Any build/trust/policy/account/service/credential mismatch or mixed generation |
+| Create-new replay | Same-directory staging, no-replace publish, exact-byte readback; existing exact bytes are replay, different bytes conflict | Exact Linux no-follow/no-replace/sync/link-count/power-loss and concurrent installer evidence | Replace/delete/repair in place, partial acceptance, ambiguous write treated as permission to rewrite |
+| Typestate | `publication -> activation -> credentials -> preflight -> prepared control plane` | Source/release closure and runtime traces proving no handle/network access before activation | Public bypass constructor, reordered handle access, preflight without installed activation |
+
+One publication manifest can authorize only its fixed activation bytes. A new
+authorization requires a new signed publication; operations must not rotate an
+activation underneath an existing generation. The activation permit
+authorizes submission of only the embedded canonical claim request. It is not
+a Cloudflare deployment permit, does not advance Authority state, and cannot
+restore an inflight mutation capability.
+
+The release closure is 28 modules: the existing 25-module packet plus
+the Rust activation implementation, independent JavaScript verifier and its
+adversarial tests. Both collectors agree on the 28-path inventory and all
+derived release/publication vectors. The merged local runner gates observed
+76 library, one binary, two CLI and 38 JavaScript tests; the broader
+ring-transition suite observed 65 tests and repository-wide `bun run check`
+exited successfully.
+
+Remaining P0 is:
+
+1. live Authority claim creation and exact response-loss recovery;
+2. typed T1 and Edge-previous phases;
+3. live predecessor-bound receipt append around every network boundary;
+4. the library-owned restart/resume driver;
+5. Linux adversarial concurrency, path/link, crash, sync and power-loss tests;
+6. full four-approval authorization revalidation;
+7. an external independently signed or reviewed WORM chain-head anchor;
+8. actual exposed-credential revocation and replacement evidence.
+
+Until all eight items and the broader production gates pass, the activation is
+local fail-closed evidence only, Go/VPS remains authoritative, and production
+remains **NO-GO**.

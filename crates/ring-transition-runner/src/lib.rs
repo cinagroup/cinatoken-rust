@@ -3,6 +3,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod credentials;
+pub mod execution_activation;
 pub mod orchestrator;
 pub mod publication;
 pub mod readback;
@@ -127,17 +128,21 @@ pub struct RunnerDescription {
     pub stable_readback_compiled: bool,
     pub access_service_token_compiled: bool,
     pub release_published: bool,
+    pub execution_activation_installed: bool,
     pub credentials_read: bool,
     pub network_requests_performed: bool,
     pub mutation_performed: bool,
     pub customer_traffic_authorized: bool,
     pub production_cutover_authorized: bool,
     pub release_trust: EmbeddedReleaseTrust,
+    pub execution_activation_trust: execution_activation::EmbeddedExecutionActivationTrust,
     pub credential_trust: credentials::EmbeddedCredentialTrust,
 }
 
 pub fn describe() -> RunnerDescription {
     let release_trust = EmbeddedReleaseTrust::checked_in();
+    let execution_activation_trust =
+        execution_activation::EmbeddedExecutionActivationTrust::checked_in();
     let credential_trust = credentials::EmbeddedCredentialTrust::checked_in();
     RunnerDescription {
         ok: true,
@@ -150,12 +155,14 @@ pub fn describe() -> RunnerDescription {
         stable_readback_compiled: true,
         access_service_token_compiled: true,
         release_published: release_trust.enabled,
+        execution_activation_installed: false,
         credentials_read: false,
         network_requests_performed: false,
         mutation_performed: false,
         customer_traffic_authorized: false,
         production_cutover_authorized: false,
         release_trust,
+        execution_activation_trust,
         credential_trust,
     }
 }
@@ -165,6 +172,7 @@ pub enum ExecutionAuthorizationError {
     ReleaseTrust(ReleaseValidationError),
     ClockUnavailable,
     PublicationVerification(publication::PublicationError),
+    ExecutionActivation(execution_activation::ExecutionActivationError),
     Credentials(credentials::CredentialError),
     ControlPlane(transport::ControlPlaneError),
 }
@@ -175,6 +183,7 @@ impl fmt::Display for ExecutionAuthorizationError {
             Self::ReleaseTrust(error) => error.fmt(formatter),
             Self::ClockUnavailable => formatter.write_str("runner clock is unavailable"),
             Self::PublicationVerification(error) => error.fmt(formatter),
+            Self::ExecutionActivation(error) => error.fmt(formatter),
             Self::Credentials(error) => error.fmt(formatter),
             Self::ControlPlane(error) => error.fmt(formatter),
         }
@@ -195,9 +204,12 @@ pub async fn authorize_execution(
         .as_secs();
     let activation = publication::verify_current_publication(now)
         .map_err(ExecutionAuthorizationError::PublicationVerification)?;
-    let credentials = credentials::load_activated_credentials(activation)
+    let execution = execution_activation::verify_current_execution_activation(activation, now)
+        .map_err(ExecutionAuthorizationError::ExecutionActivation)?;
+    let (publication, execution_identity) = execution.into_parts();
+    let credentials = credentials::load_activated_credentials(publication)
         .map_err(ExecutionAuthorizationError::Credentials)?;
-    transport::verify_loaded_credentials(credentials)
+    transport::verify_loaded_credentials(credentials, execution_identity)
         .await
         .map_err(ExecutionAuthorizationError::ControlPlane)
 }

@@ -495,3 +495,75 @@ receipt evidence at each network boundary, and keep restarted inflight claims
 readback-only. Until the Linux fault campaign, installed-chain independent
 verification, external head anchor, ACL/retention evidence and remote gates
 pass, `--execute` remains fail-closed and production remains **NO-GO**.
+
+## Signed Execution Activation Boundary
+
+The runner now requires a second installed authorization after publication
+verification and before credential loading. Its sole path is:
+
+```text
+<installation-root>/
+  execution-activations/
+    <publication-manifest-sha>.execution-activation.json
+```
+
+The runner derives the filename from the verified publication identity. The
+API accepts verified bytes and an installation root, not a caller-selected
+target, authorization ID, service, origin, path or overwrite flag. A
+publication therefore has one immutable execution activation; a different
+authorization requires a separately signed publication.
+
+The activation record is bounded strict canonical JSON with recursive
+duplicate-key and unknown-field rejection. It binds:
+
+- publication manifest/packet, generation, activation sequence, runner build
+  and runner trust-config digests;
+- a fixed `POST` to the compiled private Authority claim endpoint, with Access
+  service token required, no retry, fixed timeout and response ceiling;
+- the permit Ed25519 SPKI and its compiled fingerprint;
+- the complete canonical Authority claim and recomputed claim digest; and
+- a domain-separated signed permit over authorization, claim digest, owner,
+  ledger, claim credential and bounded issue/expiry times.
+
+The claim must also match compiled transition/authorization policy digests,
+account and ledger, pairwise-separated read/claim/deploy credential IDs,
+Controller/Edge services, runner artifact and trust config. The release key
+and claim-permit key must be distinct. Credential loading subsequently proves
+the same account and credential identities; the verified activation identity
+is retained by `PreparedControlPlane` for the future claim/receipt driver.
+
+The authorization typestate is:
+
+```text
+Verified publication
+  -> Verified installed execution activation
+  -> Loaded credentials
+  -> Read/deploy/claim identity proof and Authority preflight
+  -> PreparedControlPlane
+```
+
+No execution entry point can construct the later states from raw IDs. The
+checked-in release, activation and credential trust objects remain disabled,
+so the current CLI still exits before credential or network access.
+
+Activation installation is create-new. Same-directory staging is published to
+the fixed target with no-replace behavior, followed by directory sync and
+independent exact-byte/digest readback. An existing exact file is an
+idempotent replay. Different, partial, linked, noncanonical or
+publication-drifted content is a hard conflict and is never overwritten. A
+possibly published result that cannot be confirmed is
+`durability_unknown`; recovery rereads only the fixed path.
+
+The signed source closure is 28 modules, adding the Rust activation
+module, independent JavaScript activation verifier and verifier tests to the
+prior 25-module closure. Both collectors and both release verifiers agree on
+the inventory. The merged local gates observed 76 runner library tests, one
+runner binary test, two runner CLI tests, 38 runner JavaScript tests and 65
+broader ring-transition tests.
+
+Remaining P0 is live Authority claim creation, typed T1 and Edge phases, live
+receipt append around every network operation, the public library-owned
+resumable driver, Linux adversarial/concurrency/power-loss tests, full
+four-approval revalidation, an external receipt-chain anchor, and the
+exposed-credential revocation gate. No remote action was performed and
+production remains **NO-GO**.

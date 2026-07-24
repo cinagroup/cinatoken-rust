@@ -3208,3 +3208,49 @@ operator/append-writer/auditor ACL and retention evidence is retained, real
 Linux ext4/XFS power-loss durability is demonstrated, and the terminal chain
 head is anchored in independently signed P5 evidence or reviewed WORM/Authority
 storage. Go/VPS remains authoritative.
+
+## 2026-07-24 Signed Execution Activation Core
+
+Phase 1 now inserts a publication-specific execution activation before
+credential loading. The sole installed location is:
+
+```text
+execution-activations/<publication-manifest-sha>.execution-activation.json
+```
+
+The filename is derived by the runner from the verified publication manifest.
+No caller-selected path, authorization ID, service, target or force/replace
+flag is accepted. The file is bounded strict canonical JSON and contains the
+exact publication binding, fixed Access-protected Authority claim locator,
+permit SPKI, canonical claim, and domain-separated Ed25519 signed claim
+permit. Duplicate/unknown fields, noncanonical bytes, signature drift, expiry
+drift or locator drift fail closed.
+
+The claim and permit bind the publication manifest/packet, generation,
+activation sequence, runner build/trust config, transition and authorization
+policies, account, ledger, read/claim/deploy credential identities,
+Controller/Edge services, authorization, execution nonce, owner and claim
+digest. Credential loading and preflight occur only after those joins succeed:
+
+```text
+publication -> execution activation -> credentials -> preflight
+```
+
+Installation is create-new at the fixed path. Existing exact bytes are an
+idempotent replay; different bytes are a permanent conflict and are never
+replaced. Uncertain durability is resolved by fixed-path digest readback only.
+The checked-in execution-activation trust is disabled, `--execute` remains
+fail-closed, and no credential or remote action was used.
+
+The signed release closure is 28 modules: the previous 25 plus the Rust
+activation module, independent JavaScript verifier and its tests. The merged
+local gates observed 76 runner library tests, one runner binary test, two
+runner CLI tests, 38 runner JavaScript tests, 65 broader ring-transition tests,
+859 Worker library tests and 71 frontend tests; repository-wide
+`bun run check` exited successfully.
+
+Remaining P0 is live Authority claim creation, typed T1 and Edge phases, live
+receipt append at every network boundary, the resumable driver, Linux
+adversarial and power-loss tests, full four-approval revalidation, an external
+receipt-chain anchor, and the exposed-credential revocation gate. Go/VPS
+remains authoritative and production remains **NO-GO**.

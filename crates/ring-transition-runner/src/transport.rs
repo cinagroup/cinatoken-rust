@@ -7,6 +7,7 @@ use crate::credentials::{
     ACCESS_CLIENT_SECRET_ENV, AUTHORITY_HEADER_NAME, AUTHORITY_PREFLIGHT_PATH,
     CLOUDFLARE_API_ORIGIN,
 };
+use crate::execution_activation::ExecutionActivationIdentity;
 use crate::orchestrator::{
     self, AuthorityAppendAttempt, AuthorizedMutation, FreshIntentPermit, MutationPhase,
     ObservationAppendAttempt, ObservationPhase, ObservationRecordInput, ObservationStability,
@@ -63,6 +64,7 @@ type ProductionHttpClient = Client<ProductionConnector, Full<Bytes>>;
 
 pub struct PreparedControlPlane {
     core: ControlPlaneCore<HyperHttpsExchange>,
+    execution_activation: ExecutionActivationIdentity,
 }
 
 impl PreparedControlPlane {
@@ -72,6 +74,10 @@ impl PreparedControlPlane {
 
     pub fn access_service_token_verified(&self) -> bool {
         true
+    }
+
+    pub fn execution_activation(&self) -> &ExecutionActivationIdentity {
+        &self.execution_activation
     }
 
     pub(crate) async fn read_exact_claim(
@@ -133,12 +139,19 @@ impl PreparedControlPlane {
 
 pub(crate) async fn verify_loaded_credentials(
     loaded: LoadedCredentials,
+    execution_activation: ExecutionActivationIdentity,
 ) -> Result<PreparedControlPlane, ControlPlaneError> {
+    execution_activation
+        .validate_credential_identity(loaded.identity())
+        .map_err(ControlPlaneError::ExecutionActivation)?;
     let exchange = HyperHttpsExchange::new()?;
     let now = system_time_seconds()?;
     let request_id = random_request_id()?;
     let core = ControlPlaneCore::verify(loaded, exchange, now, &request_id).await?;
-    Ok(PreparedControlPlane { core })
+    Ok(PreparedControlPlane {
+        core,
+        execution_activation,
+    })
 }
 
 struct ControlPlaneCore<E: HttpExchange> {
@@ -1173,6 +1186,7 @@ pub enum ControlPlaneError {
     RandomUnavailable,
     TlsUnavailable,
     Credential(crate::credentials::CredentialError),
+    ExecutionActivation(crate::execution_activation::ExecutionActivationError),
     Orchestrator(orchestrator::OrchestratorError),
     Exchange,
     InvalidRequest(&'static str),
@@ -1196,6 +1210,7 @@ impl fmt::Display for ControlPlaneError {
             }
             Self::TlsUnavailable => formatter.write_str("TLS client initialization failed"),
             Self::Credential(error) => error.fmt(formatter),
+            Self::ExecutionActivation(error) => error.fmt(formatter),
             Self::Orchestrator(error) => error.fmt(formatter),
             Self::Exchange => formatter.write_str("bounded control-plane request failed"),
             Self::InvalidRequest(field) => {

@@ -1,7 +1,7 @@
 // Identity-proof typestates stay dormant until the bounded HTTP client consumes them.
 #![allow(dead_code)]
 
-use crate::publication::{ActivatedPublication, PublicationIdentity};
+use crate::publication::PublicationIdentity;
 use crate::release::{canonical_json, reject_duplicate_json, MAX_SAFE_INTEGER};
 use crate::STAGING_AUTHORITY_ORIGIN;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -460,9 +460,8 @@ impl fmt::Display for CredentialError {
 impl std::error::Error for CredentialError {}
 
 pub(crate) fn load_activated_credentials(
-    activation: ActivatedPublication,
+    identity: PublicationIdentity,
 ) -> Result<LoadedCredentials, CredentialError> {
-    let identity = activation.into_identity();
     let trust = EmbeddedCredentialTrust::checked_in();
     load_from_source(identity, &trust, &mut ProcessEnvironment)
 }

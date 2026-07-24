@@ -18643,3 +18643,135 @@ and must never regain a deployment permit. Await-expiry/recovery states must
 return a typed pending result rather than poll or write blindly. Until these
 gates and the broader G1-G8 migration approvals pass, Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.279 Signed Execution Activation And Claim Permit Overlay (2026-07-24)
+
+This overlay supersedes section 22.278 only where an installed publication
+could previously proceed directly to credential loading without a
+publication-specific execution authorization. It adds a local signed
+execution-activation boundary. It does not create the Authority claim, expose
+the execution driver, perform a Cloudflare mutation, or approve cutover.
+Checked-in execution-activation trust remains disabled and no credential,
+remote API, deployment, DNS, customer traffic, or Go/VPS authority changed.
+
+### Fixed activation path and closed bytes
+
+One verified publication has exactly one runner-selected activation location:
+
+```text
+<installation-root>/
+  execution-activations/
+    <publication-manifest-sha>.execution-activation.json
+```
+
+The caller cannot select the directory, filename, publication digest,
+authorization ID, execution nonce, Authority origin/path, service, target, or
+overwrite mode. A different authorization requires a new signed publication;
+the existing publication activation is never rotated in place.
+
+The activation is bounded strict canonical JSON with a closed schema.
+Duplicate or unknown fields, alternate canonical bytes, malformed digests,
+unsafe integers, invalid tokens, oversized content, and trailing data fail
+closed. It contains the exact signed publication binding, a fixed
+Access-protected Authority claim locator, the permit public SPKI, and the
+complete canonical claim request. The locator is fixed to one `POST`, the
+compiled private Authority origin and claim path, no retry, a fixed timeout,
+a fixed response ceiling, and mandatory Access service-token identity.
+
+### Strict signed claim permit
+
+The claim digest is recomputed from the complete canonical claim and validated
+against the Rust Authority state-machine contract. The permit is an Ed25519
+signature over a domain-separated canonical permit subject. Its compiled
+issuer, key ID and SPKI fingerprint must match; the release-signing key and
+claim-permit key must remain distinct.
+
+The signed subject binds the authorization ID, claim digest, claim owner,
+ledger identity and claim credential identity. Permit issue/expiry ordering,
+clock skew, maximum permit lifetime, claim lifetime and minimum remaining
+claim lifetime are bounded. A valid signature cannot authorize a different
+claim, publication, owner, ledger, credential or time window.
+
+### Publication, trust and credential identity joins
+
+The activation repeats and verifies the publication manifest, publication
+packet, generation, activation sequence, runner build and runner trust-config
+digests. The claim then joins those publication identities to compiled
+execution trust:
+
+- exact transition and authorization policy digests;
+- exact account and ledger identities;
+- pairwise-separated read, claim and deploy credential identities;
+- exact Controller and Edge service names;
+- exact runner build and runner trust-config digests; and
+- exact authorization, execution nonce, claim owner and claim digest.
+
+Credential handles are not read until this join succeeds. The later credential
+typestate must prove the same account and credential identities and the same
+Authority version/permit root before a prepared control plane can exist. The
+execution-activation identity remains attached to that prepared control plane
+so a future driver can bind claim creation, receipt append and resume to the
+same authorization.
+
+The library-owned authorization order is now:
+
+```text
+verified publication
+  -> verified installed execution activation
+  -> loaded and identity-proven credentials
+  -> Authority preflight
+  -> prepared control plane
+```
+
+No public constructor may skip or reorder these states. The checked-in release,
+execution-activation and credential trust roots remain disabled, so
+`--execute` still stops before credential or network use.
+
+### Create-new install and exact replay
+
+Installation derives the target solely from the verified publication manifest
+digest. The writer accepts a pre-existing trusted installation root, creates
+only the fixed activation directory, validates its entries, writes bounded
+canonical bytes to same-directory staging, publishes with no-replace
+semantics, synchronizes the directory, and independently reads back the exact
+bytes and digest.
+
+An existing target is success only when every byte equals the verified
+activation. Different, partial, noncanonical, linked or publication-drifted
+content is a permanent conflict and is never overwritten, truncated, deleted
+or repaired in place. A possibly published but unconfirmed result is
+`durability_unknown`; recovery may only reread the fixed path and compare the
+expected digest.
+
+Windows tests cover canonical verification, create-new, exact replay and
+conflict behavior only. They are not evidence for Linux directory-handle
+confinement, no-follow behavior, no-replace atomicity, link-count checks,
+directory synchronization, ACLs or power-loss durability.
+
+### Release closure target and remaining P0
+
+The signed release closure is now 28 modules: the prior 25-module closure
+plus the Rust execution-activation implementation, the independent JavaScript
+activation verifier, and its adversarial tests. Both source collectors and
+both release verifiers agree on all 28 paths, and their inventory, manifest,
+DSSE, publication, signature and activation vectors advanced together. The
+merged local gates observed 76 runner library tests, one runner binary test,
+two runner CLI tests, 38 runner JavaScript tests, 65 broader ring-transition
+tests, 859 Worker library tests and 71 frontend tests; repository-wide
+`bun run check` exited successfully.
+
+The remaining P0 work is:
+
+1. live Authority claim creation with exact response-loss recovery;
+2. typed T1 and Edge-previous read/append/observation phases;
+3. live receipt append around every Authority and Cloudflare boundary;
+4. the library-owned resumable execution driver;
+5. Linux adversarial concurrency, link/path, crash, sync and power-loss tests;
+6. full revalidation of all four independent transition authorization
+   approvals, not only their policy digests in the signed claim;
+7. an independently signed or reviewed WORM external receipt-chain anchor;
+8. actual exposed-credential revocation and replacement evidence.
+
+Until these P0 items, the exact signed Linux release ceremony, remote identity
+and scope evidence, and G1-G8 approvals pass, Go/VPS remains authoritative and
+production remains **NO-GO**.

@@ -2690,3 +2690,120 @@ signature and append-only installation, remote token scope/owner/revocation
 packet, deployed Access readback, crash campaign, execution receipts, P5-B,
 accounting/SLO/cost, rollback, G1-G8 approval, and Go/VPS drain remain hard
 gates. Production remains **NO-GO**.
+
+## 2026-07-24 K7 Execution Receipt V1 And Recovery Boundary
+
+This addendum freezes the K7 production contract and records the local Rust
+terminal projection, create-new writer and replay verifier. It does not claim
+real-time driver integration, installed-filesystem independent verification,
+Linux durability proof or an external anchor. A separate JavaScript verifier
+currently covers canonical in-memory replay. K7 remains open.
+
+### Receipt V1 contract
+
+Each authorization owns one independent append-only chain under a fixed,
+release-controlled receipt root. A chain starts at sequence 1 and cannot be
+joined to, continued by or used to repair another authorization. Every record
+is bounded canonical JSON with an exact closed schema, duplicate and unknown
+fields rejected, no floating-point values, and one byte representation shared
+by the Rust writer and an independent verifier.
+
+Receipt content is digest-only. It may bind the authorization, claim and
+owner digests; Authority ledger/version identity; installed release,
+publication and credential identities; state version; allowlisted event and
+failure classifications; request-ID, request, response, deployment-set,
+version-detail, observation and evidence digests; bounded timestamps; and
+terminal status. It must never retain a credential, authorization header,
+Access material, HMAC value, permit, request or response body, provider
+payload, SQL text/error, or unbounded Cloudflare metadata.
+
+`receiptSha256` is SHA-256 over the complete canonical record bytes and is not
+serialized into that same record. Sequence 1 has a null predecessor; every
+later record carries the exact prior `receiptSha256`. The fixed path is:
+
+```text
+execution-receipts/<authorizationIdSha256>/<sequence:020>.receipt.json
+```
+
+The writer may create a missing next record only when its expected predecessor
+exists, is canonical, hashes exactly and is not terminal. An existing target
+is an idempotent replay only when its bytes equal the proposed canonical bytes.
+Different, truncated, noncanonical, linked, out-of-order or post-seal content
+is a hard conflict: do not overwrite, delete, skip, truncate or repair it in
+place.
+
+The last record is a `terminal_seal`. Only Authority-verified
+`completed`, `recovery_required`, `aborted` or `expired` state may produce it.
+It binds the final state version and snapshot/evidence digests, terminal time,
+chain length and predecessor. No record is valid after the seal. Repair
+requires a new authorization; an old chain is retained as evidence.
+
+### Linux publish and durability boundary
+
+The production writer is Linux-only. It must hold trusted directory
+descriptors and resolve beneath them with `openat`, `O_NOFOLLOW`,
+`O_EXCL` and regular-file/link-count checks. It writes and verifies a private
+same-directory staging object, applies final receipt permissions, calls file
+`fsync`, and publishes with `renameat2(RENAME_NOREPLACE)` or a reviewed
+equivalent create-new primitive. It then `fsync`s the receipt directory and
+every newly created parent directory before reporting success, followed by an
+independent exact-byte readback.
+
+A failure after possible publication or during parent-directory `fsync` is
+`durability_unknown`, not permission to rewrite. Recovery reopens the fixed
+sequence and accepts only the exact canonical bytes and digest; missing content
+may retry only the same bytes after predecessor revalidation. Conflict,
+partial content, unsafe type/link/path, a replaced directory or an unverifiable
+filesystem stops execution and preserves the installation for audit.
+
+Windows runs validate canonical bytes, predecessor logic, exact replay,
+conflict handling and restart semantics only. Windows results are not evidence
+for Linux `openat` path confinement, `renameat2` no-replace publication,
+single-link enforcement, directory `fsync`, ACLs or power-loss durability.
+
+### Recovery authority boundary
+
+The receipt is an audit projection, never the state authority and never a
+deployment capability. Every start re-verifies the signed installed release,
+fixed execution activation and credential identities, validates the complete
+local chain, then reads the exact current Authority claim. Authority state
+alone selects the reducer path. Receipt presence, absence or a locally observed
+success can never advance the claim or authorize a Cloudflare write.
+
+A fresh, process-local, non-serializable POST permit exists only after the
+current process obtains an exact fresh Authority intent append. It is never
+written into a receipt and is never reconstructed after response loss, process
+death, reboot or failover. Restarted `controller_inflight` and `edge_inflight`
+claims are readback-only. A durable pre-POST authorization record means the
+request may have escaped; restart therefore performs stable readback and
+Authority observation only, never another deployment POST. Ambiguous receipt
+append results are resolved by exact fixed-path readback, not by replaying a
+network mutation.
+
+### Remaining K7 gates
+
+The local Rust writer/replay foundation now covers canonical terminal
+projection, exact predecessor replay, conflict/gap/post-seal rejection and
+directory synchronization. K7 passes only after all of the following are
+retained for the exact signed Linux artifact:
+
+1. the Rust writer is integrated before and after every network boundary and
+   the independent JavaScript replay verifier agrees on every canonical
+   vector, predecessor, exact-replay, conflict and terminal-seal rule and is
+   extended to securely read the installed Linux chain;
+2. two concurrent processes plus the full kill matrix prove at most one
+   deployment POST per service lifetime and no restored permit;
+3. operator-owned UID/GID, directory ownership, append-only writer boundary,
+   auditor read access, exact POSIX ACLs, retention and backup policy are
+   reviewed and read back;
+4. ext4 or XFS fault-injection/power-loss tests prove returned-success files
+   and directory entries survive, while `durability_unknown` converges by
+   digest-only readback; and
+5. the terminal receipt chain head is committed to an independently signed
+   P5 evidence packet or reviewed WORM/Authority anchor so whole-chain
+   replacement is externally detectable.
+
+Local hashes and read-only mode alone do not satisfy the external-anchor or
+deletion-resistance requirement. Until the writer, verifier, ACL, external
+chain head, retention and real Linux power-loss evidence pass, K7 remains a
+hard blocker, Go/VPS remains authoritative, and production remains **NO-GO**.

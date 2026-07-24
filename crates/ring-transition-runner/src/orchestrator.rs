@@ -32,7 +32,7 @@ pub enum ClaimStatus {
 }
 
 impl ClaimStatus {
-    fn is_terminal(self) -> bool {
+    pub(crate) fn is_terminal(self) -> bool {
         matches!(
             self,
             Self::Completed | Self::RecoveryRequired | Self::Aborted | Self::Expired
@@ -242,6 +242,10 @@ impl VerifiedSnapshot {
 
     pub fn edge_service_name(&self) -> &str {
         &self.snapshot.claim.edge.service_name
+    }
+
+    pub(crate) fn receipt_snapshot(&self) -> &AuthoritySnapshot {
+        &self.snapshot
     }
 
     pub fn decision(&self, now: u64) -> Result<RunnerDecision, OrchestratorError> {
@@ -2510,6 +2514,124 @@ mod tests {
         assert_eq!(completed.decision(NOW), Ok(RunnerDecision::SealReceipt));
     }
 
+    #[test]
+    fn terminal_snapshot_projects_one_predecessor_bound_receipt_per_history_event() {
+        use crate::credentials::CredentialIdentity;
+        use crate::publication::PublicationIdentity;
+        use crate::receipt::{plan_terminal_receipts, ReceiptEvent};
+        use crate::release::VerifiedRelease;
+
+        let mut raw = base_snapshot();
+        append_t1(&mut raw);
+        append_controller_intent(&mut raw);
+        append_controller_post_readback(&mut raw);
+        append_edge_pre_readback(&mut raw);
+        append_edge_intent(&mut raw);
+        append_edge_post_readback(&mut raw);
+        let completed = verified(raw);
+        let publication = PublicationIdentity {
+            release: VerifiedRelease {
+                source_commit: "1".repeat(40),
+                git_tree_sha: "2".repeat(40),
+                target_triple: "x86_64-unknown-linux-gnu".to_owned(),
+                manifest_sha256: "5".repeat(64),
+                packet_sha256: "6".repeat(64),
+                policy_sha256: "7".repeat(64),
+                release_key_id: "release-v1".to_owned(),
+                release_key_spki_base64url: "release-spki".to_owned(),
+                release_key_spki_sha256: "8".repeat(64),
+                artifact_file_name: "cinatoken-ring-transition-runner".to_owned(),
+                artifact_byte_length: 1,
+                artifact_sha256: "3".repeat(64),
+                module_inventory_sha256: "9".repeat(64),
+                module_count: 25,
+                module_bytes: 1,
+                authority_version_id: "authority-version-001".to_owned(),
+                permit_spki_sha256: "a".repeat(64),
+                trust_config_sha256: "4".repeat(64),
+                issued_at: "2026-07-24T00:00:00Z".to_owned(),
+                expires_at: "2026-07-25T00:00:00Z".to_owned(),
+            },
+            publication_manifest_sha256: "b".repeat(64),
+            publication_packet_sha256: "c".repeat(64),
+            generation_sha256: "d".repeat(64),
+            publication_directory_name: format!("publication-{}", "b".repeat(64)),
+            activation_sequence: 1,
+            previous_publication_manifest_sha256: None,
+            published_at: "2026-07-24T00:00:00.000Z".to_owned(),
+            expires_at: "2026-07-25T00:00:00.000Z".to_owned(),
+        };
+        let credentials = CredentialIdentity {
+            account_id_sha256: "c".repeat(64),
+            read_credential_id_sha256: "e".repeat(64),
+            claim_credential_id_sha256: "f".repeat(64),
+            deploy_credential_id_sha256: "0".repeat(64),
+            access_client_id_sha256: "1".repeat(64),
+            authority_version_id: "authority-version-001".to_owned(),
+            permit_spki_sha256: "a".repeat(64),
+            trust_config_sha256: "4".repeat(64),
+            publication_manifest_sha256: "b".repeat(64),
+            runner_build_sha256: "3".repeat(64),
+            controller_service_name: "controller-staging".to_owned(),
+            edge_service_name: "edge-staging".to_owned(),
+            stable_readback_observation_seconds: 5,
+            activation_sequence: 1,
+        };
+
+        let plan = plan_terminal_receipts(&completed, &publication, &credentials).unwrap();
+        assert_eq!(plan.receipts().len(), 8);
+        for pair in plan.receipts().windows(2) {
+            assert_eq!(
+                pair[1].record().predecessor_receipt_sha256.as_deref(),
+                Some(pair[0].sha256())
+            );
+        }
+        assert!(matches!(
+            plan.receipts().last().unwrap().record().event,
+            ReceiptEvent::TerminalSeal {
+                status: ClaimStatus::Completed,
+                state_version: 6,
+                chain_length: 8,
+                ..
+            }
+        ));
+
+        let mut expired_raw = base_snapshot();
+        append_expiry(&mut expired_raw);
+        let expired =
+            plan_terminal_receipts(&verified(expired_raw), &publication, &credentials).unwrap();
+        assert_eq!(expired.receipts().len(), 3);
+        assert!(matches!(
+            expired.receipts()[1].record().event,
+            ReceiptEvent::AuthorityExpiry { .. }
+        ));
+        assert!(matches!(
+            expired.receipts()[2].record().event,
+            ReceiptEvent::TerminalSeal {
+                status: ClaimStatus::Expired,
+                state_version: 1,
+                chain_length: 3,
+                ..
+            }
+        ));
+
+        let mut recovery_raw = base_snapshot();
+        append_t1(&mut recovery_raw);
+        append_controller_intent(&mut recovery_raw);
+        append_controller_post_readback(&mut recovery_raw);
+        append_recovery_expiry(&mut recovery_raw);
+        let recovery =
+            plan_terminal_receipts(&verified(recovery_raw), &publication, &credentials).unwrap();
+        assert!(matches!(
+            recovery.receipts().last().unwrap().record().event,
+            ReceiptEvent::TerminalSeal {
+                status: ClaimStatus::RecoveryRequired,
+                state_version: 4,
+                ..
+            }
+        ));
+    }
+
     fn controller_inflight_snapshot() -> VerifiedSnapshot {
         let mut raw = base_snapshot();
         append_t1(&mut raw);
@@ -2779,11 +2901,19 @@ mod tests {
     }
 
     fn append_expiry(snapshot: &mut AuthoritySnapshot) {
+        append_expiry_to(snapshot, ClaimStatus::Expired);
+    }
+
+    fn append_recovery_expiry(snapshot: &mut AuthoritySnapshot) {
+        append_expiry_to(snapshot, ClaimStatus::RecoveryRequired);
+    }
+
+    fn append_expiry_to(snapshot: &mut AuthoritySnapshot, to_status: ClaimStatus) {
         let state_version = snapshot.state.state_version + 1;
         let mut event = SnapshotExpiryEvent {
             state_version,
             from_status: snapshot.state.status,
-            to_status: ClaimStatus::Expired,
+            to_status,
             authority_actor_id_sha256: "6".repeat(64),
             evidence_sha256: EVIDENCE_DIGEST.to_owned(),
             expiry_event_digest_sha256: String::new(),

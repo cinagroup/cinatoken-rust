@@ -465,3 +465,33 @@ These commands prove the local fail-closed contracts only. No control D1,
 Authority deployment, route, Access policy, secret, signed runner release,
 Cloudflare mutation, customer traffic, or Go/VPS cutover is established.
 Production remains **NO-GO**.
+
+## Terminal Receipt Store Boundary
+
+The runner now contains a library-owned terminal receipt projection and
+create-new store. A verified terminal `AuthoritySnapshot` is converted into
+one genesis record, one record for each ordered Authority step or expiry
+event, and one terminal seal. Every record repeats the release, publication,
+credential and claim identities and binds the exact predecessor canonical-byte
+SHA-256.
+
+The store accepts an existing slot only when its bytes are exactly equal.
+Missing predecessors, gaps, identity drift, noncanonical or linked files,
+semantic step/expiry digest drift, and records after a terminal seal fail
+closed. The Linux publisher uses no-follow directory/file handles, exclusive
+staging, file sync, directory-FD no-replace rename, parent sync and independent
+readback. Windows is a contract-test backend, not production durability
+evidence.
+
+`tools/relay_container_ring_transition_receipt_contract.mjs` is an independent
+in-memory replay verifier for the same canonical schema and state machine. Both
+implementations and the verifier tests are part of the 25-module signed release
+closure.
+
+This store is not yet joined to `PreparedControlPlane` or the CLI. It cannot
+create a claim, restore a permit, send a deployment, or advance Authority
+state. The next driver must load one fixed signed execution activation, append
+receipt evidence at each network boundary, and keep restarted inflight claims
+readback-only. Until the Linux fault campaign, installed-chain independent
+verification, external head anchor, ACL/retention evidence and remote gates
+pass, `--execute` remains fail-closed and production remains **NO-GO**.

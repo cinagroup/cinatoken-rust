@@ -8717,3 +8717,44 @@ credential, customer traffic, provider call, financial state, or Go/VPS
 authority changed. Full repository gates, exact Rust 1.78 Linux reproducible
 builds, execution receipts, remote identity/scope/revocation evidence, and
 the crash campaign remain production blockers. Production remains **NO-GO**.
+
+## 2026-07-24 K7 Terminal Receipt Store Verification
+
+The local K7 foundation was verified without credentials or remote network
+access:
+
+```text
+cargo test -p cinatoken-ring-transition-runner
+70 library tests, 1 binary test, 2 CLI integration tests: PASS
+
+cargo clippy -p cinatoken-ring-transition-runner --all-targets -- -D warnings
+PASS
+
+bun test --timeout 30000 \
+  tests/relay-container-ring-transition-receipt.test.mjs \
+  tests/relay-container-ring-transition-release.test.mjs \
+  tests/relay-container-ring-transition-release-source.test.mjs
+31 tests, 113 expectations: PASS
+```
+
+The Rust cases prove terminal Authority projection, exact step/expiry digest
+recomputation, legal state progression, bounded canonical records,
+predecessor-bound create-new install, complete exact replay, gap/conflict and
+post-seal rejection. The independent JavaScript verifier rejects duplicate,
+unknown, noncanonical and secret-like fields, shared-identity/time drift,
+invalid step/expiry shapes and digest drift, and accepts both direct expiry and
+post-controller recovery expiry.
+
+The publication installer now keeps the Linux runner executable at `0555`,
+keeps JSON and activation files at `0444`, synchronizes new Unix directory
+entries, and performs a final activation-required readback. The signed source
+closure is 25 modules and includes the Rust receipt store, independent
+JavaScript verifier, and verifier tests.
+
+The current host verified Windows contract/replay semantics. Installing the
+`x86_64-unknown-linux-gnu` target did not complete within the bounded local
+window, so the Linux-only `openat`/`renameat2` branch, parent-directory
+durability, single-link enforcement under attack, ext4/XFS power loss, exact
+ACLs, concurrent process death, external chain-head anchor, and real-time
+driver integration remain open. Checked-in trust and `--execute` remain
+fail-closed; production remains **NO-GO**.

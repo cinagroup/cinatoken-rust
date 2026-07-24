@@ -30,6 +30,9 @@ native-tls.workspace = true
 [target.'cfg(not(windows))'.dependencies]
 hyper-rustls.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [lib]
 path = "src/lib.rs"
 

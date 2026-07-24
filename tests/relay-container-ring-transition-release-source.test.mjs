@@ -82,12 +82,19 @@ describe("ring-transition runner release source collector", () => {
     expect(first.moduleInventory.files.map((record) => record.path)).toEqual(
       [...first.moduleInventory.files.map((record) => record.path)].sort(),
     );
-    expect(first.moduleCount).toBe(22);
+    expect(first.moduleCount).toBe(25);
     expect(first.moduleInventory.files).toContainEqual({
       path: "crates/ring-transition-runner/src/readback.rs",
       byteLength: Buffer.byteLength("pub fn readback_fixture() {}\n"),
       sha256: sha256Hex(
         Buffer.from("pub fn readback_fixture() {}\n", "utf8"),
+      ),
+    });
+    expect(first.moduleInventory.files).toContainEqual({
+      path: "crates/ring-transition-runner/src/receipt.rs",
+      byteLength: Buffer.byteLength("pub fn receipt_fixture() {}\n"),
+      sha256: sha256Hex(
+        Buffer.from("pub fn receipt_fixture() {}\n", "utf8"),
       ),
     });
     expect(first.moduleInventory.files).toContainEqual({
@@ -133,6 +140,21 @@ describe("ring-transition runner release source collector", () => {
     await expect(
       collectRingTransitionRunnerReleaseSource({ repositoryRoot: repository }),
     ).rejects.toThrow(/required module missing/);
+  });
+
+  test("rejects a missing receipt writer, verifier, or verifier test", async () => {
+    for (const omit of [
+      "crates/ring-transition-runner/src/receipt.rs",
+      "tools/relay_container_ring_transition_receipt_contract.mjs",
+      "tests/relay-container-ring-transition-receipt.test.mjs",
+    ]) {
+      const repository = await fixtureRepository({ omit });
+      await expect(
+        collectRingTransitionRunnerReleaseSource({
+          repositoryRoot: repository,
+        }),
+      ).rejects.toThrow(/required module missing/);
+    }
   });
 
   test("CLI describes without Git and collects one clean fixture", async () => {
@@ -220,6 +242,10 @@ async function fixtureRepository({ omit = null } = {}) {
       "pub fn readback_fixture() {}\n",
     ],
     [
+      "crates/ring-transition-runner/src/receipt.rs",
+      "pub fn receipt_fixture() {}\n",
+    ],
+    [
       "crates/ring-transition-runner/src/release.rs",
       "pub fn release_fixture() {}\n",
     ],
@@ -230,6 +256,10 @@ async function fixtureRepository({ omit = null } = {}) {
     [
       "crates/ring-transition-runner/tests/cli.rs",
       "#[test] fn fixture() {}\n",
+    ],
+    [
+      "tests/relay-container-ring-transition-receipt.test.mjs",
+      "export const receiptFixture = true;\n",
     ],
     [
       "tests/relay-container-ring-transition-release-source.test.mjs",
@@ -250,6 +280,10 @@ async function fixtureRepository({ omit = null } = {}) {
     [
       "tools/relay_container_ring_transition_contract.mjs",
       "export const ring = true;\n",
+    ],
+    [
+      "tools/relay_container_ring_transition_receipt_contract.mjs",
+      "export const receiptContract = true;\n",
     ],
     [
       "tools/relay_container_ring_transition_release_contract.mjs",

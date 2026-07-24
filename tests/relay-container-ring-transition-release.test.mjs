@@ -78,15 +78,18 @@ describe("Relay Container ring-transition runner release contract", () => {
       "crates/ring-transition-runner/src/orchestrator.rs",
       "crates/ring-transition-runner/src/publication.rs",
       "crates/ring-transition-runner/src/readback.rs",
+      "crates/ring-transition-runner/src/receipt.rs",
       "crates/ring-transition-runner/src/release.rs",
       "crates/ring-transition-runner/src/transport.rs",
       "crates/ring-transition-runner/tests/cli.rs",
       "package.json",
+      "tests/relay-container-ring-transition-receipt.test.mjs",
       "tests/relay-container-ring-transition-release-source.test.mjs",
       "tests/relay-container-ring-transition-release.test.mjs",
       "tools/collect_ring_transition_runner_release_source.mjs",
       "tools/relay_container_p5_evidence_contract.mjs",
       "tools/relay_container_ring_transition_contract.mjs",
+      "tools/relay_container_ring_transition_receipt_contract.mjs",
       "tools/relay_container_ring_transition_release_contract.mjs",
       "tools/verify_relay_container_ring_transition_release.mjs",
     ]);
@@ -135,7 +138,7 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.moduleCount).toBe(22);
+    expect(result.moduleCount).toBe(25);
   });
 
   test("matches the deterministic Rust DSSE release vector", () => {
@@ -145,23 +148,23 @@ describe("Relay Container ring-transition runner release contract", () => {
       policySha256:
         "9b12c3dd50812180f2122311480876bd6508a81618082c615ca52d4701ec3856",
       inventorySha256:
-        "82ac2d0a4362a02f1d7ffab2b38b2cf63ce9a74977a4c188897807d8c44f5eab",
+        "b05591c72c4c675a0efccd87011359db8be9641920d7fd858e9a40ba7c3b5fbc",
       manifestSha256:
-        "1168cce51fdabef7ac1e9e2653e3ef192b1b005d6b0965ef91f15dc3ebbe437c",
+        "9722f95284b5646f5842008c4efa86ed51c433988f740283b7bc8d2986b3e783",
       packetSha256:
-        "2f777d82267fcac73dc059aef2c80ae781f34086422ad201231f6e3fa24f4cf2",
+        "50d56c5f28bde61ac2f4715550c6997c64204739be743084f9d73d0f2da65fef",
       signatureBase64:
-        "GzYVKjycMavPFuiSw5/B+WZJDlCjUPF5h1xZg05xpDO/Ddgp7FUfSQ6vHkuJsa3XJ6xwuYbsffFH7fXowROVBg==",
+        "Y5jHB7uiXuFbumL/wCEe24nBqbXXtt4Uh4GL0Nm6dCjiLLtWo8p/FnevG5WsbhnVQdLUFsQKs+cw1YBmnlThDw==",
       publicationGenerationSha256:
-        "a619272a9e04bde56cce0d966f700270604e472b707414f4b73fad0f6220f6e3",
+        "544dee522c112410ddbf43475ed88b628dbf1efb670b7bf0146df5860ee4eda3",
       publicationManifestSha256:
-        "c0e512b6000d48d8e191fba3a8896fbc983791b45dea860b03a238d5920eb648",
+        "2d19cf86cf99af871264cb85e2811768b37a92c5cc708efa483955ffd512f3e6",
       publicationPacketSha256:
-        "d4250595a3b5250754f7239b9224793fd26b8d27cb5fd7c430a5972faeb64f93",
+        "db0627888048d7c72f10da9aea1b3a0156613e0d025a493df3529dc3481a3d56",
       publicationSignatureBase64:
-        "QwhHFb8f2HrIs6AAoGycfkaoqjWCxdVRkuuGI3Ob1rXQNqa+FVqfFzSa32HBRjwOlt7os7aW8OdEPPlmKMcfBQ==",
+        "ySdrwU4BtgWZePlPhYjw/g4K1cNNaKM+I/nqxrDgoy4eTyH1QVxOrp3UcWdua6fiYUFVv33Z7WB3UF6S+Lm2AA==",
       activationSha256:
-        "6dd7e5c004e0e10339bb7d3f50583036f3e4fff9e844e09cf9a8d211dc379575",
+        "e5b99e8d81ae4e23e24fb87dea7708228b0ec7a31b195bebbd1deab9e47a5005",
     });
   });
 
@@ -781,6 +784,10 @@ async function releaseFixture({
       "runner-readback-fixture",
     ],
     [
+      "crates/ring-transition-runner/src/receipt.rs",
+      "runner-receipt-fixture",
+    ],
+    [
       "crates/ring-transition-runner/src/release.rs",
       "runner-release-fixture",
     ],
@@ -793,6 +800,10 @@ async function releaseFixture({
       "runner-cli-test-fixture",
     ],
     ["package.json", "package-fixture"],
+    [
+      "tests/relay-container-ring-transition-receipt.test.mjs",
+      "receipt-test-fixture",
+    ],
     [
       "tests/relay-container-ring-transition-release-source.test.mjs",
       "release-source-test-fixture",
@@ -812,6 +823,10 @@ async function releaseFixture({
     [
       "tools/relay_container_ring_transition_contract.mjs",
       "ring-contract-fixture",
+    ],
+    [
+      "tools/relay_container_ring_transition_receipt_contract.mjs",
+      "receipt-contract-fixture",
     ],
     [
       "tools/relay_container_ring_transition_release_contract.mjs",

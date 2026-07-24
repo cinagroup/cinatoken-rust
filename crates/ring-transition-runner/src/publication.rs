@@ -360,6 +360,7 @@ pub fn install_verified_publication(
         }
         _ => PublicationError::Io("create_publication_directory"),
     })?;
+    sync_directory(&publications, "publications")?;
     let canonical_publications =
         fs::canonicalize(&publications).map_err(|_| PublicationError::Io("publications"))?;
     let canonical_publication = fs::canonicalize(&publication_directory)
@@ -399,12 +400,24 @@ pub fn install_verified_publication(
         false,
     )?;
     set_publication_read_only(&publication_directory, &verified.identity)?;
+    sync_directory(&publication_directory, "publication_directory")?;
 
     let activation_file =
         activations.join(activation_file_name(verified.identity.activation_sequence));
     let activation_bytes = activation_bytes(&verified.identity)?;
     write_create_new(&activation_file, &activation_bytes, "activation")?;
     set_file_read_only(&activation_file)?;
+    sync_directory(&activations, "activations")?;
+    let activated_identity = verify_installed_publication_at(
+        &verified.trust,
+        &publication_directory.join(&verified.identity.release.artifact_file_name),
+        parse_whole_second_timestamp(&verified.identity.published_at, "published_at")?,
+        false,
+        true,
+    )?;
+    if activated_identity != verified.identity {
+        return Err(PublicationError::InstallConflict("activation_readback"));
+    }
 
     Ok(InstalledPublication {
         identity: verified.identity,
@@ -750,11 +763,11 @@ fn create_fixed_directory(
     name: &'static str,
 ) -> Result<PathBuf, PublicationError> {
     let directory = root.join(name);
-    match fs::create_dir(&directory) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+    let created = match fs::create_dir(&directory) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(_) => return Err(PublicationError::Io(name)),
-    }
+    };
     let metadata = fs::symlink_metadata(&directory).map_err(|_| PublicationError::Io(name))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(PublicationError::InstallConflict(name));
@@ -762,6 +775,9 @@ fn create_fixed_directory(
     let canonical = fs::canonicalize(&directory).map_err(|_| PublicationError::Io(name))?;
     if canonical.parent() != Some(canonical_root) {
         return Err(PublicationError::InstallConflict(name));
+    }
+    if created {
+        sync_directory(root, name)?;
     }
     Ok(directory)
 }
@@ -817,8 +833,8 @@ fn set_publication_read_only(
     directory: &Path,
     identity: &PublicationIdentity,
 ) -> Result<(), PublicationError> {
+    set_artifact_read_only(&directory.join(&identity.release.artifact_file_name))?;
     for file_name in [
-        identity.release.artifact_file_name.as_str(),
         RELEASE_PACKET_FILE_NAME,
         RELEASE_POLICY_FILE_NAME,
         PUBLICATION_PACKET_FILE_NAME,
@@ -826,6 +842,18 @@ fn set_publication_read_only(
         set_file_read_only(&directory.join(file_name))?;
     }
     set_directory_read_only(directory)
+}
+
+#[cfg(unix)]
+fn set_artifact_read_only(path: &Path) -> Result<(), PublicationError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o555))
+        .map_err(|_| PublicationError::Io("artifact_permissions"))
+}
+
+#[cfg(not(unix))]
+fn set_artifact_read_only(path: &Path) -> Result<(), PublicationError> {
+    set_file_read_only(path)
 }
 
 #[cfg(unix)]
@@ -859,6 +887,19 @@ fn set_directory_read_only(path: &Path) -> Result<(), PublicationError> {
     permissions.set_readonly(true);
     fs::set_permissions(path, permissions)
         .map_err(|_| PublicationError::Io("directory_permissions"))
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path, label: &'static str) -> Result<(), PublicationError> {
+    fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| PublicationError::Io(label))
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path, _label: &'static str) -> Result<(), PublicationError> {
+    // Production installation is Linux; Windows tests validate contract behavior only.
+    Ok(())
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -900,23 +941,23 @@ mod tests {
         let packet: PublicationPacket = serde_json::from_slice(&fixture.packet_json).unwrap();
         assert_eq!(
             verified.identity().generation_sha256,
-            "a619272a9e04bde56cce0d966f700270604e472b707414f4b73fad0f6220f6e3"
+            "544dee522c112410ddbf43475ed88b628dbf1efb670b7bf0146df5860ee4eda3"
         );
         assert_eq!(
             verified.identity().publication_manifest_sha256,
-            "c0e512b6000d48d8e191fba3a8896fbc983791b45dea860b03a238d5920eb648"
+            "2d19cf86cf99af871264cb85e2811768b37a92c5cc708efa483955ffd512f3e6"
         );
         assert_eq!(
             verified.identity().publication_packet_sha256,
-            "d4250595a3b5250754f7239b9224793fd26b8d27cb5fd7c430a5972faeb64f93"
+            "db0627888048d7c72f10da9aea1b3a0156613e0d025a493df3529dc3481a3d56"
         );
         assert_eq!(
             packet.envelope.signatures[0].sig,
-            "QwhHFb8f2HrIs6AAoGycfkaoqjWCxdVRkuuGI3Ob1rXQNqa+FVqfFzSa32HBRjwOlt7os7aW8OdEPPlmKMcfBQ=="
+            "ySdrwU4BtgWZePlPhYjw/g4K1cNNaKM+I/nqxrDgoy4eTyH1QVxOrp3UcWdua6fiYUFVv33Z7WB3UF6S+Lm2AA=="
         );
         assert_eq!(
             sha256_hex(&activation_bytes(verified.identity()).unwrap()),
-            "6dd7e5c004e0e10339bb7d3f50583036f3e4fff9e844e09cf9a8d211dc379575"
+            "e5b99e8d81ae4e23e24fb87dea7708228b0ec7a31b195bebbd1deab9e47a5005"
         );
 
         let root = temporary_directory();

@@ -3158,3 +3158,53 @@ exact Rust 1.78 two-build Linux release, independent signature/installation,
 actual exposed-credential revocation, deployed Access policy readback, token
 scope evidence, and the two-process fault campaign. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-24 K7 Execution Receipt V1 And Recovery Boundary
+
+Phase 1 now freezes the K7 receipt and restart contract and includes the local
+Rust terminal projection, create-new store and replay verifier. It does not
+claim the real-time driver, installed-filesystem independent verification or
+production proof. A separate JavaScript verifier covers canonical in-memory
+replay only.
+
+Each authorization has one independent bounded canonical digest-only chain at
+`execution-receipts/<authorizationIdSha256>/<sequence:020>.receipt.json`.
+Sequence 1 has no predecessor. Every later record binds the SHA-256 of the
+complete prior canonical bytes. The chain records only allowlisted release,
+publication, credential, Authority, claim, state, request-ID, readback,
+deployment-set and evidence identities or digests. It never stores secrets,
+headers, permits, HMAC values, raw request/response/provider bodies, SQL
+details or unbounded remote metadata.
+
+Writes are create-new. An existing sequence is an exact replay only when its
+bytes equal the proposed canonical record. Different, partial, noncanonical,
+linked, skipped or post-seal content is a permanent conflict and is never
+overwritten or repaired in place. A final `terminal_seal` is allowed only for
+Authority-verified `completed`, `recovery_required`, `aborted` or `expired`
+state, binds the final state and prior receipt, and forbids any later record.
+
+The production filesystem contract is Linux-only: trusted directory
+descriptors, `openat` path confinement, `O_NOFOLLOW`, `O_EXCL`,
+single-link regular files, private same-directory staging, verified bytes,
+final permissions, file `fsync`, create-new publication through
+`renameat2(RENAME_NOREPLACE)` or a reviewed equivalent, parent-directory
+`fsync`, and independent readback. An uncertain publish or directory-sync
+result is resolved by exact fixed-path digest readback and never authorizes
+overwrite. Windows validates protocol and restart semantics only; it cannot
+close Linux path, link, ACL, directory-sync or power-loss gates.
+
+Receipts are audit evidence, not state authority. Every restart must reverify
+the signed installation and identities, validate the chain, then read the
+exact Authority claim. A deployment POST permit is fresh, process-local and
+non-serializable; it is never persisted or reconstructed. Restored inflight
+claims perform stable readback and Authority observation only and can never
+issue another POST.
+
+K7 remains P0 and production **NO-GO** until the local writer is integrated at
+every network boundary, the independent verifier securely reads the installed
+Linux chain, the complete
+concurrent crash campaign passes, exact
+operator/append-writer/auditor ACL and retention evidence is retained, real
+Linux ext4/XFS power-loss durability is demonstrated, and the terminal chain
+head is anchored in independently signed P5 evidence or reviewed WORM/Authority
+storage. Go/VPS remains authoritative.

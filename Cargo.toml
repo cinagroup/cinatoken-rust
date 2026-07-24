@@ -51,6 +51,7 @@ hyper-tls = "=0.6.0"
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 hmac = "0.12"
 ipnet = "2"
+libc = "0.2"
 md5 = "0.7"
 native-tls = "=0.2.13"
 regex = "1"

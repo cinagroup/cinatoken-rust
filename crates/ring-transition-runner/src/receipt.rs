@@ -1,0 +1,2108 @@
+use crate::credentials::CredentialIdentity;
+use crate::orchestrator::{
+    AuthoritySnapshot, ClaimStatus, FailureClass, SnapshotExpiryEvent, SnapshotStep, StepCode,
+    TransportOutcome, VerifiedSnapshot, EXPIRY_CONTRACT, STEP_CONTRACT,
+};
+use crate::publication::PublicationIdentity;
+use crate::release::{
+    canonical_json, parse_canonical_json, parse_whole_second_timestamp, read_stable_regular_file,
+    sha256_hex, ReleaseVerificationError, MAX_SAFE_INTEGER,
+};
+use getrandom::getrandom;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::fs;
+#[cfg(not(target_os = "linux"))]
+use std::fs::OpenOptions;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+
+pub const EXECUTION_RECEIPT_CONTRACT: &str =
+    "cinatoken-ring-transition-runner-execution-receipt-v1";
+const HISTORY_DIGEST_CONTRACT: &str =
+    "cinatoken-ring-transition-runner-execution-receipt-history-v1";
+const RECEIPTS_DIRECTORY_NAME: &str = "execution-receipts";
+const RECEIPT_FILE_SUFFIX: &str = ".receipt.json";
+const MAX_RECEIPT_BYTES: usize = 64 * 1024;
+const MAX_RECEIPTS_PER_CHAIN: u64 = 128;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ReceiptReleaseIdentity {
+    pub source_commit: String,
+    pub git_tree_sha: String,
+    pub release_manifest_sha256: String,
+    pub release_packet_sha256: String,
+    pub release_policy_sha256: String,
+    pub artifact_sha256: String,
+    pub module_inventory_sha256: String,
+    pub module_count: u64,
+    pub publication_manifest_sha256: String,
+    pub publication_packet_sha256: String,
+    pub generation_sha256: String,
+    pub activation_sequence: u64,
+    pub previous_publication_manifest_sha256: Option<String>,
+    pub published_at: String,
+    pub expires_at: String,
+}
+
+impl From<&PublicationIdentity> for ReceiptReleaseIdentity {
+    fn from(identity: &PublicationIdentity) -> Self {
+        Self {
+            source_commit: identity.release.source_commit.clone(),
+            git_tree_sha: identity.release.git_tree_sha.clone(),
+            release_manifest_sha256: identity.release.manifest_sha256.clone(),
+            release_packet_sha256: identity.release.packet_sha256.clone(),
+            release_policy_sha256: identity.release.policy_sha256.clone(),
+            artifact_sha256: identity.release.artifact_sha256.clone(),
+            module_inventory_sha256: identity.release.module_inventory_sha256.clone(),
+            module_count: identity.release.module_count,
+            publication_manifest_sha256: identity.publication_manifest_sha256.clone(),
+            publication_packet_sha256: identity.publication_packet_sha256.clone(),
+            generation_sha256: identity.generation_sha256.clone(),
+            activation_sequence: identity.activation_sequence,
+            previous_publication_manifest_sha256: identity
+                .previous_publication_manifest_sha256
+                .clone(),
+            published_at: identity.published_at.clone(),
+            expires_at: identity.expires_at.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ReceiptCredentialIdentity {
+    pub account_id_sha256: String,
+    pub read_credential_id_sha256: String,
+    pub claim_credential_id_sha256: String,
+    pub deploy_credential_id_sha256: String,
+    pub access_client_id_sha256: String,
+    pub authority_version_id: String,
+    pub permit_spki_sha256: String,
+    pub trust_config_sha256: String,
+    pub runner_build_sha256: String,
+    pub controller_service_name: String,
+    pub edge_service_name: String,
+    pub stable_readback_observation_seconds: u16,
+}
+
+impl From<&CredentialIdentity> for ReceiptCredentialIdentity {
+    fn from(identity: &CredentialIdentity) -> Self {
+        Self {
+            account_id_sha256: identity.account_id_sha256.clone(),
+            read_credential_id_sha256: identity.read_credential_id_sha256.clone(),
+            claim_credential_id_sha256: identity.claim_credential_id_sha256.clone(),
+            deploy_credential_id_sha256: identity.deploy_credential_id_sha256.clone(),
+            access_client_id_sha256: identity.access_client_id_sha256.clone(),
+            authority_version_id: identity.authority_version_id.clone(),
+            permit_spki_sha256: identity.permit_spki_sha256.clone(),
+            trust_config_sha256: identity.trust_config_sha256.clone(),
+            runner_build_sha256: identity.runner_build_sha256.clone(),
+            controller_service_name: identity.controller_service_name.clone(),
+            edge_service_name: identity.edge_service_name.clone(),
+            stable_readback_observation_seconds: identity.stable_readback_observation_seconds,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ReceiptClaimIdentity {
+    pub authorization_id_sha256: String,
+    pub claim_digest_sha256: String,
+    pub ledger_identity_sha256: String,
+    pub claim_owner_sha256: String,
+    pub account_id_sha256: String,
+    pub generated_at: u64,
+    pub claimed_at: u64,
+    pub expires_at: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ReceiptStepEvent {
+    pub state_version: u8,
+    pub step_code: StepCode,
+    pub from_status: ClaimStatus,
+    pub to_status: ClaimStatus,
+    pub actor_execution_id_sha256: String,
+    pub mutation_request_sha256: Option<String>,
+    pub cloudflare_request_id_sha256: Option<String>,
+    pub deployment_set_sha256: Option<String>,
+    pub evidence_sha256: String,
+    pub failure_class: FailureClass,
+    pub transport_outcome: TransportOutcome,
+    pub step_digest_sha256: String,
+}
+
+impl From<&SnapshotStep> for ReceiptStepEvent {
+    fn from(step: &SnapshotStep) -> Self {
+        Self {
+            state_version: step.state_version,
+            step_code: step.step_code,
+            from_status: step.from_status,
+            to_status: step.to_status,
+            actor_execution_id_sha256: step.actor_execution_id_sha256.clone(),
+            mutation_request_sha256: step.mutation_request_sha256.clone(),
+            cloudflare_request_id_sha256: step.cloudflare_request_id_sha256.clone(),
+            deployment_set_sha256: step.deployment_set_sha256.clone(),
+            evidence_sha256: step.evidence_sha256.clone(),
+            failure_class: step.failure_class,
+            transport_outcome: step.transport_outcome,
+            step_digest_sha256: step.step_digest_sha256.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ReceiptExpiryEvent {
+    pub state_version: u8,
+    pub from_status: ClaimStatus,
+    pub to_status: ClaimStatus,
+    pub authority_actor_id_sha256: String,
+    pub evidence_sha256: String,
+    pub expiry_event_digest_sha256: String,
+    pub failure_class: FailureClass,
+}
+
+impl From<&SnapshotExpiryEvent> for ReceiptExpiryEvent {
+    fn from(event: &SnapshotExpiryEvent) -> Self {
+        Self {
+            state_version: event.state_version,
+            from_status: event.from_status,
+            to_status: event.to_status,
+            authority_actor_id_sha256: event.authority_actor_id_sha256.clone(),
+            evidence_sha256: event.evidence_sha256.clone(),
+            expiry_event_digest_sha256: event.expiry_event_digest_sha256.clone(),
+            failure_class: event.failure_class,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase", tag = "kind")]
+pub enum ReceiptEvent {
+    #[serde(rename = "claim_observed")]
+    ClaimObserved {
+        status: ClaimStatus,
+        state_version: u8,
+    },
+    #[serde(rename = "authority_step")]
+    AuthorityStep { step: ReceiptStepEvent },
+    #[serde(rename = "authority_expiry")]
+    AuthorityExpiry { expiry: ReceiptExpiryEvent },
+    #[serde(rename = "terminal_seal")]
+    TerminalSeal {
+        status: ClaimStatus,
+        state_version: u8,
+        terminal_at: u64,
+        final_snapshot_sha256: String,
+        final_snapshot_bytes: u64,
+        history_sha256: String,
+        chain_length: u64,
+    },
+}
+
+impl ReceiptEvent {
+    fn is_terminal_seal(&self) -> bool {
+        matches!(self, Self::TerminalSeal { .. })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ExecutionReceipt {
+    pub schema_version: u8,
+    pub contract: String,
+    pub environment: String,
+    pub sequence: u64,
+    pub predecessor_receipt_sha256: Option<String>,
+    pub recorded_at: u64,
+    pub release: ReceiptReleaseIdentity,
+    pub credential_identity: ReceiptCredentialIdentity,
+    pub claim: ReceiptClaimIdentity,
+    pub event: ReceiptEvent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalReceipt {
+    record: ExecutionReceipt,
+    bytes: Vec<u8>,
+    sha256: String,
+}
+
+impl CanonicalReceipt {
+    pub fn record(&self) -> &ExecutionReceipt {
+        &self.record
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceiptPlan {
+    authorization_id_sha256: String,
+    receipts: Vec<CanonicalReceipt>,
+}
+
+impl ReceiptPlan {
+    pub fn authorization_id_sha256(&self) -> &str {
+        &self.authorization_id_sha256
+    }
+
+    pub fn receipts(&self) -> &[CanonicalReceipt] {
+        &self.receipts
+    }
+
+    pub fn head_sha256(&self) -> &str {
+        self.receipts
+            .last()
+            .expect("a terminal receipt plan is never empty")
+            .sha256()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppendOutcome {
+    Created,
+    ExistingExact,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstalledReceiptChain {
+    pub authorization_id_sha256: String,
+    pub chain_directory: PathBuf,
+    pub receipt_count: u64,
+    pub head_sha256: String,
+    pub created_count: u64,
+    pub replayed_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedReceiptChain {
+    pub authorization_id_sha256: String,
+    pub receipt_count: u64,
+    pub head_sha256: String,
+    pub sealed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReceiptError {
+    Projection(&'static str),
+    InvalidJson,
+    NonCanonicalJson,
+    InvalidField(&'static str),
+    Io(&'static str),
+    UnsafeFilesystem(&'static str),
+    PredecessorMissing,
+    PredecessorMismatch,
+    Gap,
+    Conflict,
+    AlreadySealed,
+    NotSealed,
+    DurabilityUnknown { expected_sha256: String },
+}
+
+impl fmt::Display for ReceiptError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Projection(field) => write!(formatter, "receipt projection mismatch: {field}"),
+            Self::InvalidJson => formatter.write_str("receipt JSON is invalid"),
+            Self::NonCanonicalJson => formatter.write_str("receipt JSON is not canonical"),
+            Self::InvalidField(field) => write!(formatter, "receipt field is invalid: {field}"),
+            Self::Io(stage) => write!(formatter, "receipt I/O failed: {stage}"),
+            Self::UnsafeFilesystem(stage) => {
+                write!(formatter, "receipt filesystem is unsafe: {stage}")
+            }
+            Self::PredecessorMissing => formatter.write_str("receipt predecessor is missing"),
+            Self::PredecessorMismatch => formatter.write_str("receipt predecessor mismatch"),
+            Self::Gap => formatter.write_str("receipt chain contains a gap"),
+            Self::Conflict => formatter.write_str("receipt slot conflicts with canonical bytes"),
+            Self::AlreadySealed => formatter.write_str("receipt chain is already sealed"),
+            Self::NotSealed => formatter.write_str("receipt chain is not terminally sealed"),
+            Self::DurabilityUnknown { expected_sha256 } => write!(
+                formatter,
+                "receipt publication durability is unknown for {expected_sha256}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ReceiptError {}
+
+pub fn plan_terminal_receipts(
+    snapshot: &VerifiedSnapshot,
+    publication: &PublicationIdentity,
+    credentials: &CredentialIdentity,
+) -> Result<ReceiptPlan, ReceiptError> {
+    let snapshot = snapshot.receipt_snapshot();
+    validate_projection(snapshot, publication, credentials)?;
+
+    let release = ReceiptReleaseIdentity::from(publication);
+    let credential_identity = ReceiptCredentialIdentity::from(credentials);
+    let claim = ReceiptClaimIdentity {
+        authorization_id_sha256: snapshot.claim.authorization_id_sha256.clone(),
+        claim_digest_sha256: snapshot.claim.claim_digest_sha256.clone(),
+        ledger_identity_sha256: snapshot.claim.ledger_identity_sha256.clone(),
+        claim_owner_sha256: snapshot.claim.claim_owner_sha256.clone(),
+        account_id_sha256: snapshot.claim.account_id_sha256.clone(),
+        generated_at: snapshot.claim.generated_at,
+        claimed_at: snapshot.state.claimed_at,
+        expires_at: snapshot.claim.expires_at,
+    };
+
+    let mut ordered_history = Vec::with_capacity(usize::from(snapshot.state.state_version));
+    for step in &snapshot.steps {
+        ordered_history.push(OrderedHistory::Step(step));
+    }
+    for expiry in &snapshot.expiry_events {
+        ordered_history.push(OrderedHistory::Expiry(expiry));
+    }
+    ordered_history.sort_by_key(OrderedHistory::state_version);
+
+    let mut receipts = Vec::with_capacity(ordered_history.len() + 2);
+    push_receipt(
+        &mut receipts,
+        release.clone(),
+        credential_identity.clone(),
+        claim.clone(),
+        snapshot.state.claimed_at,
+        ReceiptEvent::ClaimObserved {
+            status: ClaimStatus::Claimed,
+            state_version: 0,
+        },
+    )?;
+
+    let mut history_digests = Vec::with_capacity(ordered_history.len());
+    for history in ordered_history {
+        let (recorded_at, digest, event) = match history {
+            OrderedHistory::Step(step) => (
+                step.recorded_at,
+                step.step_digest_sha256.clone(),
+                ReceiptEvent::AuthorityStep {
+                    step: ReceiptStepEvent::from(step),
+                },
+            ),
+            OrderedHistory::Expiry(expiry) => (
+                expiry.recorded_at,
+                expiry.expiry_event_digest_sha256.clone(),
+                ReceiptEvent::AuthorityExpiry {
+                    expiry: ReceiptExpiryEvent::from(expiry),
+                },
+            ),
+        };
+        history_digests.push(digest);
+        push_receipt(
+            &mut receipts,
+            release.clone(),
+            credential_identity.clone(),
+            claim.clone(),
+            recorded_at,
+            event,
+        )?;
+    }
+
+    let snapshot_bytes = canonical_json(snapshot)
+        .map_err(|_| ReceiptError::Projection("final_snapshot"))?
+        .into_bytes();
+    let history_sha256 = sha256_hex(
+        canonical_json(&HistoryDigestSubject {
+            schema_version: 1,
+            contract: HISTORY_DIGEST_CONTRACT,
+            history_digests: &history_digests,
+        })
+        .map_err(|_| ReceiptError::Projection("history"))?
+        .as_bytes(),
+    );
+    let terminal_at = snapshot
+        .state
+        .terminal_at
+        .ok_or(ReceiptError::Projection("terminal_at"))?;
+    let chain_length =
+        u64::try_from(receipts.len() + 1).map_err(|_| ReceiptError::Projection("chain_length"))?;
+    push_receipt(
+        &mut receipts,
+        release,
+        credential_identity,
+        claim,
+        terminal_at,
+        ReceiptEvent::TerminalSeal {
+            status: snapshot.state.status,
+            state_version: snapshot.state.state_version,
+            terminal_at,
+            final_snapshot_sha256: sha256_hex(&snapshot_bytes),
+            final_snapshot_bytes: snapshot_bytes
+                .len()
+                .try_into()
+                .map_err(|_| ReceiptError::Projection("final_snapshot_bytes"))?,
+            history_sha256,
+            chain_length,
+        },
+    )?;
+
+    validate_planned_chain(&receipts)?;
+    Ok(ReceiptPlan {
+        authorization_id_sha256: snapshot.claim.authorization_id_sha256.clone(),
+        receipts,
+    })
+}
+
+pub struct ReceiptStore {
+    root: PathBuf,
+}
+
+impl ReceiptStore {
+    pub fn open(root: &Path) -> Result<Self, ReceiptError> {
+        let metadata = fs::symlink_metadata(root)
+            .map_err(|_| ReceiptError::UnsafeFilesystem("installation_root"))?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(ReceiptError::UnsafeFilesystem("installation_root"));
+        }
+        let canonical = fs::canonicalize(root)
+            .map_err(|_| ReceiptError::UnsafeFilesystem("installation_root"))?;
+        Ok(Self { root: canonical })
+    }
+
+    pub fn install_terminal_plan(
+        &self,
+        plan: &ReceiptPlan,
+    ) -> Result<InstalledReceiptChain, ReceiptError> {
+        validate_lower_hex(&plan.authorization_id_sha256, "authorization_id_sha256")?;
+        let chain_directory = self.ensure_chain_directory(&plan.authorization_id_sha256)?;
+        let mut created_count = 0_u64;
+        let mut replayed_count = 0_u64;
+        for receipt in &plan.receipts {
+            match append_canonical_receipt(&chain_directory, receipt)? {
+                AppendOutcome::Created => created_count += 1,
+                AppendOutcome::ExistingExact => replayed_count += 1,
+            }
+        }
+        let verified = verify_chain_directory(&chain_directory, &plan.authorization_id_sha256)?;
+        if !verified.sealed
+            || verified.receipt_count
+                != u64::try_from(plan.receipts.len())
+                    .map_err(|_| ReceiptError::InvalidField("receipt_count"))?
+            || verified.head_sha256 != plan.head_sha256()
+        {
+            return Err(ReceiptError::Conflict);
+        }
+        Ok(InstalledReceiptChain {
+            authorization_id_sha256: plan.authorization_id_sha256.clone(),
+            chain_directory,
+            receipt_count: verified.receipt_count,
+            head_sha256: verified.head_sha256,
+            created_count,
+            replayed_count,
+        })
+    }
+
+    pub fn verify(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<VerifiedReceiptChain, ReceiptError> {
+        validate_lower_hex(authorization_id_sha256, "authorization_id_sha256")?;
+        let receipts = self.root.join(RECEIPTS_DIRECTORY_NAME);
+        require_fixed_directory(&receipts, &self.root, "receipts_directory")?;
+        let chain = receipts.join(authorization_id_sha256);
+        require_fixed_directory(&chain, &receipts, "chain_directory")?;
+        verify_chain_directory(&chain, authorization_id_sha256)
+    }
+
+    fn ensure_chain_directory(
+        &self,
+        authorization_id_sha256: &str,
+    ) -> Result<PathBuf, ReceiptError> {
+        let receipts = self.root.join(RECEIPTS_DIRECTORY_NAME);
+        create_fixed_directory(&receipts, &self.root, "receipts_directory")?;
+        let chain = receipts.join(authorization_id_sha256);
+        create_fixed_directory(&chain, &receipts, "chain_directory")?;
+        Ok(chain)
+    }
+}
+
+enum OrderedHistory<'a> {
+    Step(&'a SnapshotStep),
+    Expiry(&'a SnapshotExpiryEvent),
+}
+
+impl OrderedHistory<'_> {
+    fn state_version(&self) -> u8 {
+        match self {
+            Self::Step(step) => step.state_version,
+            Self::Expiry(expiry) => expiry.state_version,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryDigestSubject<'a> {
+    schema_version: u8,
+    contract: &'static str,
+    history_digests: &'a [String],
+}
+
+fn validate_projection(
+    snapshot: &AuthoritySnapshot,
+    publication: &PublicationIdentity,
+    credentials: &CredentialIdentity,
+) -> Result<(), ReceiptError> {
+    if !snapshot.state.status.is_terminal() {
+        return Err(ReceiptError::Projection("status"));
+    }
+    for (field, left, right) in [
+        (
+            "account_id_sha256",
+            snapshot.claim.account_id_sha256.as_str(),
+            credentials.account_id_sha256.as_str(),
+        ),
+        (
+            "read_credential_id_sha256",
+            snapshot.claim.read_credential_id_sha256.as_str(),
+            credentials.read_credential_id_sha256.as_str(),
+        ),
+        (
+            "claim_credential_id_sha256",
+            snapshot.claim.claim_credential_id_sha256.as_str(),
+            credentials.claim_credential_id_sha256.as_str(),
+        ),
+        (
+            "deploy_credential_id_sha256",
+            snapshot.claim.deploy_credential_id_sha256.as_str(),
+            credentials.deploy_credential_id_sha256.as_str(),
+        ),
+        (
+            "runner_build_sha256",
+            snapshot.claim.runner_build_sha256.as_str(),
+            credentials.runner_build_sha256.as_str(),
+        ),
+        (
+            "runner_trust_config_sha256",
+            snapshot.claim.runner_trust_config_sha256.as_str(),
+            credentials.trust_config_sha256.as_str(),
+        ),
+        (
+            "controller_service_name",
+            snapshot.claim.controller.service_name.as_str(),
+            credentials.controller_service_name.as_str(),
+        ),
+        (
+            "edge_service_name",
+            snapshot.claim.edge.service_name.as_str(),
+            credentials.edge_service_name.as_str(),
+        ),
+        (
+            "publication_manifest_sha256",
+            credentials.publication_manifest_sha256.as_str(),
+            publication.publication_manifest_sha256.as_str(),
+        ),
+        (
+            "artifact_sha256",
+            credentials.runner_build_sha256.as_str(),
+            publication.release.artifact_sha256.as_str(),
+        ),
+        (
+            "authority_version_id",
+            credentials.authority_version_id.as_str(),
+            publication.release.authority_version_id.as_str(),
+        ),
+        (
+            "permit_spki_sha256",
+            credentials.permit_spki_sha256.as_str(),
+            publication.release.permit_spki_sha256.as_str(),
+        ),
+        (
+            "trust_config_sha256",
+            credentials.trust_config_sha256.as_str(),
+            publication.release.trust_config_sha256.as_str(),
+        ),
+    ] {
+        if left != right {
+            return Err(ReceiptError::Projection(field));
+        }
+    }
+    if credentials.activation_sequence != publication.activation_sequence {
+        return Err(ReceiptError::Projection("activation_sequence"));
+    }
+    Ok(())
+}
+
+fn push_receipt(
+    receipts: &mut Vec<CanonicalReceipt>,
+    release: ReceiptReleaseIdentity,
+    credential_identity: ReceiptCredentialIdentity,
+    claim: ReceiptClaimIdentity,
+    recorded_at: u64,
+    event: ReceiptEvent,
+) -> Result<(), ReceiptError> {
+    let sequence =
+        u64::try_from(receipts.len() + 1).map_err(|_| ReceiptError::InvalidField("sequence"))?;
+    let predecessor_receipt_sha256 = receipts.last().map(|receipt| receipt.sha256().to_owned());
+    let record = ExecutionReceipt {
+        schema_version: 1,
+        contract: EXECUTION_RECEIPT_CONTRACT.to_owned(),
+        environment: "staging".to_owned(),
+        sequence,
+        predecessor_receipt_sha256,
+        recorded_at,
+        release,
+        credential_identity,
+        claim,
+        event,
+    };
+    let bytes = canonical_json(&record)
+        .map_err(|_| ReceiptError::InvalidField("canonical_json"))?
+        .into_bytes();
+    if bytes.len() > MAX_RECEIPT_BYTES {
+        return Err(ReceiptError::InvalidField("receipt_bytes"));
+    }
+    let sha256 = sha256_hex(&bytes);
+    receipts.push(CanonicalReceipt {
+        record,
+        bytes,
+        sha256,
+    });
+    Ok(())
+}
+
+fn validate_planned_chain(receipts: &[CanonicalReceipt]) -> Result<(), ReceiptError> {
+    if receipts.len() < 2 || receipts.len() > MAX_RECEIPTS_PER_CHAIN as usize {
+        return Err(ReceiptError::InvalidField("receipt_count"));
+    }
+    let first = &receipts[0].record;
+    if first.sequence != 1
+        || first.predecessor_receipt_sha256.is_some()
+        || !matches!(
+            first.event,
+            ReceiptEvent::ClaimObserved {
+                status: ClaimStatus::Claimed,
+                state_version: 0
+            }
+        )
+    {
+        return Err(ReceiptError::InvalidField("genesis"));
+    }
+    let mut status = ClaimStatus::Claimed;
+    let mut state_version = 0_u8;
+    for (index, receipt) in receipts.iter().enumerate() {
+        let expected_sequence =
+            u64::try_from(index + 1).map_err(|_| ReceiptError::InvalidField("sequence"))?;
+        if receipt.record.sequence != expected_sequence
+            || receipt.record.predecessor_receipt_sha256
+                != index
+                    .checked_sub(1)
+                    .map(|previous| receipts[previous].sha256.clone())
+        {
+            return Err(ReceiptError::PredecessorMismatch);
+        }
+        validate_record(&receipt.record)?;
+        validate_event_progress(
+            &receipt.record,
+            index,
+            receipts.len(),
+            &mut status,
+            &mut state_version,
+        )?;
+        if index + 1 != receipts.len() && receipt.record.event.is_terminal_seal() {
+            return Err(ReceiptError::AlreadySealed);
+        }
+    }
+    if !receipts
+        .last()
+        .is_some_and(|receipt| receipt.record.event.is_terminal_seal())
+    {
+        return Err(ReceiptError::NotSealed);
+    }
+    Ok(())
+}
+
+fn validate_record(record: &ExecutionReceipt) -> Result<(), ReceiptError> {
+    if record.schema_version != 1
+        || record.contract != EXECUTION_RECEIPT_CONTRACT
+        || record.environment != "staging"
+        || record.sequence == 0
+        || record.sequence > MAX_RECEIPTS_PER_CHAIN
+    {
+        return Err(ReceiptError::InvalidField("contract"));
+    }
+    if record.sequence == 1 {
+        if record.predecessor_receipt_sha256.is_some() {
+            return Err(ReceiptError::InvalidField("predecessor_receipt_sha256"));
+        }
+    } else {
+        validate_lower_hex(
+            record
+                .predecessor_receipt_sha256
+                .as_deref()
+                .ok_or(ReceiptError::InvalidField("predecessor_receipt_sha256"))?,
+            "predecessor_receipt_sha256",
+        )?;
+    }
+    for (field, value) in [
+        (
+            "authorization_id_sha256",
+            record.claim.authorization_id_sha256.as_str(),
+        ),
+        (
+            "claim_digest_sha256",
+            record.claim.claim_digest_sha256.as_str(),
+        ),
+        (
+            "ledger_identity_sha256",
+            record.claim.ledger_identity_sha256.as_str(),
+        ),
+        (
+            "claim_owner_sha256",
+            record.claim.claim_owner_sha256.as_str(),
+        ),
+        ("account_id_sha256", record.claim.account_id_sha256.as_str()),
+        (
+            "release_manifest_sha256",
+            record.release.release_manifest_sha256.as_str(),
+        ),
+        (
+            "release_packet_sha256",
+            record.release.release_packet_sha256.as_str(),
+        ),
+        (
+            "release_policy_sha256",
+            record.release.release_policy_sha256.as_str(),
+        ),
+        ("artifact_sha256", record.release.artifact_sha256.as_str()),
+        (
+            "module_inventory_sha256",
+            record.release.module_inventory_sha256.as_str(),
+        ),
+        (
+            "publication_manifest_sha256",
+            record.release.publication_manifest_sha256.as_str(),
+        ),
+        (
+            "publication_packet_sha256",
+            record.release.publication_packet_sha256.as_str(),
+        ),
+        (
+            "generation_sha256",
+            record.release.generation_sha256.as_str(),
+        ),
+        (
+            "credential_account_id_sha256",
+            record.credential_identity.account_id_sha256.as_str(),
+        ),
+        (
+            "read_credential_id_sha256",
+            record
+                .credential_identity
+                .read_credential_id_sha256
+                .as_str(),
+        ),
+        (
+            "claim_credential_id_sha256",
+            record
+                .credential_identity
+                .claim_credential_id_sha256
+                .as_str(),
+        ),
+        (
+            "deploy_credential_id_sha256",
+            record
+                .credential_identity
+                .deploy_credential_id_sha256
+                .as_str(),
+        ),
+        (
+            "access_client_id_sha256",
+            record.credential_identity.access_client_id_sha256.as_str(),
+        ),
+        (
+            "permit_spki_sha256",
+            record.credential_identity.permit_spki_sha256.as_str(),
+        ),
+        (
+            "trust_config_sha256",
+            record.credential_identity.trust_config_sha256.as_str(),
+        ),
+        (
+            "runner_build_sha256",
+            record.credential_identity.runner_build_sha256.as_str(),
+        ),
+    ] {
+        validate_lower_hex(value, field)?;
+    }
+    if let Some(previous) = &record.release.previous_publication_manifest_sha256 {
+        validate_lower_hex(previous, "previous_publication_manifest_sha256")?;
+    }
+    if record.claim.account_id_sha256 != record.credential_identity.account_id_sha256
+        || record.release.artifact_sha256 != record.credential_identity.runner_build_sha256
+        || record.release.module_count == 0
+        || record.release.activation_sequence == 0
+        || record
+            .credential_identity
+            .stable_readback_observation_seconds
+            < 5
+        || record
+            .credential_identity
+            .stable_readback_observation_seconds
+            > 120
+    {
+        return Err(ReceiptError::InvalidField("identity_binding"));
+    }
+    validate_lower_hex_length(&record.release.source_commit, 40, "source_commit")?;
+    validate_lower_hex_length(&record.release.git_tree_sha, 40, "git_tree_sha")?;
+    validate_token(
+        &record.credential_identity.authority_version_id,
+        1,
+        128,
+        "authority_version_id",
+    )?;
+    validate_service_name(
+        &record.credential_identity.controller_service_name,
+        "controller_service_name",
+    )?;
+    validate_service_name(
+        &record.credential_identity.edge_service_name,
+        "edge_service_name",
+    )?;
+    let published_at = parse_whole_second_timestamp(&record.release.published_at, "published_at")
+        .map_err(|_| ReceiptError::InvalidField("published_at"))?;
+    let release_expires_at =
+        parse_whole_second_timestamp(&record.release.expires_at, "release_expires_at")
+            .map_err(|_| ReceiptError::InvalidField("release_expires_at"))?;
+    if published_at >= release_expires_at
+        || record.claim.generated_at > record.claim.claimed_at
+        || record.claim.claimed_at > record.claim.expires_at
+        || record.claim.expires_at > MAX_SAFE_INTEGER
+        || record.recorded_at < record.claim.claimed_at
+        || record.recorded_at > MAX_SAFE_INTEGER
+    {
+        return Err(ReceiptError::InvalidField("time_binding"));
+    }
+    match &record.event {
+        ReceiptEvent::ClaimObserved {
+            status,
+            state_version,
+        } => {
+            if *status != ClaimStatus::Claimed
+                || *state_version != 0
+                || record.sequence != 1
+                || record.recorded_at != record.claim.claimed_at
+            {
+                return Err(ReceiptError::InvalidField("claim_observed"));
+            }
+        }
+        ReceiptEvent::AuthorityStep { step } => {
+            if step.state_version == 0 {
+                return Err(ReceiptError::InvalidField("step_state_version"));
+            }
+            for (field, value) in [
+                (
+                    "actor_execution_id_sha256",
+                    Some(step.actor_execution_id_sha256.as_str()),
+                ),
+                (
+                    "mutation_request_sha256",
+                    step.mutation_request_sha256.as_deref(),
+                ),
+                (
+                    "cloudflare_request_id_sha256",
+                    step.cloudflare_request_id_sha256.as_deref(),
+                ),
+                (
+                    "deployment_set_sha256",
+                    step.deployment_set_sha256.as_deref(),
+                ),
+                ("evidence_sha256", Some(step.evidence_sha256.as_str())),
+                ("step_digest_sha256", Some(step.step_digest_sha256.as_str())),
+            ] {
+                if let Some(value) = value {
+                    validate_lower_hex(value, field)?;
+                }
+            }
+            if step.actor_execution_id_sha256 != record.claim.claim_owner_sha256
+                || (record.recorded_at >= record.claim.expires_at
+                    && !matches!(
+                        step.from_status,
+                        ClaimStatus::ControllerInflight | ClaimStatus::EdgeInflight
+                    ))
+                || !valid_step_shape(step)
+                || receipt_step_digest(&record.claim, step)? != step.step_digest_sha256
+            {
+                return Err(ReceiptError::InvalidField("authority_step"));
+            }
+        }
+        ReceiptEvent::AuthorityExpiry { expiry } => {
+            if expiry.state_version == 0
+                || expiry.failure_class != FailureClass::AuthorizationExpired
+                || expiry.authority_actor_id_sha256 == record.claim.claim_owner_sha256
+                || record.recorded_at < record.claim.expires_at
+                || !matches!(
+                    (expiry.from_status, expiry.to_status),
+                    (
+                        ClaimStatus::Claimed | ClaimStatus::T1Verified,
+                        ClaimStatus::Expired
+                    ) | (
+                        ClaimStatus::ControllerVerified | ClaimStatus::EdgePrechecked,
+                        ClaimStatus::RecoveryRequired
+                    )
+                )
+            {
+                return Err(ReceiptError::InvalidField("authority_expiry"));
+            }
+            for (field, value) in [
+                (
+                    "authority_actor_id_sha256",
+                    expiry.authority_actor_id_sha256.as_str(),
+                ),
+                ("evidence_sha256", expiry.evidence_sha256.as_str()),
+                (
+                    "expiry_event_digest_sha256",
+                    expiry.expiry_event_digest_sha256.as_str(),
+                ),
+            ] {
+                validate_lower_hex(value, field)?;
+            }
+            if receipt_expiry_digest(&record.claim, expiry)? != expiry.expiry_event_digest_sha256 {
+                return Err(ReceiptError::InvalidField("authority_expiry_digest"));
+            }
+        }
+        ReceiptEvent::TerminalSeal {
+            status,
+            state_version: _,
+            terminal_at,
+            final_snapshot_sha256,
+            final_snapshot_bytes,
+            history_sha256,
+            chain_length,
+        } => {
+            if !status.is_terminal()
+                || *terminal_at != record.recorded_at
+                || *final_snapshot_bytes == 0
+                || *final_snapshot_bytes > 256 * 1024
+                || *chain_length != record.sequence
+            {
+                return Err(ReceiptError::InvalidField("terminal_seal"));
+            }
+            validate_lower_hex(final_snapshot_sha256, "final_snapshot_sha256")?;
+            validate_lower_hex(history_sha256, "history_sha256")?;
+        }
+    }
+    Ok(())
+}
+
+fn valid_step_shape(step: &ReceiptStepEvent) -> bool {
+    let read_only = step.mutation_request_sha256.is_none()
+        && step.cloudflare_request_id_sha256.is_none()
+        && step.transport_outcome == TransportOutcome::NotApplicable;
+    match step.step_code {
+        StepCode::T1Readback => {
+            step.state_version == 1
+                && step.from_status == ClaimStatus::Claimed
+                && matches!(
+                    step.to_status,
+                    ClaimStatus::T1Verified | ClaimStatus::Aborted
+                )
+                && read_only
+                && step.deployment_set_sha256.is_some()
+                && matches!(
+                    (step.to_status, step.failure_class),
+                    (ClaimStatus::T1Verified, FailureClass::None)
+                        | (ClaimStatus::Aborted, FailureClass::ReadbackDrift)
+                )
+        }
+        StepCode::ControllerMutationIntent => {
+            step.state_version == 2
+                && step.from_status == ClaimStatus::T1Verified
+                && step.to_status == ClaimStatus::ControllerInflight
+                && step.mutation_request_sha256.is_some()
+                && step.cloudflare_request_id_sha256.is_none()
+                && step.deployment_set_sha256.is_none()
+                && step.failure_class == FailureClass::None
+                && step.transport_outcome == TransportOutcome::NotApplicable
+        }
+        StepCode::ControllerPostReadback => {
+            step.state_version == 3
+                && step.from_status == ClaimStatus::ControllerInflight
+                && matches!(
+                    step.to_status,
+                    ClaimStatus::ControllerVerified | ClaimStatus::RecoveryRequired
+                )
+                && valid_post_readback(step)
+        }
+        StepCode::EdgePreReadback => {
+            step.state_version == 4
+                && step.from_status == ClaimStatus::ControllerVerified
+                && matches!(
+                    step.to_status,
+                    ClaimStatus::EdgePrechecked | ClaimStatus::RecoveryRequired
+                )
+                && read_only
+                && step.deployment_set_sha256.is_some()
+                && matches!(
+                    (step.to_status, step.failure_class),
+                    (ClaimStatus::EdgePrechecked, FailureClass::None)
+                        | (ClaimStatus::RecoveryRequired, FailureClass::ReadbackDrift)
+                )
+        }
+        StepCode::EdgeMutationIntent => {
+            step.state_version == 5
+                && step.from_status == ClaimStatus::EdgePrechecked
+                && step.to_status == ClaimStatus::EdgeInflight
+                && step.mutation_request_sha256.is_some()
+                && step.cloudflare_request_id_sha256.is_none()
+                && step.deployment_set_sha256.is_none()
+                && step.failure_class == FailureClass::None
+                && step.transport_outcome == TransportOutcome::NotApplicable
+        }
+        StepCode::EdgePostReadback => {
+            step.state_version == 6
+                && step.from_status == ClaimStatus::EdgeInflight
+                && matches!(
+                    step.to_status,
+                    ClaimStatus::Completed | ClaimStatus::RecoveryRequired
+                )
+                && valid_post_readback(step)
+        }
+        StepCode::Terminal => {
+            read_only
+                && step.deployment_set_sha256.is_none()
+                && matches!(
+                    (step.from_status, step.to_status, step.failure_class),
+                    (
+                        ClaimStatus::Claimed | ClaimStatus::T1Verified,
+                        ClaimStatus::Aborted,
+                        FailureClass::OperatorAbort
+                    ) | (
+                        ClaimStatus::EdgePrechecked,
+                        ClaimStatus::RecoveryRequired,
+                        FailureClass::OperatorAbort
+                    )
+                )
+        }
+    }
+}
+
+fn valid_post_readback(step: &ReceiptStepEvent) -> bool {
+    if step.mutation_request_sha256.is_none() || step.deployment_set_sha256.is_none() {
+        return false;
+    }
+    matches!(
+        (step.to_status, step.transport_outcome, step.failure_class),
+        (
+            ClaimStatus::ControllerVerified | ClaimStatus::Completed,
+            TransportOutcome::Success | TransportOutcome::Ambiguous,
+            FailureClass::None,
+        ) | (
+            ClaimStatus::RecoveryRequired,
+            TransportOutcome::Rejected,
+            FailureClass::HttpRejected
+        ) | (
+            ClaimStatus::RecoveryRequired,
+            TransportOutcome::Success | TransportOutcome::Ambiguous,
+            FailureClass::TransportResponseLost
+                | FailureClass::ReadbackDrift
+                | FailureClass::TargetNotStable,
+        )
+    )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReceiptStepDigestInput<'a> {
+    schema_version: u8,
+    contract: &'static str,
+    ledger_identity_sha256: &'a str,
+    claim_digest_sha256: &'a str,
+    state_version: u8,
+    step_code: StepCode,
+    from_status: ClaimStatus,
+    to_status: ClaimStatus,
+    mutation_request_sha256: Option<&'a str>,
+    cloudflare_request_id_sha256: Option<&'a str>,
+    deployment_set_sha256: Option<&'a str>,
+    evidence_sha256: &'a str,
+    failure_class: FailureClass,
+    transport_outcome: TransportOutcome,
+}
+
+fn receipt_step_digest(
+    claim: &ReceiptClaimIdentity,
+    step: &ReceiptStepEvent,
+) -> Result<String, ReceiptError> {
+    Ok(sha256_hex(
+        canonical_json(&ReceiptStepDigestInput {
+            schema_version: 1,
+            contract: STEP_CONTRACT,
+            ledger_identity_sha256: &claim.ledger_identity_sha256,
+            claim_digest_sha256: &claim.claim_digest_sha256,
+            state_version: step.state_version,
+            step_code: step.step_code,
+            from_status: step.from_status,
+            to_status: step.to_status,
+            mutation_request_sha256: step.mutation_request_sha256.as_deref(),
+            cloudflare_request_id_sha256: step.cloudflare_request_id_sha256.as_deref(),
+            deployment_set_sha256: step.deployment_set_sha256.as_deref(),
+            evidence_sha256: &step.evidence_sha256,
+            failure_class: step.failure_class,
+            transport_outcome: step.transport_outcome,
+        })
+        .map_err(|_| ReceiptError::InvalidField("step_digest"))?
+        .as_bytes(),
+    ))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReceiptExpiryDigestInput<'a> {
+    schema_version: u8,
+    contract: &'static str,
+    ledger_identity_sha256: &'a str,
+    claim_digest_sha256: &'a str,
+    state_version: u8,
+    from_status: ClaimStatus,
+    to_status: ClaimStatus,
+    evidence_sha256: &'a str,
+    failure_class: FailureClass,
+}
+
+fn receipt_expiry_digest(
+    claim: &ReceiptClaimIdentity,
+    expiry: &ReceiptExpiryEvent,
+) -> Result<String, ReceiptError> {
+    Ok(sha256_hex(
+        canonical_json(&ReceiptExpiryDigestInput {
+            schema_version: 1,
+            contract: EXPIRY_CONTRACT,
+            ledger_identity_sha256: &claim.ledger_identity_sha256,
+            claim_digest_sha256: &claim.claim_digest_sha256,
+            state_version: expiry.state_version,
+            from_status: expiry.from_status,
+            to_status: expiry.to_status,
+            evidence_sha256: &expiry.evidence_sha256,
+            failure_class: expiry.failure_class,
+        })
+        .map_err(|_| ReceiptError::InvalidField("expiry_digest"))?
+        .as_bytes(),
+    ))
+}
+
+fn validate_event_progress(
+    record: &ExecutionReceipt,
+    index: usize,
+    receipt_count: usize,
+    status: &mut ClaimStatus,
+    state_version: &mut u8,
+) -> Result<(), ReceiptError> {
+    match &record.event {
+        ReceiptEvent::ClaimObserved { .. } if index == 0 => {}
+        ReceiptEvent::AuthorityStep { step } => {
+            let next = state_version
+                .checked_add(1)
+                .ok_or(ReceiptError::InvalidField("state_version"))?;
+            if step.state_version != next || step.from_status != *status {
+                return Err(ReceiptError::InvalidField("step_progress"));
+            }
+            *state_version = next;
+            *status = step.to_status;
+        }
+        ReceiptEvent::AuthorityExpiry { expiry } => {
+            let next = state_version
+                .checked_add(1)
+                .ok_or(ReceiptError::InvalidField("state_version"))?;
+            if expiry.state_version != next || expiry.from_status != *status {
+                return Err(ReceiptError::InvalidField("expiry_progress"));
+            }
+            *state_version = next;
+            *status = expiry.to_status;
+        }
+        ReceiptEvent::TerminalSeal {
+            status: terminal_status,
+            state_version: terminal_version,
+            chain_length,
+            ..
+        } => {
+            if index + 1 != receipt_count
+                || *terminal_status != *status
+                || *terminal_version != *state_version
+                || *chain_length
+                    != u64::try_from(receipt_count)
+                        .map_err(|_| ReceiptError::InvalidField("chain_length"))?
+            {
+                return Err(ReceiptError::InvalidField("terminal_progress"));
+            }
+        }
+        ReceiptEvent::ClaimObserved { .. } => {
+            return Err(ReceiptError::InvalidField("claim_progress"));
+        }
+    }
+    Ok(())
+}
+
+fn append_canonical_receipt(
+    chain_directory: &Path,
+    receipt: &CanonicalReceipt,
+) -> Result<AppendOutcome, ReceiptError> {
+    validate_record(&receipt.record)?;
+    validate_receipt_directory_entries(chain_directory)?;
+    let canonical_parent = fs::canonicalize(chain_directory)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("chain_directory"))?;
+    let target = chain_directory.join(receipt_file_name(receipt.record.sequence));
+    if target
+        .try_exists()
+        .map_err(|_| ReceiptError::Io("receipt_exists"))?
+    {
+        let existing = read_receipt(&target, &canonical_parent)?;
+        if existing.bytes == receipt.bytes {
+            sync_directory(chain_directory, receipt.sha256())?;
+            return Ok(AppendOutcome::ExistingExact);
+        }
+        return Err(ReceiptError::Conflict);
+    }
+    if receipt.record.sequence > 1 {
+        let predecessor_path = chain_directory.join(receipt_file_name(receipt.record.sequence - 1));
+        let predecessor = read_receipt(&predecessor_path, &canonical_parent)?;
+        if predecessor.sha256
+            != receipt
+                .record
+                .predecessor_receipt_sha256
+                .as_deref()
+                .ok_or(ReceiptError::PredecessorMissing)?
+        {
+            return Err(ReceiptError::PredecessorMismatch);
+        }
+        if predecessor.record.event.is_terminal_seal() {
+            return Err(ReceiptError::AlreadySealed);
+        }
+    } else if chain_directory
+        .join(receipt_file_name(2))
+        .try_exists()
+        .map_err(|_| ReceiptError::Io("future_receipt"))?
+    {
+        return Err(ReceiptError::Gap);
+    }
+
+    if has_future_receipt(chain_directory, receipt.record.sequence + 1)? {
+        return Err(ReceiptError::Gap);
+    }
+
+    let stage = chain_directory.join(staging_file_name(receipt.record.sequence)?);
+    write_staging(&stage, receipt.bytes())?;
+    match publish_noreplace(&stage, &target) {
+        Ok(()) => {}
+        Err(error) if is_already_exists(&error) => {
+            let _ = fs::remove_file(&stage);
+            let existing = read_receipt(&target, &canonical_parent)?;
+            if existing.bytes == receipt.bytes {
+                sync_directory(chain_directory, receipt.sha256())?;
+                return Ok(AppendOutcome::ExistingExact);
+            }
+            return Err(ReceiptError::Conflict);
+        }
+        Err(_) => {
+            return Err(ReceiptError::DurabilityUnknown {
+                expected_sha256: receipt.sha256().to_owned(),
+            });
+        }
+    }
+    sync_directory(chain_directory, receipt.sha256())?;
+    let installed = read_receipt(&target, &canonical_parent)?;
+    if installed.bytes != receipt.bytes || installed.sha256 != receipt.sha256 {
+        return Err(ReceiptError::Conflict);
+    }
+    if receipt.record.event.is_terminal_seal() {
+        set_chain_read_only(chain_directory)?;
+        sync_directory(chain_directory, receipt.sha256())?;
+    }
+    Ok(AppendOutcome::Created)
+}
+
+fn verify_chain_directory(
+    chain_directory: &Path,
+    authorization_id_sha256: &str,
+) -> Result<VerifiedReceiptChain, ReceiptError> {
+    validate_receipt_directory_entries(chain_directory)?;
+    let canonical_parent = fs::canonicalize(chain_directory)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("chain_directory"))?;
+    let mut previous: Option<CanonicalReceipt> = None;
+    let mut sealed = false;
+    let mut status = ClaimStatus::Claimed;
+    let mut state_version = 0_u8;
+    let mut records = Vec::new();
+    for sequence in 1..=MAX_RECEIPTS_PER_CHAIN {
+        let path = chain_directory.join(receipt_file_name(sequence));
+        if !path
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("receipt_exists"))?
+        {
+            if has_future_receipt(chain_directory, sequence + 1)? {
+                return Err(ReceiptError::Gap);
+            }
+            break;
+        }
+        if sealed {
+            return Err(ReceiptError::AlreadySealed);
+        }
+        let receipt = read_receipt(&path, &canonical_parent)?;
+        if receipt.record.sequence != sequence
+            || receipt.record.claim.authorization_id_sha256 != authorization_id_sha256
+        {
+            return Err(ReceiptError::InvalidField("chain_identity"));
+        }
+        match &previous {
+            None if receipt.record.predecessor_receipt_sha256.is_none() => {}
+            Some(predecessor)
+                if receipt.record.predecessor_receipt_sha256.as_deref()
+                    == Some(predecessor.sha256()) => {}
+            None => return Err(ReceiptError::PredecessorMissing),
+            Some(_) => return Err(ReceiptError::PredecessorMismatch),
+        }
+        if let Some(predecessor) = &previous {
+            if receipt.record.release != predecessor.record.release
+                || receipt.record.credential_identity != predecessor.record.credential_identity
+                || receipt.record.claim != predecessor.record.claim
+                || receipt.record.recorded_at < predecessor.record.recorded_at
+            {
+                return Err(ReceiptError::Conflict);
+            }
+        }
+        sealed = receipt.record.event.is_terminal_seal();
+        records.push(receipt.clone());
+        previous = Some(receipt);
+    }
+    let head = previous.ok_or(ReceiptError::PredecessorMissing)?;
+    let receipt_count = head.record.sequence;
+    if !sealed {
+        return Err(ReceiptError::NotSealed);
+    }
+    if let ReceiptEvent::TerminalSeal { chain_length, .. } = head.record.event {
+        if chain_length != receipt_count {
+            return Err(ReceiptError::InvalidField("chain_length"));
+        }
+    }
+    let record_count = records.len();
+    for (index, receipt) in records.iter().enumerate() {
+        validate_event_progress(
+            &receipt.record,
+            index,
+            record_count,
+            &mut status,
+            &mut state_version,
+        )?;
+    }
+    Ok(VerifiedReceiptChain {
+        authorization_id_sha256: authorization_id_sha256.to_owned(),
+        receipt_count,
+        head_sha256: head.sha256,
+        sealed,
+    })
+}
+
+fn read_receipt(path: &Path, canonical_parent: &Path) -> Result<CanonicalReceipt, ReceiptError> {
+    let bytes = read_stable_regular_file(
+        path,
+        MAX_RECEIPT_BYTES,
+        canonical_parent,
+        "execution_receipt",
+    )
+    .map_err(map_release_file_error)?;
+    let record: ExecutionReceipt =
+        parse_canonical_json(&bytes, MAX_RECEIPT_BYTES, "execution_receipt").map_err(|error| {
+            match error {
+                ReleaseVerificationError::InvalidJson(_) => ReceiptError::InvalidJson,
+                ReleaseVerificationError::NonCanonicalJson(_) => ReceiptError::NonCanonicalJson,
+                _ => ReceiptError::UnsafeFilesystem("execution_receipt"),
+            }
+        })?;
+    validate_record(&record)?;
+    let sha256 = sha256_hex(&bytes);
+    Ok(CanonicalReceipt {
+        record,
+        bytes,
+        sha256,
+    })
+}
+
+fn map_release_file_error(error: ReleaseVerificationError) -> ReceiptError {
+    match error {
+        ReleaseVerificationError::FileInvalid(_) => {
+            ReceiptError::UnsafeFilesystem("execution_receipt")
+        }
+        _ => ReceiptError::Io("execution_receipt"),
+    }
+}
+
+fn create_fixed_directory(
+    directory: &Path,
+    expected_parent: &Path,
+    label: &'static str,
+) -> Result<(), ReceiptError> {
+    let created = match fs::create_dir(directory) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(_) => return Err(ReceiptError::Io(label)),
+    };
+    require_fixed_directory(directory, expected_parent, label)?;
+    if created {
+        sync_directory(expected_parent, "directory")?;
+    }
+    Ok(())
+}
+
+fn require_fixed_directory(
+    directory: &Path,
+    expected_parent: &Path,
+    label: &'static str,
+) -> Result<(), ReceiptError> {
+    let metadata =
+        fs::symlink_metadata(directory).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    let canonical =
+        fs::canonicalize(directory).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    let parent =
+        fs::canonicalize(expected_parent).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    if canonical.parent() != Some(parent.as_path()) {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn write_staging(path: &Path, bytes: &[u8]) -> Result<(), ReceiptError> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let parent = path
+        .parent()
+        .ok_or(ReceiptError::UnsafeFilesystem("staging_parent"))?;
+    let file_name = path
+        .file_name()
+        .ok_or(ReceiptError::UnsafeFilesystem("staging_name"))?;
+    let directory = open_linux_directory(parent)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("staging_parent"))?;
+    let file_name = CString::new(file_name.as_bytes())
+        .map_err(|_| ReceiptError::UnsafeFilesystem("staging_name"))?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            file_name.as_ptr(),
+            libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(ReceiptError::Io("create_staging"));
+    }
+    let file = unsafe { fs::File::from_raw_fd(descriptor) };
+    write_staging_file(file, bytes)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_staging(path: &Path, bytes: &[u8]) -> Result<(), ReceiptError> {
+    let file = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| ReceiptError::Io("create_staging"))?;
+    write_staging_file(file, bytes)
+}
+
+fn write_staging_file(mut file: fs::File, bytes: &[u8]) -> Result<(), ReceiptError> {
+    file.write_all(bytes)
+        .map_err(|_| ReceiptError::Io("write_staging"))?;
+    file.flush()
+        .map_err(|_| ReceiptError::Io("flush_staging"))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| ReceiptError::Io("seek_staging"))?;
+    let mut readback = Vec::with_capacity(bytes.len());
+    Read::by_ref(&mut file)
+        .take((MAX_RECEIPT_BYTES + 1) as u64)
+        .read_to_end(&mut readback)
+        .map_err(|_| ReceiptError::Io("readback_staging"))?;
+    if readback != bytes {
+        return Err(ReceiptError::Conflict);
+    }
+    set_file_read_only(&file)?;
+    file.sync_all()
+        .map_err(|_| ReceiptError::Io("sync_staging"))
+}
+
+#[cfg(unix)]
+fn set_file_read_only(file: &fs::File) -> Result<(), ReceiptError> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(0o444))
+        .map_err(|_| ReceiptError::Io("receipt_permissions"))
+}
+
+#[cfg(not(unix))]
+fn set_file_read_only(file: &fs::File) -> Result<(), ReceiptError> {
+    let mut permissions = file
+        .metadata()
+        .map_err(|_| ReceiptError::Io("receipt_permissions"))?
+        .permissions();
+    permissions.set_readonly(true);
+    file.set_permissions(permissions)
+        .map_err(|_| ReceiptError::Io("receipt_permissions"))
+}
+
+#[cfg(unix)]
+fn set_chain_read_only(path: &Path) -> Result<(), ReceiptError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o555))
+        .map_err(|_| ReceiptError::Io("chain_permissions"))
+}
+
+#[cfg(not(unix))]
+fn set_chain_read_only(_path: &Path) -> Result<(), ReceiptError> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn publish_noreplace(staging: &Path, target: &Path) -> Result<(), std::io::Error> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let parent = target
+        .parent()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    if staging.parent() != Some(parent) {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    }
+    let directory = open_linux_directory(parent)?;
+    let staging = CString::new(
+        staging
+            .file_name()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?
+            .as_bytes(),
+    )
+    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let target = CString::new(
+        target
+            .file_name()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?
+            .as_bytes(),
+    )
+    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let result = unsafe {
+        libc::renameat2(
+            directory.as_raw_fd(),
+            staging.as_ptr(),
+            directory.as_raw_fd(),
+            target.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn publish_noreplace(staging: &Path, target: &Path) -> Result<(), std::io::Error> {
+    fs::rename(staging, target)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn publish_noreplace(staging: &Path, target: &Path) -> Result<(), std::io::Error> {
+    fs::hard_link(staging, target)?;
+    fs::remove_file(staging)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn publish_noreplace(staging: &Path, target: &Path) -> Result<(), std::io::Error> {
+    if target.try_exists()? {
+        return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+    }
+    fs::rename(staging, target)
+}
+
+#[cfg(target_os = "linux")]
+fn sync_directory(path: &Path, expected_sha256: &str) -> Result<(), ReceiptError> {
+    open_linux_directory(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| ReceiptError::DurabilityUnknown {
+            expected_sha256: expected_sha256.to_owned(),
+        })
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn sync_directory(path: &Path, expected_sha256: &str) -> Result<(), ReceiptError> {
+    fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| ReceiptError::DurabilityUnknown {
+            expected_sha256: expected_sha256.to_owned(),
+        })
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path, _expected_sha256: &str) -> Result<(), ReceiptError> {
+    // The production runner target is Linux. Windows exercises contract and replay semantics.
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn open_linux_directory(path: &Path) -> Result<fs::File, std::io::Error> {
+    use std::ffi::CString;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let descriptor = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+fn receipt_file_name(sequence: u64) -> String {
+    format!("{sequence:020}{RECEIPT_FILE_SUFFIX}")
+}
+
+fn staging_file_name(sequence: u64) -> Result<String, ReceiptError> {
+    let mut random = [0_u8; 16];
+    getrandom(&mut random).map_err(|_| ReceiptError::Io("staging_random"))?;
+    Ok(format!(
+        ".{sequence:020}.{}.staging",
+        random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))
+}
+
+fn validate_receipt_directory_entries(directory: &Path) -> Result<(), ReceiptError> {
+    for entry in fs::read_dir(directory).map_err(|_| ReceiptError::Io("read_chain_directory"))? {
+        let entry = entry.map_err(|_| ReceiptError::Io("read_chain_directory"))?;
+        let file_name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| ReceiptError::UnsafeFilesystem("chain_entry_name"))?;
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|_| ReceiptError::UnsafeFilesystem("chain_entry"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(ReceiptError::UnsafeFilesystem("chain_entry"));
+        }
+        if let Some(sequence) = parse_receipt_file_name(&file_name) {
+            if sequence == 0 || sequence > MAX_RECEIPTS_PER_CHAIN {
+                return Err(ReceiptError::InvalidField("receipt_sequence"));
+            }
+            continue;
+        }
+        if valid_staging_file_name(&file_name) {
+            continue;
+        }
+        return Err(ReceiptError::UnsafeFilesystem("chain_entry_name"));
+    }
+    Ok(())
+}
+
+fn parse_receipt_file_name(file_name: &str) -> Option<u64> {
+    let digits = file_name.strip_suffix(RECEIPT_FILE_SUFFIX)?;
+    if digits.len() != 20 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn valid_staging_file_name(file_name: &str) -> bool {
+    let Some(value) = file_name
+        .strip_prefix('.')
+        .and_then(|value| value.strip_suffix(".staging"))
+    else {
+        return false;
+    };
+    let Some((sequence, random)) = value.split_once('.') else {
+        return false;
+    };
+    let sequence_valid = sequence
+        .parse::<u64>()
+        .is_ok_and(|value| value > 0 && value <= MAX_RECEIPTS_PER_CHAIN);
+    sequence.len() == 20
+        && sequence.bytes().all(|byte| byte.is_ascii_digit())
+        && sequence_valid
+        && random.len() == 32
+        && random
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn has_future_receipt(directory: &Path, start: u64) -> Result<bool, ReceiptError> {
+    for sequence in start..=MAX_RECEIPTS_PER_CHAIN {
+        if directory
+            .join(receipt_file_name(sequence))
+            .try_exists()
+            .map_err(|_| ReceiptError::Io("future_receipt"))?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn is_already_exists(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::AlreadyExists || error.raw_os_error() == Some(libc_eexist())
+}
+
+#[cfg(target_os = "linux")]
+const fn libc_eexist() -> i32 {
+    libc::EEXIST
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn libc_eexist() -> i32 {
+    17
+}
+
+fn validate_lower_hex(value: &str, field: &'static str) -> Result<(), ReceiptError> {
+    validate_lower_hex_length(value, 64, field)
+}
+
+fn validate_lower_hex_length(
+    value: &str,
+    length: usize,
+    field: &'static str,
+) -> Result<(), ReceiptError> {
+    if value.len() != length
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ReceiptError::InvalidField(field));
+    }
+    Ok(())
+}
+
+fn validate_token(
+    value: &str,
+    minimum: usize,
+    maximum: usize,
+    field: &'static str,
+) -> Result<(), ReceiptError> {
+    if value.len() < minimum
+        || value.len() > maximum
+        || !value.is_ascii()
+        || !value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+        })
+    {
+        return Err(ReceiptError::InvalidField(field));
+    }
+    Ok(())
+}
+
+fn validate_service_name(value: &str, field: &'static str) -> Result<(), ReceiptError> {
+    if value.len() > 63
+        || value.is_empty()
+        || !value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || (index > 0 && matches!(byte, b'-' | b'_'))
+        })
+    {
+        return Err(ReceiptError::InvalidField(field));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_new_chain_is_exactly_replayable_and_conflicts_fail_closed() {
+        let root = temporary_root("replay");
+        let plan = synthetic_plan();
+        let store = ReceiptStore::open(&root).unwrap();
+
+        let created = store.install_terminal_plan(&plan).unwrap();
+        assert_eq!(created.created_count, 3);
+        assert_eq!(created.replayed_count, 0);
+        assert_eq!(created.head_sha256, plan.head_sha256());
+
+        let replayed = store.install_terminal_plan(&plan).unwrap();
+        assert_eq!(replayed.created_count, 0);
+        assert_eq!(replayed.replayed_count, 3);
+        assert_eq!(
+            store
+                .verify(plan.authorization_id_sha256())
+                .unwrap()
+                .head_sha256,
+            plan.head_sha256()
+        );
+
+        let first = created.chain_directory.join(receipt_file_name(1));
+        make_writable(&first);
+        fs::write(&first, b"{}").unwrap();
+        assert!(store.install_terminal_plan(&plan).is_err());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn predecessor_gaps_and_post_seal_files_are_rejected() {
+        let root = temporary_root("gap");
+        let plan = synthetic_plan();
+        let store = ReceiptStore::open(&root).unwrap();
+        let chain = store
+            .ensure_chain_directory(plan.authorization_id_sha256())
+            .unwrap();
+        let second = &plan.receipts()[1];
+        write_staging(&chain.join(receipt_file_name(2)), second.bytes()).unwrap();
+        assert_eq!(store.install_terminal_plan(&plan), Err(ReceiptError::Gap));
+        cleanup(&root);
+
+        let root = temporary_root("sealed");
+        let store = ReceiptStore::open(&root).unwrap();
+        let installed = store.install_terminal_plan(&plan).unwrap();
+        let mut extra = plan.receipts()[1].record().clone();
+        extra.sequence = 4;
+        extra.predecessor_receipt_sha256 = Some(plan.head_sha256().to_owned());
+        extra.event = ReceiptEvent::ClaimObserved {
+            status: ClaimStatus::Claimed,
+            state_version: 0,
+        };
+        let bytes = canonical_json(&extra).unwrap().into_bytes();
+        make_directory_writable(&installed.chain_directory);
+        fs::write(installed.chain_directory.join(receipt_file_name(4)), bytes).unwrap();
+        assert_eq!(
+            store.verify(plan.authorization_id_sha256()),
+            Err(ReceiptError::AlreadySealed)
+        );
+        cleanup(&root);
+
+        let root = temporary_root("overbound");
+        let store = ReceiptStore::open(&root).unwrap();
+        let installed = store.install_terminal_plan(&plan).unwrap();
+        make_directory_writable(&installed.chain_directory);
+        fs::write(
+            installed
+                .chain_directory
+                .join(receipt_file_name(MAX_RECEIPTS_PER_CHAIN + 1)),
+            plan.receipts()[0].bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.verify(plan.authorization_id_sha256()),
+            Err(ReceiptError::InvalidField("receipt_sequence"))
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn noncanonical_and_linked_receipts_are_rejected() {
+        let root = temporary_root("canonical");
+        let plan = synthetic_plan();
+        let store = ReceiptStore::open(&root).unwrap();
+        let chain = store
+            .ensure_chain_directory(plan.authorization_id_sha256())
+            .unwrap();
+        let mut noncanonical = plan.receipts()[0].bytes().to_vec();
+        noncanonical.push(b'\n');
+        fs::write(chain.join(receipt_file_name(1)), noncanonical).unwrap();
+        assert_eq!(
+            store.verify(plan.authorization_id_sha256()),
+            Err(ReceiptError::NonCanonicalJson)
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn semantic_step_digest_and_identity_drift_are_rejected_before_io() {
+        let mut plan = synthetic_plan();
+        if let ReceiptEvent::AuthorityStep { step } = &mut plan.receipts[1].record.event {
+            step.step_digest_sha256 = "f".repeat(64);
+        } else {
+            panic!("synthetic plan must contain an Authority step");
+        }
+        assert_eq!(
+            validate_planned_chain(&plan.receipts),
+            Err(ReceiptError::InvalidField("authority_step"))
+        );
+
+        let mut plan = synthetic_plan();
+        plan.receipts[1].record.release.source_commit = "not-a-commit".to_owned();
+        assert_eq!(
+            validate_planned_chain(&plan.receipts),
+            Err(ReceiptError::InvalidField("source_commit"))
+        );
+    }
+
+    fn synthetic_plan() -> ReceiptPlan {
+        let release = ReceiptReleaseIdentity {
+            source_commit: "a".repeat(40),
+            git_tree_sha: "b".repeat(40),
+            release_manifest_sha256: "1".repeat(64),
+            release_packet_sha256: "2".repeat(64),
+            release_policy_sha256: "3".repeat(64),
+            artifact_sha256: "4".repeat(64),
+            module_inventory_sha256: "5".repeat(64),
+            module_count: 25,
+            publication_manifest_sha256: "6".repeat(64),
+            publication_packet_sha256: "7".repeat(64),
+            generation_sha256: "8".repeat(64),
+            activation_sequence: 1,
+            previous_publication_manifest_sha256: None,
+            published_at: "2026-07-24T00:00:00.000Z".to_owned(),
+            expires_at: "2026-07-25T00:00:00.000Z".to_owned(),
+        };
+        let credentials = ReceiptCredentialIdentity {
+            account_id_sha256: "9".repeat(64),
+            read_credential_id_sha256: "a".repeat(64),
+            claim_credential_id_sha256: "b".repeat(64),
+            deploy_credential_id_sha256: "c".repeat(64),
+            access_client_id_sha256: "d".repeat(64),
+            authority_version_id: "authority-v1".to_owned(),
+            permit_spki_sha256: "e".repeat(64),
+            trust_config_sha256: "f".repeat(64),
+            runner_build_sha256: "4".repeat(64),
+            controller_service_name: "controller-staging".to_owned(),
+            edge_service_name: "edge-staging".to_owned(),
+            stable_readback_observation_seconds: 5,
+        };
+        let claim = ReceiptClaimIdentity {
+            authorization_id_sha256: "1".repeat(64),
+            claim_digest_sha256: "2".repeat(64),
+            ledger_identity_sha256: "3".repeat(64),
+            claim_owner_sha256: "4".repeat(64),
+            account_id_sha256: "9".repeat(64),
+            generated_at: 10,
+            claimed_at: 11,
+            expires_at: 100,
+        };
+        let mut receipts = Vec::new();
+        push_receipt(
+            &mut receipts,
+            release.clone(),
+            credentials.clone(),
+            claim.clone(),
+            11,
+            ReceiptEvent::ClaimObserved {
+                status: ClaimStatus::Claimed,
+                state_version: 0,
+            },
+        )
+        .unwrap();
+        let mut step = ReceiptStepEvent {
+            state_version: 1,
+            step_code: StepCode::Terminal,
+            from_status: ClaimStatus::Claimed,
+            to_status: ClaimStatus::Aborted,
+            actor_execution_id_sha256: "4".repeat(64),
+            mutation_request_sha256: None,
+            cloudflare_request_id_sha256: None,
+            deployment_set_sha256: None,
+            evidence_sha256: "5".repeat(64),
+            failure_class: FailureClass::OperatorAbort,
+            transport_outcome: TransportOutcome::NotApplicable,
+            step_digest_sha256: String::new(),
+        };
+        step.step_digest_sha256 = receipt_step_digest(&claim, &step).unwrap();
+        push_receipt(
+            &mut receipts,
+            release.clone(),
+            credentials.clone(),
+            claim.clone(),
+            12,
+            ReceiptEvent::AuthorityStep { step },
+        )
+        .unwrap();
+        push_receipt(
+            &mut receipts,
+            release,
+            credentials,
+            claim,
+            13,
+            ReceiptEvent::TerminalSeal {
+                status: ClaimStatus::Aborted,
+                state_version: 1,
+                terminal_at: 13,
+                final_snapshot_sha256: "5".repeat(64),
+                final_snapshot_bytes: 128,
+                history_sha256: "6".repeat(64),
+                chain_length: 3,
+            },
+        )
+        .unwrap();
+        validate_planned_chain(&receipts).unwrap();
+        ReceiptPlan {
+            authorization_id_sha256: "1".repeat(64),
+            receipts,
+        }
+    }
+
+    fn temporary_root(label: &str) -> PathBuf {
+        let mut random = [0_u8; 8];
+        getrandom(&mut random).unwrap();
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let root = std::env::temp_dir().join(format!("cinatoken-receipt-{label}-{suffix}"));
+        fs::create_dir(&root).unwrap();
+        root
+    }
+
+    fn cleanup(root: &Path) {
+        make_tree_writable(root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn make_tree_writable(path: &Path) {
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let child = entry.path();
+                if child.is_dir() {
+                    make_directory_writable(&child);
+                    make_tree_writable(&child);
+                } else {
+                    make_writable(&child);
+                }
+            }
+        }
+        make_directory_writable(path);
+    }
+
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn make_writable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o644));
+        }
+        #[cfg(not(unix))]
+        if let Ok(metadata) = fs::metadata(path) {
+            let mut permissions = metadata.permissions();
+            permissions.set_readonly(false);
+            let _ = fs::set_permissions(path, permissions);
+        }
+    }
+
+    fn make_directory_writable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+        }
+        #[cfg(not(unix))]
+        make_writable(path);
+    }
+}

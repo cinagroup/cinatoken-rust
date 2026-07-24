@@ -36,15 +36,18 @@ const REQUIRED_MODULE_PATHS = Object.freeze([
   "crates/ring-transition-runner/src/orchestrator.rs",
   "crates/ring-transition-runner/src/publication.rs",
   "crates/ring-transition-runner/src/readback.rs",
+  "crates/ring-transition-runner/src/receipt.rs",
   "crates/ring-transition-runner/src/release.rs",
   "crates/ring-transition-runner/src/transport.rs",
   "crates/ring-transition-runner/tests/cli.rs",
   "package.json",
+  "tests/relay-container-ring-transition-receipt.test.mjs",
   "tests/relay-container-ring-transition-release-source.test.mjs",
   "tests/relay-container-ring-transition-release.test.mjs",
   "tools/collect_ring_transition_runner_release_source.mjs",
   "tools/relay_container_p5_evidence_contract.mjs",
   "tools/relay_container_ring_transition_contract.mjs",
+  "tools/relay_container_ring_transition_receipt_contract.mjs",
   "tools/relay_container_ring_transition_release_contract.mjs",
   "tools/verify_relay_container_ring_transition_release.mjs",
 ]);
@@ -350,6 +353,7 @@ function isReleaseModule(modulePath) {
     ].includes(modulePath) ||
     modulePath.startsWith("crates/ring-transition-runner/") ||
     [
+      "tests/relay-container-ring-transition-receipt.test.mjs",
       "tests/relay-container-ring-transition-release-source.test.mjs",
       "tests/relay-container-ring-transition-release.test.mjs",
     ].includes(modulePath) ||
@@ -357,6 +361,7 @@ function isReleaseModule(modulePath) {
       "tools/collect_ring_transition_runner_release_source.mjs",
       "tools/relay_container_p5_evidence_contract.mjs",
       "tools/relay_container_ring_transition_contract.mjs",
+      "tools/relay_container_ring_transition_receipt_contract.mjs",
       "tools/relay_container_ring_transition_release_contract.mjs",
       "tools/verify_relay_container_ring_transition_release.mjs",
     ].includes(modulePath)

@@ -18479,3 +18479,167 @@ Rust 1.78 Linux two-build/sign/install proof, the two-process crash and
 response-loss campaign, actual exposed-credential revocation evidence,
 deployed Access/token-scope evidence, and isolated remote staging validation.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.278 K7 Terminal Receipt Projection And Create-New Store Overlay (2026-07-24)
+
+This overlay supersedes section 22.277 only where the local execution-receipt
+data model, terminal projection, create-new store, publication durability, and
+signed module inventory were still absent. It is a K7 foundation, not the
+complete resumable driver and not a cutover approval. Checked-in trust remains
+disabled, `--execute` remains fail-closed after credential/control-plane
+authorization, and no Cloudflare credential, API mutation, deployment, DNS
+change, or customer traffic was used.
+
+### Frozen local Receipt V1
+
+`crates/ring-transition-runner/src/receipt.rs` now owns a closed canonical JSON
+contract:
+
+```text
+cinatoken-ring-transition-runner-execution-receipt-v1
+```
+
+Each authorization has one independent chain:
+
+```text
+<installation-root>/
+  execution-receipts/
+    <authorizationIdSha256>/
+      00000000000000000001.receipt.json
+      ...
+      000000000000000000NN.receipt.json
+```
+
+The local chain is bounded to 128 records and 64 KiB per canonical record.
+Sequence 1 has no predecessor; every later record binds SHA-256 of the complete
+prior canonical bytes. The record hash is not serialized into itself. Every
+record repeats the exact release, publication, credential and claim identity
+projection so a chain cannot silently cross an activation, account, service,
+runner build, trust root, Authority version or authorization.
+
+The delivered terminal projection has four event variants:
+
+| Event | Meaning | Authority |
+|---|---|---|
+| `claim_observed` | Genesis binds the verified claim identity and claim time | Verified terminal snapshot projection |
+| `authority_step` | One ordered state transition with only allowlisted step, request-ID, deployment-set and evidence digests | Exact Authority history |
+| `authority_expiry` | One Authority-owned expiry transition and evidence digest | Exact Authority history |
+| `terminal_seal` | Final status, state version, terminal time, final snapshot digest/length, ordered-history digest and chain length | Exact terminal snapshot |
+
+Only `completed`, `recovery_required`, `aborted`, and `expired` can seal a
+chain. The verifier reconstructs state and state-version progression from
+`claimed`, requires monotonically nondecreasing record times, rejects a second
+genesis, gaps, predecessor drift, identity drift, state jumps and any record
+after the seal. Receipt fields accept only bounded allowlisted ASCII tokens,
+service names, whole-second timestamps, safe integers and fixed lowercase
+digests. Raw credentials, Access headers, HMAC material, permit bytes, request
+or response bodies, provider payloads, SQL diagnostics and unbounded
+Cloudflare metadata have no schema location.
+
+The receipt is an audit projection only. It is not Authority state, does not
+contain a mutation permit and can never authorize a Cloudflare POST. A missing
+or present local receipt cannot advance the reducer.
+
+### Create-new publication and exact replay
+
+`ReceiptStore` validates one pre-existing regular non-symlink installation
+root, creates only the fixed receipt directories, and requires each directory
+to canonicalize immediately beneath its expected parent. A missing next slot
+may be created only after the exact predecessor exists, hashes correctly and
+is not terminal. Existing canonical bytes are an idempotent replay; different,
+truncated, noncanonical, linked, skipped or post-seal content fails closed and
+is never overwritten.
+
+The Linux implementation uses:
+
+1. `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` directory handles;
+2. `openat` with `O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW` for private staging;
+3. same-handle write, bounded readback, mode `0444`, and file `fsync`;
+4. directory-FD `renameat2(RENAME_NOREPLACE)` into the fixed sequence;
+5. receipt-directory and newly created parent-directory `fsync`;
+6. independent stable regular-file readback, including Unix single-link
+   enforcement; and
+7. mode `0555` on a terminally sealed chain directory.
+
+An already-existing target is accepted only by exact canonical-byte replay.
+An uncertain publish or directory-sync result is reported as
+`durability_unknown` with the expected digest; recovery must re-read the fixed
+slot and may never infer permission to replace it.
+
+The Windows backend exists only to exercise canonical, predecessor, replay,
+conflict, gap and seal semantics. It does not constitute evidence for Linux
+directory-FD confinement, `renameat2`, link count, parent `fsync`, ACL or
+power-loss durability.
+
+### Publication durability correction
+
+The publication installer no longer applies data-file mode `0444` to the Linux
+runner artifact. The artifact is frozen at executable mode `0555`; JSON
+sidecars and activation remain `0444`, and the publication directory remains
+`0555`.
+
+New directory entries are followed by parent-directory synchronization on
+Unix. The installer synchronizes the publication directory after final
+permissions, synchronizes the activation directory after the create-new
+activation, and then performs one final complete
+`require_activation=true` installed-publication readback. This closes the
+local executable-bit defect and narrows the file-versus-directory durability
+gap. It does not yet replace the path-based publication installer with a fully
+directory-FD-relative transaction, so the publication crash/power-loss and
+same-UID directory-replacement campaign remains open.
+
+### Release closure and local evidence
+
+`receipt.rs`, the independent JavaScript replay verifier, and its tests are
+now required signed source modules. Rust and JavaScript
+release/source collectors, deterministic inventory, manifest, DSSE,
+publication, signature and activation vectors advance together from 22 to 25
+modules. Omitting or digest-drifting the receipt implementation, independent
+verifier, or verifier tests invalidates the release closure.
+
+Local retained checks for this overlay include:
+
+- 70 Rust library tests, one binary test and two CLI integration tests;
+- exact terminal projection over the six-step completed Authority history;
+- create-new install, complete exact replay, predecessor gap, corrupted
+  canonical bytes and post-seal record rejection;
+- publication install plus final activation readback;
+- strict all-target runner Clippy with warnings denied; and
+- 31 JavaScript receipt/release/source tests with 113 expectations.
+
+The local Windows host could not complete installation of the
+`x86_64-unknown-linux-gnu` Rust target within the bounded verification window.
+Therefore the Linux-only `openat`/`renameat2` branch still requires the exact
+Rust 1.78 Linux build and runtime fault campaign; Windows test success must not
+be promoted as Linux durability evidence.
+
+### Remaining P0 sequence
+
+The next K7 increment must not expose the CLI by simply making transport
+methods public. It must preserve the library-owned typestate boundary and add:
+
+1. a fixed, signed, create-new execution activation under the verified
+   installation root, containing the exact claim request/permit and locator
+   while accepting no caller-selected ID, path, service, target or force flag;
+2. atomic Authority claim creation and response-loss recovery;
+3. typed T1 and Edge-previous stable readback/append phases;
+4. real-time receipt append before and after each Authority append, sole
+   deployment POST, readback and observation boundary, with pre-POST durable
+   authorization interpreted as “may have escaped” after restart;
+5. a library-owned public `execute_current()` driver that re-verifies release,
+   publication, execution activation, credentials, local chain and exact
+   Authority truth on every start;
+6. extend the independent in-memory JavaScript replay verifier to securely
+   read the installed Linux chain, and add an external terminal chain-head
+   anchor;
+7. two-process concurrency plus kill points around claim, append, POST,
+   response loss, all reads, receipt publish and parent sync; and
+8. exact Linux UID/GID, POSIX ACL, retention/backup, ext4 or XFS power-loss,
+   two-build Rust 1.78, Access, token-scope and exposed-credential revocation
+   evidence.
+
+`controller_inflight` and `edge_inflight` restart paths remain readback-only
+and must never regain a deployment permit. Await-expiry/recovery states must
+return a typed pending result rather than poll or write blindly. Until these
+gates and the broader G1-G8 migration approvals pass, Go/VPS remains
+authoritative and production remains **NO-GO**.

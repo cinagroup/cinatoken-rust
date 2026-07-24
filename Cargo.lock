@@ -436,6 +436,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-tls",
  "hyper-util",
+ "libc",
  "native-tls",
  "same-file",
  "serde",

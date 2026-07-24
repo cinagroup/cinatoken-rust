@@ -6,6 +6,7 @@ pub mod credentials;
 pub mod orchestrator;
 pub mod publication;
 pub mod readback;
+pub mod receipt;
 pub mod release;
 pub mod transport;
 

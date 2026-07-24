@@ -19297,3 +19297,197 @@ The next K7 implementation order is:
 
 Go/VPS remains the traffic, scheduler and financial authority. Production
 remains **NO-GO**.
+
+## 22.283 Mutation Operation Receipt And At-Most-Once Send Overlay (2026-07-24)
+
+This overlay completes the mutation half of section 22.282's next K7 item.
+The native runner now persists one deterministic, create-new Operation
+Receipt V1 start record before any Authority or Cloudflare mutation can reach
+`HttpExchange::send`. An existing start record never restores the send
+capability.
+
+Operation receipts are deliberately separate from Execution Receipt V1.
+Execution receipts are deterministic projections of exact Authority history.
+Operation receipts contain local request-boundary facts that Authority cannot
+reconstruct, including the request-ID digest and local start/finish time.
+Interleaving those facts into the Authority-history chain would make exact
+snapshot replay nondeterministic.
+
+No checked-in trust was enabled. No credential, Cloudflare API, Authority,
+route, DNS, deployment, customer traffic, billing, or Go/VPS state was read
+or mutated.
+
+### Covered mutation boundaries
+
+Every current native runner `POST` is covered:
+
+| Mutation | Deterministic state version | Request identity | Restart behavior |
+|---|---:|---|---|
+| create Authority claim | `0` | fixed claim path plus frozen activation claim-request digest | exact Authority GET only |
+| append Authority step | exact appended step version | exact claim-step path plus canonical step digest | no second append; exact Authority GET recovery |
+| deploy Controller | `2` | fixed account/service deployment path plus authorized request digest | no second deployment; stable readback only |
+| deploy Edge | `5` | fixed account/service deployment path plus authorized request digest | no second deployment; stable readback only |
+
+The Authority-step path is shared by baseline readback, mutation-intent and
+post-mutation observation append operations. All three now use the same
+strict result classification. Only the exact accepted status/body pair can
+return a fresh typed capability. Malformed success, redirect, conflict,
+timeout-like status, throttle, server error, response loss, truncation, or
+unconfirmed persistence is ambiguous. A deterministic `4xx` is rejected.
+
+The operation identity excludes the random request ID and wall-clock time. It
+is the SHA-256 of canonical JSON binding:
+
+```text
+activation + authorization + claim
+  + operation kind + Authority state version
+  + fixed POST method + target digest + request digest
+```
+
+This makes independent processes converge on one operation directory while
+still recording the winning request-ID digest inside the start event.
+
+### Fixed two-slot state machine
+
+Operation receipts live under the verified installation root:
+
+```text
+execution-operation-receipts/
+  <authorization-id-sha256>/
+    <operation-id-sha256>/
+      00000000000000000001.operation.json
+      00000000000000000002.operation.json
+```
+
+The only valid states are:
+
+| Durable state | Meaning | Send capability |
+|---|---|---|
+| no directory/start | request has not been reserved by this operation store | none |
+| slot 1 `request_started` | request may be unsent, in flight, or externally observable | never restored |
+| slot 2 `request_finished/accepted` | exact success was verified and persisted | none |
+| slot 2 `request_finished/rejected` | deterministic rejection was persisted | none |
+| slot 2 `request_finished/ambiguous` | outcome cannot be proven | none |
+
+Slot 1 is create-new and predecessor-free. Slot 2 must name slot 1's exact
+SHA-256. Identity, context and operation bytes must be identical across both
+slots. A third slot, unknown file, gap, link, noncanonical JSON, duplicate or
+unknown field, digest drift, time reversal, identity drift, or conflicting
+terminal event fails closed.
+
+Only the process that observes `OperationReservation::Fresh` receives the
+local send capability. `ExistingUnfinished` is sealed ambiguous and returns
+without network I/O. `ExistingFinished` returns without network I/O. Terminal
+publication is first-writer-wins: a late accepted response cannot replace an
+ambiguous finish already published by a recovering process.
+
+### Crash and concurrency decision table
+
+| Stop or race window | Durable interpretation | Next action |
+|---|---|---|
+| before slot 1 publication | no operation evidence; no send was authorized by this gate | rederive only through the future resumable driver |
+| after slot 1, before socket write | conservative ambiguous | read-only recovery; never resend |
+| after socket write, before response | may have escaped | read-only recovery; never resend |
+| after response, before slot 2 | may have escaped | publish ambiguous on recovery; never resend |
+| accepted/rejected slot 2 persisted | terminal local observation | verify exact Authority/provider state; never resend |
+| second process opens while first is in flight | second process may publish ambiguous | first process must honor persisted ambiguous even if it later receives success |
+| recovery probes an operation with no slot 1 | no synthetic start is created | preserve request-not-started evidence |
+
+The policy intentionally prefers an occasional false ambiguous result over a
+duplicate remote mutation. It proves at-most-once local send authorization,
+not exactly-once provider execution.
+
+### Identity and data minimization
+
+Each record joins the signed release, publication, activation, authorization,
+claim, ledger, owner, account, pairwise credential identities, Authority
+version, permit key, trust config, and Controller/Edge service names. A
+projection mismatch fails before operation publication.
+
+Records contain digests only for the target, request, request ID, response
+body and provider response ID. They never serialize authorization headers,
+Access secrets, API tokens, HMAC material, raw request bodies, raw response
+bodies, cookies, or credential values. The independent verifier recursively
+rejects secret-like field names.
+
+### Independent replay contract
+
+`tools/relay_container_ring_transition_receipt_contract.mjs` now exposes:
+
+- `computeRingTransitionOperationId`;
+- `describeRingTransitionOperationReceiptContract`; and
+- `verifyRingTransitionOperationReceiptChain`.
+
+The verifier is in-memory, credential-free, network-free, non-authorizing and
+write-free. It independently enforces canonical JSON, duplicate/unknown
+field rejection, byte bounds, operation kind/state shape, deterministic
+operation ID, context and operation invariance, predecessor linkage,
+monotonic time, outcome/status coupling, and the fixed two-slot limit.
+
+The Rust/JavaScript frozen vector is:
+
+```text
+operation id:
+9e499bf7a66322d55ebc9104845bd79d26f9585185a24926f61d49a65b604544
+
+request-start head:
+4ca2eb642f701c9c201f3835f0d2d1431620d4ec951ca573c0a9714bfd377ece
+
+accepted finish head:
+14869d3a336dcf7dca017aba41d2232ce6ead0a9dcef9e1f4feee3f7698eb0c4
+```
+
+### Local evidence
+
+Focused and aggregate local evidence on the current worktree is:
+
+- runner Rust library: 101 tests, all PASS;
+- strict all-target runner Clippy with warnings denied: PASS;
+- focused receipt JavaScript: 19 tests and 51 expectations, all PASS;
+- runner aggregate: 101 library tests, one binary test, two CLI tests, and 46
+  JavaScript tests/169 expectations, all PASS;
+- broader ring-transition JavaScript: 66 tests/729 expectations, all PASS;
+- complete repository `bun run check`: PASS with exit code 0 in 675.6
+  seconds, including workspace tests, Worker/WFP WASM checks and frontend
+  gates;
+- eight concurrent operation reservations: exactly one fresh send
+  capability;
+- real persistent claim restart: one POST total, followed by permanent
+  GET-only recovery; and
+- canonical identity tampering and a future third slot: both rejected.
+
+The signed source closure remains the same 28 modules because all changed
+runtime and verifier files were already inside the required inventory.
+These are local deterministic and Windows filesystem-contract results, not
+Linux durability, isolated staging, provider, or production evidence.
+
+### Remaining P0 sequence
+
+Mutation request-start coverage is no longer the first missing K7 item. The
+remaining order is:
+
+1. implement library-owned `execute_current()` that re-verifies release,
+   publication, activation, dispatch guard, credentials, operation receipts,
+   Execution Receipt prefix and exact Authority state, then performs at most
+   one reducer action;
+2. add deterministic request-start/finish evidence for read-only Authority
+   and Cloudflare GET boundaries, while retaining exact snapshot receipts as
+   the source-of-truth projection;
+3. bind all operation heads into the final terminal seal and an independent
+   external append-only anchor without making local operation timing part of
+   Authority snapshot reconstruction;
+4. run exact Rust 1.78 Linux reproducible builds and two-process path/link,
+   in-flight response-loss, kill-before/after-sync, ACL, backup/restore,
+   ext4/XFS and power-loss campaigns;
+5. revalidate all independent approvals and collect isolated staging Access,
+   route, D1, version, scope, revocation, rollback and Go/VPS hot-fallback
+   evidence;
+6. implement and fault-test the versioned Durable Object shard supervisor,
+   fencing, drain/recovery alarms and disposable Container adapter;
+7. close cached channel candidate, billing-expression DST/golden, paid SSE
+   terminal handoff, task-provider and financial-state Go-compatibility gaps;
+8. publish reviewed trust roots, revoke exposed credentials, complete G1-G8,
+   and only then consider any `cinatoken.com` traffic movement.
+
+Checked-in runner trust remains disabled. Go/VPS remains the traffic,
+scheduler and financial authority. Production remains **NO-GO**.

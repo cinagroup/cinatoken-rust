@@ -3361,3 +3361,47 @@ GET-only recovery. Then comes the one-action resumable driver, remaining
 append-path recovery, Linux crash/power-loss evidence, approval and external
 anchor gates, isolated staging, credential revocation and G1-G8. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-24 Mutation Operation Receipt Gate
+
+Phase 1 now has a durable at-most-once send gate for every implemented native
+runner mutation:
+
+```text
+freeze exact POST identity
+  -> create-new request_started receipt
+  -> Fresh only: perform one bounded zero-retry send
+  -> create-new accepted | rejected | ambiguous finish
+  -> exact GET or stable readback decides subsequent state
+```
+
+Claim creation uses state version 0, Authority appends use the canonical step
+version, and Cloudflare Controller/Edge deployments use versions 2/5. The
+operation ID is independent of random request IDs and local time, so
+concurrent processes converge on one operation. The winning request-ID digest
+and timestamps remain audit facts inside the records.
+
+Restart after any existing start is read-only. An unfinished start becomes
+ambiguous, an existing finish remains terminal, and neither restores a POST.
+A recovery probe does not synthesize a missing start. The first terminal
+finish wins even when another process later receives a valid success.
+
+Operation Receipt V1 is separate from the deterministic Authority-history
+Execution Receipt V1 chain. Both join the same release, publication,
+activation, claim, credential and trust identities. Operation records store
+only request/response and provider-ID digests; no secret or raw body enters
+the chain.
+
+Rust and the independent JavaScript verifier agree on the frozen operation
+ID, start head and accepted finish head. Current local gates pass with 101
+Rust library tests, 46 runner JavaScript tests/169 expectations and 66 broader
+ring-transition tests/729 expectations. The signed source closure remains 28
+modules. The complete repository `bun run check` passes with exit code 0 in
+675.6 seconds.
+
+Next is the library-owned one-action `execute_current()` resume boundary,
+followed by read-only request receipts, terminal operation-head anchoring,
+exact Linux crash/power-loss proof, approval revalidation, isolated staging,
+credential revocation and remaining Go compatibility work. No remote action
+or credential read occurred. Go/VPS remains authoritative and production
+remains **NO-GO**.

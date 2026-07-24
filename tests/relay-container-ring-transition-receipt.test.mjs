@@ -3,13 +3,17 @@ import { describe, expect, test } from "bun:test";
 import {
   MAX_RING_TRANSITION_RECEIPT_BYTES,
   MAX_RING_TRANSITION_RECEIPTS_PER_CHAIN,
+  MAX_RING_TRANSITION_OPERATION_RECEIPTS_PER_CHAIN,
   canonicalReceiptBytes,
   computeRingTransitionExpiryDigest,
+  computeRingTransitionOperationId,
   computeRingTransitionStepDigest,
   describeRingTransitionExecutionReceiptContract,
+  describeRingTransitionOperationReceiptContract,
   sha256ReceiptBytes,
   verifyRingTransitionExecutionReceiptChain,
   verifyRingTransitionExecutionReceiptPrefix,
+  verifyRingTransitionOperationReceiptChain,
 } from "../tools/relay_container_ring_transition_receipt_contract.mjs";
 
 const H = Object.freeze({
@@ -318,6 +322,284 @@ describe("K7 ring-transition Execution Receipt V1 replay verifier", () => {
     }
   });
 });
+
+describe("K7 ring-transition Operation Receipt V1 replay verifier", () => {
+  test("describes a deterministic, credential-free mutation gate contract", () => {
+    expect(describeRingTransitionOperationReceiptContract()).toEqual({
+      ok: true,
+      schemaVersion: 1,
+      contract: "cinatoken-ring-transition-runner-operation-receipt-v1",
+      environment: "staging",
+      maximumReceiptBytes: 65_536,
+      maximumReceiptsPerChain: 2,
+      constraints: {
+        canonicalJsonRequired: true,
+        duplicateAndUnknownFieldsAllowed: false,
+        deterministicOperationIdRequired: true,
+        requestStartRequiredBeforeMutation: true,
+        createNewReservationRequired: true,
+        restartAfterReservationIsReadOnly: true,
+        firstTerminalFinishWins: true,
+        credentialsRead: false,
+        networkRequestsPerformed: false,
+        filesWritten: false,
+        remoteMutationAuthorized: false,
+      },
+    });
+    expect(MAX_RING_TRANSITION_OPERATION_RECEIPTS_PER_CHAIN).toBe(2);
+  });
+
+  test("matches the Rust operation-id and request-start fixed vector", () => {
+    const { records, bytes } = deterministicOperationReceiptChain();
+    expect(
+      computeRingTransitionOperationId({
+        context: records[0].context,
+        ...operationIdentityInput(),
+      }),
+    ).toBe(
+      "9e499bf7a66322d55ebc9104845bd79d26f9585185a24926f61d49a65b604544",
+    );
+    expect(bytes.map(sha256ReceiptBytes)).toEqual([
+      "4ca2eb642f701c9c201f3835f0d2d1431620d4ec951ca573c0a9714bfd377ece",
+      "14869d3a336dcf7dca017aba41d2232ce6ead0a9dcef9e1f4feee3f7698eb0c4",
+    ]);
+    expect(verifyRingTransitionOperationReceiptChain(bytes)).toEqual({
+      ok: true,
+      operationIdSha256:
+        "9e499bf7a66322d55ebc9104845bd79d26f9585185a24926f61d49a65b604544",
+      receiptCount: 2,
+      headSha256:
+        "14869d3a336dcf7dca017aba41d2232ce6ead0a9dcef9e1f4feee3f7698eb0c4",
+      outcome: "accepted",
+    });
+  });
+
+  test("verifies an unfinished reservation without restoring send authority", () => {
+    const { bytes } = deterministicOperationReceiptChain();
+    expect(
+      verifyRingTransitionOperationReceiptChain([Array.from(bytes[0])]),
+    ).toEqual({
+      ok: true,
+      operationIdSha256:
+        "9e499bf7a66322d55ebc9104845bd79d26f9585185a24926f61d49a65b604544",
+      receiptCount: 1,
+      headSha256:
+        "4ca2eb642f701c9c201f3835f0d2d1431620d4ec951ca573c0a9714bfd377ece",
+      outcome: null,
+    });
+  });
+
+  test("rejects gaps, predecessor drift, identity drift, and time reversal", () => {
+    {
+      const { records } = deterministicOperationReceiptChain();
+      records[1].predecessorReceiptSha256 = "f".repeat(64);
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain(
+          records.map(canonicalReceiptBytes),
+        ),
+      ).toThrow(/predecessor SHA-256 mismatch/);
+    }
+
+    {
+      const { records } = deterministicOperationReceiptChain();
+      records[1].context.accountIdSha256 = "d".repeat(64);
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain(linkRecords(records)),
+      ).toThrow(/shared context or operation identity drift/);
+    }
+
+    {
+      const { records } = deterministicOperationReceiptChain();
+      records[1].recordedAt = records[0].recordedAt - 1;
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain(linkRecords(records)),
+      ).toThrow(/recordedAt is not monotonic/);
+    }
+
+    const { bytes } = deterministicOperationReceiptChain();
+    expect(() =>
+      verifyRingTransitionOperationReceiptChain([]),
+    ).toThrow(/receipt count/);
+    expect(() =>
+      verifyRingTransitionOperationReceiptChain([
+        bytes[0],
+        bytes[1],
+        bytes[1],
+      ]),
+    ).toThrow(/receipt count/);
+  });
+
+  test("rejects unknown, duplicate, non-canonical, and secret-like fields", () => {
+    {
+      const { records } = deterministicOperationReceiptChain();
+      records[0].operation.unexpected = true;
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain([
+          canonicalReceiptBytes(records[0]),
+        ]),
+      ).toThrow(/unknown field unexpected/);
+    }
+
+    {
+      const valid = deterministicOperationReceiptChain().bytes[0];
+      const json = new TextDecoder().decode(valid);
+      const duplicate = new TextEncoder().encode(
+        `${json.slice(0, -1)},"schemaVersion":1}`,
+      );
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain([duplicate]),
+      ).toThrow(/duplicate fields/);
+    }
+
+    {
+      const valid = deterministicOperationReceiptChain().bytes[0];
+      const nonCanonical = new Uint8Array(valid.length + 1);
+      nonCanonical.set(valid);
+      nonCanonical[nonCanonical.length - 1] = 0x0a;
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain([nonCanonical]),
+      ).toThrow(/not canonical/);
+    }
+
+    {
+      const { records } = deterministicOperationReceiptChain();
+      records[0].event.apiToken = "fixture-value";
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain([
+          canonicalReceiptBytes(records[0]),
+        ]),
+      ).toThrow(/forbidden secret-like field apiToken/);
+    }
+  });
+
+  test("rejects operation-id, kind-state, and terminal outcome drift", () => {
+    {
+      const { records } = deterministicOperationReceiptChain();
+      records[0].operation.operationIdSha256 = "f".repeat(64);
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain([
+          canonicalReceiptBytes(records[0]),
+        ]),
+      ).toThrow(/operation ID mismatch/);
+    }
+
+    {
+      const { records } = deterministicOperationReceiptChain();
+      records[0].operation.kind = "authority_claim_create";
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain([
+          canonicalReceiptBytes(records[0]),
+        ]),
+      ).toThrow(/stateVersion is invalid for operation kind/);
+    }
+
+    {
+      const { records } = deterministicOperationReceiptChain();
+      records[1].event.http_status = null;
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain(linkRecords(records)),
+      ).toThrow(/accepted outcome requires a 2xx status/);
+    }
+
+    {
+      const { records } = deterministicOperationReceiptChain();
+      records[1].event.outcome = "rejected";
+      records[1].event.http_status = 500;
+      expect(() =>
+        verifyRingTransitionOperationReceiptChain(linkRecords(records)),
+      ).toThrow(/rejected outcome requires a 4xx status/);
+    }
+  });
+});
+
+function deterministicOperationReceiptChain() {
+  const context = {
+    sourceCommit: "1".repeat(40),
+    gitTreeSha: "2".repeat(40),
+    releaseManifestSha256: "5".repeat(64),
+    releasePacketSha256: "6".repeat(64),
+    releasePolicySha256: "7".repeat(64),
+    artifactSha256: "3".repeat(64),
+    moduleInventorySha256: "9".repeat(64),
+    moduleCount: 28,
+    publicationManifestSha256: "7".repeat(64),
+    publicationPacketSha256: "b".repeat(64),
+    generationSha256: "d".repeat(64),
+    activationSha256: "8".repeat(64),
+    activationSequence: 1,
+    authorizationIdSha256: "1".repeat(64),
+    claimDigestSha256: "2".repeat(64),
+    ledgerIdentitySha256: "3".repeat(64),
+    claimOwnerSha256: "4".repeat(64),
+    accountIdSha256: "c".repeat(64),
+    readCredentialIdSha256: "e".repeat(64),
+    claimCredentialIdSha256: "f".repeat(64),
+    deployCredentialIdSha256: "0".repeat(64),
+    accessClientIdSha256: "1".repeat(64),
+    authorityVersionId: "authority-version-001",
+    permitSpkiSha256: "6".repeat(64),
+    trustConfigSha256: "4".repeat(64),
+    controllerServiceName: "controller-staging",
+    edgeServiceName: "edge-staging",
+    generatedAt: 1_700_000_000,
+    expiresAt: 1_700_000_400,
+  };
+  const input = operationIdentityInput();
+  const operation = {
+    operationIdSha256: computeRingTransitionOperationId({
+      context,
+      ...input,
+    }),
+    ...input,
+  };
+  const start = {
+    schemaVersion: 1,
+    contract: "cinatoken-ring-transition-runner-operation-receipt-v1",
+    environment: "staging",
+    sequence: 1,
+    predecessorReceiptSha256: null,
+    recordedAt: 1_700_000_100,
+    context,
+    operation,
+    event: {
+      kind: "request_started",
+      request_id_sha256: "a".repeat(64),
+    },
+  };
+  const finish = {
+    schemaVersion: 1,
+    contract: "cinatoken-ring-transition-runner-operation-receipt-v1",
+    environment: "staging",
+    sequence: 2,
+    predecessorReceiptSha256: sha256ReceiptBytes(
+      canonicalReceiptBytes(start),
+    ),
+    recordedAt: 1_700_000_101,
+    context: structuredClone(context),
+    operation: structuredClone(operation),
+    event: {
+      kind: "request_finished",
+      outcome: "accepted",
+      http_status: 201,
+      response_body_sha256: "c".repeat(64),
+      response_id_sha256: "d".repeat(64),
+    },
+  };
+  return {
+    records: [start, finish],
+    bytes: [canonicalReceiptBytes(start), canonicalReceiptBytes(finish)],
+  };
+}
+
+function operationIdentityInput() {
+  return {
+    kind: "authority_step_append",
+    stateVersion: 1,
+    method: "POST",
+    targetSha256: "a".repeat(64),
+    requestSha256: "b".repeat(64),
+  };
+}
 
 function deterministicTwoRecordChain() {
   const genesis = baseReceipt({

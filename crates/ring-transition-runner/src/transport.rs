@@ -24,7 +24,10 @@ use crate::readback::{
     StableBaselineReadbackPair, StableReadbackPair, MAX_DEPLOYMENTS_RESPONSE_BYTES,
     MAX_OBSERVATION_SECONDS, MAX_TARGET_VERSION_RESPONSE_BYTES, MIN_OBSERVATION_SECONDS,
 };
-use crate::receipt::{plan_snapshot_receipts, ReceiptError, ReceiptStore};
+use crate::receipt::{
+    plan_snapshot_receipts, OperationFinishInput, OperationIdentityInput, OperationKind,
+    OperationOutcome, OperationReservation, OperationStartInput, ReceiptError, ReceiptStore,
+};
 use crate::release::{canonical_json, reject_duplicate_json, MAX_SAFE_INTEGER};
 use crate::STAGING_AUTHORITY_ORIGIN;
 use async_trait::async_trait;
@@ -70,7 +73,7 @@ type ProductionConnector = NativeHttpsConnector<HttpConnector>;
 type ProductionHttpClient = Client<ProductionConnector, Full<Bytes>>;
 
 pub struct PreparedControlPlane {
-    core: ControlPlaneCore<HyperHttpsExchange, PersistentSnapshotReceiptRecorder>,
+    core: ControlPlaneCore<HyperHttpsExchange, PersistentReceiptRecorder>,
     execution_activation: ExecutionActivationIdentity,
     dispatch_location: ClaimDispatchLocation,
 }
@@ -93,14 +96,14 @@ pub enum ClaimRecoveryOutcome {
 }
 
 pub struct ClaimedControlPlane {
-    core: ControlPlaneCore<HyperHttpsExchange, PersistentSnapshotReceiptRecorder>,
+    core: ControlPlaneCore<HyperHttpsExchange, PersistentReceiptRecorder>,
     execution_activation: ExecutionActivationIdentity,
     snapshot: Box<VerifiedSnapshot>,
     classification: ClaimCreationClassification,
 }
 
 pub struct ClaimRecoveryControlPlane {
-    core: ControlPlaneCore<HyperHttpsExchange, PersistentSnapshotReceiptRecorder>,
+    core: ControlPlaneCore<HyperHttpsExchange, PersistentReceiptRecorder>,
     execution_activation: ExecutionActivationIdentity,
     classification: ClaimCreationClassification,
     last_error: ControlPlaneError,
@@ -142,6 +145,15 @@ impl PreparedControlPlane {
                     .await?
             }
             ClaimDispatchReservation::Existing => {
+                self.core.finish_unresolved_write_operation(
+                    &operation_identity(
+                        OperationKind::AuthorityClaimCreate,
+                        0,
+                        CLAIMS_PATH,
+                        self.execution_activation.claim_request_sha256(),
+                    ),
+                    now,
+                )?;
                 match self
                     .core
                     .read_activated_claim_at(&self.execution_activation, now, &read_request_id)
@@ -365,6 +377,17 @@ impl ClaimRecoveryControlPlane {
                 return ClaimRecoveryOutcome::Pending(Self { last_error, ..self });
             }
         };
+        if let Err(last_error) = self.core.finish_unresolved_write_operation(
+            &operation_identity(
+                OperationKind::AuthorityClaimCreate,
+                0,
+                CLAIMS_PATH,
+                self.execution_activation.claim_request_sha256(),
+            ),
+            now,
+        ) {
+            return ClaimRecoveryOutcome::Pending(Self { last_error, ..self });
+        }
         match self
             .core
             .read_activated_claim_at(&self.execution_activation, now, &request_id)
@@ -391,9 +414,10 @@ pub(crate) async fn verify_loaded_credentials(
         .validate_credential_identity(loaded.identity())
         .map_err(ControlPlaneError::ExecutionActivation)?;
     let exchange = HyperHttpsExchange::new()?;
-    let receipt_recorder = PersistentSnapshotReceiptRecorder::open(
+    let receipt_recorder = PersistentReceiptRecorder::open(
         dispatch_location.installation_root(),
         receipt_publication,
+        execution_activation.clone(),
     )
     .map_err(ControlPlaneError::Receipt)?;
     let now = system_time_seconds()?;
@@ -407,32 +431,61 @@ pub(crate) async fn verify_loaded_credentials(
     })
 }
 
-trait SnapshotReceiptRecorder: Send + Sync {
+trait ReceiptRecorder: Send + Sync {
     fn record_snapshot(
         &self,
         snapshot: &VerifiedSnapshot,
         credentials: &CredentialIdentity,
     ) -> Result<(), ReceiptError>;
+
+    fn reserve_operation(
+        &self,
+        _credentials: &CredentialIdentity,
+        _input: &OperationStartInput,
+    ) -> Result<OperationReservation, ReceiptError> {
+        Ok(OperationReservation::Fresh)
+    }
+
+    fn finish_operation(
+        &self,
+        _credentials: &CredentialIdentity,
+        _identity: &OperationIdentityInput,
+        input: &OperationFinishInput,
+    ) -> Result<OperationOutcome, ReceiptError> {
+        Ok(input.outcome)
+    }
+
+    fn finish_unresolved_operation(
+        &self,
+        _credentials: &CredentialIdentity,
+        _identity: &OperationIdentityInput,
+        _input: &OperationFinishInput,
+    ) -> Result<Option<OperationOutcome>, ReceiptError> {
+        Ok(None)
+    }
 }
 
-struct PersistentSnapshotReceiptRecorder {
+struct PersistentReceiptRecorder {
     store: ReceiptStore,
     publication: PublicationIdentity,
+    activation: ExecutionActivationIdentity,
 }
 
-impl PersistentSnapshotReceiptRecorder {
+impl PersistentReceiptRecorder {
     fn open(
         root: &std::path::Path,
         publication: PublicationIdentity,
+        activation: ExecutionActivationIdentity,
     ) -> Result<Self, ReceiptError> {
         Ok(Self {
             store: ReceiptStore::open(root)?,
             publication,
+            activation,
         })
     }
 }
 
-impl SnapshotReceiptRecorder for PersistentSnapshotReceiptRecorder {
+impl ReceiptRecorder for PersistentReceiptRecorder {
     fn record_snapshot(
         &self,
         snapshot: &VerifiedSnapshot,
@@ -442,15 +495,102 @@ impl SnapshotReceiptRecorder for PersistentSnapshotReceiptRecorder {
         self.store.install_snapshot_plan(&plan)?;
         Ok(())
     }
+
+    fn reserve_operation(
+        &self,
+        credentials: &CredentialIdentity,
+        input: &OperationStartInput,
+    ) -> Result<OperationReservation, ReceiptError> {
+        self.store
+            .reserve_operation(&self.publication, credentials, &self.activation, input)
+    }
+
+    fn finish_operation(
+        &self,
+        credentials: &CredentialIdentity,
+        identity: &OperationIdentityInput,
+        input: &OperationFinishInput,
+    ) -> Result<OperationOutcome, ReceiptError> {
+        self.store.finish_operation(
+            &self.publication,
+            credentials,
+            &self.activation,
+            identity,
+            input,
+        )
+    }
+
+    fn finish_unresolved_operation(
+        &self,
+        credentials: &CredentialIdentity,
+        identity: &OperationIdentityInput,
+        input: &OperationFinishInput,
+    ) -> Result<Option<OperationOutcome>, ReceiptError> {
+        self.store.finish_unresolved_operation(
+            &self.publication,
+            credentials,
+            &self.activation,
+            identity,
+            input,
+        )
+    }
 }
 
-struct ControlPlaneCore<E: HttpExchange, R: SnapshotReceiptRecorder> {
+struct ControlPlaneCore<E: HttpExchange, R: ReceiptRecorder> {
     credentials: VerifiedCredentials,
     exchange: E,
     receipt_recorder: R,
 }
 
-impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
+impl<E: HttpExchange, R: ReceiptRecorder> ControlPlaneCore<E, R> {
+    fn reserve_write_operation(
+        &self,
+        start: &OperationStartInput,
+    ) -> Result<bool, ControlPlaneError> {
+        match self
+            .receipt_recorder
+            .reserve_operation(self.credentials.identity(), start)
+            .map_err(ControlPlaneError::Receipt)?
+        {
+            OperationReservation::Fresh => Ok(true),
+            OperationReservation::ExistingUnfinished => {
+                self.receipt_recorder
+                    .finish_operation(
+                        self.credentials.identity(),
+                        &start.identity,
+                        &ambiguous_operation_finish(start.started_at, None),
+                    )
+                    .map_err(ControlPlaneError::Receipt)?;
+                Ok(false)
+            }
+            OperationReservation::ExistingFinished(_) => Ok(false),
+        }
+    }
+
+    fn finish_write_operation(
+        &self,
+        identity: &OperationIdentityInput,
+        finish: &OperationFinishInput,
+    ) -> Result<OperationOutcome, ControlPlaneError> {
+        self.receipt_recorder
+            .finish_operation(self.credentials.identity(), identity, finish)
+            .map_err(ControlPlaneError::Receipt)
+    }
+
+    fn finish_unresolved_write_operation(
+        &self,
+        identity: &OperationIdentityInput,
+        now: u64,
+    ) -> Result<Option<OperationOutcome>, ControlPlaneError> {
+        self.receipt_recorder
+            .finish_unresolved_operation(
+                self.credentials.identity(),
+                identity,
+                &ambiguous_operation_finish(now, None),
+            )
+            .map_err(ControlPlaneError::Receipt)
+    }
+
     async fn verify(
         loaded: LoadedCredentials,
         exchange: E,
@@ -526,27 +666,56 @@ impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
             request_id,
             now,
         )?;
+        let operation = operation_start(
+            operation_identity(
+                OperationKind::AuthorityClaimCreate,
+                0,
+                CLAIMS_PATH,
+                activation.claim_request_sha256(),
+            ),
+            request_id,
+            now,
+        );
+        if !self.reserve_write_operation(&operation)? {
+            return Ok(ClaimPostDisposition::Ambiguous);
+        }
         let response = match self
             .exchange
             .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
             .await
         {
             Ok(response) => response,
-            Err(_) => return Ok(ClaimPostDisposition::Ambiguous),
+            Err(_) => {
+                self.finish_write_operation(
+                    &operation.identity,
+                    &ambiguous_operation_finish(now, None),
+                )?;
+                return Ok(ClaimPostDisposition::Ambiguous);
+            }
         };
         if response.status == StatusCode::CREATED || response.status == StatusCode::OK {
-            return Ok(
-                match verify_claim_create_response(
-                    &response.body,
-                    response.status,
-                    request_id,
-                    activation,
-                    self.credentials.identity(),
-                ) {
-                    Ok(classification) => ClaimPostDisposition::Accepted(classification),
-                    Err(_) => ClaimPostDisposition::Ambiguous,
-                },
+            let verified = verify_claim_create_response(
+                &response.body,
+                response.status,
+                request_id,
+                activation,
+                self.credentials.identity(),
             );
+            let outcome = if verified.is_ok() {
+                OperationOutcome::Accepted
+            } else {
+                OperationOutcome::Ambiguous
+            };
+            let persisted = self.finish_write_operation(
+                &operation.identity,
+                &operation_finish(outcome, now, Some(&response)),
+            )?;
+            return Ok(match (verified, persisted) {
+                (Ok(classification), OperationOutcome::Accepted) => {
+                    ClaimPostDisposition::Accepted(classification)
+                }
+                _ => ClaimPostDisposition::Ambiguous,
+            });
         }
         if response.status.is_success()
             || response.status.is_redirection()
@@ -556,9 +725,21 @@ impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
             || response.status == StatusCode::TOO_MANY_REQUESTS
             || response.status.is_server_error()
         {
+            self.finish_write_operation(
+                &operation.identity,
+                &ambiguous_operation_finish(now, Some(&response)),
+            )?;
             return Ok(ClaimPostDisposition::Ambiguous);
         }
-        Err(ControlPlaneError::AuthorityMutationRejected)
+        let persisted = self.finish_write_operation(
+            &operation.identity,
+            &operation_finish(OperationOutcome::Rejected, now, Some(&response)),
+        )?;
+        if persisted == OperationOutcome::Rejected {
+            Err(ControlPlaneError::AuthorityMutationRejected)
+        } else {
+            Ok(ClaimPostDisposition::Ambiguous)
+        }
     }
 
     async fn read_activated_claim_at(
@@ -646,6 +827,16 @@ impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
             .canonical_step_json()
             .map_err(ControlPlaneError::Orchestrator)?
             .into_bytes();
+        let operation = operation_start(
+            operation_identity(
+                OperationKind::AuthorityStepAppend,
+                attempt.state_version(),
+                &path,
+                &sha256_hex(&body),
+            ),
+            &request_id,
+            now,
+        );
         let request = authority_request(
             &self.credentials,
             Method::POST,
@@ -654,20 +845,59 @@ impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
             &request_id,
             now,
         )?;
+        if !self.reserve_write_operation(&operation)? {
+            return Err(ControlPlaneError::AuthorityMutationAmbiguous);
+        }
         let response = self
             .exchange
             .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
-            .await
-            .map_err(|_| ControlPlaneError::AuthorityMutationAmbiguous)?;
-        if response.status != StatusCode::CREATED && response.status != StatusCode::OK {
-            return Err(ControlPlaneError::AuthorityMutationRejected);
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(_) => {
+                self.finish_write_operation(
+                    &operation.identity,
+                    &ambiguous_operation_finish(now, None),
+                )?;
+                return Err(ControlPlaneError::AuthorityMutationAmbiguous);
+            }
+        };
+        if response.status == StatusCode::CREATED || response.status == StatusCode::OK {
+            let verified = orchestrator::verify_fresh_append(
+                attempt,
+                &response.body,
+                &self.credentials.identity().authority_version_id,
+            );
+            let outcome = if verified.is_ok() {
+                OperationOutcome::Accepted
+            } else {
+                OperationOutcome::Ambiguous
+            };
+            let persisted = self.finish_write_operation(
+                &operation.identity,
+                &operation_finish(outcome, now, Some(&response)),
+            )?;
+            return match (verified, persisted) {
+                (Ok(permit), OperationOutcome::Accepted) => Ok(permit),
+                _ => Err(ControlPlaneError::AuthorityMutationAmbiguous),
+            };
         }
-        orchestrator::verify_fresh_append(
-            attempt,
-            &response.body,
-            &self.credentials.identity().authority_version_id,
-        )
-        .map_err(ControlPlaneError::Orchestrator)
+        if mutation_status_is_ambiguous(response.status) {
+            self.finish_write_operation(
+                &operation.identity,
+                &ambiguous_operation_finish(now, Some(&response)),
+            )?;
+            return Err(ControlPlaneError::AuthorityMutationAmbiguous);
+        }
+        let persisted = self.finish_write_operation(
+            &operation.identity,
+            &operation_finish(OperationOutcome::Rejected, now, Some(&response)),
+        )?;
+        if persisted == OperationOutcome::Rejected {
+            Err(ControlPlaneError::AuthorityMutationRejected)
+        } else {
+            Err(ControlPlaneError::AuthorityMutationAmbiguous)
+        }
     }
 
     async fn append_observation_at<P: ObservationPhase>(
@@ -684,6 +914,16 @@ impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
             .canonical_step_json()
             .map_err(ControlPlaneError::Orchestrator)?
             .into_bytes();
+        let operation = operation_start(
+            operation_identity(
+                OperationKind::AuthorityStepAppend,
+                attempt.step().state_version,
+                &path,
+                &sha256_hex(&body),
+            ),
+            &request_id,
+            now,
+        );
         let request = authority_request(
             &self.credentials,
             Method::POST,
@@ -692,20 +932,59 @@ impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
             &request_id,
             now,
         )?;
+        if !self.reserve_write_operation(&operation)? {
+            return Err(ControlPlaneError::AuthorityMutationAmbiguous);
+        }
         let response = self
             .exchange
             .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
-            .await
-            .map_err(|_| ControlPlaneError::AuthorityMutationAmbiguous)?;
-        if response.status != StatusCode::CREATED && response.status != StatusCode::OK {
-            return Err(ControlPlaneError::AuthorityMutationRejected);
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(_) => {
+                self.finish_write_operation(
+                    &operation.identity,
+                    &ambiguous_operation_finish(now, None),
+                )?;
+                return Err(ControlPlaneError::AuthorityMutationAmbiguous);
+            }
+        };
+        if response.status == StatusCode::CREATED || response.status == StatusCode::OK {
+            let verified = orchestrator::verify_observation_append(
+                attempt,
+                &response.body,
+                &self.credentials.identity().authority_version_id,
+            );
+            let outcome = if verified.is_ok() {
+                OperationOutcome::Accepted
+            } else {
+                OperationOutcome::Ambiguous
+            };
+            let persisted = self.finish_write_operation(
+                &operation.identity,
+                &operation_finish(outcome, now, Some(&response)),
+            )?;
+            return match (verified, persisted) {
+                (Ok(recorded), OperationOutcome::Accepted) => Ok(recorded),
+                _ => Err(ControlPlaneError::AuthorityMutationAmbiguous),
+            };
         }
-        orchestrator::verify_observation_append(
-            attempt,
-            &response.body,
-            &self.credentials.identity().authority_version_id,
-        )
-        .map_err(ControlPlaneError::Orchestrator)
+        if mutation_status_is_ambiguous(response.status) {
+            self.finish_write_operation(
+                &operation.identity,
+                &ambiguous_operation_finish(now, Some(&response)),
+            )?;
+            return Err(ControlPlaneError::AuthorityMutationAmbiguous);
+        }
+        let persisted = self.finish_write_operation(
+            &operation.identity,
+            &operation_finish(OperationOutcome::Rejected, now, Some(&response)),
+        )?;
+        if persisted == OperationOutcome::Rejected {
+            Err(ControlPlaneError::AuthorityMutationRejected)
+        } else {
+            Err(ControlPlaneError::AuthorityMutationAmbiguous)
+        }
     }
 
     async fn append_baseline_readback_at<P: BaselineReadbackPhase>(
@@ -722,6 +1001,16 @@ impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
             .canonical_step_json()
             .map_err(ControlPlaneError::Orchestrator)?
             .into_bytes();
+        let operation = operation_start(
+            operation_identity(
+                OperationKind::AuthorityStepAppend,
+                attempt.step().state_version,
+                &path,
+                &sha256_hex(&body),
+            ),
+            &request_id,
+            now,
+        );
         let request = authority_request(
             &self.credentials,
             Method::POST,
@@ -730,38 +1019,63 @@ impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
             &request_id,
             now,
         )?;
+        if !self.reserve_write_operation(&operation)? {
+            return Ok(BaselineAppendDisposition::Ambiguous);
+        }
         let response = match self
             .exchange
             .send(request, IDENTITY_RESPONSE_LIMIT, REQUEST_TIMEOUT)
             .await
         {
             Ok(response) => response,
-            Err(_) => return Ok(BaselineAppendDisposition::Ambiguous),
+            Err(_) => {
+                self.finish_write_operation(
+                    &operation.identity,
+                    &ambiguous_operation_finish(now, None),
+                )?;
+                return Ok(BaselineAppendDisposition::Ambiguous);
+            }
         };
         if response.status == StatusCode::CREATED || response.status == StatusCode::OK {
+            let verified = orchestrator::verify_baseline_readback_append(
+                attempt,
+                &response.body,
+                &self.credentials.identity().authority_version_id,
+                response.status == StatusCode::CREATED,
+            );
+            let outcome = if verified.is_ok() {
+                OperationOutcome::Accepted
+            } else {
+                OperationOutcome::Ambiguous
+            };
+            let persisted = self.finish_write_operation(
+                &operation.identity,
+                &operation_finish(outcome, now, Some(&response)),
+            )?;
             return Ok(
-                match orchestrator::verify_baseline_readback_append(
-                    attempt,
-                    &response.body,
-                    &self.credentials.identity().authority_version_id,
-                    response.status == StatusCode::CREATED,
-                ) {
-                    Ok(_) => BaselineAppendDisposition::Accepted,
-                    Err(_) => BaselineAppendDisposition::Ambiguous,
+                if verified.is_ok() && persisted == OperationOutcome::Accepted {
+                    BaselineAppendDisposition::Accepted
+                } else {
+                    BaselineAppendDisposition::Ambiguous
                 },
             );
         }
-        if response.status.is_success()
-            || response.status.is_redirection()
-            || response.status == StatusCode::REQUEST_TIMEOUT
-            || response.status == StatusCode::CONFLICT
-            || response.status == StatusCode::TOO_EARLY
-            || response.status == StatusCode::TOO_MANY_REQUESTS
-            || response.status.is_server_error()
-        {
+        if mutation_status_is_ambiguous(response.status) {
+            self.finish_write_operation(
+                &operation.identity,
+                &ambiguous_operation_finish(now, Some(&response)),
+            )?;
             return Ok(BaselineAppendDisposition::Ambiguous);
         }
-        Err(ControlPlaneError::AuthorityMutationRejected)
+        let persisted = self.finish_write_operation(
+            &operation.identity,
+            &operation_finish(OperationOutcome::Rejected, now, Some(&response)),
+        )?;
+        if persisted == OperationOutcome::Rejected {
+            Err(ControlPlaneError::AuthorityMutationRejected)
+        } else {
+            Ok(BaselineAppendDisposition::Ambiguous)
+        }
     }
 
     async fn deploy_once_at<P: MutationPhase>(
@@ -771,6 +1085,7 @@ impl<E: HttpExchange, R: SnapshotReceiptRecorder> ControlPlaneCore<E, R> {
     ) -> MutationAttemptOutcome {
         deploy_authorized_once(
             &self.exchange,
+            &self.receipt_recorder,
             self.credentials.identity(),
             self.credentials.account_id(),
             self.credentials.deploy_token(),
@@ -1343,8 +1658,9 @@ fn verify_claim_create_response(
     Ok(classification)
 }
 
-async fn deploy_authorized_once<E: HttpExchange, P: MutationPhase>(
+async fn deploy_authorized_once<E: HttpExchange, R: ReceiptRecorder, P: MutationPhase>(
     exchange: &E,
+    receipt_recorder: &R,
     identity: &CredentialIdentity,
     account_id: &str,
     deploy_token: &str,
@@ -1360,6 +1676,7 @@ async fn deploy_authorized_once<E: HttpExchange, P: MutationPhase>(
         return MutationAttemptOutcome::ambiguous(None, None, None);
     }
     let service_name = mutation.service_name().to_owned();
+    let state_version = mutation.state_version();
     let expected_digest = mutation.mutation_request_sha256().to_owned();
     let request = mutation.into_request();
     if request.body().len() > MAX_DEPLOYMENT_REQUEST_BYTES
@@ -1390,14 +1707,134 @@ async fn deploy_authorized_once<E: HttpExchange, P: MutationPhase>(
         Ok(request) => request,
         Err(_) => return MutationAttemptOutcome::ambiguous(None, None, None),
     };
+    let request_id = match random_request_id() {
+        Ok(request_id) => request_id,
+        Err(_) => return MutationAttemptOutcome::ambiguous(None, None, None),
+    };
+    let operation = operation_start(
+        operation_identity(
+            OperationKind::CloudflareDeployment,
+            state_version,
+            &format!("/client/v4/accounts/{account_id}/workers/scripts/{service_name}/deployments"),
+            &expected_digest,
+        ),
+        &request_id,
+        now,
+    );
+    match receipt_recorder.reserve_operation(identity, &operation) {
+        Ok(OperationReservation::Fresh) => {}
+        Ok(OperationReservation::ExistingUnfinished) => {
+            let _ = receipt_recorder.finish_operation(
+                identity,
+                &operation.identity,
+                &ambiguous_operation_finish(now, None),
+            );
+            return MutationAttemptOutcome::restored_ambiguous();
+        }
+        Ok(OperationReservation::ExistingFinished(_)) | Err(_) => {
+            return MutationAttemptOutcome::restored_ambiguous();
+        }
+    }
     let response = match exchange
         .send(request, CLOUDFLARE_RESPONSE_LIMIT, REQUEST_TIMEOUT)
         .await
     {
         Ok(response) => response,
-        Err(_) => return MutationAttemptOutcome::ambiguous(None, None, None),
+        Err(_) => {
+            let _ = receipt_recorder.finish_operation(
+                identity,
+                &operation.identity,
+                &ambiguous_operation_finish(now, None),
+            );
+            return MutationAttemptOutcome::ambiguous(None, None, None);
+        }
     };
-    classify_deployment_response(response)
+    let classified = classify_deployment_response(&response);
+    let intended = match classified.transport_outcome {
+        MutationTransportOutcome::Success => OperationOutcome::Accepted,
+        MutationTransportOutcome::Rejected => OperationOutcome::Rejected,
+        MutationTransportOutcome::Ambiguous => OperationOutcome::Ambiguous,
+    };
+    match receipt_recorder.finish_operation(
+        identity,
+        &operation.identity,
+        &operation_finish(intended, now, Some(&response)),
+    ) {
+        Ok(persisted) if persisted == intended => classified,
+        Ok(_) | Err(_) => MutationAttemptOutcome::ambiguous(
+            classified.http_status,
+            classified.response_body_sha256,
+            classified.response_id_sha256,
+        ),
+    }
+}
+
+fn operation_identity(
+    kind: OperationKind,
+    state_version: u8,
+    target: &str,
+    request_sha256: &str,
+) -> OperationIdentityInput {
+    OperationIdentityInput {
+        kind,
+        state_version,
+        target_sha256: sha256_hex(target.as_bytes()),
+        request_sha256: request_sha256.to_owned(),
+    }
+}
+
+fn operation_start(
+    identity: OperationIdentityInput,
+    request_id: &str,
+    started_at: u64,
+) -> OperationStartInput {
+    OperationStartInput {
+        identity,
+        request_id_sha256: sha256_hex(request_id.as_bytes()),
+        started_at,
+    }
+}
+
+fn operation_finish(
+    outcome: OperationOutcome,
+    started_at: u64,
+    response: Option<&BoundedHttpResponse>,
+) -> OperationFinishInput {
+    OperationFinishInput {
+        outcome,
+        finished_at: operation_finish_time(started_at),
+        http_status: response.map(|response| response.status.as_u16()),
+        response_body_sha256: response.map(|response| sha256_hex(&response.body)),
+        response_id_sha256: response
+            .and_then(|response| response_identity_sha256(&response.headers)),
+    }
+}
+
+fn ambiguous_operation_finish(
+    started_at: u64,
+    response: Option<&BoundedHttpResponse>,
+) -> OperationFinishInput {
+    operation_finish(OperationOutcome::Ambiguous, started_at, response)
+}
+
+fn operation_finish_time(started_at: u64) -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
+        .unwrap_or(started_at)
+        .max(started_at)
+        .min(MAX_SAFE_INTEGER)
+}
+
+fn mutation_status_is_ambiguous(status: StatusCode) -> bool {
+    status.is_success()
+        || status.is_redirection()
+        || status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::CONFLICT
+        || status == StatusCode::TOO_EARLY
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
 }
 
 fn snapshot_matches_identity(snapshot: &VerifiedSnapshot, identity: &CredentialIdentity) -> bool {
@@ -1784,7 +2221,7 @@ impl MutationAttemptOutcome {
     }
 }
 
-fn classify_deployment_response(response: BoundedHttpResponse) -> MutationAttemptOutcome {
+fn classify_deployment_response(response: &BoundedHttpResponse) -> MutationAttemptOutcome {
     let status = response.status.as_u16();
     let response_body_sha256 = Some(sha256_hex(&response.body));
     let response_id_sha256 = response_identity_sha256(&response.headers);
@@ -2087,7 +2524,7 @@ mod tests {
     #[derive(Clone, Copy)]
     struct NoopSnapshotReceiptRecorder;
 
-    impl SnapshotReceiptRecorder for NoopSnapshotReceiptRecorder {
+    impl ReceiptRecorder for NoopSnapshotReceiptRecorder {
         fn record_snapshot(
             &self,
             _snapshot: &VerifiedSnapshot,
@@ -2126,7 +2563,7 @@ mod tests {
         }
     }
 
-    impl SnapshotReceiptRecorder for SpySnapshotReceiptRecorder {
+    impl ReceiptRecorder for SpySnapshotReceiptRecorder {
         fn record_snapshot(
             &self,
             snapshot: &VerifiedSnapshot,
@@ -2140,6 +2577,74 @@ mod tests {
                 .expect("receipt snapshot lock")
                 .push((snapshot.status(), snapshot.state_version()));
             Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct OperationGateRecorder {
+        reservation: OperationReservation,
+        starts: Arc<Mutex<Vec<OperationStartInput>>>,
+        finishes: Arc<Mutex<Vec<OperationFinishInput>>>,
+    }
+
+    impl OperationGateRecorder {
+        fn new(reservation: OperationReservation) -> Self {
+            Self {
+                reservation,
+                starts: Arc::new(Mutex::new(Vec::new())),
+                finishes: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn starts(&self) -> Vec<OperationStartInput> {
+            self.starts.lock().expect("operation starts lock").clone()
+        }
+
+        fn finishes(&self) -> Vec<OperationFinishInput> {
+            self.finishes
+                .lock()
+                .expect("operation finishes lock")
+                .clone()
+        }
+    }
+
+    impl ReceiptRecorder for OperationGateRecorder {
+        fn record_snapshot(
+            &self,
+            _snapshot: &VerifiedSnapshot,
+            _credentials: &CredentialIdentity,
+        ) -> Result<(), ReceiptError> {
+            Ok(())
+        }
+
+        fn reserve_operation(
+            &self,
+            _credentials: &CredentialIdentity,
+            input: &OperationStartInput,
+        ) -> Result<OperationReservation, ReceiptError> {
+            self.starts
+                .lock()
+                .expect("operation starts lock")
+                .push(input.clone());
+            Ok(self.reservation)
+        }
+
+        fn finish_operation(
+            &self,
+            _credentials: &CredentialIdentity,
+            _identity: &OperationIdentityInput,
+            input: &OperationFinishInput,
+        ) -> Result<OperationOutcome, ReceiptError> {
+            self.finishes
+                .lock()
+                .expect("operation finishes lock")
+                .push(input.clone());
+            Ok(match self.reservation {
+                OperationReservation::ExistingFinished(outcome) => outcome,
+                OperationReservation::Fresh | OperationReservation::ExistingUnfinished => {
+                    input.outcome
+                }
+            })
         }
     }
 
@@ -2585,7 +3090,8 @@ mod tests {
             )),
         ]);
         let recorder =
-            PersistentSnapshotReceiptRecorder::open(&root, matching_publication()).unwrap();
+            PersistentReceiptRecorder::open(&root, matching_publication(), transport_activation())
+                .unwrap();
         let core = ControlPlaneCore {
             credentials: verified_credentials_for_transport_test(),
             exchange: exchange.clone(),
@@ -2639,6 +3145,123 @@ mod tests {
             .unwrap();
         assert_eq!(replayed, advanced);
         assert_eq!(exchange.observed().len(), 3);
+        assert_eq!(exchange.remaining(), 0);
+        cleanup_receipt_root(&root);
+    }
+
+    #[tokio::test]
+    async fn existing_operation_start_blocks_every_mutation_class_without_network() {
+        let activation = transport_activation();
+        let claim_recorder = OperationGateRecorder::new(OperationReservation::ExistingUnfinished);
+        let claim_exchange = ScriptedExchange::new(Vec::new());
+        let claim_core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: claim_exchange.clone(),
+            receipt_recorder: claim_recorder.clone(),
+        };
+        assert_eq!(
+            claim_core
+                .create_claim_once_at(&activation, NOW, "existing-claim-operation")
+                .await
+                .unwrap(),
+            ClaimPostDisposition::Ambiguous
+        );
+        assert!(claim_exchange.observed().is_empty());
+        assert_eq!(claim_recorder.starts().len(), 1);
+        assert_eq!(
+            claim_recorder.starts()[0].identity.kind,
+            OperationKind::AuthorityClaimCreate
+        );
+        assert_eq!(
+            claim_recorder.finishes()[0].outcome,
+            OperationOutcome::Ambiguous
+        );
+
+        let snapshot = verified_snapshot(&t1_snapshot_value());
+        let request = plan_controller_deployment(&snapshot).unwrap();
+        let intent = prepare_controller_intent(&snapshot, request, EVIDENCE_DIGEST, NOW).unwrap();
+        let attempt = begin_authority_append(intent, "existing-append-operation").unwrap();
+        let append_recorder = OperationGateRecorder::new(OperationReservation::ExistingFinished(
+            OperationOutcome::Ambiguous,
+        ));
+        let append_exchange = ScriptedExchange::new(Vec::new());
+        let append_core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: append_exchange.clone(),
+            receipt_recorder: append_recorder.clone(),
+        };
+        assert!(matches!(
+            append_core.append_intent_at(attempt, NOW).await,
+            Err(ControlPlaneError::AuthorityMutationAmbiguous)
+        ));
+        assert!(append_exchange.observed().is_empty());
+        assert_eq!(
+            append_recorder.starts()[0].identity.kind,
+            OperationKind::AuthorityStepAppend
+        );
+        assert!(append_recorder.finishes().is_empty());
+
+        let deploy_recorder = OperationGateRecorder::new(OperationReservation::ExistingUnfinished);
+        let deploy_exchange = ScriptedExchange::new(Vec::new());
+        let outcome = deploy_authorized_once(
+            &deploy_exchange,
+            &deploy_recorder,
+            &matching_identity(),
+            ACCOUNT_ID,
+            DEPLOY_TOKEN,
+            authorized_controller_mutation().0,
+            NOW,
+        )
+        .await;
+        assert_eq!(
+            outcome.transport_outcome,
+            MutationTransportOutcome::Ambiguous
+        );
+        assert!(deploy_exchange.observed().is_empty());
+        assert_eq!(
+            deploy_recorder.starts()[0].identity.kind,
+            OperationKind::CloudflareDeployment
+        );
+        assert_eq!(
+            deploy_recorder.finishes()[0].outcome,
+            OperationOutcome::Ambiguous
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_claim_operation_allows_one_post_then_permanent_get_only_recovery() {
+        let root = temporary_receipt_root("claim-operation");
+        let activation = transport_activation();
+        let identity = matching_identity();
+        let exchange = ScriptedExchange::new(vec![Ok(claim_create_response(
+            StatusCode::CREATED,
+            "created",
+            "persistent-claim-operation-1",
+            &activation,
+            &identity,
+        ))]);
+        let recorder =
+            PersistentReceiptRecorder::open(&root, matching_publication(), activation.clone())
+                .unwrap();
+        let core = ControlPlaneCore {
+            credentials: verified_credentials_for_transport_test(),
+            exchange: exchange.clone(),
+            receipt_recorder: recorder,
+        };
+        assert_eq!(
+            core.create_claim_once_at(&activation, NOW, "persistent-claim-operation-1",)
+                .await
+                .unwrap(),
+            ClaimPostDisposition::Accepted(ClaimCreationClassification::Created)
+        );
+        assert_eq!(
+            core.create_claim_once_at(&activation, NOW + 1, "persistent-claim-operation-2",)
+                .await
+                .unwrap(),
+            ClaimPostDisposition::Ambiguous
+        );
+        assert_eq!(exchange.observed().len(), 1);
+        assert_eq!(exchange.observed()[0].method, Method::POST);
         assert_eq!(exchange.remaining(), 0);
         cleanup_receipt_root(&root);
     }
@@ -2922,6 +3545,7 @@ mod tests {
         let exchange = ScriptedExchange::new(vec![Ok(response)]);
         let outcome = deploy_authorized_once(
             &exchange,
+            &NoopSnapshotReceiptRecorder,
             &matching_identity(),
             ACCOUNT_ID,
             DEPLOY_TOKEN,
@@ -3449,6 +4073,7 @@ mod tests {
             ))]);
             let outcome = deploy_authorized_once(
                 &exchange,
+                &NoopSnapshotReceiptRecorder,
                 &matching_identity(),
                 ACCOUNT_ID,
                 DEPLOY_TOKEN,
@@ -3469,6 +4094,7 @@ mod tests {
         let exchange = ScriptedExchange::new(vec![Err(ExchangeError::Connection)]);
         let outcome = deploy_authorized_once(
             &exchange,
+            &NoopSnapshotReceiptRecorder,
             &matching_identity(),
             ACCOUNT_ID,
             DEPLOY_TOKEN,
@@ -3608,7 +4234,7 @@ mod tests {
                 "errors": [{"code": 1001, "message": DEPLOY_TOKEN}],
             }),
         );
-        let outcome = classify_deployment_response(response);
+        let outcome = classify_deployment_response(&response);
         assert_eq!(
             outcome.transport_outcome,
             MutationTransportOutcome::Rejected

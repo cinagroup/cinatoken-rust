@@ -2,12 +2,17 @@ import { createHash } from "node:crypto";
 
 export const RING_TRANSITION_EXECUTION_RECEIPT_CONTRACT =
   "cinatoken-ring-transition-runner-execution-receipt-v1";
+export const RING_TRANSITION_OPERATION_RECEIPT_CONTRACT =
+  "cinatoken-ring-transition-runner-operation-receipt-v1";
+export const RING_TRANSITION_OPERATION_ID_CONTRACT =
+  "cinatoken-ring-transition-runner-operation-id-v1";
 export const STEP_CONTRACT =
   "cinatoken-relay-container-ring-transition-execution-step-v1";
 export const EXPIRY_CONTRACT =
   "cinatoken-relay-container-ring-transition-expiry-event-v1";
 export const MAX_RING_TRANSITION_RECEIPT_BYTES = 64 * 1024;
 export const MAX_RING_TRANSITION_RECEIPTS_PER_CHAIN = 128;
+export const MAX_RING_TRANSITION_OPERATION_RECEIPTS_PER_CHAIN = 2;
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -52,6 +57,16 @@ const FAILURE_CLASSES = new Set([
   "http_rejected",
   "readback_drift",
   "target_not_stable",
+]);
+const OPERATION_KINDS = new Set([
+  "authority_claim_create",
+  "authority_step_append",
+  "cloudflare_deployment",
+]);
+const OPERATION_OUTCOMES = new Set([
+  "accepted",
+  "rejected",
+  "ambiguous",
 ]);
 const FORBIDDEN_FIELD_NAMES = new Set([
   "accessclientsecret",
@@ -149,6 +164,56 @@ const EXPIRY_KEYS = [
   "expiryEventDigestSha256",
   "failureClass",
 ];
+const OPERATION_RECEIPT_KEYS = [
+  "schemaVersion",
+  "contract",
+  "environment",
+  "sequence",
+  "predecessorReceiptSha256",
+  "recordedAt",
+  "context",
+  "operation",
+  "event",
+];
+const OPERATION_CONTEXT_KEYS = [
+  "sourceCommit",
+  "gitTreeSha",
+  "releaseManifestSha256",
+  "releasePacketSha256",
+  "releasePolicySha256",
+  "artifactSha256",
+  "moduleInventorySha256",
+  "moduleCount",
+  "publicationManifestSha256",
+  "publicationPacketSha256",
+  "generationSha256",
+  "activationSha256",
+  "activationSequence",
+  "authorizationIdSha256",
+  "claimDigestSha256",
+  "ledgerIdentitySha256",
+  "claimOwnerSha256",
+  "accountIdSha256",
+  "readCredentialIdSha256",
+  "claimCredentialIdSha256",
+  "deployCredentialIdSha256",
+  "accessClientIdSha256",
+  "authorityVersionId",
+  "permitSpkiSha256",
+  "trustConfigSha256",
+  "controllerServiceName",
+  "edgeServiceName",
+  "generatedAt",
+  "expiresAt",
+];
+const OPERATION_IDENTITY_KEYS = [
+  "operationIdSha256",
+  "kind",
+  "stateVersion",
+  "method",
+  "targetSha256",
+  "requestSha256",
+];
 
 export function describeRingTransitionExecutionReceiptContract() {
   return {
@@ -174,6 +239,31 @@ export function describeRingTransitionExecutionReceiptContract() {
   };
 }
 
+export function describeRingTransitionOperationReceiptContract() {
+  return {
+    ok: true,
+    schemaVersion: 1,
+    contract: RING_TRANSITION_OPERATION_RECEIPT_CONTRACT,
+    environment: "staging",
+    maximumReceiptBytes: MAX_RING_TRANSITION_RECEIPT_BYTES,
+    maximumReceiptsPerChain:
+      MAX_RING_TRANSITION_OPERATION_RECEIPTS_PER_CHAIN,
+    constraints: {
+      canonicalJsonRequired: true,
+      duplicateAndUnknownFieldsAllowed: false,
+      deterministicOperationIdRequired: true,
+      requestStartRequiredBeforeMutation: true,
+      createNewReservationRequired: true,
+      restartAfterReservationIsReadOnly: true,
+      firstTerminalFinishWins: true,
+      credentialsRead: false,
+      networkRequestsPerformed: false,
+      filesWritten: false,
+      remoteMutationAuthorized: false,
+    },
+  };
+}
+
 export function canonicalReceiptJson(value) {
   return writeCanonical(value);
 }
@@ -185,6 +275,47 @@ export function canonicalReceiptBytes(value) {
 export function sha256ReceiptBytes(value) {
   const bytes = requireByteArray(value, "[receipt] bytes");
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+export function computeRingTransitionOperationId({
+  context,
+  kind,
+  stateVersion,
+  method,
+  targetSha256,
+  requestSha256,
+}) {
+  const identity = requireObject(context, "[operation id] context");
+  requireSha256(
+    identity.activationSha256,
+    "[operation id] activationSha256",
+  );
+  requireSha256(
+    identity.authorizationIdSha256,
+    "[operation id] authorizationIdSha256",
+  );
+  requireSha256(
+    identity.claimDigestSha256,
+    "[operation id] claimDigestSha256",
+  );
+  validateOperationShape(
+    { kind, stateVersion, method, targetSha256, requestSha256 },
+    "[operation id]",
+  );
+  return sha256ReceiptBytes(
+    canonicalReceiptBytes({
+      schemaVersion: 1,
+      contract: RING_TRANSITION_OPERATION_ID_CONTRACT,
+      activationSha256: identity.activationSha256,
+      authorizationIdSha256: identity.authorizationIdSha256,
+      claimDigestSha256: identity.claimDigestSha256,
+      kind,
+      stateVersion,
+      method,
+      targetSha256,
+      requestSha256,
+    }),
+  );
 }
 
 export function computeRingTransitionStepDigest({ claim, step }) {
@@ -242,6 +373,92 @@ export function computeRingTransitionExpiryDigest({ claim, expiry }) {
       failureClass: expiryEvent.failureClass,
     }),
   );
+}
+
+export function verifyRingTransitionOperationReceiptChain(
+  canonicalByteArrays,
+) {
+  if (!Array.isArray(canonicalByteArrays)) {
+    throw new TypeError(
+      "[operation chain] expected an array of canonical byte arrays",
+    );
+  }
+  if (
+    canonicalByteArrays.length < 1 ||
+    canonicalByteArrays.length >
+      MAX_RING_TRANSITION_OPERATION_RECEIPTS_PER_CHAIN
+  ) {
+    throw new Error("[operation chain] receipt count must be between 1 and 2");
+  }
+
+  const receipts = canonicalByteArrays.map((value, index) =>
+    parseCanonicalOperationReceipt(value, index + 1),
+  );
+  const start = receipts[0];
+  if (
+    start.record.sequence !== 1 ||
+    start.record.predecessorReceiptSha256 !== null ||
+    start.record.event.kind !== "request_started"
+  ) {
+    throw new Error("[operation chain] invalid request-start receipt");
+  }
+
+  const sharedContext = canonicalReceiptJson(start.record.context);
+  const sharedOperation = canonicalReceiptJson(start.record.operation);
+  let previous = null;
+  for (let index = 0; index < receipts.length; index += 1) {
+    const receipt = receipts[index];
+    const expectedSequence = index + 1;
+    if (receipt.record.sequence !== expectedSequence) {
+      throw new Error(
+        `[operation chain] sequence gap at ${expectedSequence}: received ${receipt.record.sequence}`,
+      );
+    }
+    if (
+      receipt.record.predecessorReceiptSha256 !==
+      (previous?.sha256 ?? null)
+    ) {
+      throw new Error(
+        `[operation chain] predecessor SHA-256 mismatch at sequence ${expectedSequence}`,
+      );
+    }
+    if (
+      canonicalReceiptJson(receipt.record.context) !== sharedContext ||
+      canonicalReceiptJson(receipt.record.operation) !== sharedOperation
+    ) {
+      throw new Error(
+        `[operation chain] shared context or operation identity drift at sequence ${expectedSequence}`,
+      );
+    }
+    if (
+      previous !== null &&
+      receipt.record.recordedAt < previous.record.recordedAt
+    ) {
+      throw new Error(
+        `[operation chain] recordedAt is not monotonic at sequence ${expectedSequence}`,
+      );
+    }
+    if (
+      (expectedSequence === 1 &&
+        receipt.record.event.kind !== "request_started") ||
+      (expectedSequence === 2 &&
+        receipt.record.event.kind !== "request_finished")
+    ) {
+      throw new Error(
+        `[operation chain] event kind is invalid at sequence ${expectedSequence}`,
+      );
+    }
+    previous = receipt;
+  }
+
+  return Object.freeze({
+    ok: true,
+    operationIdSha256: start.record.operation.operationIdSha256,
+    receiptCount: receipts.length,
+    headSha256: previous.sha256,
+    outcome:
+      receipts.length === 2 ? receipts[1].record.event.outcome : null,
+  });
 }
 
 export function verifyRingTransitionExecutionReceiptChain(canonicalByteArrays) {
@@ -375,6 +592,253 @@ function verifyRingTransitionExecutionReceiptSequence(canonicalByteArrays) {
     headSha256: previous.sha256,
     sealed,
   });
+}
+
+function parseCanonicalOperationReceipt(value, sequence) {
+  const bytes = requireByteArray(
+    value,
+    `[operation receipt ${sequence}] bytes`,
+  );
+  if (
+    bytes.byteLength === 0 ||
+    bytes.byteLength > MAX_RING_TRANSITION_RECEIPT_BYTES
+  ) {
+    throw new Error(
+      `[operation receipt ${sequence}] byte length must be between 1 and 65536`,
+    );
+  }
+
+  let json;
+  try {
+    json = textDecoder.decode(bytes);
+  } catch {
+    throw new Error(
+      `[operation receipt ${sequence}] JSON is not valid UTF-8`,
+    );
+  }
+  rejectDuplicateJsonFields(json, `[operation receipt ${sequence}]`);
+
+  let record;
+  try {
+    record = JSON.parse(json);
+  } catch {
+    throw new Error(`[operation receipt ${sequence}] JSON is invalid`);
+  }
+  rejectForbiddenFields(record, `[operation receipt ${sequence}]`);
+  validateOperationReceipt(record, `[operation receipt ${sequence}]`);
+
+  const canonicalBytes = canonicalReceiptBytes(record);
+  if (!equalBytes(bytes, canonicalBytes)) {
+    throw new Error(
+      `[operation receipt ${sequence}] JSON is not canonical`,
+    );
+  }
+  return {
+    record,
+    bytes,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+function validateOperationReceipt(record, label) {
+  const receipt = requireObject(record, label);
+  exactKeys(receipt, OPERATION_RECEIPT_KEYS, label);
+  requireExact(receipt.schemaVersion, 1, `${label} schemaVersion`);
+  requireExact(
+    receipt.contract,
+    RING_TRANSITION_OPERATION_RECEIPT_CONTRACT,
+    `${label} contract`,
+  );
+  requireExact(receipt.environment, "staging", `${label} environment`);
+  requireInteger(receipt.sequence, 1, 2, `${label} sequence`);
+  requireInteger(receipt.recordedAt, 0, MAX_SAFE_INTEGER, `${label} recordedAt`);
+  if (receipt.sequence === 1) {
+    requireExact(
+      receipt.predecessorReceiptSha256,
+      null,
+      `${label} predecessorReceiptSha256`,
+    );
+  } else {
+    requireSha256(
+      receipt.predecessorReceiptSha256,
+      `${label} predecessorReceiptSha256`,
+    );
+  }
+
+  validateOperationContext(receipt.context, `${label} context`);
+  validateOperationIdentity(
+    receipt.operation,
+    receipt.context,
+    `${label} operation`,
+  );
+  validateOperationEvent(receipt.event, `${label} event`);
+  if (receipt.recordedAt < receipt.context.generatedAt) {
+    throw new Error(`${label} time binding is invalid`);
+  }
+  if (
+    receipt.event.kind === "request_started" &&
+    (receipt.sequence !== 1 ||
+      receipt.recordedAt >= receipt.context.expiresAt)
+  ) {
+    throw new Error(`${label} request-start binding is invalid`);
+  }
+  if (
+    receipt.event.kind === "request_finished" &&
+    receipt.sequence !== 2
+  ) {
+    throw new Error(`${label} request-finish binding is invalid`);
+  }
+}
+
+function validateOperationContext(value, label) {
+  const context = requireObject(value, label);
+  exactKeys(context, OPERATION_CONTEXT_KEYS, label);
+  requireLowerHex(context.sourceCommit, 40, `${label} sourceCommit`);
+  requireLowerHex(context.gitTreeSha, 40, `${label} gitTreeSha`);
+  for (const field of [
+    "releaseManifestSha256",
+    "releasePacketSha256",
+    "releasePolicySha256",
+    "artifactSha256",
+    "moduleInventorySha256",
+    "publicationManifestSha256",
+    "publicationPacketSha256",
+    "generationSha256",
+    "activationSha256",
+    "authorizationIdSha256",
+    "claimDigestSha256",
+    "ledgerIdentitySha256",
+    "claimOwnerSha256",
+    "accountIdSha256",
+    "readCredentialIdSha256",
+    "claimCredentialIdSha256",
+    "deployCredentialIdSha256",
+    "accessClientIdSha256",
+    "permitSpkiSha256",
+    "trustConfigSha256",
+  ]) {
+    requireSha256(context[field], `${label} ${field}`);
+  }
+  requireInteger(context.moduleCount, 1, MAX_SAFE_INTEGER, `${label} moduleCount`);
+  requireInteger(
+    context.activationSequence,
+    1,
+    MAX_SAFE_INTEGER,
+    `${label} activationSequence`,
+  );
+  requireToken(
+    context.authorityVersionId,
+    1,
+    128,
+    `${label} authorityVersionId`,
+  );
+  requireServiceName(
+    context.controllerServiceName,
+    `${label} controllerServiceName`,
+  );
+  requireServiceName(
+    context.edgeServiceName,
+    `${label} edgeServiceName`,
+  );
+  requireInteger(context.generatedAt, 0, MAX_SAFE_INTEGER, `${label} generatedAt`);
+  requireInteger(context.expiresAt, 0, MAX_SAFE_INTEGER, `${label} expiresAt`);
+  if (context.generatedAt >= context.expiresAt) {
+    throw new Error(`${label} time range is invalid`);
+  }
+}
+
+function validateOperationIdentity(value, context, label) {
+  const operation = requireObject(value, label);
+  exactKeys(operation, OPERATION_IDENTITY_KEYS, label);
+  requireSha256(operation.operationIdSha256, `${label} operationIdSha256`);
+  validateOperationShape(operation, label);
+  const expectedId = computeRingTransitionOperationId({
+    context,
+    kind: operation.kind,
+    stateVersion: operation.stateVersion,
+    method: operation.method,
+    targetSha256: operation.targetSha256,
+    requestSha256: operation.requestSha256,
+  });
+  if (operation.operationIdSha256 !== expectedId) {
+    throw new Error(`${label} operation ID mismatch`);
+  }
+}
+
+function validateOperationShape(value, label) {
+  requireEnum(value.kind, OPERATION_KINDS, `${label} kind`);
+  requireInteger(value.stateVersion, 0, 255, `${label} stateVersion`);
+  requireExact(value.method, "POST", `${label} method`);
+  requireSha256(value.targetSha256, `${label} targetSha256`);
+  requireSha256(value.requestSha256, `${label} requestSha256`);
+  if (
+    (value.kind === "authority_claim_create" &&
+      value.stateVersion !== 0) ||
+    (value.kind === "authority_step_append" &&
+      value.stateVersion === 0) ||
+    (value.kind === "cloudflare_deployment" &&
+      value.stateVersion !== 2 &&
+      value.stateVersion !== 5)
+  ) {
+    throw new Error(`${label} stateVersion is invalid for operation kind`);
+  }
+}
+
+function validateOperationEvent(value, label) {
+  const event = requireObject(value, label);
+  requireString(event.kind, `${label} kind`);
+  switch (event.kind) {
+    case "request_started":
+      exactKeys(event, ["kind", "request_id_sha256"], label);
+      requireSha256(event.request_id_sha256, `${label} request_id_sha256`);
+      return;
+    case "request_finished":
+      exactKeys(
+        event,
+        [
+          "kind",
+          "outcome",
+          "http_status",
+          "response_body_sha256",
+          "response_id_sha256",
+        ],
+        label,
+      );
+      requireEnum(event.outcome, OPERATION_OUTCOMES, `${label} outcome`);
+      requireOptionalInteger(
+        event.http_status,
+        100,
+        599,
+        `${label} http_status`,
+      );
+      requireOptionalSha256(
+        event.response_body_sha256,
+        `${label} response_body_sha256`,
+      );
+      requireOptionalSha256(
+        event.response_id_sha256,
+        `${label} response_id_sha256`,
+      );
+      if (
+        event.outcome === "accepted" &&
+        (event.http_status === null ||
+          event.http_status < 200 ||
+          event.http_status > 299)
+      ) {
+        throw new Error(`${label} accepted outcome requires a 2xx status`);
+      }
+      if (
+        event.outcome === "rejected" &&
+        (event.http_status === null ||
+          event.http_status < 400 ||
+          event.http_status > 499)
+      ) {
+        throw new Error(`${label} rejected outcome requires a 4xx status`);
+      }
+      return;
+    default:
+      throw new Error(`${label} kind is invalid`);
+  }
 }
 
 function parseCanonicalReceipt(value, sequence) {
@@ -1002,6 +1466,12 @@ function requireLowerHex(value, length, label) {
 function requireOptionalSha256(value, label) {
   if (value !== null) {
     requireSha256(value, label);
+  }
+}
+
+function requireOptionalInteger(value, minimum, maximum, label) {
+  if (value !== null) {
+    requireInteger(value, minimum, maximum, label);
   }
 }
 

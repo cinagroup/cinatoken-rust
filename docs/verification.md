@@ -8980,3 +8980,53 @@ external mutation started or escaped before a crash. Operation-start and
 operation-finish/ambiguous receipt boundaries, the resumable driver and the
 remaining production gates are still required. Checked-in trust remains
 disabled; production remains **NO-GO**.
+
+## 2026-07-24 Mutation Operation Receipt Verification
+
+The mutation Operation Receipt V1 increment was verified locally without
+loading credentials or performing remote network requests:
+
+```powershell
+cargo fmt --all -- --check
+cargo test -p cinatoken-ring-transition-runner --lib --no-fail-fast
+cargo clippy -p cinatoken-ring-transition-runner --all-targets -- -D warnings
+bun test --timeout 30000 tests/relay-container-ring-transition-receipt.test.mjs
+bun run check:ring-transition-runner
+bun run check:relay-container:ring-transition
+```
+
+Observed results:
+
+- runner Rust library: 101 passed;
+- strict all-target runner Clippy: PASS;
+- focused receipt JavaScript: 19 tests and 51 expectations;
+- runner aggregate: 101 library tests, one binary test, two CLI tests and 46
+  JavaScript tests/169 expectations;
+- broader ring-transition JavaScript: 66 tests/729 expectations; and
+- signed release/source description: unchanged fixed 28-module closure; and
+- complete repository `bun run check`: PASS with exit code 0 in 675.6
+  seconds.
+
+The cases prove:
+
+- eight concurrent reservations mint exactly one fresh local send capability;
+- a durable existing start blocks claim, Authority append and Cloudflare
+  deployment network calls;
+- a persistent claim restart performs one POST total and then only exact GET;
+- an unfinished start is sealed ambiguous and never reopens the mutation;
+- recovery does not create an absent start record;
+- accepted, rejected and ambiguous finishes are first-terminal-wins;
+- start/finish records reject identity drift, predecessor drift, canonical
+  tampering, unknown files and a future third slot;
+- Operation Receipt V1 contains no raw credential, header, request body or
+  response body; and
+- Rust and JavaScript match the exact operation ID, start SHA-256 and accepted
+  finish SHA-256 vectors.
+
+The current evidence is Windows local contract evidence. It does not prove
+exact Rust 1.78 Linux no-follow/no-replace behavior, process-kill recovery,
+parent-directory sync, UID/GID/ACL isolation, ext4/XFS power-loss behavior,
+external anchoring, remote Authority/Cloudflare state, credential revocation
+or Go/VPS fallback. Read-only GET request boundaries and a library-owned
+one-action resumable driver also remain P0. Checked-in trust remains disabled;
+production remains **NO-GO**.

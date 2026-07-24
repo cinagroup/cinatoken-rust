@@ -842,6 +842,10 @@ impl<P: MutationPhase> AuthorityAppendAttempt<P> {
     pub fn claim_digest_sha256(&self) -> &str {
         &self.intent.step.claim_digest_sha256
     }
+
+    pub fn state_version(&self) -> u8 {
+        self.intent.step.state_version
+    }
 }
 
 pub fn begin_authority_append<P: MutationPhase>(

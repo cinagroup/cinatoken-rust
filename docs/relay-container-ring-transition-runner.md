@@ -734,3 +734,65 @@ readback boundary, followed by the one-action resumable driver, remaining
 append-path recovery, Linux crash/power-loss proof, approval revalidation,
 external anchoring, isolated staging and credential revocation. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## Mutation Operation Receipt Gate
+
+The runner now wraps every current Authority and Cloudflare mutation with a
+durable Operation Receipt V1 gate. The production control-plane path always
+constructs `PersistentReceiptRecorder`; no-op recorders exist only inside
+tests.
+
+Before `HttpExchange::send`, the runner:
+
+1. validates and freezes the exact target and body;
+2. derives an operation ID from activation, authorization, claim, operation
+   kind, state version, fixed `POST`, target digest and request digest;
+3. publishes and independently reads back a create-new `request_started`
+   record; and
+4. sends only when publication returns `Fresh`.
+
+An existing unfinished operation is sealed ambiguous and returns without
+network I/O. An existing finished operation also returns without network
+I/O. Accepted, rejected and ambiguous finishes are fixed slot 2 records
+linked to the start SHA-256. The first persisted finish is terminal; later
+responses cannot overwrite it.
+
+The covered writes are claim creation, all Authority step appends, Controller
+deployment and Edge deployment. Claim recovery performs exact GET only.
+Authority append recovery requires exact GET containing the expected step.
+Cloudflare deployment recovery proceeds through the existing stable
+readback. None can recreate a mutation capability from a receipt.
+
+The storage layout is fixed:
+
+```text
+execution-operation-receipts/
+  <authorization-sha256>/
+    <operation-sha256>/
+      00000000000000000001.operation.json
+      00000000000000000002.operation.json
+```
+
+Only canonical regular create-new files are accepted. Gaps, unknown names,
+links, a third slot, context drift, operation drift, predecessor mismatch,
+time reversal or conflicting bytes fail closed. Recovery does not create a
+missing start record.
+
+The records bind release, publication, activation, claim, ledger, account,
+credential identities, permit/trust identities and service names. They store
+request/response digests, never raw headers, secrets, tokens or bodies.
+
+The independent JavaScript verifier recomputes the operation ID and validates
+one-record unfinished and two-record terminal chains. Rust and JavaScript
+agree on the frozen operation, start and accepted-finish digests. Local gates
+pass with 101 Rust library tests, strict Clippy, 19 focused receipt tests/51
+expectations, 46 runner JavaScript tests/169 expectations and 66 broader
+ring-transition tests/729 expectations. The complete repository
+`bun run check` also passes with exit code 0 in 675.6 seconds.
+
+This is at-most-once send authorization, not exactly-once provider execution.
+Remaining P0 is the library-owned one-action resumable driver, explicit
+read-only request-boundary receipts, terminal operation-head anchoring,
+exact Linux crash/durability campaigns, approval revalidation, isolated
+staging, credential revocation and G1-G8. Checked-in trust remains disabled;
+Go/VPS remains authoritative and production remains **NO-GO**.

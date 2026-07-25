@@ -10565,7 +10565,7 @@ mod tests {
                 fs::rename(&closure, &displaced).unwrap();
                 fs::create_dir(&closure).unwrap();
             }
-            "head-set-wait" => {
+            "head-set-wait" | "head-set-prepare" => {
                 let store = ReceiptStore::open(root).unwrap();
                 let (publication, credentials, activation) = operation_context();
                 let context =
@@ -10591,16 +10591,37 @@ mod tests {
                 store
                     .publish_locked_operation_head_set(&locked, &mut state, &head_set)
                     .unwrap();
-                let mut signal = fs::File::create(ready).unwrap();
-                signal.write_all(b"head-set-synced").unwrap();
-                signal.sync_all().unwrap();
+                write_multiprocess_ready(ready, b"head-set-synced");
+                if role == "head-set-prepare" {
+                    return;
+                }
                 loop {
                     locked.require_bound().unwrap();
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
             }
+            "recover-head-set" => {
+                let store = ReceiptStore::open(root).unwrap();
+                let (publication, credentials, activation) = operation_context();
+                let first = store
+                    .recover_terminal_closure(&publication, &credentials, &activation)
+                    .unwrap()
+                    .unwrap();
+                let second = store
+                    .recover_terminal_closure(&publication, &credentials, &activation)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(first, second);
+            }
             _ => panic!("unknown multiprocess terminal child role"),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn write_multiprocess_ready(path: &Path, bytes: &[u8]) {
+        let mut signal = fs::File::create(path).unwrap();
+        signal.write_all(bytes).unwrap();
+        signal.sync_all().unwrap();
     }
 
     #[cfg(target_os = "linux")]

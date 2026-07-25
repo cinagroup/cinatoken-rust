@@ -64,6 +64,142 @@ jobs:
           echo "::error title=Linux receipt test failure::${diagnostic}"
           exit 1
 
+      - name: Trace terminal recovery descriptor syscalls
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v strace
+          artifact_log="$(mktemp)"
+          trace_log="$(mktemp)"
+          trace_root="$(mktemp -d)"
+          prepare_ready="${trace_root}.prepared"
+          recover_ready="${trace_root}.recovered"
+          trap 'rm -rf "${trace_root}" "${prepare_ready}" "${recover_ready}" "${artifact_log}" "${trace_log}"' EXIT
+
+          cargo test --locked -p cinatoken-ring-transition-runner --lib --no-run \
+            --message-format=json > "${artifact_log}"
+          test_binary="$(
+            python3 - "${artifact_log}" <<'PY'
+          import json
+          import sys
+
+          candidates = []
+          with open(sys.argv[1], "r", encoding="utf-8") as handle:
+              for line in handle:
+                  try:
+                      record = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  target = record.get("target", {})
+                  if (
+                      record.get("reason") == "compiler-artifact"
+                      and record.get("executable")
+                      and target.get("name") == "cinatoken_ring_transition_runner"
+                      and "lib" in target.get("kind", [])
+                      and record.get("profile", {}).get("test") is True
+                  ):
+                      candidates.append(record["executable"])
+          if len(candidates) != 1:
+              raise SystemExit(f"expected one runner library test binary, found {candidates!r}")
+          print(candidates[0])
+          PY
+          )"
+
+          env \
+            CINATOKEN_RING_RECEIPT_TEST_ROLE=head-set-prepare \
+            CINATOKEN_RING_RECEIPT_TEST_ROOT="${trace_root}" \
+            CINATOKEN_RING_RECEIPT_TEST_READY="${prepare_ready}" \
+            "${test_binary}" \
+            --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
+            --nocapture
+          test "$(cat "${prepare_ready}")" = "head-set-synced"
+
+          strace -f -qq -s 4096 \
+            -e trace=openat,openat2,mkdirat,renameat2,unlinkat,fchmodat,fchmod,fsync,fdatasync,flock \
+            -o "${trace_log}" \
+            env \
+              CINATOKEN_RING_RECEIPT_TEST_ROLE=recover-head-set \
+              CINATOKEN_RING_RECEIPT_TEST_ROOT="${trace_root}" \
+              CINATOKEN_RING_RECEIPT_TEST_READY="${recover_ready}" \
+              "${test_binary}" \
+              --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
+              --nocapture
+
+          python3 - "${trace_log}" <<'PY'
+          import re
+          import sys
+
+          with open(sys.argv[1], "r", encoding="utf-8") as handle:
+              lines = handle.readlines()
+          first_lock = next(
+              (
+                  index
+                  for index, line in enumerate(lines)
+                  if "flock(" in line and "LOCK_EX" in line and re.search(r"=\s*0\s*$", line)
+              ),
+              None,
+          )
+          if first_lock is None:
+              raise SystemExit("terminal recovery trace contains no successful exclusive flock")
+          locked = lines[first_lock:]
+          violations = []
+          write_flags = ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND")
+          for line in locked:
+              if "AT_FDCWD" not in line:
+                  continue
+              if "openat(AT_FDCWD" in line and any(flag in line for flag in write_flags):
+                  violations.append(line.rstrip())
+              elif any(
+                  syscall in line
+                  for syscall in (
+                      "openat2(AT_FDCWD",
+                      "mkdirat(AT_FDCWD",
+                      "renameat2(",
+                      "unlinkat(AT_FDCWD",
+                      "fchmodat(AT_FDCWD",
+                  )
+              ):
+                  violations.append(line.rstrip())
+          if violations:
+              raise SystemExit(
+                  "locked terminal recovery used AT_FDCWD mutation:\n" + "\n".join(violations)
+              )
+
+          checks = {
+              "two_exclusive_flocks": sum(
+                  1
+                  for line in locked
+                  if "flock(" in line and "LOCK_EX" in line and re.search(r"=\s*0\s*$", line)
+              ) >= 2,
+              "dirfd_openat2": any(
+                  re.search(r"openat2\(\d+,", line) and "AT_FDCWD" not in line
+                  for line in locked
+              ),
+              "dirfd_renameat2": any(
+                  re.search(r"renameat2\(\d+,", line) and "AT_FDCWD" not in line
+                  for line in locked
+              ),
+              "directory_sync": any("fsync(" in line or "fdatasync(" in line for line in locked),
+              "descriptor_chmod": any("fchmod(" in line for line in locked),
+          }
+          missing = [name for name, present in checks.items() if not present]
+          if missing:
+              raise SystemExit(f"terminal recovery trace missing required evidence: {missing}")
+          print("terminal recovery syscall trace: PASS")
+          for name in checks:
+              print(f"- {name}: PASS")
+          PY
+
+          {
+            echo "### Terminal recovery syscall trace"
+            echo
+            echo "- post-lock AT_FDCWD mutation: none"
+            echo "- retained-dirfd openat2: observed"
+            echo "- retained-dirfd renameat2: observed"
+            echo "- fsync/fdatasync: observed"
+            echo "- descriptor chmod: observed"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Reject runner warnings
         shell: bash
         run: |

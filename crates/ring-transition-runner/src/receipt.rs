@@ -5126,14 +5126,14 @@ fn open_linux_beneath(
     flags: libc::c_int,
     mode: libc::mode_t,
 ) -> Result<fs::File, std::io::Error> {
-    use std::mem::size_of;
+    use std::mem::{size_of, zeroed};
     use std::os::fd::{AsRawFd, FromRawFd};
 
-    let how = libc::open_how {
-        flags: flags as u64,
-        mode: mode as u64,
-        resolve: libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_XDEV,
-    };
+    // Linux requires unknown trailing open_how fields to remain zero.
+    let mut how: libc::open_how = unsafe { zeroed() };
+    how.flags = flags as u64;
+    how.mode = mode as u64;
+    how.resolve = libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_XDEV;
     let descriptor = unsafe {
         libc::syscall(
             libc::SYS_openat2,

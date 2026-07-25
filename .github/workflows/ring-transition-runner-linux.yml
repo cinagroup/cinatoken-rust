@@ -74,7 +74,11 @@ jobs:
           trace_root="$(mktemp -d)"
           prepare_ready="${trace_root}.prepared"
           recover_ready="${trace_root}.recovered"
-          trap 'rm -rf "${trace_root}" "${prepare_ready}" "${recover_ready}" "${artifact_log}" "${trace_log}"' EXIT
+          cleanup_trace_fixture() {
+            chmod -R u+w "${trace_root}" 2>/dev/null || true
+            rm -rf "${trace_root}" "${prepare_ready}" "${recover_ready}" "${artifact_log}" "${trace_log}"
+          }
+          trap cleanup_trace_fixture EXIT
 
           cargo test --locked -p cinatoken-ring-transition-runner --lib --no-run \
             --message-format=json > "${artifact_log}"

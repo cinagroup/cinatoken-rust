@@ -64,7 +64,7 @@ jobs:
           echo "::error title=Linux receipt test failure::${diagnostic}"
           exit 1
 
-      - name: Trace terminal recovery descriptor syscalls
+      - name: Trace terminal transaction descriptor syscalls
         shell: bash
         run: |
           set -euo pipefail

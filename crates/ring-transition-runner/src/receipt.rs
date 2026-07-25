@@ -2420,6 +2420,7 @@ impl ReceiptStore {
         Ok(candidate)
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn terminal_barrier_exists(
         &self,
         context: &OperationContextIdentity,
@@ -4303,6 +4304,7 @@ fn append_canonical_receipt(
     }
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn append_canonical_operation_receipt(
     operation_directory: &Path,
     receipt: &CanonicalOperationReceipt,

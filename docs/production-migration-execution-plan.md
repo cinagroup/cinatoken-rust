@@ -3546,3 +3546,63 @@ then the remaining reserve/finish/closure and concurrent-recovery matrix.
 Production image ownership/ACL/mount evidence remains the next environmental
 gate after that local state-machine matrix. No production authority moved;
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-25 K7 Candidate-Synced SIGKILL Acceptance Gate
+
+K7 now covers a real process death after the terminal candidate is durably
+published and independently read back, but before the corresponding accepted
+finish is appended. The killed process retains both authorization locks until
+the parent sends `SIGKILL` to its recorded tracee PID. Recovery is performed
+by a separate process and fresh store.
+
+The production acceptance invariant for this boundary is:
+
+1. candidate publication is create-new and ordered
+   `renameat2 -> closure fsync/fdatasync -> object-bound readback`;
+2. the exact writer PID then exits only through `SIGKILL`, with status 137;
+3. no operation finish, execution chain, head set or local seal exists at the
+   death boundary;
+4. fresh recovery installs only the candidate-bound accepted finish and
+   reports zero ambiguous outcomes;
+5. the resulting local seal binds the exact candidate SHA-256;
+6. authorization audit reports no unfinished operation after recovery;
+7. a second closure recovery changes no immutable file byte, inode, mode or
+   count; and
+8. startup completes this recovery before credential verification can
+   construct the bounded HTTP core or restore send authority.
+
+The exact syscall policies are now 4 locks for focused recovery, 10 for a full
+terminal transaction, 4 for the killed candidate writer and 8 for fresh
+candidate recovery, audit and immutable replay. Every successful mutation
+after the first lock remains under the fixture root and both locks; legacy or
+`AT_FDCWD` mutation fails the run.
+
+Acceptance evidence is frozen at
+`43b1536f0e1f075d27c249ca849f7e67a7655b89`,
+[run 30162862290](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290)
+and
+[job 89690905464](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290/job/89690905464).
+Ubuntu passed 148 library tests, the four 4/10/4/8 syscall policies,
+formatting and strict Clippy. The local aggregate passed 127 library tests, 3
+binary/CLI tests and 72 Bun tests with 276 expectations.
+
+The five machine-readable success summaries are retained in
+[artifact 8620731294](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290/artifacts/8620731294),
+SHA-256
+`8c68ec0966a7bfe5dda0408031b7bdb27befe01935ccb5aba33ba6481d87f2a2`.
+Clean source evidence is:
+
+| Field | Value |
+| --- | --- |
+| Git tree | `5a1c408426534d6a27ad7fa1d5b71edf0c2f3f5e` |
+| Archive SHA-256 / bytes | `8c41a77cb0f366e02f6eb3a689669f31ea71654abdf4f53eb8913cc590f63923` / 36003840 |
+| Inventory SHA-256 | `534170adf68de8e647bdd9b0382d00097f5b665df1b356aa6e2466c4d9427e7b` |
+| Modules / bytes | 34 / 1719654 |
+
+This advances K7 but does not authorize K7 completion or production
+promotion. The ordered next units are concurrent dual-startup candidate
+recovery, candidate-finish-before-plan, the remaining receipt-prefix crash
+sweep, production UID/GID/ACL and mount attestation, ext4/XFS power-loss and
+restore, externally signed WORM evidence, isolated Cloudflare DO/Container
+lifecycle and then G1-G8. Go/VPS remains traffic, scheduler and financial
+authority; production remains **NO-GO**.

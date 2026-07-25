@@ -1529,6 +1529,55 @@ the crash matrix, D1/DO/R2 recovery, image ACL/mount attestation and immutable
 external evidence remain required. Go/VPS remains authoritative and
 production remains **NO-GO**.
 
+## 2026-07-25 Candidate-Synced Process-Death Mapping
+
+The cinaVibeSDK-derived Container remains a replaceable execution resource;
+the new Rust gate proves only that one local cinatoken authorization boundary
+can fail closed across real process death. The candidate writer uses retained
+dirfds, publishes create-new, syncs the closure directory, reads the exact
+object back and is then killed by the supervising workflow. Recovery runs in
+a fresh process and reconstructs the unique accepted finish plus terminal
+closure without network authority.
+
+The four audited traces map to distinct responsibilities:
+
+| Trace | Exact locks | Purpose |
+| --- | ---: | --- |
+| Focused recovery | 4 | Prepared head-set recovery and exact replay |
+| Full terminal transaction | 10 | Reserve through terminal closure and recovery |
+| Candidate writer | 4 | Durable candidate publication followed by real SIGKILL |
+| Candidate recovery | 8 | Accepted finish, audit, closure and immutable replay |
+
+Every trace rejects successful post-lock unconfined mutation. The candidate
+writer additionally proves the same PID performed rename, closure sync and
+object-bound readback before `SIGKILL`; the recovery process proves zero
+ambiguous outcomes. The startup path completes candidate recovery before
+credential verification can construct the HTTP core, so restart does not
+restore a POST capability.
+
+The frozen evidence is
+`43b1536f0e1f075d27c249ca849f7e67a7655b89`,
+[run 30162862290](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290),
+[job 89690905464](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290/job/89690905464)
+and
+[artifact 8620731294](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290/artifacts/8620731294).
+Ubuntu passed 148 library tests and strict Clippy; local gates passed 127
+library tests, 3 binary/CLI tests and 72 Bun tests with 276 expectations.
+
+Clean source identity is Git tree
+`5a1c408426534d6a27ad7fa1d5b71edf0c2f3f5e`, archive SHA-256
+`8c41a77cb0f366e02f6eb3a689669f31ea71654abdf4f53eb8913cc590f63923`
+for 36003840 bytes, and inventory SHA-256
+`534170adf68de8e647bdd9b0382d00097f5b665df1b356aa6e2466c4d9427e7b`
+for 34 modules / 1719654 bytes.
+
+This evidence does not make Container disk the source of truth. cinaVibeSDK's
+replaceable execution model still requires D1/DO/R2 reconstruction and
+quarantine, concurrent dual-startup coverage, the remaining crash sweep,
+production image ACL/mount attestation, power-loss and restore campaigns, and
+external immutable evidence. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
 ## 2026-07-25 Full Terminal Transaction Syscall Mapping
 
 The cinaVibeSDK-derived Container model treats local disk and processes as

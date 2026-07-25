@@ -10847,6 +10847,96 @@ Cloudflare lifecycle and G1-G8 also remain open. No credential, remote
 mutation, traffic movement or Go/VPS drain occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
 
+## 22.298 K7 Candidate-Synced SIGKILL Recovery Gate (2026-07-25)
+
+The next native crash boundary is now executable and audited. A fixed child
+role reserves one exact claim-read operation, installs
+`terminal-snapshot-candidate.json`, completes its create-new rename, syncs the
+retained closure directory, performs object-bound readback and emits readiness.
+The workflow records the exact tracee PID before lock acquisition, waits for
+that readiness and sends `SIGKILL` to that PID. A separate fresh process then
+recovers the candidate; it does not reuse the killed store or HTTP client.
+
+The recovery assertions bind the original start receipt, candidate and exact
+accepted finish tuple. Recovery must report one unfinished operation, zero
+ambiguous outcomes, install only the candidate-bound accepted finish, pass a
+post-recovery authorization audit, bind the local seal back to the candidate
+SHA-256 and replay without changing file count, bytes, inode or mode. Startup
+coverage also calls the real `verify_loaded_credentials()` boundary: a
+prepared candidate closes before HTTP-core construction and subsequent
+execution returns `ReceiptSealed` without network or mutation authority.
+
+The syscall verifier now enforces the implementation's real durable order:
+
+```text
+retained-dirfd renameat2
+-> retained closure directory fsync/fdatasync
+-> object-bound candidate openat2 readback
+-> exact writer PID SIGKILL
+```
+
+Synthetic tests reject readback before durable directory sync, a different
+readback PID, `SIGTERM`, normal exit, early SIGKILL and duplicate/absent
+signal evidence. The final Ubuntu gate requires exact exclusive-lock counts:
+4 for focused recovery, 10 for the full terminal transaction, 4 for the
+killed candidate writer and 8 for fresh candidate recovery plus audit and
+immutable closure replay.
+
+The frozen candidate is
+`43b1536f0e1f075d27c249ca849f7e67a7655b89`.
+[Run 30162862290](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290)
+and
+[job 89690905464](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290/job/89690905464)
+passed on Ubuntu 24.04.4 with kernel `6.17.0-1020-azure`, Rust 1.97.1 and
+Cargo 1.97.1:
+
+- all 148 Linux library tests;
+- all four exact 4/10/4/8 lock policies;
+- actual status 137 / `SIGKILL` for the candidate writer;
+- zero successful post-lock unconfined pathname mutation;
+- successful retained-dirfd `openat2`, `renameat2`, directory sync and
+  descriptor chmod in all four traces;
+- successful retained-dirfd `mkdirat` where required; and
+- formatting plus warning-free all-target Clippy.
+
+The successful run retained five verifier/boundary JSON documents in
+[artifact 8620731294](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290/artifacts/8620731294),
+7414 bytes with artifact SHA-256
+`8c68ec0966a7bfe5dda0408031b7bdb27befe01935ccb5aba33ba6481d87f2a2`.
+Raw traces remain failure-only seven-day artifacts; independent success-trace
+signing and WORM retention are still required.
+
+The local aggregate passed 127 Rust library tests, 3 binary/CLI tests and 72
+Bun tests with 276 expectations. Clean commit-object evidence is:
+
+| Field | Value |
+| --- | --- |
+| Git tree | `5a1c408426534d6a27ad7fa1d5b71edf0c2f3f5e` |
+| Source archive | 36003840 bytes |
+| Source archive SHA-256 | `8c41a77cb0f366e02f6eb3a689669f31ea71654abdf4f53eb8913cc590f63923` |
+| Cargo.lock SHA-256 | `306232dc09ebc27d6a36f30d78492a8282e148771ca5bf3250be38507d1807eb` |
+| bun.lock SHA-256 | `da9ef4e1e16cd9e231340d2999200fdd69321a3dd7905fbc3d7754e18586c26a` |
+| package.json SHA-256 | `a03a6446fc9d5dba5fe69eff98c5fb67c831435b6810ac06f26059382cd25191` |
+| Required modules / bytes | 34 / 1719654 |
+| Module inventory SHA-256 | `534170adf68de8e647bdd9b0382d00097f5b665df1b356aa6e2466c4d9427e7b` |
+
+Runs
+[30161600791](https://github.com/cinagroup/cinatoken-rust/actions/runs/30161600791)
+and
+[30162644992](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162644992)
+remain useful negative evidence: the first exposed a verifier fixture whose
+sync/readback order contradicted the real durable writer, and the second
+proved the writer gate before exposing the recovery protocol's fourth lock
+pair for immutable replay. Neither failure was retried away or reclassified.
+
+This closes one real candidate-after-sync process-death boundary and its fresh
+startup recovery. It does not close concurrent dual-startup recovery,
+candidate-finish-before-plan, the remaining receipt-prefix crash sweep,
+production UID/GID/ACL and mount attestation, ext4/XFS power loss, restore,
+external WORM evidence, Cloudflare DO/Container lifecycle or G1-G8. No
+credential, remote mutation, customer traffic movement or Go/VPS drain
+occurred. Go/VPS remains authoritative and production remains **NO-GO**.
+
 ### 22.174 2026-07-13 Guarded Global Realtime Reservation Recovery
 
 This increment closes the local D1-orphan scanner gap identified in 22.173,

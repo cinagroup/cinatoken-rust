@@ -6075,6 +6075,82 @@ loss, restore, immutable external evidence or Cloudflare lifecycle. No
 credential or remote mutation was used. Go/VPS remains authoritative and
 production remains **NO-GO**.
 
+## 2026-07-25 Candidate-Synced SIGKILL and Startup Recovery Verification
+
+The audited crash fixture now kills the real writer after candidate
+create-new rename, retained closure-directory sync and object-bound readback,
+but before the accepted operation finish. The workflow kills the recorded
+tracee PID, not the `strace` wrapper, and records status 137 plus a parsed
+`+++ killed by SIGKILL +++` event for the same PID that held the two locks and
+published the candidate.
+
+The new verifier regression suite proves the durable order is
+`rename -> directory sync -> readback -> SIGKILL`. It rejects the old
+synthetic order, wrong-PID readback, `SIGTERM`, normal exit, early termination
+and missing or duplicate SIGKILL evidence. The fresh recovery process proves
+the exact accepted finish, zero ambiguous recovery, candidate-bound local
+seal, post-recovery audit and byte/inode/mode/count-stable replay.
+
+Frozen Ubuntu evidence:
+
+- candidate `43b1536f0e1f075d27c249ca849f7e67a7655b89`;
+- [run 30162862290](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290);
+- [job 89690905464](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290/job/89690905464);
+- Ubuntu 24.04.4, kernel `6.17.0-1020-azure`, Rust/Cargo 1.97.1;
+- 148 Linux library tests, formatting and strict all-target Clippy passed;
+- exact successful locks were 4 focused recovery, 10 full transaction, 4
+  candidate writer and 8 fresh candidate recovery;
+- candidate writer status was 137 and its JSON reported
+  `sigkillExitObserved=true`;
+- all four traces reported no successful post-lock unconfined mutation and
+  successful retained-dirfd open/rename, directory sync and descriptor chmod;
+  and
+- required writer/full/recovery traces reported successful retained-dirfd
+  `mkdirat`.
+
+The successful run retained four verification JSON documents and one
+candidate boundary JSON in
+[artifact 8620731294](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290/artifacts/8620731294).
+The artifact is 7414 bytes with SHA-256
+`8c68ec0966a7bfe5dda0408031b7bdb27befe01935ccb5aba33ba6481d87f2a2`.
+Its boundary binds the exact Git SHA, signal, tracer status and 4/8 writer and
+recovery lock counts.
+
+Local acceptance passed:
+
+- 127 Rust library tests;
+- 1 main-command test and 2 CLI tests;
+- 72 Bun tests with 276 expectations;
+- `cargo fmt --all -- --check`;
+- warning-free `cargo clippy --locked -p
+  cinatoken-ring-transition-runner --all-targets -- -D warnings`;
+- workflow YAML lint; and
+- direct replay of both failed-run Ubuntu traces after each verifier
+  correction.
+
+The startup test uses the real credential-verification entrypoint and proves a
+prepared terminal candidate recovers before HTTP-core construction. The
+subsequent execution is `ReceiptSealed` and performs no network or mutation.
+
+Clean source identity:
+
+| Field | Value |
+| --- | --- |
+| Commit | `43b1536f0e1f075d27c249ca849f7e67a7655b89` |
+| Git tree | `5a1c408426534d6a27ad7fa1d5b71edf0c2f3f5e` |
+| Archive bytes / SHA-256 | 36003840 / `8c41a77cb0f366e02f6eb3a689669f31ea71654abdf4f53eb8913cc590f63923` |
+| Cargo.lock SHA-256 | `306232dc09ebc27d6a36f30d78492a8282e148771ca5bf3250be38507d1807eb` |
+| bun.lock SHA-256 | `da9ef4e1e16cd9e231340d2999200fdd69321a3dd7905fbc3d7754e18586c26a` |
+| package.json SHA-256 | `a03a6446fc9d5dba5fe69eff98c5fb67c831435b6810ac06f26059382cd25191` |
+| Modules / bytes | 34 / 1719654 |
+| Inventory SHA-256 | `534170adf68de8e647bdd9b0382d00097f5b665df1b356aa6e2466c4d9427e7b` |
+
+This is local and CI crash/restart evidence, not production storage authority.
+Concurrent dual-startup recovery, candidate-finish-before-plan, the remaining
+receipt-prefix crash sweep, image ACL/mount checks, power loss, restore,
+external immutable evidence and Cloudflare lifecycle remain open. Go/VPS
+remains authoritative and production remains **NO-GO**.
+
 ## Container Reconciliation Retry Preview Verification (2026-07-17)
 
 This overlay adds only a RootAuth-protected preview for a dead-letter

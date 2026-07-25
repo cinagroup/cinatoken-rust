@@ -512,6 +512,57 @@ job log; durable independent trace signing/WORM retention remains open.
 The next process campaign kills the child after candidate sync and before the
 accepted finish. Production remains **NO-GO**.
 
+## Candidate-After-Sync SIGKILL Gate
+
+That process campaign is now implemented. The child executes only a fixed
+test role, reserves one deterministic claim-read, publishes the terminal
+candidate and blocks after its durable readback. The workflow captures the
+tracee PID before locks, waits for the child's post-readback stdout marker and
+sends `SIGKILL` to that exact PID. A fresh fixed-role process performs
+recovery.
+
+The verifier binds one PID across both lock acquisitions, candidate
+`renameat2`, retained closure-directory sync, object-bound candidate
+`openat2` and parsed SIGKILL termination. Its required order is:
+
+```text
+candidate rename -> closure directory sync -> candidate readback -> SIGKILL
+```
+
+The separate recovery verifies the exact start/candidate/accepted-finish
+tuple, zero ambiguous outcomes, a candidate-bound local seal, a clean
+authorization audit and immutable second replay. The startup transport test
+calls real credential verification and proves this terminal recovery returns
+before HTTP-core construction; execution then fails closed as
+`ReceiptSealed`.
+
+Candidate `43b1536f0e1f075d27c249ca849f7e67a7655b89` passed
+[Ubuntu run 30162862290](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290)
+and
+[job 89690905464](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290/job/89690905464)
+with 148 Linux library tests, warning-free Clippy and exact 4/10/4/8 lock
+traces. Candidate writer status was 137, SIGKILL was object-bound to the
+writer PID and no trace contained a successful post-lock unconfined mutation.
+
+[Artifact 8620731294](https://github.com/cinagroup/cinatoken-rust/actions/runs/30162862290/artifacts/8620731294)
+retains the four verifier JSON documents and the candidate boundary JSON. Its
+SHA-256 is
+`8c68ec0966a7bfe5dda0408031b7bdb27befe01935ccb5aba33ba6481d87f2a2`.
+
+The local aggregate passed 127 library tests, 3 binary/CLI tests and 72 Bun
+tests with 276 expectations. Clean source evidence is Git tree
+`5a1c408426534d6a27ad7fa1d5b71edf0c2f3f5e`, 36003840-byte archive SHA-256
+`8c41a77cb0f366e02f6eb3a689669f31ea71654abdf4f53eb8913cc590f63923`
+and 34 modules totaling 1719654 bytes with inventory SHA-256
+`534170adf68de8e647bdd9b0382d00097f5b665df1b356aa6e2466c4d9427e7b`.
+
+This is a bounded local durability and restart gate. It does not prove
+concurrent dual-startup recovery, every receipt-prefix crash point,
+candidate-finish-before-plan, same-UID hostility, production ACL/mount
+enforcement, power loss, restore, external immutable evidence or Cloudflare
+Container lifecycle. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
 ## Terminal Receipt Store Boundary
 
 The runner now contains a library-owned terminal receipt projection and

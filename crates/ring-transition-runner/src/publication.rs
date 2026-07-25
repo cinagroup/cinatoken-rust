@@ -941,23 +941,23 @@ mod tests {
         let packet: PublicationPacket = serde_json::from_slice(&fixture.packet_json).unwrap();
         assert_eq!(
             verified.identity().generation_sha256,
-            "b0fa3998b6595daa352f4d89c576e5eb6ac7e86507a7feffde484995b24cc0a5"
+            "845ce1c63a12651f73b7e8133241dd56ab918a133e3fb9af93018475fd8257ed"
         );
         assert_eq!(
             verified.identity().publication_manifest_sha256,
-            "505293e8bea755d6181526910ba18461009a80b447bff1c8a7e06a54391e63c9"
+            "dec69e7def004b6731d2c01a4e4d30a41f924bceee24b1c12b30d63db53ff0f8"
         );
         assert_eq!(
             verified.identity().publication_packet_sha256,
-            "7fed5af2358b8d06d8e2b581d320a7916602eadce0e5fbc89999437bdeb87c99"
+            "2ce765ecb6befbcfc6941c8032c62224199d00d45b479c7979a578cf786608d3"
         );
         assert_eq!(
             packet.envelope.signatures[0].sig,
-            "Yc1xIuLz2swBfSs/bnL4W8qUEMcxlmVKJqoTKfExU742LnfOXukc6KPvvQUqL93yDwlAEze+rO/xh6aSSbsKAQ=="
+            "KIKUDjKr4V3+ZvCgynaLTGa/1gzAAe4f8208hJ30aOzgQ1F6PpvtmmdbcOFhfOMOPMFP10DdAep8w9yTCCz/BQ=="
         );
         assert_eq!(
             sha256_hex(&activation_bytes(verified.identity()).unwrap()),
-            "9645bf5b2173acc4b75726d853498155f1e427347cd0b7b720c8d8b1b7a0d9c3"
+            "5087204285c826b569baa3a7781ce6bc37f4c29f836a984120399e3f72f9d91a"
         );
 
         let root = temporary_directory();

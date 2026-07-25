@@ -3319,7 +3319,9 @@ fn hex_lower(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credentials::verified_credentials_for_transport_test;
+    use crate::credentials::{
+        loaded_credentials_for_transport_test, verified_credentials_for_transport_test,
+    };
     use crate::orchestrator::{
         authorize_mutation, begin_authority_append, plan_controller_deployment,
         prepare_controller_intent, verify_fresh_append, ControllerMutation,
@@ -4443,6 +4445,82 @@ mod tests {
         assert!(recover_operations < recover_closure);
         assert!(recover_closure < construct_http);
         assert!(construct_http < verify_remote);
+    }
+
+    #[tokio::test]
+    async fn startup_recovers_a_terminal_candidate_before_constructing_the_http_core() {
+        let root = temporary_receipt_root("startup-terminal-candidate");
+        let publication = matching_publication();
+        let activation = transport_activation();
+        let snapshot_value = aborted_snapshot_value();
+        let snapshot = verified_snapshot(&snapshot_value);
+        let identity = matching_identity();
+        let request_id = "startup-terminal-candidate-read";
+        let target = format!(
+            "/internal/v1/ring-transition/claims/{}?claimDigestSha256={}&claimOwnerSha256={}",
+            snapshot.authorization_id_sha256(),
+            snapshot.claim_digest_sha256(),
+            snapshot.claim_owner_sha256(),
+        );
+        let request_id_sha256 = sha256_hex(request_id.as_bytes());
+        let request_sha256 =
+            read_operation_request_sha256(&sha256_hex(target.as_bytes()), &request_id_sha256)
+                .unwrap();
+        let start = operation_start(
+            operation_identity(
+                OperationKind::AuthorityClaimRead,
+                0,
+                &target,
+                &request_sha256,
+            ),
+            request_id,
+            NOW,
+        );
+        let response = scripted_json(
+            StatusCode::OK,
+            serde_json::from_slice(&exact_claim_response(
+                &snapshot_value,
+                &identity,
+                request_id,
+            ))
+            .unwrap(),
+        );
+        let finish = operation_finish(OperationOutcome::Accepted, NOW, Some(&response));
+        let store = ReceiptStore::open(&root).unwrap();
+        assert_eq!(
+            store
+                .reserve_operation(&publication, &identity, &activation, &start)
+                .unwrap(),
+            OperationReservation::Fresh
+        );
+        store
+            .install_terminal_snapshot_candidate(
+                &snapshot,
+                &publication,
+                &identity,
+                &activation,
+                &start.identity,
+                &finish,
+            )
+            .unwrap();
+
+        let prepared = verify_loaded_credentials(
+            loaded_credentials_for_transport_test(),
+            activation.clone(),
+            ClaimDispatchLocation::for_transport_test(root.clone()),
+            publication,
+        )
+        .await
+        .unwrap();
+
+        assert!(prepared.core.is_none());
+        let closure = prepared.terminal_closure.as_ref().unwrap();
+        assert_eq!(closure.terminal_status, ClaimStatus::Aborted);
+        assert_eq!(closure.terminal_state_version, 1);
+        let outcome = prepared.execute_current().await.unwrap();
+        assert_eq!(outcome.action, ExecuteCurrentAction::ReceiptSealed);
+        assert_eq!(outcome.mutation_transport_outcome, None);
+        cleanup_receipt_root(&root);
     }
 
     #[tokio::test]

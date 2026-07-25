@@ -68,6 +68,7 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.requiredModulePaths).toEqual([
       ".gitattributes",
+      ".github/workflows/ring-transition-runner-linux.yml",
       "Cargo.lock",
       "Cargo.toml",
       "bun.lock",
@@ -146,7 +147,7 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.moduleCount).toBe(33);
+    expect(result.moduleCount).toBe(34);
   });
 
   test("matches the deterministic Rust DSSE release vector", () => {
@@ -156,23 +157,23 @@ describe("Relay Container ring-transition runner release contract", () => {
       policySha256:
         "9b12c3dd50812180f2122311480876bd6508a81618082c615ca52d4701ec3856",
       inventorySha256:
-        "43446c1d0001f5bb8ecccdb980c4aa6477216885e19b9fb394c30a46f160723c",
+        "e73699ea984245019afe9d8b558df4f69fb52b653d85397df3f952a77de79844",
       manifestSha256:
-        "935dedc780721e3e6f77aa5333048d2eb0e50813192546af1b58b090de40300a",
+        "93823220f14cc457f036bf1af9ec03828c39fabb4cd7490f96aed7c46c55ffe1",
       packetSha256:
-        "ed331ec8522c6786e1d3fbb94142935aa0931ab2b9fd72d74d3608b91417790c",
+        "1abc752242ec60134e0be1df6ff4737178c3627a5a9a7ab3c46e73139bd8f03c",
       signatureBase64:
-        "HkInLhCEikf5hgLDQyjPtUn7YIRNNciMgOS2cWqCccl4KiDk6WP0KlRDWsto/KZv1CNNoDP+SukA8EDHdBWJCA==",
+        "x5wm7NaqWcE1eeWBJ1wYnzHyCtI+GaCHu5Cnen4aSZJjOyi1UVKcNDfpaqMxOMjxKtj7J4GS6Zc+Eq3L53phDw==",
       publicationGenerationSha256:
-        "b0fa3998b6595daa352f4d89c576e5eb6ac7e86507a7feffde484995b24cc0a5",
+        "845ce1c63a12651f73b7e8133241dd56ab918a133e3fb9af93018475fd8257ed",
       publicationManifestSha256:
-        "505293e8bea755d6181526910ba18461009a80b447bff1c8a7e06a54391e63c9",
+        "dec69e7def004b6731d2c01a4e4d30a41f924bceee24b1c12b30d63db53ff0f8",
       publicationPacketSha256:
-        "7fed5af2358b8d06d8e2b581d320a7916602eadce0e5fbc89999437bdeb87c99",
+        "2ce765ecb6befbcfc6941c8032c62224199d00d45b479c7979a578cf786608d3",
       publicationSignatureBase64:
-        "Yc1xIuLz2swBfSs/bnL4W8qUEMcxlmVKJqoTKfExU742LnfOXukc6KPvvQUqL93yDwlAEze+rO/xh6aSSbsKAQ==",
+        "KIKUDjKr4V3+ZvCgynaLTGa/1gzAAe4f8208hJ30aOzgQ1F6PpvtmmdbcOFhfOMOPMFP10DdAep8w9yTCCz/BQ==",
       activationSha256:
-        "9645bf5b2173acc4b75726d853498155f1e427347cd0b7b720c8d8b1b7a0d9c3",
+        "5087204285c826b569baa3a7781ce6bc37f4c29f836a984120399e3f72f9d91a",
     });
   });
 
@@ -760,6 +761,10 @@ async function releaseFixture({
 
   const moduleContents = new Map([
     [".gitattributes", "* text=auto\n"],
+    [
+      ".github/workflows/ring-transition-runner-linux.yml",
+      "name: ring-transition-runner-linux\n",
+    ],
     ["Cargo.lock", "cargo-lock-fixture"],
     ["Cargo.toml", "workspace-cargo-fixture"],
     ["bun.lock", "bun-lock-fixture"],

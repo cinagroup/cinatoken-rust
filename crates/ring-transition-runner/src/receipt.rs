@@ -10581,6 +10581,22 @@ mod tests {
         let _ = fs::remove_file(&kill_ready);
         cleanup(&kill_root);
 
+        let candidate_root = temporary_root("linux-multiprocess-terminal-candidate-kill");
+        let candidate_ready = candidate_root.with_extension("candidate-ready");
+        let mut child = spawn_multiprocess_terminal_child(
+            "candidate-synced-wait",
+            &candidate_root,
+            &candidate_ready,
+        );
+        wait_for_multiprocess_ready(&mut child, &candidate_ready);
+        child.kill().expect("SIGKILL terminal candidate writer");
+        let status = child.wait().expect("killed candidate child wait");
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+
+        recover_terminal_candidate_after_process_death(&candidate_root);
+        let _ = fs::remove_file(&candidate_ready);
+        cleanup(&candidate_root);
+
         let full_root = temporary_root("linux-multiprocess-terminal-full");
         let full_ready = full_root.with_extension("full-ready");
         let status =
@@ -10676,30 +10692,53 @@ mod tests {
                     .unwrap();
                 assert_eq!(first, second);
             }
-            "full-terminal-transaction" => {
+            "candidate-synced-prepare" | "candidate-synced-wait" => {
                 let store = ReceiptStore::open(root).unwrap();
                 let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
-                let mut read = operation_start("a", NOW);
-                read.identity.kind = OperationKind::AuthorityClaimRead;
-                read.identity.state_version = 0;
-                read.identity.request_sha256 = read_operation_request_sha256(
-                    &read.identity.target_sha256,
-                    &read.request_id_sha256,
-                )
-                .unwrap();
+                let read = terminal_candidate_crash_operation();
                 assert_eq!(
                     store
                         .reserve_operation(&publication, &credentials, &activation, &read)
                         .unwrap(),
                     OperationReservation::Fresh
                 );
-                let accepted = OperationFinishInput {
-                    outcome: OperationOutcome::Accepted,
-                    finished_at: NOW + 1,
-                    http_status: Some(200),
-                    response_body_sha256: Some("a".repeat(64)),
-                    response_id_sha256: Some("b".repeat(64)),
-                };
+                store
+                    .install_terminal_snapshot_candidate(
+                        &snapshot,
+                        &publication,
+                        &credentials,
+                        &activation,
+                        &read.identity,
+                        &terminal_candidate_accepted_finish(),
+                    )
+                    .unwrap();
+                if std::env::var_os("CINATOKEN_RING_RECEIPT_TEST_READY_STDOUT").is_some() {
+                    println!("candidate-synced");
+                    std::io::stdout().flush().unwrap();
+                } else {
+                    write_multiprocess_ready(ready, b"candidate-synced");
+                }
+                if role == "candidate-synced-prepare" {
+                    return;
+                }
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+            "recover-terminal-candidate" => {
+                recover_terminal_candidate_after_process_death(root);
+            }
+            "full-terminal-transaction" => {
+                let store = ReceiptStore::open(root).unwrap();
+                let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
+                let read = terminal_candidate_crash_operation();
+                assert_eq!(
+                    store
+                        .reserve_operation(&publication, &credentials, &activation, &read)
+                        .unwrap(),
+                    OperationReservation::Fresh
+                );
+                let accepted = terminal_candidate_accepted_finish();
                 store
                     .install_terminal_snapshot_candidate(
                         &snapshot,
@@ -10738,9 +10777,12 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn write_multiprocess_ready(path: &Path, bytes: &[u8]) {
-        let mut signal = fs::File::create(path).unwrap();
+        let staging = path.with_extension("staging");
+        let mut signal = fs::File::create(&staging).unwrap();
         signal.write_all(bytes).unwrap();
         signal.sync_all().unwrap();
+        drop(signal);
+        fs::rename(staging, path).unwrap();
     }
 
     #[cfg(target_os = "linux")]
@@ -10757,6 +10799,216 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         panic!("terminal child readiness timeout");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn terminal_candidate_crash_operation() -> OperationStartInput {
+        let mut read = operation_start("a", NOW);
+        read.identity.kind = OperationKind::AuthorityClaimRead;
+        read.identity.state_version = 0;
+        read.identity.request_sha256 =
+            read_operation_request_sha256(&read.identity.target_sha256, &read.request_id_sha256)
+                .unwrap();
+        read
+    }
+
+    #[cfg(target_os = "linux")]
+    fn terminal_candidate_accepted_finish() -> OperationFinishInput {
+        OperationFinishInput {
+            outcome: OperationOutcome::Accepted,
+            finished_at: NOW + 1,
+            http_status: Some(200),
+            response_body_sha256: Some("a".repeat(64)),
+            response_id_sha256: Some("b".repeat(64)),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn recover_terminal_candidate_after_process_death(root: &Path) {
+        let store = ReceiptStore::open(root).unwrap();
+        let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let read = terminal_candidate_crash_operation();
+        let operation = project_operation_identity(&context, &read.identity).unwrap();
+        let authorization = root
+            .join(OPERATION_RECEIPTS_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256);
+        let operation_directory = authorization.join(&operation.operation_id_sha256);
+        let closure = root
+            .join(OPERATION_CLOSURES_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256);
+        let start_path = operation_directory.join(operation_receipt_file_name(1));
+        let finish_path = operation_directory.join(operation_receipt_file_name(2));
+        let candidate_path = closure.join(TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME);
+        assert!(start_path.exists());
+        assert!(candidate_path.exists());
+        assert!(!finish_path.exists());
+        assert!(!authorization.join(OPERATION_HEAD_SET_FILE_NAME).exists());
+        assert!(!closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME).exists());
+        assert!(!root
+            .join(RECEIPTS_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256)
+            .exists());
+
+        let start = store
+            .verify_operation(
+                &context.authorization_id_sha256,
+                &operation.operation_id_sha256,
+            )
+            .unwrap();
+        assert_eq!(start.receipt_count, 1);
+        assert_eq!(start.outcome, None);
+        let candidate = store
+            .read_terminal_snapshot_candidate(&context)
+            .unwrap()
+            .unwrap();
+        let accepted = terminal_candidate_accepted_finish();
+        assert_eq!(
+            candidate.record.operation_id_sha256,
+            operation.operation_id_sha256
+        );
+        assert_eq!(
+            candidate.record.operation_start_receipt_sha256,
+            start.head_sha256
+        );
+        assert_eq!(candidate.record.operation_outcome, accepted.outcome);
+        assert_eq!(candidate.record.operation_finished_at, accepted.finished_at);
+        assert_eq!(
+            candidate.record.operation_http_status,
+            accepted.http_status.unwrap()
+        );
+        assert_eq!(
+            Some(&candidate.record.operation_response_body_sha256),
+            accepted.response_body_sha256.as_ref()
+        );
+        assert_eq!(
+            candidate.record.operation_response_id_sha256,
+            accepted.response_id_sha256
+        );
+        let candidate_identity = linux_file_identity(&candidate_path);
+
+        let recovery = store
+            .recover_unfinished_operations(&publication, &credentials, &activation, NOW + 2)
+            .unwrap();
+        assert_eq!(recovery.operation_count, 1);
+        assert_eq!(recovery.unfinished_count, 1);
+        assert_eq!(recovery.recovered_ambiguous_count, 0);
+        assert_eq!(
+            store
+                .verify_operation(
+                    &context.authorization_id_sha256,
+                    &operation.operation_id_sha256,
+                )
+                .unwrap()
+                .outcome,
+            Some(OperationOutcome::Accepted)
+        );
+        let finish = read_operation_receipt(&finish_path, &operation_directory).unwrap();
+        assert_eq!(
+            finish.record.predecessor_receipt_sha256.as_deref(),
+            Some(start.head_sha256.as_str())
+        );
+        assert_eq!(finish.record.recorded_at, accepted.finished_at);
+        assert_eq!(
+            finish.record.event,
+            OperationReceiptEvent::RequestFinished {
+                outcome: accepted.outcome,
+                http_status: accepted.http_status,
+                response_body_sha256: accepted.response_body_sha256.clone(),
+                response_id_sha256: accepted.response_id_sha256.clone(),
+            }
+        );
+        assert_eq!(
+            store
+                .audit_authorization_operations(&publication, &credentials, &activation)
+                .unwrap(),
+            OperationReceiptAudit {
+                operation_count: 1,
+                unfinished_count: 0,
+                recovered_ambiguous_count: 0,
+            }
+        );
+        let recovered = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(linux_file_identity(&candidate_path), candidate_identity);
+        let local_seal_path = closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME);
+        let local_seal = read_operation_head_local_seal(&local_seal_path, &closure).unwrap();
+        assert_eq!(
+            local_seal
+                .record
+                .terminal_snapshot_candidate_sha256
+                .as_deref(),
+            Some(candidate.sha256.as_str())
+        );
+        assert_eq!(
+            local_seal.record.operation_head_set_sha256,
+            recovered.operation_head_set_sha256
+        );
+        let first_recovery_files = linux_immutable_file_snapshot(root);
+        let replayed = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+        let replayed_files = linux_immutable_file_snapshot(root);
+        let plan = plan_terminal_receipts(&snapshot, &publication, &credentials).unwrap();
+        assert_eq!(recovered, replayed);
+        assert_eq!(first_recovery_files, replayed_files);
+        assert_eq!(recovered.execution_receipt_head_sha256, plan.head_sha256());
+        assert!(finish_path.exists());
+        assert!(authorization.join(OPERATION_HEAD_SET_FILE_NAME).exists());
+        assert!(local_seal_path.exists());
+        println!(
+            "candidate-after-sync recovery: accepted finish, zero ambiguous, immutable replay"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_file_identity(path: &Path) -> (u64, u64, u32, String) {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = fs::symlink_metadata(path).unwrap();
+        assert!(metadata.is_file());
+        (
+            metadata.ino(),
+            metadata.len(),
+            metadata.mode(),
+            sha256_hex(&fs::read(path).unwrap()),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_immutable_file_snapshot(root: &Path) -> Vec<(String, u64, u64, u32, String)> {
+        use std::os::unix::fs::MetadataExt;
+
+        let mut directories = vec![root.to_path_buf()];
+        let mut files = Vec::new();
+        while let Some(directory) = directories.pop() {
+            for entry in fs::read_dir(&directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                let metadata = fs::symlink_metadata(&path).unwrap();
+                assert!(!metadata.file_type().is_symlink());
+                if metadata.is_dir() {
+                    directories.push(path);
+                    continue;
+                }
+                assert!(metadata.is_file());
+                files.push((
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    metadata.ino(),
+                    metadata.len(),
+                    metadata.mode(),
+                    sha256_hex(&fs::read(&path).unwrap()),
+                ));
+            }
+        }
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
     }
 
     #[cfg(target_os = "linux")]

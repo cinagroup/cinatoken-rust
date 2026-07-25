@@ -37,8 +37,9 @@ const ED25519_SPKI_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-pub const REQUIRED_MODULE_PATHS: [&str; 33] = [
+pub const REQUIRED_MODULE_PATHS: [&str; 34] = [
     ".gitattributes",
+    ".github/workflows/ring-transition-runner-linux.yml",
     "Cargo.lock",
     "Cargo.toml",
     "bun.lock",
@@ -1307,20 +1308,20 @@ pub(crate) mod tests {
         );
         assert_eq!(
             verified.module_inventory_sha256,
-            "43446c1d0001f5bb8ecccdb980c4aa6477216885e19b9fb394c30a46f160723c"
+            "e73699ea984245019afe9d8b558df4f69fb52b653d85397df3f952a77de79844"
         );
         assert_eq!(
             verified.manifest_sha256,
-            "935dedc780721e3e6f77aa5333048d2eb0e50813192546af1b58b090de40300a"
+            "93823220f14cc457f036bf1af9ec03828c39fabb4cd7490f96aed7c46c55ffe1"
         );
         assert_eq!(
             verified.packet_sha256,
-            "ed331ec8522c6786e1d3fbb94142935aa0931ab2b9fd72d74d3608b91417790c"
+            "1abc752242ec60134e0be1df6ff4737178c3627a5a9a7ab3c46e73139bd8f03c"
         );
         let packet: ReleasePacket = serde_json::from_slice(&fixture.packet_json).unwrap();
         assert_eq!(
             packet.envelope.signatures[0].sig,
-            "HkInLhCEikf5hgLDQyjPtUn7YIRNNciMgOS2cWqCccl4KiDk6WP0KlRDWsto/KZv1CNNoDP+SukA8EDHdBWJCA=="
+            "x5wm7NaqWcE1eeWBJ1wYnzHyCtI+GaCHu5Cnen4aSZJjOyi1UVKcNDfpaqMxOMjxKtj7J4GS6Zc+Eq3L53phDw=="
         );
     }
 

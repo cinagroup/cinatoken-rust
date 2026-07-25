@@ -27,6 +27,7 @@ const WHOLE_SECONDS_PATTERN = /^[1-9][0-9]{0,15}$/;
 const UNSAFE_TREE_PATH_PATTERN = /[\\\p{Cc}\p{Cf}]/u;
 const REQUIRED_MODULE_PATHS = Object.freeze([
   ".gitattributes",
+  ".github/workflows/ring-transition-runner-linux.yml",
   "Cargo.lock",
   "Cargo.toml",
   "bun.lock",
@@ -353,6 +354,7 @@ function parseGitTree(bytes) {
 
 function isReleaseModule(modulePath) {
   return (
+    modulePath === ".github/workflows/ring-transition-runner-linux.yml" ||
     [
       ".gitattributes",
       "Cargo.lock",

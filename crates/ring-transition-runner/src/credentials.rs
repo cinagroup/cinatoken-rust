@@ -854,6 +854,16 @@ pub(crate) fn verified_credentials_for_transport_test() -> VerifiedCredentials {
 }
 
 #[cfg(test)]
+pub(crate) fn loaded_credentials_for_transport_test() -> LoadedCredentials {
+    let verified = verified_credentials_for_transport_test();
+    LoadedCredentials {
+        material: verified.material,
+        identity: verified.identity,
+        trust: verified.trust,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::publication::PublicationIdentity;

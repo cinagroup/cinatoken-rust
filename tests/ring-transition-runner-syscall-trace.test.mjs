@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   mkdtemp,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -17,6 +18,9 @@ const RECEIPTS = `${ROOT}/execution-operation-receipts`;
 const AUTHORIZATION = `${RECEIPTS}/${"a".repeat(64)}`;
 const CLI = fileURLToPath(
   new URL("../tools/verify_ring_transition_runner_syscall_trace.mjs", import.meta.url),
+);
+const WORKFLOW = fileURLToPath(
+  new URL("../.github/workflows/ring-transition-runner-linux.yml", import.meta.url),
 );
 const temporaryDirectories = [];
 
@@ -103,6 +107,69 @@ describe("ring-transition runner syscall trace verifier", () => {
         expectedLocks: 4,
       }),
     ).toThrow(/successful_dirfd_renameat2/);
+  });
+
+  test("binds terminal candidate sync to the locked process SIGKILL", () => {
+    const trace = fixtureTrace({
+      lockPairs: 2,
+      includeTerminalCandidateSync: true,
+      terminalSignal: "SIGKILL",
+    });
+    expect(
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: trace,
+        fixtureRoot: ROOT,
+        label: "candidate writer",
+        expectedLocks: 4,
+        requireSigkillExit: true,
+        requireTerminalCandidateSync: true,
+      }),
+    ).toMatchObject({
+      sigkillExitObserved: true,
+      terminalCandidateRenameObserved: true,
+      terminalCandidateReadbackObserved: true,
+      terminalCandidateDirectorySyncObserved: true,
+    });
+
+    for (const termination of [
+      "4100  +++ killed by SIGTERM +++",
+      "4100  +++ exited with 0 +++",
+    ]) {
+      expect(() =>
+        verifyRingTransitionRunnerSyscallTrace({
+          traceText: trace.replace(
+            "4100  +++ killed by SIGKILL +++",
+            termination,
+          ),
+          fixtureRoot: ROOT,
+          label: "candidate writer",
+          expectedLocks: 4,
+          requireSigkillExit: true,
+          requireTerminalCandidateSync: true,
+        }),
+      ).toThrow(/SIGKILL exit/);
+    }
+    expect(() =>
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: trace.replace(
+          /4100  openat2\(8<([^>]+)>, "terminal-snapshot-candidate\.json",/u,
+          '4200  openat2(8<$1>, "terminal-snapshot-candidate.json",',
+        ),
+        fixtureRoot: ROOT,
+        label: "candidate writer",
+        expectedLocks: 4,
+        requireSigkillExit: true,
+        requireTerminalCandidateSync: true,
+      }),
+    ).toThrow(/readback moved to another process/);
+    expect(
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: fixtureTrace({ lockPairs: 2 }),
+        fixtureRoot: ROOT,
+        label: "legacy policy",
+        expectedLocks: 4,
+      }).ok,
+    ).toBe(true);
   });
 
   test("requires both locks while retained-dirfd mutation occurs", () => {
@@ -211,11 +278,37 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(await rejected.exited).not.toBe(0);
     expect(await new Response(rejected.stdout).text()).toBe("");
   });
+
+  test("Linux workflow traces the candidate writer SIGKILL and fresh recovery separately", async () => {
+    const workflow = await readFile(WORKFLOW, "utf8");
+    expect(workflow).toContain(
+      "CINATOKEN_RING_RECEIPT_TEST_ROLE=candidate-synced-wait",
+    );
+    expect(workflow).toContain("CINATOKEN_RING_RECEIPT_TEST_READY_STDOUT=1");
+    expect(workflow).toContain('kill -KILL "${candidate_writer_pid}"');
+    expect(workflow).toContain(
+      "CINATOKEN_RING_RECEIPT_TEST_ROLE=recover-terminal-candidate",
+    );
+    expect(workflow).toMatch(
+      /--label "candidate-after-sync writer"\s+\\\r?\n\s+--expected-locks 4\s+\\\r?\n\s+--require-mkdirat\s+\\\r?\n\s+--require-sigkill-exit\s+\\\r?\n\s+--require-terminal-candidate-sync/u,
+    );
+    expect(workflow).toMatch(
+      /--label "candidate-after-sync recovery"\s+\\\r?\n\s+--expected-locks 6\s+\\\r?\n\s+--require-mkdirat/u,
+    );
+    expect(workflow).toContain("candidate-after-sync-writer.strace");
+    expect(workflow).toContain("candidate-after-sync-recovery.strace");
+    expect(workflow).toContain(
+      '- "tools/verify_ring_transition_runner_syscall_trace.mjs"',
+    );
+    expect(workflow).toContain("Retain syscall verification summaries");
+  });
 });
 
 function fixtureTrace({
   lockPairs,
   includeMkdirat = false,
+  includeTerminalCandidateSync = false,
+  terminalSignal = null,
   extraAfterFirstLock = "",
 }) {
   const lines = [
@@ -243,11 +336,31 @@ function fixtureTrace({
         `4100  close(6<${AUTHORIZATION}/00000000000000000001.operation.json>) = 0`,
       );
     }
+    if (includeTerminalCandidateSync && pair === lockPairs - 1) {
+      const closures = `${ROOT}/execution-operation-closures`;
+      const closure = `${closures}/${"a".repeat(64)}`;
+      lines.push(
+        `4100  openat2(3<${ROOT}>, "execution-operation-closures", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 7<${closures}>`,
+        `4100  openat2(7<${closures}>, "${"a".repeat(64)}", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 8<${closure}>`,
+        `4100  openat2(8<${closure}>, "terminal-snapshot-candidate.json.staging", {flags=O_RDWR|O_CLOEXEC|O_CREAT|O_EXCL, mode=0444, resolve=RESOLVE_BENEATH}, 24) = 9<${closure}/terminal-snapshot-candidate.json.staging>`,
+        `4100  fchmod(9<${closure}/terminal-snapshot-candidate.json.staging>, 0444) = 0`,
+        `4100  renameat2(8<${closure}>, "terminal-snapshot-candidate.json.staging", 8<${closure}>, "terminal-snapshot-candidate.json", RENAME_NOREPLACE) = 0`,
+        `4100  openat2(8<${closure}>, "terminal-snapshot-candidate.json", {flags=O_RDONLY|O_CLOEXEC, resolve=RESOLVE_BENEATH}, 24) = 10<${closure}/terminal-snapshot-candidate.json>`,
+        `4100  close(10<${closure}/terminal-snapshot-candidate.json>) = 0`,
+        `4100  fsync(8<${closure}>) = 0`,
+        `4100  close(9<${closure}/terminal-snapshot-candidate.json>) = 0`,
+        `4100  close(8<${closure}>) = 0`,
+        `4100  close(7<${closures}>) = 0`,
+      );
+    }
     lines.push(
       `4100  close(5<${AUTHORIZATION}>) = 0`,
       `4100  close(4<${RECEIPTS}>) = 0`,
     );
   }
   lines.push(`4100  close(3<${ROOT}>) = 0`);
+  if (terminalSignal) {
+    lines.push(`4100  +++ killed by ${terminalSignal} +++`);
+  }
   return lines.join("\n");
 }

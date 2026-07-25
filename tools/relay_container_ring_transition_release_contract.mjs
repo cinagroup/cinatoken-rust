@@ -40,6 +40,7 @@ const STAGING_AUTHORITY_ORIGIN =
 const RELEASE_ARTIFACT_BASENAME = "cinatoken-ring-transition-runner";
 const REQUIRED_MODULE_PATHS = Object.freeze([
   ".gitattributes",
+  ".github/workflows/ring-transition-runner-linux.yml",
   "Cargo.lock",
   "Cargo.toml",
   "bun.lock",

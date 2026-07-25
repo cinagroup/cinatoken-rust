@@ -51,6 +51,8 @@ export function verifyRingTransitionRunnerSyscallTrace({
   label,
   expectedLocks,
   requireMkdirat = false,
+  requireSigkillExit = false,
+  requireTerminalCandidateSync = false,
 }) {
   const root = normalizeFixtureRoot(fixtureRoot);
   if (typeof label !== "string" || label.length < 1 || label.length > 80) {
@@ -81,7 +83,12 @@ export function verifyRingTransitionRunnerSyscallTrace({
     dirfdMkdirat: false,
     directorySync: false,
     descriptorChmod: false,
+    terminalCandidatePid: null,
+    terminalCandidateRenameAt: null,
+    terminalCandidateReadbackAt: null,
+    terminalCandidateDirectorySyncAt: null,
   };
+  const processTerminations = [];
   let firstExclusiveLock = null;
   let parsedSyscalls = 0;
 
@@ -94,6 +101,11 @@ export function verifyRingTransitionRunnerSyscallTrace({
       line.startsWith("strace:")
     ) {
       throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
+    }
+    const termination = parseProcessTerminationLine(line);
+    if (termination) {
+      processTerminations.push({ ...termination, index });
+      continue;
     }
     if (
       /^(?:(?:\d+\s+)|(?:\[pid\s+\d+\]\s+))?(?:--- |\+\+\+ |Process )/u.test(
@@ -152,6 +164,14 @@ export function verifyRingTransitionRunnerSyscallTrace({
         heldLocks,
         evidence,
       });
+      observeTerminalCandidateEvidence({
+        syscall,
+        index,
+        root,
+        label,
+        descriptorState,
+        evidence,
+      });
     }
 
     if (syscall.name === "close" && success) {
@@ -178,6 +198,41 @@ export function verifyRingTransitionRunnerSyscallTrace({
   if (missing.length > 0) {
     throw new Error(`[${label}] trace missing required evidence: ${missing.join(", ")}`);
   }
+  const lockPids = new Set(exclusiveLocks.map((lock) => lock.pid));
+  const matchingSigkills = processTerminations.filter(
+    (termination) =>
+      termination.signal === "SIGKILL" && lockPids.has(termination.pid),
+  );
+  if (requireSigkillExit && matchingSigkills.length !== 1) {
+    throw new Error(
+      `[${label}] expected exactly one locked process SIGKILL exit, found ${matchingSigkills.length}`,
+    );
+  }
+  if (requireTerminalCandidateSync) {
+    const ordered =
+      evidence.terminalCandidateRenameAt !== null &&
+      evidence.terminalCandidateReadbackAt !== null &&
+      evidence.terminalCandidateDirectorySyncAt !== null &&
+      evidence.terminalCandidateRenameAt < evidence.terminalCandidateReadbackAt &&
+      evidence.terminalCandidateReadbackAt <
+        evidence.terminalCandidateDirectorySyncAt;
+    if (!ordered) {
+      throw new Error(
+        `[${label}] terminal candidate rename/readback/directory-sync order is missing`,
+      );
+    }
+    if (
+      requireSigkillExit &&
+      (
+        matchingSigkills[0].pid !== evidence.terminalCandidatePid ||
+        matchingSigkills[0].index <= evidence.terminalCandidateDirectorySyncAt
+      )
+    ) {
+      throw new Error(
+        `[${label}] terminal candidate writer PID was not killed after sync completed`,
+      );
+    }
+  }
 
   return {
     ok: true,
@@ -190,7 +245,111 @@ export function verifyRingTransitionRunnerSyscallTrace({
     successfulDirfdMkdirat: evidence.dirfdMkdirat,
     successfulDirectorySync: evidence.directorySync,
     successfulDescriptorChmod: evidence.descriptorChmod,
+    sigkillExitObserved: matchingSigkills.length === 1,
+    terminalCandidateRenameObserved:
+      evidence.terminalCandidateRenameAt !== null,
+    terminalCandidateReadbackObserved:
+      evidence.terminalCandidateReadbackAt !== null,
+    terminalCandidateDirectorySyncObserved:
+      evidence.terminalCandidateDirectorySyncAt !== null,
   };
+}
+
+function observeTerminalCandidateEvidence({
+  syscall,
+  index,
+  root,
+  label,
+  descriptorState,
+  evidence,
+}) {
+  if (
+    syscall.name === "renameat2" &&
+    /,\s*"terminal-snapshot-candidate\.json"\s*,\s*RENAME_NOREPLACE\s*$/u.test(
+      syscall.args,
+    )
+  ) {
+    for (const descriptor of renameDescriptors(
+      syscall.args,
+      syscall.pid,
+      descriptorState,
+    )) {
+      requireTerminalCandidateClosureDescriptor(descriptor, root, label);
+    }
+    evidence.terminalCandidatePid = syscall.pid;
+    evidence.terminalCandidateRenameAt = index;
+    return;
+  }
+  if (
+    syscall.name === "openat2" &&
+    !isWriteOpen(syscall) &&
+    /^\s*\d+(?:<[^>]*>)?,\s*"terminal-snapshot-candidate\.json",/u.test(
+      syscall.args,
+    ) &&
+    evidence.terminalCandidateRenameAt !== null
+  ) {
+    if (syscall.pid !== evidence.terminalCandidatePid) {
+      throw new Error(
+        `[${label}] terminal candidate readback moved to another process`,
+      );
+    }
+    const descriptor = descriptorArgument(
+      syscall.args,
+      syscall.pid,
+      descriptorState,
+    );
+    requireTerminalCandidateClosureDescriptor(descriptor, root, label);
+    const opened = parseDescriptorToken(syscall.result);
+    if (
+      !opened ||
+      path.posix.basename(normalizeTracePath(opened.path) ?? "") !==
+        "terminal-snapshot-candidate.json"
+    ) {
+      throw new Error(
+        `[${label}] terminal candidate readback descriptor is not object-bound`,
+      );
+    }
+    evidence.terminalCandidateReadbackAt = index;
+    return;
+  }
+  if (
+    ["fsync", "fdatasync"].includes(syscall.name) &&
+    evidence.terminalCandidateReadbackAt !== null &&
+    syscall.pid === evidence.terminalCandidatePid
+  ) {
+    const descriptor = descriptorArgument(
+      syscall.args,
+      syscall.pid,
+      descriptorState,
+    );
+    if (
+      descriptor.isDirectory &&
+      isTerminalCandidateClosurePath(root, descriptor.path)
+    ) {
+      evidence.terminalCandidateDirectorySyncAt = index;
+    }
+  }
+}
+
+function requireTerminalCandidateClosureDescriptor(
+  descriptor,
+  root,
+  label,
+) {
+  if (
+    !descriptor?.isDirectory ||
+    !isTerminalCandidateClosurePath(root, descriptor.path)
+  ) {
+    throw new Error(
+      `[${label}] terminal candidate operation is not bound to its closure directory`,
+    );
+  }
+}
+
+function isTerminalCandidateClosurePath(root, value) {
+  return isWithinFixture(root, value) &&
+    path.posix.basename(path.posix.dirname(value)) ===
+      "execution-operation-closures";
 }
 
 function verifySuccessfulMutation({
@@ -408,6 +567,19 @@ function parseSyscallLine(raw) {
   };
 }
 
+function parseProcessTerminationLine(raw) {
+  const match =
+    /^(?:(\d+)\s+|\[pid\s+(\d+)\]\s+)?\+\+\+ (?:(?:killed by (SIG[A-Z0-9]+))|(?:exited with (\d+))) \+\+\+$/u.exec(
+      raw,
+    );
+  if (!match) return null;
+  return {
+    pid: match[1] ?? match[2] ?? "main",
+    signal: match[3] ?? null,
+    exitCode: match[4] === undefined ? null : Number(match[4]),
+  };
+}
+
 function resultIsSuccess(result) {
   const match = /^(-?\d+)/u.exec(result.trim());
   return Boolean(match && Number(match[1]) >= 0);
@@ -522,10 +694,20 @@ function isWithinFixture(root, value) {
 function parseArgs(argv) {
   const values = new Map();
   let requireMkdirat = false;
+  let requireSigkillExit = false;
+  let requireTerminalCandidateSync = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--require-mkdirat") {
       requireMkdirat = true;
+      continue;
+    }
+    if (argument === "--require-sigkill-exit") {
+      requireSigkillExit = true;
+      continue;
+    }
+    if (argument === "--require-terminal-candidate-sync") {
+      requireTerminalCandidateSync = true;
       continue;
     }
     if (
@@ -558,6 +740,8 @@ function parseArgs(argv) {
     label: values.get("--label"),
     expectedLocks,
     requireMkdirat,
+    requireSigkillExit,
+    requireTerminalCandidateSync,
   };
 }
 
@@ -566,7 +750,8 @@ function usage(exitCode, message) {
   process.stderr.write(
     "Usage: node tools/verify_ring_transition_runner_syscall_trace.mjs " +
       "--trace <path> --fixture-root <path> --label <label> " +
-      "--expected-locks <even-count> [--require-mkdirat]\n",
+      "--expected-locks <even-count> [--require-mkdirat] " +
+      "[--require-sigkill-exit] [--require-terminal-candidate-sync]\n",
   );
   process.exit(exitCode);
 }

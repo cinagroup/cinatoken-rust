@@ -7,6 +7,11 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/ring-transition-runner/**"
+      - "tools/verify_ring_transition_runner_syscall_trace.mjs"
+      - "tests/ring-transition-runner-syscall-trace.test.mjs"
+      - "tools/collect_ring_transition_runner_release_source.mjs"
+      - "tools/relay_container_ring_transition_release_contract.mjs"
+      - "tests/relay-container-ring-transition-release*.test.mjs"
   push:
     branches:
       - main
@@ -15,6 +20,11 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/ring-transition-runner/**"
+      - "tools/verify_ring_transition_runner_syscall_trace.mjs"
+      - "tests/ring-transition-runner-syscall-trace.test.mjs"
+      - "tools/collect_ring_transition_runner_release_source.mjs"
+      - "tools/relay_container_ring_transition_release_contract.mjs"
+      - "tests/relay-container-ring-transition-release*.test.mjs"
   workflow_dispatch:
 
 permissions:
@@ -47,7 +57,9 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          log_file="$(mktemp)"
+          trace_artifact_dir="${RUNNER_TEMP}/ring-transition-syscall-traces"
+          mkdir -p "${trace_artifact_dir}"
+          log_file="${trace_artifact_dir}/linux-library-tests.log"
           if cargo test --locked -p cinatoken-ring-transition-runner --lib 2>&1 | tee "${log_file}"; then
             exit 0
           fi
@@ -79,15 +91,32 @@ jobs:
           full_trace_log="${trace_artifact_dir}/full-terminal-transaction.strace"
           full_trace_root="$(mktemp -d)"
           full_trace_ready="${full_trace_root}.ready"
+          candidate_writer_trace_log="${trace_artifact_dir}/candidate-after-sync-writer.strace"
+          candidate_recovery_trace_log="${trace_artifact_dir}/candidate-after-sync-recovery.strace"
+          candidate_trace_root="$(mktemp -d)"
+          candidate_writer_pid_file="${candidate_trace_root}.pid"
+          candidate_writer_output="${trace_artifact_dir}/candidate-after-sync-writer.log"
+          candidate_recovery_output="${trace_artifact_dir}/candidate-after-sync-recovery.log"
+          candidate_writer_tracer_pid=""
+          candidate_writer_pid=""
           cleanup_trace_fixture() {
+            if [[ -n "${candidate_writer_pid}" ]]; then
+              kill -KILL "${candidate_writer_pid}" 2>/dev/null || true
+            fi
+            if [[ -n "${candidate_writer_tracer_pid}" ]]; then
+              kill -KILL "${candidate_writer_tracer_pid}" 2>/dev/null || true
+            fi
             chmod -R u+w "${trace_root}" 2>/dev/null || true
             chmod -R u+w "${full_trace_root}" 2>/dev/null || true
+            chmod -R u+w "${candidate_trace_root}" 2>/dev/null || true
             rm -rf \
               "${trace_root}" \
               "${prepare_ready}" \
               "${recover_ready}" \
               "${full_trace_root}" \
               "${full_trace_ready}" \
+              "${candidate_trace_root}" \
+              "${candidate_writer_pid_file}" \
               "${artifact_log}"
           }
           trap cleanup_trace_fixture EXIT
@@ -152,28 +181,128 @@ jobs:
               --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
               --nocapture
 
+          strace -f -q -yy -s 4096 \
+            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -o "${candidate_writer_trace_log}" \
+            bash -c '
+              printf "%s\n" "$$" > "$1"
+              exec env \
+                CINATOKEN_RING_RECEIPT_TEST_ROLE=candidate-synced-wait \
+                CINATOKEN_RING_RECEIPT_TEST_ROOT="$2" \
+                CINATOKEN_RING_RECEIPT_TEST_READY="${2}.unused" \
+                CINATOKEN_RING_RECEIPT_TEST_READY_STDOUT=1 \
+                "$3" \
+                --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
+                --nocapture
+            ' _ "${candidate_writer_pid_file}" "${candidate_trace_root}" "${test_binary}" \
+            > "${candidate_writer_output}" 2>&1 &
+          candidate_writer_tracer_pid="$!"
+          for _ in $(seq 1 1000); do
+            if [[ -s "${candidate_writer_pid_file}" ]] &&
+              grep -qx "candidate-synced" "${candidate_writer_output}"; then
+              break
+            fi
+            if ! kill -0 "${candidate_writer_tracer_pid}" 2>/dev/null; then
+              cat "${candidate_writer_output}"
+              wait "${candidate_writer_tracer_pid}"
+              exit 1
+            fi
+            sleep 0.01
+          done
+          test -s "${candidate_writer_pid_file}"
+          grep -qx "candidate-synced" "${candidate_writer_output}"
+          candidate_writer_pid="$(cat "${candidate_writer_pid_file}")"
+          kill -KILL "${candidate_writer_pid}"
+          set +e
+          wait "${candidate_writer_tracer_pid}"
+          candidate_writer_status="$?"
+          set -e
+          candidate_writer_tracer_pid=""
+          candidate_writer_pid=""
+          test "${candidate_writer_status}" -ne 0
+
+          strace -f -qq -yy -s 4096 \
+            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -o "${candidate_recovery_trace_log}" \
+            env \
+              CINATOKEN_RING_RECEIPT_TEST_ROLE=recover-terminal-candidate \
+              CINATOKEN_RING_RECEIPT_TEST_ROOT="${candidate_trace_root}" \
+              CINATOKEN_RING_RECEIPT_TEST_READY="${candidate_trace_root}.unused" \
+              "${test_binary}" \
+              --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
+              --nocapture \
+            2>&1 | tee "${candidate_recovery_output}"
+
           node tools/verify_ring_transition_runner_syscall_trace.mjs \
             --trace "${trace_log}" \
             --fixture-root "${trace_root}" \
             --label "terminal recovery" \
-            --expected-locks 4
+            --expected-locks 4 \
+            | tee "${trace_artifact_dir}/terminal-recovery.verification.json"
           node tools/verify_ring_transition_runner_syscall_trace.mjs \
             --trace "${full_trace_log}" \
             --fixture-root "${full_trace_root}" \
             --label "full terminal transaction" \
             --expected-locks 10 \
-            --require-mkdirat
+            --require-mkdirat \
+            | tee "${trace_artifact_dir}/full-terminal-transaction.verification.json"
+          node tools/verify_ring_transition_runner_syscall_trace.mjs \
+            --trace "${candidate_writer_trace_log}" \
+            --fixture-root "${candidate_trace_root}" \
+            --label "candidate-after-sync writer" \
+            --expected-locks 4 \
+            --require-mkdirat \
+            --require-sigkill-exit \
+            --require-terminal-candidate-sync \
+            | tee "${trace_artifact_dir}/candidate-after-sync-writer.verification.json"
+          node tools/verify_ring_transition_runner_syscall_trace.mjs \
+            --trace "${candidate_recovery_trace_log}" \
+            --fixture-root "${candidate_trace_root}" \
+            --label "candidate-after-sync recovery" \
+            --expected-locks 6 \
+            --require-mkdirat \
+            | tee "${trace_artifact_dir}/candidate-after-sync-recovery.verification.json"
+
+          jq -n \
+            --arg gitSha "${GITHUB_SHA}" \
+            --arg boundary "candidate-after-sync-before-accepted-finish" \
+            --arg signal "SIGKILL" \
+            --argjson tracerStatus "${candidate_writer_status}" \
+            --argjson writerExpectedLocks 4 \
+            --argjson recoveryExpectedLocks 6 \
+            '{
+              gitSha: $gitSha,
+              boundary: $boundary,
+              signal: $signal,
+              tracerStatus: $tracerStatus,
+              writerExpectedLocks: $writerExpectedLocks,
+              recoveryExpectedLocks: $recoveryExpectedLocks
+            }' > "${trace_artifact_dir}/candidate-after-sync-boundary.json"
 
           {
             echo "### Terminal descriptor syscall traces"
             echo
             echo "- recovery post-lock AT_FDCWD mutation: none"
             echo "- full-transaction post-lock AT_FDCWD mutation: none"
-            echo "- exact paired exclusive locks: recovery 4; full transaction 10"
-            echo "- successful retained-dirfd openat2/renameat2: observed in both traces"
-            echo "- successful full-transaction retained-dirfd mkdirat: observed"
-            echo "- successful directory fsync/fdatasync and descriptor chmod: observed"
+            echo "- candidate writer: exact SIGKILL after candidate rename/readback/directory sync"
+            echo "- candidate-after-sync recovery post-lock AT_FDCWD mutation: none"
+            echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 6"
+            echo "- successful retained-dirfd openat2/renameat2: observed in all four traces"
+            echo "- successful full-transaction and candidate-recovery retained-dirfd mkdirat: observed"
+            echo "- successful directory fsync/fdatasync and descriptor chmod: observed in all four traces"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Retain syscall verification summaries
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ring-transition-syscall-summaries-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ring-transition-syscall-traces/*.verification.json
+            ${{ runner.temp }}/ring-transition-syscall-traces/*-boundary.json
+            ${{ runner.temp }}/ring-transition-syscall-traces/*.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Retain failed syscall traces
         if: failure()

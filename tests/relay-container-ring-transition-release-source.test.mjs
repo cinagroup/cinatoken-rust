@@ -82,7 +82,7 @@ describe("ring-transition runner release source collector", () => {
     expect(first.moduleInventory.files.map((record) => record.path)).toEqual(
       [...first.moduleInventory.files.map((record) => record.path)].sort(),
     );
-    expect(first.moduleCount).toBe(33);
+    expect(first.moduleCount).toBe(34);
     expect(first.moduleInventory.files).toContainEqual({
       path: "crates/ring-transition-runner/src/execution_activation.rs",
       byteLength: Buffer.byteLength(
@@ -199,8 +199,9 @@ describe("ring-transition runner release source collector", () => {
     }
   });
 
-  test("rejects a missing syscall trace verifier or verifier test", async () => {
+  test("rejects a missing syscall workflow, verifier or verifier test", async () => {
     for (const omit of [
+      ".github/workflows/ring-transition-runner-linux.yml",
       "tools/verify_ring_transition_runner_syscall_trace.mjs",
       "tests/ring-transition-runner-syscall-trace.test.mjs",
     ]) {
@@ -265,6 +266,10 @@ async function fixtureRepository({ omit = null } = {}) {
   temporaryDirectories.push(repository);
   const files = new Map([
     [".gitattributes", "* text=auto\n"],
+    [
+      ".github/workflows/ring-transition-runner-linux.yml",
+      "name: ring-transition-runner-linux\n",
+    ],
     ["Cargo.lock", "fixture Cargo.lock\n"],
     ["Cargo.toml", "[workspace]\n"],
     ["bun.lock", "fixture bun.lock\n"],

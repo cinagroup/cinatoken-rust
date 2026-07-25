@@ -10418,6 +10418,209 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn linux_multiprocess_terminal_rename_and_kill_recovery() {
+        const ROLE_ENV: &str = "CINATOKEN_RING_RECEIPT_TEST_ROLE";
+        const ROOT_ENV: &str = "CINATOKEN_RING_RECEIPT_TEST_ROOT";
+        const READY_ENV: &str = "CINATOKEN_RING_RECEIPT_TEST_READY";
+
+        if let Some(role) = std::env::var_os(ROLE_ENV) {
+            let root = PathBuf::from(std::env::var_os(ROOT_ENV).expect("child root"));
+            let ready = PathBuf::from(std::env::var_os(READY_ENV).expect("child ready path"));
+            run_multiprocess_terminal_child(
+                role.to_str().expect("ASCII child role"),
+                &root,
+                &ready,
+            );
+            return;
+        }
+
+        let rename_root = temporary_root("linux-multiprocess-terminal-rename");
+        let rename_ready = rename_root.with_extension("rename-ready");
+        let store = ReceiptStore::open(&rename_root).unwrap();
+        let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
+        let mut read = operation_start("a", NOW);
+        read.identity.kind = OperationKind::AuthorityClaimRead;
+        read.identity.state_version = 0;
+        read.identity.request_sha256 =
+            read_operation_request_sha256(&read.identity.target_sha256, &read.request_id_sha256)
+                .unwrap();
+        store
+            .reserve_operation(&publication, &credentials, &activation, &read)
+            .unwrap();
+        let finish = OperationFinishInput {
+            outcome: OperationOutcome::Accepted,
+            finished_at: NOW + 1,
+            http_status: Some(200),
+            response_body_sha256: Some("a".repeat(64)),
+            response_id_sha256: Some("b".repeat(64)),
+        };
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let operation = project_operation_identity(&context, &read.identity).unwrap();
+        let plan = plan_terminal_receipts(&snapshot, &publication, &credentials).unwrap();
+        let authorization = store
+            .ensure_operation_authorization_directory(&context.authorization_id_sha256)
+            .unwrap();
+        let locked = lock_operation_authorization(&authorization).unwrap();
+        let child_root = rename_root.clone();
+        let child_ready = rename_ready.clone();
+
+        let result = store.install_terminal_snapshot_candidate_locked_with_graph_hook(
+            &locked,
+            &context,
+            TerminalSnapshotCandidateInstall {
+                snapshot: &snapshot,
+                operation: &operation,
+                finish: &finish,
+                plan: &plan,
+            },
+            move |_| {
+                let status =
+                    spawn_multiprocess_terminal_child("rename-closure", &child_root, &child_ready)
+                        .wait()
+                        .expect("rename child wait");
+                assert!(status.success(), "rename child failed: {status}");
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(ReceiptError::UnsafeFilesystem(
+                "operation_authorization_closure_directory"
+            ))
+        );
+        let closures = rename_root.join(OPERATION_CLOSURES_DIRECTORY_NAME);
+        let visible_closure = closures.join(&context.authorization_id_sha256);
+        let displaced_closure = closures.join("e".repeat(64));
+        assert!(!visible_closure
+            .join(TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME)
+            .exists());
+        assert!(!displaced_closure
+            .join(TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME)
+            .exists());
+        drop(locked);
+        cleanup(&rename_root);
+
+        let kill_root = temporary_root("linux-multiprocess-terminal-kill");
+        let kill_ready = kill_root.with_extension("head-set-ready");
+        let mut child = spawn_multiprocess_terminal_child("head-set-wait", &kill_root, &kill_ready);
+        wait_for_multiprocess_ready(&mut child, &kill_ready);
+        child.kill().expect("SIGKILL terminal writer");
+        let status = child.wait().expect("killed child wait");
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+
+        let (publication, credentials, activation) = operation_context();
+        let authorization = kill_root
+            .join(OPERATION_RECEIPTS_DIRECTORY_NAME)
+            .join(activation.authorization_id_sha256());
+        let closure = kill_root
+            .join(OPERATION_CLOSURES_DIRECTORY_NAME)
+            .join(activation.authorization_id_sha256());
+        assert!(authorization.join(OPERATION_HEAD_SET_FILE_NAME).exists());
+        assert!(!closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME).exists());
+
+        let store = ReceiptStore::open(&kill_root).unwrap();
+        let recovered = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+        let replayed = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        assert_eq!(recovered, replayed);
+        assert_eq!(recovered.execution_receipt_head_sha256, plan.head_sha256());
+        assert!(closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME).exists());
+        let _ = fs::remove_file(&kill_ready);
+        cleanup(&kill_root);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn spawn_multiprocess_terminal_child(
+        role: &str,
+        root: &Path,
+        ready: &Path,
+    ) -> std::process::Child {
+        std::process::Command::new(std::env::current_exe().expect("current test executable"))
+            .arg("--exact")
+            .arg("receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery")
+            .arg("--nocapture")
+            .env_clear()
+            .env("CINATOKEN_RING_RECEIPT_TEST_ROLE", role)
+            .env("CINATOKEN_RING_RECEIPT_TEST_ROOT", root)
+            .env("CINATOKEN_RING_RECEIPT_TEST_READY", ready)
+            .spawn()
+            .expect("spawn multiprocess terminal child")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_multiprocess_terminal_child(role: &str, root: &Path, ready: &Path) {
+        match role {
+            "rename-closure" => {
+                let (_, _, activation) = operation_context();
+                let closures = root.join(OPERATION_CLOSURES_DIRECTORY_NAME);
+                let closure = closures.join(activation.authorization_id_sha256());
+                let displaced = closures.join("e".repeat(64));
+                fs::rename(&closure, &displaced).unwrap();
+                fs::create_dir(&closure).unwrap();
+            }
+            "head-set-wait" => {
+                let store = ReceiptStore::open(root).unwrap();
+                let (publication, credentials, activation) = operation_context();
+                let context =
+                    project_operation_context(&publication, &credentials, &activation).unwrap();
+                let plan =
+                    terminal_plan_for_operation_context(&publication, &credentials, &activation);
+                let authorization = store
+                    .ensure_operation_authorization_directory(&context.authorization_id_sha256)
+                    .unwrap();
+                let locked = lock_operation_authorization(&authorization).unwrap();
+                let mut graph = store
+                    .lock_terminal_graph(&locked, &context, true, true)
+                    .unwrap();
+                let mut state = store
+                    .locked_authorization_closure_state(&locked, &context)
+                    .unwrap();
+                store
+                    .install_terminal_plan_locked(&locked, &mut graph, &plan)
+                    .unwrap();
+                let head_set = store
+                    .canonical_locked_operation_head_set(&context, &state)
+                    .unwrap();
+                store
+                    .publish_locked_operation_head_set(&locked, &mut state, &head_set)
+                    .unwrap();
+                let mut signal = fs::File::create(ready).unwrap();
+                signal.write_all(b"head-set-synced").unwrap();
+                signal.sync_all().unwrap();
+                loop {
+                    locked.require_bound().unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+            _ => panic!("unknown multiprocess terminal child role"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_multiprocess_ready(child: &mut std::process::Child, ready: &Path) {
+        for _ in 0..1_000 {
+            if ready.exists() {
+                return;
+            }
+            if let Some(status) = child.try_wait().expect("child readiness poll") {
+                panic!("terminal child exited before readiness: {status}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("terminal child readiness timeout");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn linux_terminal_candidate_rejects_closure_replacement_after_graph_capture() {
         let root = temporary_root("linux-terminal-candidate-closure-replacement");
         let store = ReceiptStore::open(&root).unwrap();

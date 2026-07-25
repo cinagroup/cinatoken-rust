@@ -3072,3 +3072,55 @@ retention. They remain sources for durable-owner and CAS-winner principles
 only. Until local K4, external anchoring, K5, isolated staging, compatibility,
 rollback, Go/VPS drain and G1-G8 all pass for one immutable candidate, Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-25 K7 Linux Publication-FD Gate
+
+The first Linux pathname hardening increment is implemented at the immutable
+file publication boundary. Every execution receipt, operation receipt,
+capacity marker, terminal candidate, operation head set and local seal now
+uses one opened parent directory descriptor from staging creation through
+`RENAME_NOREPLACE`, parent `fsync` and final target readback. The verifier
+binds the installed file to the staging file's dev/inode/UID/GID/mode/nlink
+identity and rejects hard links or writable/foreign objects.
+
+The Ubuntu 24.04 gate includes three Linux-only adversarial cases:
+
+1. replace the parent pathname after staging sync and prove the final target
+   remains in the original opened inode while publication fails closed on the
+   pathname-to-inode mismatch;
+2. create a competing target before rename and prove it is never overwritten;
+3. add a second hard link to an existing target and require fail-closed
+   rejection.
+
+The immutable native evidence is commit
+`0b8f50567d30d8c69e51982af44555879d7cf691` and
+[run 30142006553](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142006553).
+Formatting, 127 Linux library tests and warning-free Clippy all passed. The
+clean commit-object inventory contains 31 modules and 1501593 bytes with
+SHA-256
+`26eea3d220a34d8c6538eedea55dbeca73de858f7965960db64b7c6523a4dac6`.
+
+This is a partial K7 gate. The production transaction still needs a typed
+`LockedAuthorization` that owns the trusted root, operation-receipts parent,
+authorization, execution-chain and closure dirfds. After `flock`, production
+code must accept that type instead of `Path`/`PathBuf`; scans must consume
+directory descriptors, children must be opened with reviewed `openat2`
+containment flags, and all chmod/rename/fsync calls must use those retained
+descriptors. Linux multi-process split-lock, seccomp/strace no-`AT_FDCWD`,
+kill-after-sync and ext4/XFS power-loss campaigns remain promotion blockers.
+
+Cloudflare Container root disks are not a persistence layer. The official
+[Container lifecycle documentation](https://developers.cloudflare.com/containers/platform-details/architecture/)
+states that disk is ephemeral after sleep/restart, and also states that the
+Container class is backed by a Durable Object while the DO and container are
+not guaranteed to run in the same location. Consequently:
+
+- the per-shard DO owns durable lifecycle/routing state;
+- D1/R2 hold shared durable records and immutable artifacts;
+- the Linux shard container treats its filesystem as replaceable scratch; and
+- K7 release receipts remain in an external reviewed Linux runner store until
+  independently anchored in DSSE/WORM storage.
+
+No Cloudflare mutation or credential use is authorized by this gate. Go/VPS
+remains traffic, scheduler and financial authority; production remains
+**NO-GO**.

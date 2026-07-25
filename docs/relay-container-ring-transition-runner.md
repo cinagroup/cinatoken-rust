@@ -1142,3 +1142,64 @@ The audited cinaVibeSDK and cinatoken Go sources have no direct parity for
 these aggregate objects, Linux `flock`, DSSE evidence or provider WORM
 retention. Go/VPS remains the traffic, scheduler and financial authority.
 Checked-in trust remains disabled and production remains **NO-GO**.
+
+## Linux Single-Parent Publication Increment
+
+The Linux create-new publication primitive now opens the immediate parent
+directory once and retains that descriptor for the complete target decision:
+
+```text
+open parent directory once
+-> reject unsafe existing target through openat(O_NOFOLLOW)
+-> create staging through openat(O_CREAT|O_EXCL|O_NOFOLLOW)
+-> write, exact readback, chmod 0444 and fsync staging
+-> renameat2(same dirfd, RENAME_NOREPLACE)
+-> fsync the same parent dirfd
+-> reopen target through the same dirfd
+-> compare target dev/inode/owner/group/mode/nlink with the staging inode
+-> reopen the parent pathname and require the same directory identity
+-> perform two bounded reads and return only exact bytes
+```
+
+This primitive is shared by Execution Receipt V1, Operation Receipt V1,
+capacity markers, terminal candidates, operation head sets and local seals.
+It rejects group/world-writable directories or files, foreign UID/GID,
+non-directory parents, non-regular targets and final files with `nlink != 1`.
+A competing target wins without overwrite; a different byte sequence remains
+a conflict. Failure to prove the target or parent sync remains
+`DurabilityUnknown`.
+
+Linux-only tests inject a parent pathname replacement immediately after
+staging fsync. The target must still appear only in the displaced original
+directory inode, the newly created replacement directory must remain empty,
+and publication must fail closed because the pathname no longer resolves to
+the pinned inode. Additional tests retain a competing target and reject a
+hard-linked target. The dedicated
+`.github/workflows/ring-transition-runner-linux.yml` gate runs the full runner
+library and warning-free clippy suite on Ubuntu 24.04.
+
+Native evidence is frozen at commit
+`0b8f50567d30d8c69e51982af44555879d7cf691`. GitHub Actions
+[run 30142006553](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142006553)
+passed formatting, all 127 Linux library tests and warning-free Clippy. The
+clean commit-object collector reports 31 modules, 1501593 bytes and inventory
+SHA-256
+`26eea3d220a34d8c6538eedea55dbeca73de858f7965960db64b7c6523a4dac6`.
+
+This closes the stage/rename/parent-fsync split for one publication, not the
+entire K7 pathname boundary. Authorization `flock` acquisition and later tree
+scans still accept paths rather than a `LockedAuthorization` fd graph.
+Operation, execution-chain and closure directories are not yet all opened
+with `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV)`.
+Split-lock replacement, multi-process kill points, ACL checks, backup/restore
+and ext4/XFS power-loss evidence therefore remain required.
+
+The receipt store is evidence owned by the external release runner. It must
+not be placed on a Cloudflare Container root filesystem. Cloudflare documents
+that Container disk is ephemeral and is recreated after sleep/restart, while
+the Container class is backed by a Durable Object that can retain associated
+persistent state. Runtime shard state belongs in DO storage/D1/R2; immutable
+release evidence belongs in the reviewed external Linux store and future
+DSSE/WORM anchor. See the official
+[Container lifecycle](https://developers.cloudflare.com/containers/platform-details/architecture/)
+boundary.

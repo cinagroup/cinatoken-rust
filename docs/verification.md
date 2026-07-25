@@ -9273,10 +9273,69 @@ Observed local evidence:
   SHA-256
   `7de1ae33cb4f36b7ea103fea15118680d076567c305270f8f74ef6d617ee4003`.
 
-This is Windows/local evidence. The Linux target download was unavailable in
-this workspace, and no native dirfd/`openat2`, directory replacement,
-multi-process kill/fsync, ext4/XFS power-loss, external DSSE/WORM or remote
-staging campaign was run. The current path re-resolution after directory
-`flock` remains a production blocker. No credential or Cloudflare remote
-action occurred; Go/VPS remains authoritative and production remains
-**NO-GO**.
+This is Windows/local evidence. The Linux standard library is installed, but
+the Windows host has no `x86_64-linux-gnu-gcc`, so dependency build scripts
+prevent a complete local Linux cross-check. Native Linux execution is assigned
+to the dedicated Ubuntu workflow. No multi-process kill/fsync, ext4/XFS
+power-loss, external DSSE/WORM or remote staging campaign was run. The current
+path re-resolution after directory `flock` remains a production blocker. No
+credential or Cloudflare remote action occurred; Go/VPS remains authoritative
+and production remains **NO-GO**.
+
+## 2026-07-25 Linux Single-Parent Publication Verification
+
+The immutable publication path now uses one Linux parent dirfd for target
+lookup, staging create/write/sync, no-replace rename, parent sync and final
+readback. The final target must match the staging dev/inode and pass
+UID/GID/mode/nlink checks, while a reopened parent pathname must still resolve
+to the pinned directory identity; bounded double-read catches content drift.
+The same primitive covers execution receipts, operation receipts, capacity
+markers, terminal candidates, head sets and local seals.
+
+Local evidence:
+
+- `cargo test -p cinatoken-ring-transition-runner --lib`: 124 Windows tests
+  passed;
+- the 23 focused receipt tests passed after the publication refactor;
+- `cargo clippy -p cinatoken-ring-transition-runner --all-targets -- -D
+  warnings`: passed; and
+- `cargo check --target x86_64-unknown-linux-gnu` reached the native `ring`
+  build and stopped because this Windows host lacks
+  `x86_64-linux-gnu-gcc`, not because of a reported runner Rust diagnostic.
+
+The new `.github/workflows/ring-transition-runner-linux.yml` gate runs the full
+library plus three Linux-only tests on Ubuntu 24.04. Those tests replace the
+parent pathname after staging sync and require fail-closed identity mismatch,
+race a no-replace competitor and reject a hard-linked target. A remote pass
+is recorded for commit
+`0b8f50567d30d8c69e51982af44555879d7cf691`:
+
+- [run 30142006553](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142006553)
+  and
+  [job 89636946500](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142006553/job/89636946500)
+  completed successfully;
+- formatting, 127 Linux library tests and `cargo clippy --locked -p
+  cinatoken-ring-transition-runner --all-targets -- -D warnings` all passed;
+- the final local `check:ring-transition-runner` passed 124 Rust library
+  tests, 3 CLI tests and 61 Bun tests/242 expectations; and
+- the clean commit-object collector reported Git tree
+  `70f6b0491c5e90107899a4ae5f6753bb29ee0e03`, source archive SHA-256
+  `7329461b1672194222f5be22076166947215282b22081237c2e7acdc31e55c9b`,
+  31 modules, 1501593 module bytes and inventory SHA-256
+  `26eea3d220a34d8c6538eedea55dbeca73de858f7965960db64b7c6523a4dac6`.
+
+The failure chain is retained as evidence rather than hidden:
+
+1. [run 30139739920](https://github.com/cinagroup/cinatoken-rust/actions/runs/30139739920)
+   rejected the first Linux candidate;
+2. [run 30141528423](https://github.com/cinagroup/cinatoken-rust/actions/runs/30141528423)
+   exposed that a tamper fixture remained writable instead of restoring
+   production mode `0444`;
+3. [run 30141856643](https://github.com/cinagroup/cinatoken-rust/actions/runs/30141856643)
+   caught a Linux-only conditional import error and warning; and
+4. run 30142006553 passed after the cross-platform fixture and import fixes.
+
+This gate proves same-parent publication continuity only. It does not yet
+prove a pinned authorization/root/closure descriptor graph, split-lock
+exclusion, zero `AT_FDCWD` after `flock`, multi-process recovery or power-loss
+durability. K7, external anchoring and production remain **NO-GO**.

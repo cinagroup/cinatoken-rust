@@ -19951,3 +19951,65 @@ WORM retention. Rollback never unseals or deletes local evidence. If closure
 cannot converge exactly, quarantine the authorization, disable the candidate,
 route new work to hot Go/VPS and issue a new authorization. Go/VPS remains the
 traffic, scheduler and financial authority. Production remains **NO-GO**.
+
+## 22.288 K7 Single-Parent Dirfd Publication (2026-07-25)
+
+The Linux runner now performs each immutable file publication through one
+opened parent directory descriptor. Target lookup, staging create/write/sync,
+`renameat2(RENAME_NOREPLACE)`, parent sync and target readback no longer
+re-open that parent pathname between durability steps. The final target must
+be the same dev/inode as the synced staging file and must retain the expected
+UID, GID, non-writable mode and single-link identity. Capacity markers,
+operation and execution receipts, terminal candidates, head sets and local
+seals all use this primitive.
+
+Three Linux-only failure injections are part of a new Ubuntu 24.04 workflow:
+
+- rename the parent after staging sync and create a replacement at the old
+  path; publication must remain on the displaced original inode and fail
+  closed because the pathname no longer resolves to that inode;
+- race a different target before rename; the competitor remains byte-for-byte
+  unchanged and staging is removed through the retained dirfd; and
+- present a hard-linked target; publication fails closed.
+
+The frozen candidate is
+`0b8f50567d30d8c69e51982af44555879d7cf691`. GitHub Actions
+[run 30142006553](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142006553)
+passed formatting, all 127 Linux library tests and warning-free Clippy. A
+clean commit-object collection produced 31 modules, 1501593 bytes and module
+inventory SHA-256
+`26eea3d220a34d8c6538eedea55dbeca73de858f7965960db64b7c6523a4dac6`.
+
+This removes the prior stage-A/rename-B/fsync-B false-success class. It does
+not complete the required trusted dirfd graph. The next K7 implementation
+must introduce a typed `LockedAuthorization` carrying pinned root,
+operation-receipts, authorization, execution-chain and closure descriptors;
+replace post-lock `Path`/`PathBuf` APIs with fd-relative scans and
+`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV)`; verify
+attachment continuity before granting any send capability; and add
+multi-process split-lock plus syscall-trace enforcement.
+
+### Cloudflare Container persistence correction
+
+The four-layer target remains:
+
+```text
+edge Worker
+-> tenant/hash-selected shard Durable Object
+-> independently replaceable linux/amd64 shard Container
+-> DO storage + D1 + R2 durable data plane
+```
+
+Cloudflare's current
+[Container lifecycle documentation](https://developers.cloudflare.com/containers/platform-details/architecture/)
+states that Container disk is ephemeral after sleep/restart, that Containers
+are backed by Durable Objects, and that a DO and its Container are not
+guaranteed to execute in the same location. Therefore no correctness claim
+may depend on shard-container local disk surviving a lifecycle event. DO
+storage owns per-shard lifecycle/CAS state, D1 owns shared relational
+authority, R2 owns large immutable artifacts, and the external K7 runner owns
+release receipts pending DSSE/WORM anchoring.
+
+This increment performs no Cloudflare mutation, reads no deployment
+credential and moves no traffic. Go/VPS remains authoritative and production
+remains **NO-GO**.

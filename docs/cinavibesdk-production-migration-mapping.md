@@ -2,7 +2,7 @@
 
 Date: 2026-07-12
 
-Latest evidence increment: 2026-07-11
+Latest evidence increment: 2026-07-25
 
 Status: production migration mapping for applying cinaVibeSDK architecture
 patterns to `cinatoken-rust`.
@@ -1277,3 +1277,143 @@ This closes the local cross-language algorithm gap, not remote routing privacy,
 secret provisioning/rotation, real-tenant distribution, Container placement,
 N/N-1 lifecycle, or billing/provider uniqueness. Production remains
 **NO-GO**.
+
+## 2026-07-25 Linux Receipt Filesystem Trust Boundary Mapping
+
+This increment compares the three pinned source trees only:
+
+- cinaVibeSDK `918e97480ee44e357abe99bf33c27259d6ac7ebd`;
+- Go cinatoken `73652508abc5cb09214dde02d51d69d1d1ccc703`; and
+- cinatoken-rust `0b8f50567d30d8c69e51982af44555879d7cf691`.
+
+Only committed objects at those pins count as source evidence. Concurrent
+uncommitted worktree files are excluded from official-design and production
+claims.
+
+The narrow question is whether local Linux bytes may authorize another
+identity proof, Cloudflare request, provider send, or terminal recovery. This
+is not a general Container feature comparison and does not upgrade local
+evidence into deployed Cloudflare evidence.
+
+### Direct source evidence
+
+| Source | Direct evidence | Trust-boundary conclusion |
+| --- | --- | --- |
+| cinaVibeSDK topology | `wrangler.jsonc:80`, `:107`, `:157` and `:220` bind `UserAppSandboxService` as both a Container class and a SQLite-backed Durable Object, while D1, R2 and KV are separate bindings. | Container execution, per-object coordination and shared persistence are separate responsibilities. A Container disk is not implied to be the global source of truth. |
+| cinaVibeSDK identity | `worker/services/sandbox/sandboxSdkClient.ts:82-115` preserves the caller's sandbox ID unless optional `many_to_one` allocation is explicitly selected; `:143-162` resolves that deterministic Sandbox and session. The checked-in Wrangler files do not set `ALLOCATION_STRATEGY`. | Stable logical identity and lifecycle ownership are inherited. The optional language-specific hash/modulo pool is not a financial or receipt authority and is not inherited. |
+| cinaVibeSDK local runtime state | `sandboxSdkClient.ts:405-440` stores instance metadata under `/workspace` and caches it in memory; `:1033-1063` creates the workspace and metadata; `:1185-1222` kills the process, unexposes the port and removes local files on shutdown. | Workspace files, process IDs, ports and memory maps are disposable lifecycle hints. They cannot prove that an operation was never sent or that an audit chain is complete. |
+| cinaVibeSDK local SQLite | `container/storage.ts:48-84` opens path-selected Bun SQLite databases with WAL and `synchronous=NORMAL`; `:107-117` schedules retention cleanup. | The Container log/error database is operational telemetry. Its mutable rows, timer cleanup and path-based opening are not copied as an immutable receipt protocol. |
+| cinaVibeSDK durable state | `worker/agents/core/codingAgent.ts:165-235` reconstructs transient behavior from persisted Agent state on every start; `:462-505` moves full conversation history into a separate DO SQLite table instead of one oversized state row. | Persist recoverable coordination before relying on a resident process, and keep large durable state outside transient runtime objects. The application-specific Agent state schema is not copied. |
+| Go cinatoken database boundary | `model/main.go:117-175` selects PostgreSQL, MySQL or a SQLite fallback through GORM; `:177-207` initializes the main database; `:258-286` migrates Channel, Token, User, Log, Task and other business rows. | Business and financial truth belongs to the database model, not request memory or ad hoc files. The VPS SQLite fallback is a deployment option, not permission to make a Cloudflare Container filesystem authoritative. |
+| Go cinatoken logs and tasks | `model/log.go:94-108` writes audit records through `LOG_DB`; `model/task.go:360-401` inserts and saves tasks through `DB`; `:408-418` uses a status-guarded CAS; `:431-441` explicitly rejects unguarded updates for billing/quota lifecycles. | Durable audit/task ownership and conditional transition semantics are inherited. Go has no equivalent of the Rust local receipt chain, aggregate head set, local seal, Linux inode lock, or external immutable anchor. |
+| Rust receipt schema | `crates/ring-transition-runner/src/receipt.rs:249-369` defines the operation head set, local seal and terminal snapshot candidate, binding release, credential, claim, operation, response and expected execution-chain identities. | The receipt filesystem is a new, closed-schema authorization history. It is not a cache of D1/DO state and cannot be reconstructed from an assumed outcome. |
+| Rust durable ordering | `receipt.rs:934-1090` installs or recovers terminal closure under an authorization lock; `:969-1039` publishes and reads back the terminal candidate before terminal closure; `:1195-1237` permits only the candidate-bound accepted finish. `transport.rs:552-588` runs local operation and closure recovery before constructing HTTP; `:1073-1132` records the terminal candidate from the exact accepted claim read. | A committed candidate closes the accepted-response crash window locally. Startup recovery cannot mint a replacement send capability and must finish all other unresolved starts as ambiguous. |
+| Rust Linux file checks | `receipt.rs:4510-4830` opens one immediate parent dirfd, creates staging with `openat(..., O_EXCL|O_NOFOLLOW)`, publishes with same-dirfd `renameat2(..., RENAME_NOREPLACE)`, syncs that dirfd, double-reads the target and binds dev/inode/UID/GID/mode/link identity. It reopens the parent pathname only to require that it still resolves to the pinned identity. | The committed publication primitive rejects writable/foreign/linked targets and parent replacement without redirecting writes. It does not yet establish the whole root/authorization/closure dirfd graph. |
+| Rust installed artifact checks | `crates/ring-transition-runner/src/release.rs:1024-1100` requires stable regular installed bytes and rejects Unix files whose link count is not one. | The executable and receipt writer must be bound to one immutable installed generation; source checkout bytes or a mutable current pointer are insufficient. |
+
+The cinaVibeSDK architecture diagram also routes Sandbox persistence to R2
+while routing execution to Containers
+(`docs/architecture-diagrams.md:88-94`). This supports the separation above,
+but a diagram is weaker evidence than the binding and implementation files and
+does not prove receipt immutability.
+
+Cloudflare's current
+[Container lifecycle documentation](https://developers.cloudflare.com/containers/platform-details/architecture/)
+states that Container disk is ephemeral after sleep or restart, that Containers
+are backed by Durable Objects, and that the associated DO and Container are not
+guaranteed to run in the same location. Therefore local Container bytes are
+replaceable scratch, not a durable receipt or financial authority.
+
+### Designs inherited into cinatoken-rust
+
+The following ideas are inherited, with stronger contracts where relay money
+or send uniqueness is involved:
+
+1. Deterministic logical ownership selects one stateful coordinator before a
+   Container is contacted. The selected identity is an input to authorization,
+   not a caller-selected filesystem path.
+2. Stateful coordination survives process eviction in DO SQLite or D1. A warm
+   object, timer, Promise, process ID, port, in-memory cache or `/workspace`
+   file is never the only owner of unfinished work.
+3. Container capacity and lifecycle are infrastructure concerns. They do not
+   decide token validity, billing, provider retry, operation outcome or receipt
+   completeness.
+4. Large immutable inputs and outputs belong in R2; business, financial and
+   reconciliation rows belong in D1; per-shard lease/fence/attempt state
+   belongs in the shard DO. KV remains non-authoritative configuration/cache.
+5. Recovery starts from persisted state and is idempotent. A missing local
+   process is not evidence that its provider request was never sent.
+6. Go's database-owned logs, tasks and guarded transitions remain the semantic
+   source for audit and financial parity. The Cloudflare migration changes the
+   storage implementation, not that ownership rule.
+
+### Rust and Cloudflare additions
+
+The following controls are new to cinatoken-rust and must not be attributed to
+cinaVibeSDK or Go cinatoken:
+
+1. HMAC-hidden tenant routing, Jump Consistent Hash, canonical shard instance
+   names and ring-generation fencing replace the optional cinaVibeSDK
+   process-language modulo allocator for relay authority.
+2. Execution Receipt V1 and operation receipts are canonical, predecessor-
+   bound, create-new records. Capacity markers prevent slot reuse; terminal
+   operation outcomes are first-writer terminal.
+3. `TerminalSnapshotCandidateV1` durably binds the exact accepted claim-read
+   response before its operation finish. `OperationHeadSetV1` accounts for
+   every terminal or marker-only slot, and `OperationHeadLocalSealV1` binds the
+   candidate, execution head and aggregate operation tree.
+4. A per-authorization local-filesystem `flock` linearizes reserve, finish,
+   recovery and closure. The lock is a concurrency primitive only: process
+   death releases it, and possession never authorizes network I/O.
+5. Linux publication uses descriptor-relative no-follow staging creation,
+   same-dirfd no-replace rename, exact-byte double readback, file and
+   parent-directory sync, immediate-parent path-identity readback and
+   durability-unknown quarantine. Whole-tree dirfd confinement and
+   owner/mode/link continuity across every scanned receipt remain required.
+6. Startup audits and recovers local receipts before HTTP construction.
+   Candidate, terminal execution chain, head set, local seal, or indeterminate
+   operation/closure staging is an admission barrier with zero identity,
+   Cloudflare or provider calls.
+7. The local seal detects changes relative to its locally verified root, but a
+   privileged writer could still replace the whole tree and seal. Independent
+   DSSE signing and separate deletion-resistant retention are therefore
+   additional, non-interchangeable production controls.
+8. Container replacement or loss of the receipt filesystem is never treated
+   as a blank authorization. The globally persisted D1/DO operation state must
+   force quarantine or exact read-only recovery; it must not issue a fresh
+   send grant merely because local bytes are absent.
+
+### Production acceptance conditions
+
+The Linux receipt filesystem boundary is production-acceptable only when one
+candidate generation satisfies every condition below. Passing Rust unit tests
+or the supplied-document JavaScript verifier is insufficient.
+
+| Gate | Required evidence | Reject / quarantine condition |
+| --- | --- | --- |
+| Trusted root | Exact installed artifact digest and generation; fixed operator-selected receipt root; no checkout, environment, CLI or request-selected fallback. | Mutable current pointer, arbitrary root, mixed-generation sidecars or unbound executable. |
+| Pinned directory graph | Trusted parent and authorization directories opened once as dirfds; contained `openat2`/`*at` traversal; `fstat` device/inode/UID/GID/mode/link continuity before and after every mutation. | Path re-resolution, directory rename/replacement, symlink, mount crossing or identity drift. |
+| Ownership and access | Dedicated service UID/GID; exact mode and POSIX ACL readback; writer-only mutation, auditor read access, no group/world write; regular-file link count exactly one. | Same-host peer can replace/link/write receipts, ACL is broader than declared, or ownership differs. |
+| Atomic durability | `O_EXCL|O_NOFOLLOW` staging, bounded canonical bytes, file sync, `RENAME_NOREPLACE`, parent sync and descriptor readback on the production filesystem. | Replace-in-place, missing sync, partial success, different existing bytes or durability-unknown treated as success. |
+| Lock-domain integrity | Two independent processes prove one authorization dirfd/inode and one local `flock` domain through reserve, finish, recovery and closure, including hostile parent/authorization-directory rename attempts. | Split lock domains, inherited permit after process death, lock held across network I/O or conflicting terminal bytes. |
+| Crash matrix | Kill after every write/flush/sync/rename/readback boundary. Restart preserves marker-only slots, finishes ordinary starts ambiguous, finishes only the candidate-bound claim read accepted, and completes the unique head set/local seal locally. | Deletion, repair-in-place, synthetic start, slot reuse, outcome change, second send or any identity/network counter above zero during recovery. |
+| Filesystem faults | Native release artifact on supported Linux and both ext4 and XFS evidence for ENOSPC, EIO, read-only remount, concurrent replacement, abrupt process kill and power loss; returned-success bytes survive remount/restart. | Windows-only evidence, tmpfs-only evidence, silent loss after acknowledged success or automatic rewrite of ambiguous state. |
+| Container/DO lifecycle | Staging exercises DO eviction, Container stop/start/replacement, N/N-1 rollout, shard drain and missing/corrupt local receipt storage while D1/DO fences remain active. | Container loss creates a new authorization, old generation can send, or two instances accept the same operation. |
+| Cross-layer reconciliation | D1 operation/financial rows, shard DO attempt journal, R2 immutable object digests and local receipt heads reconcile by authorization, operation, attempt, generation and release identity. | Any layer can terminalize with a missing/mismatched peer, or local disk becomes the sole global truth. |
+| External closure | An independent signer signs the exact local-seal and candidate identity; a separate immutable-retention system proves object identity, retention mode/deadline and denied overwrite/deletion; restore is reverified independently. | Signature substituted for retention, retention substituted for signer approval, unverified backup restore or mutable external head. |
+| Data minimization | Receipts contain canonical identities, status, lengths and digests only; no bearer/API key, raw request/response body, tenant ID, model secret or provider credential appears in filenames, JSON, logs or external anchors. | Secret/body leakage, tenant-derived path, unbounded payload or diagnostic output that changes authorization behavior. |
+| Rollback | Disable admission first, preserve all receipts/markers/candidates/head sets/seals, return traffic to Go/VPS, and create a new authorization for any retry. | Delete/truncate/rewrite history, reopen a sealed authorization or combine rollback with a ring-secret change. |
+
+The committed implementation already has no-follow descriptor-relative
+staging creation, no-replace publication, sync/readback, installed-artifact
+single-link checks, immediate publication UID/GID/mode/inode/link binding,
+terminal-candidate recovery and local aggregate closure. It still opens the
+authorization lock through a pathname, later re-resolves parts of the
+directory tree, and does not enforce one pinned descriptor graph across every
+receipt scan. Native Linux `openat2` whole-tree confinement, split-lock
+replacement, multi-process kill, ext4/XFS power-loss, Container replacement,
+independent DSSE and immutable-retention campaigns are not archived.
+
+Therefore the receipt filesystem is presently a local fail-closed candidate,
+not a production authority and not a substitute for D1, DO SQLite or R2.
+Go/VPS remains authoritative and production remains **NO-GO**.

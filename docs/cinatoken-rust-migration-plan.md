@@ -20583,3 +20583,68 @@ verifier is also not independently signed or deletion-resistant evidence.
 No credential, Cloudflare mutation, customer traffic movement or Go/VPS
 drain occurred. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 22.296 K7 Full Terminal Transaction Syscall Gate (2026-07-25)
+
+The native fixture now extends beyond head-set recovery and executes one
+complete deterministic terminal transaction in a separate Linux process:
+
+1. reserve one exact `AuthorityClaimRead` operation and require
+   `OperationReservation::Fresh`;
+2. install the terminal snapshot candidate bound to the accepted finish;
+3. finish that exact operation through the candidate-bound API and require
+   `OperationOutcome::Accepted`;
+4. derive and install the complete terminal execution/closure graph; and
+5. reopen the store, recover the terminal closure and prove that its execution
+   head is the one derived from the frozen terminal snapshot.
+
+The existing focused recovery trace remains in place. A second `strace`
+captures the full transaction process from store creation through terminal
+recovery. Both traces begin enforcement at the first successful exclusive
+`flock`; after that boundary they reject write/create/truncate/append
+`openat(AT_FDCWD, ...)`, any `openat2`, `mkdirat`, `unlinkat` or `fchmodat`
+mutation rooted at `AT_FDCWD`, and any `renameat2` containing `AT_FDCWD`.
+Both traces require numeric retained-dirfd `openat2` and `renameat2`,
+directory sync and descriptor chmod. Recovery requires at least two successful
+exclusive locks; the full transaction requires at least five plus a
+numeric-dirfd `mkdirat`.
+
+The frozen local candidate is
+`11c938720875dee8da5d19481a3b39a03bda9c84`. The aggregate local gate passed:
+
+- 126 Rust library tests;
+- 3 binary/CLI tests;
+- 61 Bun tests with 242 expectations;
+- `cargo fmt --all -- --check`; and
+- warning-free all-target Clippy.
+
+Clean commit-object collection produced:
+
+| Field | Value |
+| --- | --- |
+| Git tree | `82d824341ccf6188a4515c4ff2373c3793d7ee86` |
+| Source archive | 35932160 bytes |
+| Source archive SHA-256 | `f4605c6af5c6924da2262d9531929cd65e4e0b979bb5fcd36b62afc59aad7672` |
+| Required modules | 31 |
+| Required module bytes | 1652800 |
+| Module inventory SHA-256 | `2cc6f847b14da90f66ff0c3b4f82e72d8e60b0fc520ba6718841263e57dc24ab` |
+
+Ubuntu evidence is deliberately not marked green yet. Runs
+[30157797156](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157797156)
+and
+[30158073337](https://github.com/cinagroup/cinatoken-rust/actions/runs/30158073337)
+both failed before creating any job and each reported a GitHub
+`Internal server error`. This coincided with the official
+[GitHub Actions incident](https://stspg.io/448g37mrq066), where Actions was
+reported as a major outage with run failures and delays. These runs are
+platform-blocked evidence, not a test failure and not an acceptance result.
+A fresh green Ubuntu run for the exact candidate remains mandatory.
+
+This increment closes local path coverage for one complete happy-path terminal
+transaction. It does not cover every rejected outcome, every crash point,
+hostile same-UID interference, production UID/GID and ACL enforcement,
+ext4/XFS power-loss durability, backup/restore, independent DSSE/WORM
+anchoring, Cloudflare DO/Container lifecycle behavior or G1-G8 approval. No
+credential was read, no Cloudflare or provider mutation occurred, no customer
+traffic moved and no Go/VPS drain began. Go/VPS remains authoritative and
+production remains **NO-GO**.

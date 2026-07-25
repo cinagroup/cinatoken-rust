@@ -3460,3 +3460,44 @@ The current inline trace parser is useful CI evidence but is not an
 independently signed/WORM artifact. No credentials or remote mutations were
 used, and no traffic or financial authority moved. Go/VPS remains traffic,
 scheduler and financial authority; production remains **NO-GO**.
+
+## 2026-07-25 K7 Full Terminal Transaction Syscall Gate
+
+The next K7 increment broadens native Linux tracing from a prepared recovery
+fixture to one full happy-path terminal transaction. A dedicated child process
+must reserve an exact claim-read operation, install its terminal candidate,
+finish only that candidate-bound operation, install the complete terminal
+closure and recover the same closure after reopening the store.
+
+The production acceptance invariant is now:
+
+1. after the first successful exclusive lock, neither trace may mutate through
+   `AT_FDCWD`;
+2. focused recovery must show at least two successful exclusive locks;
+3. the full transaction must show at least five successful exclusive locks;
+4. both must show retained-dirfd `openat2` and `renameat2`, descriptor chmod
+   and directory sync; and
+5. the full transaction must additionally show retained-dirfd `mkdirat`.
+
+Local code and contract gates passed for
+`11c938720875dee8da5d19481a3b39a03bda9c84`: 126 Rust library tests, 3
+binary/CLI tests, 61 Bun tests with 242 expectations, formatting and strict
+all-target Clippy. Clean source identity is Git tree
+`82d824341ccf6188a4515c4ff2373c3793d7ee86`, archive SHA-256
+`f4605c6af5c6924da2262d9531929cd65e4e0b979bb5fcd36b62afc59aad7672`
+and module-inventory SHA-256
+`2cc6f847b14da90f66ff0c3b4f82e72d8e60b0fc520ba6718841263e57dc24ab`
+for 31 modules totaling 1652800 bytes.
+
+The Ubuntu acceptance box remains open. Runs `30157797156` and `30158073337`
+produced no jobs and reported GitHub internal-server errors during the
+[official Actions outage](https://stspg.io/448g37mrq066). They are retained as
+platform incident evidence and do not satisfy or fail the syscall acceptance
+gate. A fresh green run of the exact frozen candidate is required.
+
+The subsequent execution order is unchanged: finish native crash-boundary
+coverage; attest UID/GID, ownership, ACL and mounts; execute ext4/XFS
+power-loss and restore campaigns; externalize signed immutable evidence; then
+run isolated Cloudflare DO/Container lifecycle, fault, load/cost/SLO and
+rollback campaigns before G1-G8 review. No production authority moved.
+Go/VPS remains authoritative and production remains **NO-GO**.

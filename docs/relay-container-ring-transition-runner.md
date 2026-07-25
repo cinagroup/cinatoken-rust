@@ -1528,3 +1528,53 @@ This is one rename case, one kill boundary and one focused trace. It does not
 prove all operation paths, hostile same-UID continuous interference,
 power-loss durability, ACL/mount isolation, restore, independent DSSE/WORM or
 Cloudflare DO/Container lifecycle behavior. Production remains **NO-GO**.
+
+## Full Terminal Transaction Syscall Increment
+
+The Linux process harness now includes a fixed
+`full-terminal-transaction` role. It accepts no caller-selected command and
+uses only the fixed root and test context. In one child process it:
+
+1. reserves a deterministic `AuthorityClaimRead`;
+2. installs the snapshot candidate for an accepted finish;
+3. finishes through `finish_operation_after_terminal_candidate`;
+4. installs the planned terminal closure; and
+5. recovers and compares the exact installed closure.
+
+The parent reopens the fixture, recovers the closure again and verifies its
+execution head against `plan_terminal_receipts` for the frozen snapshot. This
+checks the persisted result from an independent process rather than trusting
+only child exit status.
+
+The Ubuntu workflow now has two syscall traces. The focused recovery trace
+retains its two-lock minimum. The full transaction trace requires at least
+five successful exclusive locks and a retained-dirfd `mkdirat`. Both require
+numeric-dirfd `openat2`/`renameat2`, descriptor chmod and sync, and both reject
+post-lock mutation rooted at `AT_FDCWD`.
+
+Local verification passed at
+`11c938720875dee8da5d19481a3b39a03bda9c84`: 126 library tests, 3
+binary/CLI tests, 61 Bun tests and 242 expectations, plus formatting and
+warning-free all-target Clippy. Clean source evidence is:
+
+| Field | Value |
+| --- | --- |
+| Git tree | `82d824341ccf6188a4515c4ff2373c3793d7ee86` |
+| Archive SHA-256 | `f4605c6af5c6924da2262d9531929cd65e4e0b979bb5fcd36b62afc59aad7672` |
+| Archive bytes | 35932160 |
+| Module inventory SHA-256 | `2cc6f847b14da90f66ff0c3b4f82e72d8e60b0fc520ba6718841263e57dc24ab` |
+| Modules / bytes | 31 / 1652800 |
+
+Runs
+[30157797156](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157797156)
+and
+[30158073337](https://github.com/cinagroup/cinatoken-rust/actions/runs/30158073337)
+did not create jobs because GitHub Actions was in an
+[official major outage](https://stspg.io/448g37mrq066). No Ubuntu acceptance
+is claimed until a fresh run executes and passes both traces.
+
+This covers one successful terminal transaction, not every rejection, crash,
+interleaving or durability boundary. Production UID/GID and ACL/mount
+attestation, ext4/XFS power-loss, restore, immutable external evidence,
+Cloudflare lifecycle and G1-G8 remain mandatory. Production remains
+**NO-GO**.

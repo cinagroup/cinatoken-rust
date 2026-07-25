@@ -1496,3 +1496,36 @@ filesystem power-loss result, ACL/mount attestation, external receipt anchor
 or Cloudflare lifecycle test. cinaVibeSDK's ephemeral Container model
 therefore still requires D1/DO/R2 recovery and quarantine rules. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-25 Full Terminal Transaction Syscall Mapping
+
+The cinaVibeSDK-derived Container model treats local disk and processes as
+replaceable execution resources. The Rust runner now tests the corresponding
+cinatoken-specific rule across a complete local terminal transaction: one
+independent process reserves an exact read, installs and finishes its terminal
+candidate, installs the closure and recovers the same closure. A fresh parent
+store then verifies the recovered execution head against the frozen snapshot
+plan.
+
+The second `strace` gate maps this workflow to retained Linux kernel
+capabilities. After the first exclusive lock, mutation through `AT_FDCWD` is
+forbidden. Full-transaction evidence must include at least five exclusive
+locks, numeric-dirfd `mkdirat`, `openat2` and `renameat2`, descriptor chmod and
+directory sync. The narrower prepared-recovery trace remains independently
+enforced with a two-lock minimum.
+
+Local verification passed for
+`11c938720875dee8da5d19481a3b39a03bda9c84`, including 126 Rust library
+tests, 3 binary/CLI tests and 61 Bun tests with 242 expectations. Its clean
+source identity is Git tree
+`82d824341ccf6188a4515c4ff2373c3793d7ee86`, archive SHA-256
+`f4605c6af5c6924da2262d9531929cd65e4e0b979bb5fcd36b62afc59aad7672`
+and inventory SHA-256
+`2cc6f847b14da90f66ff0c3b4f82e72d8e60b0fc520ba6718841263e57dc24ab`.
+
+The matching Ubuntu run is still required. Two attempts produced no jobs
+during the official GitHub Actions outage and are not counted as either pass
+or code failure. This reinforces the production design: Container-local
+receipts are fail-closed execution evidence, while durable authority and
+recovery must remain anchored in D1/DO/R2 and immutable external evidence.
+Go/VPS remains authoritative and production remains **NO-GO**.

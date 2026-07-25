@@ -9781,3 +9781,56 @@ power-loss durability, production ACL/mount policy, backup/restore,
 independent DSSE/WORM, Cloudflare lifecycle or G1-G8. No credential, network
 mutation or traffic change occurred. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-25 Full Terminal Transaction Syscall Verification
+
+The Linux child-role fixture now performs one complete deterministic
+transaction in a fresh process: exact claim-read reserve, candidate install,
+candidate-bound accepted finish, terminal closure install and exact recovery.
+The parent reopens the resulting store and binds the recovered execution head
+to the plan derived from the frozen terminal snapshot.
+
+Local aggregate command:
+
+```powershell
+npx.cmd --yes bun run check:ring-transition-runner
+```
+
+Observed local result for
+`11c938720875dee8da5d19481a3b39a03bda9c84`:
+
+- 126 Rust library tests passed;
+- 3 binary/CLI tests passed;
+- 61 Bun tests passed with 242 expectations;
+- formatting passed; and
+- strict all-target Clippy passed.
+
+The Ubuntu workflow retains the focused recovery trace and adds a full
+transaction trace. Both reject post-first-lock `AT_FDCWD` mutation and require
+numeric-dirfd `openat2`/`renameat2`, sync and descriptor chmod. The full trace
+also requires at least five successful exclusive locks and numeric-dirfd
+`mkdirat`; focused recovery still requires at least two locks.
+
+Clean commit-object evidence:
+
+- Git tree `82d824341ccf6188a4515c4ff2373c3793d7ee86`;
+- 35932160-byte source archive with SHA-256
+  `f4605c6af5c6924da2262d9531929cd65e4e0b979bb5fcd36b62afc59aad7672`;
+- 31 required modules totaling 1652800 bytes; and
+- module-inventory SHA-256
+  `2cc6f847b14da90f66ff0c3b4f82e72d8e60b0fc520ba6718841263e57dc24ab`.
+
+Remote status is unresolved, not failed code evidence. Runs
+[30157797156](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157797156)
+and
+[30158073337](https://github.com/cinagroup/cinatoken-rust/actions/runs/30158073337)
+created zero jobs and reported separate GitHub internal-server correlation
+IDs during the official
+[Actions run failures and delays incident](https://stspg.io/448g37mrq066).
+The exact candidate still requires a fresh green Ubuntu run after service
+recovery.
+
+No credential, provider request, Cloudflare mutation or traffic change was
+performed. Full crash-boundary, ACL/mount, power-loss, restore, immutable
+external evidence, Cloudflare lifecycle and G1-G8 gates remain open. Go/VPS
+remains authoritative and production remains **NO-GO**.

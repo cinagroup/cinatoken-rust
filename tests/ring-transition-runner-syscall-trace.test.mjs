@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  verifyConcurrentRingTransitionRunnerSyscallTraces,
   verifyRingTransitionRunnerSyscallTrace,
 } from "../tools/verify_ring_transition_runner_syscall_trace.mjs";
 
@@ -62,6 +63,103 @@ describe("ring-transition runner syscall trace verifier", () => {
         expectedLocks: 2,
       }),
     ).toThrow(/expected exactly 2 .* found 4/);
+  });
+
+  test("requires the declared lock shape across concurrent recovery PIDs", () => {
+    const trace = [
+      fixtureTrace({ lockPairs: 4, pid: "4100", includeMkdirat: true }),
+      fixtureTrace({ lockPairs: 4, pid: "4200" }),
+    ].join("\n");
+    expect(
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: trace,
+        fixtureRoot: ROOT,
+        label: "concurrent candidate recovery",
+        expectedLocks: 16,
+        expectedLockPids: 2,
+        expectedLocksPerPid: 8,
+        requireMkdirat: true,
+      }),
+    ).toMatchObject({
+      ok: true,
+      observedLocks: 16,
+      observedLockPids: 2,
+      observedLocksPerPid: [8, 8],
+    });
+
+    expect(() =>
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: trace,
+        fixtureRoot: ROOT,
+        label: "concurrent candidate recovery",
+        expectedLocks: 16,
+        expectedLockPids: 1,
+        expectedLocksPerPid: 16,
+      }),
+    ).toThrow(/expected 1 lock PIDs with 16 locks each/);
+
+    const asymmetric = [
+      fixtureTrace({ lockPairs: 3, pid: "4100" }),
+      fixtureTrace({ lockPairs: 5, pid: "4200" }),
+    ].join("\n");
+    expect(() =>
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: asymmetric,
+        fixtureRoot: ROOT,
+        label: "concurrent candidate recovery",
+        expectedLocks: 16,
+        expectedLockPids: 2,
+        expectedLocksPerPid: 8,
+      }),
+    ).toThrow(/found 2 PIDs with 6,10/);
+
+    expect(() =>
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: trace,
+        fixtureRoot: ROOT,
+        label: "concurrent candidate recovery",
+        expectedLocks: 16,
+        expectedLockPids: 2,
+      }),
+    ).toThrow(/must be supplied together/);
+  });
+
+  test("verifies two independent concurrent traces as one recovery bundle", () => {
+    const first = fixtureTrace({
+      lockPairs: 4,
+      pid: "4100",
+      includeMkdirat: true,
+    });
+    const second = fixtureTrace({ lockPairs: 4, pid: "4200" });
+    expect(
+      verifyConcurrentRingTransitionRunnerSyscallTraces({
+        traceTexts: [first, second],
+        fixtureRoot: ROOT,
+        label: "concurrent candidate recovery",
+        expectedLocks: 16,
+        expectedLockPids: 2,
+        expectedLocksPerPid: 8,
+        requireMkdirat: true,
+      }),
+    ).toMatchObject({
+      ok: true,
+      observedLocks: 16,
+      observedLockPids: 2,
+      observedLocksPerPid: [8, 8],
+      observedLockPidValues: ["4100", "4200"],
+      successfulDirfdMkdirat: true,
+    });
+
+    expect(() =>
+      verifyConcurrentRingTransitionRunnerSyscallTraces({
+        traceTexts: [first, fixtureTrace({ lockPairs: 4, pid: "4100" })],
+        fixtureRoot: ROOT,
+        label: "concurrent candidate recovery",
+        expectedLocks: 16,
+        expectedLockPids: 2,
+        expectedLocksPerPid: 8,
+      }),
+    ).toThrow(/distinct lock PIDs/);
   });
 
   test("rejects successful legacy mutation but permits failed EEXIST probes", () => {
@@ -288,6 +386,50 @@ describe("ring-transition runner syscall trace verifier", () => {
     });
     expect(await new Response(accepted.stderr).text()).toBe("");
 
+    const peerTracePath = path.join(directory, "peer-trace.log");
+    await writeFile(
+      tracePath,
+      fixtureTrace({ lockPairs: 4, pid: "4100", includeMkdirat: true }),
+      "utf8",
+    );
+    await writeFile(
+      peerTracePath,
+      fixtureTrace({ lockPairs: 4, pid: "4200" }),
+      "utf8",
+    );
+    const peerAccepted = Bun.spawn(
+      [
+        process.execPath,
+        CLI,
+        "--trace",
+        tracePath,
+        "--peer-trace",
+        peerTracePath,
+        "--fixture-root",
+        ROOT,
+        "--label",
+        "concurrent recovery",
+        "--expected-locks",
+        "16",
+        "--expected-lock-pids",
+        "2",
+        "--expected-locks-per-pid",
+        "8",
+        "--require-mkdirat",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await peerAccepted.exited).toBe(0);
+    expect(
+      JSON.parse(await new Response(peerAccepted.stdout).text()),
+    ).toMatchObject({
+      ok: true,
+      observedLocks: 16,
+      observedLockPids: 2,
+      observedLocksPerPid: [8, 8],
+    });
+    expect(await new Response(peerAccepted.stderr).text()).toBe("");
+
     const rejected = Bun.spawn(
       [
         process.execPath,
@@ -331,66 +473,82 @@ describe("ring-transition runner syscall trace verifier", () => {
       '- "tools/verify_ring_transition_runner_syscall_trace.mjs"',
     );
     expect(workflow).toContain("Retain syscall verification summaries");
+    expect(workflow).toContain(
+      "CINATOKEN_RING_RECEIPT_TEST_ROLE=recover-terminal-candidate-concurrent-worker",
+    );
+    expect(workflow).toMatch(
+      /--peer-trace "\$\{concurrent_second_trace_log\}"\s+\\\r?\n\s+--fixture-root "\$\{concurrent_trace_root\}"\s+\\\r?\n\s+--label "concurrent candidate recovery"\s+\\\r?\n\s+--expected-locks 16\s+\\\r?\n\s+--expected-lock-pids 2\s+\\\r?\n\s+--expected-locks-per-pid 8\s+\\\r?\n\s+--require-mkdirat/u,
+    );
+    expect(workflow).toContain("candidate-concurrent-recovery-boundary.json");
+    expect(workflow).toContain(
+      "'(.observedLockPidValues | sort) == ([$firstPid, $secondPid] | sort)'",
+    );
+    expect(workflow).toContain("exactlyOneRecoveryWriter");
+    expect(workflow).toContain(
+      "case \"${concurrent_first_unfinished}:${concurrent_second_unfinished}\" in",
+    );
+    expect(workflow).toContain("retention-days: 30");
   });
 });
 
 function fixtureTrace({
   lockPairs,
+  pid = "4100",
   includeMkdirat = false,
   includeTerminalCandidateSync = false,
   terminalSignal = null,
   extraAfterFirstLock = "",
 }) {
   const lines = [
-    `4100  open("${ROOT}", O_RDONLY|O_CLOEXEC|O_DIRECTORY|O_NOFOLLOW) = 3<${ROOT}>`,
+    `${pid}  open("${ROOT}", O_RDONLY|O_CLOEXEC|O_DIRECTORY|O_NOFOLLOW) = 3<${ROOT}>`,
   ];
   for (let pair = 0; pair < lockPairs; pair += 1) {
     lines.push(
-      `4100  openat2(3<${ROOT}>, "execution-operation-receipts", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 4<${RECEIPTS}>`,
-      `4100  openat2(4<${RECEIPTS}>, "${"a".repeat(64)}", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 5<${AUTHORIZATION}>`,
-      `4100  flock(4<${RECEIPTS}>, LOCK_EX) = 0`,
-      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX) = 0`,
+      `${pid}  openat2(3<${ROOT}>, "execution-operation-receipts", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 4<${RECEIPTS}>`,
+      `${pid}  openat2(4<${RECEIPTS}>, "${"a".repeat(64)}", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 5<${AUTHORIZATION}>`,
+      `${pid}  flock(4<${RECEIPTS}>, LOCK_EX) = 0`,
+      `${pid}  flock(5<${AUTHORIZATION}>, LOCK_EX) = 0`,
     );
     if (pair === 0 && extraAfterFirstLock) lines.push(extraAfterFirstLock);
     if (pair === 0) {
       if (includeMkdirat) {
         lines.push(
-          `4100  mkdirat(5<${AUTHORIZATION}>, "execution-chain", 0700) = 0`,
+          `${pid}  mkdirat(5<${AUTHORIZATION}>, "execution-chain", 0700) = 0`,
         );
       }
       lines.push(
-        `4100  openat2(5<${AUTHORIZATION}>, "00000000000000000001.operation.json.staging", {flags=O_RDWR|O_CLOEXEC|O_CREAT|O_EXCL, mode=0444, resolve=RESOLVE_BENEATH}, 24) = 6<${AUTHORIZATION}/00000000000000000001.operation.json.staging>`,
-        `4100  fchmod(6<${AUTHORIZATION}/00000000000000000001.operation.json.staging>, 0444) = 0`,
-        `4100  renameat2(5<${AUTHORIZATION}>, "00000000000000000001.operation.json.staging", 5<${AUTHORIZATION}>, "00000000000000000001.operation.json", RENAME_NOREPLACE) = 0`,
-        `4100  fsync(5<${AUTHORIZATION}>) = 0`,
-        `4100  close(6<${AUTHORIZATION}/00000000000000000001.operation.json>) = 0`,
+        `${pid}  openat2(5<${AUTHORIZATION}>, "00000000000000000001.operation.json.staging", {flags=O_RDWR|O_CLOEXEC|O_CREAT|O_EXCL, mode=0444, resolve=RESOLVE_BENEATH}, 24) = 6<${AUTHORIZATION}/00000000000000000001.operation.json.staging>`,
+        `${pid}  fchmod(6<${AUTHORIZATION}/00000000000000000001.operation.json.staging>, 0444) = 0`,
+        `${pid}  renameat2(5<${AUTHORIZATION}>, "00000000000000000001.operation.json.staging", 5<${AUTHORIZATION}>, "00000000000000000001.operation.json", RENAME_NOREPLACE) = 0`,
+        `${pid}  fsync(5<${AUTHORIZATION}>) = 0`,
+        `${pid}  close(6<${AUTHORIZATION}/00000000000000000001.operation.json>) = 0`,
       );
     }
     if (includeTerminalCandidateSync && pair === lockPairs - 1) {
       const closures = `${ROOT}/execution-operation-closures`;
       const closure = `${closures}/${"a".repeat(64)}`;
       lines.push(
-        `4100  openat2(3<${ROOT}>, "execution-operation-closures", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 7<${closures}>`,
-        `4100  openat2(7<${closures}>, "${"a".repeat(64)}", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 8<${closure}>`,
-        `4100  openat2(8<${closure}>, "terminal-snapshot-candidate.json.staging", {flags=O_RDWR|O_CLOEXEC|O_CREAT|O_EXCL, mode=0444, resolve=RESOLVE_BENEATH}, 24) = 9<${closure}/terminal-snapshot-candidate.json.staging>`,
-        `4100  fchmod(9<${closure}/terminal-snapshot-candidate.json.staging>, 0444) = 0`,
-        `4100  renameat2(8<${closure}>, "terminal-snapshot-candidate.json.staging", 8<${closure}>, "terminal-snapshot-candidate.json", RENAME_NOREPLACE) = 0`,
-        `4100  fsync(8<${closure}>) = 0`,
-        `4100  openat2(8<${closure}>, "terminal-snapshot-candidate.json", {flags=O_RDONLY|O_CLOEXEC, resolve=RESOLVE_BENEATH}, 24) = 10<${closure}/terminal-snapshot-candidate.json>`,
-        `4100  close(10<${closure}/terminal-snapshot-candidate.json>) = 0`,
-        `4100  close(9<${closure}/terminal-snapshot-candidate.json>) = 0`,
-        `4100  close(8<${closure}>) = 0`,
-        `4100  close(7<${closures}>) = 0`,
+        `${pid}  openat2(3<${ROOT}>, "execution-operation-closures", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 7<${closures}>`,
+        `${pid}  openat2(7<${closures}>, "${"a".repeat(64)}", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 8<${closure}>`,
+        `${pid}  openat2(8<${closure}>, "terminal-snapshot-candidate.json.staging", {flags=O_RDWR|O_CLOEXEC|O_CREAT|O_EXCL, mode=0444, resolve=RESOLVE_BENEATH}, 24) = 9<${closure}/terminal-snapshot-candidate.json.staging>`,
+        `${pid}  fchmod(9<${closure}/terminal-snapshot-candidate.json.staging>, 0444) = 0`,
+        `${pid}  renameat2(8<${closure}>, "terminal-snapshot-candidate.json.staging", 8<${closure}>, "terminal-snapshot-candidate.json", RENAME_NOREPLACE) = 0`,
+        `${pid}  fsync(8<${closure}>) = 0`,
+        `${pid}  openat2(8<${closure}>, "terminal-snapshot-candidate.json", {flags=O_RDONLY|O_CLOEXEC, resolve=RESOLVE_BENEATH}, 24) = 10<${closure}/terminal-snapshot-candidate.json>`,
+        `${pid}  close(10<${closure}/terminal-snapshot-candidate.json>) = 0`,
+        `${pid}  close(9<${closure}/terminal-snapshot-candidate.json>) = 0`,
+        `${pid}  close(8<${closure}>) = 0`,
+        `${pid}  close(7<${closures}>) = 0`,
       );
     }
     lines.push(
-      `4100  close(5<${AUTHORIZATION}>) = 0`,
-      `4100  close(4<${RECEIPTS}>) = 0`,
+      `${pid}  close(5<${AUTHORIZATION}>) = 0`,
+      `${pid}  close(4<${RECEIPTS}>) = 0`,
     );
   }
-  lines.push(`4100  close(3<${ROOT}>) = 0`);
+  lines.push(`${pid}  close(3<${ROOT}>) = 0`);
   if (terminalSignal) {
-    lines.push(`4100  +++ killed by ${terminalSignal} +++`);
+    lines.push(`${pid}  +++ killed by ${terminalSignal} +++`);
   }
   return lines.join("\n");
 }

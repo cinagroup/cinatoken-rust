@@ -50,7 +50,10 @@ export function verifyRingTransitionRunnerSyscallTrace({
   fixtureRoot,
   label,
   expectedLocks,
+  expectedLockPids = null,
+  expectedLocksPerPid = null,
   requireMkdirat = false,
+  requireMutationEvidence = true,
   requireSigkillExit = false,
   requireTerminalCandidateSync = false,
 }) {
@@ -65,6 +68,26 @@ export function verifyRingTransitionRunnerSyscallTrace({
     expectedLocks % 2 !== 0
   ) {
     throw new Error("[input] expected locks must be a positive pair count");
+  }
+  if ((expectedLockPids === null) !== (expectedLocksPerPid === null)) {
+    throw new Error(
+      "[input] expected lock PIDs and locks per PID must be supplied together",
+    );
+  }
+  if (
+    expectedLockPids !== null &&
+    (
+      !Number.isSafeInteger(expectedLockPids) ||
+      expectedLockPids < 1 ||
+      expectedLockPids > 64 ||
+      !Number.isSafeInteger(expectedLocksPerPid) ||
+      expectedLocksPerPid < 2 ||
+      expectedLocksPerPid > 128 ||
+      expectedLocksPerPid % 2 !== 0 ||
+      expectedLockPids * expectedLocksPerPid !== expectedLocks
+    )
+  ) {
+    throw new Error("[input] expected per-PID lock shape is invalid");
   }
   if (
     typeof traceText !== "string" ||
@@ -187,11 +210,35 @@ export function verifyRingTransitionRunnerSyscallTrace({
     throw new Error(`[${label}] trace contains no parsed locked syscall`);
   }
   verifyExclusiveLockPairs(exclusiveLocks, root, label, expectedLocks);
+  const locksByPid = new Map();
+  for (const lock of exclusiveLocks) {
+    locksByPid.set(lock.pid, (locksByPid.get(lock.pid) ?? 0) + 1);
+  }
+  const observedLocksPerPid = [...locksByPid.values()].sort(
+    (left, right) => left - right,
+  );
+  if (
+    expectedLockPids !== null &&
+    (
+      locksByPid.size !== expectedLockPids ||
+      observedLocksPerPid.some((count) => count !== expectedLocksPerPid)
+    )
+  ) {
+    throw new Error(
+      `[${label}] expected ${expectedLockPids} lock PIDs with ${expectedLocksPerPid} locks each, found ${locksByPid.size} PIDs with ${observedLocksPerPid.join(",")}`,
+    );
+  }
   const missing = [];
   if (!evidence.dirfdOpenat2) missing.push("successful_dirfd_openat2");
-  if (!evidence.dirfdRenameat2) missing.push("successful_dirfd_renameat2");
-  if (!evidence.directorySync) missing.push("successful_directory_sync");
-  if (!evidence.descriptorChmod) missing.push("successful_descriptor_chmod");
+  if (requireMutationEvidence && !evidence.dirfdRenameat2) {
+    missing.push("successful_dirfd_renameat2");
+  }
+  if (requireMutationEvidence && !evidence.directorySync) {
+    missing.push("successful_directory_sync");
+  }
+  if (requireMutationEvidence && !evidence.descriptorChmod) {
+    missing.push("successful_descriptor_chmod");
+  }
   if (requireMkdirat && !evidence.dirfdMkdirat) {
     missing.push("successful_dirfd_mkdirat");
   }
@@ -240,6 +287,9 @@ export function verifyRingTransitionRunnerSyscallTrace({
     label,
     expectedLocks,
     observedLocks: exclusiveLocks.length,
+    observedLockPids: locksByPid.size,
+    observedLocksPerPid,
+    observedLockPidValues: [...locksByPid.keys()].sort(),
     postLockUnconfinedMutation: false,
     successfulDirfdOpenat2: evidence.dirfdOpenat2,
     successfulDirfdRenameat2: evidence.dirfdRenameat2,
@@ -253,6 +303,97 @@ export function verifyRingTransitionRunnerSyscallTrace({
       evidence.terminalCandidateReadbackAt !== null,
     terminalCandidateDirectorySyncObserved:
       evidence.terminalCandidateDirectorySyncAt !== null,
+  };
+}
+
+export function verifyConcurrentRingTransitionRunnerSyscallTraces({
+  traceTexts,
+  fixtureRoot,
+  label,
+  expectedLocks,
+  expectedLockPids,
+  expectedLocksPerPid,
+  requireMkdirat = false,
+}) {
+  if (
+    !Array.isArray(traceTexts) ||
+    traceTexts.length !== expectedLockPids ||
+    expectedLockPids < 2 ||
+    expectedLocks !== expectedLockPids * expectedLocksPerPid
+  ) {
+    throw new Error("[input] concurrent trace bundle shape is invalid");
+  }
+  const participants = traceTexts.map((traceText, index) =>
+    verifyRingTransitionRunnerSyscallTrace({
+      traceText,
+      fixtureRoot,
+      label: `${label} participant ${index + 1}`,
+      expectedLocks: expectedLocksPerPid,
+      expectedLockPids: 1,
+      expectedLocksPerPid,
+      requireMutationEvidence: false,
+    })
+  );
+  const observedLockPidValues = participants.flatMap(
+    (participant) => participant.observedLockPidValues,
+  );
+  if (new Set(observedLockPidValues).size !== expectedLockPids) {
+    throw new Error(
+      `[${label}] concurrent traces do not identify ${expectedLockPids} distinct lock PIDs`,
+    );
+  }
+  const evidence = {
+    successfulDirfdOpenat2: participants.every(
+      (participant) => participant.successfulDirfdOpenat2,
+    ),
+    successfulDirfdRenameat2: participants.some(
+      (participant) => participant.successfulDirfdRenameat2,
+    ),
+    successfulDirfdMkdirat: participants.some(
+      (participant) => participant.successfulDirfdMkdirat,
+    ),
+    successfulDirectorySync: participants.some(
+      (participant) => participant.successfulDirectorySync,
+    ),
+    successfulDescriptorChmod: participants.some(
+      (participant) => participant.successfulDescriptorChmod,
+    ),
+  };
+  const missing = [];
+  if (!evidence.successfulDirfdRenameat2) {
+    missing.push("successful_dirfd_renameat2");
+  }
+  if (!evidence.successfulDirectorySync) {
+    missing.push("successful_directory_sync");
+  }
+  if (!evidence.successfulDescriptorChmod) {
+    missing.push("successful_descriptor_chmod");
+  }
+  if (requireMkdirat && !evidence.successfulDirfdMkdirat) {
+    missing.push("successful_dirfd_mkdirat");
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `[${label}] concurrent traces missing required evidence: ${missing.join(", ")}`,
+    );
+  }
+
+  return {
+    ok: true,
+    label,
+    expectedLocks,
+    observedLocks: participants.reduce(
+      (total, participant) => total + participant.observedLocks,
+      0,
+    ),
+    observedLockPids: expectedLockPids,
+    observedLocksPerPid: participants.flatMap(
+      (participant) => participant.observedLocksPerPid,
+    ).sort((left, right) => left - right),
+    observedLockPidValues: observedLockPidValues.sort(),
+    postLockUnconfinedMutation: false,
+    ...evidence,
+    participants,
   };
 }
 
@@ -721,9 +862,12 @@ function parseArgs(argv) {
     if (
       ![
         "--trace",
+        "--peer-trace",
         "--fixture-root",
         "--label",
         "--expected-locks",
+        "--expected-lock-pids",
+        "--expected-locks-per-pid",
       ].includes(argument)
     ) {
       usage(2, `[input] unknown argument: ${argument}`);
@@ -742,11 +886,20 @@ function parseArgs(argv) {
     if (!values.has(name)) usage(2, `[input] missing argument: ${name}`);
   }
   const expectedLocks = Number(values.get("--expected-locks"));
+  const expectedLockPids = values.has("--expected-lock-pids")
+    ? Number(values.get("--expected-lock-pids"))
+    : null;
+  const expectedLocksPerPid = values.has("--expected-locks-per-pid")
+    ? Number(values.get("--expected-locks-per-pid"))
+    : null;
   return {
     tracePath: values.get("--trace"),
+    peerTracePath: values.get("--peer-trace") ?? null,
     fixtureRoot: values.get("--fixture-root"),
     label: values.get("--label"),
     expectedLocks,
+    expectedLockPids,
+    expectedLocksPerPid,
     requireMkdirat,
     requireSigkillExit,
     requireTerminalCandidateSync,
@@ -759,6 +912,8 @@ function usage(exitCode, message) {
     "Usage: node tools/verify_ring_transition_runner_syscall_trace.mjs " +
       "--trace <path> --fixture-root <path> --label <label> " +
       "--expected-locks <even-count> [--require-mkdirat] " +
+      "[--peer-trace <path>] " +
+      "[--expected-lock-pids <count> --expected-locks-per-pid <even-count>] " +
       "[--require-sigkill-exit] [--require-terminal-candidate-sync]\n",
   );
   process.exit(exitCode);
@@ -771,10 +926,30 @@ async function main() {
     if (trace.length < 1 || trace.length > MAX_TRACE_BYTES) {
       throw new Error(`[${options.label}] trace size is invalid`);
     }
-    const result = verifyRingTransitionRunnerSyscallTrace({
-      ...options,
-      traceText: trace.toString("utf8"),
-    });
+    let result;
+    if (options.peerTracePath !== null) {
+      if (
+        options.expectedLockPids === null ||
+        options.expectedLocksPerPid === null ||
+        options.requireSigkillExit ||
+        options.requireTerminalCandidateSync
+      ) {
+        throw new Error("[input] concurrent trace bundle arguments are invalid");
+      }
+      const peerTrace = await readFile(options.peerTracePath);
+      if (peerTrace.length < 1 || peerTrace.length > MAX_TRACE_BYTES) {
+        throw new Error(`[${options.label}] peer trace size is invalid`);
+      }
+      result = verifyConcurrentRingTransitionRunnerSyscallTraces({
+        ...options,
+        traceTexts: [trace.toString("utf8"), peerTrace.toString("utf8")],
+      });
+    } else {
+      result = verifyRingTransitionRunnerSyscallTrace({
+        ...options,
+        traceText: trace.toString("utf8"),
+      });
+    }
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } catch (error) {
     process.stderr.write(

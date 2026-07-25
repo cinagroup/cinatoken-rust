@@ -97,8 +97,25 @@ jobs:
           candidate_writer_pid_file="${candidate_trace_root}.pid"
           candidate_writer_output="${trace_artifact_dir}/candidate-after-sync-writer.log"
           candidate_recovery_output="${trace_artifact_dir}/candidate-after-sync-recovery.log"
+          concurrent_trace_parent="$(mktemp -d)"
+          concurrent_trace_root="${concurrent_trace_parent}/fixture"
+          mkdir -p "${concurrent_trace_root}"
+          concurrent_fixture_ready="${concurrent_trace_root}.candidate-fixture-ready"
+          concurrent_first_ready="${concurrent_trace_root}.concurrent-first.ready"
+          concurrent_second_ready="${concurrent_trace_root}.concurrent-second.ready"
+          concurrent_start_gate="${concurrent_trace_root}.concurrent-start.gate"
+          concurrent_first_trace_log="${trace_artifact_dir}/candidate-concurrent-recovery-first.strace"
+          concurrent_second_trace_log="${trace_artifact_dir}/candidate-concurrent-recovery-second.strace"
+          concurrent_first_output="${trace_artifact_dir}/candidate-concurrent-recovery-first.log"
+          concurrent_second_output="${trace_artifact_dir}/candidate-concurrent-recovery-second.log"
+          concurrent_first_pid_file="${trace_artifact_dir}/candidate-concurrent-recovery-first.pid"
+          concurrent_second_pid_file="${trace_artifact_dir}/candidate-concurrent-recovery-second.pid"
           candidate_writer_tracer_pid=""
           candidate_writer_pid=""
+          concurrent_first_tracer_pid=""
+          concurrent_second_tracer_pid=""
+          concurrent_first_pid=""
+          concurrent_second_pid=""
           cleanup_trace_fixture() {
             if [[ -n "${candidate_writer_pid}" ]]; then
               kill -KILL "${candidate_writer_pid}" 2>/dev/null || true
@@ -106,9 +123,22 @@ jobs:
             if [[ -n "${candidate_writer_tracer_pid}" ]]; then
               kill -KILL "${candidate_writer_tracer_pid}" 2>/dev/null || true
             fi
+            if [[ -n "${concurrent_first_pid}" ]]; then
+              kill -KILL "${concurrent_first_pid}" 2>/dev/null || true
+            fi
+            if [[ -n "${concurrent_second_pid}" ]]; then
+              kill -KILL "${concurrent_second_pid}" 2>/dev/null || true
+            fi
+            if [[ -n "${concurrent_first_tracer_pid}" ]]; then
+              kill -KILL "${concurrent_first_tracer_pid}" 2>/dev/null || true
+            fi
+            if [[ -n "${concurrent_second_tracer_pid}" ]]; then
+              kill -KILL "${concurrent_second_tracer_pid}" 2>/dev/null || true
+            fi
             chmod -R u+w "${trace_root}" 2>/dev/null || true
             chmod -R u+w "${full_trace_root}" 2>/dev/null || true
             chmod -R u+w "${candidate_trace_root}" 2>/dev/null || true
+            chmod -R u+w "${concurrent_trace_parent}" 2>/dev/null || true
             rm -rf \
               "${trace_root}" \
               "${prepare_ready}" \
@@ -117,6 +147,7 @@ jobs:
               "${full_trace_ready}" \
               "${candidate_trace_root}" \
               "${candidate_writer_pid_file}" \
+              "${concurrent_trace_parent}" \
               "${artifact_log}"
           }
           trap cleanup_trace_fixture EXIT
@@ -233,6 +264,123 @@ jobs:
               --nocapture \
             2>&1 | tee "${candidate_recovery_output}"
 
+          env \
+            CINATOKEN_RING_RECEIPT_TEST_ROLE=candidate-synced-prepare \
+            CINATOKEN_RING_RECEIPT_TEST_ROOT="${concurrent_trace_root}" \
+            CINATOKEN_RING_RECEIPT_TEST_READY="${concurrent_fixture_ready}" \
+            "${test_binary}" \
+            --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
+            --nocapture
+          test "$(cat "${concurrent_fixture_ready}")" = "candidate-synced"
+
+          strace -f -qq -yy -s 4096 \
+            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -o "${concurrent_first_trace_log}" \
+            bash -c '
+              printf "%s\n" "$$" > "$1"
+              exec env \
+                CINATOKEN_RING_RECEIPT_TEST_ROLE=recover-terminal-candidate-concurrent-worker \
+                CINATOKEN_RING_RECEIPT_TEST_ROOT="$2" \
+                CINATOKEN_RING_RECEIPT_TEST_READY="$3" \
+                "$4" \
+                --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
+                --nocapture
+            ' _ \
+              "${concurrent_first_pid_file}" \
+              "${concurrent_trace_root}" \
+              "${concurrent_first_ready}" \
+              "${test_binary}" \
+            > "${concurrent_first_output}" 2>&1 &
+          concurrent_first_tracer_pid="$!"
+
+          strace -f -qq -yy -s 4096 \
+            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -o "${concurrent_second_trace_log}" \
+            bash -c '
+              printf "%s\n" "$$" > "$1"
+              exec env \
+                CINATOKEN_RING_RECEIPT_TEST_ROLE=recover-terminal-candidate-concurrent-worker \
+                CINATOKEN_RING_RECEIPT_TEST_ROOT="$2" \
+                CINATOKEN_RING_RECEIPT_TEST_READY="$3" \
+                "$4" \
+                --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
+                --nocapture
+            ' _ \
+              "${concurrent_second_pid_file}" \
+              "${concurrent_trace_root}" \
+              "${concurrent_second_ready}" \
+              "${test_binary}" \
+            > "${concurrent_second_output}" 2>&1 &
+          concurrent_second_tracer_pid="$!"
+
+          for _ in $(seq 1 1000); do
+            if [[ -s "${concurrent_first_ready}" ]] &&
+              [[ -s "${concurrent_second_ready}" ]] &&
+              [[ -s "${concurrent_first_pid_file}" ]] &&
+              [[ -s "${concurrent_second_pid_file}" ]]; then
+              break
+            fi
+            if ! kill -0 "${concurrent_first_tracer_pid}" 2>/dev/null ||
+              ! kill -0 "${concurrent_second_tracer_pid}" 2>/dev/null; then
+              cat "${concurrent_first_output}"
+              cat "${concurrent_second_output}"
+              exit 1
+            fi
+            sleep 0.01
+          done
+          test "$(cat "${concurrent_first_ready}")" = "recovery-ready"
+          test "$(cat "${concurrent_second_ready}")" = "recovery-ready"
+          concurrent_first_pid="$(cat "${concurrent_first_pid_file}")"
+          concurrent_second_pid="$(cat "${concurrent_second_pid_file}")"
+          test "${concurrent_first_pid}" != "${concurrent_second_pid}"
+          kill -0 "${concurrent_first_pid}"
+          kill -0 "${concurrent_second_pid}"
+          printf "recover" > "${concurrent_start_gate}.staging"
+          mv "${concurrent_start_gate}.staging" "${concurrent_start_gate}"
+
+          set +e
+          wait "${concurrent_first_tracer_pid}"
+          concurrent_first_status="$?"
+          wait "${concurrent_second_tracer_pid}"
+          concurrent_second_status="$?"
+          set -e
+          concurrent_first_tracer_pid=""
+          concurrent_second_tracer_pid=""
+          concurrent_first_pid=""
+          concurrent_second_pid=""
+          if [[ "${concurrent_first_status}" -ne 0 ]] ||
+            [[ "${concurrent_second_status}" -ne 0 ]]; then
+            cat "${concurrent_first_output}"
+            cat "${concurrent_second_output}"
+            exit 1
+          fi
+          concurrent_first_closure="$(
+            grep '^concurrent-terminal-closure=' "${concurrent_first_output}" | tail -n 1
+          )"
+          concurrent_second_closure="$(
+            grep '^concurrent-terminal-closure=' "${concurrent_second_output}" | tail -n 1
+          )"
+          concurrent_first_unfinished="$(
+            grep '^concurrent-recovery-unfinished=' "${concurrent_first_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          concurrent_second_unfinished="$(
+            grep '^concurrent-recovery-unfinished=' "${concurrent_second_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          test -n "${concurrent_first_closure}"
+          test "${concurrent_first_closure}" = "${concurrent_second_closure}"
+          case "${concurrent_first_unfinished}:${concurrent_second_unfinished}" in
+            1:0|0:1) ;;
+            *)
+              cat "${concurrent_first_output}"
+              cat "${concurrent_second_output}"
+              exit 1
+              ;;
+          esac
+
           node tools/verify_ring_transition_runner_syscall_trace.mjs \
             --trace "${trace_log}" \
             --fixture-root "${trace_root}" \
@@ -262,6 +410,22 @@ jobs:
             --expected-locks 8 \
             --require-mkdirat \
             | tee "${trace_artifact_dir}/candidate-after-sync-recovery.verification.json"
+          node tools/verify_ring_transition_runner_syscall_trace.mjs \
+            --trace "${concurrent_first_trace_log}" \
+            --peer-trace "${concurrent_second_trace_log}" \
+            --fixture-root "${concurrent_trace_root}" \
+            --label "concurrent candidate recovery" \
+            --expected-locks 16 \
+            --expected-lock-pids 2 \
+            --expected-locks-per-pid 8 \
+            --require-mkdirat \
+            | tee "${trace_artifact_dir}/candidate-concurrent-recovery.verification.json"
+          jq -e \
+            --arg firstPid "$(cat "${concurrent_first_pid_file}")" \
+            --arg secondPid "$(cat "${concurrent_second_pid_file}")" \
+            '(.observedLockPidValues | sort) == ([$firstPid, $secondPid] | sort)' \
+            "${trace_artifact_dir}/candidate-concurrent-recovery.verification.json" \
+            > /dev/null
 
           jq -n \
             --arg gitSha "${GITHUB_SHA}" \
@@ -279,6 +443,38 @@ jobs:
               recoveryExpectedLocks: $recoveryExpectedLocks
             }' > "${trace_artifact_dir}/candidate-after-sync-boundary.json"
 
+          jq -n \
+            --arg gitSha "${GITHUB_SHA}" \
+            --arg firstPid "$(cat "${concurrent_first_pid_file}")" \
+            --arg secondPid "$(cat "${concurrent_second_pid_file}")" \
+            --arg closure "${concurrent_first_closure#concurrent-terminal-closure=}" \
+            --argjson firstStatus "${concurrent_first_status}" \
+            --argjson secondStatus "${concurrent_second_status}" \
+            --argjson firstUnfinished "${concurrent_first_unfinished}" \
+            --argjson secondUnfinished "${concurrent_second_unfinished}" \
+            '{
+              gitSha: $gitSha,
+              participants: [
+                {
+                  name: "first",
+                  pid: $firstPid,
+                  tracerStatus: $firstStatus,
+                  unfinishedObserved: $firstUnfinished
+                },
+                {
+                  name: "second",
+                  pid: $secondPid,
+                  tracerStatus: $secondStatus,
+                  unfinishedObserved: $secondUnfinished
+                }
+              ],
+              sharedStartGate: true,
+              exactlyOneRecoveryWriter: (
+                ($firstUnfinished + $secondUnfinished) == 1
+              ),
+              closureIdentity: $closure
+            }' > "${trace_artifact_dir}/candidate-concurrent-recovery-boundary.json"
+
           {
             echo "### Terminal descriptor syscall traces"
             echo
@@ -286,10 +482,11 @@ jobs:
             echo "- full-transaction post-lock AT_FDCWD mutation: none"
             echo "- candidate writer: exact SIGKILL after candidate rename/directory sync/object-bound readback"
             echo "- candidate-after-sync recovery post-lock AT_FDCWD mutation: none"
-            echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8"
-            echo "- successful retained-dirfd openat2/renameat2: observed in all four traces"
+            echo "- concurrent candidate recovery: two distinct ready-before-release processes converged on one closure identity"
+            echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 8 per PID / 16 total"
+            echo "- successful retained-dirfd openat2/renameat2: observed in each standalone trace or the concurrent bundle"
             echo "- successful full-transaction and candidate-recovery retained-dirfd mkdirat: observed"
-            echo "- successful directory fsync/fdatasync and descriptor chmod: observed in all four traces"
+            echo "- successful directory fsync/fdatasync and descriptor chmod: observed in each standalone trace or the concurrent bundle"
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Retain syscall verification summaries
@@ -301,8 +498,10 @@ jobs:
             ${{ runner.temp }}/ring-transition-syscall-traces/*.verification.json
             ${{ runner.temp }}/ring-transition-syscall-traces/*-boundary.json
             ${{ runner.temp }}/ring-transition-syscall-traces/*.log
+            ${{ runner.temp }}/ring-transition-syscall-traces/*.pid
+            ${{ runner.temp }}/ring-transition-syscall-traces/*.strace
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 30
 
       - name: Retain failed syscall traces
         if: failure()

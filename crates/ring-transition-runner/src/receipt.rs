@@ -10597,6 +10597,166 @@ mod tests {
         let _ = fs::remove_file(&candidate_ready);
         cleanup(&candidate_root);
 
+        let concurrent_root =
+            temporary_root("linux-multiprocess-terminal-candidate-concurrent-recovery");
+        let fixture_ready = concurrent_root.with_extension("candidate-fixture-ready");
+        let fixture_status = spawn_multiprocess_terminal_child(
+            "candidate-synced-prepare",
+            &concurrent_root,
+            &fixture_ready,
+        )
+        .wait()
+        .expect("candidate fixture child wait");
+        assert!(
+            fixture_status.success(),
+            "candidate fixture child failed: {fixture_status}"
+        );
+        assert_eq!(fs::read(&fixture_ready).unwrap(), b"candidate-synced");
+        let fixture_files = linux_immutable_file_snapshot(&concurrent_root);
+
+        let pair_ready = concurrent_root.with_extension("concurrent-pair-ready");
+        let pair_status = spawn_multiprocess_terminal_child(
+            "recover-terminal-candidate-concurrent-pair",
+            &concurrent_root,
+            &pair_ready,
+        )
+        .wait()
+        .expect("concurrent recovery pair wait");
+        assert!(
+            pair_status.success(),
+            "concurrent recovery pair failed: {pair_status}"
+        );
+
+        let store = ReceiptStore::open(&concurrent_root).unwrap();
+        let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let read = terminal_candidate_crash_operation();
+        let operation = project_operation_identity(&context, &read.identity).unwrap();
+        let authorization = concurrent_root
+            .join(OPERATION_RECEIPTS_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256);
+        let operation_directory = authorization.join(&operation.operation_id_sha256);
+        let closure_directory = concurrent_root
+            .join(OPERATION_CLOSURES_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256);
+        let finish_path = operation_directory.join(operation_receipt_file_name(2));
+        let closure = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+
+        let operation_chain = store
+            .verify_operation(
+                &context.authorization_id_sha256,
+                &operation.operation_id_sha256,
+            )
+            .unwrap();
+        assert_eq!(operation_chain.receipt_count, 2);
+        assert_eq!(operation_chain.outcome, Some(OperationOutcome::Accepted));
+        let operation_receipt_count = fs::read_dir(&operation_directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.ends_with(OPERATION_RECEIPT_FILE_SUFFIX))
+            })
+            .count();
+        assert_eq!(operation_receipt_count, 2);
+        let accepted = terminal_candidate_accepted_finish();
+        let finish = read_operation_receipt(&finish_path, &operation_directory).unwrap();
+        assert_eq!(finish.record.recorded_at, accepted.finished_at);
+        assert_eq!(
+            finish.record.event,
+            OperationReceiptEvent::RequestFinished {
+                outcome: OperationOutcome::Accepted,
+                http_status: accepted.http_status,
+                response_body_sha256: accepted.response_body_sha256,
+                response_id_sha256: accepted.response_id_sha256,
+            }
+        );
+        assert_eq!(
+            store
+                .audit_authorization_operations(&publication, &credentials, &activation)
+                .unwrap(),
+            OperationReceiptAudit {
+                operation_count: 1,
+                unfinished_count: 0,
+                recovered_ambiguous_count: 0,
+            }
+        );
+
+        let plan = plan_terminal_receipts(&snapshot, &publication, &credentials).unwrap();
+        let verified_graph = store.verify(&context.authorization_id_sha256).unwrap();
+        assert_eq!(
+            verified_graph.receipt_count,
+            u64::try_from(plan.receipts().len()).unwrap()
+        );
+        assert_eq!(verified_graph.head_sha256, plan.head_sha256());
+        assert!(verified_graph.sealed);
+        assert_eq!(
+            closure.execution_receipt_head_sha256,
+            verified_graph.head_sha256
+        );
+        let graph_receipt_count = fs::read_dir(
+            concurrent_root
+                .join(RECEIPTS_DIRECTORY_NAME)
+                .join(&context.authorization_id_sha256),
+        )
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(RECEIPT_FILE_SUFFIX))
+        })
+        .count();
+        assert_eq!(graph_receipt_count, plan.receipts().len());
+        assert_eq!(
+            fs::read_dir(concurrent_root.join(RECEIPTS_DIRECTORY_NAME))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(
+            fs::read_dir(concurrent_root.join(OPERATION_CLOSURES_DIRECTORY_NAME))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert!(authorization.join(OPERATION_HEAD_SET_FILE_NAME).exists());
+        assert!(closure_directory
+            .join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME)
+            .exists());
+
+        let recovered_files = linux_immutable_file_snapshot(&concurrent_root);
+        for fixture_file in &fixture_files {
+            assert_eq!(
+                recovered_files
+                    .iter()
+                    .find(|recovered| recovered.0 == fixture_file.0),
+                Some(fixture_file),
+                "concurrent recovery rewrote fixture file {}",
+                fixture_file.0
+            );
+        }
+        let replayed = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed, closure);
+        assert_eq!(
+            linux_immutable_file_snapshot(&concurrent_root),
+            recovered_files
+        );
+
+        for path in [fixture_ready, pair_ready] {
+            let _ = fs::remove_file(path);
+        }
+        cleanup(&concurrent_root);
+
         let full_root = temporary_root("linux-multiprocess-terminal-full");
         let full_ready = full_root.with_extension("full-ready");
         let status =
@@ -10621,16 +10781,28 @@ mod tests {
         root: &Path,
         ready: &Path,
     ) -> std::process::Child {
-        std::process::Command::new(std::env::current_exe().expect("current test executable"))
+        multiprocess_terminal_child_command(role, root, ready)
+            .spawn()
+            .expect("spawn multiprocess terminal child")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn multiprocess_terminal_child_command(
+        role: &str,
+        root: &Path,
+        ready: &Path,
+    ) -> std::process::Command {
+        let mut command =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"));
+        command
             .arg("--exact")
             .arg("receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery")
             .arg("--nocapture")
             .env_clear()
             .env("CINATOKEN_RING_RECEIPT_TEST_ROLE", role)
             .env("CINATOKEN_RING_RECEIPT_TEST_ROOT", root)
-            .env("CINATOKEN_RING_RECEIPT_TEST_READY", ready)
-            .spawn()
-            .expect("spawn multiprocess terminal child")
+            .env("CINATOKEN_RING_RECEIPT_TEST_READY", ready);
+        command
     }
 
     #[cfg(target_os = "linux")]
@@ -10728,6 +10900,104 @@ mod tests {
             "recover-terminal-candidate" => {
                 recover_terminal_candidate_after_process_death(root);
             }
+            "recover-terminal-candidate-concurrent-pair" => {
+                let first_ready = root.with_extension("concurrent-first.ready");
+                let second_ready = root.with_extension("concurrent-second.ready");
+                let start_gate = root.with_extension("concurrent-start.gate");
+                let mut first = multiprocess_terminal_child_command(
+                    "recover-terminal-candidate-concurrent-worker",
+                    root,
+                    &first_ready,
+                )
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn first concurrent recovery worker");
+                let mut second = multiprocess_terminal_child_command(
+                    "recover-terminal-candidate-concurrent-worker",
+                    root,
+                    &second_ready,
+                )
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn second concurrent recovery worker");
+                wait_for_multiprocess_ready(&mut first, &first_ready);
+                wait_for_multiprocess_ready(&mut second, &second_ready);
+                write_multiprocess_ready(&start_gate, b"recover");
+
+                let first_output = first.wait_with_output().expect("first worker output");
+                let second_output = second.wait_with_output().expect("second worker output");
+                assert!(
+                    first_output.status.success(),
+                    "first concurrent recovery worker failed: {}",
+                    first_output.status
+                );
+                assert!(
+                    second_output.status.success(),
+                    "second concurrent recovery worker failed: {}",
+                    second_output.status
+                );
+                let first_observation =
+                    multiprocess_closure_stdout(&first_output.stdout, "first worker");
+                let second_observation =
+                    multiprocess_closure_stdout(&second_output.stdout, "second worker");
+                assert_eq!(first_observation, second_observation);
+                let first_unfinished =
+                    multiprocess_usize_stdout(&first_output.stdout, "first worker");
+                let second_unfinished =
+                    multiprocess_usize_stdout(&second_output.stdout, "second worker");
+                assert_eq!(first_unfinished + second_unfinished, 1);
+                for path in [first_ready, second_ready, start_gate] {
+                    let _ = fs::remove_file(path);
+                }
+                println!("concurrent-pair-closure={first_observation}");
+            }
+            "recover-terminal-candidate-concurrent-worker" => {
+                let store = ReceiptStore::open(root).unwrap();
+                let (publication, credentials, activation, _) = terminal_snapshot_context();
+                assert_terminal_candidate_crash_fixture(
+                    &store,
+                    root,
+                    &publication,
+                    &credentials,
+                    &activation,
+                );
+                write_multiprocess_ready(ready, b"recovery-ready");
+                wait_for_multiprocess_release(&root.with_extension("concurrent-start.gate"));
+                let recovery = store
+                    .recover_unfinished_operations(&publication, &credentials, &activation, NOW + 2)
+                    .unwrap();
+                assert_eq!(recovery.operation_count, 1);
+                assert!(recovery.unfinished_count <= 1);
+                assert_eq!(recovery.recovered_ambiguous_count, 0);
+                let closure = store
+                    .recover_terminal_closure(&publication, &credentials, &activation)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    store
+                        .audit_authorization_operations(&publication, &credentials, &activation,)
+                        .unwrap(),
+                    OperationReceiptAudit {
+                        operation_count: 1,
+                        unfinished_count: 0,
+                        recovered_ambiguous_count: 0,
+                    }
+                );
+                let replayed = store
+                    .recover_terminal_closure(&publication, &credentials, &activation)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(replayed, closure);
+                println!(
+                    "concurrent-recovery-unfinished={}",
+                    recovery.unfinished_count
+                );
+                println!(
+                    "concurrent-terminal-closure={}",
+                    terminal_closure_observation(&closure)
+                );
+                std::io::stdout().flush().unwrap();
+            }
             "full-terminal-transaction" => {
                 let store = ReceiptStore::open(root).unwrap();
                 let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
@@ -10802,6 +11072,52 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    fn wait_for_multiprocess_release(release: &Path) {
+        for _ in 0..1_000 {
+            if release.exists() {
+                assert_eq!(fs::read(release).unwrap(), b"recover");
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("terminal child release timeout");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn multiprocess_closure_stdout(stdout: &[u8], worker: &str) -> String {
+        std::str::from_utf8(stdout)
+            .unwrap_or_else(|_| panic!("{worker} stdout was not UTF-8"))
+            .lines()
+            .find_map(|line| line.strip_prefix("concurrent-terminal-closure="))
+            .unwrap_or_else(|| panic!("{worker} did not report a terminal closure"))
+            .to_owned()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn multiprocess_usize_stdout(stdout: &[u8], worker: &str) -> usize {
+        std::str::from_utf8(stdout)
+            .unwrap_or_else(|_| panic!("{worker} stdout was not UTF-8"))
+            .lines()
+            .find_map(|line| line.strip_prefix("concurrent-recovery-unfinished="))
+            .unwrap_or_else(|| panic!("{worker} did not report an unfinished count"))
+            .parse()
+            .unwrap_or_else(|_| panic!("{worker} reported an invalid unfinished count"))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn terminal_closure_observation(closure: &VerifiedTerminalClosure) -> String {
+        format!(
+            "authorization={};status={:?};state_version={};execution_head={};operation_head_set={};local_seal={}",
+            closure.authorization_id_sha256,
+            closure.terminal_status,
+            closure.terminal_state_version,
+            closure.execution_receipt_head_sha256,
+            closure.operation_head_set_sha256,
+            closure.local_seal_sha256,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
     fn terminal_candidate_crash_operation() -> OperationStartInput {
         let mut read = operation_start("a", NOW);
         read.identity.kind = OperationKind::AuthorityClaimRead;
@@ -10821,6 +11137,68 @@ mod tests {
             response_body_sha256: Some("a".repeat(64)),
             response_id_sha256: Some("b".repeat(64)),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_terminal_candidate_crash_fixture(
+        store: &ReceiptStore,
+        root: &Path,
+        publication: &PublicationReceipt,
+        credentials: &TransitionCredentialBundle,
+        activation: &ActivationReceipt,
+    ) {
+        let context = project_operation_context(publication, credentials, activation).unwrap();
+        let read = terminal_candidate_crash_operation();
+        let operation = project_operation_identity(&context, &read.identity).unwrap();
+        let authorization = root
+            .join(OPERATION_RECEIPTS_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256);
+        let operation_directory = authorization.join(&operation.operation_id_sha256);
+        let closure = root
+            .join(OPERATION_CLOSURES_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256);
+        let start_path = operation_directory.join(operation_receipt_file_name(1));
+        let finish_path = operation_directory.join(operation_receipt_file_name(2));
+        let candidate_path = closure.join(TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME);
+
+        assert!(start_path.exists());
+        assert!(candidate_path.exists());
+        assert!(!finish_path.exists());
+        assert!(!authorization.join(OPERATION_HEAD_SET_FILE_NAME).exists());
+        assert!(!closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME).exists());
+        assert!(!root
+            .join(RECEIPTS_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256)
+            .exists());
+
+        let start = read_operation_receipt(&start_path, &operation_directory).unwrap();
+        let candidate = store
+            .read_terminal_snapshot_candidate(&context)
+            .unwrap()
+            .unwrap();
+        let accepted = terminal_candidate_accepted_finish();
+        assert_eq!(
+            candidate.record.operation_id_sha256,
+            operation.operation_id_sha256
+        );
+        assert_eq!(
+            candidate.record.operation_start_receipt_sha256,
+            start.sha256
+        );
+        assert_eq!(candidate.record.operation_outcome, accepted.outcome);
+        assert_eq!(candidate.record.operation_finished_at, accepted.finished_at);
+        assert_eq!(
+            candidate.record.operation_http_status,
+            accepted.http_status.unwrap()
+        );
+        assert_eq!(
+            Some(&candidate.record.operation_response_body_sha256),
+            accepted.response_body_sha256.as_ref()
+        );
+        assert_eq!(
+            candidate.record.operation_response_id_sha256,
+            accepted.response_id_sha256
+        );
     }
 
     #[cfg(target_os = "linux")]

@@ -9569,3 +9569,70 @@ descriptor conversion, multiprocess fault injection, syscall traces,
 ext4/XFS power loss and external DSSE/WORM evidence remain open. No
 credential, remote mutation or traffic change occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-25 Linux Finish and Recovery Retained Graph Verification
+
+This increment verifies descriptor continuity for ordinary finish,
+candidate-bound finish, unresolved-operation completion and startup recovery.
+The candidate contract additionally binds the exact start receipt and exact
+canonical finish receipt.
+
+Local command:
+
+```powershell
+npx.cmd --yes bun run check:ring-transition-runner
+```
+
+Observed local result:
+
+- 126 Rust library tests passed;
+- 3 binary/CLI tests passed; and
+- 61 Bun tests passed with 242 expectations.
+
+Native evidence is frozen at
+`33bbda404a01ae2b2e068237f891a44a1a3b8a68`:
+
+- [run 30148796402](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148796402)
+  and
+  [job 89655504013](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148796402/job/89655504013)
+  passed;
+- formatting, 140 Linux library tests and warning-free Clippy completed
+  successfully;
+- Linux tests replace the operation directory after finish verification and
+  after recovery graph capture, require
+  `UnsafeFilesystem("operation_directory")`, and prove that no finish receipt
+  is redirected to the replacement or displaced directory;
+- portable tests reject terminal-candidate start-receipt drift and reject a
+  different existing accepted finish; and
+- clean commit-object collection produced Git tree
+  `34947264d0812d4faefd1d7006bf577463bcaefd`, a 35809280-byte source archive
+  with SHA-256
+  `5741487d63c7e710d0469dc3d8a8741c9c7c5521cb7d97eb08e625f30d290aea`,
+  and 31 required modules totaling 1591919 bytes with inventory SHA-256
+  `637906e8da2927e55467134368f584b6ffb500dce553efb650086f9bea2d7b5a`.
+
+[Run 30148493686](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148493686)
+and
+[job 89654712996](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148493686/job/89654712996)
+are retained as intermediate evidence. Formatting and the complete Linux
+filesystem test step passed. Clippy then identified two old path fallbacks as
+dead in the Linux production target. Commit `33bbda40` restricted them to
+non-Linux and test builds; no lint suppression or production behavior change
+was used.
+
+The verified boundary includes:
+
+1. the same retained operation object before and after finish append;
+2. exact candidate start and finish binding;
+3. the same retained operation set before and after recovery completion;
+4. a final fd-relative authorization rescan with identical operation IDs; and
+5. retained terminal-candidate reread before recovery success.
+
+The next verification unit is candidate/head-set/local-seal publication and
+terminal closure on a retained root-to-leaf descriptor graph. This evidence
+does not replace dedicated UID/GID, exact ACL/ownership and mount isolation
+against a peer that shares the runner identity and ignores `flock`.
+Multiprocess kill/rename campaigns, syscall traces, ext4/XFS power-loss,
+backup/restore, independent DSSE/WORM and Cloudflare lifecycle evidence
+remain open. No credential, remote mutation or traffic change occurred.
+Go/VPS remains authoritative and production remains **NO-GO**.

@@ -20311,3 +20311,77 @@ exact ACL readback, backup/restore, ext4/XFS power-loss evidence,
 independent DSSE/WORM anchoring and Cloudflare lifecycle proof remain open.
 No credential, Cloudflare mutation, traffic movement or Go/VPS drain
 occurred. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.293 K7 Finish and Recovery Retained Operation Graph (2026-07-25)
+
+Linux operation completion no longer drops from the authorization capability
+back to pathname-based verification and append. Ordinary finish,
+`finish_unresolved_operation`, candidate-bound accepted finish and startup
+unfinished-operation recovery now open each operation beneath the retained
+`LockedAuthorization` descriptor and keep its `LockedOperationDirectory`
+through verification, append, readback and the terminal decision.
+
+The two finish contracts are now explicit:
+
+1. `FirstTerminalWins` preserves the existing ordinary-operation replay rule;
+   an already terminal operation returns its recorded outcome.
+2. `ExactInput` is used for a terminal snapshot candidate. It binds the
+   candidate to the exact start-receipt SHA-256 and requires an existing or
+   newly published finish receipt to match the complete canonical finish
+   record, including time, HTTP status, response-body digest and response ID.
+   Another `Accepted` receipt is not sufficient.
+
+Recovery captures a retained terminal barrier and a sorted
+`LockedVerifiedOperation` graph in one authorization lock domain. Each graph
+entry contains the verified chain plus its still-open operation dirfd.
+Candidate validation and ambiguous completion consume those objects directly.
+Before returning an audit, recovery:
+
+1. verifies every retained operation again and requires a terminal outcome;
+2. rescans the retained authorization fd and requires the same operation-ID
+   set with no unfinished chain; and
+3. rereads the candidate through the retained closure graph and requires
+   byte-for-byte and record equality.
+
+Linux fault tests rename an operation directory after finish verification and
+after recovery graph capture, recreate the original pathname, and prove that
+both paths fail with `UnsafeFilesystem("operation_directory")`. Neither the
+replacement nor displaced directory receives a finish receipt. Portable
+tests also prove that a candidate rejects a changed start receipt and rejects
+a different already-existing `Accepted` finish.
+
+The implementation candidate is
+`09f1b5deb588318c598034ebbe1c211946c56177`; the frozen lint-clean candidate
+is `33bbda404a01ae2b2e068237f891a44a1a3b8a68`.
+[Run 30148796402](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148796402)
+and
+[job 89655504013](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148796402/job/89655504013)
+passed formatting, all 140 Linux library tests and warning-free Clippy. The
+aggregate local gate passed 126 Rust library tests, 3 binary/CLI tests and 61
+Bun tests with 242 expectations.
+
+Clean commit-object evidence produced Git tree
+`34947264d0812d4faefd1d7006bf577463bcaefd`, a 35809280-byte source archive
+with SHA-256
+`5741487d63c7e710d0469dc3d8a8741c9c7c5521cb7d97eb08e625f30d290aea`,
+and 31 required modules totaling 1591919 bytes with inventory SHA-256
+`637906e8da2927e55467134368f584b6ffb500dce553efb650086f9bea2d7b5a`.
+[Run 30148493686](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148493686)
+is retained as the intermediate failure: formatting and all Linux filesystem
+tests passed, while Clippy found that the old path fallbacks were dead in the
+Linux production target. Commit `33bbda40` cfg-gated those fallbacks to
+non-Linux and tests without suppressing either warning.
+
+This closes retained operation continuity for finish and unfinished recovery.
+It does not yet close `install_terminal_snapshot_candidate`,
+`recover_terminal_closure`, terminal head-set/local-seal publication and
+closure verification; those are the next descriptor-publication unit. The
+initial installation-root/authorization acquisition window also remains an
+OS boundary. A malicious same-UID process that ignores `flock` still requires
+dedicated UID/GID, exact parent ownership/ACLs and mount/workload isolation.
+
+True multi-process rename/kill campaigns, zero-unapproved-`AT_FDCWD` tracing,
+ext4/XFS power-loss evidence, backup/restore, independent DSSE/WORM anchoring,
+Cloudflare Container/DO lifecycle proof and G1-G8 approval remain open. No
+credential, Cloudflare mutation, customer traffic movement or Go/VPS drain
+occurred. Go/VPS remains authoritative and production remains **NO-GO**.

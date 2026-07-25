@@ -1374,3 +1374,50 @@ UID/GID, exact ACL/parent ownership and mount/workload isolation. Finish,
 recovery, candidate installation and closure graph conversion, native fault
 campaigns, DSSE/WORM and Cloudflare lifecycle evidence remain open.
 Production remains **NO-GO**.
+
+## Linux Finish and Recovery Retained Graph Increment
+
+Finish now opens the operation directory beneath `LockedAuthorization` and
+retains that descriptor through direct verification, finish publication,
+readback and final binding checks. `finish_unresolved_operation` performs its
+optional lookup only after the authorization is locked, so an absent or
+terminal result is no longer derived from an unlocked replacement pathname.
+
+`OperationFinishExpectation` separates ordinary first-terminal-wins behavior
+from exact candidate behavior. Exact candidate finish verifies the candidate
+start-receipt digest and compares the complete canonical sequence-2 receipt.
+This prevents an existing but semantically different `Accepted` response from
+being treated as the terminal snapshot response.
+
+Recovery retains a `LockedVerifiedOperation` for every audited chain. The
+initial audit, candidate decision, append, retained-object recheck and final
+authorization rescan remain in one authorization lock domain. The final scan
+must contain the same sorted operation IDs, all terminal, and the candidate
+must still have identical canonical bytes.
+
+Linux tests replace an operation pathname after finish verification and after
+recovery graph capture. Both fail closed and neither the replacement nor the
+displaced inode receives a finish receipt. Cross-platform tests reject a
+candidate after start-receipt drift and reject a different existing accepted
+finish.
+
+Commit `33bbda404a01ae2b2e068237f891a44a1a3b8a68` passed
+[Ubuntu run 30148796402](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148796402)
+and
+[job 89655504013](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148796402/job/89655504013)
+with formatting, 140 Linux library tests and warning-free Clippy. The local
+aggregate gate passed 126 Rust library tests, 3 binary/CLI tests and 61 Bun
+tests with 242 expectations. Clean source evidence has Git tree
+`34947264d0812d4faefd1d7006bf577463bcaefd`, archive SHA-256
+`5741487d63c7e710d0469dc3d8a8741c9c7c5521cb7d97eb08e625f30d290aea`
+and 31 modules totaling 1591919 bytes with inventory SHA-256
+`637906e8da2927e55467134368f584b6ffb500dce553efb650086f9bea2d7b5a`.
+
+The remaining descriptor unit begins before these consumers:
+terminal-candidate publication, terminal execution/head-set/local-seal
+publication, closure recovery and closure verification still contain
+path-based acquisition or publication segments. The initial trusted-root
+acquisition and a hostile same-UID writer also remain OS-enforced boundaries.
+Dedicated identity and ACL/mount isolation, native fault campaigns,
+DSSE/WORM and Cloudflare lifecycle evidence remain required. Production
+remains **NO-GO**.

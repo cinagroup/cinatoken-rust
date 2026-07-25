@@ -1284,7 +1284,7 @@ This increment compares the three pinned source trees only:
 
 - cinaVibeSDK `918e97480ee44e357abe99bf33c27259d6ac7ebd`;
 - Go cinatoken `73652508abc5cb09214dde02d51d69d1d1ccc703`; and
-- cinatoken-rust `79b3f4a3e2534f3249c57e21f9314295d389105e`.
+- cinatoken-rust `33bbda404a01ae2b2e068237f891a44a1a3b8a68`.
 
 Only committed objects at those pins count as source evidence. Concurrent
 uncommitted worktree files are excluded from official-design and production
@@ -1313,6 +1313,7 @@ evidence into deployed Cloudflare evidence.
 | Rust contained child opens | The same fail-closed `openat2` wrapper creates staging files and reopens immutable targets relative to their immediate parent descriptor. A native test accepts a valid child and rejects `../` escape and symlink traversal; unsupported syscalls do not fall back to `openat`. | Child lookup already rooted at a retained descriptor cannot escape beneath, traverse symlinks or cross mounts. Execution/closure acquisition and full finish/recovery/closure traversal are not yet one retained graph. |
 | Rust reserve operation graph | `LockedOperationDirectory` is created with `mkdirat`, opened beneath the retained authorization dirfd, and bound to stable identity. Capacity publication, `fdopendir`/`readdir` audit, child opens, start append/readback/verification and terminal operation-directory chmod/fsync use retained descriptors. A Linux test replaces and recreates the operation pathname before the final reserve decision and requires fail-closed rejection. | Capacity and per-operation state cannot be redirected to a replacement pathname during reserve. |
 | Rust reserve terminal graph | `LockedReserveTerminalBarrier` retains the installation root plus authorization-specific execution-chain and closure topology. Execution receipts, head set, local seal and terminal candidate are read beneath retained dirfds; the authorization-wide sibling/capacity audit also consumes the retained authorization fd. Reserve checks the graph before mutation and before returning a reservation. | Official writers linearize under the authorization `flock`, and captured directory/content drift cannot produce `Fresh`. Continuous absence against a malicious same-UID peer still requires dedicated identity, ACL and mount isolation. |
+| Rust finish and recovery graph | Ordinary, unresolved and candidate-bound finish retain the operation dirfd through verify, append and readback. Recovery retains every audited operation dirfd, rechecks the same objects, rescans the authorization fd for the same operation-ID set and rereads the candidate. Exact candidate finish binds both the start-receipt digest and complete canonical finish record. | A replaced operation pathname cannot redirect a finish or recovery outcome. A merely matching `Accepted` outcome cannot stand in for the candidate response. Candidate/head-set/local-seal publication and terminal closure still require descriptor conversion. |
 | Rust installed artifact checks | `release.rs::verify_installed_release_at` requires stable regular installed bytes; the Unix file-identity check rejects link counts other than one. | The executable and receipt writer must be bound to one immutable installed generation; source checkout bytes or a mutable current pointer are insufficient. |
 
 The cinaVibeSDK architecture diagram also routes Sandbox persistence to R2
@@ -1379,7 +1380,9 @@ cinaVibeSDK or Go cinatoken:
    barrier before returning. Linux publication uses descriptor-relative
    no-follow staging creation, same-dirfd no-replace rename, exact-byte double
    readback, file and parent-directory sync, immediate-parent path-identity
-   readback and durability-unknown quarantine. Finish/recovery/closure still
+   readback and durability-unknown quarantine. Finish and unfinished recovery
+   now retain operation and terminal graphs through their final decisions.
+   Candidate/head-set/local-seal publication and terminal closure still
    require complete descriptor confinement.
 6. Startup audits and recovers local receipts before HTTP construction.
    Candidate, terminal execution chain, head set, local seal, or indeterminate
@@ -1423,20 +1426,22 @@ parent/authorization lock capability. Capacity and reserve's per-operation
 subtree now use retained dirfds, including direct entry scans and start
 publication. Reserve's execution chain, head set, local seal, terminal
 candidate and authorization-wide sibling audit now consume retained
-descriptors and are rechecked before return. Finish/recovery/closure are not
-yet one pinned graph. Dedicated UID/ACL/mount isolation against non-cooperative
-same-UID writers, true multi-process replacement/kill campaigns, ext4/XFS
-power-loss, Container replacement, independent DSSE and immutable-retention
-campaigns are not archived.
+descriptors and are rechecked before return. Finish and unfinished recovery
+also retain each operation descriptor and enforce exact candidate start and
+finish binding. Candidate/head-set/local-seal publication and terminal
+closure are not yet one pinned graph. Dedicated UID/ACL/mount isolation
+against non-cooperative same-UID writers, true multi-process
+replacement/kill campaigns, ext4/XFS power-loss, Container replacement,
+independent DSSE and immutable-retention campaigns are not archived.
 
 The current Rust evidence is
-[run 30147304951](https://github.com/cinagroup/cinatoken-rust/actions/runs/30147304951):
-formatting, 136 Linux tests and warning-free Clippy passed. Clean commit-object
+[run 30148796402](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148796402):
+formatting, 140 Linux tests and warning-free Clippy passed. Clean commit-object
 evidence for the pinned Rust commit has Git tree
-`85e4f7f267996c3d128a30bef6bfc17e1b3d780b`, source-archive SHA-256
-`c0dd0f59f9582f9c18b20271f851c67a104341abaad36ae15fe02a3b7a851dd5`
-and 31 required modules totaling 1569772 bytes with inventory SHA-256
-`51e2c990d72bf140588ffa175f73600abbd4b6ffa4319a0ef0f9e63d674f8890`.
+`34947264d0812d4faefd1d7006bf577463bcaefd`, source-archive SHA-256
+`5741487d63c7e710d0469dc3d8a8741c9c7c5521cb7d97eb08e625f30d290aea`
+and 31 required modules totaling 1591919 bytes with inventory SHA-256
+`637906e8da2927e55467134368f584b6ffb500dce553efb650086f9bea2d7b5a`.
 
 Therefore the receipt filesystem is presently a local fail-closed candidate,
 not a production authority and not a substitute for D1, DO SQLite or R2.

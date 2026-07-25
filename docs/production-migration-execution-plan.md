@@ -3296,3 +3296,53 @@ next consume retained graphs. Native process-death/replacement campaigns,
 syscall tracing, ext4/XFS power loss, DSSE/WORM, Cloudflare lifecycle and
 G1-G8 approval remain blockers. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-25 K7 Finish and Recovery Retained Graph Gate
+
+The Linux finish and startup-recovery transactions now retain operation
+directory capabilities instead of returning to path lookup after acquiring
+the authorization lock. Ordinary finish, unresolved-operation finish and the
+candidate-bound accepted finish all verify and append beneath the same
+operation dirfd while the retained terminal graph is checked around the
+decision.
+
+Candidate finish is stricter than ordinary first-terminal-wins replay. It
+requires the candidate's start-receipt SHA-256 to equal the retained
+operation start and requires the full canonical finish receipt to equal the
+candidate input. A different terminal receipt cannot satisfy the gate merely
+because both outcomes are `Accepted`.
+
+Unfinished recovery captures the complete sorted operation graph, including
+one retained dirfd per verified chain. It completes every ordinary unfinished
+operation as ambiguous and only the exact candidate operation as accepted.
+It then verifies the same retained objects, rescans the authorization
+descriptor for the identical operation-ID set, and rereads the retained
+candidate before returning its audit.
+
+Commit `33bbda404a01ae2b2e068237f891a44a1a3b8a68` passed
+[run 30148796402](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148796402)
+and
+[job 89655504013](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148796402/job/89655504013)
+with formatting, 140 Linux library tests and warning-free Clippy. The local
+aggregate gate passed 126 Rust library tests, 3 binary/CLI tests and 61 Bun
+tests with 242 expectations. Clean source evidence is Git tree
+`34947264d0812d4faefd1d7006bf577463bcaefd`, source-archive SHA-256
+`5741487d63c7e710d0469dc3d8a8741c9c7c5521cb7d97eb08e625f30d290aea`
+and module-inventory SHA-256
+`637906e8da2927e55467134368f584b6ffb500dce553efb650086f9bea2d7b5a`
+for 31 modules and 1591919 bytes.
+
+[Run 30148493686](https://github.com/cinagroup/cinatoken-rust/actions/runs/30148493686)
+is archived as the intermediate gate. Its Linux filesystem tests passed, but
+Clippy correctly rejected path fallbacks that had become Linux-production
+dead code. The frozen candidate platform-gates those fallbacks without lint
+suppression.
+
+The next P0 implementation gate is terminal publication and closure:
+candidate creation, head-set/local-seal publication, terminal-closure
+recovery and closure verification must consume one retained root-to-leaf
+graph. Dedicated UID/GID, exact ACL and parent ownership, mount isolation,
+native multiprocess/process-death campaigns, syscall traces, ext4/XFS
+power-loss, backup/restore, independent DSSE/WORM, Cloudflare lifecycle and
+G1-G8 approval remain mandatory. Go/VPS remains traffic, scheduler and
+financial authority; production remains **NO-GO**.

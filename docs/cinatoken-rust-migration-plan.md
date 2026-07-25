@@ -20221,3 +20221,93 @@ readback and Cloudflare lifecycle proof.
 No production credential, Cloudflare mutation, customer traffic movement or
 Go/VPS drain occurred. Go/VPS remains the traffic, scheduler and financial
 authority. Production remains **NO-GO**.
+
+## 22.292 K7 Reserve Terminal Admission Descriptor Graph (2026-07-25)
+
+Linux reserve now captures a `LockedReserveTerminalBarrier` immediately after
+the authorization lock. The graph retains the installation root and the
+authorization-specific execution and closure topology:
+
+```text
+installation root fd
+|- execution-receipts fd?
+|  `- authorization execution-chain fd?
+|- execution-operation-receipts fd
+|  `- LockedAuthorization fd
+`- execution-operation-closures fd?
+   `- authorization closure fd?
+```
+
+All directory discovery is relative to a retained parent with the fail-closed
+`openat2` policy. An absent optional directory is also recorded and rechecked.
+The shared installation, execution-receipts and closure-root directories bind
+object identity without pinning global content timestamps, avoiding
+cross-authorization availability coupling. The authorization-specific
+execution chain and closure additionally bind `mtime`/`ctime` so content
+renames or remove-and-restore activity after capture fail closed.
+
+The execution-chain verifier now enumerates its retained dirfd and opens every
+receipt beneath it. The valid transient execution-staging naming contract is
+preserved while symlink, foreign-owner, group/world-writable and linked
+staging objects are rejected. Operation head-set reads use the retained
+authorization fd. Local-seal and terminal-candidate reads use the retained
+closure fd. The previous barrier order is preserved:
+
+```text
+sealed execution chain
+-> operation head set
+-> local seal
+-> terminal candidate
+```
+
+Reserve audits this graph before capacity mutation and again before returning
+any fresh or existing reservation. Its authorization-wide capacity,
+operation-directory and sibling receipt scan is also fd-relative; a clean
+replacement pathname can no longer hide entries from the retained
+authorization inode during the final audit. A head set introduced by the test
+hook is rejected before the start receipt is written.
+
+Linux tests cover execution-chain replacement, closure-directory replacement,
+late head-set introduction with zero start publication, and parity for valid
+transient execution staging. Together with the prior operation-directory
+replacement test, these prove that descriptor capture followed by pathname or
+content drift cannot produce `Fresh`.
+
+The frozen candidate is
+`79b3f4a3e2534f3249c57e21f9314295d389105e`.
+[Run 30147304951](https://github.com/cinagroup/cinatoken-rust/actions/runs/30147304951)
+and
+[job 89651524827](https://github.com/cinagroup/cinatoken-rust/actions/runs/30147304951/job/89651524827)
+passed formatting, all 136 Linux library tests and warning-free Clippy. The
+aggregate local gate passed 124 Rust library tests, 3 binary/CLI tests and 61
+Bun tests with 242 expectations.
+
+Clean commit-object evidence produced Git tree
+`85e4f7f267996c3d128a30bef6bfc17e1b3d780b`, a 35778560-byte source
+archive with SHA-256
+`c0dd0f59f9582f9c18b20271f851c67a104341abaad36ae15fe02a3b7a851dd5`,
+and 31 required modules totaling 1569772 bytes with inventory SHA-256
+`51e2c990d72bf140588ffa175f73600abbd4b6ffa4319a0ef0f9e63d674f8890`.
+[Run 30145270642](https://github.com/cinagroup/cinatoken-rust/actions/runs/30145270642)
+is retained as the intermediate failure: Linux conditional compilation found
+that a new test helper duplicated an existing Linux-only helper. Renaming the
+fixture produced the frozen passing candidate; no production code changed in
+that correction.
+
+This closes the official-writer reserve barrier under the authorization
+`flock` and detects graph drift after capture. It does not make an absence
+proof atomic against an arbitrary process already running as the same UID
+that deliberately ignores `flock`, hides every terminal name before graph
+capture, keeps it hidden through the final check and restores it after
+`Fresh`. Production therefore still requires a dedicated runner UID/GID,
+non-writable parent ownership/ACLs or mount isolation, and proof that no
+untrusted workload shares that identity. This is an OS-enforced boundary, not
+something another path scan can solve.
+
+Finish, unresolved recovery, candidate installation and terminal closure
+still contain path-based graph segments and are the next implementation
+units. True multi-process kill/rename campaigns, syscall-trace enforcement,
+exact ACL readback, backup/restore, ext4/XFS power-loss evidence,
+independent DSSE/WORM anchoring and Cloudflare lifecycle proof remain open.
+No credential, Cloudflare mutation, traffic movement or Go/VPS drain
+occurred. Go/VPS remains authoritative and production remains **NO-GO**.

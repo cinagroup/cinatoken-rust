@@ -9502,3 +9502,70 @@ remain P2. Multi-process rename/kill campaigns, zero-unapproved-`AT_FDCWD`
 traces, ACL/backup/restore, ext4/XFS power-loss and independent DSSE/WORM
 evidence remain open. No credential or Cloudflare mutation was used. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-25 Linux Reserve Terminal Descriptor Graph Verification
+
+This increment verifies that reserve evaluates terminal admission and its
+authorization-wide sibling tree through retained Linux directory descriptors.
+The implementation directly scans execution receipts, capacity markers,
+operation directories, operation receipts, the head set, local seal and
+terminal candidate. It repeats the terminal barrier immediately before a
+reservation may escape.
+
+Local command:
+
+```powershell
+npx.cmd --yes bun run check:ring-transition-runner
+```
+
+Observed local result:
+
+- 124 Rust library tests passed;
+- 3 binary/CLI tests passed; and
+- 61 Bun tests passed with 242 expectations.
+
+Native evidence is frozen at
+`79b3f4a3e2534f3249c57e21f9314295d389105e`:
+
+- [run 30147304951](https://github.com/cinagroup/cinatoken-rust/actions/runs/30147304951)
+  and
+  [job 89651524827](https://github.com/cinagroup/cinatoken-rust/actions/runs/30147304951/job/89651524827)
+  passed;
+- formatting, 136 Linux library tests and warning-free Clippy completed
+  successfully;
+- Linux tests replace the captured execution chain and closure directory,
+  introduce a late head set before start publication, and preserve valid
+  transient execution-staging behavior; and
+- clean commit-object collection produced Git tree
+  `85e4f7f267996c3d128a30bef6bfc17e1b3d780b`, a 35778560-byte source
+  archive with SHA-256
+  `c0dd0f59f9582f9c18b20271f851c67a104341abaad36ae15fe02a3b7a851dd5`,
+  and 31 required modules totaling 1569772 bytes with inventory SHA-256
+  `51e2c990d72bf140588ffa175f73600abbd4b6ffa4319a0ef0f9e63d674f8890`.
+
+[Run 30145270642](https://github.com/cinagroup/cinatoken-rust/actions/runs/30145270642)
+is retained as the intermediate failure. Formatting passed, but Linux
+conditional compilation found a duplicate test-helper name before tests
+could run. Commit `79b3f4a3` renamed the fixture; production code was
+unchanged and the complete native gate then passed.
+
+The tests prove:
+
+1. execution-chain replacement after graph capture returns
+   `UnsafeFilesystem("chain_directory")`;
+2. closure-directory replacement returns
+   `UnsafeFilesystem("operation_authorization_closure_directory")`;
+3. a late malformed head set is parsed from the retained authorization fd and
+   rejected before a start receipt exists; and
+4. valid transient execution staging remains compatible with the previous
+   scan contract.
+
+The evidence does not claim atomic absence against a process that deliberately
+shares the runner UID and ignores `flock`. Such a process could hide an object
+before graph capture, keep it hidden through the final check and restore it
+after return. Dedicated UID/GID, exact ACL and parent ownership, plus mount and
+workload isolation are mandatory production controls. Finish/recovery/closure
+descriptor conversion, multiprocess fault injection, syscall traces,
+ext4/XFS power loss and external DSSE/WORM evidence remain open. No
+credential, remote mutation or traffic change occurred. Go/VPS remains
+authoritative and production remains **NO-GO**.

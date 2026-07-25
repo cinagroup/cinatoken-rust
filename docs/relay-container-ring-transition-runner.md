@@ -1325,3 +1325,52 @@ Staging cleanup/error classification is tracked separately as P2. Real
 multi-process replacement/kill, syscall-trace, filesystem-fault, DSSE/WORM
 and Cloudflare lifecycle evidence remain mandatory. Production remains
 **NO-GO**.
+
+## Linux Reserve Terminal Descriptor Graph Increment
+
+`LockedReserveTerminalBarrier` captures the authorization-specific terminal
+admission topology from the installation root dirfd. Existing execution-chain
+and closure directories retain their descriptors, parent-relative names,
+paths, stable identities and content versions. Missing optional directories
+remain explicit absence states and are rechecked. Shared roots bind only
+object identity so another authorization cannot cause a false failure merely
+by changing an unrelated child.
+
+The Linux execution verifier scans the retained chain descriptor and opens
+each receipt with `openat2`. Valid transient staging names remain accepted,
+while unsafe staging objects fail closed. Head-set reads use
+`LockedAuthorization`; local-seal and candidate reads use the retained
+closure descriptor. The barrier keeps its existing ordered short circuit and
+runs before reserve mutation plus immediately before any reservation result.
+
+The final authorization audit now uses `fdopendir`/`readdir` on the retained
+authorization descriptor. It directly validates capacity records, opens every
+operation directory beneath that fd and verifies each sibling receipt chain.
+This prevents a temporary replacement of the authorization pathname from
+presenting a clean sibling tree to the final audit.
+
+Commit `79b3f4a3e2534f3249c57e21f9314295d389105e` passed
+[Ubuntu run 30147304951](https://github.com/cinagroup/cinatoken-rust/actions/runs/30147304951)
+and
+[job 89651524827](https://github.com/cinagroup/cinatoken-rust/actions/runs/30147304951/job/89651524827)
+with formatting, 136 Linux library tests and warning-free Clippy. The local
+aggregate runner gate passed 124 Rust library tests, 3 binary/CLI tests and 61
+Bun tests with 242 expectations. Clean source evidence has Git tree
+`85e4f7f267996c3d128a30bef6bfc17e1b3d780b`, archive SHA-256
+`c0dd0f59f9582f9c18b20271f851c67a104341abaad36ae15fe02a3b7a851dd5`
+and 31 modules totaling 1569772 bytes with inventory SHA-256
+`51e2c990d72bf140588ffa175f73600abbd4b6ffa4319a0ef0f9e63d674f8890`.
+
+Linux tests replace and recreate the execution chain and closure directory
+after capture, introduce a head set before start publication, and verify
+execution-staging parity. None can produce `Fresh`. The first pushed candidate
+failed only because the new Linux test helper duplicated an existing
+conditional fixture name; the passing candidate contains the rename.
+
+The guarantee is bounded by kernel-enforced ownership. A process already
+running as the runner UID can ignore advisory `flock` and keep terminal names
+hidden across both checks. Production therefore requires a dedicated service
+UID/GID, exact ACL/parent ownership and mount/workload isolation. Finish,
+recovery, candidate installation and closure graph conversion, native fault
+campaigns, DSSE/WORM and Cloudflare lifecycle evidence remain open.
+Production remains **NO-GO**.

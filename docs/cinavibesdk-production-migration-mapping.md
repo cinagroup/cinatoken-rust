@@ -1284,7 +1284,7 @@ This increment compares the three pinned source trees only:
 
 - cinaVibeSDK `918e97480ee44e357abe99bf33c27259d6ac7ebd`;
 - Go cinatoken `73652508abc5cb09214dde02d51d69d1d1ccc703`; and
-- cinatoken-rust `8cf817f081d0001fc7ef1f6992984f990a1f8b50`.
+- cinatoken-rust `79b3f4a3e2534f3249c57e21f9314295d389105e`.
 
 Only committed objects at those pins count as source evidence. Concurrent
 uncommitted worktree files are excluded from official-design and production
@@ -1311,7 +1311,8 @@ evidence into deployed Cloudflare evidence.
 | Rust Linux file checks | `receipt.rs` opens one immediate parent dirfd, creates staging with contained `openat2(..., O_EXCL|O_NOFOLLOW)`, publishes with same-dirfd `renameat2(..., RENAME_NOREPLACE)`, syncs that dirfd, double-reads the target and binds dev/inode/UID/GID/mode/link identity. It reopens the parent pathname only to require that it still resolves to the pinned identity. | The committed publication primitive rejects writable/foreign/linked targets and parent replacement without redirecting writes. It does not yet establish the whole root/execution/closure dirfd graph. |
 | Rust authorization lock | `receipt.rs` defines `LockedAuthorization` over retained `operation-receipts` and authorization descriptors and their stable identities. Acquisition locks the parent, opens the child with `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV)`, locks the child and revalidates both parent-relative and absolute attachment before reserve, finish, recovery or closure can succeed. | Cooperative processes cannot split across old and replacement authorization inodes at this boundary. The parent lock is control-plane serialization and is released before network I/O; it is not proof of hostile-writer containment for the remaining path-based tree. |
 | Rust contained child opens | The same fail-closed `openat2` wrapper creates staging files and reopens immutable targets relative to their immediate parent descriptor. A native test accepts a valid child and rejects `../` escape and symlink traversal; unsupported syscalls do not fall back to `openat`. | Child lookup already rooted at a retained descriptor cannot escape beneath, traverse symlinks or cross mounts. Execution/closure acquisition and full finish/recovery/closure traversal are not yet one retained graph. |
-| Rust reserve operation graph | `LockedOperationDirectory` is created with `mkdirat`, opened beneath the retained authorization dirfd, and bound to stable identity. Capacity publication, `fdopendir`/`readdir` audit, child opens, start append/readback/verification and terminal operation-directory chmod/fsync use retained descriptors. A Linux test replaces and recreates the operation pathname before the final reserve decision and requires fail-closed rejection. | Capacity and per-operation state cannot be redirected to a replacement pathname during reserve. The terminal barrier still re-resolves execution, head-set, closure and candidate paths before `Fresh`, so this is not yet a complete reserve authorization graph. |
+| Rust reserve operation graph | `LockedOperationDirectory` is created with `mkdirat`, opened beneath the retained authorization dirfd, and bound to stable identity. Capacity publication, `fdopendir`/`readdir` audit, child opens, start append/readback/verification and terminal operation-directory chmod/fsync use retained descriptors. A Linux test replaces and recreates the operation pathname before the final reserve decision and requires fail-closed rejection. | Capacity and per-operation state cannot be redirected to a replacement pathname during reserve. |
+| Rust reserve terminal graph | `LockedReserveTerminalBarrier` retains the installation root plus authorization-specific execution-chain and closure topology. Execution receipts, head set, local seal and terminal candidate are read beneath retained dirfds; the authorization-wide sibling/capacity audit also consumes the retained authorization fd. Reserve checks the graph before mutation and before returning a reservation. | Official writers linearize under the authorization `flock`, and captured directory/content drift cannot produce `Fresh`. Continuous absence against a malicious same-UID peer still requires dedicated identity, ACL and mount isolation. |
 | Rust installed artifact checks | `release.rs::verify_installed_release_at` requires stable regular installed bytes; the Unix file-identity check rejects link counts other than one. | The executable and receipt writer must be bound to one immutable installed generation; source checkout bytes or a mutable current pointer are insufficient. |
 
 The cinaVibeSDK architecture diagram also routes Sandbox persistence to R2
@@ -1371,13 +1372,15 @@ cinaVibeSDK or Go cinatoken:
    replacement; reserve, finish, recovery and closure recheck attachment.
    Process death releases the locks, and possession never authorizes network
    I/O.
-5. Linux reserve additionally retains each operation directory through
-   capacity accounting, direct entry audit, start publication/readback and
-   final operation binding. Linux publication uses descriptor-relative
+5. Linux reserve retains each operation directory through capacity accounting,
+   direct entry audit, start publication/readback and final operation binding.
+   It also retains the authorization-specific execution and closure graph,
+   performs fd-relative terminal reads and sibling audits, and repeats the
+   barrier before returning. Linux publication uses descriptor-relative
    no-follow staging creation, same-dirfd no-replace rename, exact-byte double
    readback, file and parent-directory sync, immediate-parent path-identity
-   readback and durability-unknown quarantine. The terminal barrier and the
-   finish/recovery/closure graph still require descriptor confinement.
+   readback and durability-unknown quarantine. Finish/recovery/closure still
+   require complete descriptor confinement.
 6. Startup audits and recovers local receipts before HTTP construction.
    Candidate, terminal execution chain, head set, local seal, or indeterminate
    operation/closure staging is an admission barrier with zero identity,
@@ -1418,20 +1421,22 @@ single-link checks, immediate publication UID/GID/mode/inode/link binding,
 terminal-candidate recovery, local aggregate closure and a retained
 parent/authorization lock capability. Capacity and reserve's per-operation
 subtree now use retained dirfds, including direct entry scans and start
-publication. The terminal barrier still re-resolves execution, head-set,
-closure and candidate paths, while finish/recovery/closure are not yet one
-pinned graph. Native Linux whole-tree confinement, true multi-process
-replacement/kill campaigns, ext4/XFS power-loss, Container replacement,
-independent DSSE and immutable-retention campaigns are not archived.
+publication. Reserve's execution chain, head set, local seal, terminal
+candidate and authorization-wide sibling audit now consume retained
+descriptors and are rechecked before return. Finish/recovery/closure are not
+yet one pinned graph. Dedicated UID/ACL/mount isolation against non-cooperative
+same-UID writers, true multi-process replacement/kill campaigns, ext4/XFS
+power-loss, Container replacement, independent DSSE and immutable-retention
+campaigns are not archived.
 
 The current Rust evidence is
-[run 30144317849](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144317849):
-formatting, 132 Linux tests and warning-free Clippy passed. Clean commit-object
+[run 30147304951](https://github.com/cinagroup/cinatoken-rust/actions/runs/30147304951):
+formatting, 136 Linux tests and warning-free Clippy passed. Clean commit-object
 evidence for the pinned Rust commit has Git tree
-`a46f6cf1bc1d3f3843fdde28e4c98c60043c8a36`, source-archive SHA-256
-`ee1e9c865893fe01075e1baaa169f901b83d996ef27a2c3e3e99c4fe7cbbd781`
-and 31 required modules totaling 1534319 bytes with inventory SHA-256
-`2f9d12f0893b65d88001f61becc08d92a95f818e1ca03849d8bd715f06f3f6f0`.
+`85e4f7f267996c3d128a30bef6bfc17e1b3d780b`, source-archive SHA-256
+`c0dd0f59f9582f9c18b20271f851c67a104341abaad36ae15fe02a3b7a851dd5`
+and 31 required modules totaling 1569772 bytes with inventory SHA-256
+`51e2c990d72bf140588ffa175f73600abbd4b6ffa4319a0ef0f9e63d674f8890`.
 
 Therefore the receipt filesystem is presently a local fail-closed candidate,
 not a production authority and not a substitute for D1, DO SQLite or R2.

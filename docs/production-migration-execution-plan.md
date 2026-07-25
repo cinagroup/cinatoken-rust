@@ -3244,3 +3244,55 @@ multi-process replacement and process-death campaigns, syscall traces,
 ACL/restore, ext4/XFS power-loss, external DSSE/WORM, isolated Cloudflare
 lifecycle tests and G1-G8 approval remain required. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-25 K7 Reserve Terminal Descriptor Graph Gate
+
+The reserve admission transaction now captures one Linux descriptor graph
+after `LockedAuthorization` acquisition. It includes the installation root,
+optional execution-receipts root and authorization chain, the retained
+operation-receipts/authorization pair, and the optional closure root and
+authorization closure. Child acquisition uses the common
+`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV)` primitive.
+
+The graph distinguishes shared and authorization-specific state. Shared
+top-level directories bind inode identity but not global `mtime`/`ctime`;
+unrelated authorizations therefore do not invalidate this transaction.
+Execution-chain and closure directories bind both identity and content
+version. Optional absence is rechecked. Execution receipts, head set, local
+seal and terminal candidate are read from retained descriptors, in the same
+short-circuit order as the original barrier.
+
+The final authorization-wide audit has also moved from `fs::read_dir(Path)` to
+the retained authorization fd. Capacity markers, every sibling operation
+directory and each operation receipt are validated directly. Reserve runs the
+terminal graph both before capacity mutation and immediately before returning
+a reservation. A newly introduced head set stops before start publication.
+
+Commit `79b3f4a3e2534f3249c57e21f9314295d389105e` passed
+[run 30147304951](https://github.com/cinagroup/cinatoken-rust/actions/runs/30147304951)
+and
+[job 89651524827](https://github.com/cinagroup/cinatoken-rust/actions/runs/30147304951/job/89651524827)
+with formatting, 136 Linux library tests and warning-free Clippy. The local
+aggregate gate passed 124 Rust library tests, 3 binary/CLI tests and 61 Bun
+tests with 242 expectations. Clean source evidence is Git tree
+`85e4f7f267996c3d128a30bef6bfc17e1b3d780b`, source-archive SHA-256
+`c0dd0f59f9582f9c18b20271f851c67a104341abaad36ae15fe02a3b7a851dd5`
+and module-inventory SHA-256
+`51e2c990d72bf140588ffa175f73600abbd4b6ffa4319a0ef0f9e63d674f8890`
+for 31 modules and 1569772 bytes.
+
+The preceding
+[run 30145270642](https://github.com/cinagroup/cinatoken-rust/actions/runs/30145270642)
+is archived as a Linux-only test-compilation failure caused by a duplicate
+fixture name. The correction renamed that fixture and left production logic
+unchanged.
+
+This gate proves official-writer linearization and fail-closed drift detection
+after graph capture. It cannot prove continuous absence against a malicious
+same-UID peer that ignores `flock`; the production host must enforce a
+dedicated service identity, exact parent ACLs/ownership and workload/mount
+isolation. Finish, recovery, candidate installation and terminal closure must
+next consume retained graphs. Native process-death/replacement campaigns,
+syscall tracing, ext4/XFS power loss, DSSE/WORM, Cloudflare lifecycle and
+G1-G8 approval remain blockers. Go/VPS remains authoritative and production
+remains **NO-GO**.

@@ -2034,7 +2034,7 @@ impl ReceiptStore {
         )
     }
 
-    #[cfg(any(test, not(target_os = "linux")))]
+    #[cfg(not(target_os = "linux"))]
     fn authorization_operations(
         &self,
         context: &OperationContextIdentity,
@@ -5308,6 +5308,7 @@ fn read_locked_execution_receipt(
     parse_execution_receipt_bytes(bytes)
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn verify_operation_directory(
     operation_directory: &Path,
     authorization_id_sha256: &str,
@@ -6391,6 +6392,7 @@ fn require_locked_execution_chain_matches_terminal_candidate(
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 fn publish_canonical_bytes(
     parent: &Path,
     target: &Path,
@@ -6408,6 +6410,7 @@ fn publish_canonical_bytes(
     )
 }
 
+#[cfg(not(target_os = "linux"))]
 fn publish_canonical_bytes_with_limit(
     parent: &Path,
     target: &Path,
@@ -6461,7 +6464,7 @@ fn publish_locked_terminal_bytes(
     Ok(outcome)
 }
 
-#[cfg(any(test, not(target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 fn freeze_operation_directories(
     authorization: &Path,
     head_set: &OperationHeadSetManifest,
@@ -6482,6 +6485,7 @@ fn freeze_operation_directories(
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 fn require_execution_chain_identity(
     chain_directory: &Path,
     publication: &PublicationIdentity,

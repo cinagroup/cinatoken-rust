@@ -74,9 +74,21 @@ jobs:
           trace_root="$(mktemp -d)"
           prepare_ready="${trace_root}.prepared"
           recover_ready="${trace_root}.recovered"
+          full_trace_log="$(mktemp)"
+          full_trace_root="$(mktemp -d)"
+          full_trace_ready="${full_trace_root}.ready"
           cleanup_trace_fixture() {
             chmod -R u+w "${trace_root}" 2>/dev/null || true
-            rm -rf "${trace_root}" "${prepare_ready}" "${recover_ready}" "${artifact_log}" "${trace_log}"
+            chmod -R u+w "${full_trace_root}" 2>/dev/null || true
+            rm -rf \
+              "${trace_root}" \
+              "${prepare_ready}" \
+              "${recover_ready}" \
+              "${full_trace_root}" \
+              "${full_trace_ready}" \
+              "${artifact_log}" \
+              "${trace_log}" \
+              "${full_trace_log}"
           }
           trap cleanup_trace_fixture EXIT
 
@@ -129,79 +141,123 @@ jobs:
               --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
               --nocapture
 
-          python3 - "${trace_log}" <<'PY'
+          strace -f -qq -s 4096 \
+            -e trace=openat,openat2,mkdirat,renameat2,unlinkat,fchmodat,fchmod,fsync,fdatasync,flock \
+            -o "${full_trace_log}" \
+            env \
+              CINATOKEN_RING_RECEIPT_TEST_ROLE=full-terminal-transaction \
+              CINATOKEN_RING_RECEIPT_TEST_ROOT="${full_trace_root}" \
+              CINATOKEN_RING_RECEIPT_TEST_READY="${full_trace_ready}" \
+              "${test_binary}" \
+              --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
+              --nocapture
+
+          python3 - \
+            "${trace_log}" "terminal recovery" 2 false \
+            "${full_trace_log}" "full terminal transaction" 5 true <<'PY'
           import re
           import sys
 
-          with open(sys.argv[1], "r", encoding="utf-8") as handle:
-              lines = handle.readlines()
-          first_lock = next(
-              (
-                  index
-                  for index, line in enumerate(lines)
-                  if "flock(" in line and "LOCK_EX" in line and re.search(r"=\s*0\s*$", line)
-              ),
-              None,
-          )
-          if first_lock is None:
-              raise SystemExit("terminal recovery trace contains no successful exclusive flock")
-          locked = lines[first_lock:]
-          violations = []
+          arguments = sys.argv[1:]
+          if not arguments or len(arguments) % 4:
+              raise SystemExit("expected trace path, label, minimum locks, and mkdirat flag")
+
           write_flags = ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND")
-          for line in locked:
-              if "AT_FDCWD" not in line:
-                  continue
-              if "openat(AT_FDCWD" in line and any(flag in line for flag in write_flags):
-                  violations.append(line.rstrip())
-              elif any(
-                  syscall in line
-                  for syscall in (
-                      "openat2(AT_FDCWD",
-                      "mkdirat(AT_FDCWD",
-                      "renameat2(",
-                      "unlinkat(AT_FDCWD",
-                      "fchmodat(AT_FDCWD",
-                  )
-              ):
-                  violations.append(line.rstrip())
-          if violations:
-              raise SystemExit(
-                  "locked terminal recovery used AT_FDCWD mutation:\n" + "\n".join(violations)
+
+          def successful_exclusive_lock(line):
+              return (
+                  "flock(" in line
+                  and "LOCK_EX" in line
+                  and re.search(r"=\s*0\s*$", line)
               )
 
-          checks = {
-              "two_exclusive_flocks": sum(
-                  1
-                  for line in locked
-                  if "flock(" in line and "LOCK_EX" in line and re.search(r"=\s*0\s*$", line)
-              ) >= 2,
-              "dirfd_openat2": any(
-                  re.search(r"openat2\(\d+,", line) and "AT_FDCWD" not in line
-                  for line in locked
-              ),
-              "dirfd_renameat2": any(
-                  re.search(r"renameat2\(\d+,", line) and "AT_FDCWD" not in line
-                  for line in locked
-              ),
-              "directory_sync": any("fsync(" in line or "fdatasync(" in line for line in locked),
-              "descriptor_chmod": any("fchmod(" in line for line in locked),
-          }
-          missing = [name for name, present in checks.items() if not present]
-          if missing:
-              raise SystemExit(f"terminal recovery trace missing required evidence: {missing}")
-          print("terminal recovery syscall trace: PASS")
-          for name in checks:
-              print(f"- {name}: PASS")
+          for offset in range(0, len(arguments), 4):
+              trace_path, label, minimum_locks_text, require_mkdirat_text = arguments[
+                  offset : offset + 4
+              ]
+              minimum_locks = int(minimum_locks_text)
+              require_mkdirat = require_mkdirat_text == "true"
+              with open(trace_path, "r", encoding="utf-8") as handle:
+                  lines = handle.readlines()
+              first_lock = next(
+                  (
+                      index
+                      for index, line in enumerate(lines)
+                      if successful_exclusive_lock(line)
+                  ),
+                  None,
+              )
+              if first_lock is None:
+                  raise SystemExit(
+                      f"{label} trace contains no successful exclusive flock"
+                  )
+              locked = lines[first_lock:]
+              violations = []
+              for line in locked:
+                  if "AT_FDCWD" not in line:
+                      continue
+                  if "openat(AT_FDCWD" in line and any(
+                      flag in line for flag in write_flags
+                  ):
+                      violations.append(line.rstrip())
+                  elif any(
+                      syscall in line
+                      for syscall in (
+                          "openat2(AT_FDCWD",
+                          "mkdirat(AT_FDCWD",
+                          "renameat2(",
+                          "unlinkat(AT_FDCWD",
+                          "fchmodat(AT_FDCWD",
+                      )
+                  ):
+                      violations.append(line.rstrip())
+              if violations:
+                  raise SystemExit(
+                      f"locked {label} used AT_FDCWD mutation:\n"
+                      + "\n".join(violations)
+                  )
+
+              checks = {
+                  f"exclusive_flocks_at_least_{minimum_locks}": sum(
+                      1 for line in locked if successful_exclusive_lock(line)
+                  )
+                  >= minimum_locks,
+                  "dirfd_openat2": any(
+                      re.search(r"openat2\(\d+,", line) and "AT_FDCWD" not in line
+                      for line in locked
+                  ),
+                  "dirfd_renameat2": any(
+                      re.search(r"renameat2\(\d+,", line) and "AT_FDCWD" not in line
+                      for line in locked
+                  ),
+                  "directory_sync": any(
+                      "fsync(" in line or "fdatasync(" in line for line in locked
+                  ),
+                  "descriptor_chmod": any("fchmod(" in line for line in locked),
+              }
+              if require_mkdirat:
+                  checks["dirfd_mkdirat"] = any(
+                      re.search(r"mkdirat\(\d+,", line) and "AT_FDCWD" not in line
+                      for line in locked
+                  )
+              missing = [name for name, present in checks.items() if not present]
+              if missing:
+                  raise SystemExit(
+                      f"{label} trace missing required evidence: {missing}"
+                  )
+              print(f"{label} syscall trace: PASS")
+              for name in checks:
+                  print(f"- {name}: PASS")
           PY
 
           {
-            echo "### Terminal recovery syscall trace"
+            echo "### Terminal descriptor syscall traces"
             echo
-            echo "- post-lock AT_FDCWD mutation: none"
-            echo "- retained-dirfd openat2: observed"
-            echo "- retained-dirfd renameat2: observed"
-            echo "- fsync/fdatasync: observed"
-            echo "- descriptor chmod: observed"
+            echo "- recovery post-lock AT_FDCWD mutation: none"
+            echo "- full-transaction post-lock AT_FDCWD mutation: none"
+            echo "- retained-dirfd openat2/renameat2: observed in both traces"
+            echo "- full-transaction retained-dirfd mkdirat: observed"
+            echo "- fsync/fdatasync and descriptor chmod: observed in both traces"
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Reject runner warnings

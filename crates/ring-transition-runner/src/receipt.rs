@@ -10580,6 +10580,23 @@ mod tests {
         assert!(closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME).exists());
         let _ = fs::remove_file(&kill_ready);
         cleanup(&kill_root);
+
+        let full_root = temporary_root("linux-multiprocess-terminal-full");
+        let full_ready = full_root.with_extension("full-ready");
+        let status =
+            spawn_multiprocess_terminal_child("full-terminal-transaction", &full_root, &full_ready)
+                .wait()
+                .expect("full terminal child wait");
+        assert!(status.success(), "full terminal child failed: {status}");
+        let store = ReceiptStore::open(&full_root).unwrap();
+        let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
+        let recovered = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+        let plan = plan_terminal_receipts(&snapshot, &publication, &credentials).unwrap();
+        assert_eq!(recovered.execution_receipt_head_sha256, plan.head_sha256());
+        cleanup(&full_root);
     }
 
     #[cfg(target_os = "linux")]
@@ -10658,6 +10675,62 @@ mod tests {
                     .unwrap()
                     .unwrap();
                 assert_eq!(first, second);
+            }
+            "full-terminal-transaction" => {
+                let store = ReceiptStore::open(root).unwrap();
+                let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
+                let mut read = operation_start("a", NOW);
+                read.identity.kind = OperationKind::AuthorityClaimRead;
+                read.identity.state_version = 0;
+                read.identity.request_sha256 = read_operation_request_sha256(
+                    &read.identity.target_sha256,
+                    &read.request_id_sha256,
+                )
+                .unwrap();
+                assert_eq!(
+                    store
+                        .reserve_operation(&publication, &credentials, &activation, &read)
+                        .unwrap(),
+                    OperationReservation::Fresh
+                );
+                let accepted = OperationFinishInput {
+                    outcome: OperationOutcome::Accepted,
+                    finished_at: NOW + 1,
+                    http_status: Some(200),
+                    response_body_sha256: Some("a".repeat(64)),
+                    response_id_sha256: Some("b".repeat(64)),
+                };
+                store
+                    .install_terminal_snapshot_candidate(
+                        &snapshot,
+                        &publication,
+                        &credentials,
+                        &activation,
+                        &read.identity,
+                        &accepted,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    store
+                        .finish_operation_after_terminal_candidate(
+                            &publication,
+                            &credentials,
+                            &activation,
+                            &read.identity,
+                            &accepted,
+                        )
+                        .unwrap(),
+                    OperationOutcome::Accepted
+                );
+                let plan = plan_terminal_receipts(&snapshot, &publication, &credentials).unwrap();
+                let installed = store
+                    .install_terminal_closure(&plan, &publication, &credentials, &activation)
+                    .unwrap();
+                let recovered = store
+                    .recover_terminal_closure(&publication, &credentials, &activation)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(installed, recovered);
             }
             _ => panic!("unknown multiprocess terminal child role"),
         }

@@ -10772,6 +10772,81 @@ provider, billing reconciliation, alert, or rollback evidence is archived.
 Settlement writes and `/v1/realtime` therefore remain default-off and
 production remains **NO-GO**.
 
+## 22.297 K7 Audited Syscall Evidence Gate (2026-07-25)
+
+The first full-transaction trace gate was intentionally re-audited before the
+crash matrix expanded. That audit found that the inline parser traced only a
+selected `*at` syscall list, treated failed calls as positive evidence and
+required only one successful lock per logical phase. A regression that removed
+the parent receipts lock could therefore have met the old minimum counts.
+Those checks are superseded by the committed, independently unit-tested
+`tools/verify_ring_transition_runner_syscall_trace.mjs`.
+
+The hardened workflow now:
+
+1. traces `%file` plus `flock`, `fsync`, `fdatasync`, `fchmod`,
+   descriptor duplication and close operations with `strace -f -yy`;
+2. rejects diagnostic, resumed, unfinished and otherwise unparsed trace lines;
+3. distinguishes successful mutation from failed probes, so an `EEXIST`
+   pathname probe is neither a mutation violation nor positive evidence;
+4. tracks per-process descriptor path, directory type, duplication, close and
+   held-lock state;
+5. requires every successful post-lock mutation to remain under the exact
+   fixture root and to occur while both the receipts and authorization locks
+   are held;
+6. validates repeated receipts/authorization lock pairs without identity
+   drift;
+7. requires exactly four successful exclusive locks for two recovery passes
+   and exactly ten for the five full-transaction phases; and
+8. counts only successful retained-dirfd `openat2`, `renameat2`, optional
+   `mkdirat`, directory sync and descriptor chmod as positive evidence.
+
+The verifier and its synthetic/CLI negative tests are now release-source
+required modules. This increases the frozen inventory from 31 to 33 modules
+and moves all dependent Rust and JavaScript DSSE/publication vectors together.
+Failed workflow traces are retained for seven days through a SHA-pinned
+`actions/upload-artifact`; a successful run deliberately skips that failure
+artifact.
+
+The exact candidate is
+`938950b2f3057167d8cbf5749650681732006e0b`.
+[Run 30159686961](https://github.com/cinagroup/cinatoken-rust/actions/runs/30159686961)
+and
+[job 89682866508](https://github.com/cinagroup/cinatoken-rust/actions/runs/30159686961/job/89682866508)
+passed on Ubuntu 24.04:
+
+- formatting;
+- all 147 Linux library tests;
+- focused recovery with exactly 4/4 paired locks;
+- full terminal transaction with exactly 10/10 paired locks;
+- successful retained-dirfd `openat2` and `renameat2` in both traces;
+- successful retained-dirfd `mkdirat` in the full trace;
+- successful directory sync and descriptor chmod in both traces;
+- zero successful post-lock unconfined pathname mutation; and
+- warning-free all-target Clippy.
+
+The aggregate local gate passed 126 Rust library tests, 3 binary/CLI tests and
+70 Bun tests with 258 expectations. Clean commit-object evidence produced:
+
+| Field | Value |
+| --- | --- |
+| Git tree | `ed6bcf39865d4cb5ee695cf3f9e53577daa26881` |
+| Source archive | 35962880 bytes |
+| Source archive SHA-256 | `6a03ced213ccd8837890b2cd7eb5b0903fb416749b3461c6ecbafd3dcf0e6293` |
+| Required modules | 33 |
+| Required module bytes | 1678772 |
+| Module inventory SHA-256 | `6fe6f610a4835faa860d56076009cb8a70cff80fa6036919c0968c1bbb2b3222` |
+
+The earlier zero-job runs `30157797156` and `30158073337` remain useful
+GitHub outage history but are no longer an open acceptance blocker. The next
+highest-risk local increment is a real process death after terminal candidate
+sync and before accepted finish, followed by the remaining reserve, finish,
+closure and concurrent-recovery crash matrix. UID/GID and ACL/mount
+attestation, ext4/XFS power loss, restore, independent DSSE/WORM evidence,
+Cloudflare lifecycle and G1-G8 also remain open. No credential, remote
+mutation, traffic movement or Go/VPS drain occurred. Go/VPS remains
+authoritative and production remains **NO-GO**.
+
 ### 22.174 2026-07-13 Guarded Global Realtime Reservation Recovery
 
 This increment closes the local D1-orphan scanner gap identified in 22.173,

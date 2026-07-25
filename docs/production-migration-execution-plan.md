@@ -3463,7 +3463,7 @@ scheduler and financial authority; production remains **NO-GO**.
 
 ## 2026-07-25 K7 Full Terminal Transaction Syscall Gate
 
-The next K7 increment broadens native Linux tracing from a prepared recovery
+This K7 increment broadened native Linux tracing from a prepared recovery
 fixture to one full happy-path terminal transaction. A dedicated child process
 must reserve an exact claim-read operation, install its terminal candidate,
 finish only that candidate-bound operation, install the complete terminal
@@ -3500,4 +3500,49 @@ coverage; attest UID/GID, ownership, ACL and mounts; execute ext4/XFS
 power-loss and restore campaigns; externalize signed immutable evidence; then
 run isolated Cloudflare DO/Container lifecycle, fault, load/cost/SLO and
 rollback campaigns before G1-G8 review. No production authority moved.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-25 K7 Audited Syscall Evidence Gate
+
+The production evidence parser is now part of the frozen runner source, not
+only workflow text. The old selected-syscall/minimum-lock policy is superseded
+by:
+
+1. full `%file` tracing with descriptor paths from `strace -yy`;
+2. fail-closed parsing of every emitted syscall line;
+3. success-result checks for every violation and positive-evidence decision;
+4. per-PID descriptor, dup, close and lock tracking;
+5. fixture-root and two-lock enforcement for successful mutations;
+6. exact receipts/authorization lock pairs: 4 for focused recovery and 10 for
+   the full transaction; and
+7. successful, object-bound dirfd/sync/chmod evidence.
+
+The verifier and test are required by the Rust release manifest, JavaScript
+release contract and clean source collector. A missing verifier or verifier
+test fails source collection. Dependent deterministic release, publication and
+activation hashes were regenerated and cross-runtime tests pass.
+
+Acceptance evidence is frozen at
+`938950b2f3057167d8cbf5749650681732006e0b`,
+[run 30159686961](https://github.com/cinagroup/cinatoken-rust/actions/runs/30159686961)
+and
+[job 89682866508](https://github.com/cinagroup/cinatoken-rust/actions/runs/30159686961/job/89682866508).
+All 147 Ubuntu library tests, both syscall traces, formatting and strict Clippy
+passed. The local aggregate passed 126 library tests, 3 binary/CLI tests and 70
+Bun tests with 258 expectations.
+
+Clean source:
+
+| Field | Value |
+| --- | --- |
+| Git tree | `ed6bcf39865d4cb5ee695cf3f9e53577daa26881` |
+| Archive SHA-256 | `6a03ced213ccd8837890b2cd7eb5b0903fb416749b3461c6ecbafd3dcf0e6293` |
+| Archive bytes | 35962880 |
+| Inventory SHA-256 | `6fe6f610a4835faa860d56076009cb8a70cff80fa6036919c0968c1bbb2b3222` |
+| Modules / bytes | 33 / 1678772 |
+
+K7 execution now advances to the candidate-after-sync process-death boundary,
+then the remaining reserve/finish/closure and concurrent-recovery matrix.
+Production image ownership/ACL/mount evidence remains the next environmental
+gate after that local state-machine matrix. No production authority moved;
 Go/VPS remains authoritative and production remains **NO-GO**.

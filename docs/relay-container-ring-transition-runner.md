@@ -466,6 +466,52 @@ Authority deployment, route, Access policy, secret, signed runner release,
 Cloudflare mutation, customer traffic, or Go/VPS cutover is established.
 Production remains **NO-GO**.
 
+## Audited Syscall Trace Verifier
+
+`tools/verify_ring_transition_runner_syscall_trace.mjs` is now a required
+release-source module with direct function and CLI tests. It consumes a
+bounded trace and an exact fixture root. It performs no network request,
+credential read or file write.
+
+The verifier tracks:
+
+- PID and descriptor identity from `strace -yy`;
+- directory descriptors opened by `open`, `openat` and `openat2`;
+- `dup`, `dup2`, `dup3`, `fcntl(F_DUPFD*)` and `close`;
+- successful exclusive lock acquisition and release; and
+- successful mutation, directory sync and descriptor chmod.
+
+Legacy pathname mutation after the first lock is rejected. Allowed dirfd
+mutation must be successful, remain beneath the supplied fixture root and
+occur while both lock descriptors are live. Failed calls cannot satisfy
+positive evidence. An `EEXIST` probe is permitted because it performed no
+mutation, but it is still visible in the complete `%file` trace.
+
+Every lock pair must be the same
+`execution-operation-receipts/<authorization>` graph and remain on one PID.
+Focused two-pass recovery requires exactly 4 successful locks. Reserve,
+candidate, candidate-bound finish, closure and recovery require exactly 10.
+This prevents a future single-lock regression from satisfying the gate.
+
+Candidate `938950b2f3057167d8cbf5749650681732006e0b` passed
+[Ubuntu run 30159686961](https://github.com/cinagroup/cinatoken-rust/actions/runs/30159686961)
+and
+[job 89682866508](https://github.com/cinagroup/cinatoken-rust/actions/runs/30159686961/job/89682866508)
+with 147 Linux tests and every hardened syscall assertion. The local aggregate
+passed 126 library tests, 3 binary/CLI tests and 70 Bun tests with 258
+expectations. Clean source evidence is Git tree
+`ed6bcf39865d4cb5ee695cf3f9e53577daa26881`, archive SHA-256
+`6a03ced213ccd8837890b2cd7eb5b0903fb416749b3461c6ecbafd3dcf0e6293`
+and inventory SHA-256
+`6fe6f610a4835faa860d56076009cb8a70cff80fa6036919c0968c1bbb2b3222`
+for 33 modules and 1678772 bytes.
+
+Failed traces are retained for seven days through a commit-pinned official
+upload action. Successful traces are represented by the verifier JSON in the
+job log; durable independent trace signing/WORM retention remains open.
+The next process campaign kills the child after candidate sync and before the
+accepted finish. Production remains **NO-GO**.
+
 ## Terminal Receipt Store Boundary
 
 The runner now contains a library-owned terminal receipt projection and

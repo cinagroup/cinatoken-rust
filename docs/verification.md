@@ -6027,6 +6027,54 @@ provider call, remote migration, deployment, or traffic switch is claimed.
 All eight Container gates remain false; Go/VPS remains authoritative and
 production remains **NO-GO**.
 
+## 2026-07-25 Audited Syscall Trace Verifier
+
+The full-transaction trace gate now uses a checked-in Node-compatible verifier
+rather than an inline workflow parser. Its eight Bun tests cover successful
+paired-lock traces, exact lock-count regression, failed `EEXIST` probes,
+failed-call evidence rejection, mutation without both locks, `AT_FDCWD`,
+outside-root descriptors, incomplete lines and CLI ambiguity.
+
+The workflow records `strace -f -yy` `%file` output plus lock, sync, chmod and
+descriptor lifecycle calls. The verifier binds `-yy` descriptors beneath the
+exact fixture root, tracks dup/close and lock ownership, rejects successful
+legacy pathname mutation, and counts only successful syscall results.
+
+Frozen Ubuntu evidence:
+
+- candidate `938950b2f3057167d8cbf5749650681732006e0b`;
+- [run 30159686961](https://github.com/cinagroup/cinatoken-rust/actions/runs/30159686961);
+- [job 89682866508](https://github.com/cinagroup/cinatoken-rust/actions/runs/30159686961/job/89682866508);
+- Ubuntu 24.04.4, kernel `6.17.0-1020-azure`, Rust 1.97.1;
+- 147 Linux library tests, formatting and strict Clippy passed;
+- recovery observed exactly 4 locks and full transaction exactly 10;
+- both traces observed successful dirfd `openat2`, `renameat2`, directory sync
+  and descriptor chmod;
+- the full trace observed successful dirfd `mkdirat`; and
+- both traces reported no successful post-lock unconfined mutation.
+
+Local aggregate evidence is 126 Rust library tests, 3 binary/CLI tests and 70
+Bun tests with 258 expectations. Clean source identity:
+
+- Git tree `ed6bcf39865d4cb5ee695cf3f9e53577daa26881`;
+- 35962880-byte archive with SHA-256
+  `6a03ced213ccd8837890b2cd7eb5b0903fb416749b3461c6ecbafd3dcf0e6293`;
+- 33 required modules totaling 1678772 bytes; and
+- inventory SHA-256
+  `6fe6f610a4835faa860d56076009cb8a70cff80fa6036919c0968c1bbb2b3222`.
+
+Failure-only trace retention is pinned to
+`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02`
+for seven days. The successful run skipped that artifact as designed; its
+verifier JSON is retained in the job log. The prior zero-job outage attempts
+remain historical evidence and no longer block this exact candidate.
+
+This proves the traced happy path and focused recovery syscall policy, not the
+remaining process-death matrix, production image ACLs/mounts, abrupt power
+loss, restore, immutable external evidence or Cloudflare lifecycle. No
+credential or remote mutation was used. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
 ## Container Reconciliation Retry Preview Verification (2026-07-17)
 
 This overlay adds only a RootAuth-protected preview for a dead-letter

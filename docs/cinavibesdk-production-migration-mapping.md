@@ -1497,6 +1497,38 @@ or Cloudflare lifecycle test. cinaVibeSDK's ephemeral Container model
 therefore still requires D1/DO/R2 recovery and quarantine rules. Go/VPS
 remains authoritative and production remains **NO-GO**.
 
+## 2026-07-25 Audited Linux Syscall Evidence Mapping
+
+The Container execution-plane mapping now includes the verifier that decides
+whether local Linux receipt evidence is admissible. This matters because a
+replaceable Container process cannot rely on an unreviewed CI text search as
+its durability proof.
+
+The hardened cinatoken verifier consumes complete `%file` traces with `-yy`
+descriptor identity, requires successful syscall results, tracks descriptor
+and lock lifetime, and binds every successful mutation under the isolated
+fixture root while both locks are held. It requires exact 4-lock recovery and
+10-lock full-transaction protocols, so loss of the parent receipts lock cannot
+pass unnoticed.
+
+The verifier and its tests are part of the 33-module release inventory.
+Candidate `938950b2f3057167d8cbf5749650681732006e0b` passed
+[Ubuntu run 30159686961](https://github.com/cinagroup/cinatoken-rust/actions/runs/30159686961)
+and
+[job 89682866508](https://github.com/cinagroup/cinatoken-rust/actions/runs/30159686961/job/89682866508):
+147 Linux tests, both syscall policies, formatting and strict Clippy passed.
+Clean source has Git tree
+`ed6bcf39865d4cb5ee695cf3f9e53577daa26881`, archive SHA-256
+`6a03ced213ccd8837890b2cd7eb5b0903fb416749b3461c6ecbafd3dcf0e6293`
+and inventory SHA-256
+`6fe6f610a4835faa860d56076009cb8a70cff80fa6036919c0968c1bbb2b3222`.
+
+This makes the local evidence gate stronger; it does not make ephemeral
+Container storage authoritative. Candidate-after-sync `SIGKILL`, the rest of
+the crash matrix, D1/DO/R2 recovery, image ACL/mount attestation and immutable
+external evidence remain required. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
 ## 2026-07-25 Full Terminal Transaction Syscall Mapping
 
 The cinaVibeSDK-derived Container model treats local disk and processes as

@@ -1184,8 +1184,9 @@ impl ReceiptStore {
         locked.require_bound()?;
         #[cfg(target_os = "linux")]
         {
-            let mut graph = self.lock_terminal_graph(&locked, &context, true, true)?;
             let mut state = self.locked_authorization_closure_state(&locked, &context)?;
+            self.canonical_locked_operation_head_set(&context, &state)?;
+            let mut graph = self.lock_terminal_graph(&locked, &context, true, true)?;
             let candidate = graph
                 .operation_closure
                 .as_ref()
@@ -1199,7 +1200,6 @@ impl ReceiptStore {
                     return Err(ReceiptError::Conflict);
                 }
             }
-            self.canonical_locked_operation_head_set(&context, &state)?;
             self.install_terminal_plan_locked(&locked, &mut graph, plan)?;
             self.install_terminal_closure_graph_locked(&locked, &context, &mut graph, &mut state)
         }
@@ -9829,6 +9829,52 @@ mod tests {
             }
             result => panic!("unexpected reservation result: {result:?}"),
         }
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unfinished_terminal_attempt_leaves_no_terminal_graph_and_finish_remains_available() {
+        let root = temporary_root("unfinished-terminal-no-graph");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        let start = operation_start("a", NOW);
+        assert_eq!(
+            store
+                .reserve_operation(&publication, &credentials, &activation, &start)
+                .unwrap(),
+            OperationReservation::Fresh
+        );
+
+        assert_eq!(
+            store.install_terminal_closure(&plan, &publication, &credentials, &activation,),
+            Err(ReceiptError::InvalidField("unfinished_operation_chain"))
+        );
+        assert!(!root.join(RECEIPTS_DIRECTORY_NAME).exists());
+        assert!(!root.join(OPERATION_CLOSURES_DIRECTORY_NAME).exists());
+
+        assert_eq!(
+            store
+                .finish_operation(
+                    &publication,
+                    &credentials,
+                    &activation,
+                    &start.identity,
+                    &OperationFinishInput {
+                        outcome: OperationOutcome::Accepted,
+                        finished_at: NOW + 1,
+                        http_status: Some(200),
+                        response_body_sha256: Some("a".repeat(64)),
+                        response_id_sha256: Some("b".repeat(64)),
+                    },
+                )
+                .unwrap(),
+            OperationOutcome::Accepted
+        );
+        store
+            .install_terminal_closure(&plan, &publication, &credentials, &activation)
+            .unwrap();
         cleanup(&root);
     }
 

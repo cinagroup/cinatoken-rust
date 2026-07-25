@@ -3194,3 +3194,53 @@ derive from `LockedAuthorization` descriptors before `Fresh` can escape.
 Execution and closure roots, finish/recovery/terminal closure, real
 multi-process faults, syscall tracing, ext4/XFS power-loss, DSSE/WORM and
 Cloudflare lifecycle evidence remain blockers. Production remains **NO-GO**.
+
+## 2026-07-25 K7 Reserve Operation Dirfd Gate
+
+The Linux reserve path now derives capacity and operation state from
+`LockedAuthorization` descriptors through the point immediately before a
+fresh send capability is returned:
+
+1. capacity markers publish relative to the retained authorization dirfd;
+2. the operation directory is created with `mkdirat` and reopened with
+   fail-closed `openat2` containment;
+3. operation entries are enumerated with `fdopendir`/`readdir` after rewinding
+   the duplicated directory descriptor;
+4. receipt children are opened beneath the retained operation dirfd; and
+5. start append/readback/verification and operation-directory chmod/fsync use
+   that same retained directory object.
+
+The runner compares the retained operation identity with both its
+authorization-relative entry and absolute pathname before `Fresh` can escape.
+A Linux test renames that directory after descriptor acquisition, recreates
+the old pathname and proves fail-closed rejection with no fresh authorization
+and no redirected receipt publication. Repeated direct scans are separately
+tested to catch shared directory-offset regressions.
+
+Commit `8cf817f081d0001fc7ef1f6992984f990a1f8b50` passed
+[run 30144317849](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144317849)
+and
+[job 89643177206](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144317849/job/89643177206)
+with formatting, 132 Linux library tests and warning-free Clippy. The local
+aggregate gate passed 124 Rust library tests, 3 binary/CLI tests and 61 Bun
+tests with 242 expectations. Clean source evidence is Git tree
+`a46f6cf1bc1d3f3843fdde28e4c98c60043c8a36`, source-archive SHA-256
+`ee1e9c865893fe01075e1baaa169f901b83d996ef27a2c3e3e99c4fe7cbbd781`
+and module-inventory SHA-256
+`2f9d12f0893b65d88001f61becc08d92a95f818e1ca03849d8bd715f06f3f6f0`
+for 31 modules and 1534319 bytes.
+
+[Run 30144186705](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144186705)
+remains archived as the intermediate gate: all Linux tests passed, but Clippy
+rejected dead fallback code and an over-wide test-hook signature. The final
+candidate fixes both without lint suppression.
+
+This gate does not authorize production. The reserve terminal barrier still
+re-resolves execution, head-set, closure and candidate paths and is the next
+P0. It must become one retained descriptor graph and be revalidated
+immediately before `Fresh`; finish, recovery and terminal closure follow.
+Publication staging cleanup/error fidelity is a P2 hardening item. Native
+multi-process replacement and process-death campaigns, syscall traces,
+ACL/restore, ext4/XFS power-loss, external DSSE/WORM, isolated Cloudflare
+lifecycle tests and G1-G8 approval remain required. Go/VPS remains
+authoritative and production remains **NO-GO**.

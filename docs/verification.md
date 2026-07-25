@@ -9439,3 +9439,66 @@ root graph. Reserve-to-Fresh descriptor continuity, mount-fixture rejection,
 zero-unapproved-`AT_FDCWD` traces, true multiprocess rename/kill, ACL,
 backup/restore, ext4/XFS power-loss and external DSSE/WORM gates remain open.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-25 Linux Reserve Operation Dirfd Verification
+
+This increment verifies descriptor continuity for capacity and per-operation
+state during reserve. Linux creates operation directories relative to the
+retained authorization descriptor, opens them with the common fail-closed
+`openat2` policy, audits them through `fdopendir`/`readdir`, and appends,
+reads and verifies the start receipt through the retained operation
+descriptor.
+
+Local command:
+
+```powershell
+npx.cmd --yes bun run check:ring-transition-runner
+```
+
+Observed local result:
+
+- 124 Rust library tests passed;
+- 3 binary/CLI tests passed; and
+- 61 Bun tests passed with 242 expectations.
+
+Native evidence is frozen at
+`8cf817f081d0001fc7ef1f6992984f990a1f8b50`:
+
+- [run 30144317849](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144317849)
+  and
+  [job 89643177206](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144317849/job/89643177206)
+  passed;
+- formatting, 132 Linux library tests and warning-free Clippy completed
+  successfully;
+- Linux tests prove operation-path replacement fails closed before `Fresh`
+  and that repeated direct directory scans rewind to the complete entry set;
+  and
+- clean commit-object collection produced Git tree
+  `a46f6cf1bc1d3f3843fdde28e4c98c60043c8a36`, a 35727360-byte source
+  archive with SHA-256
+  `ee1e9c865893fe01075e1baaa169f901b83d996ef27a2c3e3e99c4fe7cbbd781`,
+  and 31 required modules totaling 1534319 bytes with inventory SHA-256
+  `2f9d12f0893b65d88001f61becc08d92a95f818e1ca03849d8bd715f06f3f6f0`.
+
+[Run 30144186705](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144186705)
+is retained as the intermediate failure. Its 132 Linux tests passed, but
+Clippy rejected one dead Linux-only fallback and a publication test hook with
+too many arguments. The frozen candidate cfg-gates the fallback and groups
+the retained parent arguments; no lint suppression was added.
+
+The replacement test acquires the operation descriptor, renames its pathname,
+creates a different directory at the original path and then continues
+reserve. The expected result is
+`UnsafeFilesystem("operation_directory")`, with no `Fresh` result and no
+start receipt redirected into either pathname. Static review found no
+`fdopendir` ownership leak and no Windows cfg regression.
+
+The verified boundary is deliberately partial. Reserve's terminal barrier
+still performs path-based reads of the execution chain, head set, closure and
+terminal candidate, and the final binding check covers authorization and
+operation directories rather than that complete terminal graph. This is the
+next P0. Publication staging cleanup and precise syscall-error preservation
+remain P2. Multi-process rename/kill campaigns, zero-unapproved-`AT_FDCWD`
+traces, ACL/backup/restore, ext4/XFS power-loss and independent DSSE/WORM
+evidence remain open. No credential or Cloudflare mutation was used. Go/VPS
+remains authoritative and production remains **NO-GO**.

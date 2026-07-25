@@ -1280,3 +1280,48 @@ enumeration, chmod or fsync sites above the child-open layer. Reserve-to-Fresh
 descriptor continuity is the next P0 implementation unit, followed by the
 remaining execution/closure graph and native multiprocess/fault campaign.
 Production remains **NO-GO**.
+
+## Linux Reserve Operation Dirfd Increment
+
+Reserve now owns a `LockedOperationDirectory` from the retained authorization
+descriptor through operation audit and start-receipt publication. Linux
+capacity files use the authorization dirfd publication primitive. Operation
+directories use `mkdirat`, are opened with the common fail-closed `openat2`
+wrapper, and retain their path, parent-relative name and stable filesystem
+identity.
+
+Direct operation audit uses `fdopendir`/`readdir` on a duplicated descriptor.
+The implementation first performs `lseek(fd, 0, SEEK_SET)` because duplicated
+directory descriptors share the same open-file-description offset. Child
+receipt opens, start append/readback, prefix verification, directory mode
+transition and fsync all consume the retained operation descriptor.
+
+`LockedOperationDirectory::require_bound()` verifies both the
+authorization-relative operation entry and its absolute pathname against the
+retained identity. Reserve invokes that check, together with
+`LockedAuthorization::require_bound()`, before returning `Fresh`. A Linux
+hook test replaces and recreates the operation pathname after descriptor
+acquisition and proves that the transaction fails closed without publishing
+to either redirected location. Another test proves consecutive descriptor
+scans see the complete entry set.
+
+Commit `8cf817f081d0001fc7ef1f6992984f990a1f8b50` passed
+[Ubuntu run 30144317849](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144317849)
+and
+[job 89643177206](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144317849/job/89643177206)
+with formatting, 132 Linux library tests and warning-free Clippy. The local
+aggregate runner gate passed 124 Rust library tests, 3 binary/CLI tests and 61
+Bun tests with 242 expectations. The clean 31-module inventory contains
+1534319 bytes and has SHA-256
+`2f9d12f0893b65d88001f61becc08d92a95f818e1ca03849d8bd715f06f3f6f0`;
+the source archive SHA-256 is
+`ee1e9c865893fe01075e1baaa169f901b83d996ef27a2c3e3e99c4fe7cbbd781`.
+
+The remaining P0 is the terminal barrier within reserve. Execution-chain,
+head-set, closure and terminal-candidate paths are still re-resolved and are
+not rechecked as one descriptor graph at the final `Fresh` boundary. Finish,
+ambiguous recovery and terminal closure remain later graph-conversion slices.
+Staging cleanup/error classification is tracked separately as P2. Real
+multi-process replacement/kill, syscall-trace, filesystem-fault, DSSE/WORM
+and Cloudflare lifecycle evidence remain mandatory. Production remains
+**NO-GO**.

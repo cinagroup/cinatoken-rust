@@ -20147,3 +20147,77 @@ anchoring remain open.
 
 No production credential, Cloudflare mutation or customer traffic was used.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.291 K7 Reserve Operation Dirfd Pinning (2026-07-25)
+
+The Linux reserve transaction now carries a retained operation-directory
+capability from `LockedAuthorization` through capacity accounting, operation
+audit, start publication and the final decision that may return `Fresh`.
+Capacity markers are published relative to the authorization descriptor.
+Operation directories are created with `mkdirat`, reopened beneath that
+descriptor with
+`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV)`, and bound to
+their stable dev/inode/UID/GID/mode/link identity.
+
+Operation-directory enumeration now uses `fdopendir`/`readdir` over a
+duplicate of the retained descriptor. The duplicate is rewound with `lseek`
+before each scan because duplicated directory descriptors share their file
+offset. Stable child files are opened beneath the operation descriptor with
+the same fail-closed `openat2` policy. Start-receipt append, readback and
+verification, plus terminal operation-directory chmod/fsync, therefore no
+longer depend on re-resolving the operation pathname during reserve.
+
+Before `Fresh` can escape, the runner revalidates:
+
+1. the retained authorization capability and its parent attachment;
+2. the operation entry relative to the retained authorization descriptor;
+3. the operation absolute pathname against the same stable identity; and
+4. the exact operation receipt prefix read through the retained operation
+   descriptor.
+
+A Linux replacement test renames the operation directory after its descriptor
+has been acquired, recreates the original pathname and proves that reserve
+returns `UnsafeFilesystem("operation_directory")`. Neither the recreated nor
+displaced directory receives a successful fresh reservation. A second Linux
+test proves repeated direct directory audits rewind correctly.
+
+The frozen native candidate is
+`8cf817f081d0001fc7ef1f6992984f990a1f8b50`.
+[Run 30144317849](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144317849)
+and
+[job 89643177206](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144317849/job/89643177206)
+passed formatting, all 132 Linux library tests and warning-free Clippy. The
+aggregate local gate passed 124 Rust library tests, 3 binary/CLI tests and 61
+Bun tests with 242 expectations.
+
+Clean commit-object evidence produced Git tree
+`a46f6cf1bc1d3f3843fdde28e4c98c60043c8a36`, a 35727360-byte source
+archive with SHA-256
+`ee1e9c865893fe01075e1baaa169f901b83d996ef27a2c3e3e99c4fe7cbbd781`,
+and 31 required modules totaling 1534319 bytes with inventory SHA-256
+`2f9d12f0893b65d88001f61becc08d92a95f818e1ca03849d8bd715f06f3f6f0`.
+[Run 30144186705](https://github.com/cinagroup/cinatoken-rust/actions/runs/30144186705)
+is retained as the intermediate failure: all 132 Linux tests passed, while
+Clippy rejected one Linux-only dead path helper and an eight-argument
+publication hook. The final candidate cfg-gates the fallback and groups the
+retained publication parent without suppressing either lint.
+
+This closes capacity and per-operation descriptor continuity in reserve, but
+not the full reserve-to-`Fresh` graph. The terminal barrier still re-resolves
+execution-chain, head-set, closure and candidate paths. A same-UID writer can
+temporarily replace one of those terminal artifacts during the check, so
+terminal-barrier descriptor pinning and a final barrier revalidation are the
+next P0 implementation. Finish, recovery and terminal closure must then be
+moved onto the same retained graph.
+
+Immutable-publication staging cleanup and errno classification are also a P2
+hardening item: a post-create failure can leave fail-closed staging residue,
+and failed cleanup must not obscure the primary syscall error. The remaining
+promotion gates include true multi-process rename/kill campaigns,
+zero-unapproved-`AT_FDCWD` syscall tracing, exact ACLs, backup/restore,
+ext4/XFS power-loss evidence, independent DSSE signing, provider WORM
+readback and Cloudflare lifecycle proof.
+
+No production credential, Cloudflare mutation, customer traffic movement or
+Go/VPS drain occurred. Go/VPS remains the traffic, scheduler and financial
+authority. Production remains **NO-GO**.

@@ -284,7 +284,7 @@ jobs:
             echo
             echo "- recovery post-lock AT_FDCWD mutation: none"
             echo "- full-transaction post-lock AT_FDCWD mutation: none"
-            echo "- candidate writer: exact SIGKILL after candidate rename/readback/directory sync"
+            echo "- candidate writer: exact SIGKILL after candidate rename/directory sync/object-bound readback"
             echo "- candidate-after-sync recovery post-lock AT_FDCWD mutation: none"
             echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 6"
             echo "- successful retained-dirfd openat2/renameat2: observed in all four traces"

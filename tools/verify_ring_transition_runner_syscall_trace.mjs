@@ -213,23 +213,24 @@ export function verifyRingTransitionRunnerSyscallTrace({
       evidence.terminalCandidateRenameAt !== null &&
       evidence.terminalCandidateReadbackAt !== null &&
       evidence.terminalCandidateDirectorySyncAt !== null &&
-      evidence.terminalCandidateRenameAt < evidence.terminalCandidateReadbackAt &&
-      evidence.terminalCandidateReadbackAt <
-        evidence.terminalCandidateDirectorySyncAt;
+      evidence.terminalCandidateRenameAt <
+        evidence.terminalCandidateDirectorySyncAt &&
+      evidence.terminalCandidateDirectorySyncAt <
+        evidence.terminalCandidateReadbackAt;
     if (!ordered) {
       throw new Error(
-        `[${label}] terminal candidate rename/readback/directory-sync order is missing`,
+        `[${label}] terminal candidate rename/directory-sync/readback order is missing`,
       );
     }
     if (
       requireSigkillExit &&
       (
         matchingSigkills[0].pid !== evidence.terminalCandidatePid ||
-        matchingSigkills[0].index <= evidence.terminalCandidateDirectorySyncAt
+        matchingSigkills[0].index <= evidence.terminalCandidateReadbackAt
       )
     ) {
       throw new Error(
-        `[${label}] terminal candidate writer PID was not killed after sync completed`,
+        `[${label}] terminal candidate writer PID was not killed after durable readback completed`,
       );
     }
   }
@@ -309,12 +310,19 @@ function observeTerminalCandidateEvidence({
         `[${label}] terminal candidate readback descriptor is not object-bound`,
       );
     }
-    evidence.terminalCandidateReadbackAt = index;
+    if (
+      evidence.terminalCandidateDirectorySyncAt !== null &&
+      index > evidence.terminalCandidateDirectorySyncAt &&
+      evidence.terminalCandidateReadbackAt === null
+    ) {
+      evidence.terminalCandidateReadbackAt = index;
+    }
     return;
   }
   if (
     ["fsync", "fdatasync"].includes(syscall.name) &&
-    evidence.terminalCandidateReadbackAt !== null &&
+    evidence.terminalCandidateRenameAt !== null &&
+    evidence.terminalCandidateDirectorySyncAt === null &&
     syscall.pid === evidence.terminalCandidatePid
   ) {
     const descriptor = descriptorArgument(

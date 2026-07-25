@@ -162,6 +162,36 @@ describe("ring-transition runner syscall trace verifier", () => {
         requireTerminalCandidateSync: true,
       }),
     ).toThrow(/readback moved to another process/);
+    expect(() =>
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: trace.replace(
+          `4100  fsync(8<${ROOT}/execution-operation-closures/${"a".repeat(64)}>) = 0\n` +
+            `4100  openat2(8<${ROOT}/execution-operation-closures/${"a".repeat(64)}>, "terminal-snapshot-candidate.json",`,
+          `4100  openat2(8<${ROOT}/execution-operation-closures/${"a".repeat(64)}>, "terminal-snapshot-candidate.json",`,
+        ),
+        fixtureRoot: ROOT,
+        label: "candidate writer",
+        expectedLocks: 4,
+        requireSigkillExit: true,
+        requireTerminalCandidateSync: true,
+      }),
+    ).toThrow(/rename\/directory-sync\/readback order/);
+    expect(() =>
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: trace
+          .replace("\n4100  +++ killed by SIGKILL +++", "")
+          .replace(
+            `4100  openat2(8<${ROOT}/execution-operation-closures/${"a".repeat(64)}>, "terminal-snapshot-candidate.json",`,
+            `4100  +++ killed by SIGKILL +++\n` +
+              `4100  openat2(8<${ROOT}/execution-operation-closures/${"a".repeat(64)}>, "terminal-snapshot-candidate.json",`,
+          ),
+        fixtureRoot: ROOT,
+        label: "candidate writer",
+        expectedLocks: 4,
+        requireSigkillExit: true,
+        requireTerminalCandidateSync: true,
+      }),
+    ).toThrow(/killed after durable readback/);
     expect(
       verifyRingTransitionRunnerSyscallTrace({
         traceText: fixtureTrace({ lockPairs: 2 }),
@@ -345,9 +375,9 @@ function fixtureTrace({
         `4100  openat2(8<${closure}>, "terminal-snapshot-candidate.json.staging", {flags=O_RDWR|O_CLOEXEC|O_CREAT|O_EXCL, mode=0444, resolve=RESOLVE_BENEATH}, 24) = 9<${closure}/terminal-snapshot-candidate.json.staging>`,
         `4100  fchmod(9<${closure}/terminal-snapshot-candidate.json.staging>, 0444) = 0`,
         `4100  renameat2(8<${closure}>, "terminal-snapshot-candidate.json.staging", 8<${closure}>, "terminal-snapshot-candidate.json", RENAME_NOREPLACE) = 0`,
+        `4100  fsync(8<${closure}>) = 0`,
         `4100  openat2(8<${closure}>, "terminal-snapshot-candidate.json", {flags=O_RDONLY|O_CLOEXEC, resolve=RESOLVE_BENEATH}, 24) = 10<${closure}/terminal-snapshot-candidate.json>`,
         `4100  close(10<${closure}/terminal-snapshot-candidate.json>) = 0`,
-        `4100  fsync(8<${closure}>) = 0`,
         `4100  close(9<${closure}/terminal-snapshot-candidate.json>) = 0`,
         `4100  close(8<${closure}>) = 0`,
         `4100  close(7<${closures}>) = 0`,

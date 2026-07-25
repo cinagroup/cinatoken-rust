@@ -44,7 +44,25 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Verify Linux receipt filesystem behavior
-        run: cargo test --locked -p cinatoken-ring-transition-runner --lib
+        shell: bash
+        run: |
+          set -o pipefail
+          log_file="$(mktemp)"
+          if cargo test --locked -p cinatoken-ring-transition-runner --lib 2>&1 | tee "${log_file}"; then
+            exit 0
+          fi
+          {
+            echo "### Linux receipt test failure"
+            echo '```text'
+            tail -n 120 "${log_file}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          diagnostic="$(tail -n 80 "${log_file}")"
+          diagnostic="${diagnostic//'%'/'%25'}"
+          diagnostic="${diagnostic//$'\r'/'%0D'}"
+          diagnostic="${diagnostic//$'\n'/'%0A'}"
+          echo "::error title=Linux receipt test failure::${diagnostic}"
+          exit 1
 
       - name: Reject runner warnings
         run: cargo clippy --locked -p cinatoken-ring-transition-runner --all-targets -- -D warnings

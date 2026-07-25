@@ -959,6 +959,14 @@ struct LockedAuthorizationOperationState {
 }
 
 #[cfg(target_os = "linux")]
+struct TerminalSnapshotCandidateInstall<'a> {
+    snapshot: &'a VerifiedSnapshot,
+    operation: &'a OperationIdentity,
+    finish: &'a OperationFinishInput,
+    plan: &'a ReceiptPlan,
+}
+
+#[cfg(target_os = "linux")]
 struct LockedTerminalDirectory {
     directory: fs::File,
     path: PathBuf,
@@ -1080,6 +1088,7 @@ impl ReceiptStore {
         Ok(Self { root: canonical })
     }
 
+    #[cfg(any(test, not(target_os = "linux")))]
     pub(crate) fn install_terminal_plan(
         &self,
         plan: &ReceiptPlan,
@@ -1299,10 +1308,12 @@ impl ReceiptStore {
         self.install_terminal_snapshot_candidate_locked_with_graph_hook(
             locked,
             context,
-            snapshot,
-            operation,
-            finish,
-            plan,
+            TerminalSnapshotCandidateInstall {
+                snapshot,
+                operation,
+                finish,
+                plan,
+            },
             |_| {},
         )
     }
@@ -1312,16 +1323,14 @@ impl ReceiptStore {
         &self,
         locked: &LockedAuthorization,
         context: &OperationContextIdentity,
-        snapshot: &VerifiedSnapshot,
-        operation: &OperationIdentity,
-        finish: &OperationFinishInput,
-        plan: &ReceiptPlan,
+        input: TerminalSnapshotCandidateInstall<'_>,
         after_graph_locked: F,
     ) -> Result<(), ReceiptError>
     where
         F: FnOnce(&LockedReserveTerminalBarrier),
     {
-        let directory = open_locked_operation_directory(locked, &operation.operation_id_sha256)?;
+        let directory =
+            open_locked_operation_directory(locked, &input.operation.operation_id_sha256)?;
         let mut graph = self.lock_terminal_graph(locked, context, false, true)?;
         after_graph_locked(&graph);
         self.read_locked_operation_terminal_candidate(locked, &graph, context, true)?;
@@ -1329,16 +1338,16 @@ impl ReceiptStore {
             locked,
             &directory,
             &context.authorization_id_sha256,
-            &operation.operation_id_sha256,
+            &input.operation.operation_id_sha256,
         )?;
-        require_operation_identity(&verified_operation, context, operation)?;
-        validate_terminal_candidate_operation(operation, finish, &verified_operation)?;
+        require_operation_identity(&verified_operation, context, input.operation)?;
+        validate_terminal_candidate_operation(input.operation, input.finish, &verified_operation)?;
         let candidate = canonical_terminal_snapshot_candidate(
-            snapshot,
+            input.snapshot,
             context,
             &verified_operation,
-            finish,
-            plan,
+            input.finish,
+            input.plan,
         )?;
         let closure = graph
             .operation_closure
@@ -3189,6 +3198,7 @@ impl ReceiptStore {
         Ok(Some(chain))
     }
 
+    #[cfg(any(test, not(target_os = "linux")))]
     fn execution_chain(&self, authorization_id_sha256: &str) -> Result<PathBuf, ReceiptError> {
         self.find_execution_chain(authorization_id_sha256)?
             .ok_or(ReceiptError::PredecessorMissing)
@@ -3249,6 +3259,7 @@ impl ReceiptStore {
         Ok(Some((receipts, authorization)))
     }
 
+    #[cfg(any(test, not(target_os = "linux")))]
     fn ensure_operation_closure_directory(
         &self,
         authorization_id_sha256: &str,
@@ -3267,6 +3278,7 @@ impl ReceiptStore {
         Ok(closure)
     }
 
+    #[cfg(any(test, not(target_os = "linux")))]
     fn operation_closure_directory(
         &self,
         authorization_id_sha256: &str,
@@ -3299,6 +3311,7 @@ impl ReceiptStore {
         Ok(operation)
     }
 
+    #[cfg(any(test, not(target_os = "linux")))]
     fn operation_directory(
         &self,
         authorization_id_sha256: &str,
@@ -3308,6 +3321,7 @@ impl ReceiptStore {
             .ok_or(ReceiptError::PredecessorMissing)
     }
 
+    #[cfg(any(test, not(target_os = "linux")))]
     fn find_operation_directory(
         &self,
         authorization_id_sha256: &str,
@@ -5690,6 +5704,7 @@ fn parse_execution_receipt_bytes(bytes: Vec<u8>) -> Result<CanonicalReceipt, Rec
     })
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn read_operation_receipt(
     path: &Path,
     canonical_parent: &Path,
@@ -5921,6 +5936,7 @@ fn reserve_locked_operation_capacity(
     result
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn read_operation_capacity_reservation(
     path: &Path,
     canonical_parent: &Path,
@@ -6384,6 +6400,7 @@ fn read_locked_terminal_snapshot_candidate(
     result
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn require_execution_chain_matches_terminal_candidate(
     chain_directory: &Path,
     chain: &VerifiedReceiptChain,
@@ -10437,10 +10454,12 @@ mod tests {
         let result = store.install_terminal_snapshot_candidate_locked_with_graph_hook(
             &locked,
             &context,
-            &snapshot,
-            &operation,
-            &finish,
-            &plan,
+            TerminalSnapshotCandidateInstall {
+                snapshot: &snapshot,
+                operation: &operation,
+                finish: &finish,
+                plan: &plan,
+            },
             move |_| {
                 fs::rename(&hook_closure, &hook_displaced).unwrap();
                 fs::create_dir(&hook_closure).unwrap();

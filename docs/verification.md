@@ -9397,3 +9397,45 @@ zero-`AT_FDCWD` syscall tracing, true multi-process kill/rename campaigns,
 ACL/backup/restore, ext4/XFS power-loss and external DSSE/WORM evidence remain
 open. No Cloudflare credential or mutation was used. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-25 Linux openat2 Child-Containment Verification
+
+The native Linux wrapper now opens authorization children, staging files and
+stable readback targets with `SYS_openat2` and
+`RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV`. The implementation has
+no fallback to weaker path traversal. The Linux-only test opens a valid child
+and rejects both `../outside` and a symlink to that outside directory.
+
+The first pushed candidate,
+`0e9fec41d02003a563cf0a1465eb51df630106bc`, failed
+[run 30143319279](https://github.com/cinagroup/cinatoken-rust/actions/runs/30143319279)
+at Linux compilation. GitHub's bounded test annotation recorded Rust
+`E0639`: `libc::open_how` is non-exhaustive and cannot be built with a struct
+literal outside the `libc` crate. The final implementation zero-initializes
+the ABI structure, then assigns the three known fields so unknown tail fields
+remain zero.
+
+Native evidence is frozen at
+`7c015f812ca42b73388166abd67b24da4d7cb6ae`:
+
+- [run 30143505878](https://github.com/cinagroup/cinatoken-rust/actions/runs/30143505878)
+  and
+  [job 89641059840](https://github.com/cinagroup/cinatoken-rust/actions/runs/30143505878/job/89641059840)
+  passed;
+- formatting, 130 Linux library tests and warning-free Clippy completed
+  successfully;
+- the aggregate local command passed 124 Rust library tests, 3 binary/CLI
+  tests and 61 Bun tests with 242 expectations; and
+- clean commit-object collection produced Git tree
+  `6dd3bd5366171c35295b4dc19d623459f308a34c`, a 35696640-byte source
+  archive with SHA-256
+  `72e9662384e3d2de4c3434fd8ae1df3679d0d741af436152b3ec67f9b33624a7`,
+  and 31 required modules totaling 1511043 bytes with inventory SHA-256
+  `86fa2af05728e11ed6d338e8dfb727489de1a821b38c10626042b735e0250be7`.
+
+The verified scope begins only after an immediate parent descriptor has been
+acquired. It does not prove that all such parents originate from one retained
+root graph. Reserve-to-Fresh descriptor continuity, mount-fixture rejection,
+zero-unapproved-`AT_FDCWD` traces, true multiprocess rename/kill, ACL,
+backup/restore, ext4/XFS power-loss and external DSSE/WORM gates remain open.
+Go/VPS remains authoritative and production remains **NO-GO**.

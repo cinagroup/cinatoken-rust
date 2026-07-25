@@ -3161,3 +3161,36 @@ promotion campaign still requires real two-process replacement and kill
 injection, exact ACLs, backup/restore, ext4/XFS power-loss, external DSSE/WORM
 closure, isolated Cloudflare lifecycle tests and G1-G8 approval for one
 candidate. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-25 K7 openat2 Child-Containment Gate
+
+The native Linux child-open primitive now uses `SYS_openat2` with
+`RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV`. It is shared by:
+
+1. authorization directories opened relative to the retained
+   `operation-receipts` parent;
+2. immutable staging files created relative to their immediate parent; and
+3. immutable targets reopened for bounded stable readback.
+
+There is no legacy-kernel or policy-denial fallback to path-based `open` or
+plain `openat`. An unsupported or blocked syscall prevents publication and
+fresh send authority. A Linux test accepts a real child and rejects both
+`../` escape and symlink traversal.
+
+Commit `7c015f812ca42b73388166abd67b24da4d7cb6ae` passed
+[run 30143505878](https://github.com/cinagroup/cinatoken-rust/actions/runs/30143505878)
+with formatting, 130 Linux library tests and warning-free Clippy. Clean source
+evidence is Git tree `6dd3bd5366171c35295b4dc19d623459f308a34c`,
+source-archive SHA-256
+`72e9662384e3d2de4c3434fd8ae1df3679d0d741af436152b3ec67f9b33624a7`
+and module-inventory SHA-256
+`86fa2af05728e11ed6d338e8dfb727489de1a821b38c10626042b735e0250be7`
+for 31 modules and 1511043 bytes.
+
+The next implementation gate is not another wrapper. It is the reserve
+transaction: terminal-barrier reads, capacity publication, operation
+directory creation, operation-chain audit and start publication must all
+derive from `LockedAuthorization` descriptors before `Fresh` can escape.
+Execution and closure roots, finish/recovery/terminal closure, real
+multi-process faults, syscall tracing, ext4/XFS power-loss, DSSE/WORM and
+Cloudflare lifecycle evidence remain blockers. Production remains **NO-GO**.

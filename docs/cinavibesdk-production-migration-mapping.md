@@ -1284,7 +1284,7 @@ This increment compares the three pinned source trees only:
 
 - cinaVibeSDK `918e97480ee44e357abe99bf33c27259d6ac7ebd`;
 - Go cinatoken `73652508abc5cb09214dde02d51d69d1d1ccc703`; and
-- cinatoken-rust `63df95c6f8390579e00b2788378abdb89eb5f3c5`.
+- cinatoken-rust `7c015f812ca42b73388166abd67b24da4d7cb6ae`.
 
 Only committed objects at those pins count as source evidence. Concurrent
 uncommitted worktree files are excluded from official-design and production
@@ -1309,7 +1309,8 @@ evidence into deployed Cloudflare evidence.
 | Rust receipt schema | `crates/ring-transition-runner/src/receipt.rs:249-369` defines the operation head set, local seal and terminal snapshot candidate, binding release, credential, claim, operation, response and expected execution-chain identities. | The receipt filesystem is a new, closed-schema authorization history. It is not a cache of D1/DO state and cannot be reconstructed from an assumed outcome. |
 | Rust durable ordering | `receipt.rs:934-1090` installs or recovers terminal closure under an authorization lock; `:969-1039` publishes and reads back the terminal candidate before terminal closure; `:1195-1237` permits only the candidate-bound accepted finish. `transport.rs:552-588` runs local operation and closure recovery before constructing HTTP; `:1073-1132` records the terminal candidate from the exact accepted claim read. | A committed candidate closes the accepted-response crash window locally. Startup recovery cannot mint a replacement send capability and must finish all other unresolved starts as ambiguous. |
 | Rust Linux file checks | `receipt.rs:4510-4830` opens one immediate parent dirfd, creates staging with `openat(..., O_EXCL|O_NOFOLLOW)`, publishes with same-dirfd `renameat2(..., RENAME_NOREPLACE)`, syncs that dirfd, double-reads the target and binds dev/inode/UID/GID/mode/link identity. It reopens the parent pathname only to require that it still resolves to the pinned identity. | The committed publication primitive rejects writable/foreign/linked targets and parent replacement without redirecting writes. It does not yet establish the whole root/authorization/closure dirfd graph. |
-| Rust authorization lock | `receipt.rs` defines `LockedAuthorization` over retained `operation-receipts` and authorization descriptors and their stable identities. Acquisition locks the parent, opens the child relative to that descriptor, locks the child and revalidates both parent-relative and absolute attachment before reserve, finish, recovery or closure can succeed. | Cooperative processes cannot split across old and replacement authorization inodes at this boundary. The parent lock is control-plane serialization and is released before network I/O; it is not proof of hostile-writer containment for the remaining path-based tree. |
+| Rust authorization lock | `receipt.rs` defines `LockedAuthorization` over retained `operation-receipts` and authorization descriptors and their stable identities. Acquisition locks the parent, opens the child with `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV)`, locks the child and revalidates both parent-relative and absolute attachment before reserve, finish, recovery or closure can succeed. | Cooperative processes cannot split across old and replacement authorization inodes at this boundary. The parent lock is control-plane serialization and is released before network I/O; it is not proof of hostile-writer containment for the remaining path-based tree. |
+| Rust contained child opens | The same fail-closed `openat2` wrapper creates staging files and reopens immutable targets relative to their immediate parent descriptor. A native test accepts a valid child and rejects `../` escape and symlink traversal; unsupported syscalls do not fall back to `openat`. | Child lookup already rooted at a retained descriptor cannot escape beneath, traverse symlinks or cross mounts. Parent acquisition and full reserve/finish/recovery/closure traversal are not yet one retained graph. |
 | Rust installed artifact checks | `crates/ring-transition-runner/src/release.rs:1024-1100` requires stable regular installed bytes and rejects Unix files whose link count is not one. | The executable and receipt writer must be bound to one immutable installed generation; source checkout bytes or a mutable current pointer are insufficient. |
 
 The cinaVibeSDK architecture diagram also routes Sandbox persistence to R2
@@ -1420,11 +1421,11 @@ power-loss, Container replacement, independent DSSE and immutable-retention
 campaigns are not archived.
 
 The current Rust evidence is
-[run 30142822377](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142822377):
-formatting, 129 Linux tests and warning-free Clippy passed. Clean commit-object
-evidence for the pinned Rust commit contains 31 required modules and 1509783
+[run 30143505878](https://github.com/cinagroup/cinatoken-rust/actions/runs/30143505878):
+formatting, 130 Linux tests and warning-free Clippy passed. Clean commit-object
+evidence for the pinned Rust commit contains 31 required modules and 1511043
 bytes with inventory SHA-256
-`8fd60cc8c0849f89ace289d6eb6b099f11f8a061d1226708185e946aa872d971`.
+`86fa2af05728e11ed6d338e8dfb727489de1a821b38c10626042b735e0250be7`.
 
 Therefore the receipt filesystem is presently a local fail-closed candidate,
 not a production authority and not a substitute for D1, DO SQLite or R2.

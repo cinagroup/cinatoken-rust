@@ -20086,3 +20086,64 @@ independent DSSE signing and provider WORM readback remain K7 blockers.
 No Cloudflare mutation, credential read, customer traffic movement or Go/VPS
 drain occurred. Go/VPS remains the traffic, scheduler and financial authority.
 Production remains **NO-GO**.
+
+## 22.290 K7 Contained Linux Child Opens (2026-07-25)
+
+The Linux receipt foundation now routes every child open performed after an
+immediate parent descriptor has been acquired through one `openat2` wrapper.
+Authorization-directory opens, create-new staging opens and stable regular
+target readback all require:
+
+```text
+RESOLVE_BENEATH
+| RESOLVE_NO_SYMLINKS
+| RESOLVE_NO_XDEV
+```
+
+The existing `O_DIRECTORY`, `O_NOFOLLOW`, `O_EXCL`, `O_CLOEXEC` and access
+flags remain operation-specific. The wrapper invokes `SYS_openat2` with a
+zero-initialized `libc::open_how`, then sets only `flags`, `mode` and
+`resolve`; unknown future tail fields therefore stay zero as required by the
+kernel ABI. There is deliberately no fallback to `openat` when the syscall,
+resolve flags or kernel policy are unavailable. Such a host fails closed
+before returning a fresh reservation or accepting an immutable publication.
+
+The Linux-only containment test proves that a valid child opens, while both a
+`../` parent escape and a symbolic-link child are rejected. `NO_XDEV` also
+makes bind-mount or mount-point crossing a rejection at the syscall boundary;
+privileged mount-fixture evidence remains part of the later native filesystem
+campaign.
+
+The frozen native candidate is
+`7c015f812ca42b73388166abd67b24da4d7cb6ae`.
+[Run 30143505878](https://github.com/cinagroup/cinatoken-rust/actions/runs/30143505878)
+and
+[job 89641059840](https://github.com/cinagroup/cinatoken-rust/actions/runs/30143505878/job/89641059840)
+passed formatting, all 130 Linux library tests and warning-free Clippy. The
+aggregate local gate again passed 124 Rust library tests, 3 binary/CLI tests
+and 61 Bun tests with 242 expectations.
+
+Clean commit-object evidence produced Git tree
+`6dd3bd5366171c35295b4dc19d623459f308a34c`, a 35696640-byte source
+archive with SHA-256
+`72e9662384e3d2de4c3434fd8ae1df3679d0d741af436152b3ec67f9b33624a7`,
+and 31 required modules totaling 1511043 bytes with inventory SHA-256
+`86fa2af05728e11ed6d338e8dfb727489de1a821b38c10626042b735e0250be7`.
+[Run 30143319279](https://github.com/cinagroup/cinatoken-rust/actions/runs/30143319279)
+is retained as the intermediate failure: Linux compilation rejected a direct
+literal construction of the non-exhaustive `libc::open_how`. The compatible
+zero-initialization and field assignment is the code that passed the frozen
+candidate gate.
+
+This closes relative child escape, symlink traversal and mount crossing for
+the opens already rooted at a retained immediate-parent descriptor. It does
+not remove path resolution used to obtain every execution, operation and
+closure parent. Reserve remains the next P0 slice: capacity, operation-child,
+terminal-barrier and full-tree audit must consume retained descriptors from
+`LockedAuthorization` through the point where `Fresh` may be returned. True
+multi-process replacement/kill tests, zero-unapproved-`AT_FDCWD` tracing,
+exact ACLs, backup/restore, ext4/XFS power loss and external DSSE/WORM
+anchoring remain open.
+
+No production credential, Cloudflare mutation or customer traffic was used.
+Go/VPS remains authoritative and production remains **NO-GO**.

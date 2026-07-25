@@ -1245,3 +1245,38 @@ proof, ACLs, backup/restore, ext4/XFS power-loss and external DSSE/WORM
 anchoring remain required. The external Linux runner remains the receipt
 owner; Cloudflare Container disk remains replaceable scratch. Production
 remains **NO-GO**.
+
+## Linux openat2 Child-Containment Increment
+
+All Linux child opens that already have an immediate parent descriptor now use
+one fail-closed `open_linux_beneath` primitive. The wrapper calls
+`SYS_openat2` with:
+
+```text
+RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV
+```
+
+Authorization child directories retain `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`.
+Staging creation retains `O_CREAT|O_EXCL|O_RDWR|O_NOFOLLOW|O_CLOEXEC` and mode
+`0600`; stable target readback retains `O_RDONLY|O_NOFOLLOW|O_CLOEXEC`. The
+file is later changed to `0444`, synced and identity-checked by the existing
+publication protocol.
+
+The `open_how` ABI is zero-initialized before its known fields are assigned,
+so any future kernel tail fields remain zero. `ENOSYS`, resolve-policy denial
+or any other `openat2` failure is returned to the caller; there is no fallback
+to weaker traversal. A Linux-only test confirms one valid child and rejects a
+parent escape plus a symlink child.
+
+Commit `7c015f812ca42b73388166abd67b24da4d7cb6ae` passed
+[Ubuntu run 30143505878](https://github.com/cinagroup/cinatoken-rust/actions/runs/30143505878)
+with formatting, 130 Linux library tests and warning-free Clippy. The clean
+31-module inventory contains 1511043 bytes and has SHA-256
+`86fa2af05728e11ed6d338e8dfb727489de1a821b38c10626042b735e0250be7`.
+
+This primitive does not itself retain every parent in the receipt graph.
+Reserve, finish, recovery and closure still contain path-based acquisition,
+enumeration, chmod or fsync sites above the child-open layer. Reserve-to-Fresh
+descriptor continuity is the next P0 implementation unit, followed by the
+remaining execution/closure graph and native multiprocess/fault campaign.
+Production remains **NO-GO**.

@@ -863,6 +863,10 @@ impl LockedAuthorization {
             "operation_authorization_lock",
         )
     }
+
+    fn authorization_path(&self) -> &Path {
+        &self.authorization_path
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -880,11 +884,49 @@ impl Drop for LockedAuthorization {
 #[cfg(not(target_os = "linux"))]
 struct LockedAuthorization {
     _guard: MutexGuard<'static, ()>,
+    authorization_path: PathBuf,
 }
 
 #[cfg(not(target_os = "linux"))]
 impl LockedAuthorization {
     fn require_bound(&self) -> Result<(), ReceiptError> {
+        Ok(())
+    }
+
+    fn authorization_path(&self) -> &Path {
+        &self.authorization_path
+    }
+}
+
+struct LockedOperationDirectory {
+    path: PathBuf,
+    #[cfg(target_os = "linux")]
+    directory: fs::File,
+    #[cfg(target_os = "linux")]
+    name: std::ffi::CString,
+    #[cfg(target_os = "linux")]
+    identity: LinuxFilesystemIdentity,
+}
+
+impl LockedOperationDirectory {
+    fn require_bound(&self, authorization: &LockedAuthorization) -> Result<(), ReceiptError> {
+        authorization.require_bound()?;
+        #[cfg(target_os = "linux")]
+        {
+            require_linux_directory_at_object(
+                &authorization.authorization,
+                &self.name,
+                &self.identity,
+                "operation_directory",
+            )?;
+            require_linux_directory_path_object(&self.path, &self.identity, "operation_directory")?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        require_fixed_directory(
+            &self.path,
+            authorization.authorization_path(),
+            "operation_directory",
+        )?;
         Ok(())
     }
 }
@@ -1153,6 +1195,26 @@ impl ReceiptStore {
         activation: &ExecutionActivationIdentity,
         input: &OperationStartInput,
     ) -> Result<OperationReservation, ReceiptError> {
+        self.reserve_operation_with_directory_hook(
+            publication,
+            credentials,
+            activation,
+            input,
+            |_| {},
+        )
+    }
+
+    fn reserve_operation_with_directory_hook<F>(
+        &self,
+        publication: &PublicationIdentity,
+        credentials: &CredentialIdentity,
+        activation: &ExecutionActivationIdentity,
+        input: &OperationStartInput,
+        after_directory_locked: F,
+    ) -> Result<OperationReservation, ReceiptError>
+    where
+        F: FnOnce(&LockedOperationDirectory),
+    {
         let context = project_operation_context(publication, credentials, activation)?;
         let operation = project_operation_identity(&context, &input.identity)?;
         validate_operation_start_input(&context, input)?;
@@ -1169,26 +1231,24 @@ impl ReceiptStore {
             return Err(ReceiptError::AlreadySealed);
         }
         locked.require_bound()?;
-        reserve_operation_capacity(&authorization, &operation.operation_id_sha256)?;
+        reserve_locked_operation_capacity(&locked, &operation.operation_id_sha256)?;
         locked.require_bound()?;
-        let directory = self.ensure_operation_directory(
-            &context.authorization_id_sha256,
-            &operation.operation_id_sha256,
-        )?;
+        let directory = ensure_locked_operation_directory(&locked, &operation.operation_id_sha256)?;
+        after_directory_locked(&directory);
+        directory.require_bound(&locked)?;
         locked.require_bound()?;
         self.authorization_operation_ids(&context.authorization_id_sha256)?;
-        let start_path = directory.join(operation_receipt_file_name(1));
-        if start_path
-            .try_exists()
-            .map_err(|_| ReceiptError::Io("operation_start_exists"))?
-        {
-            let verified = verify_operation_directory(
+        directory.require_bound(&locked)?;
+        if locked_operation_receipt_exists(&directory, 1)? {
+            let verified = verify_locked_operation_directory(
+                &locked,
                 &directory,
                 &context.authorization_id_sha256,
                 &operation.operation_id_sha256,
             )?;
             require_operation_identity(&verified, &context, &operation)?;
             self.authorization_operations(&context)?;
+            directory.require_bound(&locked)?;
             locked.require_bound()?;
             return Ok(operation_reservation(&verified));
         }
@@ -1203,9 +1263,10 @@ impl ReceiptStore {
                 request_id_sha256: input.request_id_sha256.clone(),
             },
         )?;
-        match append_canonical_operation_receipt(&directory, &start) {
+        match append_locked_operation_receipt(&locked, &directory, &start) {
             Ok(AppendOutcome::Created) => {
-                let verified = verify_operation_directory(
+                let verified = verify_locked_operation_directory(
+                    &locked,
                     &directory,
                     &context.authorization_id_sha256,
                     &operation.operation_id_sha256,
@@ -1217,17 +1278,20 @@ impl ReceiptStore {
                     return Err(ReceiptError::Conflict);
                 }
                 self.authorization_operations(&context)?;
+                directory.require_bound(&locked)?;
                 locked.require_bound()?;
                 Ok(OperationReservation::Fresh)
             }
             Ok(AppendOutcome::ExistingExact) | Err(ReceiptError::Conflict) => {
-                let verified = verify_operation_directory(
+                let verified = verify_locked_operation_directory(
+                    &locked,
                     &directory,
                     &context.authorization_id_sha256,
                     &operation.operation_id_sha256,
                 )?;
                 require_operation_identity(&verified, &context, &operation)?;
                 self.authorization_operations(&context)?;
+                directory.require_bound(&locked)?;
                 locked.require_bound()?;
                 Ok(operation_reservation(&verified))
             }
@@ -2049,6 +2113,7 @@ impl ReceiptStore {
         Ok(closure)
     }
 
+    #[cfg(test)]
     fn ensure_operation_directory(
         &self,
         authorization_id_sha256: &str,
@@ -3759,6 +3824,80 @@ fn append_canonical_operation_receipt(
     }
 }
 
+#[cfg(target_os = "linux")]
+fn append_locked_operation_receipt(
+    authorization: &LockedAuthorization,
+    operation_directory: &LockedOperationDirectory,
+    receipt: &CanonicalOperationReceipt,
+) -> Result<AppendOutcome, ReceiptError> {
+    validate_operation_record(&receipt.record)?;
+    operation_directory.require_bound(authorization)?;
+    validate_locked_operation_directory_entries(operation_directory)?;
+    let target_name = std::ffi::CString::new(operation_receipt_file_name(receipt.record.sequence))
+        .map_err(|_| ReceiptError::UnsafeFilesystem("operation_receipt"))?;
+    if let Some(existing) =
+        read_locked_operation_receipt_optional(operation_directory, receipt.record.sequence)?
+    {
+        if existing.bytes == receipt.bytes {
+            sync_linux_directory(&operation_directory.directory, &receipt.sha256)?;
+            operation_directory.require_bound(authorization)?;
+            return Ok(AppendOutcome::ExistingExact);
+        }
+        return Err(ReceiptError::Conflict);
+    }
+    if receipt.record.sequence == 2 {
+        let predecessor = read_locked_operation_receipt(operation_directory, 1)?;
+        if predecessor.sha256
+            != receipt
+                .record
+                .predecessor_receipt_sha256
+                .as_deref()
+                .ok_or(ReceiptError::PredecessorMissing)?
+        {
+            return Err(ReceiptError::PredecessorMismatch);
+        }
+    } else if read_locked_operation_receipt_optional(operation_directory, 2)?.is_some() {
+        return Err(ReceiptError::Gap);
+    }
+    for sequence in (receipt.record.sequence + 1)..=MAX_OPERATION_RECEIPTS_PER_CHAIN {
+        if read_locked_operation_receipt_optional(operation_directory, sequence)?.is_some() {
+            return Err(ReceiptError::Gap);
+        }
+    }
+
+    let outcome = match publish_exact_bytes_linux_at(
+        &operation_directory.directory,
+        &operation_directory.path,
+        &target_name,
+        receipt.record.sequence,
+        &receipt.bytes,
+        MAX_RECEIPT_BYTES,
+        "operation_receipt",
+    )? {
+        ExactPublicationOutcome::Created => AppendOutcome::Created,
+        ExactPublicationOutcome::ExistingExact => AppendOutcome::ExistingExact,
+        ExactPublicationOutcome::ExistingDifferent(_) => return Err(ReceiptError::Conflict),
+    };
+    if receipt.record.sequence == MAX_OPERATION_RECEIPTS_PER_CHAIN {
+        set_locked_operation_directory_read_only(operation_directory)?;
+        sync_linux_directory(&operation_directory.directory, &receipt.sha256)?;
+    }
+    operation_directory.require_bound(authorization)?;
+    Ok(outcome)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn append_locked_operation_receipt(
+    authorization: &LockedAuthorization,
+    operation_directory: &LockedOperationDirectory,
+    receipt: &CanonicalOperationReceipt,
+) -> Result<AppendOutcome, ReceiptError> {
+    operation_directory.require_bound(authorization)?;
+    let outcome = append_canonical_operation_receipt(&operation_directory.path, receipt)?;
+    operation_directory.require_bound(authorization)?;
+    Ok(outcome)
+}
+
 fn verify_chain_directory(
     chain_directory: &Path,
     authorization_id_sha256: &str,
@@ -3914,6 +4053,79 @@ fn verify_operation_directory(
     })
 }
 
+#[cfg(target_os = "linux")]
+fn verify_locked_operation_directory(
+    authorization: &LockedAuthorization,
+    operation_directory: &LockedOperationDirectory,
+    authorization_id_sha256: &str,
+    operation_id_sha256: &str,
+) -> Result<VerifiedOperationReceiptChainInternal, ReceiptError> {
+    operation_directory.require_bound(authorization)?;
+    validate_locked_operation_directory_entries(operation_directory)?;
+    let start = read_locked_operation_receipt(operation_directory, 1)?;
+    if start.record.sequence != 1
+        || start.record.context.authorization_id_sha256 != authorization_id_sha256
+        || start.record.operation.operation_id_sha256 != operation_id_sha256
+        || start.record.predecessor_receipt_sha256.is_some()
+        || !matches!(
+            start.record.event,
+            OperationReceiptEvent::RequestStarted { .. }
+        )
+    {
+        return Err(ReceiptError::InvalidField("operation_chain_identity"));
+    }
+    let finish = read_locked_operation_receipt_optional(operation_directory, 2)?;
+    if let Some(finish) = &finish {
+        if finish.record.sequence != 2
+            || finish.record.predecessor_receipt_sha256.as_deref() != Some(&start.sha256)
+            || finish.record.context != start.record.context
+            || finish.record.operation != start.record.operation
+            || finish.record.recorded_at < start.record.recorded_at
+        {
+            return Err(ReceiptError::Conflict);
+        }
+    }
+    let (receipt_count, head_sha256, outcome) = match finish {
+        Some(finish) => {
+            let OperationReceiptEvent::RequestFinished { outcome, .. } = finish.record.event else {
+                return Err(ReceiptError::InvalidField("operation_finish"));
+            };
+            (2, finish.sha256, Some(outcome))
+        }
+        None => (1, start.sha256.clone(), None),
+    };
+    operation_directory.require_bound(authorization)?;
+    Ok(VerifiedOperationReceiptChainInternal {
+        verified: VerifiedOperationReceiptChain {
+            operation_id_sha256: operation_id_sha256.to_owned(),
+            receipt_count,
+            head_sha256,
+            outcome,
+        },
+        context: start.record.context,
+        operation: start.record.operation,
+        start_sha256: start.sha256,
+        start_recorded_at: start.record.recorded_at,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn verify_locked_operation_directory(
+    authorization: &LockedAuthorization,
+    operation_directory: &LockedOperationDirectory,
+    authorization_id_sha256: &str,
+    operation_id_sha256: &str,
+) -> Result<VerifiedOperationReceiptChainInternal, ReceiptError> {
+    operation_directory.require_bound(authorization)?;
+    let verified = verify_operation_directory(
+        &operation_directory.path,
+        authorization_id_sha256,
+        operation_id_sha256,
+    )?;
+    operation_directory.require_bound(authorization)?;
+    Ok(verified)
+}
+
 fn require_operation_identity(
     verified: &VerifiedOperationReceiptChainInternal,
     context: &OperationContextIdentity,
@@ -3968,6 +4180,12 @@ fn read_operation_receipt(
         "operation_receipt",
     )
     .map_err(map_release_file_error)?;
+    parse_operation_receipt_bytes(bytes)
+}
+
+fn parse_operation_receipt_bytes(
+    bytes: Vec<u8>,
+) -> Result<CanonicalOperationReceipt, ReceiptError> {
     let record: OperationReceipt =
         parse_canonical_json(&bytes, MAX_RECEIPT_BYTES, "operation_receipt").map_err(|error| {
             match error {
@@ -3983,6 +4201,55 @@ fn read_operation_receipt(
         bytes,
         sha256,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn read_locked_operation_receipt(
+    operation_directory: &LockedOperationDirectory,
+    sequence: u64,
+) -> Result<CanonicalOperationReceipt, ReceiptError> {
+    read_locked_operation_receipt_optional(operation_directory, sequence)?
+        .ok_or(ReceiptError::PredecessorMissing)
+}
+
+#[cfg(target_os = "linux")]
+fn read_locked_operation_receipt_optional(
+    operation_directory: &LockedOperationDirectory,
+    sequence: u64,
+) -> Result<Option<CanonicalOperationReceipt>, ReceiptError> {
+    let name = std::ffi::CString::new(operation_receipt_file_name(sequence))
+        .map_err(|_| ReceiptError::UnsafeFilesystem("operation_receipt"))?;
+    let Some((bytes, _)) = read_stable_linux_regular_at(
+        &operation_directory.directory,
+        &name,
+        MAX_RECEIPT_BYTES,
+        "operation_receipt",
+    )?
+    else {
+        return Ok(None);
+    };
+    parse_operation_receipt_bytes(bytes).map(Some)
+}
+
+#[cfg(target_os = "linux")]
+fn locked_operation_receipt_exists(
+    operation_directory: &LockedOperationDirectory,
+    sequence: u64,
+) -> Result<bool, ReceiptError> {
+    read_locked_operation_receipt_optional(operation_directory, sequence)
+        .map(|receipt| receipt.is_some())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn locked_operation_receipt_exists(
+    operation_directory: &LockedOperationDirectory,
+    sequence: u64,
+) -> Result<bool, ReceiptError> {
+    operation_directory
+        .path
+        .join(operation_receipt_file_name(sequence))
+        .try_exists()
+        .map_err(|_| ReceiptError::Io("operation_receipt_exists"))
 }
 
 fn reserve_operation_capacity(
@@ -4039,6 +4306,82 @@ fn reserve_operation_capacity(
         }
     }
     Err(ReceiptError::InvalidField("operation_chain_count"))
+}
+
+#[cfg(target_os = "linux")]
+fn reserve_locked_operation_capacity(
+    authorization: &LockedAuthorization,
+    operation_id_sha256: &str,
+) -> Result<(), ReceiptError> {
+    validate_lower_hex(operation_id_sha256, "operation_id_sha256")?;
+    authorization.require_bound()?;
+    let initial_slot = usize::from_str_radix(&operation_id_sha256[..16], 16)
+        .map_err(|_| ReceiptError::InvalidField("operation_id_sha256"))?
+        % MAX_OPERATION_CHAINS_PER_AUTHORIZATION;
+    for offset in 0..MAX_OPERATION_CHAINS_PER_AUTHORIZATION {
+        let slot = (initial_slot + offset) % MAX_OPERATION_CHAINS_PER_AUTHORIZATION;
+        let record = OperationCapacityReservation {
+            schema_version: 1,
+            contract: OPERATION_CAPACITY_RESERVATION_CONTRACT.to_owned(),
+            slot: u16::try_from(slot)
+                .map_err(|_| ReceiptError::InvalidField("operation_capacity_slot"))?,
+            operation_id_sha256: operation_id_sha256.to_owned(),
+        };
+        let bytes = canonical_json(&record)
+            .map_err(|_| ReceiptError::InvalidField("operation_capacity_reservation"))?
+            .into_bytes();
+        let target_name = std::ffi::CString::new(operation_capacity_file_name(slot))
+            .map_err(|_| ReceiptError::UnsafeFilesystem("operation_capacity_reservation"))?;
+        if let Some((existing_bytes, _)) = read_stable_linux_regular_at(
+            &authorization.authorization,
+            &target_name,
+            MAX_RECEIPT_BYTES,
+            "operation_capacity_reservation",
+        )? {
+            let existing = parse_operation_capacity_reservation_bytes(&existing_bytes)?;
+            if existing.operation_id_sha256 == operation_id_sha256 {
+                authorization.require_bound()?;
+                return Ok(());
+            }
+            continue;
+        }
+        let staging_sequence = u64::try_from(slot + 1)
+            .map_err(|_| ReceiptError::InvalidField("operation_capacity_slot"))?;
+        match publish_exact_bytes_linux_at(
+            &authorization.authorization,
+            authorization.authorization_path(),
+            &target_name,
+            staging_sequence,
+            &bytes,
+            MAX_RECEIPT_BYTES,
+            "operation_capacity_reservation",
+        )? {
+            ExactPublicationOutcome::Created | ExactPublicationOutcome::ExistingExact => {
+                authorization.require_bound()?;
+                return Ok(());
+            }
+            ExactPublicationOutcome::ExistingDifferent(existing_bytes) => {
+                let existing = parse_operation_capacity_reservation_bytes(&existing_bytes)?;
+                if existing.operation_id_sha256 == operation_id_sha256 {
+                    authorization.require_bound()?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Err(ReceiptError::InvalidField("operation_chain_count"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn reserve_locked_operation_capacity(
+    authorization: &LockedAuthorization,
+    operation_id_sha256: &str,
+) -> Result<(), ReceiptError> {
+    authorization.require_bound()?;
+    let result =
+        reserve_operation_capacity(authorization.authorization_path(), operation_id_sha256);
+    authorization.require_bound()?;
+    result
 }
 
 fn read_operation_capacity_reservation(
@@ -4606,7 +4949,6 @@ where
     F: FnOnce(),
 {
     use std::ffi::CString;
-    use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
 
     if bytes.is_empty() || bytes.len() > maximum_bytes || target.parent() != Some(parent) {
@@ -4619,12 +4961,67 @@ where
         CString::new(target_name.as_bytes()).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
     let directory =
         open_linux_directory(parent).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
-    let directory_identity = linux_directory_identity(&directory, label)?;
+    publish_exact_bytes_linux_at_with_hook(
+        &directory,
+        parent,
+        &target_name,
+        staging_sequence,
+        bytes,
+        maximum_bytes,
+        label,
+        after_staging_sync,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn publish_exact_bytes_linux_at(
+    directory: &fs::File,
+    parent_path: &Path,
+    target_name: &std::ffi::CStr,
+    staging_sequence: u64,
+    bytes: &[u8],
+    maximum_bytes: usize,
+    label: &'static str,
+) -> Result<ExactPublicationOutcome, ReceiptError> {
+    publish_exact_bytes_linux_at_with_hook(
+        directory,
+        parent_path,
+        target_name,
+        staging_sequence,
+        bytes,
+        maximum_bytes,
+        label,
+        || {},
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn publish_exact_bytes_linux_at_with_hook<F>(
+    directory: &fs::File,
+    parent_path: &Path,
+    target_name: &std::ffi::CStr,
+    staging_sequence: u64,
+    bytes: &[u8],
+    maximum_bytes: usize,
+    label: &'static str,
+    after_staging_sync: F,
+) -> Result<ExactPublicationOutcome, ReceiptError>
+where
+    F: FnOnce(),
+{
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+
+    if bytes.is_empty() || bytes.len() > maximum_bytes {
+        return Err(ReceiptError::InvalidField("canonical_publication_bytes"));
+    }
+    require_linux_relative_component(target_name, label)?;
+    let directory_identity = linux_directory_identity(directory, label)?;
     if let Some((existing, _)) =
-        read_stable_linux_regular_at(&directory, &target_name, maximum_bytes, label)?
+        read_stable_linux_regular_at(directory, target_name, maximum_bytes, label)?
     {
-        sync_linux_directory(&directory, &sha256_hex(bytes))?;
-        require_linux_directory_path_identity(parent, &directory_identity, label)?;
+        sync_linux_directory(directory, &sha256_hex(bytes))?;
+        require_linux_directory_path_identity(parent_path, &directory_identity, label)?;
         return Ok(if existing == bytes {
             ExactPublicationOutcome::ExistingExact
         } else {
@@ -4635,7 +5032,7 @@ where
     let stage_name = staging_file_name(staging_sequence)?;
     let stage_name = CString::new(stage_name.as_bytes())
         .map_err(|_| ReceiptError::UnsafeFilesystem("staging_name"))?;
-    let stage = create_linux_staging_at(&directory, &stage_name)?;
+    let stage = create_linux_staging_at(directory, &stage_name)?;
     let stage_writer = stage
         .try_clone()
         .map_err(|_| ReceiptError::Io("clone_staging"))?;
@@ -4654,10 +5051,10 @@ where
     };
     if rename_result != 0 {
         let _ = unsafe { libc::unlinkat(directory.as_raw_fd(), stage_name.as_ptr(), 0) };
-        sync_linux_directory(&directory, &sha256_hex(bytes))?;
-        require_linux_directory_path_identity(parent, &directory_identity, label)?;
+        sync_linux_directory(directory, &sha256_hex(bytes))?;
+        require_linux_directory_path_identity(parent_path, &directory_identity, label)?;
         if let Some((existing, _)) =
-            read_stable_linux_regular_at(&directory, &target_name, maximum_bytes, label)?
+            read_stable_linux_regular_at(directory, target_name, maximum_bytes, label)?
         {
             return Ok(if existing == bytes {
                 ExactPublicationOutcome::ExistingExact
@@ -4670,20 +5067,20 @@ where
         });
     }
 
-    sync_linux_directory(&directory, &sha256_hex(bytes))?;
+    sync_linux_directory(directory, &sha256_hex(bytes))?;
     let (installed, installed_identity) =
-        read_stable_linux_regular_at(&directory, &target_name, maximum_bytes, label)?.ok_or_else(
+        read_stable_linux_regular_at(directory, target_name, maximum_bytes, label)?.ok_or_else(
             || ReceiptError::DurabilityUnknown {
                 expected_sha256: sha256_hex(bytes),
             },
         )?;
     if installed != bytes
         || installed_identity != stage_identity
-        || linux_directory_identity(&directory, label)? != directory_identity
+        || linux_directory_identity(directory, label)? != directory_identity
     {
         return Err(ReceiptError::Conflict);
     }
-    require_linux_directory_path_identity(parent, &directory_identity, label)?;
+    require_linux_directory_path_identity(parent_path, &directory_identity, label)?;
     Ok(ExactPublicationOutcome::Created)
 }
 
@@ -5037,6 +5434,18 @@ fn set_chain_read_only(path: &Path) -> Result<(), ReceiptError> {
         .map_err(|_| ReceiptError::Io("chain_permissions"))
 }
 
+#[cfg(target_os = "linux")]
+fn set_locked_operation_directory_read_only(
+    directory: &LockedOperationDirectory,
+) -> Result<(), ReceiptError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    directory
+        .directory
+        .set_permissions(fs::Permissions::from_mode(0o555))
+        .map_err(|_| ReceiptError::Io("chain_permissions"))
+}
+
 #[cfg(not(unix))]
 fn set_chain_read_only(_path: &Path) -> Result<(), ReceiptError> {
     Ok(())
@@ -5151,6 +5560,77 @@ fn open_linux_beneath(
 }
 
 #[cfg(target_os = "linux")]
+fn read_linux_directory_names(
+    directory: &fs::File,
+    label: &'static str,
+) -> Result<Vec<String>, ReceiptError> {
+    use std::ffi::CStr;
+    use std::os::fd::AsRawFd;
+
+    let duplicate = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate < 0 {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    if unsafe { libc::lseek(duplicate, 0, libc::SEEK_SET) } < 0 {
+        unsafe {
+            libc::close(duplicate);
+        }
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    let stream = unsafe { libc::fdopendir(duplicate) };
+    if stream.is_null() {
+        unsafe {
+            libc::close(duplicate);
+        }
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+
+    let mut names = Vec::new();
+    let mut result = Ok(());
+    loop {
+        unsafe {
+            *libc::__errno_location() = 0;
+        }
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            if unsafe { *libc::__errno_location() } != 0 {
+                result = Err(ReceiptError::UnsafeFilesystem(label));
+            }
+            break;
+        }
+        let bytes = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if bytes == b"." || bytes == b".." {
+            continue;
+        }
+        match String::from_utf8(bytes.to_vec()) {
+            Ok(name) => names.push(name),
+            Err(_) => {
+                result = Err(ReceiptError::UnsafeFilesystem(label));
+                break;
+            }
+        }
+    }
+    let close_result = unsafe { libc::closedir(stream) };
+    if close_result != 0 && result.is_ok() {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    result?;
+    Ok(names)
+}
+
+#[cfg(target_os = "linux")]
+fn require_linux_relative_component(
+    component: &std::ffi::CStr,
+    label: &'static str,
+) -> Result<(), ReceiptError> {
+    let bytes = component.to_bytes();
+    if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn lock_linux_directory(file: &fs::File, label: &'static str) -> Result<(), ReceiptError> {
     use std::os::fd::AsRawFd;
 
@@ -5217,13 +5697,76 @@ where
 }
 
 #[cfg(not(target_os = "linux"))]
-fn lock_operation_authorization(_path: &Path) -> Result<LockedAuthorization, ReceiptError> {
+fn lock_operation_authorization(path: &Path) -> Result<LockedAuthorization, ReceiptError> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
-        .map(|guard| LockedAuthorization { _guard: guard })
+        .map(|guard| LockedAuthorization {
+            _guard: guard,
+            authorization_path: path.to_owned(),
+        })
         .map_err(|_| ReceiptError::Io("operation_authorization_lock"))
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_locked_operation_directory(
+    authorization: &LockedAuthorization,
+    operation_id_sha256: &str,
+) -> Result<LockedOperationDirectory, ReceiptError> {
+    use std::os::fd::AsRawFd;
+
+    validate_lower_hex(operation_id_sha256, "operation_id_sha256")?;
+    authorization.require_bound()?;
+    let name = std::ffi::CString::new(operation_id_sha256)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("operation_directory"))?;
+    let created = if unsafe {
+        libc::mkdirat(
+            authorization.authorization.as_raw_fd(),
+            name.as_ptr(),
+            0o700,
+        )
+    } == 0
+    {
+        true
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(ReceiptError::Io("operation_directory"));
+        }
+        false
+    };
+    if created {
+        sync_linux_directory(&authorization.authorization, operation_id_sha256)?;
+    }
+    let directory = open_linux_directory_at(&authorization.authorization, &name)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("operation_directory"))?;
+    let identity = linux_directory_identity(&directory, "operation_directory")?;
+    let locked = LockedOperationDirectory {
+        path: authorization.authorization_path().join(operation_id_sha256),
+        directory,
+        name,
+        identity,
+    };
+    locked.require_bound(authorization)?;
+    Ok(locked)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_locked_operation_directory(
+    authorization: &LockedAuthorization,
+    operation_id_sha256: &str,
+) -> Result<LockedOperationDirectory, ReceiptError> {
+    validate_lower_hex(operation_id_sha256, "operation_id_sha256")?;
+    let path = authorization.authorization_path().join(operation_id_sha256);
+    let _ = create_fixed_directory(
+        &path,
+        authorization.authorization_path(),
+        "operation_directory",
+    )?;
+    let locked = LockedOperationDirectory { path };
+    locked.require_bound(authorization)?;
+    Ok(locked)
 }
 
 fn receipt_file_name(sequence: u64) -> String {
@@ -5316,6 +5859,37 @@ fn validate_operation_directory_entries(directory: &Path) -> Result<(), ReceiptE
             continue;
         }
         return Err(ReceiptError::UnsafeFilesystem("operation_entry_name"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_locked_operation_directory_entries(
+    directory: &LockedOperationDirectory,
+) -> Result<(), ReceiptError> {
+    for file_name in read_linux_directory_names(&directory.directory, "operation_directory")? {
+        let valid_staging = valid_staging_file_name(&file_name, MAX_OPERATION_RECEIPTS_PER_CHAIN);
+        if valid_staging {
+            return Err(ReceiptError::UnsafeFilesystem("operation_receipt_staging"));
+        }
+        let Some(sequence) = parse_operation_receipt_file_name(&file_name) else {
+            return Err(ReceiptError::UnsafeFilesystem("operation_entry_name"));
+        };
+        if sequence == 0 || sequence > MAX_OPERATION_RECEIPTS_PER_CHAIN {
+            return Err(ReceiptError::InvalidField("operation_receipt_sequence"));
+        }
+        let name = std::ffi::CString::new(file_name)
+            .map_err(|_| ReceiptError::UnsafeFilesystem("operation_entry_name"))?;
+        if read_stable_linux_regular_at(
+            &directory.directory,
+            &name,
+            MAX_RECEIPT_BYTES,
+            "operation_receipt",
+        )?
+        .is_none()
+        {
+            return Err(ReceiptError::UnsafeFilesystem("operation_receipt"));
+        }
     }
     Ok(())
 }
@@ -7690,6 +8264,73 @@ mod tests {
         assert!(open_linux_directory_at(&parent, &CString::new("../outside").unwrap()).is_err());
         assert!(open_linux_directory_at(&parent, &CString::new("linked").unwrap()).is_err());
 
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_directory_fd_scan_rewinds_between_audits() {
+        let root = temporary_root("linux-directory-fd-rewind");
+        fs::write(root.join("first"), b"first").unwrap();
+        fs::write(root.join("second"), b"second").unwrap();
+        let directory = open_linux_directory(&root).unwrap();
+
+        let mut first = read_linux_directory_names(&directory, "directory_fd_scan").unwrap();
+        let mut second = read_linux_directory_names(&directory, "directory_fd_scan").unwrap();
+        first.sort();
+        second.sort();
+        assert_eq!(first, vec!["first".to_owned(), "second".to_owned()]);
+        assert_eq!(second, first);
+
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_reserve_never_returns_fresh_after_operation_directory_replacement() {
+        let root = temporary_root("linux-reserve-operation-replacement");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let target_sha256 = "a".repeat(64);
+        let request_id_sha256 = "e".repeat(64);
+        let request_sha256 =
+            read_operation_request_sha256(&target_sha256, &request_id_sha256).unwrap();
+        let start = OperationStartInput {
+            identity: OperationIdentityInput {
+                kind: OperationKind::AuthorityClaimRead,
+                state_version: 0,
+                target_sha256,
+                request_sha256,
+            },
+            request_id_sha256,
+            started_at: NOW,
+        };
+        let authorization = root
+            .join(OPERATION_RECEIPTS_DIRECTORY_NAME)
+            .join(activation.authorization_id_sha256());
+        let displaced = authorization.join("displaced");
+        let hook_displaced = displaced.clone();
+
+        let result = store.reserve_operation_with_directory_hook(
+            &publication,
+            &credentials,
+            &activation,
+            &start,
+            move |directory| {
+                fs::rename(&directory.path, &hook_displaced).unwrap();
+                fs::create_dir(&directory.path).unwrap();
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(ReceiptError::UnsafeFilesystem("operation_directory"))
+        );
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let operation = project_operation_identity(&context, &start.identity).unwrap();
+        let replacement = authorization.join(&operation.operation_id_sha256);
+        assert_eq!(fs::read_dir(&replacement).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&displaced).unwrap().count(), 0);
         cleanup(&root);
     }
 

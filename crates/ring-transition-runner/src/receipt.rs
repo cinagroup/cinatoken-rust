@@ -4252,6 +4252,7 @@ fn locked_operation_receipt_exists(
         .map_err(|_| ReceiptError::Io("operation_receipt_exists"))
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn reserve_operation_capacity(
     authorization_directory: &Path,
     operation_id_sha256: &str,
@@ -4916,6 +4917,13 @@ fn require_fixed_directory(
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+struct LinuxPublicationParent<'a> {
+    directory: &'a fs::File,
+    path: &'a Path,
+}
+
+#[cfg(target_os = "linux")]
 fn publish_exact_bytes(
     parent: &Path,
     target: &Path,
@@ -4962,8 +4970,10 @@ where
     let directory =
         open_linux_directory(parent).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
     publish_exact_bytes_linux_at_with_hook(
-        &directory,
-        parent,
+        LinuxPublicationParent {
+            directory: &directory,
+            path: parent,
+        },
         &target_name,
         staging_sequence,
         bytes,
@@ -4984,8 +4994,10 @@ fn publish_exact_bytes_linux_at(
     label: &'static str,
 ) -> Result<ExactPublicationOutcome, ReceiptError> {
     publish_exact_bytes_linux_at_with_hook(
-        directory,
-        parent_path,
+        LinuxPublicationParent {
+            directory,
+            path: parent_path,
+        },
         target_name,
         staging_sequence,
         bytes,
@@ -4997,8 +5009,7 @@ fn publish_exact_bytes_linux_at(
 
 #[cfg(target_os = "linux")]
 fn publish_exact_bytes_linux_at_with_hook<F>(
-    directory: &fs::File,
-    parent_path: &Path,
+    parent: LinuxPublicationParent<'_>,
     target_name: &std::ffi::CStr,
     staging_sequence: u64,
     bytes: &[u8],
@@ -5016,12 +5027,12 @@ where
         return Err(ReceiptError::InvalidField("canonical_publication_bytes"));
     }
     require_linux_relative_component(target_name, label)?;
-    let directory_identity = linux_directory_identity(directory, label)?;
+    let directory_identity = linux_directory_identity(parent.directory, label)?;
     if let Some((existing, _)) =
-        read_stable_linux_regular_at(directory, target_name, maximum_bytes, label)?
+        read_stable_linux_regular_at(parent.directory, target_name, maximum_bytes, label)?
     {
-        sync_linux_directory(directory, &sha256_hex(bytes))?;
-        require_linux_directory_path_identity(parent_path, &directory_identity, label)?;
+        sync_linux_directory(parent.directory, &sha256_hex(bytes))?;
+        require_linux_directory_path_identity(parent.path, &directory_identity, label)?;
         return Ok(if existing == bytes {
             ExactPublicationOutcome::ExistingExact
         } else {
@@ -5032,7 +5043,7 @@ where
     let stage_name = staging_file_name(staging_sequence)?;
     let stage_name = CString::new(stage_name.as_bytes())
         .map_err(|_| ReceiptError::UnsafeFilesystem("staging_name"))?;
-    let stage = create_linux_staging_at(directory, &stage_name)?;
+    let stage = create_linux_staging_at(parent.directory, &stage_name)?;
     let stage_writer = stage
         .try_clone()
         .map_err(|_| ReceiptError::Io("clone_staging"))?;
@@ -5042,19 +5053,19 @@ where
 
     let rename_result = unsafe {
         libc::renameat2(
-            directory.as_raw_fd(),
+            parent.directory.as_raw_fd(),
             stage_name.as_ptr(),
-            directory.as_raw_fd(),
+            parent.directory.as_raw_fd(),
             target_name.as_ptr(),
             libc::RENAME_NOREPLACE,
         )
     };
     if rename_result != 0 {
-        let _ = unsafe { libc::unlinkat(directory.as_raw_fd(), stage_name.as_ptr(), 0) };
-        sync_linux_directory(directory, &sha256_hex(bytes))?;
-        require_linux_directory_path_identity(parent_path, &directory_identity, label)?;
+        let _ = unsafe { libc::unlinkat(parent.directory.as_raw_fd(), stage_name.as_ptr(), 0) };
+        sync_linux_directory(parent.directory, &sha256_hex(bytes))?;
+        require_linux_directory_path_identity(parent.path, &directory_identity, label)?;
         if let Some((existing, _)) =
-            read_stable_linux_regular_at(directory, target_name, maximum_bytes, label)?
+            read_stable_linux_regular_at(parent.directory, target_name, maximum_bytes, label)?
         {
             return Ok(if existing == bytes {
                 ExactPublicationOutcome::ExistingExact
@@ -5067,20 +5078,19 @@ where
         });
     }
 
-    sync_linux_directory(directory, &sha256_hex(bytes))?;
+    sync_linux_directory(parent.directory, &sha256_hex(bytes))?;
     let (installed, installed_identity) =
-        read_stable_linux_regular_at(directory, target_name, maximum_bytes, label)?.ok_or_else(
-            || ReceiptError::DurabilityUnknown {
+        read_stable_linux_regular_at(parent.directory, target_name, maximum_bytes, label)?
+            .ok_or_else(|| ReceiptError::DurabilityUnknown {
                 expected_sha256: sha256_hex(bytes),
-            },
-        )?;
+            })?;
     if installed != bytes
         || installed_identity != stage_identity
-        || linux_directory_identity(directory, label)? != directory_identity
+        || linux_directory_identity(parent.directory, label)? != directory_identity
     {
         return Err(ReceiptError::Conflict);
     }
-    require_linux_directory_path_identity(parent_path, &directory_identity, label)?;
+    require_linux_directory_path_identity(parent.path, &directory_identity, label)?;
     Ok(ExactPublicationOutcome::Created)
 }
 

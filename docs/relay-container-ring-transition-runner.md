@@ -1467,3 +1467,64 @@ that acquisition: dedicated UID/GID, exact ownership/ACLs and mount isolation.
 Native multi-process replacement/kill, syscall tracing, ext4/XFS power-loss,
 restore, independent DSSE/WORM and Cloudflare lifecycle evidence remain
 required. Production remains **NO-GO**.
+
+## Native Process-Death and Recovery Syscall Increment
+
+The runner now has a Linux-only child-role harness that restarts the exact
+compiled library test binary with a cleared environment. Fixed roles cover
+closure replacement, head-set publication while retaining the lock,
+head-set-only preparation and exact recovery. The harness does not accept a
+caller-selected command and does not construct transport or credential
+state.
+
+The closure-replacement child runs as an independent PID. After the parent
+captures the terminal candidate descriptors, the child renames the closure
+directory and recreates the original pathname. The parent must reject the
+attachment drift, and candidate bytes may appear in neither the displaced nor
+replacement closure.
+
+The process-death child installs the deterministic terminal plan and synced
+head set while holding `LockedAuthorization`. The parent waits for the synced
+marker, sends `SIGKILL`, verifies signal 9 and reacquires state through a new
+`ReceiptStore`. Recovery must install the exact local seal and a second
+recovery must return the identical verified closure.
+
+This campaign found that `install_terminal_closure` created terminal graph
+directories before rejecting an unfinished operation. A concurrent finish
+could observe the empty execution chain and fail with `PredecessorMissing`.
+Linux closure now audits the authorization operation state and derives a
+canonical head set before it creates any execution or closure graph object.
+The regression test proves no terminal roots remain after the rejected
+attempt, then completes the operation and closure.
+
+The workflow traces only the recovery child after a prepared head-set crash
+boundary. Its verifier starts at the first successful exclusive `flock`,
+rejects mutation rooted at `AT_FDCWD`, and requires:
+
+- at least two successful exclusive locks;
+- `openat2` beneath a numeric retained dirfd;
+- `renameat2` between numeric retained dirfds;
+- `fsync` or `fdatasync`; and
+- descriptor `fchmod`.
+
+Read-only absolute path identity checks are permitted. The workflow cleanup
+runs outside the traced child and restores owner write permission only to
+remove the isolated read-only fixture.
+
+Commit `467fba330164841142c0cdd7c11658acd5605674` passed
+[Ubuntu run 30157298245](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157298245)
+and
+[job 89677148809](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157298245/job/89677148809)
+with formatting, 147 Linux tests, the syscall gate and warning-free Clippy.
+The local aggregate passed 126 Rust library tests, 3 binary/CLI tests and 61
+Bun tests with 242 expectations. Clean source evidence has Git tree
+`215e80c3220756764afe9cd3ae0829a00a60a887`, a 35901440-byte archive with
+SHA-256
+`54bd395057dfedb4089ba344ad0835215ca717af75d7a440b6a35598363d1e90`,
+and 31 modules totaling 1649358 bytes with inventory SHA-256
+`ae61249e39efe9cb70ac855302837995d0ea59a0b22d388250f4157e49175b9f`.
+
+This is one rename case, one kill boundary and one focused trace. It does not
+prove all operation paths, hostile same-UID continuous interference,
+power-loss durability, ACL/mount isolation, restore, independent DSSE/WORM or
+Cloudflare DO/Container lifecycle behavior. Production remains **NO-GO**.

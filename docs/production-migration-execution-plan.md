@@ -3395,3 +3395,68 @@ ext4/XFS power-loss and restore campaigns, independent DSSE/WORM closure,
 then isolated Cloudflare DO/Container lifecycle tests and G1-G8 review.
 Go/VPS remains traffic, scheduler and financial authority; production remains
 **NO-GO**.
+
+## 2026-07-25 K7 Native Process-Death and Syscall Gate
+
+This P0 increment converts the first part of the remaining native-fault
+requirement into an executable Linux gate.
+
+Completed evidence:
+
+1. an independent process replaces the authorization closure pathname after
+   the parent captures the terminal candidate graph; publication fails closed
+   and neither old nor replacement closure receives the candidate;
+2. a child publishes and syncs the head set while retaining the authorization
+   lock, is terminated by `SIGKILL`, and a fresh store recovers one exact
+   local seal twice;
+3. an unfinished closure attempt is now read-only until operation-state
+   validation succeeds, so it creates no empty terminal graph and cannot
+   strand a concurrent finish at `PredecessorMissing`; and
+4. focused recovery tracing rejects every post-lock `AT_FDCWD` mutation and
+   requires two exclusive locks, dirfd-confined `openat2`/`renameat2`,
+   descriptor chmod and directory sync.
+
+Acceptance evidence is frozen at
+`467fba330164841142c0cdd7c11658acd5605674`.
+[Run 30157298245](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157298245)
+and
+[job 89677148809](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157298245/job/89677148809)
+passed formatting, 147 Linux library tests, the trace step and warning-free
+Clippy. The aggregate local gate passed 126 Rust library tests, 3 binary/CLI
+tests and 61 Bun tests with 242 expectations.
+
+Clean source evidence:
+
+| Field | Value |
+| --- | --- |
+| Git tree | `215e80c3220756764afe9cd3ae0829a00a60a887` |
+| Source archive | 35901440 bytes |
+| Source archive SHA-256 | `54bd395057dfedb4089ba344ad0835215ca717af75d7a440b6a35598363d1e90` |
+| Required modules | 31 |
+| Required module bytes | 1649358 |
+| Module inventory SHA-256 | `ae61249e39efe9cb70ac855302837995d0ea59a0b22d388250f4157e49175b9f` |
+
+Two intermediate runs remain part of the audit trail. Run `30156048897`
+exposed the terminal-graph ordering race rather than being retried away. Run
+`30157120814` passed all code and trace assertions but failed to remove the
+intentionally read-only temporary fixture. The final workflow restores owner
+write permission after tracing, then removes only that isolated fixture.
+
+Still required before any production promotion:
+
+1. broaden process campaigns across reserve, finish, candidate installation,
+   closure publication and every declared crash boundary;
+2. prove dedicated UID/GID, exact parent ownership/POSIX ACLs and mount
+   isolation on the production image;
+3. run ext4 and XFS abrupt-power-loss and durability-unknown quarantine
+   matrices;
+4. prove backup/restore and missing-local-tree quarantine against D1/DO
+   operation state;
+5. independently sign and deletion-protect the trace, receipt and source
+   evidence; and
+6. complete isolated Cloudflare DO/Container lifecycle tests and G1-G8 review.
+
+The current inline trace parser is useful CI evidence but is not an
+independently signed/WORM artifact. No credentials or remote mutations were
+used, and no traffic or financial authority moved. Go/VPS remains traffic,
+scheduler and financial authority; production remains **NO-GO**.

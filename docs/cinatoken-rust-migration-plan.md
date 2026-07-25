@@ -20497,3 +20497,89 @@ power-loss, backup/restore, independent DSSE plus immutable retention,
 Cloudflare DO/Container lifecycle evidence and G1-G8 approval. No credential,
 remote mutation, customer traffic movement or Go/VPS drain occurred.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.295 K7 Native Process-Death and Recovery Syscall Gate (2026-07-25)
+
+The terminal receipt boundary now has a focused native multi-process and
+syscall-trace gate in addition to the in-process descriptor fault hooks.
+The Linux test binary can restart only its exact test with one of four fixed
+roles. Child environments are cleared and contain only the fixed role,
+fixture root and readiness path. No role reads credentials, constructs an
+HTTP client or authorizes a remote mutation.
+
+The first process campaign captures the candidate operation and closure
+descriptors in the parent. A separate process then renames the authorization
+closure directory and creates a replacement at the original pathname. The
+parent must reject the identity drift, and neither the displaced directory
+nor the visible replacement may receive
+`terminal-snapshot-candidate.json`. This is a real PID and pathname attack,
+not a callback running in the writer thread.
+
+The second campaign starts a child that acquires the authorization lock,
+installs the terminal execution plan and publishes a synced operation head
+set, then waits while retaining the lock. The parent observes the synced
+boundary, sends `SIGKILL`, verifies signal 9 and opens a fresh `ReceiptStore`.
+Recovery must create the exact local seal, and a second recovery must replay
+the identical verified closure. Process death therefore releases the
+cooperative lock without restoring send authority or requiring network I/O.
+
+The campaign exposed a separate Linux linearization defect in the existing
+finish/closure race. A failed closure attempt created empty execution and
+closure directories before rejecting an unfinished operation. A concurrent
+finish could then encounter the empty execution chain as a terminal barrier
+and return `PredecessorMissing`. The implementation now audits operation
+state and derives a valid canonical head set before creating any terminal
+graph object. A dedicated regression proves an unfinished closure attempt
+leaves no execution-receipt or operation-closure root, after which the
+operation can finish and the terminal closure can install normally.
+
+The workflow prepares a synced head-set-only fixture, then starts a separate
+recovery process under `strace`. After the first successful exclusive
+`flock`, the verifier rejects:
+
+1. write/create/truncate/append `openat(AT_FDCWD, ...)`;
+2. any `openat2`, `mkdirat`, `unlinkat` or `fchmodat` mutation rooted at
+   `AT_FDCWD`; and
+3. any `renameat2` whose source or destination uses `AT_FDCWD`.
+
+The same trace must contain two successful exclusive locks, numeric-dirfd
+`openat2`, numeric-dirfd `renameat2`, `fsync` or `fdatasync`, and `fchmod`.
+Read-only absolute-path identity checks and dynamic-loader activity are not
+classified as mutations. The trace is intentionally scoped to exact terminal
+recovery after a head-set crash; it is not evidence for every reserve,
+finish, candidate or closure path.
+
+The frozen code candidate is
+`467fba330164841142c0cdd7c11658acd5605674`.
+[Run 30157298245](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157298245)
+and
+[job 89677148809](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157298245/job/89677148809)
+passed formatting, all 147 Linux library tests, the recovery syscall trace
+and warning-free Clippy. The aggregate local gate passed 126 Rust library
+tests, 3 binary/CLI tests and 61 Bun tests with 242 expectations.
+
+Clean commit-object evidence produced Git tree
+`215e80c3220756764afe9cd3ae0829a00a60a887`, a 35901440-byte source archive
+with SHA-256
+`54bd395057dfedb4089ba344ad0835215ca717af75d7a440b6a35598363d1e90`,
+and 31 required modules totaling 1649358 bytes with inventory SHA-256
+`ae61249e39efe9cb70ac855302837995d0ea59a0b22d388250f4157e49175b9f`.
+
+[Run 30156048897](https://github.com/cinagroup/cinatoken-rust/actions/runs/30156048897)
+is retained as evidence for the discovered empty-terminal-graph race.
+[Run 30157120814](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157120814)
+then passed all 147 tests and every syscall assertion; only its EXIT cleanup
+failed because the verified fixture was intentionally read-only. The final
+workflow restores owner write permission only after tracing and then removes
+the isolated temporary fixture.
+
+This closes one candidate-closure replacement scenario, one head-set
+`SIGKILL` boundary and one focused recovery trace. It does not prove
+continuous absence against a hostile process sharing the runner UID, every
+crash boundary, real power loss, ext4/XFS durability, production UID/GID and
+ACL enforcement, backup/restore, independent DSSE/WORM anchoring, Cloudflare
+DO/Container lifecycle behavior or G1-G8 approval. The inline workflow trace
+verifier is also not independently signed or deletion-resistant evidence.
+No credential, Cloudflare mutation, customer traffic movement or Go/VPS
+drain occurred. Go/VPS remains authoritative and production remains
+**NO-GO**.

@@ -1446,3 +1446,53 @@ and 31 required modules totaling 1637476 bytes with inventory SHA-256
 Therefore the receipt filesystem is presently a local fail-closed candidate,
 not a production authority and not a substitute for D1, DO SQLite or R2.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-25 Native Receipt Process and Syscall Mapping
+
+The cinaVibeSDK Container topology remains the reference for process
+lifecycle and replaceable local execution, while the new Rust evidence is a
+cinatoken-specific financial/send authorization control. It must not be
+attributed to cinaVibeSDK and does not make Container disk authoritative.
+
+The Rust runner now exercises two real process boundaries. One independent
+PID renames and recreates the terminal candidate closure while the writer
+retains its descriptor graph; the writer rejects the drift and publishes to
+neither inode. Another child publishes and syncs the operation head set while
+holding the authorization lock, is killed with `SIGKILL`, and a fresh process
+recovers the exact local seal twice without network access or a new send
+capability.
+
+The Linux workflow also traces the focused head-set recovery path. After the
+first successful `flock(LOCK_EX)`, mutation through `AT_FDCWD` is forbidden,
+while numeric-dirfd `openat2` and `renameat2`, descriptor chmod and directory
+sync are mandatory. Read-only path identity checks remain allowed. This maps
+the local execution plane to retained kernel objects, but durable business
+authority still belongs in D1/DO state and immutable evidence still belongs
+outside ephemeral Container storage.
+
+The process test exposed an ordering bug: an unfinished closure attempt could
+create empty terminal directories before returning
+`unfinished_operation_chain`, causing a concurrent operation finish to see
+`PredecessorMissing`. The Rust transaction now validates the operation state
+before any terminal graph creation, and a regression proves that the failed
+attempt leaves no terminal graph and that finish plus closure remain
+available.
+
+The frozen evidence is commit
+`467fba330164841142c0cdd7c11658acd5605674`,
+[run 30157298245](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157298245)
+and
+[job 89677148809](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157298245/job/89677148809):
+147 Linux tests, the syscall gate, formatting and warning-free Clippy passed.
+The clean source identity is Git tree
+`215e80c3220756764afe9cd3ae0829a00a60a887`, archive SHA-256
+`54bd395057dfedb4089ba344ad0835215ca717af75d7a440b6a35598363d1e90`
+and inventory SHA-256
+`ae61249e39efe9cb70ac855302837995d0ea59a0b22d388250f4157e49175b9f`
+for 31 modules and 1649358 bytes.
+
+This is focused recovery evidence, not a complete hostile same-UID campaign,
+filesystem power-loss result, ACL/mount attestation, external receipt anchor
+or Cloudflare lifecycle test. cinaVibeSDK's ephemeral Container model
+therefore still requires D1/DO/R2 recovery and quarantine rules. Go/VPS
+remains authoritative and production remains **NO-GO**.

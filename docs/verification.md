@@ -9712,3 +9712,72 @@ multi-process kill/rename, syscall traces, ext4/XFS, backup/restore,
 DSSE/WORM, Cloudflare lifecycle and G1-G8 remain open. No credential, remote
 mutation or traffic change occurred. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-25 Native Process-Death and Recovery Syscall Verification
+
+Local aggregate command:
+
+```powershell
+npx.cmd --yes bun run check:ring-transition-runner
+```
+
+Observed local result:
+
+- 126 Rust library tests passed;
+- 3 binary/CLI tests passed; and
+- 61 Bun tests passed with 242 expectations.
+
+Native Linux evidence is frozen at
+`467fba330164841142c0cdd7c11658acd5605674`:
+
+- [run 30157298245](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157298245)
+  and
+  [job 89677148809](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157298245/job/89677148809)
+  passed;
+- formatting, 147 Linux library tests and warning-free Clippy completed
+  successfully;
+- the independent closure-replacement child cannot redirect candidate
+  publication to either the displaced or visible replacement directory;
+- a child killed by `SIGKILL` after synced head-set publication releases the
+  lock, and a fresh store recovers and exactly replays the local seal; and
+- the focused `strace` gate passed two exclusive-lock, numeric-dirfd
+  `openat2`, numeric-dirfd `renameat2`, directory-sync and descriptor-chmod
+  requirements while finding no post-lock `AT_FDCWD` mutation.
+
+The Linux suite also verifies the race correction discovered by the first
+trace candidate. An unfinished closure attempt now returns
+`unfinished_operation_chain` before creating the terminal execution or
+closure roots. The same operation can then finish and install its terminal
+closure. This prevents an empty execution-chain residue from surfacing as
+`PredecessorMissing`.
+
+Clean commit-object collection from an independent clean clone produced:
+
+- Git tree `215e80c3220756764afe9cd3ae0829a00a60a887`;
+- a 35901440-byte source archive with SHA-256
+  `54bd395057dfedb4089ba344ad0835215ca717af75d7a440b6a35598363d1e90`;
+- 31 required modules totaling 1649358 bytes; and
+- module-inventory SHA-256
+  `ae61249e39efe9cb70ac855302837995d0ea59a0b22d388250f4157e49175b9f`.
+
+Intermediate evidence is retained:
+
+- [run 30156048897](https://github.com/cinagroup/cinatoken-rust/actions/runs/30156048897)
+  failed the existing finish/closure linearization test with
+  `PredecessorMissing`, exposing the premature empty terminal graph; and
+- [run 30157120814](https://github.com/cinagroup/cinatoken-rust/actions/runs/30157120814)
+  passed all 147 tests and trace assertions but failed only when its EXIT trap
+  attempted to delete the intentionally read-only fixture.
+
+The final cleanup restores owner write permission after the traced process
+has exited and deletes only the temporary fixture. It is not part of the
+production recovery trace.
+
+Evidence scope is intentionally narrow. Read-only absolute path identity
+checks are allowed, only the head-set recovery process is traced, and the
+inline parser is neither independently signed nor immutable. This does not
+prove all process interleavings, hostile same-UID containment, ext4/XFS
+power-loss durability, production ACL/mount policy, backup/restore,
+independent DSSE/WORM, Cloudflare lifecycle or G1-G8. No credential, network
+mutation or traffic change occurred. Go/VPS remains authoritative and
+production remains **NO-GO**.

@@ -1192,8 +1192,7 @@ impl ReceiptStore {
             }
             self.canonical_locked_operation_head_set(&context, &state)?;
             self.install_terminal_plan_locked(&locked, &mut graph, plan)?;
-            return self
-                .install_terminal_closure_graph_locked(&locked, &context, &mut graph, &mut state);
+            self.install_terminal_closure_graph_locked(&locked, &context, &mut graph, &mut state)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -1238,9 +1237,9 @@ impl ReceiptStore {
         locked.require_bound()?;
         #[cfg(target_os = "linux")]
         {
-            return self.install_terminal_snapshot_candidate_locked(
+            self.install_terminal_snapshot_candidate_locked(
                 &locked, &context, snapshot, &operation, finish, &plan,
-            );
+            )
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -1350,7 +1349,7 @@ impl ReceiptStore {
         let context = project_operation_context(publication, credentials, activation)?;
         #[cfg(target_os = "linux")]
         {
-            return self.recover_terminal_closure_locked(publication, credentials, &context);
+            self.recover_terminal_closure_locked(publication, credentials, &context)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -2035,6 +2034,7 @@ impl ReceiptStore {
         )
     }
 
+    #[cfg(any(test, not(target_os = "linux")))]
     fn authorization_operations(
         &self,
         context: &OperationContextIdentity,
@@ -2137,6 +2137,7 @@ impl ReceiptStore {
         Ok(locked_operations)
     }
 
+    #[cfg(any(test, not(target_os = "linux")))]
     fn authorization_operation_ids(
         &self,
         authorization_id_sha256: &str,
@@ -2695,6 +2696,7 @@ impl ReceiptStore {
         })
     }
 
+    #[cfg(any(test, not(target_os = "linux")))]
     fn canonical_operation_head_set(
         &self,
         context: &OperationContextIdentity,
@@ -6459,6 +6461,7 @@ fn publish_locked_terminal_bytes(
     Ok(outcome)
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn freeze_operation_directories(
     authorization: &Path,
     head_set: &OperationHeadSetManifest,
@@ -6499,6 +6502,7 @@ fn require_execution_chain_identity(
     require_execution_receipt_context(&first.record, context)
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn require_execution_chain_identity_from_context(
     chain_directory: &Path,
     context: &OperationContextIdentity,
@@ -7730,6 +7734,7 @@ fn validate_receipt_directory_entries(directory: &Path) -> Result<(), ReceiptErr
     Ok(())
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn validate_operation_directory_entries(directory: &Path) -> Result<(), ReceiptError> {
     for entry in
         fs::read_dir(directory).map_err(|_| ReceiptError::Io("read_operation_directory"))?
@@ -7924,6 +7929,7 @@ fn has_future_receipt(directory: &Path, start: u64) -> Result<bool, ReceiptError
     Ok(false)
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn has_future_operation_receipt(directory: &Path, start: u64) -> Result<bool, ReceiptError> {
     for sequence in start..=MAX_OPERATION_RECEIPTS_PER_CHAIN {
         if directory

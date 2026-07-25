@@ -61,6 +61,7 @@ const REQUIRED_MODULE_PATHS = Object.freeze([
   "tests/relay-container-ring-transition-receipt.test.mjs",
   "tests/relay-container-ring-transition-release-source.test.mjs",
   "tests/relay-container-ring-transition-release.test.mjs",
+  "tests/ring-transition-runner-syscall-trace.test.mjs",
   "tools/collect_ring_transition_runner_release_source.mjs",
   "tools/relay_container_p5_evidence_contract.mjs",
   "tools/relay_container_ring_transition_contract.mjs",
@@ -70,6 +71,7 @@ const REQUIRED_MODULE_PATHS = Object.freeze([
   "tools/relay_container_ring_transition_release_contract.mjs",
   "tools/verify_relay_container_ring_transition_operation_anchor.mjs",
   "tools/verify_relay_container_ring_transition_release.mjs",
+  "tools/verify_ring_transition_runner_syscall_trace.mjs",
 ]);
 const TARGETS = Object.freeze([
   "x86_64-pc-windows-msvc",

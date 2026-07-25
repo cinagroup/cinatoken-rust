@@ -37,7 +37,7 @@ const ED25519_SPKI_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-pub const REQUIRED_MODULE_PATHS: [&str; 31] = [
+pub const REQUIRED_MODULE_PATHS: [&str; 33] = [
     ".gitattributes",
     "Cargo.lock",
     "Cargo.toml",
@@ -60,6 +60,7 @@ pub const REQUIRED_MODULE_PATHS: [&str; 31] = [
     "tests/relay-container-ring-transition-receipt.test.mjs",
     "tests/relay-container-ring-transition-release-source.test.mjs",
     "tests/relay-container-ring-transition-release.test.mjs",
+    "tests/ring-transition-runner-syscall-trace.test.mjs",
     "tools/collect_ring_transition_runner_release_source.mjs",
     "tools/relay_container_p5_evidence_contract.mjs",
     "tools/relay_container_ring_transition_contract.mjs",
@@ -69,6 +70,7 @@ pub const REQUIRED_MODULE_PATHS: [&str; 31] = [
     "tools/relay_container_ring_transition_release_contract.mjs",
     "tools/verify_relay_container_ring_transition_operation_anchor.mjs",
     "tools/verify_relay_container_ring_transition_release.mjs",
+    "tools/verify_ring_transition_runner_syscall_trace.mjs",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1305,20 +1307,20 @@ pub(crate) mod tests {
         );
         assert_eq!(
             verified.module_inventory_sha256,
-            "3f8053ba2d32f873f2ed97163cceb593c9061f6c640cadfa8a5f006d0d0a0871"
+            "43446c1d0001f5bb8ecccdb980c4aa6477216885e19b9fb394c30a46f160723c"
         );
         assert_eq!(
             verified.manifest_sha256,
-            "7206467d82e388eb4f66920a3485e24322727579b04fda2eca43928b0f366f4b"
+            "935dedc780721e3e6f77aa5333048d2eb0e50813192546af1b58b090de40300a"
         );
         assert_eq!(
             verified.packet_sha256,
-            "cc27a202b61400b788e324c0aea315a4acea6ff98f78c33ba70e8be86e5cd5e8"
+            "ed331ec8522c6786e1d3fbb94142935aa0931ab2b9fd72d74d3608b91417790c"
         );
         let packet: ReleasePacket = serde_json::from_slice(&fixture.packet_json).unwrap();
         assert_eq!(
             packet.envelope.signatures[0].sig,
-            "9gfuwYmBHH9fYPihHVa3t0fbr4MqpP8djZPbM/BCXYTMEQQa4oUtJs92ggWKoEdvHjTqDsQ2zoff2m8AhDi3CA=="
+            "HkInLhCEikf5hgLDQyjPtUn7YIRNNciMgOS2cWqCccl4KiDk6WP0KlRDWsto/KZv1CNNoDP+SukA8EDHdBWJCA=="
         );
     }
 

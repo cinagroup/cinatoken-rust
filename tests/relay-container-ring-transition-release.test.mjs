@@ -89,6 +89,7 @@ describe("Relay Container ring-transition runner release contract", () => {
       "tests/relay-container-ring-transition-receipt.test.mjs",
       "tests/relay-container-ring-transition-release-source.test.mjs",
       "tests/relay-container-ring-transition-release.test.mjs",
+      "tests/ring-transition-runner-syscall-trace.test.mjs",
       "tools/collect_ring_transition_runner_release_source.mjs",
       "tools/relay_container_p5_evidence_contract.mjs",
       "tools/relay_container_ring_transition_contract.mjs",
@@ -98,6 +99,7 @@ describe("Relay Container ring-transition runner release contract", () => {
       "tools/relay_container_ring_transition_release_contract.mjs",
       "tools/verify_relay_container_ring_transition_operation_anchor.mjs",
       "tools/verify_relay_container_ring_transition_release.mjs",
+      "tools/verify_ring_transition_runner_syscall_trace.mjs",
     ]);
 
     const source = await readFile(
@@ -144,7 +146,7 @@ describe("Relay Container ring-transition runner release contract", () => {
     });
     expect(result.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.moduleCount).toBe(31);
+    expect(result.moduleCount).toBe(33);
   });
 
   test("matches the deterministic Rust DSSE release vector", () => {
@@ -154,23 +156,23 @@ describe("Relay Container ring-transition runner release contract", () => {
       policySha256:
         "9b12c3dd50812180f2122311480876bd6508a81618082c615ca52d4701ec3856",
       inventorySha256:
-        "3f8053ba2d32f873f2ed97163cceb593c9061f6c640cadfa8a5f006d0d0a0871",
+        "43446c1d0001f5bb8ecccdb980c4aa6477216885e19b9fb394c30a46f160723c",
       manifestSha256:
-        "7206467d82e388eb4f66920a3485e24322727579b04fda2eca43928b0f366f4b",
+        "935dedc780721e3e6f77aa5333048d2eb0e50813192546af1b58b090de40300a",
       packetSha256:
-        "cc27a202b61400b788e324c0aea315a4acea6ff98f78c33ba70e8be86e5cd5e8",
+        "ed331ec8522c6786e1d3fbb94142935aa0931ab2b9fd72d74d3608b91417790c",
       signatureBase64:
-        "9gfuwYmBHH9fYPihHVa3t0fbr4MqpP8djZPbM/BCXYTMEQQa4oUtJs92ggWKoEdvHjTqDsQ2zoff2m8AhDi3CA==",
+        "HkInLhCEikf5hgLDQyjPtUn7YIRNNciMgOS2cWqCccl4KiDk6WP0KlRDWsto/KZv1CNNoDP+SukA8EDHdBWJCA==",
       publicationGenerationSha256:
-        "7511d83dba6cf5e66baf1de47dc72871fec75bdf1a417f25fdd319972fe6e10d",
+        "b0fa3998b6595daa352f4d89c576e5eb6ac7e86507a7feffde484995b24cc0a5",
       publicationManifestSha256:
-        "48be9fa670469d82181b85ea2b9686c28aab412c56cde1a7c6397ea338182199",
+        "505293e8bea755d6181526910ba18461009a80b447bff1c8a7e06a54391e63c9",
       publicationPacketSha256:
-        "10a01a83a625780fca28f7ebf54a5ab6af2f71d63d2ed7c5f6b2c140f40ade92",
+        "7fed5af2358b8d06d8e2b581d320a7916602eadce0e5fbc89999437bdeb87c99",
       publicationSignatureBase64:
-        "wcleQ3k/FyeiYvBk0LBg6jaqdRNVUwynI3fqLrwWrliwRWDtlJIYp0RK50EKdh/MiT98qwSu98P1arU/caslCQ==",
+        "Yc1xIuLz2swBfSs/bnL4W8qUEMcxlmVKJqoTKfExU742LnfOXukc6KPvvQUqL93yDwlAEze+rO/xh6aSSbsKAQ==",
       activationSha256:
-        "f704b3e95e7e979f75b821eb069f5f2262dde367bee8c4c2e22cd5eca95ef1e5",
+        "9645bf5b2173acc4b75726d853498155f1e427347cd0b7b720c8d8b1b7a0d9c3",
     });
   });
 
@@ -831,6 +833,10 @@ async function releaseFixture({
       "release-test-fixture",
     ],
     [
+      "tests/ring-transition-runner-syscall-trace.test.mjs",
+      "syscall-trace-test-fixture",
+    ],
+    [
       "tools/collect_ring_transition_runner_release_source.mjs",
       "release-source-collector-fixture",
     ],
@@ -865,6 +871,10 @@ async function releaseFixture({
     [
       "tools/verify_relay_container_ring_transition_release.mjs",
       "release-verifier-fixture",
+    ],
+    [
+      "tools/verify_ring_transition_runner_syscall_trace.mjs",
+      "syscall-trace-verifier-fixture",
     ],
   ]);
   const moduleInventory = {

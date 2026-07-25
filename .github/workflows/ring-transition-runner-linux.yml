@@ -70,11 +70,13 @@ jobs:
           set -euo pipefail
           command -v strace
           artifact_log="$(mktemp)"
-          trace_log="$(mktemp)"
+          trace_artifact_dir="${RUNNER_TEMP}/ring-transition-syscall-traces"
+          mkdir -p "${trace_artifact_dir}"
+          trace_log="${trace_artifact_dir}/terminal-recovery.strace"
           trace_root="$(mktemp -d)"
           prepare_ready="${trace_root}.prepared"
           recover_ready="${trace_root}.recovered"
-          full_trace_log="$(mktemp)"
+          full_trace_log="${trace_artifact_dir}/full-terminal-transaction.strace"
           full_trace_root="$(mktemp -d)"
           full_trace_ready="${full_trace_root}.ready"
           cleanup_trace_fixture() {
@@ -86,9 +88,7 @@ jobs:
               "${recover_ready}" \
               "${full_trace_root}" \
               "${full_trace_ready}" \
-              "${artifact_log}" \
-              "${trace_log}" \
-              "${full_trace_log}"
+              "${artifact_log}"
           }
           trap cleanup_trace_fixture EXIT
 
@@ -130,8 +130,8 @@ jobs:
             --nocapture
           test "$(cat "${prepare_ready}")" = "head-set-synced"
 
-          strace -f -qq -s 4096 \
-            -e trace=openat,openat2,mkdirat,renameat2,unlinkat,fchmodat,fchmod,fsync,fdatasync,flock \
+          strace -f -qq -yy -s 4096 \
+            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
             -o "${trace_log}" \
             env \
               CINATOKEN_RING_RECEIPT_TEST_ROLE=recover-head-set \
@@ -141,8 +141,8 @@ jobs:
               --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
               --nocapture
 
-          strace -f -qq -s 4096 \
-            -e trace=openat,openat2,mkdirat,renameat2,unlinkat,fchmodat,fchmod,fsync,fdatasync,flock \
+          strace -f -qq -yy -s 4096 \
+            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
             -o "${full_trace_log}" \
             env \
               CINATOKEN_RING_RECEIPT_TEST_ROLE=full-terminal-transaction \
@@ -152,113 +152,37 @@ jobs:
               --exact receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
               --nocapture
 
-          python3 - \
-            "${trace_log}" "terminal recovery" 2 false \
-            "${full_trace_log}" "full terminal transaction" 5 true <<'PY'
-          import re
-          import sys
-
-          arguments = sys.argv[1:]
-          if not arguments or len(arguments) % 4:
-              raise SystemExit("expected trace path, label, minimum locks, and mkdirat flag")
-
-          write_flags = ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND")
-
-          def successful_exclusive_lock(line):
-              return (
-                  "flock(" in line
-                  and "LOCK_EX" in line
-                  and re.search(r"=\s*0\s*$", line)
-              )
-
-          for offset in range(0, len(arguments), 4):
-              trace_path, label, minimum_locks_text, require_mkdirat_text = arguments[
-                  offset : offset + 4
-              ]
-              minimum_locks = int(minimum_locks_text)
-              require_mkdirat = require_mkdirat_text == "true"
-              with open(trace_path, "r", encoding="utf-8") as handle:
-                  lines = handle.readlines()
-              first_lock = next(
-                  (
-                      index
-                      for index, line in enumerate(lines)
-                      if successful_exclusive_lock(line)
-                  ),
-                  None,
-              )
-              if first_lock is None:
-                  raise SystemExit(
-                      f"{label} trace contains no successful exclusive flock"
-                  )
-              locked = lines[first_lock:]
-              violations = []
-              for line in locked:
-                  if "AT_FDCWD" not in line:
-                      continue
-                  if "openat(AT_FDCWD" in line and any(
-                      flag in line for flag in write_flags
-                  ):
-                      violations.append(line.rstrip())
-                  elif any(
-                      syscall in line
-                      for syscall in (
-                          "openat2(AT_FDCWD",
-                          "mkdirat(AT_FDCWD",
-                          "renameat2(",
-                          "unlinkat(AT_FDCWD",
-                          "fchmodat(AT_FDCWD",
-                      )
-                  ):
-                      violations.append(line.rstrip())
-              if violations:
-                  raise SystemExit(
-                      f"locked {label} used AT_FDCWD mutation:\n"
-                      + "\n".join(violations)
-                  )
-
-              checks = {
-                  f"exclusive_flocks_at_least_{minimum_locks}": sum(
-                      1 for line in locked if successful_exclusive_lock(line)
-                  )
-                  >= minimum_locks,
-                  "dirfd_openat2": any(
-                      re.search(r"openat2\(\d+,", line) and "AT_FDCWD" not in line
-                      for line in locked
-                  ),
-                  "dirfd_renameat2": any(
-                      re.search(r"renameat2\(\d+,", line) and "AT_FDCWD" not in line
-                      for line in locked
-                  ),
-                  "directory_sync": any(
-                      "fsync(" in line or "fdatasync(" in line for line in locked
-                  ),
-                  "descriptor_chmod": any("fchmod(" in line for line in locked),
-              }
-              if require_mkdirat:
-                  checks["dirfd_mkdirat"] = any(
-                      re.search(r"mkdirat\(\d+,", line) and "AT_FDCWD" not in line
-                      for line in locked
-                  )
-              missing = [name for name, present in checks.items() if not present]
-              if missing:
-                  raise SystemExit(
-                      f"{label} trace missing required evidence: {missing}"
-                  )
-              print(f"{label} syscall trace: PASS")
-              for name in checks:
-                  print(f"- {name}: PASS")
-          PY
+          node tools/verify_ring_transition_runner_syscall_trace.mjs \
+            --trace "${trace_log}" \
+            --fixture-root "${trace_root}" \
+            --label "terminal recovery" \
+            --expected-locks 4
+          node tools/verify_ring_transition_runner_syscall_trace.mjs \
+            --trace "${full_trace_log}" \
+            --fixture-root "${full_trace_root}" \
+            --label "full terminal transaction" \
+            --expected-locks 10 \
+            --require-mkdirat
 
           {
             echo "### Terminal descriptor syscall traces"
             echo
             echo "- recovery post-lock AT_FDCWD mutation: none"
             echo "- full-transaction post-lock AT_FDCWD mutation: none"
-            echo "- retained-dirfd openat2/renameat2: observed in both traces"
-            echo "- full-transaction retained-dirfd mkdirat: observed"
-            echo "- fsync/fdatasync and descriptor chmod: observed in both traces"
+            echo "- exact paired exclusive locks: recovery 4; full transaction 10"
+            echo "- successful retained-dirfd openat2/renameat2: observed in both traces"
+            echo "- successful full-transaction retained-dirfd mkdirat: observed"
+            echo "- successful directory fsync/fdatasync and descriptor chmod: observed"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Retain failed syscall traces
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ring-transition-syscall-traces-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ring-transition-syscall-traces
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Reject runner warnings
         shell: bash

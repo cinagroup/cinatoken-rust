@@ -82,7 +82,7 @@ describe("ring-transition runner release source collector", () => {
     expect(first.moduleInventory.files.map((record) => record.path)).toEqual(
       [...first.moduleInventory.files.map((record) => record.path)].sort(),
     );
-    expect(first.moduleCount).toBe(31);
+    expect(first.moduleCount).toBe(33);
     expect(first.moduleInventory.files).toContainEqual({
       path: "crates/ring-transition-runner/src/execution_activation.rs",
       byteLength: Buffer.byteLength(
@@ -189,6 +189,20 @@ describe("ring-transition runner release source collector", () => {
       "tools/relay_container_ring_transition_operation_anchor_contract.mjs",
       "tools/verify_relay_container_ring_transition_operation_anchor.mjs",
       "tests/relay-container-ring-transition-operation-anchor.test.mjs",
+    ]) {
+      const repository = await fixtureRepository({ omit });
+      await expect(
+        collectRingTransitionRunnerReleaseSource({
+          repositoryRoot: repository,
+        }),
+      ).rejects.toThrow(/required module missing/);
+    }
+  });
+
+  test("rejects a missing syscall trace verifier or verifier test", async () => {
+    for (const omit of [
+      "tools/verify_ring_transition_runner_syscall_trace.mjs",
+      "tests/ring-transition-runner-syscall-trace.test.mjs",
     ]) {
       const repository = await fixtureRepository({ omit });
       await expect(
@@ -328,6 +342,10 @@ async function fixtureRepository({ omit = null } = {}) {
       "export const fixture = true;\n",
     ],
     [
+      "tests/ring-transition-runner-syscall-trace.test.mjs",
+      "export const syscallTraceFixture = true;\n",
+    ],
+    [
       "tools/collect_ring_transition_runner_release_source.mjs",
       "export const collector = true;\n",
     ],
@@ -362,6 +380,10 @@ async function fixtureRepository({ omit = null } = {}) {
     [
       "tools/verify_relay_container_ring_transition_release.mjs",
       "export const verifier = true;\n",
+    ],
+    [
+      "tools/verify_ring_transition_runner_syscall_trace.mjs",
+      "export const syscallTraceVerifier = true;\n",
     ],
   ]);
   if (omit !== null) files.delete(omit);

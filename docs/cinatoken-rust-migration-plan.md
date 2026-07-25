@@ -20013,3 +20013,76 @@ release receipts pending DSSE/WORM anchoring.
 This increment performs no Cloudflare mutation, reads no deployment
 credential and moves no traffic. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 22.289 K7 Authorization Lock Domain Pinning (2026-07-25)
+
+The Linux runner now carries the authorization transaction through a typed
+`LockedAuthorization` instead of a bare authorization-directory file. Lock
+acquisition opens and validates the fixed `operation-receipts` parent, takes
+an exclusive parent `flock`, rechecks the parent pathname identity, opens the
+authorization child relative to that retained parent descriptor with
+`openat(O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)`, and takes the authorization
+`flock`. The retained parent and authorization descriptors, paths, names and
+stable dev/inode/UID/GID identities form one explicit lock capability.
+
+The parent lock is intentional control-plane serialization. It prevents two
+cooperating runner processes from acquiring different authorization inodes
+when a pathname is replaced between lookup and lock. It is released before
+network I/O and therefore does not serialize relay requests. The narrower
+authorization lock still owns reserve, finish, recovery and terminal-closure
+linearization.
+
+Every operation that may return a fresh send capability or terminal success
+now calls `require_bound()` while holding that capability. The check requires:
+
+- the fixed `operation-receipts` pathname to resolve to the retained parent
+  dev/inode/UID/GID identity;
+- the authorization entry opened relative to the retained parent descriptor
+  to resolve to the retained authorization identity; and
+- the absolute authorization pathname to resolve to that same identity.
+
+Reserve rechecks attachment before capacity mutation, after capacity
+publication, after operation-directory creation and before returning either a
+fresh or existing operation. Finish, ambiguous recovery and terminal closure
+check before and after their durable mutations. `finish_operation_locked()` and
+`install_terminal_closure_locked()` require `&LockedAuthorization`, making the
+lock capability visible in the internal API rather than relying on call-site
+convention.
+
+Two additional Linux-only tests replace the authorization pathname after lock
+acquisition and verify fail-closed binding, and independently prove that a
+second parent `flock` cannot be acquired while the capability is held. The
+frozen native candidate is
+`63df95c6f8390579e00b2788378abdb89eb5f3c5`. GitHub Actions
+[run 30142822377](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142822377)
+and
+[job 89639172198](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142822377/job/89639172198)
+passed formatting, all 129 Linux library tests and warning-free Clippy. The
+local aggregate gate passed 124 Rust library tests, 3 binary/CLI tests and 61
+Bun tests with 242 expectations.
+
+A clean commit-object collection produced Git tree
+`b73035bebda0b3f713243cf1353cef09f3fd0c80`, source archive SHA-256
+`05b3eb98b90a9f90f201f4ca0153b8c59767223b165894714d7c3545b89de112`,
+31 required modules totaling 1509783 bytes, and module-inventory SHA-256
+`8fd60cc8c0849f89ace289d6eb6b099f11f8a061d1226708185e946aa872d971`.
+The preceding
+[run 30142666351](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142666351)
+already passed all 129 Linux tests but failed the warning gate; the dead
+Linux-only helper and redundant errno branch were removed before the frozen
+candidate passed.
+
+This closes the cooperative split-lock window at the immediate
+`operation-receipts`/authorization boundary. It does not yet prove a complete
+trusted descriptor graph. Root, execution-chain, operation subdirectories and
+closure objects still need fd-relative scans and
+`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV)` containment.
+A same-UID hostile local writer can still force quarantine or ambiguous local
+writes in remaining path-based operations; it must never be treated as a
+successful send or closure. True multi-process rename/kill campaigns,
+syscall-trace enforcement, ACL/backup/restore, ext4/XFS power-loss evidence,
+independent DSSE signing and provider WORM readback remain K7 blockers.
+
+No Cloudflare mutation, credential read, customer traffic movement or Go/VPS
+drain occurred. Go/VPS remains the traffic, scheduler and financial authority.
+Production remains **NO-GO**.

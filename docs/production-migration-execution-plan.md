@@ -3124,3 +3124,40 @@ not guaranteed to run in the same location. Consequently:
 No Cloudflare mutation or credential use is authorized by this gate. Go/VPS
 remains traffic, scheduler and financial authority; production remains
 **NO-GO**.
+
+## 2026-07-25 K7 Authorization Lock Capability Gate
+
+The next Linux increment replaces the implicit authorization lock convention
+with a typed `LockedAuthorization`. The capability retains the opened
+`operation-receipts` parent and authorization directory descriptors, their
+stable identities and their exclusive `flock` ownership. The authorization
+directory is opened relative to the retained parent, not by independently
+resolving a second absolute path.
+
+Acquisition takes the parent lock first and the authorization lock second.
+This deliberately serializes the low-volume control-plane mutation boundary
+so two cooperative runner processes cannot split across old and replacement
+authorization inodes. Locks are released before network I/O. Reserve, finish,
+local recovery and terminal closure require the capability and revalidate both
+path attachments before granting fresh send authority or terminal success.
+
+Commit `63df95c6f8390579e00b2788378abdb89eb5f3c5` is the immutable native
+candidate for this gate.
+[Run 30142822377](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142822377)
+passed formatting, 129 native Linux tests and warning-free Clippy. The local
+aggregate runner gate passed 124 Rust library tests, 3 binary/CLI tests and 61
+Bun tests with 242 expectations. Clean source evidence is Git tree
+`b73035bebda0b3f713243cf1353cef09f3fd0c80`, source archive SHA-256
+`05b3eb98b90a9f90f201f4ca0153b8c59767223b165894714d7c3545b89de112`
+and module-inventory SHA-256
+`8fd60cc8c0849f89ace289d6eb6b099f11f8a061d1226708185e946aa872d971`
+for 31 modules and 1509783 bytes.
+
+This gate remains partial. The implementation must next retain the trusted
+root, execution-chain, operation and closure descriptors; convert post-lock
+tree scans and child operations to reviewed `openat2`/`*at` calls; and prove
+zero unapproved `AT_FDCWD` path resolution through syscall tracing. The
+promotion campaign still requires real two-process replacement and kill
+injection, exact ACLs, backup/restore, ext4/XFS power-loss, external DSSE/WORM
+closure, isolated Cloudflare lifecycle tests and G1-G8 approval for one
+candidate. Go/VPS remains authoritative and production remains **NO-GO**.

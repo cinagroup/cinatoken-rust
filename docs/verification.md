@@ -9339,3 +9339,61 @@ This gate proves same-parent publication continuity only. It does not yet
 prove a pinned authorization/root/closure descriptor graph, split-lock
 exclusion, zero `AT_FDCWD` after `flock`, multi-process recovery or power-loss
 durability. K7, external anchoring and production remain **NO-GO**.
+
+## 2026-07-25 Linux Authorization Lock-Domain Verification
+
+The second native Linux increment introduces a typed `LockedAuthorization`
+that retains the opened `operation-receipts` parent and authorization
+directory descriptors, their stable filesystem identities and both exclusive
+locks. The authorization child is opened relative to the retained parent.
+Binding checks compare the retained objects with both parent-relative and
+absolute pathname resolution before fresh send authority or terminal success
+can escape.
+
+Local commands:
+
+```powershell
+cargo fmt --all -- --check
+cargo test --locked -p cinatoken-ring-transition-runner --lib
+cargo clippy --locked -p cinatoken-ring-transition-runner --all-targets -- -D warnings
+npx.cmd --yes bun run check:ring-transition-runner
+```
+
+Observed local results:
+
+- formatting and warning-free Clippy passed;
+- 124 Rust library tests passed on Windows;
+- 3 binary/CLI tests passed; and
+- 61 Bun contract tests passed with 242 expectations.
+
+Native Linux evidence is frozen at commit
+`63df95c6f8390579e00b2788378abdb89eb5f3c5`:
+
+- [run 30142822377](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142822377)
+  and
+  [job 89639172198](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142822377/job/89639172198)
+  completed successfully;
+- formatting, 129 Linux library tests and warning-free Clippy passed;
+- Linux tests include authorization-path replacement fail-closed behavior and
+  competing parent-lock exclusion; and
+- clean commit-object collection produced Git tree
+  `b73035bebda0b3f713243cf1353cef09f3fd0c80`, a 35676160-byte source
+  archive with SHA-256
+  `05b3eb98b90a9f90f201f4ca0153b8c59767223b165894714d7c3545b89de112`,
+  and 31 required modules totaling 1509783 bytes with inventory SHA-256
+  `8fd60cc8c0849f89ace289d6eb6b099f11f8a061d1226708185e946aa872d971`.
+
+[Run 30142666351](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142666351)
+is retained as the intermediate failure: all 129 Linux tests passed, but
+Clippy rejected the candidate. Removing a dead Linux-only identity helper and
+the redundant `EWOULDBLOCK`/`EAGAIN` branch produced the frozen passing
+candidate; the workflow now emits bounded Clippy diagnostics on future
+failures.
+
+This evidence proves cooperative parent/authorization lock-domain continuity,
+not complete hostile-path containment. Root, execution-chain, operation and
+closure descriptors are not yet one retained fd graph; `openat2` containment,
+zero-`AT_FDCWD` syscall tracing, true multi-process kill/rename campaigns,
+ACL/backup/restore, ext4/XFS power-loss and external DSSE/WORM evidence remain
+open. No Cloudflare credential or mutation was used. Go/VPS remains
+authoritative and production remains **NO-GO**.

@@ -1203,3 +1203,45 @@ release evidence belongs in the reviewed external Linux store and future
 DSSE/WORM anchor. See the official
 [Container lifecycle](https://developers.cloudflare.com/containers/platform-details/architecture/)
 boundary.
+
+## Linux Authorization Lock Capability Increment
+
+Linux authorization transactions now use `LockedAuthorization`, which owns
+the retained `operation-receipts` parent descriptor, the authorization
+descriptor opened relative to that parent, stable filesystem identities and
+both exclusive `flock` domains. Acquisition order is fixed:
+
+```text
+open and validate operation-receipts parent
+-> flock parent exclusively
+-> revalidate parent pathname attachment
+-> open authorization child with openat(O_DIRECTORY|O_NOFOLLOW)
+-> validate and flock authorization exclusively
+-> require parent-relative and absolute authorization identity agreement
+```
+
+The parent lock prevents cooperating processes from splitting onto old and
+replacement authorization inodes. It protects only local control-plane
+publication and is released before any HTTP exchange. Reserve, finish,
+unfinished-operation recovery and terminal closure receive the typed
+capability and call `require_bound()` before and after the durable points that
+could otherwise lead to fresh send authority or terminal success.
+
+Linux-only tests now also replace the authorization pathname after lock
+acquisition and require fail-closed rejection, and prove that a competing
+parent `flock` remains blocked while `LockedAuthorization` is alive. Commit
+`63df95c6f8390579e00b2788378abdb89eb5f3c5` passed
+[Ubuntu run 30142822377](https://github.com/cinagroup/cinatoken-rust/actions/runs/30142822377)
+with formatting, 129 Linux library tests and warning-free Clippy. The clean
+31-module inventory contains 1509783 bytes and has SHA-256
+`8fd60cc8c0849f89ace289d6eb6b099f11f8a061d1226708185e946aa872d971`.
+
+This is not the final pathname boundary. Root, execution-chain, per-operation
+and closure traversal still contains path-based work that must move behind
+retained descriptors and reviewed `openat2` containment. A hostile same-UID
+writer can still force fail-closed quarantine or ambiguous residue at those
+remaining sites. Multi-process process-death/rename campaigns, syscall-trace
+proof, ACLs, backup/restore, ext4/XFS power-loss and external DSSE/WORM
+anchoring remain required. The external Linux runner remains the receipt
+owner; Cloudflare Container disk remains replaceable scratch. Production
+remains **NO-GO**.

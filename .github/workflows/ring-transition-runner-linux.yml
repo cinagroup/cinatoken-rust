@@ -1,0 +1,50 @@
+name: ring-transition-runner-linux
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ring-transition-runner-linux.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/ring-transition-runner/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ring-transition-runner-linux.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/ring-transition-runner/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ring-transition-runner-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  receipt-filesystem:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out frozen source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Record Linux and Rust identities
+        run: |
+          uname -a
+          rustc -Vv
+          cargo -V
+
+      - name: Verify runner formatting
+        run: cargo fmt --all -- --check
+
+      - name: Verify Linux receipt filesystem behavior
+        run: cargo test --locked -p cinatoken-ring-transition-runner --lib
+
+      - name: Reject runner warnings
+        run: cargo clippy --locked -p cinatoken-ring-transition-runner --all-targets -- -D warnings

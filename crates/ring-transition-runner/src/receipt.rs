@@ -624,6 +624,13 @@ pub enum AppendOutcome {
     ExistingExact,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum ExactPublicationOutcome {
+    Created,
+    ExistingExact,
+    ExistingDifferent(Vec<u8>),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstalledReceiptChain {
     pub authorization_id_sha256: String,
@@ -3597,36 +3604,24 @@ fn append_canonical_receipt(
         return Err(ReceiptError::Gap);
     }
 
-    let stage = chain_directory.join(staging_file_name(receipt.record.sequence)?);
-    write_staging(&stage, receipt.bytes())?;
-    if publish_noreplace(&stage, &target).is_err() {
-        let _ = fs::remove_file(&stage);
-        match target.try_exists() {
-            Ok(true) => {
-                let existing = read_receipt(&target, &canonical_parent)?;
-                if existing.bytes == receipt.bytes {
-                    sync_directory(chain_directory, receipt.sha256())?;
-                    return Ok(AppendOutcome::ExistingExact);
-                }
-                return Err(ReceiptError::Conflict);
+    match publish_exact_bytes(
+        chain_directory,
+        &target,
+        receipt.record.sequence,
+        receipt.bytes(),
+        MAX_RECEIPT_BYTES,
+        "execution_receipt",
+    )? {
+        ExactPublicationOutcome::Created => {
+            if receipt.record.event.is_terminal_seal() {
+                set_chain_read_only(chain_directory)?;
+                sync_directory(chain_directory, receipt.sha256())?;
             }
-            Ok(false) | Err(_) => {
-                return Err(ReceiptError::DurabilityUnknown {
-                    expected_sha256: receipt.sha256().to_owned(),
-                });
-            }
+            Ok(AppendOutcome::Created)
         }
+        ExactPublicationOutcome::ExistingExact => Ok(AppendOutcome::ExistingExact),
+        ExactPublicationOutcome::ExistingDifferent(_) => Err(ReceiptError::Conflict),
     }
-    sync_directory(chain_directory, receipt.sha256())?;
-    let installed = read_receipt(&target, &canonical_parent)?;
-    if installed.bytes != receipt.bytes || installed.sha256 != receipt.sha256 {
-        return Err(ReceiptError::Conflict);
-    }
-    if receipt.record.event.is_terminal_seal() {
-        set_chain_read_only(chain_directory)?;
-        sync_directory(chain_directory, receipt.sha256())?;
-    }
-    Ok(AppendOutcome::Created)
 }
 
 fn append_canonical_operation_receipt(
@@ -3672,36 +3667,24 @@ fn append_canonical_operation_receipt(
         return Err(ReceiptError::Gap);
     }
 
-    let stage = operation_directory.join(staging_file_name(receipt.record.sequence)?);
-    write_staging(&stage, &receipt.bytes)?;
-    if publish_noreplace(&stage, &target).is_err() {
-        let _ = fs::remove_file(&stage);
-        match target.try_exists() {
-            Ok(true) => {
-                let existing = read_operation_receipt(&target, &canonical_parent)?;
-                if existing.bytes == receipt.bytes {
-                    sync_directory(operation_directory, &receipt.sha256)?;
-                    return Ok(AppendOutcome::ExistingExact);
-                }
-                return Err(ReceiptError::Conflict);
+    match publish_exact_bytes(
+        operation_directory,
+        &target,
+        receipt.record.sequence,
+        &receipt.bytes,
+        MAX_RECEIPT_BYTES,
+        "operation_receipt",
+    )? {
+        ExactPublicationOutcome::Created => {
+            if receipt.record.sequence == MAX_OPERATION_RECEIPTS_PER_CHAIN {
+                set_chain_read_only(operation_directory)?;
+                sync_directory(operation_directory, &receipt.sha256)?;
             }
-            Ok(false) | Err(_) => {
-                return Err(ReceiptError::DurabilityUnknown {
-                    expected_sha256: receipt.sha256.clone(),
-                });
-            }
+            Ok(AppendOutcome::Created)
         }
+        ExactPublicationOutcome::ExistingExact => Ok(AppendOutcome::ExistingExact),
+        ExactPublicationOutcome::ExistingDifferent(_) => Err(ReceiptError::Conflict),
     }
-    sync_directory(operation_directory, &receipt.sha256)?;
-    let installed = read_operation_receipt(&target, &canonical_parent)?;
-    if installed.bytes != receipt.bytes || installed.sha256 != receipt.sha256 {
-        return Err(ReceiptError::Conflict);
-    }
-    if receipt.record.sequence == MAX_OPERATION_RECEIPTS_PER_CHAIN {
-        set_chain_read_only(operation_directory)?;
-        sync_directory(operation_directory, &receipt.sha256)?;
-    }
-    Ok(AppendOutcome::Created)
 }
 
 fn verify_chain_directory(
@@ -3961,36 +3944,27 @@ fn reserve_operation_capacity(
             }
             continue;
         }
-        let stage = authorization_directory
-            .join(staging_file_name(u64::try_from(slot + 1).map_err(
-                |_| ReceiptError::InvalidField("operation_capacity_slot"),
-            )?)?);
-        write_staging(&stage, &bytes)?;
-        if publish_noreplace(&stage, &path).is_err() {
-            let _ = fs::remove_file(&stage);
-            match path.try_exists() {
-                Ok(true) => {
-                    let existing =
-                        read_operation_capacity_reservation(&path, authorization_directory)?;
-                    if existing.operation_id_sha256 == operation_id_sha256 {
-                        sync_directory(authorization_directory, operation_id_sha256)?;
-                        return Ok(());
-                    }
-                    continue;
+        let staging_sequence = u64::try_from(slot + 1)
+            .map_err(|_| ReceiptError::InvalidField("operation_capacity_slot"))?;
+        match publish_exact_bytes(
+            authorization_directory,
+            &path,
+            staging_sequence,
+            &bytes,
+            MAX_RECEIPT_BYTES,
+            "operation_capacity_reservation",
+        )? {
+            ExactPublicationOutcome::Created | ExactPublicationOutcome::ExistingExact => {
+                return Ok(());
+            }
+            ExactPublicationOutcome::ExistingDifferent(existing_bytes) => {
+                let existing = parse_operation_capacity_reservation_bytes(&existing_bytes)?;
+                if existing.operation_id_sha256 == operation_id_sha256 {
+                    return Ok(());
                 }
-                Ok(false) | Err(_) => {
-                    return Err(ReceiptError::DurabilityUnknown {
-                        expected_sha256: sha256_hex(&bytes),
-                    });
-                }
+                continue;
             }
         }
-        sync_directory(authorization_directory, operation_id_sha256)?;
-        let installed = read_operation_capacity_reservation(&path, authorization_directory)?;
-        if installed != record {
-            return Err(ReceiptError::Conflict);
-        }
-        return Ok(());
     }
     Err(ReceiptError::InvalidField("operation_chain_count"))
 }
@@ -4006,8 +3980,14 @@ fn read_operation_capacity_reservation(
         "operation_capacity_reservation",
     )
     .map_err(map_release_file_error)?;
+    parse_operation_capacity_reservation_bytes(&bytes)
+}
+
+fn parse_operation_capacity_reservation_bytes(
+    bytes: &[u8],
+) -> Result<OperationCapacityReservation, ReceiptError> {
     let record: OperationCapacityReservation =
-        parse_canonical_json(&bytes, MAX_RECEIPT_BYTES, "operation_capacity_reservation").map_err(
+        parse_canonical_json(bytes, MAX_RECEIPT_BYTES, "operation_capacity_reservation").map_err(
             |error| match error {
                 ReleaseVerificationError::InvalidJson(_) => ReceiptError::InvalidJson,
                 ReleaseVerificationError::NonCanonicalJson(_) => ReceiptError::NonCanonicalJson,
@@ -4364,47 +4344,18 @@ fn publish_canonical_bytes_with_limit(
     if bytes.is_empty() || bytes.len() > maximum_bytes {
         return Err(ReceiptError::InvalidField("canonical_publication_bytes"));
     }
-    let canonical_parent =
-        fs::canonicalize(parent).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
-    if target.try_exists().map_err(|_| ReceiptError::Io(label))? {
-        let existing = read_stable_regular_file(target, maximum_bytes, &canonical_parent, label)
-            .map_err(map_release_file_error)?;
-        if existing == bytes {
-            sync_directory(parent, &sha256_hex(bytes))?;
-            return Ok(AppendOutcome::ExistingExact);
-        }
-        return Err(ReceiptError::Conflict);
+    match publish_exact_bytes(
+        parent,
+        target,
+        staging_sequence,
+        bytes,
+        maximum_bytes,
+        label,
+    )? {
+        ExactPublicationOutcome::Created => Ok(AppendOutcome::Created),
+        ExactPublicationOutcome::ExistingExact => Ok(AppendOutcome::ExistingExact),
+        ExactPublicationOutcome::ExistingDifferent(_) => Err(ReceiptError::Conflict),
     }
-    let stage = parent.join(staging_file_name(staging_sequence)?);
-    write_staging_with_limit(&stage, bytes, maximum_bytes)?;
-    if publish_noreplace(&stage, target).is_err() {
-        let _ = fs::remove_file(&stage);
-        match target.try_exists() {
-            Ok(true) => {
-                let existing =
-                    read_stable_regular_file(target, maximum_bytes, &canonical_parent, label)
-                        .map_err(map_release_file_error)?;
-                if existing == bytes {
-                    sync_directory(parent, &sha256_hex(bytes))?;
-                    return Ok(AppendOutcome::ExistingExact);
-                }
-                return Err(ReceiptError::Conflict);
-            }
-            Ok(false) | Err(_) => {
-                return Err(ReceiptError::DurabilityUnknown {
-                    expected_sha256: sha256_hex(bytes),
-                });
-            }
-        }
-    }
-    let sha256 = sha256_hex(bytes);
-    sync_directory(parent, &sha256)?;
-    let installed = read_stable_regular_file(target, maximum_bytes, &canonical_parent, label)
-        .map_err(map_release_file_error)?;
-    if installed != bytes {
-        return Err(ReceiptError::Conflict);
-    }
-    Ok(AppendOutcome::Created)
 }
 
 fn freeze_operation_directories(
@@ -4550,18 +4501,351 @@ fn require_fixed_directory(
 }
 
 #[cfg(target_os = "linux")]
+fn publish_exact_bytes(
+    parent: &Path,
+    target: &Path,
+    staging_sequence: u64,
+    bytes: &[u8],
+    maximum_bytes: usize,
+    label: &'static str,
+) -> Result<ExactPublicationOutcome, ReceiptError> {
+    publish_exact_bytes_linux_with_hook(
+        parent,
+        target,
+        staging_sequence,
+        bytes,
+        maximum_bytes,
+        label,
+        || {},
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn publish_exact_bytes_linux_with_hook<F>(
+    parent: &Path,
+    target: &Path,
+    staging_sequence: u64,
+    bytes: &[u8],
+    maximum_bytes: usize,
+    label: &'static str,
+    after_staging_sync: F,
+) -> Result<ExactPublicationOutcome, ReceiptError>
+where
+    F: FnOnce(),
+{
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    if bytes.is_empty() || bytes.len() > maximum_bytes || target.parent() != Some(parent) {
+        return Err(ReceiptError::InvalidField("canonical_publication_bytes"));
+    }
+    let target_name = target
+        .file_name()
+        .ok_or(ReceiptError::UnsafeFilesystem(label))?;
+    let target_name =
+        CString::new(target_name.as_bytes()).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    let directory =
+        open_linux_directory(parent).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    let directory_identity = linux_directory_identity(&directory, label)?;
+    if let Some((existing, _)) =
+        read_stable_linux_regular_at(&directory, &target_name, maximum_bytes, label)?
+    {
+        sync_linux_directory(&directory, &sha256_hex(bytes))?;
+        require_linux_directory_path_identity(parent, &directory_identity, label)?;
+        return Ok(if existing == bytes {
+            ExactPublicationOutcome::ExistingExact
+        } else {
+            ExactPublicationOutcome::ExistingDifferent(existing)
+        });
+    }
+
+    let stage_name = staging_file_name(staging_sequence)?;
+    let stage_name = CString::new(stage_name.as_bytes())
+        .map_err(|_| ReceiptError::UnsafeFilesystem("staging_name"))?;
+    let stage = create_linux_staging_at(&directory, &stage_name)?;
+    let stage_writer = stage
+        .try_clone()
+        .map_err(|_| ReceiptError::Io("clone_staging"))?;
+    write_staging_file(stage_writer, bytes, maximum_bytes)?;
+    let stage_identity = linux_regular_file_identity(&stage, "staging_file")?;
+    after_staging_sync();
+
+    let rename_result = unsafe {
+        libc::renameat2(
+            directory.as_raw_fd(),
+            stage_name.as_ptr(),
+            directory.as_raw_fd(),
+            target_name.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if rename_result != 0 {
+        let _ = unsafe { libc::unlinkat(directory.as_raw_fd(), stage_name.as_ptr(), 0) };
+        sync_linux_directory(&directory, &sha256_hex(bytes))?;
+        require_linux_directory_path_identity(parent, &directory_identity, label)?;
+        if let Some((existing, _)) =
+            read_stable_linux_regular_at(&directory, &target_name, maximum_bytes, label)?
+        {
+            return Ok(if existing == bytes {
+                ExactPublicationOutcome::ExistingExact
+            } else {
+                ExactPublicationOutcome::ExistingDifferent(existing)
+            });
+        }
+        return Err(ReceiptError::DurabilityUnknown {
+            expected_sha256: sha256_hex(bytes),
+        });
+    }
+
+    sync_linux_directory(&directory, &sha256_hex(bytes))?;
+    let (installed, installed_identity) =
+        read_stable_linux_regular_at(&directory, &target_name, maximum_bytes, label)?.ok_or_else(
+            || ReceiptError::DurabilityUnknown {
+                expected_sha256: sha256_hex(bytes),
+            },
+        )?;
+    if installed != bytes
+        || installed_identity != stage_identity
+        || linux_directory_identity(&directory, label)? != directory_identity
+    {
+        return Err(ReceiptError::Conflict);
+    }
+    require_linux_directory_path_identity(parent, &directory_identity, label)?;
+    Ok(ExactPublicationOutcome::Created)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn publish_exact_bytes(
+    parent: &Path,
+    target: &Path,
+    staging_sequence: u64,
+    bytes: &[u8],
+    maximum_bytes: usize,
+    label: &'static str,
+) -> Result<ExactPublicationOutcome, ReceiptError> {
+    if bytes.is_empty() || bytes.len() > maximum_bytes || target.parent() != Some(parent) {
+        return Err(ReceiptError::InvalidField("canonical_publication_bytes"));
+    }
+    let canonical_parent =
+        fs::canonicalize(parent).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    if target.try_exists().map_err(|_| ReceiptError::Io(label))? {
+        let existing = read_stable_regular_file(target, maximum_bytes, &canonical_parent, label)
+            .map_err(map_release_file_error)?;
+        sync_directory(parent, &sha256_hex(bytes))?;
+        return Ok(if existing == bytes {
+            ExactPublicationOutcome::ExistingExact
+        } else {
+            ExactPublicationOutcome::ExistingDifferent(existing)
+        });
+    }
+    let stage = parent.join(staging_file_name(staging_sequence)?);
+    write_staging_with_limit(&stage, bytes, maximum_bytes)?;
+    if publish_noreplace(&stage, target).is_err() {
+        let _ = fs::remove_file(&stage);
+        match target.try_exists() {
+            Ok(true) => {
+                let existing =
+                    read_stable_regular_file(target, maximum_bytes, &canonical_parent, label)
+                        .map_err(map_release_file_error)?;
+                sync_directory(parent, &sha256_hex(bytes))?;
+                return Ok(if existing == bytes {
+                    ExactPublicationOutcome::ExistingExact
+                } else {
+                    ExactPublicationOutcome::ExistingDifferent(existing)
+                });
+            }
+            Ok(false) | Err(_) => {
+                return Err(ReceiptError::DurabilityUnknown {
+                    expected_sha256: sha256_hex(bytes),
+                });
+            }
+        }
+    }
+    let sha256 = sha256_hex(bytes);
+    sync_directory(parent, &sha256)?;
+    let installed = read_stable_regular_file(target, maximum_bytes, &canonical_parent, label)
+        .map_err(map_release_file_error)?;
+    if installed != bytes {
+        return Err(ReceiptError::Conflict);
+    }
+    Ok(ExactPublicationOutcome::Created)
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LinuxFilesystemIdentity {
+    device: u64,
+    inode: u64,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    links: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn linux_file_identity(file: &fs::File) -> Result<(libc::stat, LinuxFilesystemIdentity), ()> {
+    use std::mem::MaybeUninit;
+    use std::os::fd::AsRawFd;
+
+    let mut stat = MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(());
+    }
+    let stat = unsafe { stat.assume_init() };
+    let identity = LinuxFilesystemIdentity {
+        device: stat.st_dev,
+        inode: stat.st_ino,
+        uid: stat.st_uid,
+        gid: stat.st_gid,
+        mode: stat.st_mode,
+        links: stat.st_nlink,
+    };
+    Ok((stat, identity))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_directory_identity(
+    directory: &fs::File,
+    label: &'static str,
+) -> Result<LinuxFilesystemIdentity, ReceiptError> {
+    let (stat, identity) =
+        linux_file_identity(directory).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    if stat.st_mode & libc::S_IFMT != libc::S_IFDIR
+        || stat.st_uid != unsafe { libc::geteuid() }
+        || stat.st_gid != unsafe { libc::getegid() }
+        || stat.st_mode & 0o022 != 0
+        || stat.st_nlink < 2
+    {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    Ok(identity)
+}
+
+#[cfg(target_os = "linux")]
+fn require_linux_directory_path_identity(
+    path: &Path,
+    expected: &LinuxFilesystemIdentity,
+    label: &'static str,
+) -> Result<(), ReceiptError> {
+    let reopened = open_linux_directory(path).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    if linux_directory_identity(&reopened, label)? != *expected {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_regular_file_identity(
+    file: &fs::File,
+    label: &'static str,
+) -> Result<LinuxFilesystemIdentity, ReceiptError> {
+    let (stat, identity) =
+        linux_file_identity(file).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    if stat.st_mode & libc::S_IFMT != libc::S_IFREG
+        || stat.st_uid != unsafe { libc::geteuid() }
+        || stat.st_gid != unsafe { libc::getegid() }
+        || stat.st_mode & 0o777 != 0o444
+        || stat.st_nlink != 1
+    {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    Ok(identity)
+}
+
+#[cfg(target_os = "linux")]
+fn create_linux_staging_at(
+    directory: &fs::File,
+    file_name: &std::ffi::CStr,
+) -> Result<fs::File, ReceiptError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            file_name.as_ptr(),
+            libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(ReceiptError::Io("create_staging"));
+    }
+    Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+}
+
+#[cfg(target_os = "linux")]
+fn read_stable_linux_regular_at(
+    directory: &fs::File,
+    file_name: &std::ffi::CStr,
+    maximum_bytes: usize,
+    label: &'static str,
+) -> Result<Option<(Vec<u8>, LinuxFilesystemIdentity)>, ReceiptError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            file_name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    let mut file = unsafe { fs::File::from_raw_fd(descriptor) };
+    let before = linux_regular_file_identity(&file, label)?;
+    let length = file
+        .metadata()
+        .map_err(|_| ReceiptError::UnsafeFilesystem(label))?
+        .len();
+    if length == 0 || length > maximum_bytes as u64 {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    let mut first = Vec::with_capacity(length as usize);
+    Read::by_ref(&mut file)
+        .take((maximum_bytes + 1) as u64)
+        .read_to_end(&mut first)
+        .map_err(|_| ReceiptError::Io(label))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| ReceiptError::Io(label))?;
+    let mut second = Vec::with_capacity(first.len());
+    Read::by_ref(&mut file)
+        .take((maximum_bytes + 1) as u64)
+        .read_to_end(&mut second)
+        .map_err(|_| ReceiptError::Io(label))?;
+    let after = linux_regular_file_identity(&file, label)?;
+    if first != second || before != after || first.len() != length as usize {
+        return Err(ReceiptError::Conflict);
+    }
+    Ok(Some((first, after)))
+}
+
+#[cfg(target_os = "linux")]
+fn sync_linux_directory(directory: &fs::File, expected_sha256: &str) -> Result<(), ReceiptError> {
+    directory
+        .sync_all()
+        .map_err(|_| ReceiptError::DurabilityUnknown {
+            expected_sha256: expected_sha256.to_owned(),
+        })
+}
+
+#[cfg(all(test, target_os = "linux"))]
 fn write_staging(path: &Path, bytes: &[u8]) -> Result<(), ReceiptError> {
     write_staging_with_limit(path, bytes, MAX_RECEIPT_BYTES)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 fn write_staging_with_limit(
     path: &Path,
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<(), ReceiptError> {
     use std::ffi::CString;
-    use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
 
     let parent = path
@@ -4574,22 +4858,11 @@ fn write_staging_with_limit(
         .map_err(|_| ReceiptError::UnsafeFilesystem("staging_parent"))?;
     let file_name = CString::new(file_name.as_bytes())
         .map_err(|_| ReceiptError::UnsafeFilesystem("staging_name"))?;
-    let descriptor = unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            file_name.as_ptr(),
-            libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if descriptor < 0 {
-        return Err(ReceiptError::Io("create_staging"));
-    }
-    let file = unsafe { fs::File::from_raw_fd(descriptor) };
+    let file = create_linux_staging_at(&directory, &file_name)?;
     write_staging_file(file, bytes, maximum_bytes)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(test, not(target_os = "linux")))]
 fn write_staging(path: &Path, bytes: &[u8]) -> Result<(), ReceiptError> {
     write_staging_with_limit(path, bytes, MAX_RECEIPT_BYTES)
 }
@@ -4664,49 +4937,6 @@ fn set_chain_read_only(path: &Path) -> Result<(), ReceiptError> {
 #[cfg(not(unix))]
 fn set_chain_read_only(_path: &Path) -> Result<(), ReceiptError> {
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn publish_noreplace(staging: &Path, target: &Path) -> Result<(), std::io::Error> {
-    use std::ffi::CString;
-    use std::os::fd::AsRawFd;
-    use std::os::unix::ffi::OsStrExt;
-
-    let parent = target
-        .parent()
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    if staging.parent() != Some(parent) {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
-    }
-    let directory = open_linux_directory(parent)?;
-    let staging = CString::new(
-        staging
-            .file_name()
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?
-            .as_bytes(),
-    )
-    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    let target = CString::new(
-        target
-            .file_name()
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?
-            .as_bytes(),
-    )
-    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    let result = unsafe {
-        libc::renameat2(
-            directory.as_raw_fd(),
-            staging.as_ptr(),
-            directory.as_raw_fd(),
-            target.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
 }
 
 #[cfg(windows)]
@@ -7073,6 +7303,105 @@ mod tests {
             authorization_id_sha256: activation.authorization_id_sha256().to_owned(),
             receipts,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_exact_publication_fails_closed_after_parent_path_replacement() {
+        let root = temporary_root("linux-parent-fd");
+        let parent = root.join("parent");
+        let displaced = root.join("displaced");
+        fs::create_dir(&parent).unwrap();
+        let target = parent.join("receipt.json");
+        let bytes = br#"{"contract":"single-parent-fd"}"#;
+        let hook_parent = parent.clone();
+        let hook_displaced = displaced.clone();
+
+        let outcome = publish_exact_bytes_linux_with_hook(
+            &parent,
+            &target,
+            1,
+            bytes,
+            MAX_RECEIPT_BYTES,
+            "linux_parent_fd_test",
+            move || {
+                fs::rename(&hook_parent, &hook_displaced).unwrap();
+                fs::create_dir(&hook_parent).unwrap();
+            },
+        );
+
+        assert_eq!(
+            outcome,
+            Err(ReceiptError::UnsafeFilesystem("linux_parent_fd_test"))
+        );
+        assert_eq!(fs::read(displaced.join("receipt.json")).unwrap(), bytes);
+        assert!(!parent.join("receipt.json").exists());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_exact_publication_never_overwrites_a_competing_target() {
+        let root = temporary_root("linux-noreplace");
+        let target = root.join("receipt.json");
+        let competing = br#"{"contract":"competitor"}"#;
+        let requested = br#"{"contract":"requested"}"#;
+        let hook_target = target.clone();
+
+        let outcome = publish_exact_bytes_linux_with_hook(
+            &root,
+            &target,
+            1,
+            requested,
+            MAX_RECEIPT_BYTES,
+            "linux_noreplace_test",
+            move || {
+                use std::os::unix::fs::PermissionsExt;
+
+                fs::write(&hook_target, competing).unwrap();
+                fs::set_permissions(&hook_target, fs::Permissions::from_mode(0o444)).unwrap();
+            },
+        )
+        .unwrap();
+
+        let ExactPublicationOutcome::ExistingDifferent(existing) = outcome else {
+            panic!("the competing target must win");
+        };
+        assert_eq!(existing, competing);
+        assert_eq!(fs::read(&target).unwrap(), competing);
+        assert_eq!(
+            fs::read_dir(&root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".staging"))
+                .count(),
+            0
+        );
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_exact_publication_rejects_hard_linked_targets() {
+        let root = temporary_root("linux-hardlink");
+        let target = root.join("receipt.json");
+        let alias = root.join("receipt.alias");
+        fs::write(&target, br#"{"contract":"linked"}"#).unwrap();
+        fs::hard_link(&target, &alias).unwrap();
+
+        assert_eq!(
+            publish_exact_bytes(
+                &root,
+                &target,
+                1,
+                br#"{"contract":"linked"}"#,
+                MAX_RECEIPT_BYTES,
+                "linux_hardlink_test",
+            ),
+            Err(ReceiptError::UnsafeFilesystem("linux_hardlink_test"))
+        );
+        cleanup(&root);
     }
 
     fn temporary_root(label: &str) -> PathBuf {

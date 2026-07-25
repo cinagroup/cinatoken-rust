@@ -833,22 +833,60 @@ pub struct ReceiptStore {
 }
 
 #[cfg(target_os = "linux")]
-struct AuthorizationGuard(fs::File);
+struct LockedAuthorization {
+    receipts: fs::File,
+    authorization: fs::File,
+    receipts_path: PathBuf,
+    authorization_path: PathBuf,
+    authorization_name: std::ffi::CString,
+    receipts_identity: LinuxFilesystemIdentity,
+    authorization_identity: LinuxFilesystemIdentity,
+}
 
 #[cfg(target_os = "linux")]
-impl Drop for AuthorizationGuard {
+impl LockedAuthorization {
+    fn require_bound(&self) -> Result<(), ReceiptError> {
+        require_linux_directory_path_object(
+            &self.receipts_path,
+            &self.receipts_identity,
+            "operation_receipts_lock",
+        )?;
+        require_linux_directory_at_object(
+            &self.receipts,
+            &self.authorization_name,
+            &self.authorization_identity,
+            "operation_authorization_lock",
+        )?;
+        require_linux_directory_path_object(
+            &self.authorization_path,
+            &self.authorization_identity,
+            "operation_authorization_lock",
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for LockedAuthorization {
     fn drop(&mut self) {
         use std::os::fd::AsRawFd;
 
         unsafe {
-            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+            libc::flock(self.authorization.as_raw_fd(), libc::LOCK_UN);
+            libc::flock(self.receipts.as_raw_fd(), libc::LOCK_UN);
         }
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-struct AuthorizationGuard {
+struct LockedAuthorization {
     _guard: MutexGuard<'static, ()>,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl LockedAuthorization {
+    fn require_bound(&self) -> Result<(), ReceiptError> {
+        Ok(())
+    }
 }
 
 impl ReceiptStore {
@@ -954,7 +992,8 @@ impl ReceiptStore {
         }
         let authorization =
             self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
-        let _guard = lock_operation_authorization(&authorization)?;
+        let locked = lock_operation_authorization(&authorization)?;
+        locked.require_bound()?;
         if let Some(candidate) = self.read_terminal_snapshot_candidate(&context)? {
             let candidate_plan =
                 plan_terminal_receipts(&candidate.snapshot, publication, credentials)?;
@@ -970,7 +1009,8 @@ impl ReceiptStore {
             return Err(ReceiptError::InvalidField("unfinished_operation_chain"));
         }
         self.install_terminal_plan(plan)?;
-        self.install_terminal_closure_locked(&context)
+        locked.require_bound()?;
+        self.install_terminal_closure_locked(&locked, &context)
     }
 
     pub(crate) fn install_terminal_snapshot_candidate(
@@ -990,7 +1030,8 @@ impl ReceiptStore {
         }
         let authorization =
             self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
-        let _guard = lock_operation_authorization(&authorization)?;
+        let locked = lock_operation_authorization(&authorization)?;
+        locked.require_bound()?;
         if self.execution_chain_is_sealed(&context.authorization_id_sha256)?
             || self.terminal_artifact_exists(&context.authorization_id_sha256)?
         {
@@ -1042,7 +1083,8 @@ impl ReceiptStore {
         if installed.bytes != candidate.bytes || installed.record != candidate.record {
             return Err(ReceiptError::Conflict);
         }
-        sync_directory(&closure, &candidate.sha256)
+        sync_directory(&closure, &candidate.sha256)?;
+        locked.require_bound()
     }
 
     pub(crate) fn recover_terminal_closure(
@@ -1055,7 +1097,8 @@ impl ReceiptStore {
         if self.read_terminal_snapshot_candidate(&context)?.is_some() {
             let authorization =
                 self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
-            let _guard = lock_operation_authorization(&authorization)?;
+            let locked = lock_operation_authorization(&authorization)?;
+            locked.require_bound()?;
             let candidate = self
                 .read_terminal_snapshot_candidate(&context)?
                 .ok_or(ReceiptError::Conflict)?;
@@ -1068,7 +1111,10 @@ impl ReceiptStore {
             }
             let plan = plan_terminal_receipts(&candidate.snapshot, publication, credentials)?;
             self.install_terminal_plan(&plan)?;
-            return self.install_terminal_closure_locked(&context).map(Some);
+            locked.require_bound()?;
+            return self
+                .install_terminal_closure_locked(&locked, &context)
+                .map(Some);
         }
         let Some(chain) = self.find_execution_chain(&context.authorization_id_sha256)? else {
             if self.terminal_artifact_exists(&context.authorization_id_sha256)? {
@@ -1086,7 +1132,8 @@ impl ReceiptStore {
         require_execution_chain_identity(&chain, publication, credentials, &context)?;
         let authorization =
             self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
-        let _guard = lock_operation_authorization(&authorization)?;
+        let locked = lock_operation_authorization(&authorization)?;
+        locked.require_bound()?;
         let operations = self.authorization_operations(&context)?;
         if operations
             .iter()
@@ -1094,7 +1141,9 @@ impl ReceiptStore {
         {
             return Err(ReceiptError::InvalidField("unfinished_operation_chain"));
         }
-        self.install_terminal_closure_locked(&context).map(Some)
+        locked.require_bound()?;
+        self.install_terminal_closure_locked(&locked, &context)
+            .map(Some)
     }
 
     pub(crate) fn reserve_operation(
@@ -1114,15 +1163,19 @@ impl ReceiptStore {
         }
         let authorization =
             self.ensure_operation_authorization_directory(&context.authorization_id_sha256)?;
-        let _guard = lock_operation_authorization(&authorization)?;
+        let locked = lock_operation_authorization(&authorization)?;
+        locked.require_bound()?;
         if self.terminal_barrier_exists(&context, &authorization)? {
             return Err(ReceiptError::AlreadySealed);
         }
+        locked.require_bound()?;
         reserve_operation_capacity(&authorization, &operation.operation_id_sha256)?;
+        locked.require_bound()?;
         let directory = self.ensure_operation_directory(
             &context.authorization_id_sha256,
             &operation.operation_id_sha256,
         )?;
+        locked.require_bound()?;
         self.authorization_operation_ids(&context.authorization_id_sha256)?;
         let start_path = directory.join(operation_receipt_file_name(1));
         if start_path
@@ -1136,6 +1189,7 @@ impl ReceiptStore {
             )?;
             require_operation_identity(&verified, &context, &operation)?;
             self.authorization_operations(&context)?;
+            locked.require_bound()?;
             return Ok(operation_reservation(&verified));
         }
 
@@ -1163,6 +1217,7 @@ impl ReceiptStore {
                     return Err(ReceiptError::Conflict);
                 }
                 self.authorization_operations(&context)?;
+                locked.require_bound()?;
                 Ok(OperationReservation::Fresh)
             }
             Ok(AppendOutcome::ExistingExact) | Err(ReceiptError::Conflict) => {
@@ -1173,6 +1228,7 @@ impl ReceiptStore {
                 )?;
                 require_operation_identity(&verified, &context, &operation)?;
                 self.authorization_operations(&context)?;
+                locked.require_bound()?;
                 Ok(operation_reservation(&verified))
             }
             Err(error) => Err(error),
@@ -1192,11 +1248,12 @@ impl ReceiptStore {
         let (_, authorization) = self
             .find_operation_authorization_directory(&context.authorization_id_sha256)?
             .ok_or(ReceiptError::PredecessorMissing)?;
-        let _guard = lock_operation_authorization(&authorization)?;
+        let locked = lock_operation_authorization(&authorization)?;
+        locked.require_bound()?;
         if self.terminal_barrier_exists(&context, &authorization)? {
             return Err(ReceiptError::AlreadySealed);
         }
-        self.finish_operation_locked(&context, &operation, input)
+        self.finish_operation_locked(&locked, &context, &operation, input)
     }
 
     pub(crate) fn finish_operation_after_terminal_candidate(
@@ -1217,7 +1274,8 @@ impl ReceiptStore {
         let (_, authorization) = self
             .find_operation_authorization_directory(&context.authorization_id_sha256)?
             .ok_or(ReceiptError::PredecessorMissing)?;
-        let _guard = lock_operation_authorization(&authorization)?;
+        let locked = lock_operation_authorization(&authorization)?;
+        locked.require_bound()?;
         if self.execution_chain_is_sealed(&context.authorization_id_sha256)?
             || self.terminal_artifact_exists(&context.authorization_id_sha256)?
         {
@@ -1237,15 +1295,17 @@ impl ReceiptStore {
         {
             return Err(ReceiptError::Conflict);
         }
-        self.finish_operation_locked(&context, &operation, input)
+        self.finish_operation_locked(&locked, &context, &operation, input)
     }
 
     fn finish_operation_locked(
         &self,
+        locked: &LockedAuthorization,
         context: &OperationContextIdentity,
         operation: &OperationIdentity,
         input: &OperationFinishInput,
     ) -> Result<OperationOutcome, ReceiptError> {
+        locked.require_bound()?;
         let directory = self.operation_directory(
             &context.authorization_id_sha256,
             &operation.operation_id_sha256,
@@ -1257,6 +1317,7 @@ impl ReceiptStore {
         )?;
         require_operation_identity(&verified, context, operation)?;
         if let Some(outcome) = verified.verified.outcome {
+            locked.require_bound()?;
             return Ok(outcome);
         }
         validate_operation_finish_input(operation.kind, input, verified.start_recorded_at)?;
@@ -1273,7 +1334,7 @@ impl ReceiptStore {
                 response_id_sha256: input.response_id_sha256.clone(),
             },
         )?;
-        match append_canonical_operation_receipt(&directory, &finish) {
+        let outcome = match append_canonical_operation_receipt(&directory, &finish) {
             Ok(_) | Err(ReceiptError::Conflict) => {
                 let verified = verify_operation_directory(
                     &directory,
@@ -1284,7 +1345,9 @@ impl ReceiptStore {
                 verified.verified.outcome.ok_or(ReceiptError::Conflict)
             }
             Err(error) => Err(error),
-        }
+        }?;
+        locked.require_bound()?;
+        Ok(outcome)
     }
 
     pub(crate) fn finish_unresolved_operation(
@@ -1355,7 +1418,8 @@ impl ReceiptStore {
                 recovered_ambiguous_count: 0,
             });
         };
-        let _guard = lock_operation_authorization(&authorization)?;
+        let locked = lock_operation_authorization(&authorization)?;
+        locked.require_bound()?;
         if self.terminal_artifact_exists(&context.authorization_id_sha256)? {
             return Err(ReceiptError::AlreadySealed);
         }
@@ -1415,7 +1479,8 @@ impl ReceiptStore {
                     response_id_sha256: None,
                 }
             };
-            let outcome = self.finish_operation_locked(&context, &operation.operation, &finish)?;
+            let outcome =
+                self.finish_operation_locked(&locked, &context, &operation.operation, &finish)?;
             if outcome != finish.outcome {
                 return Err(ReceiptError::Conflict);
             }
@@ -1426,6 +1491,7 @@ impl ReceiptStore {
         if !recovered_candidate {
             return Err(ReceiptError::Conflict);
         }
+        locked.require_bound()?;
         let verified = self.authorization_operations(&context)?;
         if verified.len() != operation_count
             || verified
@@ -1434,6 +1500,7 @@ impl ReceiptStore {
         {
             return Err(ReceiptError::Conflict);
         }
+        locked.require_bound()?;
         Ok(OperationReceiptAudit {
             operation_count,
             unfinished_count,
@@ -1596,8 +1663,10 @@ impl ReceiptStore {
 
     fn install_terminal_closure_locked(
         &self,
+        locked: &LockedAuthorization,
         context: &OperationContextIdentity,
     ) -> Result<VerifiedTerminalClosure, ReceiptError> {
+        locked.require_bound()?;
         let execution_chain = self.verify(&context.authorization_id_sha256)?;
         require_execution_chain_identity_from_context(
             &self.execution_chain(&context.authorization_id_sha256)?,
@@ -1648,7 +1717,10 @@ impl ReceiptStore {
         }
         set_chain_read_only(&closure)?;
         sync_directory(&closure, &canonical_local_seal.sha256)?;
-        self.verify_terminal_closure(context)
+        locked.require_bound()?;
+        let verified = self.verify_terminal_closure(context)?;
+        locked.require_bound()?;
+        Ok(verified)
     }
 
     fn verify_terminal_closure(
@@ -4736,6 +4808,62 @@ fn require_linux_directory_path_identity(
 }
 
 #[cfg(target_os = "linux")]
+fn require_linux_directory_at_identity(
+    parent: &fs::File,
+    file_name: &std::ffi::CStr,
+    expected: &LinuxFilesystemIdentity,
+    label: &'static str,
+) -> Result<(), ReceiptError> {
+    let reopened = open_linux_directory_at(parent, file_name)
+        .map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    if linux_directory_identity(&reopened, label)? != *expected {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn same_linux_directory_object(
+    left: &LinuxFilesystemIdentity,
+    right: &LinuxFilesystemIdentity,
+) -> bool {
+    left.device == right.device
+        && left.inode == right.inode
+        && left.uid == right.uid
+        && left.gid == right.gid
+}
+
+#[cfg(target_os = "linux")]
+fn require_linux_directory_path_object(
+    path: &Path,
+    expected: &LinuxFilesystemIdentity,
+    label: &'static str,
+) -> Result<(), ReceiptError> {
+    let reopened = open_linux_directory(path).map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    let actual = linux_directory_identity(&reopened, label)?;
+    if !same_linux_directory_object(&actual, expected) {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn require_linux_directory_at_object(
+    parent: &fs::File,
+    file_name: &std::ffi::CStr,
+    expected: &LinuxFilesystemIdentity,
+    label: &'static str,
+) -> Result<(), ReceiptError> {
+    let reopened = open_linux_directory_at(parent, file_name)
+        .map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
+    let actual = linux_directory_identity(&reopened, label)?;
+    if !same_linux_directory_object(&actual, expected) {
+        return Err(ReceiptError::UnsafeFilesystem(label));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn linux_regular_file_identity(
     file: &fs::File,
     label: &'static str,
@@ -5004,25 +5132,99 @@ fn open_linux_directory(path: &Path) -> Result<fs::File, std::io::Error> {
 }
 
 #[cfg(target_os = "linux")]
-fn lock_operation_authorization(path: &Path) -> Result<AuthorizationGuard, ReceiptError> {
+fn open_linux_directory_at(
+    parent: &fs::File,
+    file_name: &std::ffi::CStr,
+) -> Result<fs::File, std::io::Error> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            file_name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn lock_linux_directory(file: &fs::File, label: &'static str) -> Result<(), ReceiptError> {
     use std::os::fd::AsRawFd;
 
-    let directory = open_linux_directory(path)
-        .map_err(|_| ReceiptError::UnsafeFilesystem("operation_authorization_lock"))?;
-    let result = unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX) };
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     if result != 0 {
-        return Err(ReceiptError::Io("operation_authorization_lock"));
+        return Err(ReceiptError::Io(label));
     }
-    Ok(AuthorizationGuard(directory))
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn lock_operation_authorization(path: &Path) -> Result<LockedAuthorization, ReceiptError> {
+    lock_operation_authorization_linux_with_hook(path, || {})
+}
+
+#[cfg(target_os = "linux")]
+fn lock_operation_authorization_linux_with_hook<F>(
+    path: &Path,
+    after_locks: F,
+) -> Result<LockedAuthorization, ReceiptError>
+where
+    F: FnOnce(),
+{
+    use std::os::unix::ffi::OsStrExt;
+
+    let receipts_path = path
+        .parent()
+        .ok_or(ReceiptError::UnsafeFilesystem("operation_receipts_lock"))?
+        .to_owned();
+    let authorization_name = path.file_name().ok_or(ReceiptError::UnsafeFilesystem(
+        "operation_authorization_lock",
+    ))?;
+    let authorization_name = std::ffi::CString::new(authorization_name.as_bytes())
+        .map_err(|_| ReceiptError::UnsafeFilesystem("operation_authorization_lock"))?;
+
+    let receipts = open_linux_directory(&receipts_path)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("operation_receipts_lock"))?;
+    let receipts_identity = linux_directory_identity(&receipts, "operation_receipts_lock")?;
+    lock_linux_directory(&receipts, "operation_receipts_lock")?;
+    require_linux_directory_path_identity(
+        &receipts_path,
+        &receipts_identity,
+        "operation_receipts_lock",
+    )?;
+
+    let authorization = open_linux_directory_at(&receipts, &authorization_name)
+        .map_err(|_| ReceiptError::UnsafeFilesystem("operation_authorization_lock"))?;
+    let authorization_identity =
+        linux_directory_identity(&authorization, "operation_authorization_lock")?;
+    lock_linux_directory(&authorization, "operation_authorization_lock")?;
+
+    let locked = LockedAuthorization {
+        receipts,
+        authorization,
+        receipts_path,
+        authorization_path: path.to_owned(),
+        authorization_name,
+        receipts_identity,
+        authorization_identity,
+    };
+    after_locks();
+    locked.require_bound()?;
+    Ok(locked)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn lock_operation_authorization(_path: &Path) -> Result<AuthorizationGuard, ReceiptError> {
+fn lock_operation_authorization(_path: &Path) -> Result<LockedAuthorization, ReceiptError> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
-        .map(|guard| AuthorizationGuard { _guard: guard })
+        .map(|guard| LockedAuthorization { _guard: guard })
         .map_err(|_| ReceiptError::Io("operation_authorization_lock"))
 }
 
@@ -7406,6 +7608,69 @@ mod tests {
                 "linux_hardlink_test",
             ),
             Err(ReceiptError::UnsafeFilesystem("linux_hardlink_test"))
+        );
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_locked_authorization_fails_closed_after_path_replacement() {
+        let root = temporary_root("linux-authorization-replacement");
+        let receipts = root.join("operation-receipts");
+        let authorization = receipts.join("a".repeat(64));
+        let displaced = receipts.join("displaced");
+        fs::create_dir(&receipts).unwrap();
+        fs::create_dir(&authorization).unwrap();
+        let hook_authorization = authorization.clone();
+        let hook_displaced = displaced.clone();
+
+        let result = lock_operation_authorization_linux_with_hook(&authorization, move || {
+            fs::rename(&hook_authorization, &hook_displaced).unwrap();
+            fs::create_dir(&hook_authorization).unwrap();
+        });
+
+        assert!(matches!(
+            result,
+            Err(ReceiptError::UnsafeFilesystem(
+                "operation_authorization_lock"
+            ))
+        ));
+        assert_eq!(fs::read_dir(&authorization).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&displaced).unwrap().count(), 0);
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_locked_authorization_holds_the_parent_flock() {
+        use std::os::fd::AsRawFd;
+
+        let root = temporary_root("linux-authorization-parent-lock");
+        let receipts = root.join("operation-receipts");
+        let authorization = receipts.join("a".repeat(64));
+        fs::create_dir(&receipts).unwrap();
+        fs::create_dir(&authorization).unwrap();
+        let locked = lock_operation_authorization(&authorization).unwrap();
+        let contender = open_linux_directory(&receipts).unwrap();
+
+        assert_eq!(
+            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            -1
+        );
+        let error = std::io::Error::last_os_error();
+        assert!(
+            error.raw_os_error() == Some(libc::EWOULDBLOCK)
+                || error.raw_os_error() == Some(libc::EAGAIN)
+        );
+
+        drop(locked);
+        assert_eq!(
+            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_UN) },
+            0
         );
         cleanup(&root);
     }

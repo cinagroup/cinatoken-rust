@@ -6744,7 +6744,10 @@ mod tests {
             serde_json::from_slice(&fs::read(&operation_head).unwrap()).unwrap();
         mutated_operation["event"]["response_id_sha256"] =
             serde_json::Value::String("c".repeat(64));
-        fs::write(&operation_head, canonical_json(&mutated_operation).unwrap()).unwrap();
+        overwrite_and_restore_read_only(
+            &operation_head,
+            canonical_json(&mutated_operation).unwrap().as_bytes(),
+        );
         assert_eq!(
             store.recover_terminal_closure(&publication, &credentials, &activation),
             Err(ReceiptError::Conflict)
@@ -6767,7 +6770,10 @@ mod tests {
         let mut mutated_head_set: serde_json::Value =
             serde_json::from_slice(&fs::read(&head_set).unwrap()).unwrap();
         mutated_head_set["operationContextSha256"] = serde_json::Value::String("f".repeat(64));
-        fs::write(&head_set, canonical_json(&mutated_head_set).unwrap()).unwrap();
+        overwrite_and_restore_read_only(
+            &head_set,
+            canonical_json(&mutated_head_set).unwrap().as_bytes(),
+        );
         assert_eq!(
             store.recover_terminal_closure(&publication, &credentials, &activation),
             Err(ReceiptError::Conflict)
@@ -7449,6 +7455,17 @@ mod tests {
             permissions.set_readonly(false);
             let _ = fs::set_permissions(path, permissions);
         }
+    }
+
+    fn overwrite_and_restore_read_only(path: &Path, bytes: &[u8]) {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .unwrap();
+        file.write_all(bytes).unwrap();
+        file.flush().unwrap();
+        set_file_read_only(&file).unwrap();
     }
 
     fn make_directory_writable(path: &Path) {

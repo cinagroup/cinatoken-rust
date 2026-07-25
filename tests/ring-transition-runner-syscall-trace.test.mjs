@@ -323,7 +323,7 @@ describe("ring-transition runner syscall trace verifier", () => {
       /--label "candidate-after-sync writer"\s+\\\r?\n\s+--expected-locks 4\s+\\\r?\n\s+--require-mkdirat\s+\\\r?\n\s+--require-sigkill-exit\s+\\\r?\n\s+--require-terminal-candidate-sync/u,
     );
     expect(workflow).toMatch(
-      /--label "candidate-after-sync recovery"\s+\\\r?\n\s+--expected-locks 6\s+\\\r?\n\s+--require-mkdirat/u,
+      /--label "candidate-after-sync recovery"\s+\\\r?\n\s+--expected-locks 8\s+\\\r?\n\s+--require-mkdirat/u,
     );
     expect(workflow).toContain("candidate-after-sync-writer.strace");
     expect(workflow).toContain("candidate-after-sync-recovery.strace");

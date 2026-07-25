@@ -259,7 +259,7 @@ jobs:
             --trace "${candidate_recovery_trace_log}" \
             --fixture-root "${candidate_trace_root}" \
             --label "candidate-after-sync recovery" \
-            --expected-locks 6 \
+            --expected-locks 8 \
             --require-mkdirat \
             | tee "${trace_artifact_dir}/candidate-after-sync-recovery.verification.json"
 
@@ -269,7 +269,7 @@ jobs:
             --arg signal "SIGKILL" \
             --argjson tracerStatus "${candidate_writer_status}" \
             --argjson writerExpectedLocks 4 \
-            --argjson recoveryExpectedLocks 6 \
+            --argjson recoveryExpectedLocks 8 \
             '{
               gitSha: $gitSha,
               boundary: $boundary,
@@ -286,7 +286,7 @@ jobs:
             echo "- full-transaction post-lock AT_FDCWD mutation: none"
             echo "- candidate writer: exact SIGKILL after candidate rename/directory sync/object-bound readback"
             echo "- candidate-after-sync recovery post-lock AT_FDCWD mutation: none"
-            echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 6"
+            echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8"
             echo "- successful retained-dirfd openat2/renameat2: observed in all four traces"
             echo "- successful full-transaction and candidate-recovery retained-dirfd mkdirat: observed"
             echo "- successful directory fsync/fdatasync and descriptor chmod: observed in all four traces"

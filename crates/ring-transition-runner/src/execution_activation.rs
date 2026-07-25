@@ -12,7 +12,9 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use getrandom::getrandom;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
+#[cfg(not(target_os = "linux"))]
+use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 

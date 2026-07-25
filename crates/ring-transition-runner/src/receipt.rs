@@ -7458,7 +7458,7 @@ mod tests {
     }
 
     fn overwrite_and_restore_read_only(path: &Path, bytes: &[u8]) {
-        let mut file = OpenOptions::new()
+        let mut file = fs::OpenOptions::new()
             .write(true)
             .truncate(true)
             .open(path)

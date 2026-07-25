@@ -1421,3 +1421,49 @@ acquisition and a hostile same-UID writer also remain OS-enforced boundaries.
 Dedicated identity and ACL/mount isolation, native fault campaigns,
 DSSE/WORM and Cloudflare lifecycle evidence remain required. Production
 remains **NO-GO**.
+
+## Linux Terminal Closure Retained Graph Increment
+
+The remaining terminal descriptor unit is now implemented. Linux candidate
+installation retains the operation and closure descriptors through exact
+validation, no-replace publication and direct readback. Terminal execution
+receipts append beneath the retained chain descriptor. Head-set publication
+uses `LockedAuthorization`; operation freeze uses every retained operation
+descriptor; local-seal publication uses the retained closure descriptor.
+
+`LockedAuthorizationOperationState` binds the authorization directory version,
+verified operation graph, marker-only directories, capacity reservations and
+optional installed head set. The terminal graph and authorization state are
+checked after candidate read, before head-set publication, before local-seal
+publication and after all artifacts are installed. Final verification reads
+all four terminal components directly from the retained graph.
+
+Recovery captures the same graph before making a decision. Exact candidate
+plan replay, sealed-chain closure completion and head-set-without-local-seal
+recovery therefore use the same descriptor-confined publication paths as the
+normal transaction. Portable path fallbacks remain compiled for tests and
+non-Linux targets only.
+
+Five Linux fault tests replace the candidate closure, execution chain,
+operation sibling or closure after graph capture, and simulate a crash between
+head-set and local-seal publication. Replacement paths receive no visible
+authorized closure, and the crash case recovers one exact idempotent seal.
+
+Commit `3cbddd719c1354ea7765d24089837120fdf6ca04` passed
+[Ubuntu run 30154588102](https://github.com/cinagroup/cinatoken-rust/actions/runs/30154588102)
+and
+[job 89670450774](https://github.com/cinagroup/cinatoken-rust/actions/runs/30154588102/job/89670450774)
+with formatting, 145 Linux library tests and warning-free Clippy. The local
+aggregate gate passed 126 Rust library tests, 3 binary/CLI tests and 61 Bun
+tests with 242 expectations. Clean source evidence has Git tree
+`c673790199bba2f1090654a4cfbc64b42c977934`, archive SHA-256
+`08bd3fb6857222853381a72be72c2d2604f85638e3d22de9c92b524098b758d9`
+and 31 modules totaling 1637476 bytes with inventory SHA-256
+`a2d6a538fca14072171642185e926db35a1b24837cbda526ec80abda37c0b140`.
+
+The official writer is now descriptor-confined after trusted-root and
+authorization acquisition. Production still requires the OS boundary around
+that acquisition: dedicated UID/GID, exact ownership/ACLs and mount isolation.
+Native multi-process replacement/kill, syscall tracing, ext4/XFS power-loss,
+restore, independent DSSE/WORM and Cloudflare lifecycle evidence remain
+required. Production remains **NO-GO**.

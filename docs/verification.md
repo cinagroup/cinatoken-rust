@@ -9636,3 +9636,79 @@ Multiprocess kill/rename campaigns, syscall traces, ext4/XFS power-loss,
 backup/restore, independent DSSE/WORM and Cloudflare lifecycle evidence
 remain open. No credential, remote mutation or traffic change occurred.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-25 Linux Terminal Closure Retained Graph Verification
+
+This increment verifies descriptor continuity for terminal candidate
+publication, terminal execution-plan installation, operation head-set and
+local-seal publication, startup closure recovery and final closure
+verification.
+
+Local command:
+
+```powershell
+npx.cmd --yes bun run check:ring-transition-runner
+```
+
+Observed local result:
+
+- 126 Rust library tests passed;
+- 3 binary/CLI tests passed; and
+- 61 Bun tests passed with 242 expectations.
+
+Native evidence is frozen at
+`3cbddd719c1354ea7765d24089837120fdf6ca04`:
+
+- [run 30154588102](https://github.com/cinagroup/cinatoken-rust/actions/runs/30154588102)
+  and
+  [job 89670450774](https://github.com/cinagroup/cinatoken-rust/actions/runs/30154588102/job/89670450774)
+  passed;
+- formatting, 145 Linux library tests and warning-free Clippy completed
+  successfully;
+- five Linux tests cover candidate-closure replacement, execution-chain
+  replacement during append, operation replacement after state capture,
+  closure replacement after candidate read and exact recovery from the
+  head-set/local-seal crash boundary; and
+- clean commit-object collection produced Git tree
+  `c673790199bba2f1090654a4cfbc64b42c977934`, a 35870720-byte source
+  archive with SHA-256
+  `08bd3fb6857222853381a72be72c2d2604f85638e3d22de9c92b524098b758d9`,
+  and 31 required modules totaling 1637476 bytes with inventory SHA-256
+  `a2d6a538fca14072171642185e926db35a1b24837cbda526ec80abda37c0b140`.
+
+The verified boundary includes:
+
+1. candidate publication and direct readback beneath the retained closure
+   descriptor;
+2. terminal execution append and verification beneath the retained execution
+   chain descriptor;
+3. a retained authorization snapshot containing operation dirfds,
+   marker-only directories, capacity records, optional head set and directory
+   version;
+4. descriptor-relative head-set publication, operation freeze and local-seal
+   publication with version refresh only after authorized mutation;
+5. graph and authorization-state checks after candidate read and immediately
+   before local-seal publication; and
+6. exact, network-free startup recovery when the head set exists but the
+   local seal does not.
+
+[Runs 30149938243](https://github.com/cinagroup/cinatoken-rust/actions/runs/30149938243),
+[30151162327](https://github.com/cinagroup/cinatoken-rust/actions/runs/30151162327),
+[30151378836](https://github.com/cinagroup/cinatoken-rust/actions/runs/30151378836)
+and
+[30151786816](https://github.com/cinagroup/cinatoken-rust/actions/runs/30151786816)
+remain intermediate evidence. Linux conditional compilation and strict
+Clippy exposed dead path fallbacks and an over-wide hook; the concurrent test
+also preserved the exact `unfinished_operation_chain` retry classification.
+The final candidate uses platform cfg and explicit input grouping, with no
+lint suppression.
+
+This evidence closes the current official-writer terminal graph after
+trusted-root and authorization acquisition. It does not prove hostile
+same-UID containment, true multi-process lock/rename behavior, filesystem
+durability after power loss, restore integrity or independent external
+closure. Dedicated UID/GID, exact ACL/ownership, mount isolation,
+multi-process kill/rename, syscall traces, ext4/XFS, backup/restore,
+DSSE/WORM, Cloudflare lifecycle and G1-G8 remain open. No credential, remote
+mutation or traffic change occurred. Go/VPS remains authoritative and
+production remains **NO-GO**.

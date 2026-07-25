@@ -20385,3 +20385,115 @@ ext4/XFS power-loss evidence, backup/restore, independent DSSE/WORM anchoring,
 Cloudflare Container/DO lifecycle proof and G1-G8 approval remain open. No
 credential, Cloudflare mutation, customer traffic movement or Go/VPS drain
 occurred. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.294 K7 Terminal Closure Retained Descriptor Graph (2026-07-25)
+
+Linux terminal publication and restart recovery now remain on one retained
+root-to-leaf descriptor graph. This closes the descriptor-conversion unit
+left open by 22.293:
+
+```text
+installation root fd
+|- execution-receipts fd
+|  `- authorization execution-chain fd
+|- operation-receipts fd
+|  `- LockedAuthorization fd
+|     |- capacity records
+|     |- retained operation dirfds
+|     `- operation-head-set.json
+`- operation-closures fd
+   `- authorization closure fd
+      |- terminal-snapshot-candidate.json?
+      `- operation-head-local-seal.json
+```
+
+Missing execution or closure directories are created with `mkdirat`, synced
+through their retained parent and reopened with the common fail-closed
+`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV)` policy.
+Existing objects are opened by the same contained traversal. The graph binds
+every parent/child attachment and binds authorization-specific directory
+content versions.
+
+`install_terminal_snapshot_candidate` now retains both the exact operation
+directory and closure directory through validation, create-new publication,
+direct readback and graph revalidation. Terminal execution receipts append
+directly beneath the retained chain dirfd. The authorization closure snapshot
+retains every verified operation dirfd, marker-only directory, capacity
+reservation, optional installed head set and the authorization directory
+version.
+
+Closure publication has the following fail-closed order:
+
+1. verify the sealed execution chain directly and bind its first and terminal
+   receipts to the projected context and optional candidate;
+2. verify the retained operation state and derive the canonical head set;
+3. publish or exactly replay the head set beneath `LockedAuthorization`;
+4. chmod/fsync every retained operation directory and the authorization
+   directory, refreshing only versions changed by authorized mutation;
+5. revalidate the complete graph and authorization snapshot;
+6. publish or exactly replay the local seal beneath the retained closure
+   dirfd, make the closure read-only, sync it and refresh its version; and
+7. verify the execution chain, candidate, head set and local seal again from
+   the retained graph before returning success.
+
+Recovery no longer uses path lookup to decide whether a candidate, execution
+seal, head set or local seal exists. It reacquires the graph under the
+authorization lock, audits operation state while allowing an installed head
+set, and performs exact replay only. An unfinished operation retains the
+existing `unfinished_operation_chain` classification so the concurrent
+finish/closure linearization loop can wait without changing protocol
+semantics. A crash after head-set publication and before local-seal
+publication completes the same unique closure on restart and a second restart
+is an exact replay.
+
+Five new Linux fault tests prove:
+
+1. closure replacement after candidate graph capture cannot install a
+   candidate at the replacement path;
+2. execution-chain replacement during direct terminal append cannot redirect
+   a visible chain, and publication reports the retained/path identity drift;
+3. operation-directory replacement after authorization-state capture is
+   rejected before head-set or local-seal publication;
+4. closure replacement after candidate read is rejected before head-set or
+   local-seal publication; and
+5. the head-set-without-local-seal crash point recovers exactly and
+   idempotently.
+
+The frozen code candidate is
+`3cbddd719c1354ea7765d24089837120fdf6ca04`.
+[Run 30154588102](https://github.com/cinagroup/cinatoken-rust/actions/runs/30154588102)
+and
+[job 89670450774](https://github.com/cinagroup/cinatoken-rust/actions/runs/30154588102/job/89670450774)
+passed formatting, all 145 Linux library tests and warning-free Clippy. The
+aggregate local gate passed 126 Rust library tests, 3 binary/CLI tests and 61
+Bun tests with 242 expectations.
+
+Clean commit-object evidence produced Git tree
+`c673790199bba2f1090654a4cfbc64b42c977934`, a 35870720-byte source archive
+with SHA-256
+`08bd3fb6857222853381a72be72c2d2604f85638e3d22de9c92b524098b758d9`,
+and 31 required modules totaling 1637476 bytes with inventory SHA-256
+`a2d6a538fca14072171642185e926db35a1b24837cbda526ec80abda37c0b140`.
+
+[Runs 30149938243](https://github.com/cinagroup/cinatoken-rust/actions/runs/30149938243),
+[30151162327](https://github.com/cinagroup/cinatoken-rust/actions/runs/30151162327),
+[30151378836](https://github.com/cinagroup/cinatoken-rust/actions/runs/30151378836)
+and
+[30151786816](https://github.com/cinagroup/cinatoken-rust/actions/runs/30151786816)
+are retained intermediate evidence. They respectively exposed Linux-only
+dead fallbacks, an over-broad cfg change, the concurrent unfinished-operation
+error-class regression, and the final dead-helper/test-hook lint findings.
+Every correction preserved the fail-closed design and used platform scoping
+or explicit input grouping rather than lint suppression.
+
+This closes the in-process official-writer terminal descriptor transaction;
+it does not promote the runner. Initial trusted-root and authorization
+acquisition still rely on OS-enforced ownership. A peer deliberately sharing
+the runner UID can ignore advisory locks and mutate names outside the exact
+checked intervals. Production still requires dedicated UID/GID, exact
+ownership and ACL readback, mount/workload isolation, native multi-process
+rename/kill campaigns, zero-unapproved-`AT_FDCWD` traces, ext4/XFS
+power-loss, backup/restore, independent DSSE plus immutable retention,
+Cloudflare DO/Container lifecycle evidence and G1-G8 approval. No credential,
+remote mutation, customer traffic movement or Go/VPS drain occurred.
+Go/VPS remains authoritative and production remains **NO-GO**.

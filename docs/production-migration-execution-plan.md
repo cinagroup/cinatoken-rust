@@ -3346,3 +3346,52 @@ native multiprocess/process-death campaigns, syscall traces, ext4/XFS
 power-loss, backup/restore, independent DSSE/WORM, Cloudflare lifecycle and
 G1-G8 approval remain mandatory. Go/VPS remains traffic, scheduler and
 financial authority; production remains **NO-GO**.
+
+## 2026-07-25 K7 Terminal Publication and Recovery Descriptor Gate
+
+The terminal publication transaction now consumes the retained graph required
+by the preceding gate. Candidate creation, execution receipt installation,
+operation head-set publication, operation-directory freeze, local-seal
+publication, recovery and final verification no longer return to path-based
+Linux production helpers.
+
+The authorization snapshot records its directory version, every verified
+operation with an open dirfd, marker-only directories, capacity reservations
+and an optional installed head set. Authorized publication and chmod
+operations refresh only the versions they intentionally change. Every
+cross-directory step revalidates both the terminal graph and authorization
+snapshot before the next artifact is published.
+
+Startup recovery is exact and local. It reads the candidate, execution chain,
+head set and local seal from retained descriptors. A candidate replays its
+deterministic terminal plan; a sealed execution chain without a local seal
+continues closure; an unsealed or empty chain returns no closure only when no
+head set or local seal contradicts that state. No recovery branch mints send
+authority or performs network I/O.
+
+Linux tests cover closure replacement after candidate capture, execution
+replacement during terminal append, operation replacement after state
+capture, closure replacement after candidate read, and a process crash after
+head-set publication but before local-seal publication. The crash case
+recovers the same closure twice, proving idempotent replay.
+
+Commit `3cbddd719c1354ea7765d24089837120fdf6ca04` passed
+[run 30154588102](https://github.com/cinagroup/cinatoken-rust/actions/runs/30154588102)
+and
+[job 89670450774](https://github.com/cinagroup/cinatoken-rust/actions/runs/30154588102/job/89670450774)
+with formatting, 145 Linux library tests and warning-free Clippy. The local
+aggregate gate passed 126 Rust library tests, 3 binary/CLI tests and 61 Bun
+tests with 242 expectations. Clean source evidence is Git tree
+`c673790199bba2f1090654a4cfbc64b42c977934`, source-archive SHA-256
+`08bd3fb6857222853381a72be72c2d2604f85638e3d22de9c92b524098b758d9`
+and module-inventory SHA-256
+`a2d6a538fca14072171642185e926db35a1b24837cbda526ec80abda37c0b140`
+for 31 modules and 1637476 bytes.
+
+This gate closes the current single-process official-writer descriptor unit,
+not the production migration. Next acceptance work is native multi-process
+rename/kill and syscall-trace evidence, exact UID/GID/ACL and mount controls,
+ext4/XFS power-loss and restore campaigns, independent DSSE/WORM closure,
+then isolated Cloudflare DO/Container lifecycle tests and G1-G8 review.
+Go/VPS remains traffic, scheduler and financial authority; production remains
+**NO-GO**.

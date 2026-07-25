@@ -4871,20 +4871,13 @@ fn create_linux_staging_at(
     directory: &fs::File,
     file_name: &std::ffi::CStr,
 ) -> Result<fs::File, ReceiptError> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-
-    let descriptor = unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            file_name.as_ptr(),
-            libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if descriptor < 0 {
-        return Err(ReceiptError::Io("create_staging"));
-    }
-    Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    open_linux_beneath(
+        directory,
+        file_name,
+        libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        0o600,
+    )
+    .map_err(|_| ReceiptError::Io("create_staging"))
 }
 
 #[cfg(target_os = "linux")]
@@ -4894,23 +4887,20 @@ fn read_stable_linux_regular_at(
     maximum_bytes: usize,
     label: &'static str,
 ) -> Result<Option<(Vec<u8>, LinuxFilesystemIdentity)>, ReceiptError> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-
-    let descriptor = unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            file_name.as_ptr(),
-            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if descriptor < 0 {
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::NotFound {
-            return Ok(None);
+    let mut file = match open_linux_beneath(
+        directory,
+        file_name,
+        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        0,
+    ) {
+        Ok(file) => file,
+        Err(error) => {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(ReceiptError::UnsafeFilesystem(label));
         }
-        return Err(ReceiptError::UnsafeFilesystem(label));
-    }
-    let mut file = unsafe { fs::File::from_raw_fd(descriptor) };
+    };
     let before = linux_regular_file_identity(&file, label)?;
     let length = file
         .metadata()
@@ -5121,19 +5111,42 @@ fn open_linux_directory_at(
     parent: &fs::File,
     file_name: &std::ffi::CStr,
 ) -> Result<fs::File, std::io::Error> {
+    open_linux_beneath(
+        parent,
+        file_name,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        0,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn open_linux_beneath(
+    parent: &fs::File,
+    path: &std::ffi::CStr,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+) -> Result<fs::File, std::io::Error> {
+    use std::mem::size_of;
     use std::os::fd::{AsRawFd, FromRawFd};
 
+    let how = libc::open_how {
+        flags: flags as u64,
+        mode: mode as u64,
+        resolve: libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_XDEV,
+    };
     let descriptor = unsafe {
-        libc::openat(
+        libc::syscall(
+            libc::SYS_openat2,
             parent.as_raw_fd(),
-            file_name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            path.as_ptr(),
+            &how,
+            size_of::<libc::open_how>(),
         )
     };
     if descriptor < 0 {
         Err(std::io::Error::last_os_error())
     } else {
-        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+        Ok(unsafe { fs::File::from_raw_fd(descriptor as libc::c_int) })
     }
 }
 
@@ -7654,6 +7667,29 @@ mod tests {
             unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_UN) },
             0
         );
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_openat2_child_open_rejects_escape_and_symlink() {
+        use std::ffi::CString;
+        use std::os::unix::fs::symlink;
+
+        let root = temporary_root("linux-openat2-containment");
+        let parent = root.join("parent");
+        let child = parent.join("child");
+        let outside = root.join("outside");
+        fs::create_dir(&parent).unwrap();
+        fs::create_dir(&child).unwrap();
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, parent.join("linked")).unwrap();
+        let parent = open_linux_directory(&parent).unwrap();
+
+        assert!(open_linux_directory_at(&parent, &CString::new("child").unwrap()).is_ok());
+        assert!(open_linux_directory_at(&parent, &CString::new("../outside").unwrap()).is_err());
+        assert!(open_linux_directory_at(&parent, &CString::new("linked").unwrap()).is_err());
+
         cleanup(&root);
     }
 

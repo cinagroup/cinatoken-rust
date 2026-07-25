@@ -9125,7 +9125,7 @@ mod tests {
             terminal_plan_for_operation_context(&publication, &credentials, &activation);
         prefix.receipts.truncate(1);
         store.install_snapshot_plan(&prefix).unwrap();
-        let start = operation_start();
+        let start = terminal_barrier_operation_start();
         let chain = root
             .join(RECEIPTS_DIRECTORY_NAME)
             .join(activation.authorization_id_sha256());
@@ -9159,7 +9159,7 @@ mod tests {
         let root = temporary_root("linux-reserve-closure-replacement");
         let store = ReceiptStore::open(&root).unwrap();
         let (publication, credentials, activation) = operation_context();
-        let start = operation_start();
+        let start = terminal_barrier_operation_start();
         let closures = root.join(OPERATION_CLOSURES_DIRECTORY_NAME);
         let closure = closures.join(activation.authorization_id_sha256());
         let displaced = closures.join("d".repeat(64));
@@ -9198,7 +9198,7 @@ mod tests {
         let root = temporary_root("linux-reserve-head-set-race");
         let store = ReceiptStore::open(&root).unwrap();
         let (publication, credentials, activation) = operation_context();
-        let start = operation_start();
+        let start = terminal_barrier_operation_start();
         let head_set = root
             .join(OPERATION_RECEIPTS_DIRECTORY_NAME)
             .join(activation.authorization_id_sha256())
@@ -9250,7 +9250,12 @@ mod tests {
 
         assert_eq!(
             store
-                .reserve_operation(&publication, &credentials, &activation, &operation_start(),)
+                .reserve_operation(
+                    &publication,
+                    &credentials,
+                    &activation,
+                    &terminal_barrier_operation_start(),
+                )
                 .unwrap(),
             OperationReservation::Fresh
         );
@@ -9258,7 +9263,7 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn operation_start() -> OperationStartInput {
+    fn terminal_barrier_operation_start() -> OperationStartInput {
         let target_sha256 = "a".repeat(64);
         let request_id_sha256 = "e".repeat(64);
         OperationStartInput {

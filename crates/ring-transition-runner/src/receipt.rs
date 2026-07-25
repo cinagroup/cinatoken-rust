@@ -4808,21 +4808,6 @@ fn require_linux_directory_path_identity(
 }
 
 #[cfg(target_os = "linux")]
-fn require_linux_directory_at_identity(
-    parent: &fs::File,
-    file_name: &std::ffi::CStr,
-    expected: &LinuxFilesystemIdentity,
-    label: &'static str,
-) -> Result<(), ReceiptError> {
-    let reopened = open_linux_directory_at(parent, file_name)
-        .map_err(|_| ReceiptError::UnsafeFilesystem(label))?;
-    if linux_directory_identity(&reopened, label)? != *expected {
-        return Err(ReceiptError::UnsafeFilesystem(label));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
 fn same_linux_directory_object(
     left: &LinuxFilesystemIdentity,
     right: &LinuxFilesystemIdentity,
@@ -7658,10 +7643,7 @@ mod tests {
             -1
         );
         let error = std::io::Error::last_os_error();
-        assert!(
-            error.raw_os_error() == Some(libc::EWOULDBLOCK)
-                || error.raw_os_error() == Some(libc::EAGAIN)
-        );
+        assert_eq!(error.raw_os_error(), Some(libc::EWOULDBLOCK));
 
         drop(locked);
         assert_eq!(

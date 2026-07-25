@@ -65,4 +65,16 @@ jobs:
           exit 1
 
       - name: Reject runner warnings
-        run: cargo clippy --locked -p cinatoken-ring-transition-runner --all-targets -- -D warnings
+        shell: bash
+        run: |
+          set -o pipefail
+          log_file="$(mktemp)"
+          if cargo clippy --locked -p cinatoken-ring-transition-runner --all-targets -- -D warnings 2>&1 | tee "${log_file}"; then
+            exit 0
+          fi
+          diagnostic="$(tail -n 80 "${log_file}")"
+          diagnostic="${diagnostic//'%'/'%25'}"
+          diagnostic="${diagnostic//$'\r'/'%0D'}"
+          diagnostic="${diagnostic//$'\n'/'%0A'}"
+          echo "::error title=Linux runner clippy failure::${diagnostic}"
+          exit 1

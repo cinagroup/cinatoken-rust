@@ -1296,8 +1296,34 @@ impl ReceiptStore {
         finish: &OperationFinishInput,
         plan: &ReceiptPlan,
     ) -> Result<(), ReceiptError> {
+        self.install_terminal_snapshot_candidate_locked_with_graph_hook(
+            locked,
+            context,
+            snapshot,
+            operation,
+            finish,
+            plan,
+            |_| {},
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_terminal_snapshot_candidate_locked_with_graph_hook<F>(
+        &self,
+        locked: &LockedAuthorization,
+        context: &OperationContextIdentity,
+        snapshot: &VerifiedSnapshot,
+        operation: &OperationIdentity,
+        finish: &OperationFinishInput,
+        plan: &ReceiptPlan,
+        after_graph_locked: F,
+    ) -> Result<(), ReceiptError>
+    where
+        F: FnOnce(&LockedReserveTerminalBarrier),
+    {
         let directory = open_locked_operation_directory(locked, &operation.operation_id_sha256)?;
         let mut graph = self.lock_terminal_graph(locked, context, false, true)?;
+        after_graph_locked(&graph);
         self.read_locked_operation_terminal_candidate(locked, &graph, context, true)?;
         let verified_operation = verify_locked_operation_directory(
             locked,
@@ -2261,11 +2287,26 @@ impl ReceiptStore {
         graph: &mut LockedReserveTerminalBarrier,
         plan: &ReceiptPlan,
     ) -> Result<InstalledReceiptChain, ReceiptError> {
+        self.install_terminal_plan_locked_with_graph_hook(locked, graph, plan, |_| {})
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_terminal_plan_locked_with_graph_hook<F>(
+        &self,
+        locked: &LockedAuthorization,
+        graph: &mut LockedReserveTerminalBarrier,
+        plan: &ReceiptPlan,
+        after_graph_bound: F,
+    ) -> Result<InstalledReceiptChain, ReceiptError>
+    where
+        F: FnOnce(&LockedReserveTerminalBarrier),
+    {
         validate_planned_prefix(&plan.receipts)?;
         if !plan.is_sealed() {
             return Err(ReceiptError::NotSealed);
         }
         graph.require_bound(locked)?;
+        after_graph_bound(graph);
         let chain = graph
             .execution_chain
             .as_mut()
@@ -2315,9 +2356,11 @@ impl ReceiptStore {
     ) -> Result<CanonicalOperationHeadSet, ReceiptError> {
         let mut operations = BTreeMap::new();
         for operation in &state.operations {
+            if operation.verified.verified.outcome.is_none() {
+                return Err(ReceiptError::InvalidField("unfinished_operation_chain"));
+            }
             if operation.verified.context != *context
                 || operation.verified.verified.receipt_count != MAX_OPERATION_RECEIPTS_PER_CHAIN
-                || operation.verified.verified.outcome.is_none()
             {
                 return Err(ReceiptError::InvalidField("operation_head_set_chain"));
             }
@@ -2445,6 +2488,27 @@ impl ReceiptStore {
         graph: &mut LockedReserveTerminalBarrier,
         state: &mut LockedAuthorizationOperationState,
     ) -> Result<VerifiedTerminalClosure, ReceiptError> {
+        self.install_terminal_closure_graph_locked_with_candidate_hook(
+            locked,
+            context,
+            graph,
+            state,
+            |_| {},
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_terminal_closure_graph_locked_with_candidate_hook<F>(
+        &self,
+        locked: &LockedAuthorization,
+        context: &OperationContextIdentity,
+        graph: &mut LockedReserveTerminalBarrier,
+        state: &mut LockedAuthorizationOperationState,
+        after_candidate_read: F,
+    ) -> Result<VerifiedTerminalClosure, ReceiptError>
+    where
+        F: FnOnce(&LockedReserveTerminalBarrier),
+    {
         graph.require_bound(locked)?;
         self.require_locked_authorization_state(locked, state)?;
         let execution_directory = graph
@@ -2470,6 +2534,9 @@ impl ReceiptStore {
                 candidate,
             )?;
         }
+        after_candidate_read(graph);
+        graph.require_bound(locked)?;
+        self.require_locked_authorization_state(locked, state)?;
         let canonical_head_set = self.canonical_locked_operation_head_set(context, state)?;
         self.publish_locked_operation_head_set(locked, state, &canonical_head_set)?;
         self.freeze_locked_operation_state(locked, state, &canonical_head_set)?;
@@ -2480,6 +2547,8 @@ impl ReceiptStore {
             &canonical_head_set,
             terminal_candidate.as_ref(),
         )?;
+        graph.require_bound(locked)?;
+        self.require_locked_authorization_state(locked, state)?;
         let closure = graph
             .operation_closure
             .as_mut()
@@ -10327,6 +10396,274 @@ mod tests {
         assert_eq!(first, vec!["first".to_owned(), "second".to_owned()]);
         assert_eq!(second, first);
 
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_terminal_candidate_rejects_closure_replacement_after_graph_capture() {
+        let root = temporary_root("linux-terminal-candidate-closure-replacement");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation, snapshot) = terminal_snapshot_context();
+        let mut read = operation_start("a", NOW);
+        read.identity.kind = OperationKind::AuthorityClaimRead;
+        read.identity.state_version = 0;
+        read.identity.request_sha256 =
+            read_operation_request_sha256(&read.identity.target_sha256, &read.request_id_sha256)
+                .unwrap();
+        store
+            .reserve_operation(&publication, &credentials, &activation, &read)
+            .unwrap();
+        let finish = OperationFinishInput {
+            outcome: OperationOutcome::Accepted,
+            finished_at: NOW + 1,
+            http_status: Some(200),
+            response_body_sha256: Some("a".repeat(64)),
+            response_id_sha256: Some("b".repeat(64)),
+        };
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let operation = project_operation_identity(&context, &read.identity).unwrap();
+        let plan = plan_terminal_receipts(&snapshot, &publication, &credentials).unwrap();
+        let authorization = store
+            .ensure_operation_authorization_directory(&context.authorization_id_sha256)
+            .unwrap();
+        let locked = lock_operation_authorization(&authorization).unwrap();
+        let closures = root.join(OPERATION_CLOSURES_DIRECTORY_NAME);
+        let closure = closures.join(&context.authorization_id_sha256);
+        let displaced = closures.join("d".repeat(64));
+        let hook_closure = closure.clone();
+        let hook_displaced = displaced.clone();
+
+        let result = store.install_terminal_snapshot_candidate_locked_with_graph_hook(
+            &locked,
+            &context,
+            &snapshot,
+            &operation,
+            &finish,
+            &plan,
+            move |_| {
+                fs::rename(&hook_closure, &hook_displaced).unwrap();
+                fs::create_dir(&hook_closure).unwrap();
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(ReceiptError::UnsafeFilesystem(
+                "operation_authorization_closure_directory"
+            ))
+        );
+        assert!(!closure.join(TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME).exists());
+        assert!(!displaced
+            .join(TERMINAL_SNAPSHOT_CANDIDATE_FILE_NAME)
+            .exists());
+        drop(locked);
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_terminal_plan_keeps_replacement_out_of_the_visible_execution_chain() {
+        let root = temporary_root("linux-terminal-plan-chain-replacement");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        let authorization = store
+            .ensure_operation_authorization_directory(&context.authorization_id_sha256)
+            .unwrap();
+        let locked = lock_operation_authorization(&authorization).unwrap();
+        let mut graph = store
+            .lock_terminal_graph(&locked, &context, true, true)
+            .unwrap();
+        let chain = root
+            .join(RECEIPTS_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256);
+        let displaced = root.join(RECEIPTS_DIRECTORY_NAME).join("d".repeat(64));
+        let hook_chain = chain.clone();
+        let hook_displaced = displaced.clone();
+
+        let result = store.install_terminal_plan_locked_with_graph_hook(
+            &locked,
+            &mut graph,
+            &plan,
+            move |_| {
+                fs::rename(&hook_chain, &hook_displaced).unwrap();
+                fs::create_dir(&hook_chain).unwrap();
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(ReceiptError::UnsafeFilesystem("execution_receipt"))
+        );
+        assert_eq!(fs::read_dir(&chain).unwrap().count(), 0);
+        assert!(displaced.join(receipt_file_name(1)).exists());
+        drop(locked);
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_terminal_head_set_rejects_operation_replacement_after_state_capture() {
+        let root = temporary_root("linux-terminal-operation-replacement");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let start = terminal_barrier_operation_start();
+        store
+            .reserve_operation(&publication, &credentials, &activation, &start)
+            .unwrap();
+        store
+            .finish_operation(
+                &publication,
+                &credentials,
+                &activation,
+                &start.identity,
+                &OperationFinishInput {
+                    outcome: OperationOutcome::Ambiguous,
+                    finished_at: NOW + 1,
+                    http_status: None,
+                    response_body_sha256: None,
+                    response_id_sha256: None,
+                },
+            )
+            .unwrap();
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        let authorization = store
+            .ensure_operation_authorization_directory(&context.authorization_id_sha256)
+            .unwrap();
+        let locked = lock_operation_authorization(&authorization).unwrap();
+        let mut graph = store
+            .lock_terminal_graph(&locked, &context, true, true)
+            .unwrap();
+        let mut state = store
+            .locked_authorization_closure_state(&locked, &context)
+            .unwrap();
+        store
+            .install_terminal_plan_locked(&locked, &mut graph, &plan)
+            .unwrap();
+        let operation_path = state.operations[0].directory.path.clone();
+        let displaced = authorization.join("d".repeat(64));
+        fs::rename(&operation_path, &displaced).unwrap();
+        fs::create_dir(&operation_path).unwrap();
+        state.authorization_version =
+            linux_directory_version(&locked.authorization, "operation_authorization_lock").unwrap();
+
+        let result =
+            store.install_terminal_closure_graph_locked(&locked, &context, &mut graph, &mut state);
+
+        assert_eq!(
+            result,
+            Err(ReceiptError::UnsafeFilesystem("operation_directory"))
+        );
+        assert!(!authorization.join(OPERATION_HEAD_SET_FILE_NAME).exists());
+        let closure = root
+            .join(OPERATION_CLOSURES_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256);
+        assert!(!closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME).exists());
+        drop(locked);
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_terminal_closure_rechecks_graph_after_candidate_read() {
+        let root = temporary_root("linux-terminal-closure-replacement");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        let authorization = store
+            .ensure_operation_authorization_directory(&context.authorization_id_sha256)
+            .unwrap();
+        let locked = lock_operation_authorization(&authorization).unwrap();
+        let mut graph = store
+            .lock_terminal_graph(&locked, &context, true, true)
+            .unwrap();
+        let mut state = store
+            .locked_authorization_closure_state(&locked, &context)
+            .unwrap();
+        store
+            .install_terminal_plan_locked(&locked, &mut graph, &plan)
+            .unwrap();
+        let closures = root.join(OPERATION_CLOSURES_DIRECTORY_NAME);
+        let closure = closures.join(&context.authorization_id_sha256);
+        let displaced = closures.join("d".repeat(64));
+        let hook_closure = closure.clone();
+        let hook_displaced = displaced.clone();
+
+        let result = store.install_terminal_closure_graph_locked_with_candidate_hook(
+            &locked,
+            &context,
+            &mut graph,
+            &mut state,
+            move |_| {
+                fs::rename(&hook_closure, &hook_displaced).unwrap();
+                fs::create_dir(&hook_closure).unwrap();
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(ReceiptError::UnsafeFilesystem(
+                "operation_authorization_closure_directory"
+            ))
+        );
+        assert!(!authorization.join(OPERATION_HEAD_SET_FILE_NAME).exists());
+        assert!(!closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME).exists());
+        assert!(!displaced.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME).exists());
+        drop(locked);
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_terminal_recovery_completes_exactly_after_head_set_crash() {
+        let root = temporary_root("linux-terminal-head-set-crash");
+        let store = ReceiptStore::open(&root).unwrap();
+        let (publication, credentials, activation) = operation_context();
+        let context = project_operation_context(&publication, &credentials, &activation).unwrap();
+        let plan = terminal_plan_for_operation_context(&publication, &credentials, &activation);
+        let authorization = store
+            .ensure_operation_authorization_directory(&context.authorization_id_sha256)
+            .unwrap();
+        {
+            let locked = lock_operation_authorization(&authorization).unwrap();
+            let mut graph = store
+                .lock_terminal_graph(&locked, &context, true, true)
+                .unwrap();
+            let mut state = store
+                .locked_authorization_closure_state(&locked, &context)
+                .unwrap();
+            store
+                .install_terminal_plan_locked(&locked, &mut graph, &plan)
+                .unwrap();
+            let head_set = store
+                .canonical_locked_operation_head_set(&context, &state)
+                .unwrap();
+            store
+                .publish_locked_operation_head_set(&locked, &mut state, &head_set)
+                .unwrap();
+        }
+        let closure = root
+            .join(OPERATION_CLOSURES_DIRECTORY_NAME)
+            .join(&context.authorization_id_sha256);
+        assert!(authorization.join(OPERATION_HEAD_SET_FILE_NAME).exists());
+        assert!(!closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME).exists());
+
+        let recovered = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+        let replayed = store
+            .recover_terminal_closure(&publication, &credentials, &activation)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(recovered, replayed);
+        assert_eq!(recovered.execution_receipt_head_sha256, plan.head_sha256());
+        assert!(closure.join(OPERATION_HEAD_LOCAL_SEAL_FILE_NAME).exists());
         cleanup(&root);
     }
 

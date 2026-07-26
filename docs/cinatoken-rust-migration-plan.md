@@ -11182,6 +11182,75 @@ DO/Container lifecycle and G1-G8 also remain open. No credential, provider or
 Cloudflare request was made; no customer traffic or Go/VPS authority moved.
 Go/VPS remains authoritative and production remains **NO-GO**.
 
+## 22.302 K7 Real Startup Receipt-Lock Timeout Gate (2026-07-26)
+
+Section 22.301's next process-level gate is now implemented and accepted on
+native Linux. The test is intentionally separate from the successful
+dual-startup trace so its 5-second timeout does not change the frozen
+concurrency counts.
+
+The accepted boundary uses three independent process roles:
+
+1. the parent installs a terminal-candidate receipt fixture and snapshots every
+   descendant path, file type, device, inode, mode, link count and file byte;
+2. a holder process opens the exact production
+   `execution-operation-receipts` directory, acquires
+   `flock(LOCK_EX | LOCK_NB)`, publishes readiness and stays alive until the
+   timeout child exits;
+3. a current-thread Tokio child marks the syscall window and executes the real
+   `verify_loaded_credentials()` startup path while HTTP exchange construction
+   is forbidden by a process-local tripwire;
+4. the call must return only
+   `ReceiptError::LockTimeout { scope: "operation_receipts_lock",
+   timeout_ms: 5_000 }` between 4,900 and 8,000 milliseconds;
+5. the child must record zero HTTP exchange construction attempts, zero
+   successful scoped locks and zero scoped network syscalls; and
+6. before releasing the holder, the parent requires the complete receipt-tree
+   snapshot to be identical. After release, a fresh real startup must recover
+   the fixture as `ReceiptSealed` without constructing an HTTP core or loading
+   the access service token.
+
+The timeout-mode syscall policy is
+`typed-receipts-root-timeout-v1`. It accepts exactly one terminal pending retry
+only for the reported startup TID and exact receipts-root descriptor. At least
+one scoped contention attempt is required, successful scoped locks must be
+zero, every contention must have one successful absolute
+`CLOCK_MONOTONIC`/`TIMER_ABSTIME` sleep, and blocking `flock` or any scoped
+network syscall remains fatal. The ordinary success verifier still rejects
+every pending retry.
+
+Acceptance is frozen at:
+
+| Evidence | Frozen value |
+| --- | --- |
+| Candidate / tree | `56acfce31dbe5e154dd5450d5112882aef4f5dbd` / `d4e6fe556049047745638c1d653b3d0edb50f426` |
+| Ubuntu run/job | [30188739169](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169) / [89757895460](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/job/89757895460) |
+| Platform/source gate | Ubuntu 24.04.4, rustc/cargo 1.97.1, formatting, 156/156 library tests, all syscall policies and strict all-target Clippy passed |
+| Typed timeout | 5,002ms observed against the fixed 5,000ms budget; holder PID `4178`, startup PID `4180`, startup TID `4181` |
+| Scoped lock proof | 491 attempts, 0 successful locks, 491 contention results, 491 absolute monotonic sleeps, 0 interrupted retries/sleeps and 0 blocking attempts |
+| Scoped startup proof | 1,008 parsed syscalls in the marker window, 0 network syscalls and 0 HTTP exchange construction attempts |
+| Whole trace | 5,748 parsed syscalls; only three unscoped `socketpair`; 3,000 split lines reconciled |
+| Filesystem/recovery | metadata-and-byte snapshot unchanged before release; post-release real startup returned `ReceiptSealed` with no HTTP core |
+| Summary artifact | [8627833392](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/artifacts/8627833392), 21 files, 18671 bytes, `sha256:370e16a6f46c4a0156ca7288e6a4280a4a9b72550a61086ae8ebc2f447c0288a`, expires `2026-08-25T05:04:15Z` |
+| Successful raw traces | [8627833482](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/artifacts/8627833482), 8 files, 150104 bytes, `sha256:337a52b48e2e1be92b674f05120a128831d34f41da0008bf65a1c7f1a88ddfb1`, expires `2026-08-25T05:04:16Z` |
+
+[Run 30188633076](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188633076)
+is retained as negative build evidence: the complete Linux tests, timeout
+trace, verification and artifacts passed, but strict Linux Clippy rejected one
+redundant import and the unaliased snapshot tuple. Candidate `56acfce3` fixes
+only those lint findings and reruns the complete gate.
+
+This closes real process-level startup propagation for the cooperative
+receipts-root timeout. It does not prove hostile same-UID exclusion, network
+namespace/seccomp or inherited-FD isolation, production image UID/GID/ACL and
+mount policy, repeated schedule distribution, ext4/XFS power loss and restore,
+external signed WORM anchoring, real Cloudflare Container lifecycle or G1-G8.
+The next K7 order is repeated startup/recovery soak, production image identity
+and filesystem attestation, power-loss/restore, then external immutable
+anchoring before isolated Cloudflare rehearsal. No credential, provider,
+Cloudflare API, customer traffic or Go/VPS authority changed. Go/VPS remains
+authoritative and production remains **NO-GO**.
+
 ### 22.174 2026-07-13 Guarded Global Realtime Reservation Recovery
 
 This increment closes the local D1-orphan scanner gap identified in 22.173,

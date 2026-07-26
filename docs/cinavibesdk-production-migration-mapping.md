@@ -1713,6 +1713,44 @@ quarantine, production image UID/GID/ACL/mounts, power-loss/restore, external
 immutable evidence and G1-G8 remain open. Go/VPS remains authoritative and
 production remains **NO-GO**.
 
+## 2026-07-26 Real Startup Lock-Timeout Mapping
+
+The process-level timeout campaign now closes the remaining local propagation
+item in the bounded-lock mapping. It does not change cinaVibeSDK's production
+authority split.
+
+| cinaVibeSDK concern | Accepted Rust/Cloudflare evidence | Remaining boundary |
+| --- | --- | --- |
+| Replaceable startup under a stuck peer | An independent process holds the exact receipts-root lock while a separate current-thread Tokio process runs real `verify_loaded_credentials()` and returns the typed 5-second root timeout in 5,002ms. | Repeat under actual Container cold-start, eviction and replacement schedules; calibrate alert/SLO policy without enlarging the business deadline. |
+| No accidental authority while blocked | The scoped trace has 491 contention attempts, 491 absolute monotonic sleeps, zero successful locks, zero network syscalls and zero HTTP exchange construction. | Syscall observation is not network namespace, seccomp or inherited-FD denial. |
+| Replaceable local filesystem | Descendant path/type/device/inode/mode/link-count/content snapshot is identical before lock release; after release, real startup safely recovers `ReceiptSealed`. | D1/DO/R2 reconstruction, quarantine and remote replacement remain the authority. |
+| Holder continuity | The parent continuously checks that the holder process remains alive until the timeout child exits; internal and workflow watchdogs bound hangs. | Production supervisor ownership, PID namespace and kill/eviction evidence remain open. |
+| Auditability | Timeout evidence is isolated from successful concurrency traces and produces a verifier JSON, boundary manifest and raw trace with candidate/digest retention. | Repeated schedule distributions and externally signed immutable retention remain open. |
+
+Frozen acceptance is candidate
+`56acfce31dbe5e154dd5450d5112882aef4f5dbd`, Git tree
+`d4e6fe556049047745638c1d653b3d0edb50f426`,
+[run 30188739169](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169)
+and
+[job 89757895460](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/job/89757895460).
+Ubuntu 24.04.4 passed 156 library tests, formatting, all native trace policies
+and strict Clippy. The 5,002ms timeout window parsed 1,008 scoped syscalls and
+proved 491 contention/sleep pairs, zero successful locks, zero scoped network
+and zero HTTP exchange construction.
+
+[Summary artifact 8627833392](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/artifacts/8627833392)
+is 18671 bytes with digest
+`sha256:370e16a6f46c4a0156ca7288e6a4280a4a9b72550a61086ae8ebc2f447c0288a`;
+[raw trace artifact 8627833482](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/artifacts/8627833482)
+is 150104 bytes with digest
+`sha256:337a52b48e2e1be92b674f05120a128831d34f41da0008bf65a1c7f1a88ddfb1`.
+They expire `2026-08-25T05:04:15Z` and `2026-08-25T05:04:16Z`.
+
+This closes a local K7 sub-gate only. Production image identity/filesystem
+attestation, schedule soak, power-loss/restore, external WORM evidence,
+Cloudflare lifecycle and G1-G8 remain open. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
 ## 2026-07-25 Full Terminal Transaction Syscall Mapping
 
 The cinaVibeSDK-derived Container model treats local disk and processes as

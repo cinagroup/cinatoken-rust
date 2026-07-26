@@ -724,6 +724,63 @@ production UID/GID/ACL/mount and inherited-FD controls, power-loss/restore,
 external WORM evidence, Cloudflare lifecycle and G1-G8 remain open. Go/VPS
 remains authoritative and production remains **NO-GO**.
 
+## Real Startup Receipt-Lock Timeout Boundary
+
+The runner now has a native process test for the startup behavior left open by
+the bounded-lock gate. An independent holder locks the exact
+`execution-operation-receipts` directory. A separate current-thread Tokio
+process then calls the real `verify_loaded_credentials()` path.
+
+The timeout child:
+
+- publishes create-new start/finish markers around only the business call;
+- forbids `HyperHttpsExchange::new()` with a process-local construction
+  tripwire;
+- accepts only
+  `LockTimeout { scope: "operation_receipts_lock", timeout_ms: 5_000 }`;
+- requires 4,900ms <= elapsed < 8,000ms; and
+- reports the process/TID, elapsed budget and zero HTTP-construction count for
+  workflow pinning.
+
+The parent continuously requires the holder to remain alive, uses an internal
+9-second child watchdog and is itself wrapped by a 15-second workflow
+watchdog. Before release it compares every descendant path, type, device,
+inode, mode, link count and file byte. After release it runs real startup again
+and requires `ReceiptSealed`, no HTTP core and no verified access service
+token.
+
+The syscall verifier's explicit timeout mode requires the exact receipts-root
+descriptor and reported startup TID, zero scoped successful locks, at least
+one contention, one successful absolute monotonic sleep for every contention,
+zero blocking attempts and zero scoped network syscalls. It does not weaken
+the successful-startup mode, which still rejects every pending retry.
+
+Candidate `56acfce31dbe5e154dd5450d5112882aef4f5dbd`, tree
+`d4e6fe556049047745638c1d653b3d0edb50f426`,
+[run 30188739169](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169)
+and
+[job 89757895460](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/job/89757895460)
+passed formatting, 156 Linux library tests, every syscall boundary and strict
+Clippy. The real call returned after 5,002ms. Its marker window contained 491
+lock attempts, all contention, exactly 491 monotonic sleeps, zero successful
+locks, zero network syscalls and zero HTTP exchange constructions. The fixture
+snapshot was unchanged and the post-release action was `ReceiptSealed`.
+
+[Summary artifact 8627833392](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/artifacts/8627833392)
+contains 21 files, is 18671 bytes, has digest
+`sha256:370e16a6f46c4a0156ca7288e6a4280a4a9b72550a61086ae8ebc2f447c0288a`
+and expires `2026-08-25T05:04:15Z`.
+[Raw artifact 8627833482](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/artifacts/8627833482)
+contains eight traces, is 150104 bytes, has digest
+`sha256:337a52b48e2e1be92b674f05120a128831d34f41da0008bf65a1c7f1a88ddfb1`
+and expires `2026-08-25T05:04:16Z`.
+
+This proves cooperative timeout propagation, not hostile same-UID isolation,
+namespace/seccomp or inherited-FD denial, production image policy,
+power-loss/restore, external WORM retention or Cloudflare lifecycle behavior.
+Those gates and G1-G8 remain open. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
 ## Terminal Receipt Store Boundary
 
 The runner now contains a library-owned terminal receipt projection and

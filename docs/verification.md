@@ -6340,6 +6340,79 @@ signed/WORM evidence, real Cloudflare lifecycle or G1-G8. No credential or
 remote authority was used. Go/VPS remains authoritative and production
 remains **NO-GO**.
 
+## 2026-07-26 Real Startup Receipt-Lock Timeout Verification
+
+This verification isolates a blocked startup from the successful dual-startup
+campaign. A holder process acquires the exact production receipts-root lock.
+A separate process/TID executes real `verify_loaded_credentials()` under a
+current-thread Tokio runtime and a fail-fast HTTP-construction tripwire.
+
+Rust assertions require:
+
+- the holder remains alive until the timeout child exits;
+- only typed
+  `ReceiptError::LockTimeout { scope: "operation_receipts_lock",
+  timeout_ms: 5_000 }` is accepted;
+- elapsed time is at least 4,900ms and below 8,000ms;
+- `HyperHttpsExchange::new()` has zero construction attempts;
+- descendant path/type/device/inode/mode/link-count/content snapshot is exactly
+  unchanged before holder release; and
+- after release, real startup has no HTTP core/access token and executes
+  `ReceiptSealed`.
+
+Verifier assertions require:
+
+- exactly one reported startup TID and one complete create-new marker window;
+- the terminal pending retry targets only
+  `<fixture>/execution-operation-receipts`;
+- scoped successful locks equal zero;
+- scoped attempts equal contention plus interrupted attempts;
+- at least one contention and exactly one successful absolute
+  `CLOCK_MONOTONIC` sleep per contention;
+- zero blocking lock attempts and zero scoped network syscalls; and
+- no unscoped network syscall name other than the pinned test-harness
+  `socketpair`.
+
+Frozen Ubuntu result:
+
+| Field | Value |
+| --- | --- |
+| Candidate / tree | `56acfce31dbe5e154dd5450d5112882aef4f5dbd` / `d4e6fe556049047745638c1d653b3d0edb50f426` |
+| Run / job | [30188739169](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169) / [89757895460](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/job/89757895460) |
+| Platform/source | Ubuntu 24.04.4, `x86_64-unknown-linux-gnu`, rustc/cargo 1.97.1; formatting, 156/156 library tests and strict all-target Clippy passed |
+| Runtime identity | holder PID `4178`; startup PID `4180`; startup TID `4181` |
+| Timeout | fixed 5,000ms budget, 5,002ms observed, 15,000ms external watchdog |
+| Scoped trace | 1,008 parsed; 491 lock attempts; 0 success; 491 contention; 491 monotonic sleeps; 0 interrupted; 0 blocking; 0 network |
+| Whole trace | 5,748 parsed; 502 total lock attempts including unscoped setup/recovery; 11 successful unscoped locks; exact 3 unscoped `socketpair`; 3,000 split lines reconciled |
+| Authority/filesystem | 0 HTTP construction; metadata-and-byte snapshot unchanged; post-release action `ReceiptSealed` |
+
+[Summary artifact 8627833392](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/artifacts/8627833392)
+contains 21 files, is 18671 bytes, has digest
+`sha256:370e16a6f46c4a0156ca7288e6a4280a4a9b72550a61086ae8ebc2f447c0288a`
+and expires `2026-08-25T05:04:15Z`.
+[Successful raw trace artifact 8627833482](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/artifacts/8627833482)
+contains eight traces, is 150104 bytes, has digest
+`sha256:337a52b48e2e1be92b674f05120a128831d34f41da0008bf65a1c7f1a88ddfb1`
+and expires `2026-08-25T05:04:16Z`.
+
+[Run 30188633076](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188633076)
+passed all runtime and trace assertions and uploaded both artifacts, then
+failed strict Linux Clippy on a redundant test-only import and snapshot tuple
+complexity. The accepted candidate replaces the tuple with an alias and reruns
+the entire gate.
+
+Local verification passed 129 library tests, three binary/CLI tests, strict
+Clippy, the 152-test aggregate Bun gate, focused timeout/verifier tests, Bash
+syntax, YAML parsing, Node syntax and `git diff --check`. Native Linux remains
+the accepted source for process, `flock` and `strace` behavior.
+
+This closes the real-startup cooperative timeout sub-gate only. It does not
+prove namespace/seccomp/inherited-FD isolation, production image UID/GID/ACL
+and mount policy, schedule soak, ext4/XFS power-loss/restore, external signed
+WORM retention, remote Cloudflare lifecycle or G1-G8. No credential or remote
+authority was used. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
 ## Container Reconciliation Retry Preview Verification (2026-07-17)
 
 This overlay adds only a RootAuth-protected preview for a dead-letter

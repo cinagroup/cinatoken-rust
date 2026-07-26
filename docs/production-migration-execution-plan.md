@@ -3783,3 +3783,54 @@ Next K7 execution units, in order:
 No credential, remote API, provider, traffic, scheduler or financial mutation
 was used for this gate. Go/VPS remains all production authority; production
 remains **NO-GO**.
+
+## 2026-07-26 K7 Real Startup Receipt-Lock Timeout Gate
+
+The first remaining execution unit from the bounded-lock gate is complete.
+Promotion remains prohibited; this gate proves only local cooperative timeout
+propagation through the real startup path.
+
+Execution acceptance:
+
+1. install one terminal-candidate fixture and capture descendant filesystem
+   identity, mode, link and byte state;
+2. start an independent holder that locks the exact production receipts root
+   and must stay alive through the timeout observation;
+3. execute `verify_loaded_credentials()` in a separate process and
+   current-thread Tokio runtime with an HTTP-construction fail-fast tripwire;
+4. require only the typed 5,000-millisecond receipts-root timeout within the
+   4,900-8,000-millisecond observation bound;
+5. verify from `strace` that the marker window has at least one contention,
+   zero successful locks, exactly one absolute monotonic sleep per contention,
+   no blocking lock and no network syscall;
+6. require zero HTTP exchange construction and an unchanged fixture snapshot
+   before release; and
+7. release the holder and prove a new real startup recovers `ReceiptSealed`
+   without an HTTP core.
+
+Frozen gate:
+
+| Evidence | Result |
+| --- | --- |
+| Candidate / tree | `56acfce31dbe5e154dd5450d5112882aef4f5dbd` / `d4e6fe556049047745638c1d653b3d0edb50f426` |
+| Ubuntu run/job | [30188739169](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169) / [89757895460](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/job/89757895460) |
+| Source gate | Ubuntu 24.04.4, rustc/cargo 1.97.1, formatting, 156/156 library tests and strict all-target Clippy passed |
+| Timeout result | typed `operation_receipts_lock` / 5,000ms; 5,002ms observed; 15,000ms workflow watchdog |
+| Lock evidence | 491 scoped attempts / 0 success / 491 contention / 491 absolute monotonic sleeps / 0 interrupted / 0 blocking |
+| Authority evidence | 0 scoped network syscalls, 0 HTTP exchange construction, unchanged metadata-and-byte snapshot, safe post-release `ReceiptSealed` recovery |
+| Summary artifact | [8627833392](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/artifacts/8627833392), 18671 bytes, `sha256:370e16a6f46c4a0156ca7288e6a4280a4a9b72550a61086ae8ebc2f447c0288a`, expires `2026-08-25T05:04:15Z` |
+| Raw traces | [8627833482](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188739169/artifacts/8627833482), 150104 bytes, `sha256:337a52b48e2e1be92b674f05120a128831d34f41da0008bf65a1c7f1a88ddfb1`, expires `2026-08-25T05:04:16Z` |
+
+Run
+[30188633076](https://github.com/cinagroup/cinatoken-rust/actions/runs/30188633076)
+retains the same successful runtime/trace evidence but failed the final Linux
+lint step on a redundant import and tuple complexity; the accepted candidate
+fixes only those findings.
+
+Next K7 execution units are repeated startup/recovery schedule soak,
+production Container UID/GID/ownership/ACL/mount/inherited-FD attestation,
+ext4/XFS power-loss and restore, external signed immutable anchoring, then
+isolated Cloudflare lifecycle rehearsal. This gate is not namespace/seccomp,
+remote lifecycle or production deployment evidence. No credential or remote
+authority was used. Go/VPS remains all production authority and production
+remains **NO-GO**.

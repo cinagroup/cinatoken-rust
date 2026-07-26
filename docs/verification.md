@@ -6262,6 +6262,84 @@ lifecycle remain required. The accepted run has only the pinned upload
 action's Node 20 deprecation warning while GitHub forces Node 24. Go/VPS
 remains authoritative and production remains **NO-GO**.
 
+## 2026-07-26 Bounded Nonblocking Receipt Lock Verification
+
+The production Linux lock path now has a fixed 5-second total deadline shared
+by the receipts-root and authorization locks. Acquisition uses only
+`LOCK_EX | LOCK_NB`; contention retries every 10 milliseconds using absolute
+`CLOCK_MONOTONIC` sleep. `EINTR` preserves the original deadline,
+`EAGAIN`/`EWOULDBLOCK` are the only contention results, and timeout/system
+errors preserve typed scope, operation and errno.
+
+Rust verification covers:
+
+- receipts-root contention returning the expected typed bounded timeout;
+- authorization contention consuming the same deadline, releasing the root
+  lock and leaving the authorization directory empty;
+- injected `EINTR` attempts not resetting the deadline;
+- unexpected `flock` errno classification; and
+- a static cross-platform gate fixing the production 5-second, nonblocking,
+  monotonic absolute-sleep protocol.
+
+The JavaScript verifier covers exact flags/results, blocking and unknown flag
+rejection, abnormal errno and positive-result rejection, stable retry
+identity, required root/authorization order, missing monotonic sleep, EINTR
+sleep/retry handling and strict split-call reconciliation. The workflow
+captures `clock_nanosleep` for recovery, full transaction, candidate recovery,
+both concurrent receipt processes and real startup. The candidate writer is
+the sole exception because the test deliberately kills it while it waits in
+an unrelated relative 50-millisecond harness loop after durable sync. Its
+actual `EAGAIN` retry would still fail without captured absolute-sleep
+evidence.
+
+Frozen Ubuntu result:
+
+| Field | Value |
+| --- | --- |
+| Candidate | `d96753c5fe90cc59d0ea539be346c27285fbdb69` |
+| Git tree | `a7a8c8aaa4ce97506432b21f84672c1af7636634` |
+| Run / job | [30187560531](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531) / [89754869675](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/job/89754869675) |
+| Platform | Ubuntu 24.04.4, `x86_64-unknown-linux-gnu`, rustc/cargo 1.97.1 |
+| Source validation | formatting, 154/154 library tests, all syscall policies and strict all-target Clippy passed |
+| Standalone traces | terminal recovery 4/4; full transaction 10/10; candidate writer 4/4; candidate recovery 8/8 successful/attempted locks, zero contention |
+| Concurrent receipt trace | 12 successful / 57 attempts / 45 contention / 45 monotonic sleeps / 0 interrupted / 0 blocking |
+| Concurrent startup trace | 24 successful / 58 attempts / 34 contention / 34 monotonic sleeps / 0 interrupted / 0 blocking |
+| Startup trace scope | TIDs `4177`,`4178`; 7008 parsed / 3456 scoped / 0 scoped network / 62 unscoped incomplete / 348 reconciled split lines / exact 3 `socketpair` baseline |
+
+[Summary artifact 8627504413](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/artifacts/8627504413)
+contains 18 verifier, boundary, log and PID files, is 15924 bytes, has digest
+`sha256:f6ed76b44a6232ec388ed4a3d1f7ff31974b23c018ace23af7f99697ace09583`
+and expires `2026-08-25T04:19:18Z`.
+[Successful raw trace artifact 8627504519](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/artifacts/8627504519)
+contains seven traces, is 120805 bytes, has digest
+`sha256:2390b75f13b58f315b88b64e3f4096e95f203af82489d17d80c12df3da33b720`
+and expires `2026-08-25T04:19:18Z`.
+
+Local post-fix validation passed 128 Rust library tests, strict all-target
+Clippy and 26 focused Bun verifier/workflow tests; workflow formatting, Node
+syntax and `git diff --check` also passed. A complete earlier local aggregate
+on the lock implementation passed 128 library, 3 binary/CLI and 150 Bun tests
+with 622 expectations before the native Linux schedule exposed and corrected
+the recovery-loser case.
+
+Negative evidence is retained:
+
+- [run 30187320790](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187320790)
+  exposed the legal `AlreadySealed` loser after 153 passing tests; only that
+  typed result is now accepted and both participants still verify/replay one
+  closure; and
+- [run 30187432173](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187432173)
+  passed all 154 Linux tests, then rejected the incomplete relative harness
+  sleep interrupted by the planned writer `SIGKILL`.
+
+No live `EINTR` was observed; interruption semantics are covered by injected
+Rust and verifier fixtures. This proof does not replace a process-level real
+startup timeout test, repeated schedule soak, dedicated UID/GID and exact
+ACL/mount/inherited-FD controls, ext4/XFS power loss, restore, external
+signed/WORM evidence, real Cloudflare lifecycle or G1-G8. No credential or
+remote authority was used. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
 ## Container Reconciliation Retry Preview Verification (2026-07-17)
 
 This overlay adds only a RootAuth-protected preview for a dead-letter

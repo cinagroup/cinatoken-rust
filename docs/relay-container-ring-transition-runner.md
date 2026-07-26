@@ -667,6 +667,63 @@ isolation, bounded `flock`, the remaining crash and storage campaigns,
 external evidence, Cloudflare lifecycle and G1-G8. Production remains
 **NO-GO**.
 
+## Bounded Nonblocking Receipt Lock Gate
+
+The production Linux receipt lock is no longer an unbounded blocking
+`flock`. `lock_operation_authorization` creates one 5-second
+`LinuxLockDeadline` before the receipts-root attempt, then uses that same value
+for the authorization lock. The acquisition loop uses
+`flock(LOCK_EX | LOCK_NB)`, treats only `EAGAIN`/`EWOULDBLOCK` as contention,
+and sleeps to an absolute `CLOCK_MONOTONIC` retry point. `EINTR` preserves the
+deadline. Clock, sleep and unexpected lock failures retain operation and errno
+in `ReceiptError::LockSystem`; exhaustion returns
+`ReceiptError::LockTimeout`.
+
+The native verifier requires exact nonblocking flags and zero-valued success,
+the root-before-authorization order, stable TID/fd/path/scope across retries,
+root ownership during authorization retries, reverse unlocks, and one absolute
+monotonic sleep per observed contention retry. It strictly reconciles split
+trace calls. Successful protocol counts remain exact, while attempts and
+retries are schedule-dependent telemetry.
+
+Candidate `d96753c5fe90cc59d0ea539be346c27285fbdb69`, Git tree
+`a7a8c8aaa4ce97506432b21f84672c1af7636634`,
+[Ubuntu run 30187560531](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531)
+and
+[job 89754869675](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/job/89754869675)
+passed 154 Linux library tests, formatting, all traces and strict Clippy.
+
+The accepted run observed:
+
+- exact successful standalone lock counts `4/10/4/8`;
+- concurrent receipt recovery with 12 successes, 57 attempts, 45 contention
+  retries and 45 monotonic sleeps;
+- concurrent real startup with 24 successes, 58 attempts, 34 contention
+  retries, 34 monotonic sleeps and zero blocking attempts; and
+- zero network attempts across 3456 syscalls in the two real startup windows,
+  from 7008 parsed syscalls, with 348 split lines reconciled.
+
+[Summary artifact 8627504413](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/artifacts/8627504413)
+is 15924 bytes with digest
+`sha256:f6ed76b44a6232ec388ed4a3d1f7ff31974b23c018ace23af7f99697ace09583`.
+[Raw artifact 8627504519](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/artifacts/8627504519)
+is 120805 bytes with digest
+`sha256:2390b75f13b58f315b88b64e3f4096e95f203af82489d17d80c12df3da33b720`.
+Both expire `2026-08-25T04:19:18Z`.
+
+Run `30187320790` remains evidence for the legitimate concurrent recovery
+loser returning `AlreadySealed`; run `30187432173` remains evidence that an
+unrelated relative harness sleep interrupted by deliberate `SIGKILL` cannot be
+presented as a complete lock-retry sleep. The candidate-writer trace excludes
+only that harness sleep; every actual retry-capable recovery/concurrency/startup
+trace still captures `clock_nanosleep`.
+
+This closes bounded cooperative waiting, not hostile same-UID exclusion or
+production readiness. A real startup timeout propagation test, schedule soak,
+production UID/GID/ACL/mount and inherited-FD controls, power-loss/restore,
+external WORM evidence, Cloudflare lifecycle and G1-G8 remain open. Go/VPS
+remains authoritative and production remains **NO-GO**.
+
 ## Terminal Receipt Store Boundary
 
 The runner now contains a library-owned terminal receipt projection and

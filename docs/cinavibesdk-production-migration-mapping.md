@@ -1661,6 +1661,58 @@ close bounded locking, power-loss/restore, external WORM, Cloudflare
 lifecycle or G1-G8. Go/VPS remains authoritative and production remains
 **NO-GO**.
 
+## 2026-07-26 Bounded Receipt Lock Mapping
+
+The bounded-lock increment closes the specific blocking-wait gap above without
+changing cinaVibeSDK's authority split. The local Container filesystem remains
+an execution cache; D1/DO state and externally retained evidence remain the
+reconstruction and quarantine authority.
+
+| cinaVibeSDK concern | Rust/Cloudflare evidence | Remaining boundary |
+| --- | --- | --- |
+| Replaceable startup latency | Receipts-root and authorization locks share one 5-second `CLOCK_MONOTONIC` deadline; the second lock receives no fresh budget. | The fixed budget still needs real Cloudflare Container cold-start and eviction SLO calibration. |
+| Cooperative lock behavior | Production uses only `LOCK_EX | LOCK_NB`; 10-millisecond retries use absolute monotonic sleep. | A peer sharing the runner UID can ignore advisory locks; dedicated identity and mount isolation remain mandatory. |
+| Fail-closed error ownership | Timeout and system failures are typed separately with scope, operation and errno; unexpected errors are never treated as contention. | Operational alert routing and remote Container restart/quarantine evidence remain open. |
+| Transaction continuity | Root precedes authorization; authorization retries require root ownership; failure of the second lock releases the first without creating receipt objects. | D1/DO reconstruction still decides whether a new Container may resume. |
+| Auditable nondeterminism | Successful lock counts stay exact, while attempts/retries/sleeps are disclosed. The accepted run observed 45 receipt-recovery and 34 startup contention retries, each paired with a monotonic sleep. | Repeated schedule soak and process-level startup timeout evidence remain open. |
+| Startup egress boundary | The same accepted startup trace reports zero blocking lock attempts and zero network attempts in both real startup windows. | This remains syscall observation, not network namespace, seccomp or inherited-FD isolation. |
+
+Frozen acceptance is candidate
+`d96753c5fe90cc59d0ea539be346c27285fbdb69`, Git tree
+`a7a8c8aaa4ce97506432b21f84672c1af7636634`,
+[run 30187560531](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531)
+and
+[job 89754869675](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/job/89754869675).
+Ubuntu passed formatting, 154 library tests, all trace policies and strict
+Clippy. Concurrent receipt recovery reported 12 successful locks from 57
+attempts and 45 monotonic contention sleeps. Concurrent real startup reported
+24 successful locks from 58 attempts, 34 monotonic contention sleeps, zero
+blocking attempts, 7008 parsed syscalls, 3456 scoped syscalls and zero scoped
+network attempts.
+
+[Summary artifact 8627504413](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/artifacts/8627504413)
+is 15924 bytes with digest
+`sha256:f6ed76b44a6232ec388ed4a3d1f7ff31974b23c018ace23af7f99697ace09583`.
+[Successful raw trace artifact 8627504519](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/artifacts/8627504519)
+is 120805 bytes with digest
+`sha256:2390b75f13b58f315b88b64e3f4096e95f203af82489d17d80c12df3da33b720`.
+Both expire `2026-08-25T04:19:18Z`.
+
+Runs
+[30187320790](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187320790)
+and
+[30187432173](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187432173)
+remain negative evidence for a legitimate concurrent `AlreadySealed` loser
+and an unrelated relative harness sleep interrupted by deliberate `SIGKILL`.
+The corrections preserve exact closure replay and retain monotonic-sleep
+enforcement on every real retry path.
+
+This does not make Container disk authoritative or approve cutover. Real
+Container lifecycle, startup lock-timeout propagation, D1/DO/R2 recovery and
+quarantine, production image UID/GID/ACL/mounts, power-loss/restore, external
+immutable evidence and G1-G8 remain open. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
 ## 2026-07-25 Full Terminal Transaction Syscall Mapping
 
 The cinaVibeSDK-derived Container model treats local disk and processes as

@@ -11109,6 +11109,79 @@ real Cloudflare DO/Container lifecycle and G1-G8. The unexplained run
 pinned upload action's Node 20 deprecation warning while GitHub forces Node
 24. Go/VPS remains authoritative and production remains **NO-GO**.
 
+## 22.301 K7 Bounded Nonblocking Receipt Lock Gate (2026-07-26)
+
+This gate supersedes the blocking-`flock` boundary recorded in section 22.300.
+Every production Linux receipt-store entry path now acquires the receipts-root
+and authorization locks with one shared `LinuxLockDeadline`:
+
+1. the total budget is fixed at 5,000 milliseconds and is created before the
+   first lock attempt;
+2. both locks use exact `flock(LOCK_EX | LOCK_NB)`;
+3. only `EAGAIN`/`EWOULDBLOCK` is contention and sleeps toward a 10-millisecond
+   absolute `CLOCK_MONOTONIC` retry point with
+   `clock_nanosleep(TIMER_ABSTIME)`;
+4. `EINTR` retries neither create a new deadline nor change the lock identity;
+5. timeout returns typed `LockTimeout { scope, timeout_ms }`, while clock,
+   sleep and unexpected `flock` failures return typed
+   `LockSystem { scope, operation, errno }`; and
+6. if the second lock times out, normal reverse-order destruction releases the
+   first lock and no receipt, execution or closure object is created.
+
+The syscall verifier now treats the lock protocol as
+`exclusive-nonblocking-monotonic-deadline-v1`. It requires the exact two-flag
+set and successful result zero, rejects blocking or numeric/unknown flags,
+binds retries to the same TID, descriptor, path and lock scope, requires the
+receipts-root lock before the authorization lock, and requires every observed
+contention retry to have a captured absolute monotonic sleep. Successful lock
+counts remain exact protocol assertions; attempts and contention are reported
+separately because scheduler contention is intentionally nondeterministic.
+Split `strace` calls are reconciled only by exact TID and syscall name.
+
+Acceptance is frozen at:
+
+| Evidence | Frozen value |
+| --- | --- |
+| Candidate | `d96753c5fe90cc59d0ea539be346c27285fbdb69` |
+| Git tree | `a7a8c8aaa4ce97506432b21f84672c1af7636634` |
+| Ubuntu run/job | [30187560531](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531) / [89754869675](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/job/89754869675) |
+| Linux gate | Ubuntu 24.04, Rust 1.97.1, formatting, 154 library tests and strict all-target Clippy passed |
+| Standalone successful locks | terminal recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; all had zero contention |
+| Concurrent receipt recovery | 12 successful locks from 57 attempts; 45 contention retries; 45 monotonic sleeps; zero blocking attempts |
+| Concurrent real startup | 24 successful locks from 58 attempts; 34 contention retries; 34 monotonic sleeps; zero blocking attempts; 348 split lines reconciled |
+| Startup network window | 7008 parsed / 3456 scoped syscalls; zero scoped network attempts; outside-window baseline remained exactly three `socketpair` |
+| Summary artifact | [8627504413](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/artifacts/8627504413), 15924 bytes, `sha256:f6ed76b44a6232ec388ed4a3d1f7ff31974b23c018ace23af7f99697ace09583`, expires `2026-08-25T04:19:18Z` |
+| Successful raw traces | [8627504519](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/artifacts/8627504519), 120805 bytes, `sha256:2390b75f13b58f315b88b64e3f4096e95f203af82489d17d80c12df3da33b720`, expires `2026-08-25T04:19:18Z` |
+
+The accepted run observed real contention rather than merely exercising an
+uncontended shape. No live `EINTR` happened, so injected Rust and Bun verifier
+tests remain the evidence that interruption preserves the original deadline.
+The candidate-writer trace intentionally excludes `clock_nanosleep`: after its
+durable sync marker it waits in an unrelated relative 50-millisecond harness
+loop and is deliberately killed. All recovery, concurrency and startup traces
+retain `clock_nanosleep`; a writer-side `EAGAIN` still fails verification
+because its required absolute retry sleep cannot be proven.
+
+[Run 30187320790](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187320790)
+is retained because Linux exposed a legal recovery-loser `AlreadySealed`
+schedule after 153 tests; the loser now accepts only that typed result and both
+processes still replay the same closure.
+[Run 30187432173](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187432173)
+then passed all 154 Linux tests and failed only because the deliberately killed
+relative harness sleep was still inside the writer trace filter. The final
+calibration removes that unrelated syscall from only that one trace rather
+than weakening the retry verifier.
+
+This closes the bounded-wait implementation and native trace sub-gate, not K7
+or production promotion. A process-level real-startup timeout campaign that
+holds the receipts lock, proves typed startup failure within the shared budget
+and reasserts zero transport/authority creation remains the next focused lock
+test. Schedule soak, dedicated UID/GID and exact ACL/mount attestation,
+ext4/XFS power loss, restore, external signed WORM evidence, real Cloudflare
+DO/Container lifecycle and G1-G8 also remain open. No credential, provider or
+Cloudflare request was made; no customer traffic or Go/VPS authority moved.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
 ### 22.174 2026-07-13 Guarded Global Realtime Reservation Recovery
 
 This increment closes the local D1-orphan scanner gap identified in 22.173,

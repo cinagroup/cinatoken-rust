@@ -3719,3 +3719,67 @@ isolated Cloudflare lifecycle and all G1-G8 approvals.
 The only accepted-run annotation is the pinned upload action's Node 20
 deprecation warning while GitHub forces Node 24. Go/VPS remains traffic,
 scheduler and financial authority; production remains **NO-GO**.
+
+## 2026-07-26 K7 Bounded Receipt Authorization Lock Gate
+
+The blocking-`flock` item carried by the preceding gate is now closed for the
+official Linux writer. Promotion remains prohibited; this is one K7 sub-gate.
+
+Implementation acceptance:
+
+1. create one 5,000-millisecond monotonic deadline before acquiring the
+   receipts-root lock and pass the same deadline to the authorization lock;
+2. use only `LOCK_EX | LOCK_NB`, retry contention every 10 milliseconds with
+   absolute `CLOCK_MONOTONIC` sleep, and preserve the deadline across `EINTR`;
+3. classify only `EAGAIN`/`EWOULDBLOCK` as contention and return typed
+   scope-bearing timeout/system errors for every other outcome;
+4. release the root lock if authorization acquisition fails and create no
+   receipt, execution or closure object before both locks and retained-path
+   identity checks succeed;
+5. verify exact lock flags, result, order, identity and unlocks from native
+   traces; bind each contention retry to one required monotonic sleep; and
+6. keep exact successful lock counts independent of nondeterministic attempt
+   counts.
+
+Frozen gate:
+
+| Evidence | Result |
+| --- | --- |
+| Candidate / tree | `d96753c5fe90cc59d0ea539be346c27285fbdb69` / `a7a8c8aaa4ce97506432b21f84672c1af7636634` |
+| Ubuntu run/job | [30187560531](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531) / [89754869675](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/job/89754869675) |
+| Linux source gate | 154/154 library tests, formatting and strict all-target Clippy passed |
+| Exact standalone successes | 4 recovery, 10 full transaction, 4 candidate writer, 8 candidate recovery |
+| Receipt-store concurrency | 12 successes / 57 attempts / 45 contention retries / 45 absolute monotonic sleeps / 0 blocking |
+| Real startup concurrency | 24 successes / 58 attempts / 34 contention retries / 34 absolute monotonic sleeps / 0 blocking |
+| Startup isolation observation | 7008 parsed / 3456 scoped / 0 scoped network / 348 split lines reconciled |
+| Summary artifact | [8627504413](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/artifacts/8627504413), 15924 bytes, `sha256:f6ed76b44a6232ec388ed4a3d1f7ff31974b23c018ace23af7f99697ace09583` |
+| Raw traces | [8627504519](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187560531/artifacts/8627504519), 120805 bytes, `sha256:2390b75f13b58f315b88b64e3f4096e95f203af82489d17d80c12df3da33b720` |
+| Artifact expiry | `2026-08-25T04:19:18Z` |
+
+Run
+[30187320790](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187320790)
+is retained as the Linux schedule that exposed the legal `AlreadySealed`
+recovery loser. Run
+[30187432173](https://github.com/cinagroup/cinatoken-rust/actions/runs/30187432173)
+passed all 154 library tests, then rejected an incomplete relative
+50-millisecond test-harness sleep when the candidate writer was deliberately
+killed. Only that writer trace omits `clock_nanosleep`; all retry-capable
+recovery, concurrent and startup traces retain it, and any writer contention
+still fails without its required absolute sleep evidence.
+
+Next K7 execution units, in order:
+
+1. add a real `verify_loaded_credentials()` process test whose peer holds the
+   receipts lock past the shared deadline, with watchdog-bounded typed timeout,
+   zero HTTP core and no mutation authority;
+2. run repeated concurrent startup/recovery soak and retain schedule
+   distribution rather than pinning retry counts;
+3. attest dedicated UID/GID, ownership, ACL, mount and inherited-FD isolation
+   in the production Container image;
+4. complete ext4/XFS crash/power-loss and backup/restore campaigns; and
+5. bind externally signed immutable receipt evidence before isolated
+   Cloudflare lifecycle rehearsal and G1-G8.
+
+No credential, remote API, provider, traffic, scheduler or financial mutation
+was used for this gate. Go/VPS remains all production authority; production
+remains **NO-GO**.

@@ -68,6 +68,7 @@ const NETWORK_SYSCALLS = new Set([
   "socketpair",
 ]);
 const ALLOWED_UNSCOPED_NETWORK_SYSCALLS = new Set(["socketpair"]);
+const LOCK_POLICY = "exclusive-nonblocking-monotonic-deadline-v1";
 
 export function verifyRingTransitionRunnerSyscallTrace({
   traceText,
@@ -123,6 +124,7 @@ export function verifyRingTransitionRunnerSyscallTrace({
 
   const descriptorState = new Map();
   const heldLocks = new Map();
+  const pendingLockRetries = new Map();
   const exclusiveLocks = [];
   const evidence = {
     dirfdOpenat2: false,
@@ -136,19 +138,16 @@ export function verifyRingTransitionRunnerSyscallTrace({
     terminalCandidateDirectorySyncAt: null,
   };
   const processTerminations = [];
-  let firstExclusiveLock = null;
+  let firstLockAttempt = null;
   let parsedSyscalls = 0;
+  let observedLockAttempts = 0;
+  let observedContentionRetries = 0;
+  let observedInterruptedRetries = 0;
+  let observedMonotonicSleeps = 0;
+  let observedInterruptedSleeps = 0;
 
-  for (const [index, rawLine] of traceText.split(/\r?\n/u).entries()) {
-    const line = rawLine.trim();
-    if (line === "") continue;
-    if (
-      line.includes("<unfinished ...>") ||
-      line.includes("resumed>") ||
-      line.startsWith("strace:")
-    ) {
-      throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
-    }
+  const reconciled = reconcileTraceLines(traceText, label);
+  for (const { index, line } of reconciled.lines) {
     const termination = parseProcessTerminationLine(line);
     if (termination) {
       processTerminations.push({ ...termination, index });
@@ -170,35 +169,86 @@ export function verifyRingTransitionRunnerSyscallTrace({
     rememberDescriptor(syscall, descriptorState);
     const success = resultIsSuccess(syscall.result);
     const afterFirstLock =
-      firstExclusiveLock !== null && index >= firstExclusiveLock;
+      firstLockAttempt !== null && index >= firstLockAttempt;
 
-    if (
-      syscall.name === "flock" &&
-      syscall.args.includes("LOCK_EX") &&
-      success
-    ) {
+    if (syscall.name === "flock") {
+      const flock = classifyFlockSyscall(syscall, label);
+      const locks = locksFor(heldLocks, syscall.pid);
       const descriptor = descriptorArgument(
         syscall.args,
         syscall.pid,
         descriptorState,
       );
-      requireFixtureDescriptor(descriptor, root, label, "exclusive flock");
-      locksFor(heldLocks, syscall.pid).set(descriptor.fd, descriptor.path);
+      if (flock.kind === "unlock") {
+        if (!locks.has(descriptor.fd)) {
+          throw new Error(
+            `[${label}] unlock does not match a held lock: ${syscall.raw}`,
+          );
+        }
+        locks.delete(descriptor.fd);
+        continue;
+      }
+
+      observedLockAttempts += 1;
+      if (firstLockAttempt === null) firstLockAttempt = index;
+      requireFixtureDescriptor(
+        descriptor,
+        root,
+        label,
+        "exclusive nonblocking flock",
+      );
+      const lockScope = lockDescriptorScope(descriptor, root, label);
+      validateLockAcquisitionOrder({
+        descriptor,
+        lockScope,
+        locks,
+        pendingLockRetries,
+        syscall,
+        label,
+      });
+      if (flock.outcome === "contention") {
+        observedContentionRetries += 1;
+        pendingLockRetries.set(syscall.pid, {
+          fd: descriptor.fd,
+          path: descriptor.path,
+          scope: lockScope,
+          requiresSleep: true,
+          slept: false,
+        });
+        continue;
+      }
+      if (flock.outcome === "interrupted") {
+        observedInterruptedRetries += 1;
+        pendingLockRetries.set(syscall.pid, {
+          fd: descriptor.fd,
+          path: descriptor.path,
+          scope: lockScope,
+          requiresSleep: false,
+          slept: false,
+        });
+        continue;
+      }
+      pendingLockRetries.delete(syscall.pid);
+      locks.set(descriptor.fd, descriptor.path);
       exclusiveLocks.push({
         pid: syscall.pid,
         fd: descriptor.fd,
         path: descriptor.path,
       });
-      if (firstExclusiveLock === null) firstExclusiveLock = index;
       continue;
     }
-    if (
-      syscall.name === "flock" &&
-      syscall.args.includes("LOCK_UN") &&
-      success
-    ) {
-      const descriptor = parseDescriptorToken(syscall.args);
-      if (descriptor) locksFor(heldLocks, syscall.pid).delete(descriptor.fd);
+
+    if (syscall.name === "clock_nanosleep") {
+      const pending = pendingLockRetries.get(syscall.pid);
+      if (pending?.requiresSleep) {
+        const sleep = classifyMonotonicDeadlineSleep(syscall, label);
+        if (sleep === "success") {
+          pending.slept = true;
+          observedMonotonicSleeps += 1;
+        } else {
+          observedInterruptedSleeps += 1;
+        }
+      }
       continue;
     }
 
@@ -225,12 +275,26 @@ export function verifyRingTransitionRunnerSyscallTrace({
       const descriptor = parseDescriptorToken(syscall.args);
       if (descriptor) {
         descriptorState.delete(descriptorKey(syscall.pid, descriptor.fd));
-        locksFor(heldLocks, syscall.pid).delete(descriptor.fd);
+        const locks = locksFor(heldLocks, syscall.pid);
+        locks.delete(descriptor.fd);
+        const pending = pendingLockRetries.get(syscall.pid);
+        if (pending?.fd === descriptor.fd) {
+          throw new Error(
+            `[${label}] retried lock descriptor closed before acquisition: ${syscall.raw}`,
+          );
+        }
       }
     }
   }
 
-  if (parsedSyscalls === 0 || firstExclusiveLock === null) {
+  if (pendingLockRetries.size !== 0) {
+    throw new Error(
+      `[${label}] lock retries did not converge: ${[
+        ...pendingLockRetries.entries(),
+      ].map(([pid, pending]) => `${pid}:${pending.scope}`).join(",")}`,
+    );
+  }
+  if (parsedSyscalls === 0 || firstLockAttempt === null) {
     throw new Error(`[${label}] trace contains no parsed locked syscall`);
   }
   verifyExclusiveLockPairs(exclusiveLocks, root, label, expectedLocks);
@@ -311,8 +375,17 @@ export function verifyRingTransitionRunnerSyscallTrace({
   return {
     ok: true,
     label,
+    lockPolicy: LOCK_POLICY,
     expectedLocks,
     observedLocks: exclusiveLocks.length,
+    observedSuccessfulLocks: exclusiveLocks.length,
+    observedLockAttempts,
+    observedContentionRetries,
+    observedInterruptedRetries,
+    observedMonotonicSleeps,
+    observedInterruptedSleeps,
+    blockingLockAttemptsObserved: 0,
+    reconciledSplitTraceLines: reconciled.incompleteTraceLinesObserved,
     observedLockPids: locksByPid.size,
     observedLocksPerPid,
     observedLockPidValues: [...locksByPid.keys()].sort(),
@@ -410,9 +483,39 @@ export function verifyConcurrentRingTransitionRunnerSyscallTraces({
   return {
     ok: true,
     label,
+    lockPolicy: LOCK_POLICY,
     expectedLocks,
     observedLocks: participants.reduce(
       (total, participant) => total + participant.observedLocks,
+      0,
+    ),
+    observedSuccessfulLocks: participants.reduce(
+      (total, participant) => total + participant.observedSuccessfulLocks,
+      0,
+    ),
+    observedLockAttempts: participants.reduce(
+      (total, participant) => total + participant.observedLockAttempts,
+      0,
+    ),
+    observedContentionRetries: participants.reduce(
+      (total, participant) => total + participant.observedContentionRetries,
+      0,
+    ),
+    observedInterruptedRetries: participants.reduce(
+      (total, participant) => total + participant.observedInterruptedRetries,
+      0,
+    ),
+    observedMonotonicSleeps: participants.reduce(
+      (total, participant) => total + participant.observedMonotonicSleeps,
+      0,
+    ),
+    observedInterruptedSleeps: participants.reduce(
+      (total, participant) => total + participant.observedInterruptedSleeps,
+      0,
+    ),
+    blockingLockAttemptsObserved: 0,
+    reconciledSplitTraceLines: participants.reduce(
+      (total, participant) => total + participant.reconciledSplitTraceLines,
       0,
     ),
     observedLockPids: expectedLockPids,
@@ -473,10 +576,15 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
 
   let parsedSyscalls = 0;
   let scopedParsedSyscalls = 0;
-  let unscopedIncompleteTraceLinesObserved = 0;
   let unscopedNetworkSyscallsObserved = 0;
+  let observedLockAttempts = 0;
+  let observedSuccessfulLocks = 0;
+  let observedContentionRetries = 0;
+  let observedInterruptedRetries = 0;
+  let observedMonotonicSleeps = 0;
+  let observedInterruptedSleeps = 0;
   const observedPidValues = new Set();
-  const pendingExpectedSyscalls = new Map();
+  const pendingLockRetries = new Map();
   const unscopedNetworkSyscallNames = new Set();
   const traceWindows = new Map(
     expectedTracePidValues.map((pid, index) => [
@@ -491,81 +599,19 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
       },
     ]),
   );
-  for (const rawLine of traceText.split(/\r?\n/u)) {
-    const line = rawLine.trim();
-    if (line === "") continue;
-    if (line.startsWith("strace:")) {
-      throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
-    }
-    const unfinished = parseUnfinishedSyscallLine(line);
-    if (unfinished) {
-      observedPidValues.add(unfinished.pid);
-      const traceWindow = traceWindows.get(unfinished.pid);
-      if (!traceWindow) {
-        unscopedIncompleteTraceLinesObserved += 1;
-        continue;
-      }
-      const markerKind = traceMarkerKind(
-        unfinished.name,
-        line,
-        traceWindow,
-      );
-      if (traceWindow.active) {
-        scopedParsedSyscalls += 1;
-      }
-      if (NETWORK_SYSCALLS.has(unfinished.name) && traceWindow.active) {
-        throw new Error(
-          `[${label}] forbidden network syscall attempted: ${unfinished.name} by ${unfinished.pid}`,
-        );
-      }
-      if (NETWORK_SYSCALLS.has(unfinished.name)) {
-        if (!ALLOWED_UNSCOPED_NETWORK_SYSCALLS.has(unfinished.name)) {
-          throw new Error(
-            `[${label}] forbidden unscoped network syscall attempted: ${unfinished.name} by ${unfinished.pid}`,
-          );
-        }
-        unscopedNetworkSyscallsObserved += 1;
-        unscopedNetworkSyscallNames.add(unfinished.name);
-      }
-      if (pendingExpectedSyscalls.has(unfinished.pid)) {
-        throw new Error(
-          `[${label}] overlapping unfinished syscalls for ${unfinished.pid}`,
-        );
-      }
-      pendingExpectedSyscalls.set(unfinished.pid, {
-        name: unfinished.name,
-        markerKind,
-      });
-      continue;
-    }
-    const resumed = parseResumedSyscallLine(line);
-    if (resumed) {
-      observedPidValues.add(resumed.pid);
-      const traceWindow = traceWindows.get(resumed.pid);
-      if (!traceWindow) {
-        unscopedIncompleteTraceLinesObserved += 1;
-        continue;
-      }
-      const pending = pendingExpectedSyscalls.get(resumed.pid);
-      if (!pending || pending.name !== resumed.name) {
-        throw new Error(
-          `[${label}] resumed syscall has no matching unfinished syscall: ${line}`,
-        );
-      }
-      pendingExpectedSyscalls.delete(resumed.pid);
-      if (pending.markerKind) {
-        if (!resultIsSuccess(resumed.result)) {
-          throw new Error(
-            `[${label}] trace ${pending.markerKind} marker failed for ${resumed.pid}`,
-          );
-        }
-        applyTraceMarker(traceWindow, pending.markerKind, label);
-      }
-      continue;
-    }
-    if (line.includes("<unfinished ...>") || line.includes("resumed>")) {
-      throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
-    }
+  const reconciled = reconcileTraceLines(traceText, label);
+  const unscopedIncompleteTraceLinesObserved = reconciled.lines.reduce(
+    (total, entry) =>
+      total +
+      (
+          entry.splitPid !== null &&
+          !traceWindows.has(entry.splitPid)
+        ? entry.splitParts
+        : 0
+      ),
+    0,
+  );
+  for (const { line } of reconciled.lines) {
     if (parseProcessTerminationLine(line)) continue;
     if (
       /^(?:(?:\d+\s+)|(?:\[pid\s+\d+\]\s+))?(?:--- |\+\+\+ |Process )/u.test(
@@ -598,6 +644,68 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
       unscopedNetworkSyscallsObserved += 1;
       unscopedNetworkSyscallNames.add(syscall.name);
     }
+    if (syscall.name === "flock") {
+      const flock = classifyFlockSyscall(syscall, label);
+      if (flock.kind === "unlock") {
+        if (pendingLockRetries.has(syscall.pid)) {
+          throw new Error(
+            `[${label}] lock was unlocked while a retry was pending: ${syscall.raw}`,
+          );
+        }
+      } else {
+        observedLockAttempts += 1;
+        const descriptor = parseDescriptorToken(syscall.args);
+        if (!descriptor) {
+          throw new Error(
+            `[${label}] traced flock has no numeric descriptor: ${syscall.raw}`,
+          );
+        }
+        const normalizedPath = normalizeTracePath(descriptor.path);
+        const pending = pendingLockRetries.get(syscall.pid);
+        if (
+          pending &&
+          (
+            pending.fd !== descriptor.fd ||
+            pending.path !== normalizedPath
+          )
+        ) {
+          throw new Error(`[${label}] lock retry identity drift: ${syscall.raw}`);
+        }
+        if (pending?.requiresSleep && !pending.slept) {
+          throw new Error(
+            `[${label}] contended lock retried without a monotonic deadline sleep: ${syscall.raw}`,
+          );
+        }
+        if (flock.outcome === "success") {
+          observedSuccessfulLocks += 1;
+          pendingLockRetries.delete(syscall.pid);
+        } else {
+          if (flock.outcome === "contention") {
+            observedContentionRetries += 1;
+          } else {
+            observedInterruptedRetries += 1;
+          }
+          pendingLockRetries.set(syscall.pid, {
+            fd: descriptor.fd,
+            path: normalizedPath,
+            requiresSleep: flock.outcome === "contention",
+            slept: false,
+          });
+        }
+      }
+    }
+    if (syscall.name === "clock_nanosleep") {
+      const pending = pendingLockRetries.get(syscall.pid);
+      if (pending?.requiresSleep) {
+        const sleep = classifyMonotonicDeadlineSleep(syscall, label);
+        if (sleep === "success") {
+          pending.slept = true;
+          observedMonotonicSleeps += 1;
+        } else {
+          observedInterruptedSleeps += 1;
+        }
+      }
+    }
     if (traceWindow) {
       const markerKind = traceMarkerKind(
         syscall.name,
@@ -617,12 +725,12 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
   if (parsedSyscalls === 0) {
     throw new Error(`[${label}] trace contains no parsed syscall`);
   }
-  if (pendingExpectedSyscalls.size !== 0) {
+  if (pendingLockRetries.size !== 0) {
     throw new Error(
-      `[${label}] unfinished expected-PID syscalls were not resumed: ${[
-        ...pendingExpectedSyscalls.entries(),
+      `[${label}] lock retries did not converge: ${[
+        ...pendingLockRetries.entries(),
       ]
-        .map(([pid, pending]) => `${pid}:${pending.name}`)
+        .map(([pid, pending]) => `${pid}:${pending.fd}`)
         .join(",")}`,
     );
   }
@@ -652,6 +760,7 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
     networkPolicy: "zero-network-syscalls-for-pinned-windows-v1",
     networkScope: "reported-verify-loaded-credentials-test-thread-windows",
     traceWindowPolicy: "successful-create-new-marker-open-v1",
+    lockPolicy: LOCK_POLICY,
     parsedSyscalls,
     scopedParsedSyscalls,
     observedProcessIdentities: observedPidValues.size,
@@ -670,6 +779,14 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
     unscopedIncompleteTraceLinesObserved,
     unscopedNetworkSyscallsObserved,
     unscopedNetworkSyscallNames: [...unscopedNetworkSyscallNames].sort(),
+    observedLockAttempts,
+    observedSuccessfulLocks,
+    observedContentionRetries,
+    observedInterruptedRetries,
+    observedMonotonicSleeps,
+    observedInterruptedSleeps,
+    blockingLockAttemptsObserved: 0,
+    reconciledSplitTraceLines: reconciled.incompleteTraceLinesObserved,
     zeroNetworkSyscalls: true,
   };
 }
@@ -1035,6 +1152,172 @@ function rememberDescriptor(syscall, descriptorState) {
   }
 }
 
+function reconcileTraceLines(traceText, label) {
+  const lines = [];
+  const pending = new Map();
+  let incompleteTraceLinesObserved = 0;
+  for (const [index, rawLine] of traceText.split(/\r?\n/u).entries()) {
+    const line = rawLine.trim();
+    if (line === "") continue;
+    if (line.startsWith("strace:")) {
+      throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
+    }
+    const unfinished = parseUnfinishedSyscallLine(line);
+    if (unfinished) {
+      incompleteTraceLinesObserved += 1;
+      if (pending.has(unfinished.pid)) {
+        throw new Error(
+          `[${label}] overlapping unfinished syscalls for ${unfinished.pid}`,
+        );
+      }
+      pending.set(unfinished.pid, unfinished);
+      continue;
+    }
+    const resumed = parseResumedSyscallLine(line);
+    if (resumed) {
+      incompleteTraceLinesObserved += 1;
+      const unfinishedCall = pending.get(resumed.pid);
+      if (!unfinishedCall || unfinishedCall.name !== resumed.name) {
+        throw new Error(
+          `[${label}] resumed syscall has no matching unfinished syscall: ${line}`,
+        );
+      }
+      pending.delete(resumed.pid);
+      lines.push({
+        index,
+        splitPid: resumed.pid,
+        splitParts: 2,
+        line:
+          `${resumed.pid}  ${resumed.name}(` +
+          `${unfinishedCall.argsPrefix}${resumed.argsSuffix}) = ${resumed.result}`,
+      });
+      continue;
+    }
+    if (line.includes("<unfinished ...>") || line.includes("resumed>")) {
+      throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
+    }
+    lines.push({ index, line, splitPid: null, splitParts: 0 });
+  }
+  if (pending.size !== 0) {
+    throw new Error(
+      `[${label}] unfinished syscalls were not resumed: ${[
+        ...pending.entries(),
+      ].map(([pid, syscall]) => `${pid}:${syscall.name}`).join(",")}`,
+    );
+  }
+  return { lines, incompleteTraceLinesObserved };
+}
+
+function classifyFlockSyscall(syscall, label) {
+  const match =
+    /^\s*\d+(?:<[^>]*>)?\s*,\s*([A-Z][A-Z0-9_]*(?:\s*\|\s*[A-Z][A-Z0-9_]*)*)\s*$/u
+      .exec(syscall.args);
+  if (!match) {
+    throw new Error(`[${label}] flock arguments are invalid: ${syscall.raw}`);
+  }
+  const flags = new Set(match[1].split("|").map((flag) => flag.trim()));
+  const isExclusiveNonblocking =
+    flags.size === 2 && flags.has("LOCK_EX") && flags.has("LOCK_NB");
+  const isUnlock = flags.size === 1 && flags.has("LOCK_UN");
+  if (!isExclusiveNonblocking && !isUnlock) {
+    throw new Error(
+      `[${label}] blocking or unexpected flock flags: ${syscall.raw}`,
+    );
+  }
+  if (isUnlock) {
+    if (syscall.result.trim() !== "0") {
+      throw new Error(`[${label}] flock unlock failed: ${syscall.raw}`);
+    }
+    return { kind: "unlock", outcome: "success" };
+  }
+  if (syscall.result.trim() === "0") {
+    return { kind: "lock", outcome: "success" };
+  }
+  const failure = /^-1\s+(EAGAIN|EWOULDBLOCK|EINTR)\b/u.exec(
+    syscall.result.trim(),
+  );
+  if (!failure) {
+    throw new Error(
+      `[${label}] exclusive nonblocking flock failed unexpectedly: ${syscall.raw}`,
+    );
+  }
+  return {
+    kind: "lock",
+    outcome: failure[1] === "EINTR" ? "interrupted" : "contention",
+  };
+}
+
+function lockDescriptorScope(descriptor, root, label) {
+  const receiptsPath = path.posix.join(root, "execution-operation-receipts");
+  if (descriptor.path === receiptsPath) return "receipts";
+  if (
+    path.posix.dirname(descriptor.path) === receiptsPath &&
+    /^[0-9a-f]{64}$/u.test(path.posix.basename(descriptor.path))
+  ) {
+    return "authorization";
+  }
+  throw new Error(
+    `[${label}] exclusive nonblocking flock is not a receipts/authorization lock`,
+  );
+}
+
+function validateLockAcquisitionOrder({
+  descriptor,
+  lockScope,
+  locks,
+  pendingLockRetries,
+  syscall,
+  label,
+}) {
+  const pending = pendingLockRetries.get(syscall.pid);
+  if (pending) {
+    if (
+      pending.fd !== descriptor.fd ||
+      pending.path !== descriptor.path ||
+      pending.scope !== lockScope
+    ) {
+      throw new Error(`[${label}] lock retry identity drift: ${syscall.raw}`);
+    }
+    if (pending.requiresSleep && !pending.slept) {
+      throw new Error(
+        `[${label}] contended lock retried without a monotonic deadline sleep: ${syscall.raw}`,
+      );
+    }
+  }
+  const heldPaths = new Set(locks.values());
+  if (lockScope === "receipts" && locks.size !== 0) {
+    throw new Error(
+      `[${label}] receipts lock attempted while another lock is held: ${syscall.raw}`,
+    );
+  }
+  if (
+    lockScope === "authorization" &&
+    (
+      locks.size !== 1 ||
+      !heldPaths.has(path.posix.dirname(descriptor.path))
+    )
+  ) {
+    throw new Error(
+      `[${label}] authorization lock attempted without its receipts lock: ${syscall.raw}`,
+    );
+  }
+}
+
+function classifyMonotonicDeadlineSleep(syscall, label) {
+  if (
+    !/^\s*CLOCK_MONOTONIC\s*,\s*TIMER_ABSTIME\s*,/u.test(syscall.args)
+  ) {
+    throw new Error(
+      `[${label}] lock retry sleep is not an absolute monotonic sleep: ${syscall.raw}`,
+    );
+  }
+  if (syscall.result.trim() === "0") return "success";
+  if (/^-1\s+EINTR\b/u.test(syscall.result.trim())) return "interrupted";
+  throw new Error(
+    `[${label}] absolute monotonic lock retry sleep failed: ${syscall.raw}`,
+  );
+}
+
 function parseSyscallLine(raw) {
   const match =
     /^(?:(\d+)\s+|\[pid\s+(\d+)\]\s+)?([A-Za-z_][A-Za-z0-9_]*)\((.*)\)\s+=\s+(.+)$/u.exec(
@@ -1052,26 +1335,28 @@ function parseSyscallLine(raw) {
 
 function parseUnfinishedSyscallLine(raw) {
   const match =
-    /^(?:(\d+)\s+|\[pid\s+(\d+)\]\s+)([A-Za-z_][A-Za-z0-9_]*)\(.*<unfinished \.\.\.>$/u.exec(
+    /^(?:(\d+)\s+|\[pid\s+(\d+)\]\s+)([A-Za-z_][A-Za-z0-9_]*)\((.*)<unfinished \.\.\.>$/u.exec(
       raw,
     );
   if (!match) return null;
   return {
     pid: match[1] ?? match[2],
     name: match[3],
+    argsPrefix: match[4],
   };
 }
 
 function parseResumedSyscallLine(raw) {
   const match =
-    /^(?:(\d+)\s+|\[pid\s+(\d+)\]\s+)<\.\.\. ([A-Za-z_][A-Za-z0-9_]*) resumed>.*\)\s+=\s+(.+)$/u.exec(
+    /^(?:(\d+)\s+|\[pid\s+(\d+)\]\s+)<\.\.\. ([A-Za-z_][A-Za-z0-9_]*) resumed>(.*)\)\s+=\s+(.+)$/u.exec(
       raw,
     );
   if (!match) return null;
   return {
     pid: match[1] ?? match[2],
     name: match[3],
-    result: match[4],
+    argsSuffix: match[4],
+    result: match[5],
   };
 }
 

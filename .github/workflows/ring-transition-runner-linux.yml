@@ -143,7 +143,7 @@ jobs:
           concurrent_second_pid_file="${trace_artifact_dir}/candidate-concurrent-recovery-second.pid"
           startup_trace_log="${trace_artifact_dir}/concurrent-startup-recovery.strace"
           startup_output="${trace_artifact_dir}/concurrent-startup-recovery.log"
-          startup_trace_filter="%file,%network,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl"
+          startup_trace_filter="%file,%network,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl"
           candidate_writer_tracer_pid=""
           candidate_writer_pid=""
           concurrent_first_tracer_pid=""
@@ -235,7 +235,7 @@ jobs:
           test "$(cat "${prepare_ready}")" = "head-set-synced"
 
           strace -f -qq -yy -s 4096 \
-            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -e trace=%file,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
             -o "${trace_log}" \
             env \
               CINATOKEN_RING_RECEIPT_TEST_ROLE=recover-head-set \
@@ -246,7 +246,7 @@ jobs:
               --nocapture
 
           strace -f -qq -yy -s 4096 \
-            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -e trace=%file,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
             -o "${full_trace_log}" \
             env \
               CINATOKEN_RING_RECEIPT_TEST_ROLE=full-terminal-transaction \
@@ -257,7 +257,7 @@ jobs:
               --nocapture
 
           strace -f -q -yy -s 4096 \
-            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -e trace=%file,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
             -o "${candidate_writer_trace_log}" \
             bash -c '
               printf "%s\n" "$$" > "$1"
@@ -297,7 +297,7 @@ jobs:
           test "${candidate_writer_status}" -ne 0
 
           strace -f -qq -yy -s 4096 \
-            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -e trace=%file,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
             -o "${candidate_recovery_trace_log}" \
             env \
               CINATOKEN_RING_RECEIPT_TEST_ROLE=recover-terminal-candidate \
@@ -318,7 +318,7 @@ jobs:
           test "$(cat "${concurrent_fixture_ready}")" = "candidate-synced"
 
           strace -f -qq -yy -s 4096 \
-            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -e trace=%file,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
             -o "${concurrent_first_trace_log}" \
             bash -c '
               printf "%s\n" "$$" > "$1"
@@ -338,7 +338,7 @@ jobs:
           concurrent_first_tracer_pid="$!"
 
           strace -f -qq -yy -s 4096 \
-            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -e trace=%file,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
             -o "${concurrent_second_trace_log}" \
             bash -c '
               printf "%s\n" "$$" > "$1"
@@ -620,6 +620,8 @@ jobs:
             '(.networkPolicy == "zero-network-syscalls-for-pinned-windows-v1") and
               (.networkScope == "reported-verify-loaded-credentials-test-thread-windows") and
               (.traceWindowPolicy == "successful-create-new-marker-open-v1") and
+              (.lockPolicy == "exclusive-nonblocking-monotonic-deadline-v1") and
+              (.blockingLockAttemptsObserved == 0) and
               (.expectedTracePidValues == [$firstTid, $secondTid]) and
               (.traceWindows == [
                 {
@@ -701,6 +703,8 @@ jobs:
               networkPolicy: "zero-network-syscalls-for-pinned-windows-v1",
               networkScope: "reported-verify-loaded-credentials-test-thread-windows",
               traceWindowPolicy: "successful-create-new-marker-open-v1",
+              lockPolicy: "exclusive-nonblocking-monotonic-deadline-v1",
+              blockingLockAttemptsObserved: 0,
               networkSyscallsObserved: 0,
               unscopedNetworkSyscallsObserved: $unscopedNetworkSyscallsObserved,
               unscopedNetworkSyscallNames: $unscopedNetworkSyscallNames,
@@ -725,7 +729,8 @@ jobs:
             echo "- candidate-after-sync recovery post-lock AT_FDCWD mutation: none"
             echo "- concurrent candidate recovery: two distinct ready-before-release processes converged on one closure identity"
             echo "- concurrent verify_loaded_credentials startup: two distinct current-thread Tokio TIDs converged on ReceiptSealed with zero network syscalls inside their create-new marker windows"
-            echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 6 per PID / 12 total"
+            echo "- exact successful paired nonblocking exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 6 per PID / 12 total"
+            echo "- lock contention: one shared 5s CLOCK_MONOTONIC deadline per receipts/authorization pair with absolute retry sleeps and zero blocking flock attempts"
             echo "- successful retained-dirfd openat2/renameat2: observed in each standalone trace or the concurrent bundle"
             echo "- successful full-transaction and candidate-recovery retained-dirfd mkdirat: observed"
             echo "- successful directory fsync/fdatasync and descriptor chmod: observed in each standalone trace or the concurrent bundle"

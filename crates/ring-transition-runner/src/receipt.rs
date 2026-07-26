@@ -20,6 +20,10 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "linux"))]
 use std::sync::{Mutex, MutexGuard, OnceLock};
+#[cfg(target_os = "linux")]
+use std::time::Duration;
+#[cfg(all(test, target_os = "linux"))]
+use std::time::Instant;
 
 pub const EXECUTION_RECEIPT_CONTRACT: &str =
     "cinatoken-ring-transition-runner-execution-receipt-v1";
@@ -55,6 +59,10 @@ const MAX_TERMINAL_SNAPSHOT_CANDIDATE_BYTES: usize = 320 * 1024;
 const MAX_RECEIPTS_PER_CHAIN: u64 = 128;
 const MAX_OPERATION_RECEIPTS_PER_CHAIN: u64 = 2;
 const MAX_OPERATION_CHAINS_PER_AUTHORIZATION: usize = 128;
+#[cfg(target_os = "linux")]
+const OPERATION_LOCK_TIMEOUT_MILLISECONDS: u64 = 5_000;
+#[cfg(target_os = "linux")]
+const OPERATION_LOCK_RETRY_MILLISECONDS: u64 = 10;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -672,6 +680,15 @@ pub enum ReceiptError {
     NonCanonicalJson,
     InvalidField(&'static str),
     Io(&'static str),
+    LockTimeout {
+        scope: &'static str,
+        timeout_ms: u64,
+    },
+    LockSystem {
+        scope: &'static str,
+        operation: &'static str,
+        errno: i32,
+    },
     UnsafeFilesystem(&'static str),
     PredecessorMissing,
     PredecessorMismatch,
@@ -679,7 +696,9 @@ pub enum ReceiptError {
     Conflict,
     AlreadySealed,
     NotSealed,
-    DurabilityUnknown { expected_sha256: String },
+    DurabilityUnknown {
+        expected_sha256: String,
+    },
 }
 
 impl fmt::Display for ReceiptError {
@@ -690,6 +709,20 @@ impl fmt::Display for ReceiptError {
             Self::NonCanonicalJson => formatter.write_str("receipt JSON is not canonical"),
             Self::InvalidField(field) => write!(formatter, "receipt field is invalid: {field}"),
             Self::Io(stage) => write!(formatter, "receipt I/O failed: {stage}"),
+            Self::LockTimeout { scope, timeout_ms } => {
+                write!(
+                    formatter,
+                    "receipt lock timed out: {scope} after {timeout_ms}ms"
+                )
+            }
+            Self::LockSystem {
+                scope,
+                operation,
+                errno,
+            } => write!(
+                formatter,
+                "receipt lock system call failed: {scope} {operation} errno {errno}"
+            ),
             Self::UnsafeFilesystem(stage) => {
                 write!(formatter, "receipt filesystem is unsafe: {stage}")
             }
@@ -7573,14 +7606,169 @@ fn require_linux_relative_component(
 }
 
 #[cfg(target_os = "linux")]
-fn lock_linux_directory(file: &fs::File, label: &'static str) -> Result<(), ReceiptError> {
+#[derive(Clone, Copy)]
+struct LinuxLockDeadline {
+    expires_at: libc::timespec,
+    timeout_ms: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxLockDeadline {
+    fn from_now(timeout: Duration, scope: &'static str) -> Result<Self, ReceiptError> {
+        let timeout_ms =
+            u64::try_from(timeout.as_millis()).map_err(|_| ReceiptError::LockSystem {
+                scope,
+                operation: "deadline",
+                errno: libc::EOVERFLOW,
+            })?;
+        let now = linux_monotonic_now(scope)?;
+        let expires_at = linux_timespec_add(now, timeout).ok_or(ReceiptError::LockSystem {
+            scope,
+            operation: "deadline",
+            errno: libc::EOVERFLOW,
+        })?;
+        Ok(Self {
+            expires_at,
+            timeout_ms,
+        })
+    }
+
+    fn require_remaining(self, scope: &'static str) -> Result<libc::timespec, ReceiptError> {
+        let now = linux_monotonic_now(scope)?;
+        if linux_timespec_at_or_after(now, self.expires_at) {
+            return Err(self.timeout(scope));
+        }
+        Ok(now)
+    }
+
+    fn sleep_until_retry(self, scope: &'static str) -> Result<(), ReceiptError> {
+        let now = self.require_remaining(scope)?;
+        let retry_at = linux_timespec_add(
+            now,
+            Duration::from_millis(OPERATION_LOCK_RETRY_MILLISECONDS),
+        )
+        .ok_or(ReceiptError::LockSystem {
+            scope,
+            operation: "retry_deadline",
+            errno: libc::EOVERFLOW,
+        })?;
+        let wake_at = if linux_timespec_at_or_after(retry_at, self.expires_at) {
+            self.expires_at
+        } else {
+            retry_at
+        };
+        loop {
+            let result = unsafe {
+                libc::clock_nanosleep(
+                    libc::CLOCK_MONOTONIC,
+                    libc::TIMER_ABSTIME,
+                    &wake_at,
+                    std::ptr::null_mut(),
+                )
+            };
+            if result == 0 {
+                return Ok(());
+            }
+            if result != libc::EINTR {
+                return Err(ReceiptError::LockSystem {
+                    scope,
+                    operation: "clock_nanosleep",
+                    errno: result,
+                });
+            }
+        }
+    }
+
+    fn timeout(self, scope: &'static str) -> ReceiptError {
+        ReceiptError::LockTimeout {
+            scope,
+            timeout_ms: self.timeout_ms,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_monotonic_now(scope: &'static str) -> Result<libc::timespec, ReceiptError> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) } != 0 {
+        return Err(ReceiptError::LockSystem {
+            scope,
+            operation: "clock_gettime",
+            errno: std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO),
+        });
+    }
+    Ok(now)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_timespec_add(instant: libc::timespec, duration: Duration) -> Option<libc::timespec> {
+    let nanoseconds = i128::from(instant.tv_nsec) + i128::from(duration.subsec_nanos());
+    let seconds = i128::from(instant.tv_sec)
+        .checked_add(i128::from(duration.as_secs()))?
+        .checked_add(nanoseconds / 1_000_000_000)?;
+    Some(libc::timespec {
+        tv_sec: libc::time_t::try_from(seconds).ok()?,
+        tv_nsec: libc::c_long::try_from(nanoseconds % 1_000_000_000).ok()?,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_timespec_at_or_after(instant: libc::timespec, boundary: libc::timespec) -> bool {
+    instant.tv_sec > boundary.tv_sec
+        || (instant.tv_sec == boundary.tv_sec && instant.tv_nsec >= boundary.tv_nsec)
+}
+
+#[cfg(target_os = "linux")]
+fn acquire_linux_exclusive_lock_with<F>(
+    label: &'static str,
+    deadline: LinuxLockDeadline,
+    mut attempt: F,
+) -> Result<(), ReceiptError>
+where
+    F: FnMut() -> Result<(), i32>,
+{
+    loop {
+        deadline.require_remaining(label)?;
+        match attempt() {
+            Ok(()) => return Ok(()),
+            Err(errno) if errno == libc::EINTR => {}
+            Err(errno) if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK => {
+                deadline.sleep_until_retry(label)?;
+            }
+            Err(errno) => {
+                return Err(ReceiptError::LockSystem {
+                    scope: label,
+                    operation: "flock",
+                    errno,
+                });
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn lock_linux_directory(
+    file: &fs::File,
+    label: &'static str,
+    deadline: LinuxLockDeadline,
+) -> Result<(), ReceiptError> {
     use std::os::fd::AsRawFd;
 
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-    if result != 0 {
-        return Err(ReceiptError::Io(label));
-    }
-    Ok(())
+    acquire_linux_exclusive_lock_with(label, deadline, || {
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO))
+        }
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -7591,6 +7779,22 @@ fn lock_operation_authorization(path: &Path) -> Result<LockedAuthorization, Rece
 #[cfg(target_os = "linux")]
 fn lock_operation_authorization_linux_with_hook<F>(
     path: &Path,
+    after_locks: F,
+) -> Result<LockedAuthorization, ReceiptError>
+where
+    F: FnOnce(),
+{
+    lock_operation_authorization_linux_with_timeout_and_hook(
+        path,
+        Duration::from_millis(OPERATION_LOCK_TIMEOUT_MILLISECONDS),
+        after_locks,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn lock_operation_authorization_linux_with_timeout_and_hook<F>(
+    path: &Path,
+    timeout: Duration,
     after_locks: F,
 ) -> Result<LockedAuthorization, ReceiptError>
 where
@@ -7611,7 +7815,8 @@ where
     let receipts = open_linux_directory(&receipts_path)
         .map_err(|_| ReceiptError::UnsafeFilesystem("operation_receipts_lock"))?;
     let receipts_identity = linux_directory_identity(&receipts, "operation_receipts_lock")?;
-    lock_linux_directory(&receipts, "operation_receipts_lock")?;
+    let deadline = LinuxLockDeadline::from_now(timeout, "operation_receipts_lock")?;
+    lock_linux_directory(&receipts, "operation_receipts_lock", deadline)?;
     require_linux_directory_path_identity(
         &receipts_path,
         &receipts_identity,
@@ -7622,7 +7827,7 @@ where
         .map_err(|_| ReceiptError::UnsafeFilesystem("operation_authorization_lock"))?;
     let authorization_identity =
         linux_directory_identity(&authorization, "operation_authorization_lock")?;
-    lock_linux_directory(&authorization, "operation_authorization_lock")?;
+    lock_linux_directory(&authorization, "operation_authorization_lock", deadline)?;
 
     let locked = LockedAuthorization {
         receipts,
@@ -8087,6 +8292,28 @@ fn validate_service_name(value: &str, field: &'static str) -> Result<(), Receipt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linux_lock_source_is_nonblocking_bounded_and_monotonic() {
+        let source = include_str!("receipt.rs");
+
+        for required in [
+            "OPERATION_LOCK_TIMEOUT_MILLISECONDS: u64 = 5_000",
+            "libc::LOCK_EX | libc::LOCK_NB",
+            "libc::CLOCK_MONOTONIC",
+            "libc::TIMER_ABSTIME",
+            "operation: \"clock_nanosleep\"",
+            "lock_linux_directory(&receipts, \"operation_receipts_lock\", deadline)",
+            "lock_linux_directory(&authorization, \"operation_authorization_lock\", deadline)",
+        ] {
+            assert!(
+                source.contains(required),
+                "Linux lock source is missing {required}"
+            );
+        }
+        let blocking_call = ["libc::flock(file.as_raw_fd(), libc::", "LOCK_EX", ")"].concat();
+        assert!(!source.contains(&blocking_call));
+    }
 
     #[test]
     fn create_new_chain_is_exactly_replayable_and_conflicts_fail_closed() {
@@ -10419,6 +10646,179 @@ mod tests {
             0
         );
         cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_receipts_lock_contention_returns_a_bounded_typed_error() {
+        use std::os::fd::AsRawFd;
+
+        let root = temporary_root("linux-receipts-lock-timeout");
+        let receipts = root.join("operation-receipts");
+        let authorization = receipts.join("a".repeat(64));
+        fs::create_dir(&receipts).unwrap();
+        fs::create_dir(&authorization).unwrap();
+        let holder = open_linux_directory(&receipts).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+
+        let started = Instant::now();
+        let result = lock_operation_authorization_linux_with_timeout_and_hook(
+            &authorization,
+            Duration::from_millis(40),
+            || {},
+        );
+        let elapsed = started.elapsed();
+
+        assert!(matches!(
+            result,
+            Err(ReceiptError::LockTimeout {
+                scope: "operation_receipts_lock",
+                timeout_ms: 40,
+            })
+        ));
+        assert!(
+            elapsed >= Duration::from_millis(20),
+            "receipts lock timeout returned too early: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "receipts lock timeout was not bounded: {elapsed:?}"
+        );
+        assert_eq!(fs::read_dir(&authorization).unwrap().count(), 0);
+        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_UN) }, 0);
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_authorization_locks_share_one_monotonic_deadline() {
+        use std::os::fd::AsRawFd;
+
+        let root = temporary_root("linux-authorization-lock-deadline");
+        let receipts = root.join("operation-receipts");
+        let authorization = receipts.join("a".repeat(64));
+        fs::create_dir(&receipts).unwrap();
+        fs::create_dir(&authorization).unwrap();
+
+        let receipts_holder = open_linux_directory(&receipts).unwrap();
+        let authorization_holder = open_linux_directory(&authorization).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(receipts_holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB,) },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                libc::flock(
+                    authorization_holder.as_raw_fd(),
+                    libc::LOCK_EX | libc::LOCK_NB,
+                )
+            },
+            0
+        );
+
+        let release_parent = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            assert_eq!(
+                unsafe { libc::flock(receipts_holder.as_raw_fd(), libc::LOCK_UN) },
+                0
+            );
+        });
+        let started = Instant::now();
+        let result = lock_operation_authorization_linux_with_timeout_and_hook(
+            &authorization,
+            Duration::from_millis(100),
+            || {},
+        );
+        let elapsed = started.elapsed();
+        release_parent.join().unwrap();
+
+        assert!(matches!(
+            result,
+            Err(ReceiptError::LockTimeout {
+                scope: "operation_authorization_lock",
+                timeout_ms: 100,
+            })
+        ));
+        assert!(
+            elapsed >= Duration::from_millis(70),
+            "lock deadline returned too early: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "lock deadline was not bounded: {elapsed:?}"
+        );
+        assert_eq!(fs::read_dir(&authorization).unwrap().count(), 0);
+
+        let receipts_probe = open_linux_directory(&receipts).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(receipts_probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB,) },
+            0,
+            "the first lock must be released when the second lock times out"
+        );
+        assert_eq!(
+            unsafe { libc::flock(receipts_probe.as_raw_fd(), libc::LOCK_UN) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::flock(authorization_holder.as_raw_fd(), libc::LOCK_UN) },
+            0
+        );
+        cleanup(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_lock_eintr_retries_do_not_reset_the_deadline() {
+        let deadline =
+            LinuxLockDeadline::from_now(Duration::from_millis(40), "operation_receipts_lock")
+                .unwrap();
+        let attempts = std::cell::Cell::new(0_u64);
+        let started = Instant::now();
+        let result = acquire_linux_exclusive_lock_with("operation_receipts_lock", deadline, || {
+            attempts.set(attempts.get() + 1);
+            std::thread::sleep(Duration::from_millis(5));
+            Err(libc::EINTR)
+        });
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            result,
+            Err(ReceiptError::LockTimeout {
+                scope: "operation_receipts_lock",
+                timeout_ms: 40,
+            })
+        );
+        assert!(attempts.get() > 1);
+        assert!(
+            elapsed >= Duration::from_millis(20),
+            "EINTR deadline returned too early: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "EINTR reset the deadline: {elapsed:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_lock_system_error_preserves_scope_operation_and_errno() {
+        let deadline =
+            LinuxLockDeadline::from_now(Duration::from_secs(1), "operation_authorization_lock")
+                .unwrap();
+
+        assert_eq!(
+            acquire_linux_exclusive_lock_with("operation_authorization_lock", deadline, || Err(
+                libc::EBADF
+            ),),
+            Err(ReceiptError::LockSystem {
+                scope: "operation_authorization_lock",
+                operation: "flock",
+                errno: libc::EBADF,
+            })
+        );
     }
 
     #[cfg(target_os = "linux")]

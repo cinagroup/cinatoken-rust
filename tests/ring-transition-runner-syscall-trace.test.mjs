@@ -47,7 +47,13 @@ describe("ring-transition runner syscall trace verifier", () => {
     });
     expect(result).toMatchObject({
       ok: true,
+      lockPolicy: "exclusive-nonblocking-monotonic-deadline-v1",
       observedLocks: 10,
+      observedSuccessfulLocks: 10,
+      observedLockAttempts: 10,
+      observedContentionRetries: 0,
+      observedInterruptedRetries: 0,
+      blockingLockAttemptsObserved: 0,
       postLockUnconfinedMutation: false,
       successfulDirfdOpenat2: true,
       successfulDirfdRenameat2: true,
@@ -55,6 +61,130 @@ describe("ring-transition runner syscall trace verifier", () => {
       successfulDirectorySync: true,
       successfulDescriptorChmod: true,
     });
+  });
+
+  test("accepts bounded nonblocking contention and EINTR retries", () => {
+    const authorizationLock =
+      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
+    const trace = fixtureTrace({ lockPairs: 2 }).replace(
+      authorizationLock,
+      [
+        `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = -1 EAGAIN (Resource temporarily unavailable)`,
+        "4100  clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, {tv_sec=10, tv_nsec=20}, NULL) = -1 EINTR (Interrupted system call)",
+        "4100  clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, {tv_sec=10, tv_nsec=20}, NULL) = 0",
+        `4100  flock(5<${AUTHORIZATION}>, LOCK_NB|LOCK_EX) = -1 EWOULDBLOCK (Resource temporarily unavailable)`,
+        "4100  clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, {tv_sec=10, tv_nsec=30}, NULL) = 0",
+        `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = -1 EINTR (Interrupted system call)`,
+        authorizationLock,
+      ].join("\n"),
+    );
+
+    expect(
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: trace,
+        fixtureRoot: ROOT,
+        label: "contended recovery",
+        expectedLocks: 4,
+      }),
+    ).toMatchObject({
+      observedLocks: 4,
+      observedSuccessfulLocks: 4,
+      observedLockAttempts: 7,
+      observedContentionRetries: 2,
+      observedInterruptedRetries: 1,
+      observedMonotonicSleeps: 2,
+      observedInterruptedSleeps: 1,
+      blockingLockAttemptsObserved: 0,
+    });
+  });
+
+  test("rejects blocking flags, abnormal errno, drift, and missing sleep", () => {
+    const base = fixtureTrace({ lockPairs: 2 });
+    const authorizationLock =
+      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
+    const verify = (traceText) =>
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText,
+        fixtureRoot: ROOT,
+        label: "invalid lock trace",
+        expectedLocks: 4,
+      });
+
+    expect(() => verify(base.replaceAll("LOCK_EX|LOCK_NB", "LOCK_EX")))
+      .toThrow(/blocking or unexpected flock flags/);
+    expect(() =>
+      verify(
+        base.replace(
+          authorizationLock,
+          authorizationLock.replace(" = 0", " = -1 EBADF (Bad file descriptor)"),
+        ),
+      )
+    ).toThrow(/failed unexpectedly/);
+    expect(() =>
+      verify(base.replace(authorizationLock, authorizationLock.replace(" = 0", " = 1")))
+    ).toThrow(/failed unexpectedly/);
+    expect(() =>
+      verify(
+        base.replace(
+          authorizationLock,
+          [
+            authorizationLock.replace(
+              " = 0",
+              " = -1 EAGAIN (Resource temporarily unavailable)",
+            ),
+            authorizationLock,
+          ].join("\n"),
+        ),
+      )
+    ).toThrow(/without a monotonic deadline sleep/);
+    expect(() =>
+      verify(
+        base.replace(
+          authorizationLock,
+          [
+            authorizationLock.replace(
+              " = 0",
+              " = -1 EINTR (Interrupted system call)",
+            ),
+            `4100  flock(6<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`,
+          ].join("\n"),
+        ),
+      )
+    ).toThrow(/lock retry identity drift/);
+  });
+
+  test("reconciles exact split flock calls and rejects unmatched resumes", () => {
+    const authorizationLock =
+      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
+    const split = fixtureTrace({ lockPairs: 2 }).replace(
+      authorizationLock,
+      [
+        `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB <unfinished ...>`,
+        "4100  <... flock resumed>) = 0",
+      ].join("\n"),
+    );
+    expect(
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: split,
+        fixtureRoot: ROOT,
+        label: "split lock trace",
+        expectedLocks: 4,
+      }),
+    ).toMatchObject({
+      observedSuccessfulLocks: 4,
+      reconciledSplitTraceLines: 2,
+    });
+    expect(() =>
+      verifyRingTransitionRunnerSyscallTrace({
+        traceText: split.replace(
+          "<... flock resumed>",
+          "<... openat2 resumed>",
+        ),
+        fixtureRoot: ROOT,
+        label: "split lock trace",
+        expectedLocks: 4,
+      })
+    ).toThrow(/no matching unfinished syscall/);
   });
 
   test("requires the complete two-lock protocol for every phase", () => {
@@ -212,6 +342,7 @@ describe("ring-transition runner syscall trace verifier", () => {
       networkPolicy: "zero-network-syscalls-for-pinned-windows-v1",
       networkScope: "reported-verify-loaded-credentials-test-thread-windows",
       traceWindowPolicy: "successful-create-new-marker-open-v1",
+      lockPolicy: "exclusive-nonblocking-monotonic-deadline-v1",
       expectedTracePidValues: ["4100"],
       networkSyscallsObserved: 0,
       networkSyscallNames: [],
@@ -221,6 +352,47 @@ describe("ring-transition runner syscall trace verifier", () => {
       unscopedNetworkSyscallNames: ["socketpair"],
       zeroNetworkSyscalls: true,
     });
+
+    const startupAuthorizationLock =
+      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
+    const contendedStartup = startupWindowTrace().replace(
+      startupAuthorizationLock,
+      [
+        startupAuthorizationLock.replace(
+          " = 0",
+          " = -1 EAGAIN (Resource temporarily unavailable)",
+        ),
+        "4100  clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, {tv_sec=10, tv_nsec=20}, NULL) = 0",
+        startupAuthorizationLock,
+      ].join("\n"),
+    );
+    expect(
+      verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText: contendedStartup,
+        label: "concurrent startup recovery",
+        expectedTracePidValues: ["4100"],
+        expectedTraceStartPaths: [TRACE_START],
+        expectedTraceFinishPaths: [TRACE_FINISH],
+      }),
+    ).toMatchObject({
+      observedSuccessfulLocks: 4,
+      observedLockAttempts: 5,
+      observedContentionRetries: 1,
+      observedMonotonicSleeps: 1,
+      blockingLockAttemptsObserved: 0,
+    });
+    expect(() =>
+      verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText: startupWindowTrace().replaceAll(
+          "LOCK_EX|LOCK_NB",
+          "LOCK_EX",
+        ),
+        label: "concurrent startup recovery",
+        expectedTracePidValues: ["4100"],
+        expectedTraceStartPaths: [TRACE_START],
+        expectedTraceFinishPaths: [TRACE_FINISH],
+      })
+    ).toThrow(/blocking or unexpected flock flags/);
 
     for (const syscall of [
       "socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC, IPPROTO_TCP) = -1 EACCES (Permission denied)",
@@ -249,7 +421,7 @@ describe("ring-transition runner syscall trace verifier", () => {
         expectedTraceStartPaths: [TRACE_START],
         expectedTraceFinishPaths: [TRACE_FINISH],
       }),
-    ).toThrow(/forbidden network syscall attempted/);
+    ).toThrow(/forbidden network syscall attempted|unfinished syscalls were not resumed/);
     expect(
       verifyRingTransitionRunnerZeroNetworkTrace({
         traceText: startupWindowTrace({
@@ -276,7 +448,7 @@ describe("ring-transition runner syscall trace verifier", () => {
         expectedTraceStartPaths: [TRACE_START],
         expectedTraceFinishPaths: [TRACE_FINISH],
       }),
-    ).toThrow(/unfinished expected-PID syscalls were not resumed/);
+    ).toThrow(/unfinished syscalls were not resumed/);
     expect(() =>
       verifyRingTransitionRunnerZeroNetworkTrace({
         traceText: startupWindowTrace(),
@@ -441,7 +613,7 @@ describe("ring-transition runner syscall trace verifier", () => {
 
   test("requires both locks while retained-dirfd mutation occurs", () => {
     const authorizationLock =
-      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX) = 0`;
+      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
     const trace = fixtureTrace({ lockPairs: 2 })
       .replace(`${authorizationLock}\n`, "")
       .replace(
@@ -495,7 +667,7 @@ describe("ring-transition runner syscall trace verifier", () => {
         label: "focused recovery",
         expectedLocks: 4,
       }),
-    ).toThrow(/incomplete or diagnostic/);
+    ).toThrow(/incomplete or diagnostic|unfinished syscalls were not resumed/);
   });
 
   test("CLI verifies one bounded trace and rejects ambiguous invocation", async () => {
@@ -521,7 +693,10 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(await accepted.exited).toBe(0);
     expect(JSON.parse(await new Response(accepted.stdout).text())).toMatchObject({
       ok: true,
+      lockPolicy: "exclusive-nonblocking-monotonic-deadline-v1",
       observedLocks: 4,
+      observedSuccessfulLocks: 4,
+      blockingLockAttemptsObserved: 0,
     });
     expect(await new Response(accepted.stderr).text()).toBe("");
 
@@ -549,7 +724,9 @@ describe("ring-transition runner syscall trace verifier", () => {
       JSON.parse(await new Response(zeroNetworkAccepted.stdout).text()),
     ).toMatchObject({
       ok: true,
+      lockPolicy: "exclusive-nonblocking-monotonic-deadline-v1",
       networkSyscallsObserved: 0,
+      blockingLockAttemptsObserved: 0,
       zeroNetworkSyscalls: true,
     });
     expect(await new Response(zeroNetworkAccepted.stderr).text()).toBe("");
@@ -692,7 +869,7 @@ describe("ring-transition runner syscall trace verifier", () => {
       "transport::tests::linux_multiprocess_startup_terminal_candidate_converges_without_http",
     );
     expect(workflow).toContain(
-      'startup_trace_filter="%file,%network,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl"',
+      'startup_trace_filter="%file,%network,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl"',
     );
     expect(workflow).toContain('-e "trace=${startup_trace_filter}"');
     expect(workflow).toContain("--require-zero-network");
@@ -714,6 +891,16 @@ describe("ring-transition runner syscall trace verifier", () => {
     );
     expect(workflow).toContain(
       'traceWindowPolicy: "successful-create-new-marker-open-v1"',
+    );
+    expect(workflow).toContain(
+      'lockPolicy: "exclusive-nonblocking-monotonic-deadline-v1"',
+    );
+    expect(workflow).toContain("blockingLockAttemptsObserved: 0");
+    expect(workflow).toContain(
+      "exact successful paired nonblocking exclusive locks",
+    );
+    expect(workflow).toContain(
+      "one shared 5s CLOCK_MONOTONIC deadline",
     );
     expect(workflow).toContain("followForks: true");
     expect(workflow).toContain("traceSha256: $traceSha256");
@@ -765,8 +952,8 @@ function fixtureTrace({
     lines.push(
       `${pid}  openat2(3<${ROOT}>, "execution-operation-receipts", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 4<${RECEIPTS}>`,
       `${pid}  openat2(4<${RECEIPTS}>, "${"a".repeat(64)}", {flags=O_RDONLY|O_CLOEXEC|O_DIRECTORY, resolve=RESOLVE_BENEATH}, 24) = 5<${AUTHORIZATION}>`,
-      `${pid}  flock(4<${RECEIPTS}>, LOCK_EX) = 0`,
-      `${pid}  flock(5<${AUTHORIZATION}>, LOCK_EX) = 0`,
+      `${pid}  flock(4<${RECEIPTS}>, LOCK_EX|LOCK_NB) = 0`,
+      `${pid}  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`,
     );
     if (pair === 0 && extraAfterFirstLock) lines.push(extraAfterFirstLock);
     if (pair === 0 && includeMutation) {

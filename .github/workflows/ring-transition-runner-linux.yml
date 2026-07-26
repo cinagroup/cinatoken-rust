@@ -460,12 +460,21 @@ jobs:
             --expected-locks-per-pid 6 \
             --require-mkdirat \
             | tee "${trace_artifact_dir}/candidate-concurrent-recovery.verification.json"
-          jq -e \
-            --arg firstPid "$(cat "${concurrent_first_pid_file}")" \
-            --arg secondPid "$(cat "${concurrent_second_pid_file}")" \
-            '(.observedLockPidValues | sort) == ([$firstPid, $secondPid] | sort)' \
-            "${trace_artifact_dir}/candidate-concurrent-recovery.verification.json" \
-            > /dev/null
+          expected_concurrent_pids="$(
+            jq -cn \
+              --arg firstPid "$(cat "${concurrent_first_pid_file}")" \
+              --arg secondPid "$(cat "${concurrent_second_pid_file}")" \
+              '[$firstPid, $secondPid] | sort'
+          )"
+          observed_concurrent_pids="$(
+            jq -c \
+              '.observedLockPidValues | sort' \
+              "${trace_artifact_dir}/candidate-concurrent-recovery.verification.json"
+          )"
+          printf "concurrent-expected-pids=%s\n" "${expected_concurrent_pids}"
+          printf "concurrent-observed-lock-pids=%s\n" "${observed_concurrent_pids}"
+          test "${observed_concurrent_pids}" = "${expected_concurrent_pids}"
+          echo "concurrent-pid-identity=verified"
 
           jq -n \
             --arg gitSha "${GITHUB_SHA}" \
@@ -514,6 +523,11 @@ jobs:
               ),
               closureIdentity: $closure
             }' > "${trace_artifact_dir}/candidate-concurrent-recovery-boundary.json"
+          jq -e \
+            '.exactlyOneRecoveryWriter == true and (.closureIdentity | length > 0)' \
+            "${trace_artifact_dir}/candidate-concurrent-recovery-boundary.json" \
+            > /dev/null
+          echo "concurrent-boundary-manifest=verified"
 
           {
             echo "### Terminal descriptor syscall traces"

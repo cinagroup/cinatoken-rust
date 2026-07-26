@@ -78,11 +78,26 @@ jobs:
             echo "### Linux receipt test failure"
             echo
             echo "- focused replay status: ${focused_status}"
+            echo
+            echo "#### Full library suite tail"
+            echo '```text'
+            tail -n 200 "${log_file}"
+            echo '```'
+            echo
+            echo "#### Focused multiprocess replay tail"
             echo '```text'
             tail -n 200 "${focused_log}"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
-          diagnostic="$(tail -n 120 "${focused_log}")"
+          diagnostic="$(
+            {
+              echo "full library suite:"
+              tail -n 160 "${log_file}"
+              echo
+              echo "focused multiprocess replay (status ${focused_status}):"
+              tail -n 80 "${focused_log}"
+            }
+          )"
           diagnostic="${diagnostic//'%'/'%25'}"
           diagnostic="${diagnostic//$'\r'/'%0D'}"
           diagnostic="${diagnostic//$'\n'/'%0A'}"

@@ -11143,9 +11143,9 @@ mod tests {
     fn assert_terminal_candidate_crash_fixture(
         store: &ReceiptStore,
         root: &Path,
-        publication: &PublicationReceipt,
-        credentials: &TransitionCredentialBundle,
-        activation: &ActivationReceipt,
+        publication: &PublicationIdentity,
+        credentials: &CredentialIdentity,
+        activation: &ExecutionActivationIdentity,
     ) {
         let context = project_operation_context(publication, credentials, activation).unwrap();
         let read = terminal_candidate_crash_operation();

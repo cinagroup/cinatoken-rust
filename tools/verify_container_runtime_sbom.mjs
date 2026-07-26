@@ -119,7 +119,7 @@ export async function auditRepositoryContract() {
       workflow.includes("--cpus 2") &&
       workflow.includes("--ulimit nofile=1024:1024") &&
       workflow.includes(
-        "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m",
+        "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777",
       ),
     "SBOM workflow must run two resource-bounded nonroot offline catalogers",
   );

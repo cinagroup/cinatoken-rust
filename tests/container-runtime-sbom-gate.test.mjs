@@ -71,7 +71,7 @@ describe("container runtime SBOM release gate", () => {
       "--memory 1g",
       "--cpus 2",
       "--ulimit nofile=1024:1024",
-      "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m",
+      "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777",
       "--scope squashed",
       `--source-name ${SBOM_SOURCE_NAME}`,
       '--source-version "${OCI_MANIFEST_DIGEST}"',

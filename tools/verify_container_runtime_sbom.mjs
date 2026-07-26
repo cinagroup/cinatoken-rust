@@ -8,8 +8,9 @@ export const SYFT_VERSION = "1.49.0";
 export const SYFT_SCHEMA_VERSION = "16.1.10";
 export const SYFT_IMAGE =
   "ghcr.io/anchore/syft:v1.49.0@sha256:13b53ebabe3d215268c90cf8fb9b875f0183908245f376fd4b3a2cb69d21d484";
-export const SBOM_SOURCE_REFERENCE =
+export const SBOM_INPUT_REFERENCE =
   "oci-archive:/input/container-runtime.tar";
+export const SBOM_SOURCE_REFERENCE = "/input/container-runtime.tar";
 export const SBOM_SOURCE_NAME = "cinatoken-container-runtime";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -130,7 +131,7 @@ export async function auditRepositoryContract() {
       workflow.includes(
         "--mount \"type=bind,src=${output_directory},dst=/output\"",
       ) &&
-      workflow.includes(`"${SBOM_SOURCE_REFERENCE}"`) &&
+      workflow.includes(`"${SBOM_INPUT_REFERENCE}"`) &&
       workflow.includes("--scope squashed") &&
       workflow.includes(`--source-name ${SBOM_SOURCE_NAME}`) &&
       workflow.includes('--source-version "${OCI_MANIFEST_DIGEST}"') &&
@@ -253,6 +254,7 @@ export async function runSbomGate(sbomAPath, sbomBPath, ociReportPath) {
       name: "syft",
       version: SYFT_VERSION,
       schemaVersion: SYFT_SCHEMA_VERSION,
+      inputReference: SBOM_INPUT_REFERENCE,
       sourceReference: SBOM_SOURCE_REFERENCE,
       scope: "squashed",
       networkDisabled: true,

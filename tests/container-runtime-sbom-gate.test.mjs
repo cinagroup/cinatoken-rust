@@ -13,6 +13,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { runBoundedSubprocess } from "../tools/lib/bounded_subprocess.mjs";
 import {
   SBOM_GATE_CONTRACT_VERSION,
+  SBOM_INPUT_REFERENCE,
   SBOM_SOURCE_NAME,
   SBOM_SOURCE_REFERENCE,
   SYFT_IMAGE,
@@ -79,7 +80,7 @@ describe("container runtime SBOM release gate", () => {
     ]) {
       expect(workflow).toContain(option);
     }
-    expect(workflow).toContain(`"${SBOM_SOURCE_REFERENCE}"`);
+    expect(workflow).toContain(`"${SBOM_INPUT_REFERENCE}"`);
     expect(workflow).toContain(
       "node tools/verify_container_runtime_sbom.mjs",
     );
@@ -229,6 +230,8 @@ describe("container runtime SBOM release gate", () => {
         name: "syft",
         version: SYFT_VERSION,
         schemaVersion: SYFT_SCHEMA_VERSION,
+        inputReference: SBOM_INPUT_REFERENCE,
+        sourceReference: SBOM_SOURCE_REFERENCE,
         networkDisabled: true,
         runsAsRoot: false,
       },

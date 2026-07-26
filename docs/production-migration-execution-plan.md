@@ -3827,10 +3827,41 @@ retains the same successful runtime/trace evidence but failed the final Linux
 lint step on a redundant import and tuple complexity; the accepted candidate
 fixes only those findings.
 
-Next K7 execution units are repeated startup/recovery schedule soak,
-production Container UID/GID/ownership/ACL/mount/inherited-FD attestation,
-ext4/XFS power-loss and restore, external signed immutable anchoring, then
-isolated Cloudflare lifecycle rehearsal. This gate is not namespace/seccomp,
-remote lifecycle or production deployment evidence. No credential or remote
-authority was used. Go/VPS remains all production authority and production
-remains **NO-GO**.
+Repeated startup/recovery schedule soak is closed by the execution gate below.
+Next K7 execution units are production Container
+UID/GID/ownership/ACL/mount/inherited-FD attestation, ext4/XFS power-loss and
+restore, external signed immutable anchoring, then isolated Cloudflare
+lifecycle rehearsal. This gate is not namespace/seccomp, remote lifecycle or
+production deployment evidence. No credential or remote authority was used.
+Go/VPS remains all production authority and production remains **NO-GO**.
+
+### K7 repeated startup schedule soak
+
+The local repeated-schedule gate is now accepted with this immutable boundary:
+
+| Evidence | Result |
+| --- | --- |
+| Candidate / tree | `01c04940c77610a0d98a3feb61fa235724838d58` / `2f2ecc7d93da479d8ebf19e39f880da965c50af7` |
+| Ubuntu run/job | [30189628276](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276) / [89760384170](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/job/89760384170) |
+| Source gate | Ubuntu 24.04.4, rustc/cargo 1.97.1, formatting, 156/156 library tests, all syscall policies and strict all-target Clippy passed |
+| Campaign | 32 required / 32 observed exact dual-process startup tests; all per-iteration PID/TID pairs unequal; all actions `ReceiptSealed` |
+| Bounds | 15,000ms per iteration and 120,000ms per campaign; observed 173-177ms per iteration and 6,133ms for the campaign |
+| Closure admission | successful exact Rust test must prove equal child closure plus safe replay/recovery; 7 cross-fixture closures were observed but are not a threshold |
+| Records | 32-sample NDJSON and embedded boundary samples, `sha256:c72f8ad9a5b80ec88af002883bc33c0d1673c31532184f931fb04639a9bdc1d4` |
+| Trace policy | `single-captured-sample-plus-process-soak-v1`; one separate successful startup trace, `sha256:63ce773e5ba81b128373135ad4f3a1f8341c9d81308bb2bd9401f35e33a3b462` |
+| Summary artifact | [8628118657](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/artifacts/8628118657), 24 files, 28940 bytes, `sha256:b83cb16e39540e6dc25ec34c5f6ea4562bddcf2faca8f4f9d2054c0ce4e710e0`, expires `2026-08-25T05:36:45Z` |
+| Raw traces | [8628118769](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/artifacts/8628118769), 8 files, 149155 bytes, `sha256:16d0a7c08df3b6d62e5776790632d51d8c429a0dcbe06af390982390da624e7e`, expires `2026-08-25T05:36:46Z` |
+
+Run
+[30189502740](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189502740)
+is negative calibration evidence: every schedule sample passed, but the first
+aggregate incorrectly required independent fixtures to have one global
+closure. The corrected gate keeps equality strict inside each participant
+pair and treats cross-fixture closure count as observation only.
+
+The next executable K7 units are production Container
+UID/GID/ownership/ACL/mount/inherited-FD attestation, ext4/XFS power-loss and
+restore, external signed immutable anchoring and isolated Cloudflare lifecycle
+rehearsal. The accepted soak is not remote replacement, long-duration load or
+production deployment evidence. No credential or remote authority was used.
+Go/VPS remains all production authority and production remains **NO-GO**.

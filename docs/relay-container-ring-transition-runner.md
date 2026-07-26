@@ -781,6 +781,61 @@ power-loss/restore, external WORM retention or Cloudflare lifecycle behavior.
 Those gates and G1-G8 remain open. Go/VPS remains authoritative and production
 remains **NO-GO**.
 
+## Repeated Startup Schedule Soak
+
+The Linux workflow now invokes the exact dual-process real-startup test 32
+times as separate test-binary executions. A sample is recorded only after the
+test exits successfully. That test requires equal closure observations from
+both child processes, `ReceiptSealed` from both, distinct process and
+current-thread Tokio lock identities, no HTTP core, safe real-startup replay
+and exact installed-closure recovery.
+
+Each invocation has a 15-second watchdog. The whole campaign has an independent
+120-second deadline. The workflow validates numeric unequal PID/TID pairs,
+nonempty closures, well-formed closure hashes, 32 unique iteration indexes and
+all `receipt-sealed` actions. It retains:
+
+- `startup-schedule-soak.log`, the full per-iteration test output;
+- `startup-schedule-soak-records.ndjson`, one normalized record per sample;
+- `startup-schedule-soak-boundary.json`, the complete aggregate plus embedded
+  samples and NDJSON SHA-256; and
+- one separate successful `strace -f` sample under policy
+  `single-captured-sample-plus-process-soak-v1`.
+
+The accepted candidate is
+`01c04940c77610a0d98a3feb61fa235724838d58`, tree
+`2f2ecc7d93da479d8ebf19e39f880da965c50af7`,
+[run 30189628276](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276)
+and
+[job 89760384170](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/job/89760384170).
+All 32 iterations passed in 6,133ms. Individual samples took 173-177ms
+(5,574ms aggregate); all process/TID pairs were distinct within their sample,
+all actions were `ReceiptSealed`, and all closure/hash checks passed. Seven
+cross-fixture closure identities were observed and intentionally are not a
+pass threshold. The NDJSON digest is
+`sha256:c72f8ad9a5b80ec88af002883bc33c0d1673c31532184f931fb04639a9bdc1d4`;
+the separate trace digest is
+`sha256:63ce773e5ba81b128373135ad4f3a1f8341c9d81308bb2bd9401f35e33a3b462`.
+
+[Summary artifact 8628118657](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/artifacts/8628118657)
+contains 24 files, is 28940 bytes, has digest
+`sha256:b83cb16e39540e6dc25ec34c5f6ea4562bddcf2faca8f4f9d2054c0ce4e710e0`
+and expires `2026-08-25T05:36:45Z`.
+[Raw artifact 8628118769](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/artifacts/8628118769)
+contains eight traces, is 149155 bytes, has digest
+`sha256:16d0a7c08df3b6d62e5776790632d51d8c429a0dcbe06af390982390da624e7e`
+and expires `2026-08-25T05:36:46Z`.
+
+[Run 30189502740](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189502740)
+is retained as negative calibration evidence. Its 32 exact tests passed, but
+the initial aggregate incorrectly required one global closure across
+independent fixtures. Equality remains mandatory inside each pair.
+
+This is a bounded local process-schedule campaign, not 32 syscall traces,
+production image attestation, Cloudflare lifecycle replacement, long-duration
+load, power-loss recovery or production authorization. Those gates and G1-G8
+remain open. Go/VPS remains authoritative and production remains **NO-GO**.
+
 ## Terminal Receipt Store Boundary
 
 The runner now contains a library-owned terminal receipt projection and

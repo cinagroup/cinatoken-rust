@@ -6408,10 +6408,72 @@ the accepted source for process, `flock` and `strace` behavior.
 
 This closes the real-startup cooperative timeout sub-gate only. It does not
 prove namespace/seccomp/inherited-FD isolation, production image UID/GID/ACL
-and mount policy, schedule soak, ext4/XFS power-loss/restore, external signed
-WORM retention, remote Cloudflare lifecycle or G1-G8. No credential or remote
-authority was used. Go/VPS remains authoritative and production remains
-**NO-GO**.
+and mount policy, ext4/XFS power-loss/restore, external signed WORM retention,
+remote Cloudflare lifecycle or G1-G8. Repeated local schedule soak is closed by
+the verification section below. No credential or remote authority was used.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Repeated startup schedule soak verification (2026-07-26)
+
+Accepted command shape:
+
+```bash
+for iteration in $(seq 1 32); do
+  timeout --signal=TERM --kill-after=2s 15s \
+    "${test_binary}" \
+    --exact transport::tests::linux_multiprocess_startup_terminal_candidate_converges_without_http \
+    --nocapture
+done
+```
+
+The workflow admits a sample only when the command exits zero and reports two
+numeric unequal process PIDs, two numeric unequal lock TIDs, one nonempty
+closure and action `receipt-sealed`. The exact Rust test itself asserts equal
+child closures, both `ReceiptSealed` outcomes, no HTTP core/access token,
+successful real-startup replay and exact installed-closure recovery. The
+workflow adds a 15,000ms iteration watchdog, a separate 120,000ms campaign
+budget, unique iteration indexes and SHA-256 binding of all normalized NDJSON
+records.
+
+Frozen result:
+
+| Field | Value |
+| --- | --- |
+| Candidate / tree | `01c04940c77610a0d98a3feb61fa235724838d58` / `2f2ecc7d93da479d8ebf19e39f880da965c50af7` |
+| Run / job | [30189628276](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276) / [89760384170](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/job/89760384170) |
+| Platform/source | Ubuntu 24.04.4, Linux `6.17.0-1020-azure`, rustc/cargo 1.97.1; formatting, 156/156 library tests, all syscall policies and strict all-target Clippy passed |
+| Iterations | 32 required / 32 observed; all per-sample PID and TID pairs unequal; all actions `ReceiptSealed` |
+| Timing | campaign 6,133ms; sample minimum 173ms, maximum 177ms and total 5,574ms |
+| Closure evidence | equal per-fixture participant closure and safe replay required by the exact Rust test; 7 cross-fixture closures observed but not pinned |
+| Records | `startup-schedule-soak-records.ndjson`, 32 samples, `sha256:c72f8ad9a5b80ec88af002883bc33c0d1673c31532184f931fb04639a9bdc1d4` |
+| Trace boundary | `single-captured-sample-plus-process-soak-v1`; one separate successful startup trace, `sha256:63ce773e5ba81b128373135ad4f3a1f8341c9d81308bb2bd9401f35e33a3b462` |
+
+[Summary artifact 8628118657](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/artifacts/8628118657)
+contains 24 files, is 28940 bytes, has digest
+`sha256:b83cb16e39540e6dc25ec34c5f6ea4562bddcf2faca8f4f9d2054c0ce4e710e0`
+and expires `2026-08-25T05:36:45Z`.
+[Successful raw trace artifact 8628118769](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/artifacts/8628118769)
+contains eight traces, is 149155 bytes, has digest
+`sha256:16d0a7c08df3b6d62e5776790632d51d8c429a0dcbe06af390982390da624e7e`
+and expires `2026-08-25T05:36:46Z`.
+
+[Run 30189502740](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189502740)
+is negative calibration evidence: all 32 exact iterations succeeded, then an
+invalid single-global-closure aggregate assertion failed. The accepted policy
+requires equality only within each fixture's two-process result and reports
+cross-fixture diversity without freezing it.
+
+Local validation for the implementation passed 129 Rust library tests, three
+binary/CLI tests, strict Clippy, 153 aggregate Bun tests, 29 focused
+syscall/workflow tests, Bash syntax, YAML parsing, Node syntax and
+`git diff --check`. Native Linux run 30189628276 is authoritative for process,
+`flock`, `strace` and campaign evidence.
+
+This closes local repeated startup scheduling only. It does not prove 32
+traced samples, production UID/GID/ACL/mount/inherited-FD policy, real
+Cloudflare cold-start/eviction/replacement, long-duration load, power-loss
+recovery, external WORM retention or G1-G8. No credential or remote authority
+was used. Go/VPS remains authoritative and production remains **NO-GO**.
 
 ## Container Reconciliation Retry Preview Verification (2026-07-17)
 

@@ -1746,10 +1746,51 @@ is 150104 bytes with digest
 `sha256:337a52b48e2e1be92b674f05120a128831d34f41da0008bf65a1c7f1a88ddfb1`.
 They expire `2026-08-25T05:04:15Z` and `2026-08-25T05:04:16Z`.
 
-This closes a local K7 sub-gate only. Production image identity/filesystem
-attestation, schedule soak, power-loss/restore, external WORM evidence,
-Cloudflare lifecycle and G1-G8 remain open. Go/VPS remains authoritative and
-production remains **NO-GO**.
+This closes a local K7 sub-gate only. Repeated local schedule soak is closed by
+the mapping below. Production image identity/filesystem attestation,
+power-loss/restore, external WORM evidence, Cloudflare lifecycle and G1-G8
+remain open. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-26 Repeated Startup Schedule Mapping
+
+The local replaceability mapping now includes a bounded 32-iteration
+dual-process schedule campaign.
+
+| cinaVibeSDK concern | Accepted Rust/Cloudflare evidence | Remaining boundary |
+| --- | --- | --- |
+| Repeatable replacement startup | 32 independent exact Rust test invocations all completed; each fixture's two startup processes converged on equal terminal closure evidence and returned `ReceiptSealed`, then safe replay/recovery passed. | The campaign runs on one Ubuntu host, not real Cloudflare cold-start, eviction or shard replacement schedules. |
+| Participant isolation | Every admitted sample contains two unequal process PIDs and two unequal current-thread Tokio lock TIDs. | This proves process/thread separation inside the test host, not production PID/user/mount namespaces. |
+| Bounded latency | Per-iteration elapsed time was 173-177ms under a 15,000ms watchdog; all 32 iterations completed in 6,133ms under the independent 120,000ms campaign budget. | Production SLO calibration must include image pull, placement, cold start, eviction and regional load. |
+| Auditable nondeterminism | All 32 NDJSON samples are embedded in the boundary manifest and bound by `sha256:c72f8ad9a5b80ec88af002883bc33c0d1673c31532184f931fb04639a9bdc1d4`. Seven cross-fixture closure identities were observed but are not pinned. | External signed immutable retention and long-duration distribution analysis remain open. |
+| Syscall claim discipline | Policy `single-captured-sample-plus-process-soak-v1` explicitly binds the campaign to one separate successful startup trace instead of claiming 32 traced runs. | Network namespace, seccomp and inherited-FD denial are still not demonstrated. |
+
+Frozen acceptance is candidate
+`01c04940c77610a0d98a3feb61fa235724838d58`, tree
+`2f2ecc7d93da479d8ebf19e39f880da965c50af7`,
+[run 30189628276](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276)
+and
+[job 89760384170](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/job/89760384170).
+Ubuntu 24.04.4 passed 156 library tests, formatting, all syscall policies and
+strict Clippy.
+
+[Summary artifact 8628118657](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/artifacts/8628118657)
+contains 24 files, is 28940 bytes and has digest
+`sha256:b83cb16e39540e6dc25ec34c5f6ea4562bddcf2faca8f4f9d2054c0ce4e710e0`;
+[raw trace artifact 8628118769](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/artifacts/8628118769)
+contains eight traces, is 149155 bytes and has digest
+`sha256:16d0a7c08df3b6d62e5776790632d51d8c429a0dcbe06af390982390da624e7e`.
+They expire `2026-08-25T05:36:45Z` and `2026-08-25T05:36:46Z`.
+
+Run
+[30189502740](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189502740)
+preserves the useful negative calibration: 32 exact tests passed, while an
+invalid cross-fixture single-closure assertion failed. The accepted mapping
+scopes equality to each participant pair.
+
+This closes local repeated scheduling only. Production image identity,
+Cloudflare lifecycle replacement, power-loss/restore, external WORM evidence
+and G1-G8 remain open. Go/VPS remains authoritative and production remains
+**NO-GO**.
 
 ## 2026-07-25 Full Terminal Transaction Syscall Mapping
 

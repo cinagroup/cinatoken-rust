@@ -11243,13 +11243,73 @@ only those lint findings and reruns the complete gate.
 This closes real process-level startup propagation for the cooperative
 receipts-root timeout. It does not prove hostile same-UID exclusion, network
 namespace/seccomp or inherited-FD isolation, production image UID/GID/ACL and
-mount policy, repeated schedule distribution, ext4/XFS power loss and restore,
-external signed WORM anchoring, real Cloudflare Container lifecycle or G1-G8.
-The next K7 order is repeated startup/recovery soak, production image identity
-and filesystem attestation, power-loss/restore, then external immutable
-anchoring before isolated Cloudflare rehearsal. No credential, provider,
-Cloudflare API, customer traffic or Go/VPS authority changed. Go/VPS remains
-authoritative and production remains **NO-GO**.
+mount policy, ext4/XFS power loss and restore, external signed WORM anchoring,
+real Cloudflare Container lifecycle or G1-G8. Repeated local schedule
+distribution is closed by section 22.303 below. The next K7 order is production
+image identity and filesystem attestation, power-loss/restore, then external
+immutable anchoring before isolated Cloudflare rehearsal. No credential,
+provider, Cloudflare API, customer traffic or Go/VPS authority changed.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.303 K7 Repeated Startup/Recovery Schedule Soak (2026-07-26)
+
+The next K7 execution unit is now implemented and accepted on native Linux.
+It repeatedly executes the exact real-startup concurrency test as independent
+process invocations instead of inferring schedule stability from one traced
+sample.
+
+The campaign contract is
+`cinatoken-ring-transition-startup-schedule-soak-v1`:
+
+1. run 32 independent iterations of
+   `linux_multiprocess_startup_terminal_candidate_converges_without_http`;
+2. admit a sample only when the exact Rust test exits successfully after both
+   child processes return `ReceiptSealed`, report equal closure observations,
+   replay real startup without an HTTP core and recover the installed closure;
+3. require two nonzero, unequal process PIDs and two nonzero, unequal
+   current-thread Tokio lock TIDs in every iteration;
+4. enforce a 15,000ms watchdog on every iteration and a separate 120,000ms
+   monotonic campaign budget;
+5. retain one normalized NDJSON record per iteration, bind those bytes by
+   SHA-256, aggregate all 32 samples into a versioned boundary JSON and retain
+   the complete human-readable output; and
+6. keep syscall claims separate: the campaign reuses one independently
+   captured successful startup trace and does not claim that all 32 schedule
+   samples were traced.
+
+Frozen acceptance:
+
+| Evidence | Frozen value |
+| --- | --- |
+| Candidate / tree | `01c04940c77610a0d98a3feb61fa235724838d58` / `2f2ecc7d93da479d8ebf19e39f880da965c50af7` |
+| Ubuntu run/job | [30189628276](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276) / [89760384170](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/job/89760384170) |
+| Platform/source gate | Ubuntu 24.04.4, Linux `6.17.0-1020-azure`, rustc/cargo 1.97.1, formatting, 156/156 library tests, all syscall policies and strict all-target Clippy passed |
+| Schedule result | 32 required / 32 observed; every participant PID pair and lock-TID pair was distinct within its iteration; every action was `ReceiptSealed` |
+| Timing | campaign 6,133ms of 120,000ms; per-iteration minimum 173ms, maximum 177ms and aggregate 5,574ms, all below the 15,000ms watchdog |
+| Closure policy | every successful exact Rust test asserted equal per-fixture child closures plus safe replay; 7 cross-fixture closure values were observed as informational nondeterminism, not a pass threshold |
+| Normalized records | `startup-schedule-soak-records.ndjson`, 32 records, `sha256:c72f8ad9a5b80ec88af002883bc33c0d1673c31532184f931fb04639a9bdc1d4` |
+| Syscall claim boundary | `single-captured-sample-plus-process-soak-v1`; one separate `strace -f` sample, trace `sha256:63ce773e5ba81b128373135ad4f3a1f8341c9d81308bb2bd9401f35e33a3b462` |
+| Summary artifact | [8628118657](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/artifacts/8628118657), 24 files, 28940 bytes, `sha256:b83cb16e39540e6dc25ec34c5f6ea4562bddcf2faca8f4f9d2054c0ce4e710e0`, expires `2026-08-25T05:36:45Z` |
+| Successful raw traces | [8628118769](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189628276/artifacts/8628118769), 8 files, 149155 bytes, `sha256:16d0a7c08df3b6d62e5776790632d51d8c429a0dcbe06af390982390da624e7e`, expires `2026-08-25T05:36:46Z` |
+
+[Run 30189502740](https://github.com/cinagroup/cinatoken-rust/actions/runs/30189502740)
+is retained as negative calibration evidence. All 32 exact Rust iterations
+passed, but the first aggregate incorrectly required independent fixtures to
+share one global closure. Their operation-head/local-seal identities may
+legitimately differ. The accepted policy keeps equal-closure convergence
+strict within each process pair while reporting cross-fixture diversity
+without pinning it.
+
+This closes the bounded local schedule-distribution sub-gate, not production
+lifecycle soak. It does not simulate Cloudflare Container cold starts,
+evictions, replacements or concurrent shard load; it also does not prove
+namespace/seccomp/inherited-FD isolation, production image UID/GID/ACL/mount
+policy, ext4/XFS power-loss recovery, external signed WORM retention or G1-G8.
+The next K7 order is production image identity/filesystem attestation,
+power-loss/restore, external immutable anchoring and then isolated Cloudflare
+lifecycle rehearsal. No credential, provider or Cloudflare request was made;
+no customer traffic or Go/VPS authority moved. Go/VPS remains authoritative
+and production remains **NO-GO**.
 
 ### 22.174 2026-07-13 Guarded Global Realtime Reservation Recovery
 

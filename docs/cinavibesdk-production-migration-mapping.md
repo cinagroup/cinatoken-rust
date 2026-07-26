@@ -1608,11 +1608,58 @@ concurrent traces and strict Clippy. GitHub reports artifact digest
 `sha256:a97bb267dd8e24d81f5bf16c3e7dd258107ebc251032cd1ee7f3132cb6b2a589`;
 the candidate Git tree is `fb8a9ae44621e0c04b57496393391e56762601ff`.
 
-This closes only the local receipt-store mapping. Run `30183488782` left one
+At that candidate this closed only the local receipt-store mapping. The real
+dual-startup network-observation mapping is below. Run `30183488782` left one
 non-reproduced Linux full-suite failure, so repeated soak remains required.
 D1/DO/R2 reconstruction, real Container lifecycle, image isolation,
 power-loss/restore, external evidence and G1-G8 remain production gates.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-26 Real Dual-Startup Network Observation Mapping
+
+cinaVibeSDK treats Container processes as replaceable and forbids recovery
+from silently creating a second remote effect. The Rust gate now maps that
+principle to the real startup entrypoint, not only the receipt-store helper.
+Two independent, environment-cleared child processes execute
+`verify_loaded_credentials()` concurrently, recover the same local terminal
+closure, return no HTTP core and replay `ReceiptSealed`. The production path
+handles the losing `AlreadySealed` race by reading the installed closure
+rather than constructing transport authority.
+
+| cinaVibeSDK concern | Rust/Cloudflare evidence | Remaining boundary |
+| --- | --- | --- |
+| Replaceable startup | Two process PIDs and two current-thread Tokio TIDs execute the real startup path behind one shared gate; a third startup performs immutable replay. | This is a Linux test fixture, not a real Cloudflare Container restart/eviction campaign. |
+| Exact observation scope | Unique create-new start/finish paths bind one complete syscall window to each reported worker TID. | Marker windows are observation boundaries, not kernel policy. |
+| No startup egress | 3880 syscalls inside two windows contain zero successful or failed `%network` attempts. Outside-window network calls are pinned to exactly three `socketpair`; every other name fails globally. | Inherited socket use through ordinary `read`/`write`, `sendfile` or `io_uring` is not covered. |
+| Fail-closed concurrency | `AlreadySealed` from initial audit or unfinished recovery can return only the verified installed terminal closure; no HTTP core or mutation outcome is produced. | Blocking `flock` still has no deadline; schedule soak is incomplete. |
+| Evidence privacy | Structured summaries/logs/PIDs are separate from successful raw traces; failed raw traces retain for only seven days. | External signing/WORM and production log-classification policy remain open. |
+| Durable authority | Local closure identity and direct post-close audit are stable after both startup processes. | Container disk remains replaceable; D1/DO/R2 reconstruction and quarantine still control production authority. |
+
+Frozen acceptance is candidate
+`eb90c27af35b56e169b64e676eba2bbb37d0fe15`, Git tree
+`cf9a63b698c35b8addaa97c7d84bb69f46ebbfa1`,
+[run 30186091600](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600)
+and
+[job 89750973529](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/job/89750973529).
+Ubuntu passed 149 library tests and strict Clippy. The trace parsed 7252
+syscalls across six identities, reconciled 64 unscoped split lines and
+accepted only the exact three-`socketpair` outside-window baseline.
+
+[Summary artifact 8627086351](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/artifacts/8627086351)
+is 14803 bytes with digest
+`sha256:91720d03fd24d8daf49609671d84a238db8b1df0bf1a331b97c8ec6d01b30f5f`;
+[raw trace artifact 8627086439](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/artifacts/8627086439)
+is 123728 bytes with digest
+`sha256:d177ca95b21a796e3f686644f24af3563079377a7e34d938d0e7fff063bceb95`.
+Both expire `2026-08-25T03:24:49Z`.
+
+The negative runs `30184982382`, `30185436031` and `30185637997` record why
+process-wide, raw-TID-only and reject-all-split-line claims were unsound. The
+accepted scope is deliberately narrower and auditable. It does not authorize
+customer traffic, replace network namespace/seccomp/FD-isolation evidence, or
+close bounded locking, power-loss/restore, external WORM, Cloudflare
+lifecycle or G1-G8. Go/VPS remains authoritative and production remains
+**NO-GO**.
 
 ## 2026-07-25 Full Terminal Transaction Syscall Mapping
 

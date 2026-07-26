@@ -6191,13 +6191,76 @@ tests and 146 Bun tests with 573 expectations, plus formatting, YAML and
 warning-free Clippy. Native Ubuntu is the Linux compilation evidence because
 the Windows host lacks `x86_64-linux-gnu-gcc`.
 
-This closes only concurrent receipt-store recovery. Real concurrent
-`verify_loaded_credentials()` startup, zero `socket`/`connect` syscall proof,
-bounded `flock` acquisition, candidate-finish-before-plan, remaining crash
-prefixes, production ACL/mounts, power-loss/restore and external WORM evidence
-remain open. Run `30183488782` also left one non-reproduced full-suite failure;
-focused replays passed, so repeated Ubuntu soak remains an explicit gate.
-Go/VPS remains authoritative and production remains **NO-GO**.
+At that frozen candidate, this closed only concurrent receipt-store recovery.
+Real concurrent `verify_loaded_credentials()` startup and the narrower
+zero-network syscall window are verified below. Bounded `flock` acquisition,
+candidate-finish-before-plan, remaining crash prefixes, production
+ACL/mounts, power-loss/restore and external WORM evidence remain open. Run
+`30183488782` also left one non-reproduced full-suite failure; focused replays
+passed, so repeated Ubuntu soak remains an explicit gate. Go/VPS remains
+authoritative and production remains **NO-GO**.
+
+## 2026-07-26 Real Dual-Startup Zero-Network Window Verification
+
+The Linux gate now launches two independent, environment-cleared child
+processes against one terminal-candidate fixture. Their current-thread Tokio
+test threads each create unique start and finish marker files around the real
+`verify_loaded_credentials()` call and terminal `execute_current()` replay.
+Both recover the same terminal closure with no HTTP core, unverified access
+token, `ReceiptSealed`, no claim classification and no mutation transport
+outcome. A third real startup replay returns the same closure; raw store audit
+after closure returns `AlreadySealed`.
+
+The production startup path handles a concurrent `AlreadySealed` result from
+either operation audit or unfinished recovery by reading the installed
+terminal closure. That branch returns before `HyperHttpsExchange`
+construction. The verifier rejects missing or malformed windows, every failed
+or successful network-class syscall inside a window, and every
+outside-window network name except the explicitly pinned local
+`socketpair` baseline.
+
+Frozen Ubuntu evidence:
+
+- candidate `eb90c27af35b56e169b64e676eba2bbb37d0fe15`;
+- Git tree `cf9a63b698c35b8addaa97c7d84bb69f46ebbfa1`;
+- [run 30186091600](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600);
+- [job 89750973529](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/job/89750973529);
+- 149 Linux library tests, formatting and strict all-target Clippy passed;
+- existing standalone lock policies remained 4/10/4/8 and receipt-store
+  concurrency remained 6+6;
+- startup TIDs `4172` and `4173` had two complete create-new marker windows;
+- 7252 syscalls were parsed across six identities, with 3880 syscalls inside
+  the two windows and zero network-class attempts there;
+- 64 outside-window split lines were reconciled; and
+- exactly three outside-window network-class calls were observed, all
+  `socketpair`; any other name or count fails the workflow.
+
+[Summary artifact 8627086351](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/artifacts/8627086351)
+contains 18 structured/log/PID files, is 14803 bytes, has digest
+`sha256:91720d03fd24d8daf49609671d84a238db8b1df0bf1a331b97c8ec6d01b30f5f`
+and expires `2026-08-25T03:24:49Z`.
+[Raw trace artifact 8627086439](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/artifacts/8627086439)
+contains seven successful traces, is 123728 bytes, has digest
+`sha256:d177ca95b21a796e3f686644f24af3563079377a7e34d938d0e7fff063bceb95`
+and expires `2026-08-25T03:24:49Z`. Successful raw traces and structured
+summaries retain for 30 days; failed raw traces are isolated to a seven-day
+failure artifact.
+
+Local aggregate verification passed 127 Rust library tests, three binary/CLI
+tests and 147 Bun tests with 608 expectations, plus format, YAML, Node syntax
+and strict Clippy. Failed runs `30184982382`, `30185436031` and `30185637997`
+are retained as negative evidence for, respectively, parent-harness
+`socketpair`, split unscoped `readlink`, and same-TID Tokio initialization
+before the call window.
+
+This is a syscall-observation proof, not kernel-enforced isolation. Inherited
+socket descriptors used through ordinary `read`/`write`, `sendfile` or
+`io_uring` remain outside `%network`; network namespace/seccomp denial,
+schedule soak, bounded `flock`, remaining crash points, production
+ACL/mount/power-loss/restore, external WORM evidence and real Cloudflare
+lifecycle remain required. The accepted run has only the pinned upload
+action's Node 20 deprecation warning while GitHub forces Node 24. Go/VPS
+remains authoritative and production remains **NO-GO**.
 
 ## Container Reconciliation Retry Preview Verification (2026-07-17)
 

@@ -604,13 +604,68 @@ is 87879 bytes with digest
 and 30-day retention. Candidate Git tree:
 `fb8a9ae44621e0c04b57496393391e56762601ff`.
 
-This is a receipt-store concurrency proof, not two production startup paths.
-It does not call `verify_loaded_credentials()` in both processes, trace
-`socket`/`connect`, bound blocking `flock` acquisition or prove Container
-storage authority. One non-reproduced Linux full-suite failure on run
-`30183488782` also requires soak. Candidate-finish-before-plan, remaining
+At that candidate this was a receipt-store concurrency proof, not two
+production startup paths. The real dual-startup and bounded syscall window are
+covered below. Blocking `flock`, Container storage authority, the
+non-reproduced run `30183488782`, candidate-finish-before-plan, remaining
 crash prefixes, image isolation, power loss, restore, external WORM and
 Cloudflare lifecycle remain open. Production remains **NO-GO**.
+
+## Real Dual-Startup Zero-Network Window Gate
+
+The runner now tests its real startup entrypoint with two independent child
+processes. Both children clear inherited environment, retain only fixed
+fixture and synchronization paths, and execute
+`verify_loaded_credentials()` on a current-thread Tokio runtime. A concurrent
+`AlreadySealed` result during operation audit or unfinished recovery is
+resolved by reading the installed terminal closure; that path returns a
+control plane with no HTTP core. Both children then produce the same local
+`ReceiptSealed` result without a mutation transport outcome.
+
+Each child publishes a unique create-new trace-start marker after the shared
+release gate and a trace-finish marker after sealed execution. The verifier
+joins those paths to the reported Linux TID and requires exactly one ordered,
+successful window per child. Inside either window every `%network` syscall is
+forbidden regardless of return value. Outside the windows only the known
+local orchestration syscall `socketpair` is allowed, and the workflow pins its
+count to exactly three; a `socket`, `connect`, `send*`, `recv*` or any other
+network-class call from any traced identity fails.
+
+Candidate `eb90c27af35b56e169b64e676eba2bbb37d0fe15` and Git tree
+`cf9a63b698c35b8addaa97c7d84bb69f46ebbfa1` passed
+[Ubuntu run 30186091600](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600)
+and
+[job 89750973529](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/job/89750973529).
+Ubuntu passed 149 Linux library tests, formatting, all previous trace gates,
+the dual-startup gate, both artifact uploads and strict Clippy.
+
+The accepted startup trace observed six identities and parsed 7252 syscalls.
+Worker TIDs `4172` and `4173` had complete windows with 3880 parsed syscalls
+and zero network-class attempts. Outside the windows, 64 unfinished/resumed
+lines were reconciled and exactly three `socketpair` calls were observed.
+
+[Summary artifact 8627086351](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/artifacts/8627086351)
+is 14803 bytes with digest
+`sha256:91720d03fd24d8daf49609671d84a238db8b1df0bf1a331b97c8ec6d01b30f5f`.
+[Raw trace artifact 8627086439](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/artifacts/8627086439)
+is 123728 bytes with digest
+`sha256:d177ca95b21a796e3f686644f24af3563079377a7e34d938d0e7fff063bceb95`.
+Both expire `2026-08-25T03:24:49Z`; failed raw traces use a separate
+seven-day artifact.
+
+Runs `30184982382`, `30185436031` and `30185637997` are retained negative
+evidence for, respectively, parent harness `socketpair`, valid split
+`readlink` trace lines and same-TID runtime initialization before the business
+window. The accepted-run annotation is only the upload action Node 20
+deprecation warning while GitHub forces Node 24.
+
+This proves observed `%network` behavior, not kernel-enforced egress denial.
+Inherited socket FDs used with `read`/`write`, `sendfile` or `io_uring`, a
+background path using only the allowed local `socketpair`, and untested
+schedules remain residual boundaries. Production still requires FD/runtime
+isolation, bounded `flock`, the remaining crash and storage campaigns,
+external evidence, Cloudflare lifecycle and G1-G8. Production remains
+**NO-GO**.
 
 ## Terminal Receipt Store Boundary
 

@@ -11003,15 +11003,111 @@ root-caused; repeated Ubuntu soak remains required before K7 promotion. The
 only final-run annotation is the pinned upload action's Node 20 deprecation
 warning while GitHub forces Node 24, which remains CI maintenance debt.
 
-This closes concurrent recovery only at the receipt-store boundary. It is not
-two real `verify_loaded_credentials()` startup processes, does not trace
-`socket`/`connect` to prove zero egress, and does not add a bounded timeout to
-the blocking root `flock`. Exact replay may still perform directory sync/chmod
-metadata operations even though immutable file identities remain stable.
-Candidate-finish-before-plan, the remaining receipt-prefix crash sweep,
-production UID/GID/ACL/mount enforcement, ext4/XFS power loss, restore,
-external signing/WORM, Cloudflare DO/Container lifecycle and G1-G8 remain
-open. Go/VPS remains authoritative and production remains **NO-GO**.
+At that frozen candidate, this closed concurrent recovery only at the
+receipt-store boundary. It was not two real `verify_loaded_credentials()`
+startup processes, did not trace `socket`/`connect`, and did not add a bounded
+timeout to the blocking root `flock`. Section 22.300 closes the first two of
+those historical gaps with a narrower syscall claim. Exact replay may still
+perform directory sync/chmod metadata operations even though immutable file
+identities remain stable. Candidate-finish-before-plan, the remaining
+receipt-prefix crash sweep, production UID/GID/ACL/mount enforcement,
+ext4/XFS power loss, restore, external signing/WORM, Cloudflare DO/Container
+lifecycle and G1-G8 remain open. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
+## 22.300 K7 Real Dual-Startup Zero-Network Window Gate (2026-07-26)
+
+Two independent child processes now execute the real
+`verify_loaded_credentials()` entrypoint against one terminal-candidate
+fixture. Each child starts with `env_clear()`, receives only fixed test paths,
+reports its process PID and current-thread Tokio TID, waits behind the shared
+release gate, and creates unique start/finish marker files around the exact
+startup-recovery plus `ReceiptSealed` execution window. Both return
+`PreparedControlPlane { core: None }`, never verify an access-service token,
+converge on one six-field terminal closure and execute with no mutation
+transport outcome. A third real startup replay returns the same closure, and
+direct post-close audit remains `AlreadySealed`.
+
+The startup path now treats an `AlreadySealed` race from either initial audit
+or unfinished-operation recovery as a request to recover the already
+installed terminal closure. It never constructs `HyperHttpsExchange` in this
+case. This is the production-path concurrency fix; the marker files and child
+roles exist only in the Linux test module.
+
+The syscall verifier is fail-closed and scope-aware:
+
+1. `strace -f` captures `%file`, `%network`, lock, durability, descriptor and
+   duplication syscalls with the exact filter, strace version, follow-forks
+   flag, raw-trace SHA-256 and byte count recorded in the boundary manifest.
+2. Each reported worker TID must have one successful create-new start marker
+   and one successful create-new finish marker in order. Missing, duplicate,
+   failed, crossed or unfinished windows fail verification.
+3. Every successful or failed `%network` attempt inside either window fails,
+   including `socket`, `connect`, `send*`, `recv*` and `socketpair`.
+4. Outside the windows, the complete trace is pinned to exactly three
+   `socketpair` calls and no other network syscall name. This preserves the
+   known libtest/Tokio/`Command` orchestration baseline while rejecting a
+   background thread that attempts `socket`, `connect` or other network I/O.
+5. Standard `strace` unfinished/resumed pairs are accepted only when they
+   match by TID and syscall; diagnostic, unparsed, overlapping or unclosed
+   scoped lines fail.
+
+Acceptance is frozen at
+`eb90c27af35b56e169b64e676eba2bbb37d0fe15`,
+Git tree `cf9a63b698c35b8addaa97c7d84bb69f46ebbfa1`,
+[run 30186091600](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600)
+and
+[job 89750973529](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/job/89750973529).
+Ubuntu 24.04 passed all 149 Linux library tests, formatting, the existing
+4/10/4/8 standalone trace policies, the 6+6 receipt-store concurrency policy,
+the new dual-startup policy, both evidence uploads and strict all-target
+Clippy.
+
+The accepted startup trace parsed 7252 syscalls from six observed identities.
+The two pinned startup TIDs were `4172` and `4173`; their complete marker
+windows contained 3880 parsed syscalls and zero `%network` calls. The
+unscoped trace contained 64 split trace lines and exactly three network-class
+calls, all named `socketpair`. The workflow requires these values and names,
+not merely an empty successful-call list.
+
+Evidence is deliberately split by sensitivity:
+
+- [summary artifact 8627086351](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/artifacts/8627086351)
+  contains 18 verifier, boundary, process-output and PID files; it is 14803
+  bytes with digest
+  `sha256:91720d03fd24d8daf49609671d84a238db8b1df0bf1a331b97c8ec6d01b30f5f`
+  and expires `2026-08-25T03:24:49Z`.
+- [raw trace artifact 8627086439](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/artifacts/8627086439)
+  contains seven successful `.strace` files; it is 123728 bytes with digest
+  `sha256:d177ca95b21a796e3f686644f24af3563079377a7e34d938d0e7fff063bceb95`
+  and expires `2026-08-25T03:24:49Z`.
+- Failed raw traces remain in a separate seven-day artifact; successful raw
+  traces and structured summaries retain for 30 days.
+
+Local acceptance passed 127 Rust library tests, three binary/CLI tests and 147
+Bun tests with 608 expectations, plus format, YAML, Node syntax and strict
+Clippy gates. Runs
+[30184982382](https://github.com/cinagroup/cinatoken-rust/actions/runs/30184982382),
+[30185436031](https://github.com/cinagroup/cinatoken-rust/actions/runs/30185436031)
+and
+[30185637997](https://github.com/cinagroup/cinatoken-rust/actions/runs/30185637997)
+remain negative evidence: they respectively exposed parent-harness
+`socketpair`, unscoped split `readlink`, and same-TID Tokio initialization
+`socketpair` before the business call window. They were fixed by narrowing the
+claim, not by deleting observations.
+
+This proves zero traced `%network` syscall attempts only inside the two
+explicit startup windows, plus a globally pinned outside-window `socketpair`
+baseline. It does not prove absence of I/O through inherited socket
+descriptors using ordinary `read`/`write`, `sendfile` or `io_uring`; it is not
+a network namespace or seccomp denial. It also does not cover every possible
+schedule, bound blocking `flock`, close candidate-finish-before-plan, finish
+the receipt-prefix crash sweep, attest production UID/GID/ACL/mounts, prove
+ext4/XFS power loss and restore, create external WORM evidence, or exercise
+real Cloudflare DO/Container lifecycle and G1-G8. The unexplained run
+`30183488782` still requires soak. The only accepted-run annotation is the
+pinned upload action's Node 20 deprecation warning while GitHub forces Node
+24. Go/VPS remains authoritative and production remains **NO-GO**.
 
 ### 22.174 2026-07-13 Guarded Global Realtime Reservation Recovery
 

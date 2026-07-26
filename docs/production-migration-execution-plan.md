@@ -3659,3 +3659,63 @@ K7 is still not accepted for production. Before promotion, execute:
 The pinned upload action's Node 20 deprecation warning is also CI maintenance
 debt. Go/VPS remains traffic, scheduler and financial authority; production
 remains **NO-GO**.
+
+## 2026-07-26 K7 Real Dual-Startup Network Observation Gate
+
+The second K7 item above is now closed at an explicitly bounded observation
+scope. Two environment-cleared child processes execute the real
+`verify_loaded_credentials()` path concurrently against one
+candidate-after-sync fixture. Unique successful create-new marker opens bound
+each worker's evidence window from immediately before credential/startup
+recovery through the local `ReceiptSealed` execution result. The startup
+implementation now accepts a concurrent `AlreadySealed` audit/recovery result
+only by recovering the already installed terminal closure and returns before
+constructing an HTTP core.
+
+The gate requires:
+
+1. two distinct process PIDs and two distinct current-thread Tokio TIDs;
+2. both marker windows complete in order on their declared TIDs;
+3. both prepared control planes have no HTTP core and do not verify an access
+   token;
+4. both return the same terminal closure and local `ReceiptSealed` result;
+5. zero successful or failed `%network` syscall attempts in both windows;
+6. exactly three network-class calls outside the windows, all `socketpair`;
+7. all other outside-window network names fail globally, including calls from
+   a newly spawned background thread; and
+8. a third real startup replay and direct `AlreadySealed` audit preserve the
+   installed closure.
+
+Acceptance packet:
+
+| Evidence | Frozen value |
+| --- | --- |
+| Candidate | `eb90c27af35b56e169b64e676eba2bbb37d0fe15` |
+| Git tree | `cf9a63b698c35b8addaa97c7d84bb69f46ebbfa1` |
+| Ubuntu run/job | [30186091600](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600) / [89750973529](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/job/89750973529) |
+| Linux library tests | 149 passed |
+| Startup trace | 7252 parsed; 3880 window-scoped; 0 scoped network; 64 unscoped split lines; 3 unscoped `socketpair` |
+| Summary artifact | [8627086351](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/artifacts/8627086351), 14803 bytes, `sha256:91720d03fd24d8daf49609671d84a238db8b1df0bf1a331b97c8ec6d01b30f5f`, expires `2026-08-25T03:24:49Z` |
+| Successful raw traces | [8627086439](https://github.com/cinagroup/cinatoken-rust/actions/runs/30186091600/artifacts/8627086439), 123728 bytes, `sha256:d177ca95b21a796e3f686644f24af3563079377a7e34d938d0e7fff063bceb95`, expires `2026-08-25T03:24:49Z` |
+| Local aggregate | 127 Rust library + 3 binary/CLI + 147 Bun; 608 expectations; format/YAML/Node/Clippy passed |
+
+The three preceding failed campaigns remain part of the audit trail:
+
+| Run | Rejected assumption | Corrective control |
+| --- | --- | --- |
+| [30184982382](https://github.com/cinagroup/cinatoken-rust/actions/runs/30184982382) | Whole test tree could be labeled zero-network | Separate harness/runtime identities from the business call |
+| [30185436031](https://github.com/cinagroup/cinatoken-rust/actions/runs/30185436031) | All unfinished/resumed lines should be rejected | Reconcile exact TID/syscall pairs and disclose unscoped splits |
+| [30185637997](https://github.com/cinagroup/cinatoken-rust/actions/runs/30185637997) | A worker TID alone identifies the business interval | Bind successful create-new start/finish windows around the real call |
+
+This gate must not be interpreted as an egress sandbox. `%network` does not
+prove absence of traffic through an inherited socket using ordinary
+`read`/`write`, `sendfile` or `io_uring`. Production promotion still requires
+runtime FD closure, network namespace/seccomp or equivalent isolation
+evidence, repeated schedule soak, bounded `flock`, candidate-finish-before-
+plan, the remaining receipt-prefix crash matrix, UID/GID/ACL/mount and
+ext4/XFS power-loss/restore campaigns, external signed WORM evidence,
+isolated Cloudflare lifecycle and all G1-G8 approvals.
+
+The only accepted-run annotation is the pinned upload action's Node 20
+deprecation warning while GitHub forces Node 24. Go/VPS remains traffic,
+scheduler and financial authority; production remains **NO-GO**.

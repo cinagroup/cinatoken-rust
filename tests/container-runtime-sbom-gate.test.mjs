@@ -246,6 +246,7 @@ describe("container runtime SBOM release gate", () => {
       sourceConfigDigest: fixture.ociReport.ociConfigDigest,
       sourceMediaType: OCI_MANIFEST_MEDIA_TYPE,
       sourcePlatformMetadataPresent: true,
+      sourceLayerDigestKind: "uncompressed-diff-id",
       sourceLayerCount: 2,
     });
 
@@ -296,6 +297,7 @@ describe("container runtime SBOM release gate", () => {
         sourceLayerCount: 2,
         sourceMediaType: OCI_MANIFEST_MEDIA_TYPE,
         sourcePlatformMetadataPresent: true,
+        sourceLayerDigestKind: "uncompressed-diff-id",
       },
       generatedSbomPresent: true,
       generatedProvenancePresent: false,
@@ -575,8 +577,8 @@ function buildFixture() {
         imageSize: 4096,
         layers: layerBytes.map((bytes, index) => ({
           mediaType: OCI_LAYER_MEDIA_TYPE,
-          digest: layerDigests[index],
-          size: bytes.length,
+          digest: diffIds[index],
+          size: 0,
         })),
         manifest: rawManifest.toString("base64"),
         config: rawConfig.toString("base64"),

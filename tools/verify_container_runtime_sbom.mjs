@@ -320,6 +320,7 @@ export async function runSbomGate(sbomAPath, sbomBPath, ociReportPath) {
       sourceMediaType: sbomFacts.sourceMediaType,
       sourcePlatformMetadataPresent:
         sbomFacts.sourcePlatformMetadataPresent,
+      sourceLayerDigestKind: sbomFacts.sourceLayerDigestKind,
       sourceLayerCount: sbomFacts.sourceLayerCount,
     },
     generatedSbomPresent: true,
@@ -530,9 +531,10 @@ export function validateSyftSbom(sbom, ociReport) {
       [OCI_LAYER_MEDIA_TYPE, DOCKER_LAYER_MEDIA_TYPE].includes(
         layer.mediaType,
       ) &&
-        layer.digest === ociReport.compressedLayerDigests[index] &&
+        layer.digest === ociReport.uncompressedLayerDiffIds[index] &&
         Number.isSafeInteger(layer.size) &&
-        layer.size > 0,
+        layer.size >= 0 &&
+        layer.size <= 128 * 1024 * 1024,
       `Syft layer ${index} is not bound to the OCI descriptor`,
     );
   }
@@ -710,6 +712,7 @@ export function validateSyftSbom(sbom, ociReport) {
     sourceConfigDigest: metadata.imageID,
     sourceMediaType: metadata.mediaType,
     sourcePlatformMetadataPresent,
+    sourceLayerDigestKind: "uncompressed-diff-id",
     sourceLayerCount: layers.length,
   };
 }

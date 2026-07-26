@@ -6547,15 +6547,14 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn startup_receipt_tree_snapshot(
-        root: &std::path::Path,
-    ) -> Vec<(String, bool, u64, u64, u32, u64, Option<Vec<u8>>)> {
-        use std::os::unix::fs::MetadataExt;
+    type StartupReceiptTreeEntry = (String, bool, u64, u64, u32, u64, Option<Vec<u8>>);
 
+    #[cfg(target_os = "linux")]
+    fn startup_receipt_tree_snapshot(root: &std::path::Path) -> Vec<StartupReceiptTreeEntry> {
         fn visit(
             root: &std::path::Path,
             current: &std::path::Path,
-            entries: &mut Vec<(String, bool, u64, u64, u32, u64, Option<Vec<u8>>)>,
+            entries: &mut Vec<StartupReceiptTreeEntry>,
         ) {
             use std::os::unix::fs::MetadataExt;
 

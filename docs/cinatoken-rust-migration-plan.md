@@ -10930,12 +10930,88 @@ proved the writer gate before exposing the recovery protocol's fourth lock
 pair for immutable replay. Neither failure was retried away or reclassified.
 
 This closes one real candidate-after-sync process-death boundary and its fresh
-startup recovery. It does not close concurrent dual-startup recovery,
-candidate-finish-before-plan, the remaining receipt-prefix crash sweep,
-production UID/GID/ACL and mount attestation, ext4/XFS power loss, restore,
-external WORM evidence, Cloudflare DO/Container lifecycle or G1-G8. No
-credential, remote mutation, customer traffic movement or Go/VPS drain
-occurred. Go/VPS remains authoritative and production remains **NO-GO**.
+startup recovery. At this candidate, concurrent dual-startup recovery was
+still open; section 22.299 closes the narrower receipt-store concurrency
+variant. Candidate-finish-before-plan, the remaining receipt-prefix crash
+sweep, production UID/GID/ACL and mount attestation, ext4/XFS power loss,
+restore, external WORM evidence, Cloudflare DO/Container lifecycle and G1-G8
+remain open. No credential, remote mutation, customer traffic movement or
+Go/VPS drain occurred. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
+## 22.299 K7 Concurrent Candidate Recovery Linearization Gate (2026-07-26)
+
+The candidate-after-sync fixture now has a bounded two-process recovery
+campaign. Two independent test-harness processes first validate the same
+candidate fixture, publish separate readiness files and wait behind one shared
+release gate. Their Rust test threads then concurrently run unfinished-
+operation recovery, terminal-closure recovery and immutable closure replay.
+Both processes must return the same six-field closure identity, exactly one
+must report the unfinished start, and together they must leave one accepted
+finish, one sealed execution graph and no second recovery writer.
+
+The Linux evidence model distinguishes process identity from the Rust test
+harness thread that actually acquires `flock`. Each process PID remains
+recorded as isolation evidence; each worker also reports its Linux TID from
+inside the test thread. The syscall verifier requires:
+
+1. two distinct reported lock TIDs and exact equality with the two strace lock
+   identities;
+2. exactly six exclusive locks per TID and twelve total;
+3. every successful mutation to remain under both authorization locks and
+   retained directory descriptors;
+4. one participant may be a legal read-only replay, but the two-trace union
+   must contain successful `openat2`, `renameat2`, directory sync, descriptor
+   chmod and required `mkdirat` mutation evidence; and
+5. a two-read-only bundle must fail verification.
+
+The boundary manifest retains both `processPid` and `lockThreadId`, both tracer
+statuses, each unfinished count, `exactlyOneRecoveryWriter=true` and the shared
+closure identity. The outer test also proves the accepted finish tuple,
+exactly two operation receipts, one authorization/closure directory, sealed
+execution graph, unchanged candidate fixture file identity and fail-closed
+`AlreadySealed` audit after closure.
+
+Acceptance evidence is frozen at
+`aaa52936765ec47afdc2871ccab4fd2e6115ffbd`,
+[run 30183935884](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884)
+and
+[job 89745204486](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884/job/89745204486).
+Ubuntu 24.04 passed all 148 Linux library tests, formatting, the exact
+4/10/4/8 standalone trace policies, the 6+6 concurrent policy, evidence
+upload and warning-free all-target Clippy.
+
+[Artifact 8626449986](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884/artifacts/8626449986)
+retains the configured verifier JSON, boundary JSON, process outputs, PID
+files and raw straces for 30 days. GitHub reports 87879 bytes, digest
+`sha256:a97bb267dd8e24d81f5bf16c3e7dd258107ebc251032cd1ee7f3132cb6b2a589`
+and expiry at `2026-08-25T02:05:23Z`. The accepted Git tree is
+`fb8a9ae44621e0c04b57496393391e56762601ff`.
+
+Local acceptance passed 127 Rust library tests, three binary/CLI tests and 146
+Bun tests with 573 expectations across the checked source and retained
+release-source evidence copy, plus format, YAML and strict Clippy gates.
+The local Linux cross-check could not start because the installed Rust target
+has no `x86_64-linux-gnu-gcc`; the exact Linux branch instead compiled and ran
+in the successful native Ubuntu job.
+
+Failed runs remain negative evidence rather than being erased. Run
+`30183243675` exposed the legal read-only loser, and run `30183693397` proved
+that a Rust test-harness PID is not the lock-owning TID. One earlier full-suite
+failure on run `30183488782` passed every focused replay and has not been
+root-caused; repeated Ubuntu soak remains required before K7 promotion. The
+only final-run annotation is the pinned upload action's Node 20 deprecation
+warning while GitHub forces Node 24, which remains CI maintenance debt.
+
+This closes concurrent recovery only at the receipt-store boundary. It is not
+two real `verify_loaded_credentials()` startup processes, does not trace
+`socket`/`connect` to prove zero egress, and does not add a bounded timeout to
+the blocking root `flock`. Exact replay may still perform directory sync/chmod
+metadata operations even though immutable file identities remain stable.
+Candidate-finish-before-plan, the remaining receipt-prefix crash sweep,
+production UID/GID/ACL/mount enforcement, ext4/XFS power loss, restore,
+external signing/WORM, Cloudflare DO/Container lifecycle and G1-G8 remain
+open. Go/VPS remains authoritative and production remains **NO-GO**.
 
 ### 22.174 2026-07-13 Guarded Global Realtime Reservation Recovery
 

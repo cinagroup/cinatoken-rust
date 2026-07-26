@@ -3600,9 +3600,62 @@ Clean source evidence is:
 | Modules / bytes | 34 / 1719654 |
 
 This advances K7 but does not authorize K7 completion or production
-promotion. The ordered next units are concurrent dual-startup candidate
-recovery, candidate-finish-before-plan, the remaining receipt-prefix crash
-sweep, production UID/GID/ACL and mount attestation, ext4/XFS power-loss and
-restore, externally signed WORM evidence, isolated Cloudflare DO/Container
-lifecycle and then G1-G8. Go/VPS remains traffic, scheduler and financial
-authority; production remains **NO-GO**.
+promotion. Concurrent receipt-store candidate recovery is accepted below;
+real dual startup remains open. The ordered next units include
+candidate-finish-before-plan, the remaining receipt-prefix crash sweep,
+production UID/GID/ACL and mount attestation, ext4/XFS power-loss and restore,
+externally signed WORM evidence, isolated Cloudflare DO/Container lifecycle
+and then G1-G8. Go/VPS remains traffic, scheduler and financial authority;
+production remains **NO-GO**.
+
+## 2026-07-26 K7 Concurrent Receipt-Store Recovery Gate
+
+The bounded concurrency gate launches two independent harness processes
+against one candidate-after-sync fixture. Each validates the fixture before a
+shared release gate. Their Rust test threads then recover concurrently and
+must satisfy all of these acceptance conditions:
+
+1. both return the same terminal closure identity;
+2. unfinished counts are exactly `1:0` or `0:1`;
+3. the store contains one accepted finish, exactly two operation receipts and
+   one sealed execution graph;
+4. candidate fixture file identity remains unchanged and post-seal audit is
+   fail-closed;
+5. strace observes two distinct lock TIDs, six locks each and twelve total;
+6. process PID and lock TID are retained separately and the TIDs exactly match
+   the strace lock identities; and
+7. a read-only loser is allowed only when the two-trace union contains the
+   complete retained-dirfd mutation and durability evidence.
+
+Acceptance is frozen at
+`aaa52936765ec47afdc2871ccab4fd2e6115ffbd`,
+[run 30183935884](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884)
+and
+[job 89745204486](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884/job/89745204486).
+Ubuntu passed 148 library tests, exact 4/10/4/8 standalone traces, the 6+6
+concurrent bundle, formatting, evidence upload and strict Clippy.
+
+[Artifact 8626449986](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884/artifacts/8626449986)
+retains the configured raw and structured evidence for 30 days. GitHub reports
+87879 bytes, digest
+`sha256:a97bb267dd8e24d81f5bf16c3e7dd258107ebc251032cd1ee7f3132cb6b2a589`
+and expiry `2026-08-25T02:05:23Z`. Candidate Git tree:
+`fb8a9ae44621e0c04b57496393391e56762601ff`.
+
+K7 is still not accepted for production. Before promotion, execute:
+
+1. repeated Ubuntu stress/soak until the unexplained run `30183488782`
+   full-suite failure is root-caused or a documented consecutive-green
+   threshold is met;
+2. two real `verify_loaded_credentials()` startup processes with zero
+   `socket`/`connect` syscalls before sealed recovery completes;
+3. bounded lock acquisition and fail-closed timeout/availability behavior;
+4. candidate-finish-before-plan and the remaining receipt-prefix crash sweep;
+5. production UID/GID/ACL/mount, ext4/XFS power-loss and restore campaigns;
+6. external signed WORM evidence and isolated Cloudflare DO/Container
+   lifecycle; and
+7. the complete G1-G8 approval path.
+
+The pinned upload action's Node 20 deprecation warning is also CI maintenance
+debt. Go/VPS remains traffic, scheduler and financial authority; production
+remains **NO-GO**.

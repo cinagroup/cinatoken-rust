@@ -556,12 +556,61 @@ tests with 276 expectations. Clean source evidence is Git tree
 and 34 modules totaling 1719654 bytes with inventory SHA-256
 `534170adf68de8e647bdd9b0382d00097f5b665df1b356aa6e2466c4d9427e7b`.
 
-This is a bounded local durability and restart gate. It does not prove
-concurrent dual-startup recovery, every receipt-prefix crash point,
+This is a bounded local durability and restart gate. At that candidate it did
+not prove concurrent recovery; the receipt-store variant is covered below.
+It still does not prove every receipt-prefix crash point,
 candidate-finish-before-plan, same-UID hostility, production ACL/mount
 enforcement, power loss, restore, external immutable evidence or Cloudflare
 Container lifecycle. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## Concurrent Candidate Recovery Gate
+
+The Linux harness now starts two independent traced processes against the same
+candidate fixture. Both validate the crash boundary before publishing
+readiness and waiting on one shared start gate. Each Rust test thread then
+runs unfinished-operation recovery, terminal closure and exact replay.
+
+The Rust test harness executes tests on worker threads, so process PID and lock
+identity are intentionally distinct. Each process records its PID for process
+isolation, while the concurrent role reports `SYS_gettid` from the thread that
+opens the store and acquires the locks. The workflow requires the two reported
+TIDs to be distinct and exactly equal to the two strace lock identities.
+
+The concurrent verifier accepts one mutating participant and one fully
+read-only replay participant. Each trace must still have exactly six exclusive
+locks under one TID, with twelve locks across two TIDs. The bundle, rather than
+each participant, must prove successful retained-dirfd `openat2`, `renameat2`,
+required `mkdirat`, directory sync and descriptor chmod. Every observed
+mutation remains confined under both locks; a two-read-only bundle is rejected.
+
+Both processes emit the same terminal closure identity. Their unfinished
+counts must sum to one, and the boundary manifest records `processPid`,
+`lockThreadId`, tracer status, unfinished count,
+`exactlyOneRecoveryWriter=true` and the shared closure. The outer verifier
+requires exactly two operation receipts, a sealed graph, stable candidate
+fixture identity, immutable closure replay and `AlreadySealed` for post-close
+audit.
+
+Candidate `aaa52936765ec47afdc2871ccab4fd2e6115ffbd` passed
+[Ubuntu run 30183935884](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884)
+and
+[job 89745204486](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884/job/89745204486)
+with 148 Linux library tests, exact 4/10/4/8 standalone locks, 6+6
+concurrent locks, formatting and strict Clippy.
+[Artifact 8626449986](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884/artifacts/8626449986)
+is 87879 bytes with digest
+`sha256:a97bb267dd8e24d81f5bf16c3e7dd258107ebc251032cd1ee7f3132cb6b2a589`
+and 30-day retention. Candidate Git tree:
+`fb8a9ae44621e0c04b57496393391e56762601ff`.
+
+This is a receipt-store concurrency proof, not two production startup paths.
+It does not call `verify_loaded_credentials()` in both processes, trace
+`socket`/`connect`, bound blocking `flock` acquisition or prove Container
+storage authority. One non-reproduced Linux full-suite failure on run
+`30183488782` also requires soak. Candidate-finish-before-plan, remaining
+crash prefixes, image isolation, power loss, restore, external WORM and
+Cloudflare lifecycle remain open. Production remains **NO-GO**.
 
 ## Terminal Receipt Store Boundary
 

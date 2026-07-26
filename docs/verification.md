@@ -6146,10 +6146,58 @@ Clean source identity:
 | Inventory SHA-256 | `534170adf68de8e647bdd9b0382d00097f5b665df1b356aa6e2466c4d9427e7b` |
 
 This is local and CI crash/restart evidence, not production storage authority.
-Concurrent dual-startup recovery, candidate-finish-before-plan, the remaining
-receipt-prefix crash sweep, image ACL/mount checks, power loss, restore,
-external immutable evidence and Cloudflare lifecycle remain open. Go/VPS
-remains authoritative and production remains **NO-GO**.
+At this candidate, concurrent dual-startup recovery remained open; the
+receipt-store variant is verified below. Candidate-finish-before-plan, the
+remaining receipt-prefix crash sweep, image ACL/mount checks, power loss,
+restore, external immutable evidence and Cloudflare lifecycle remain open.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-26 Concurrent Candidate Recovery Verification
+
+Two independent OS processes now validate the same candidate-after-sync
+fixture, wait behind one shared gate and concurrently execute receipt-store
+recovery. Both converge on the same closure identity; exactly one observes the
+unfinished start and writes its accepted finish, while the other performs a
+legal read-only replay. The final store has exactly two operation receipts,
+one authorization/closure directory and a sealed execution graph.
+
+The strace bundle verifies the actual Rust test-thread TIDs rather than their
+parent harness PIDs. It requires two distinct lock TIDs, six exclusive locks
+per TID and twelve total. A participant can contain no successful write, but
+the bundle must contain at least one successful retained-dirfd open/rename,
+directory sync, descriptor chmod and required mkdir; both traces being
+read-only is rejected.
+
+Frozen Ubuntu evidence:
+
+- candidate `aaa52936765ec47afdc2871ccab4fd2e6115ffbd`;
+- [run 30183935884](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884);
+- [job 89745204486](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884/job/89745204486);
+- 148 Linux library tests, formatting and strict all-target Clippy passed;
+- exact standalone locks were 4/10/4/8 and concurrent locks were 6+6;
+- process PID and lock-thread TID were separately recorded and exactly joined
+  to the strace lock identities; and
+- the final run had no failure annotation. Its only annotation was the upload
+  action Node 20 deprecation warning while GitHub forced Node 24.
+
+[Artifact 8626449986](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884/artifacts/8626449986)
+is 87879 bytes with GitHub artifact digest
+`sha256:a97bb267dd8e24d81f5bf16c3e7dd258107ebc251032cd1ee7f3132cb6b2a589`
+and expires `2026-08-25T02:05:23Z`. The accepted Git tree is
+`fb8a9ae44621e0c04b57496393391e56762601ff`.
+
+Local aggregate verification passed 127 Rust library tests, three binary/CLI
+tests and 146 Bun tests with 573 expectations, plus formatting, YAML and
+warning-free Clippy. Native Ubuntu is the Linux compilation evidence because
+the Windows host lacks `x86_64-linux-gnu-gcc`.
+
+This closes only concurrent receipt-store recovery. Real concurrent
+`verify_loaded_credentials()` startup, zero `socket`/`connect` syscall proof,
+bounded `flock` acquisition, candidate-finish-before-plan, remaining crash
+prefixes, production ACL/mounts, power-loss/restore and external WORM evidence
+remain open. Run `30183488782` also left one non-reproduced full-suite failure;
+focused replays passed, so repeated Ubuntu soak remains an explicit gate.
+Go/VPS remains authoritative and production remains **NO-GO**.
 
 ## Container Reconciliation Retry Preview Verification (2026-07-17)
 

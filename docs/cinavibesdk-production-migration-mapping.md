@@ -2,7 +2,7 @@
 
 Date: 2026-07-12
 
-Latest evidence increment: 2026-07-25
+Latest evidence increment: 2026-07-26
 
 Status: production migration mapping for applying cinaVibeSDK architecture
 patterns to `cinatoken-rust`.
@@ -1573,10 +1573,46 @@ for 34 modules / 1719654 bytes.
 
 This evidence does not make Container disk the source of truth. cinaVibeSDK's
 replaceable execution model still requires D1/DO/R2 reconstruction and
-quarantine, concurrent dual-startup coverage, the remaining crash sweep,
-production image ACL/mount attestation, power-loss and restore campaigns, and
-external immutable evidence. Go/VPS remains authoritative and production
-remains **NO-GO**.
+quarantine. The narrower concurrent receipt-store recovery is mapped below;
+real dual startup, the remaining crash sweep, production image ACL/mount
+attestation, power-loss and restore campaigns, and external immutable evidence
+remain open. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-26 Concurrent Receipt-Store Recovery Mapping
+
+The cinaVibeSDK replaceable-Container model requires local recovery to converge
+without turning Container disk into business authority. The new Rust gate
+tests that local invariant with two independent processes and one shared
+candidate fixture. Exactly one process appends the candidate-bound accepted
+finish; the other is a read-only replay, and both converge on one sealed
+closure identity.
+
+The evidence mapping is:
+
+| cinaVibeSDK concern | Rust/Cloudflare evidence | Remaining boundary |
+| --- | --- | --- |
+| Replaceable process | Two independent process PIDs validate the fixture before one shared release gate. | Not yet two real credential-verification startup processes. |
+| Lock linearization | The actual Rust worker TIDs are separately reported and exactly match two strace lock identities; six locks per TID, twelve total. | Blocking root `flock` has no bounded timeout or availability proof. |
+| Idempotent recovery | Unfinished counts are exactly `1:0` or `0:1`; both workers return one closure identity and the final store has one accepted finish. | Candidate-finish-before-plan and remaining receipt-prefix crashes are open. |
+| Least mutation | A read-only loser is legal, while bundle union evidence must prove one complete retained-dirfd mutation path and reject two read-only traces. | Zero `socket`/`connect` syscall evidence is not yet captured. |
+| Durable evidence | Raw straces, process outputs, PID files, verifier JSON and boundary JSON are configured in one 30-day artifact. | External signature/WORM, ext4/XFS power loss, restore and production mounts remain open. |
+
+Frozen evidence is candidate
+`aaa52936765ec47afdc2871ccab4fd2e6115ffbd`,
+[run 30183935884](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884),
+[job 89745204486](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884/job/89745204486)
+and
+[artifact 8626449986](https://github.com/cinagroup/cinatoken-rust/actions/runs/30183935884/artifacts/8626449986).
+Ubuntu passed 148 library tests, exact 4/10/4/8 standalone traces, 6+6
+concurrent traces and strict Clippy. GitHub reports artifact digest
+`sha256:a97bb267dd8e24d81f5bf16c3e7dd258107ebc251032cd1ee7f3132cb6b2a589`;
+the candidate Git tree is `fb8a9ae44621e0c04b57496393391e56762601ff`.
+
+This closes only the local receipt-store mapping. Run `30183488782` left one
+non-reproduced Linux full-suite failure, so repeated soak remains required.
+D1/DO/R2 reconstruction, real Container lifecycle, image isolation,
+power-loss/restore, external evidence and G1-G8 remain production gates.
+Go/VPS remains authoritative and production remains **NO-GO**.
 
 ## 2026-07-25 Full Terminal Transaction Syscall Mapping
 

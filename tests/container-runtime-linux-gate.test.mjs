@@ -71,7 +71,13 @@ describe("linux container release gate", () => {
     expect(dockerfile).toContain("\nWORKDIR /\n");
     expect(dockerfile).toStartWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`);
     expect(dockerfile).toContain("CARGO_BUILD_TARGET=x86_64-unknown-linux-musl");
-    expect(dockerfile).toContain('RUSTFLAGS="-C target-feature=+crt-static"');
+    expect(dockerfile).toContain(
+      "readelf -l /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime",
+    );
+    expect(dockerfile).toContain(
+      "! grep -q INTERP /tmp/cinatoken-container-runtime-program-headers",
+    );
+    expect(dockerfile).not.toContain("RUSTFLAGS=");
     expect(dockerfile).toContain(
       "install -D -m 0755 /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime",
     );

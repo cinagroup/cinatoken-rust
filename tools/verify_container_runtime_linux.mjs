@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { runBoundedSubprocess } from "./lib/bounded_subprocess.mjs";
 
-export const LINUX_GATE_CONTRACT_VERSION = 6;
+export const LINUX_GATE_CONTRACT_VERSION = 7;
 export const RUNTIME_ATTESTATION_CONTRACT_VERSION = 1;
 export const RUNTIME_UID = 65_532;
 export const RUNTIME_GID = 65_532;
@@ -150,8 +150,14 @@ export async function auditRepositoryContract() {
     dockerfile.startsWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`) &&
       dockerfile.includes("CARGO_BUILD_TARGET=x86_64-unknown-linux-musl") &&
       dockerfile.includes("CARGO_INCREMENTAL=0") &&
-      dockerfile.includes('RUSTFLAGS="-C target-feature=+crt-static"') &&
       dockerfile.includes("SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}") &&
+      dockerfile.includes(
+        "readelf -l /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime",
+      ) &&
+      dockerfile.includes(
+        "! grep -q INTERP /tmp/cinatoken-container-runtime-program-headers",
+      ) &&
+      !dockerfile.includes("RUSTFLAGS=") &&
       dockerfile.includes(
         "install -D -m 0755 /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime",
       ) &&

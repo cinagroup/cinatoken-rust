@@ -1,10 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,18 +16,24 @@ const TRACE_FINISH = `${ROOT}.startup-trace-finish`;
 const RECEIPTS = `${ROOT}/execution-operation-receipts`;
 const AUTHORIZATION = `${RECEIPTS}/${"a".repeat(64)}`;
 const CLI = fileURLToPath(
-  new URL("../tools/verify_ring_transition_runner_syscall_trace.mjs", import.meta.url),
+  new URL(
+    "../tools/verify_ring_transition_runner_syscall_trace.mjs",
+    import.meta.url,
+  ),
 );
 const WORKFLOW = fileURLToPath(
-  new URL("../.github/workflows/ring-transition-runner-linux.yml", import.meta.url),
+  new URL(
+    "../.github/workflows/ring-transition-runner-linux.yml",
+    import.meta.url,
+  ),
 );
 const temporaryDirectories = [];
 
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
-    ),
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
 
@@ -64,8 +65,7 @@ describe("ring-transition runner syscall trace verifier", () => {
   });
 
   test("accepts bounded nonblocking contention and EINTR retries", () => {
-    const authorizationLock =
-      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
+    const authorizationLock = `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
     const trace = fixtureTrace({ lockPairs: 2 }).replace(
       authorizationLock,
       [
@@ -100,8 +100,7 @@ describe("ring-transition runner syscall trace verifier", () => {
 
   test("rejects blocking flags, abnormal errno, drift, and missing sleep", () => {
     const base = fixtureTrace({ lockPairs: 2 });
-    const authorizationLock =
-      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
+    const authorizationLock = `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
     const verify = (traceText) =>
       verifyRingTransitionRunnerSyscallTrace({
         traceText,
@@ -110,18 +109,27 @@ describe("ring-transition runner syscall trace verifier", () => {
         expectedLocks: 4,
       });
 
-    expect(() => verify(base.replaceAll("LOCK_EX|LOCK_NB", "LOCK_EX")))
-      .toThrow(/blocking or unexpected flock flags/);
+    expect(() => verify(base.replaceAll("LOCK_EX|LOCK_NB", "LOCK_EX"))).toThrow(
+      /blocking or unexpected flock flags/,
+    );
     expect(() =>
       verify(
         base.replace(
           authorizationLock,
-          authorizationLock.replace(" = 0", " = -1 EBADF (Bad file descriptor)"),
+          authorizationLock.replace(
+            " = 0",
+            " = -1 EBADF (Bad file descriptor)",
+          ),
         ),
-      )
+      ),
     ).toThrow(/failed unexpectedly/);
     expect(() =>
-      verify(base.replace(authorizationLock, authorizationLock.replace(" = 0", " = 1")))
+      verify(
+        base.replace(
+          authorizationLock,
+          authorizationLock.replace(" = 0", " = 1"),
+        ),
+      ),
     ).toThrow(/failed unexpectedly/);
     expect(() =>
       verify(
@@ -135,7 +143,7 @@ describe("ring-transition runner syscall trace verifier", () => {
             authorizationLock,
           ].join("\n"),
         ),
-      )
+      ),
     ).toThrow(/without a monotonic deadline sleep/);
     expect(() =>
       verify(
@@ -149,13 +157,12 @@ describe("ring-transition runner syscall trace verifier", () => {
             `4100  flock(6<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`,
           ].join("\n"),
         ),
-      )
+      ),
     ).toThrow(/lock retry identity drift/);
   });
 
   test("reconciles exact split flock calls and rejects unmatched resumes", () => {
-    const authorizationLock =
-      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
+    const authorizationLock = `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
     const split = fixtureTrace({ lockPairs: 2 }).replace(
       authorizationLock,
       [
@@ -183,7 +190,7 @@ describe("ring-transition runner syscall trace verifier", () => {
         fixtureRoot: ROOT,
         label: "split lock trace",
         expectedLocks: 4,
-      })
+      }),
     ).toThrow(/no matching unfinished syscall/);
   });
 
@@ -353,8 +360,7 @@ describe("ring-transition runner syscall trace verifier", () => {
       zeroNetworkSyscalls: true,
     });
 
-    const startupAuthorizationLock =
-      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
+    const startupAuthorizationLock = `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
     const contendedStartup = startupWindowTrace().replace(
       startupAuthorizationLock,
       [
@@ -391,15 +397,15 @@ describe("ring-transition runner syscall trace verifier", () => {
         expectedTracePidValues: ["4100"],
         expectedTraceStartPaths: [TRACE_START],
         expectedTraceFinishPaths: [TRACE_FINISH],
-      })
+      }),
     ).toThrow(/blocking or unexpected flock flags/);
 
     for (const syscall of [
       "socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC, IPPROTO_TCP) = -1 EACCES (Permission denied)",
       "connect(9, {sa_family=AF_INET, sin_port=htons(443)}, 16) = -1 ECONNREFUSED (Connection refused)",
-      "recv(9, \"\", 1, 0) = -1 EBADF (Bad file descriptor)",
-      "send(9, \"x\", 1, 0) = -1 EBADF (Bad file descriptor)",
-      "sendto(9, \"x\", 1, 0, NULL, 0) = -1 EBADF (Bad file descriptor)",
+      'recv(9, "", 1, 0) = -1 EBADF (Bad file descriptor)',
+      'send(9, "x", 1, 0) = -1 EBADF (Bad file descriptor)',
+      'sendto(9, "x", 1, 0, NULL, 0) = -1 EBADF (Bad file descriptor)',
     ]) {
       expect(() =>
         verifyRingTransitionRunnerZeroNetworkTrace({
@@ -421,7 +427,9 @@ describe("ring-transition runner syscall trace verifier", () => {
         expectedTraceStartPaths: [TRACE_START],
         expectedTraceFinishPaths: [TRACE_FINISH],
       }),
-    ).toThrow(/forbidden network syscall attempted|unfinished syscalls were not resumed/);
+    ).toThrow(
+      /forbidden network syscall attempted|unfinished syscalls were not resumed/,
+    );
     expect(
       verifyRingTransitionRunnerZeroNetworkTrace({
         traceText: startupWindowTrace({
@@ -439,9 +447,7 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(() =>
       verifyRingTransitionRunnerZeroNetworkTrace({
         traceText: startupWindowTrace({
-          inside: [
-            '4100  readlink("/proc/self/exe",  <unfinished ...>',
-          ],
+          inside: ['4100  readlink("/proc/self/exe",  <unfinished ...>'],
         }),
         label: "concurrent startup recovery",
         expectedTracePidValues: ["4100"],
@@ -473,11 +479,79 @@ describe("ring-transition runner syscall trace verifier", () => {
     ).toThrow(/forbidden unscoped network syscall attempted/);
   });
 
+  test("accepts only a scoped receipts-root lock timeout", () => {
+    for (const retries of [1, 3]) {
+      expect(
+        verifyRingTransitionRunnerZeroNetworkTrace({
+          traceText: startupLockTimeoutTrace({ retries }),
+          fixtureRoot: ROOT,
+          label: "startup receipts lock timeout",
+          expectedTracePidValues: ["4100"],
+          expectedTraceStartPaths: [TRACE_START],
+          expectedTraceFinishPaths: [TRACE_FINISH],
+          requireLockTimeout: true,
+        }),
+      ).toMatchObject({
+        ok: true,
+        lockPolicy: "exclusive-nonblocking-monotonic-deadline-v1",
+        lockTimeoutPolicy: "typed-receipts-root-timeout-v1",
+        lockTimeoutObserved: true,
+        timedOutLockScope: "operation_receipts_lock",
+        scopedLockAttempts: retries,
+        scopedSuccessfulLocks: 0,
+        scopedContentionRetries: retries,
+        scopedMonotonicSleeps: retries,
+        blockingLockAttemptsObserved: 0,
+        networkSyscallsObserved: 0,
+        zeroNetworkSyscalls: true,
+      });
+    }
+
+    const verify = (traceText) =>
+      verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText,
+        fixtureRoot: ROOT,
+        label: "startup receipts lock timeout",
+        expectedTracePidValues: ["4100"],
+        expectedTraceStartPaths: [TRACE_START],
+        expectedTraceFinishPaths: [TRACE_FINISH],
+        requireLockTimeout: true,
+      });
+
+    expect(() => verify(startupLockTimeoutTrace({ retries: 0 }))).toThrow(
+      /lock timeout evidence is incomplete/,
+    );
+    expect(() =>
+      verify(startupLockTimeoutTrace({ includeSuccessAfterContention: true })),
+    ).toThrow(/lock timeout evidence is incomplete/);
+    expect(() =>
+      verify(startupLockTimeoutTrace({ pendingPath: `${ROOT}/other` })),
+    ).toThrow(/lock timeout evidence is incomplete/);
+    expect(() =>
+      verify(startupLockTimeoutTrace({ retries: 2, sleepPid: "4200" })),
+    ).toThrow(/retried without a monotonic deadline sleep/);
+    expect(() =>
+      verify(
+        startupLockTimeoutTrace().replaceAll("LOCK_EX|LOCK_NB", "LOCK_EX"),
+      ),
+    ).toThrow(/blocking or unexpected flock flags/);
+    expect(() =>
+      verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText: startupLockTimeoutTrace(),
+        fixtureRoot: ROOT,
+        label: "startup receipts lock timeout",
+        expectedTracePidValues: ["4100", "4200"],
+        expectedTraceStartPaths: [TRACE_START, `${TRACE_START}.peer`],
+        expectedTraceFinishPaths: [TRACE_FINISH, `${TRACE_FINISH}.peer`],
+        requireLockTimeout: true,
+      }),
+    ).toThrow(/lock-timeout trace arguments are invalid/);
+  });
+
   test("rejects successful legacy mutation but permits failed EEXIST probes", () => {
     const safe = fixtureTrace({
       lockPairs: 2,
-      extraAfterFirstLock:
-        `4100  mkdir("${RECEIPTS}", 0700) = -1 EEXIST (File exists)`,
+      extraAfterFirstLock: `4100  mkdir("${RECEIPTS}", 0700) = -1 EEXIST (File exists)`,
     });
     expect(
       verifyRingTransitionRunnerSyscallTrace({
@@ -490,8 +564,7 @@ describe("ring-transition runner syscall trace verifier", () => {
 
     const unsafe = fixtureTrace({
       lockPairs: 2,
-      extraAfterFirstLock:
-        `4100  mkdir("${ROOT}/replacement", 0700) = 0`,
+      extraAfterFirstLock: `4100  mkdir("${ROOT}/replacement", 0700) = 0`,
     });
     expect(() =>
       verifyRingTransitionRunnerSyscallTrace({
@@ -612,8 +685,7 @@ describe("ring-transition runner syscall trace verifier", () => {
   });
 
   test("requires both locks while retained-dirfd mutation occurs", () => {
-    const authorizationLock =
-      `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
+    const authorizationLock = `4100  flock(5<${AUTHORIZATION}>, LOCK_EX|LOCK_NB) = 0`;
     const trace = fixtureTrace({ lockPairs: 2 })
       .replace(`${authorizationLock}\n`, "")
       .replace(
@@ -671,7 +743,9 @@ describe("ring-transition runner syscall trace verifier", () => {
   });
 
   test("CLI verifies one bounded trace and rejects ambiguous invocation", async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), "cinatoken-trace-cli-"));
+    const directory = await mkdtemp(
+      path.join(tmpdir(), "cinatoken-trace-cli-"),
+    );
     temporaryDirectories.push(directory);
     const tracePath = path.join(directory, "trace.log");
     await writeFile(tracePath, fixtureTrace({ lockPairs: 2 }), "utf8");
@@ -691,7 +765,9 @@ describe("ring-transition runner syscall trace verifier", () => {
       { stdout: "pipe", stderr: "pipe" },
     );
     expect(await accepted.exited).toBe(0);
-    expect(JSON.parse(await new Response(accepted.stdout).text())).toMatchObject({
+    expect(
+      JSON.parse(await new Response(accepted.stdout).text()),
+    ).toMatchObject({
       ok: true,
       lockPolicy: "exclusive-nonblocking-monotonic-deadline-v1",
       observedLocks: 4,
@@ -731,6 +807,43 @@ describe("ring-transition runner syscall trace verifier", () => {
     });
     expect(await new Response(zeroNetworkAccepted.stderr).text()).toBe("");
 
+    await writeFile(tracePath, startupLockTimeoutTrace({ retries: 2 }), "utf8");
+    const lockTimeoutAccepted = Bun.spawn(
+      [
+        process.execPath,
+        CLI,
+        "--trace",
+        tracePath,
+        "--fixture-root",
+        ROOT,
+        "--label",
+        "startup receipts lock timeout",
+        "--expected-trace-pids",
+        "4100",
+        "--expected-trace-start-paths",
+        TRACE_START,
+        "--expected-trace-finish-paths",
+        TRACE_FINISH,
+        "--require-zero-network",
+        "--require-lock-timeout",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await lockTimeoutAccepted.exited).toBe(0);
+    expect(
+      JSON.parse(await new Response(lockTimeoutAccepted.stdout).text()),
+    ).toMatchObject({
+      lockTimeoutPolicy: "typed-receipts-root-timeout-v1",
+      lockTimeoutObserved: true,
+      timedOutLockScope: "operation_receipts_lock",
+      scopedSuccessfulLocks: 0,
+      scopedContentionRetries: 2,
+      scopedMonotonicSleeps: 2,
+      networkSyscallsObserved: 0,
+    });
+    expect(await new Response(lockTimeoutAccepted.stderr).text()).toBe("");
+
+    await writeFile(tracePath, startupWindowTrace(), "utf8");
     const zeroNetworkRejected = Bun.spawn(
       [
         process.execPath,
@@ -855,15 +968,13 @@ describe("ring-transition runner syscall trace verifier", () => {
     );
     expect(workflow).toContain("candidate-concurrent-recovery-boundary.json");
     expect(workflow).toContain("grep '^concurrent-lock-thread-id='");
-    expect(workflow).toContain(
-      "'.observedLockPidValues | sort'",
-    );
+    expect(workflow).toContain("'.observedLockPidValues | sort'");
     expect(workflow).toContain("concurrent-lock-thread-identity=verified");
     expect(workflow).toContain("processPid: $firstProcessPid");
     expect(workflow).toContain("lockThreadId: $firstLockThreadId");
     expect(workflow).toContain("exactlyOneRecoveryWriter");
     expect(workflow).toContain(
-      "case \"${concurrent_first_unfinished}:${concurrent_second_unfinished}\" in",
+      'case "${concurrent_first_unfinished}:${concurrent_second_unfinished}" in',
     );
     expect(workflow).toContain(
       "transport::tests::linux_multiprocess_startup_terminal_candidate_converges_without_http",
@@ -899,16 +1010,12 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(workflow).toContain(
       "exact successful paired nonblocking exclusive locks",
     );
-    expect(workflow).toContain(
-      "one shared 5s CLOCK_MONOTONIC deadline",
-    );
+    expect(workflow).toContain("one shared 5s CLOCK_MONOTONIC deadline");
     expect(workflow).toContain("followForks: true");
     expect(workflow).toContain("traceSha256: $traceSha256");
     expect(workflow).toContain("preparedWithoutHttpCore: true");
     expect(workflow).toContain("networkSyscallsObserved: 0");
-    expect(workflow).toContain(
-      '(.unscopedNetworkSyscallsObserved == 3)',
-    );
+    expect(workflow).toContain("(.unscopedNetworkSyscallsObserved == 3)");
     expect(workflow).toContain(
       '(.unscopedNetworkSyscallNames == ["socketpair"])',
     );
@@ -917,6 +1024,54 @@ describe("ring-transition runner syscall trace verifier", () => {
     );
     expect(workflow).toContain("Retain successful syscall traces");
     expect(workflow).toContain("retention-days: 30");
+  });
+
+  test("Linux workflow freezes the typed startup receipts-lock timeout boundary", async () => {
+    const workflow = await readFile(WORKFLOW, "utf8");
+    expect(workflow).toContain(
+      "transport::tests::linux_multiprocess_startup_lock_timeout_has_no_authority_side_effect",
+    );
+    expect(workflow).toMatch(
+      /timeout --signal=TERM --kill-after=2s 15s\s+\\\r?\n\s+strace -f -qq -yy -s 4096/u,
+    );
+    expect(workflow).toContain(
+      '--fixture-root "${startup_timeout_root}"',
+    );
+    expect(workflow).toContain("--require-lock-timeout");
+    expect(workflow).toContain("startup-lock-timeout.verification.json");
+    expect(workflow).toContain("startup-lock-timeout-boundary.json");
+    expect(workflow).toContain(
+      '(.lockTimeoutPolicy == "typed-receipts-root-timeout-v1")',
+    );
+    expect(workflow).toContain(
+      '(.timedOutLockScope == "operation_receipts_lock")',
+    );
+    expect(workflow).toContain(
+      "(.scopedContentionRetries == .scopedMonotonicSleeps)",
+    );
+    expect(workflow).toContain(
+      'test "${startup_timeout_budget_ms}" = "5000"',
+    );
+    expect(workflow).toContain(
+      'test "${startup_timeout_elapsed_ms}" -ge 4900',
+    );
+    expect(workflow).toContain(
+      'test "${startup_timeout_elapsed_ms}" -lt 8000',
+    );
+    expect(workflow).toContain(
+      'test "${startup_timeout_http_core_attempts}" = "0"',
+    );
+    expect(workflow).toContain(
+      'test "${startup_timeout_fixture_unchanged}" = "true"',
+    );
+    expect(workflow).toContain(
+      'test "${startup_timeout_recovery_action}" = "receipt-sealed"',
+    );
+    expect(workflow).toContain("httpExchangeConstructionAttempts: $httpExchangeConstructionAttempts");
+    expect(workflow).toContain("fixtureTreeUnchanged: true");
+    expect(workflow).toContain("traceSha256: $traceSha256");
+    expect(workflow).toContain("traceBytes: $traceBytes");
+    expect(workflow).toContain("startup-lock-timeout-boundary=verified");
   });
 });
 
@@ -934,6 +1089,34 @@ function startupWindowTrace({
     `${pid}  openat(AT_FDCWD, "${TRACE_FINISH}", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0666) = 10<${TRACE_FINISH}>`,
     ...after,
   ].join("\n");
+}
+
+function startupLockTimeoutTrace({
+  pid = "4100",
+  holderPid = "4000",
+  retries = 1,
+  pendingPath = RECEIPTS,
+  sleepPid = pid,
+  includeSuccessAfterContention = false,
+} = {}) {
+  const lines = [
+    `${holderPid}  flock(7<${RECEIPTS}>, LOCK_EX|LOCK_NB) = 0`,
+    `${pid}  openat(AT_FDCWD, "${TRACE_START}", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0666) = 9<${TRACE_START}>`,
+  ];
+  for (let retry = 0; retry < retries; retry += 1) {
+    lines.push(
+      `${pid}  flock(4<${pendingPath}>, LOCK_EX|LOCK_NB) = -1 EAGAIN (Resource temporarily unavailable)`,
+      `${sleepPid}  clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, {tv_sec=10, tv_nsec=${20 + retry}}, NULL) = 0`,
+    );
+  }
+  if (includeSuccessAfterContention) {
+    lines.push(`${pid}  flock(4<${pendingPath}>, LOCK_EX|LOCK_NB) = 0`);
+  }
+  lines.push(
+    `${pid}  openat(AT_FDCWD, "${TRACE_FINISH}", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0666) = 10<${TRACE_FINISH}>`,
+    `${holderPid}  flock(7<${RECEIPTS}>, LOCK_UN) = 0`,
+  );
+  return lines.join("\n");
 }
 
 function fixtureTrace({

@@ -101,16 +101,14 @@ export function verifyRingTransitionRunnerSyscallTrace({
   }
   if (
     expectedLockPids !== null &&
-    (
-      !Number.isSafeInteger(expectedLockPids) ||
+    (!Number.isSafeInteger(expectedLockPids) ||
       expectedLockPids < 1 ||
       expectedLockPids > 64 ||
       !Number.isSafeInteger(expectedLocksPerPid) ||
       expectedLocksPerPid < 2 ||
       expectedLocksPerPid > 128 ||
       expectedLocksPerPid % 2 !== 0 ||
-      expectedLockPids * expectedLocksPerPid !== expectedLocks
-    )
+      expectedLockPids * expectedLocksPerPid !== expectedLocks)
   ) {
     throw new Error("[input] expected per-PID lock shape is invalid");
   }
@@ -291,7 +289,9 @@ export function verifyRingTransitionRunnerSyscallTrace({
     throw new Error(
       `[${label}] lock retries did not converge: ${[
         ...pendingLockRetries.entries(),
-      ].map(([pid, pending]) => `${pid}:${pending.scope}`).join(",")}`,
+      ]
+        .map(([pid, pending]) => `${pid}:${pending.scope}`)
+        .join(",")}`,
     );
   }
   if (parsedSyscalls === 0 || firstLockAttempt === null) {
@@ -307,10 +307,8 @@ export function verifyRingTransitionRunnerSyscallTrace({
   );
   if (
     expectedLockPids !== null &&
-    (
-      locksByPid.size !== expectedLockPids ||
-      observedLocksPerPid.some((count) => count !== expectedLocksPerPid)
-    )
+    (locksByPid.size !== expectedLockPids ||
+      observedLocksPerPid.some((count) => count !== expectedLocksPerPid))
   ) {
     throw new Error(
       `[${label}] expected ${expectedLockPids} lock PIDs with ${expectedLocksPerPid} locks each, found ${locksByPid.size} PIDs with ${observedLocksPerPid.join(",")}`,
@@ -333,7 +331,9 @@ export function verifyRingTransitionRunnerSyscallTrace({
     missing.push("successful_dirfd_mkdirat");
   }
   if (missing.length > 0) {
-    throw new Error(`[${label}] trace missing required evidence: ${missing.join(", ")}`);
+    throw new Error(
+      `[${label}] trace missing required evidence: ${missing.join(", ")}`,
+    );
   }
   const lockPids = new Set(exclusiveLocks.map((lock) => lock.pid));
   const matchingSigkills = processTerminations.filter(
@@ -361,10 +361,8 @@ export function verifyRingTransitionRunnerSyscallTrace({
     }
     if (
       requireSigkillExit &&
-      (
-        matchingSigkills[0].pid !== evidence.terminalCandidatePid ||
-        matchingSigkills[0].index <= evidence.terminalCandidateReadbackAt
-      )
+      (matchingSigkills[0].pid !== evidence.terminalCandidatePid ||
+        matchingSigkills[0].index <= evidence.terminalCandidateReadbackAt)
     ) {
       throw new Error(
         `[${label}] terminal candidate writer PID was not killed after durable readback completed`,
@@ -431,7 +429,7 @@ export function verifyConcurrentRingTransitionRunnerSyscallTraces({
       expectedLockPids: 1,
       expectedLocksPerPid,
       requireMutationEvidence: false,
-    })
+    }),
   );
   const observedLockPidValues = participants.flatMap(
     (participant) => participant.observedLockPidValues,
@@ -519,9 +517,9 @@ export function verifyConcurrentRingTransitionRunnerSyscallTraces({
       0,
     ),
     observedLockPids: expectedLockPids,
-    observedLocksPerPid: participants.flatMap(
-      (participant) => participant.observedLocksPerPid,
-    ).sort((left, right) => left - right),
+    observedLocksPerPid: participants
+      .flatMap((participant) => participant.observedLocksPerPid)
+      .sort((left, right) => left - right),
     observedLockPidValues: observedLockPidValues.sort(),
     postLockUnconfinedMutation: false,
     ...evidence,
@@ -535,6 +533,8 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
   expectedTracePidValues,
   expectedTraceStartPaths,
   expectedTraceFinishPaths,
+  requireLockTimeout = false,
+  fixtureRoot = null,
 }) {
   if (typeof label !== "string" || label.length < 1 || label.length > 80) {
     throw new Error("[input] trace label is invalid");
@@ -567,6 +567,16 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
     throw new Error("[input] trace marker paths must be distinct");
   }
   if (
+    typeof requireLockTimeout !== "boolean" ||
+    (requireLockTimeout && expectedTracePidValues.length !== 1) ||
+    (!requireLockTimeout && fixtureRoot !== null)
+  ) {
+    throw new Error("[input] lock-timeout trace arguments are invalid");
+  }
+  const timeoutFixtureRoot = requireLockTimeout
+    ? normalizeFixtureRoot(fixtureRoot)
+    : null;
+  if (
     typeof traceText !== "string" ||
     traceText.length < 1 ||
     Buffer.byteLength(traceText, "utf8") > MAX_TRACE_BYTES
@@ -583,6 +593,12 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
   let observedInterruptedRetries = 0;
   let observedMonotonicSleeps = 0;
   let observedInterruptedSleeps = 0;
+  let scopedLockAttempts = 0;
+  let scopedSuccessfulLocks = 0;
+  let scopedContentionRetries = 0;
+  let scopedInterruptedRetries = 0;
+  let scopedMonotonicSleeps = 0;
+  let scopedInterruptedSleeps = 0;
   const observedPidValues = new Set();
   const pendingLockRetries = new Map();
   const unscopedNetworkSyscallNames = new Set();
@@ -603,12 +619,9 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
   const unscopedIncompleteTraceLinesObserved = reconciled.lines.reduce(
     (total, entry) =>
       total +
-      (
-          entry.splitPid !== null &&
-          !traceWindows.has(entry.splitPid)
+      (entry.splitPid !== null && !traceWindows.has(entry.splitPid)
         ? entry.splitParts
-        : 0
-      ),
+        : 0),
     0,
   );
   for (const { line } of reconciled.lines) {
@@ -654,6 +667,7 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
         }
       } else {
         observedLockAttempts += 1;
+        if (traceWindow?.active) scopedLockAttempts += 1;
         const descriptor = parseDescriptorToken(syscall.args);
         if (!descriptor) {
           throw new Error(
@@ -661,15 +675,19 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
           );
         }
         const normalizedPath = normalizeTracePath(descriptor.path);
+        if (normalizedPath === null) {
+          throw new Error(
+            `[${label}] traced flock descriptor path is invalid: ${syscall.raw}`,
+          );
+        }
         const pending = pendingLockRetries.get(syscall.pid);
         if (
           pending &&
-          (
-            pending.fd !== descriptor.fd ||
-            pending.path !== normalizedPath
-          )
+          (pending.fd !== descriptor.fd || pending.path !== normalizedPath)
         ) {
-          throw new Error(`[${label}] lock retry identity drift: ${syscall.raw}`);
+          throw new Error(
+            `[${label}] lock retry identity drift: ${syscall.raw}`,
+          );
         }
         if (pending?.requiresSleep && !pending.slept) {
           throw new Error(
@@ -678,12 +696,15 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
         }
         if (flock.outcome === "success") {
           observedSuccessfulLocks += 1;
+          if (traceWindow?.active) scopedSuccessfulLocks += 1;
           pendingLockRetries.delete(syscall.pid);
         } else {
           if (flock.outcome === "contention") {
             observedContentionRetries += 1;
+            if (traceWindow?.active) scopedContentionRetries += 1;
           } else {
             observedInterruptedRetries += 1;
+            if (traceWindow?.active) scopedInterruptedRetries += 1;
           }
           pendingLockRetries.set(syscall.pid, {
             fd: descriptor.fd,
@@ -701,8 +722,10 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
         if (sleep === "success") {
           pending.slept = true;
           observedMonotonicSleeps += 1;
+          if (traceWindow?.active) scopedMonotonicSleeps += 1;
         } else {
           observedInterruptedSleeps += 1;
+          if (traceWindow?.active) scopedInterruptedSleeps += 1;
         }
       }
     }
@@ -725,7 +748,34 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
   if (parsedSyscalls === 0) {
     throw new Error(`[${label}] trace contains no parsed syscall`);
   }
-  if (pendingLockRetries.size !== 0) {
+  let lockTimeoutObserved = false;
+  let timedOutLockScope = null;
+  if (requireLockTimeout) {
+    const expectedPid = expectedTracePidValues[0];
+    const expectedPath = path.posix.join(
+      timeoutFixtureRoot,
+      "execution-operation-receipts",
+    );
+    const pending = pendingLockRetries.get(expectedPid);
+    if (
+      pendingLockRetries.size !== 1 ||
+      !pending ||
+      pending.path !== expectedPath ||
+      !pending.requiresSleep ||
+      !pending.slept ||
+      scopedLockAttempts < 1 ||
+      scopedSuccessfulLocks !== 0 ||
+      scopedContentionRetries < 1 ||
+      scopedContentionRetries !== scopedMonotonicSleeps ||
+      scopedLockAttempts !== scopedContentionRetries + scopedInterruptedRetries
+    ) {
+      throw new Error(
+        `[${label}] receipts-root lock timeout evidence is incomplete`,
+      );
+    }
+    lockTimeoutObserved = true;
+    timedOutLockScope = "operation_receipts_lock";
+  } else if (pendingLockRetries.size !== 0) {
     throw new Error(
       `[${label}] lock retries did not converge: ${[
         ...pendingLockRetries.entries(),
@@ -743,11 +793,7 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
     );
   }
   for (const traceWindow of traceWindows.values()) {
-    if (
-      !traceWindow.started ||
-      traceWindow.active ||
-      !traceWindow.finished
-    ) {
+    if (!traceWindow.started || traceWindow.active || !traceWindow.finished) {
       throw new Error(
         `[${label}] trace window is incomplete for ${traceWindow.pid}`,
       );
@@ -786,6 +832,17 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
     observedMonotonicSleeps,
     observedInterruptedSleeps,
     blockingLockAttemptsObserved: 0,
+    scopedLockAttempts,
+    scopedSuccessfulLocks,
+    scopedContentionRetries,
+    scopedInterruptedRetries,
+    scopedMonotonicSleeps,
+    scopedInterruptedSleeps,
+    lockTimeoutPolicy: requireLockTimeout
+      ? "typed-receipts-root-timeout-v1"
+      : null,
+    lockTimeoutObserved,
+    timedOutLockScope,
     reconciledSplitTraceLines: reconciled.incompleteTraceLinesObserved,
     zeroNetworkSyscalls: true,
   };
@@ -931,11 +988,7 @@ function observeTerminalCandidateEvidence({
   }
 }
 
-function requireTerminalCandidateClosureDescriptor(
-  descriptor,
-  root,
-  label,
-) {
+function requireTerminalCandidateClosureDescriptor(descriptor, root, label) {
   if (
     !descriptor?.isDirectory ||
     !isTerminalCandidateClosurePath(root, descriptor.path)
@@ -947,9 +1000,11 @@ function requireTerminalCandidateClosureDescriptor(
 }
 
 function isTerminalCandidateClosurePath(root, value) {
-  return isWithinFixture(root, value) &&
+  return (
+    isWithinFixture(root, value) &&
     path.posix.basename(path.posix.dirname(value)) ===
-      "execution-operation-closures";
+      "execution-operation-closures"
+  );
 }
 
 function verifySuccessfulMutation({
@@ -969,18 +1024,12 @@ function verifySuccessfulMutation({
       `[${label}] successful post-lock legacy pathname mutation: ${syscall.raw}`,
     );
   }
-  if (
-    syscall.name === "openat" &&
-    writeOpen
-  ) {
+  if (syscall.name === "openat" && writeOpen) {
     throw new Error(
       `[${label}] successful post-lock openat write is not openat2-confined: ${syscall.raw}`,
     );
   }
-  if (
-    syscall.name === "openat2" &&
-    syscall.args.includes("AT_FDCWD")
-  ) {
+  if (syscall.name === "openat2" && syscall.args.includes("AT_FDCWD")) {
     throw new Error(
       `[${label}] successful post-lock openat2 used AT_FDCWD: ${syscall.raw}`,
     );
@@ -1015,13 +1064,7 @@ function verifySuccessfulMutation({
     const descriptors =
       syscall.name === "renameat2"
         ? renameDescriptors(syscall.args, syscall.pid, descriptorState)
-        : [
-            descriptorArgument(
-              syscall.args,
-              syscall.pid,
-              descriptorState,
-            ),
-          ];
+        : [descriptorArgument(syscall.args, syscall.pid, descriptorState)];
     for (const descriptor of descriptors) {
       requireFixtureDescriptor(
         descriptor,
@@ -1047,9 +1090,7 @@ function verifySuccessfulMutation({
   }
 
   if (
-    ["fchown", "fremovexattr", "fsetxattr", "ftruncate"].includes(
-      syscall.name,
-    )
+    ["fchown", "fremovexattr", "fsetxattr", "ftruncate"].includes(syscall.name)
   ) {
     throw new Error(
       `[${label}] unexpected successful post-lock descriptor mutation: ${syscall.raw}`,
@@ -1062,10 +1103,7 @@ function verifySuccessfulMutation({
       syscall.pid,
       descriptorState,
     );
-    if (
-      descriptor.isDirectory &&
-      isWithinFixture(root, descriptor.path)
-    ) {
+    if (descriptor.isDirectory && isWithinFixture(root, descriptor.path)) {
       requireTwoLocks(heldLocks, syscall.pid, label, syscall.raw);
       evidence.directorySync = true;
     }
@@ -1090,7 +1128,9 @@ function verifyExclusiveLockPairs(locks, root, label, expectedLocks) {
       !isWithinFixture(root, receipts.path) ||
       !isWithinFixture(root, authorization.path)
     ) {
-      throw new Error(`[${label}] exclusive locks are not a receipts/authorization pair`);
+      throw new Error(
+        `[${label}] exclusive locks are not a receipts/authorization pair`,
+      );
     }
     expectedReceiptsPath ??= receipts.path;
     expectedAuthorizationPath ??= authorization.path;
@@ -1160,7 +1200,9 @@ function reconcileTraceLines(traceText, label) {
     const line = rawLine.trim();
     if (line === "") continue;
     if (line.startsWith("strace:")) {
-      throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
+      throw new Error(
+        `[${label}] incomplete or diagnostic trace line: ${line}`,
+      );
     }
     const unfinished = parseUnfinishedSyscallLine(line);
     if (unfinished) {
@@ -1194,15 +1236,17 @@ function reconcileTraceLines(traceText, label) {
       continue;
     }
     if (line.includes("<unfinished ...>") || line.includes("resumed>")) {
-      throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
+      throw new Error(
+        `[${label}] incomplete or diagnostic trace line: ${line}`,
+      );
     }
     lines.push({ index, line, splitPid: null, splitParts: 0 });
   }
   if (pending.size !== 0) {
     throw new Error(
-      `[${label}] unfinished syscalls were not resumed: ${[
-        ...pending.entries(),
-      ].map(([pid, syscall]) => `${pid}:${syscall.name}`).join(",")}`,
+      `[${label}] unfinished syscalls were not resumed: ${[...pending.entries()]
+        .map(([pid, syscall]) => `${pid}:${syscall.name}`)
+        .join(",")}`,
     );
   }
   return { lines, incompleteTraceLinesObserved };
@@ -1210,8 +1254,9 @@ function reconcileTraceLines(traceText, label) {
 
 function classifyFlockSyscall(syscall, label) {
   const match =
-    /^\s*\d+(?:<[^>]*>)?\s*,\s*([A-Z][A-Z0-9_]*(?:\s*\|\s*[A-Z][A-Z0-9_]*)*)\s*$/u
-      .exec(syscall.args);
+    /^\s*\d+(?:<[^>]*>)?\s*,\s*([A-Z][A-Z0-9_]*(?:\s*\|\s*[A-Z][A-Z0-9_]*)*)\s*$/u.exec(
+      syscall.args,
+    );
   if (!match) {
     throw new Error(`[${label}] flock arguments are invalid: ${syscall.raw}`);
   }
@@ -1292,10 +1337,7 @@ function validateLockAcquisitionOrder({
   }
   if (
     lockScope === "authorization" &&
-    (
-      locks.size !== 1 ||
-      !heldPaths.has(path.posix.dirname(descriptor.path))
-    )
+    (locks.size !== 1 || !heldPaths.has(path.posix.dirname(descriptor.path)))
   ) {
     throw new Error(
       `[${label}] authorization lock attempted without its receipts lock: ${syscall.raw}`,
@@ -1304,9 +1346,7 @@ function validateLockAcquisitionOrder({
 }
 
 function classifyMonotonicDeadlineSleep(syscall, label) {
-  if (
-    !/^\s*CLOCK_MONOTONIC\s*,\s*TIMER_ABSTIME\s*,/u.test(syscall.args)
-  ) {
+  if (!/^\s*CLOCK_MONOTONIC\s*,\s*TIMER_ABSTIME\s*,/u.test(syscall.args)) {
     throw new Error(
       `[${label}] lock retry sleep is not an absolute monotonic sleep: ${syscall.raw}`,
     );
@@ -1379,16 +1419,13 @@ function resultIsSuccess(result) {
 }
 
 function isWriteOpen(syscall) {
-  return ["creat", "open", "openat", "openat2"].includes(syscall.name) &&
-    WRITE_FLAGS.some((flag) => syscall.args.includes(flag));
+  return (
+    ["creat", "open", "openat", "openat2"].includes(syscall.name) &&
+    WRITE_FLAGS.some((flag) => syscall.args.includes(flag))
+  );
 }
 
-function descriptorArgument(
-  args,
-  pid,
-  descriptorState,
-  required = true,
-) {
+function descriptorArgument(args, pid, descriptorState, required = true) {
   const parsed = parseDescriptorToken(args);
   if (!parsed) {
     if (required) throw new Error("[trace] numeric descriptor is required");
@@ -1404,9 +1441,7 @@ function descriptorArgument(
 
 function renameDescriptors(args, pid, descriptorState) {
   const match =
-    /^\s*(\d+)(?:<([^>]*)>)?,\s*"[^"]*"\s*,\s*(\d+)(?:<([^>]*)>)?,/u.exec(
-      args,
-    );
+    /^\s*(\d+)(?:<([^>]*)>)?,\s*"[^"]*"\s*,\s*(\d+)(?:<([^>]*)>)?,/u.exec(args);
   if (!match) throw new Error("[trace] renameat2 descriptors are invalid");
   return [
     descriptorFromParts(match[1], match[2], pid, descriptorState),
@@ -1439,7 +1474,9 @@ function requireFixtureDescriptor(descriptor, root, label, purpose) {
     !Number.isSafeInteger(descriptor.fd) ||
     !isWithinFixture(root, descriptor.path)
   ) {
-    throw new Error(`[${label}] ${purpose} is not bound beneath the fixture root`);
+    throw new Error(
+      `[${label}] ${purpose} is not bound beneath the fixture root`,
+    );
   }
 }
 
@@ -1480,8 +1517,10 @@ function normalizeTracePath(value) {
 }
 
 function isWithinFixture(root, value) {
-  return typeof value === "string" &&
-    (value === root || value.startsWith(`${root}/`));
+  return (
+    typeof value === "string" &&
+    (value === root || value.startsWith(`${root}/`))
+  );
 }
 
 function parseArgs(argv) {
@@ -1490,6 +1529,7 @@ function parseArgs(argv) {
   let requireSigkillExit = false;
   let requireTerminalCandidateSync = false;
   let requireZeroNetwork = false;
+  let requireLockTimeout = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--require-mkdirat") {
@@ -1506,6 +1546,10 @@ function parseArgs(argv) {
     }
     if (argument === "--require-zero-network") {
       requireZeroNetwork = true;
+      continue;
+    }
+    if (argument === "--require-lock-timeout") {
+      requireLockTimeout = true;
       continue;
     }
     if (
@@ -1535,13 +1579,14 @@ function parseArgs(argv) {
   if (requireZeroNetwork) {
     if (
       values.has("--peer-trace") ||
-      values.has("--fixture-root") ||
       values.has("--expected-locks") ||
       values.has("--expected-lock-pids") ||
       values.has("--expected-locks-per-pid") ||
       requireMkdirat ||
       requireSigkillExit ||
-      requireTerminalCandidateSync
+      requireTerminalCandidateSync ||
+      (requireLockTimeout && !values.has("--fixture-root")) ||
+      (!requireLockTimeout && values.has("--fixture-root"))
     ) {
       usage(2, "[input] zero-network trace arguments are invalid");
     }
@@ -1564,7 +1609,6 @@ function parseArgs(argv) {
     return {
       tracePath: values.get("--trace"),
       peerTracePath: null,
-      fixtureRoot: null,
       label: values.get("--label"),
       expectedLocks: null,
       expectedLockPids: null,
@@ -1573,12 +1617,15 @@ function parseArgs(argv) {
       requireSigkillExit: false,
       requireTerminalCandidateSync: false,
       requireZeroNetwork: true,
+      requireLockTimeout,
+      fixtureRoot: values.get("--fixture-root") ?? null,
       expectedTracePidValues,
       expectedTraceStartPaths,
       expectedTraceFinishPaths,
     };
   }
   if (
+    requireLockTimeout ||
     values.has("--expected-trace-pids") ||
     values.has("--expected-trace-start-paths") ||
     values.has("--expected-trace-finish-paths")
@@ -1607,6 +1654,7 @@ function parseArgs(argv) {
     requireSigkillExit,
     requireTerminalCandidateSync,
     requireZeroNetwork: false,
+    requireLockTimeout: false,
     expectedTracePidValues: null,
     expectedTraceStartPaths: null,
     expectedTraceFinishPaths: null,
@@ -1626,7 +1674,7 @@ function usage(exitCode, message) {
       "--trace <path> --label <label> --expected-trace-pids <pid,...> " +
       "--expected-trace-start-paths <path,...> " +
       "--expected-trace-finish-paths <path,...> " +
-      "--require-zero-network\n",
+      "--require-zero-network [--require-lock-timeout --fixture-root <path>]\n",
   );
   process.exit(exitCode);
 }
@@ -1646,6 +1694,8 @@ async function main() {
         expectedTracePidValues: options.expectedTracePidValues,
         expectedTraceStartPaths: options.expectedTraceStartPaths,
         expectedTraceFinishPaths: options.expectedTraceFinishPaths,
+        requireLockTimeout: options.requireLockTimeout,
+        fixtureRoot: options.fixtureRoot,
       });
     } else if (options.peerTracePath !== null) {
       if (
@@ -1654,7 +1704,9 @@ async function main() {
         options.requireSigkillExit ||
         options.requireTerminalCandidateSync
       ) {
-        throw new Error("[input] concurrent trace bundle arguments are invalid");
+        throw new Error(
+          "[input] concurrent trace bundle arguments are invalid",
+        );
       }
       const peerTrace = await readFile(options.peerTracePath);
       if (peerTrace.length < 1 || peerTrace.length > MAX_TRACE_BYTES) {

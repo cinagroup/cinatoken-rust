@@ -67,6 +67,13 @@ const CLOUDFLARE_RESPONSE_LIMIT: usize = 2 * 1024 * 1024;
 const MAX_DEPLOYMENT_REQUEST_BYTES: usize = 256 * 1024;
 const AUTHORITY_TOKEN_LIFETIME_SECONDS: u64 = 30;
 
+#[cfg(test)]
+static HTTP_EXCHANGE_CONSTRUCTION_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static HTTP_EXCHANGE_CONSTRUCTION_FORBIDDEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(not(windows))]
 type ProductionConnector = RustlsHttpsConnector<HttpConnector>;
 #[cfg(windows)]
@@ -2937,6 +2944,14 @@ struct HyperHttpsExchange {
 
 impl HyperHttpsExchange {
     fn new() -> Result<Self, ControlPlaneError> {
+        #[cfg(test)]
+        {
+            HTTP_EXCHANGE_CONSTRUCTION_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                !HTTP_EXCHANGE_CONSTRUCTION_FORBIDDEN.load(std::sync::atomic::Ordering::SeqCst),
+                "HTTP exchange construction crossed a forbidden test boundary"
+            );
+        }
         #[cfg(not(windows))]
         let connector = HttpsConnectorBuilder::new()
             .with_webpki_roots()
@@ -3376,6 +3391,8 @@ mod tests {
         authorize_mutation, begin_authority_append, plan_controller_deployment,
         prepare_controller_intent, verify_fresh_append, ControllerMutation,
     };
+    #[cfg(target_os = "linux")]
+    use crate::receipt::OPERATION_RECEIPTS_DIRECTORY_NAME;
     use std::collections::VecDeque;
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener};
@@ -4497,6 +4514,31 @@ mod tests {
         assert!(construct_http < verify_remote);
     }
 
+    #[test]
+    fn startup_lock_timeout_source_is_process_bounded_and_side_effect_checked() {
+        let source = include_str!("transport.rs");
+
+        for required in [
+            "linux_multiprocess_startup_lock_timeout_has_no_authority_side_effect",
+            "\"hold-receipts-lock\"",
+            "\"verify-loaded-credentials-timeout\"",
+            "Err(ControlPlaneError::Receipt(ReceiptError::LockTimeout",
+            "scope: \"operation_receipts_lock\"",
+            "timeout_ms: 5_000",
+            "wait_for_startup_child_bounded",
+            "assert_eq!(startup_receipt_tree_snapshot(&root), before)",
+            "assert!(recovered.core.is_none())",
+            "HTTP_EXCHANGE_CONSTRUCTION_FORBIDDEN",
+            "startup-timeout-http-core-attempts=0",
+            ".env_clear()",
+        ] {
+            assert!(
+                source.contains(required),
+                "startup timeout source is missing {required}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn startup_recovers_a_terminal_candidate_before_constructing_the_http_core() {
         let root = temporary_receipt_root("startup-terminal-candidate");
@@ -4717,6 +4759,230 @@ mod tests {
             second_trace_start,
             second_trace_finish,
         ] {
+            let _ = std::fs::remove_file(path);
+        }
+        cleanup_receipt_root(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn linux_multiprocess_startup_lock_timeout_has_no_authority_side_effect() {
+        const ROLE_ENV: &str = "CINATOKEN_RING_STARTUP_TIMEOUT_TEST_ROLE";
+        const ROOT_ENV: &str = "CINATOKEN_RING_STARTUP_TIMEOUT_TEST_ROOT";
+        const READY_ENV: &str = "CINATOKEN_RING_STARTUP_TIMEOUT_TEST_READY";
+        const RELEASE_ENV: &str = "CINATOKEN_RING_STARTUP_TIMEOUT_TEST_RELEASE";
+        const TRACE_START_ENV: &str = "CINATOKEN_RING_STARTUP_TIMEOUT_TEST_TRACE_START";
+        const TRACE_FINISH_ENV: &str = "CINATOKEN_RING_STARTUP_TIMEOUT_TEST_TRACE_FINISH";
+
+        if let Some(role) = std::env::var_os(ROLE_ENV) {
+            let role = role.to_str().expect("startup timeout child role");
+            let root = std::path::PathBuf::from(
+                std::env::var_os(ROOT_ENV).expect("startup timeout child root"),
+            );
+            let ready = std::path::PathBuf::from(
+                std::env::var_os(READY_ENV).expect("startup timeout child ready path"),
+            );
+            let release = std::path::PathBuf::from(
+                std::env::var_os(RELEASE_ENV).expect("startup timeout child release path"),
+            );
+            let trace_start = std::path::PathBuf::from(
+                std::env::var_os(TRACE_START_ENV).expect("startup timeout child trace start path"),
+            );
+            let trace_finish = std::path::PathBuf::from(
+                std::env::var_os(TRACE_FINISH_ENV)
+                    .expect("startup timeout child trace finish path"),
+            );
+            let lock_thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
+            assert!(lock_thread_id > 0);
+
+            match role {
+                "hold-receipts-lock" => {
+                    use std::os::fd::AsRawFd;
+
+                    let receipts =
+                        std::fs::File::open(root.join(OPERATION_RECEIPTS_DIRECTORY_NAME))
+                            .expect("open startup timeout receipts root");
+                    assert_eq!(
+                        unsafe { libc::flock(receipts.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                        0,
+                        "acquire startup timeout holder lock"
+                    );
+                    println!("startup-timeout-holder-process-id={}", std::process::id());
+                    println!("startup-timeout-holder-thread-id={lock_thread_id}");
+                    std::io::stdout().flush().unwrap();
+                    write_startup_test_signal(&ready, b"startup-ready");
+                    wait_for_startup_lock_holder_release(&release);
+                    assert_eq!(
+                        unsafe { libc::flock(receipts.as_raw_fd(), libc::LOCK_UN) },
+                        0,
+                        "release startup timeout holder lock"
+                    );
+                }
+                "verify-loaded-credentials-timeout" => {
+                    println!("startup-timeout-process-id={}", std::process::id());
+                    println!("startup-timeout-lock-thread-id={lock_thread_id}");
+                    write_startup_test_signal(
+                        &trace_start,
+                        b"verify-loaded-credentials-timeout-start",
+                    );
+                    HTTP_EXCHANGE_CONSTRUCTION_ATTEMPTS
+                        .store(0, std::sync::atomic::Ordering::SeqCst);
+                    HTTP_EXCHANGE_CONSTRUCTION_FORBIDDEN
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    let started = StdInstant::now();
+                    let result = verify_loaded_credentials(
+                        loaded_credentials_for_transport_test(),
+                        transport_activation(),
+                        ClaimDispatchLocation::for_transport_test(root),
+                        matching_publication(),
+                    )
+                    .await;
+                    let elapsed = started.elapsed();
+                    HTTP_EXCHANGE_CONSTRUCTION_FORBIDDEN
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    assert_eq!(
+                        HTTP_EXCHANGE_CONSTRUCTION_ATTEMPTS
+                            .load(std::sync::atomic::Ordering::SeqCst),
+                        0,
+                        "startup lock timeout constructed an HTTP exchange"
+                    );
+                    match result {
+                        Err(ControlPlaneError::Receipt(ReceiptError::LockTimeout {
+                            scope: "operation_receipts_lock",
+                            timeout_ms: 5_000,
+                        })) => {}
+                        Err(error) => panic!("unexpected startup timeout error: {error}"),
+                        Ok(_) => panic!("startup unexpectedly acquired the held receipts lock"),
+                    }
+                    assert!(
+                        elapsed >= Duration::from_millis(4_900),
+                        "startup lock timeout returned too early: {elapsed:?}"
+                    );
+                    assert!(
+                        elapsed < Duration::from_secs(8),
+                        "startup lock timeout was not bounded: {elapsed:?}"
+                    );
+                    write_startup_test_signal(
+                        &trace_finish,
+                        b"verify-loaded-credentials-timeout-finish",
+                    );
+                    println!("startup-timeout-budget-ms=5000");
+                    println!("startup-timeout-elapsed-ms={}", elapsed.as_millis());
+                    println!("startup-timeout-http-core-attempts=0");
+                    std::io::stdout().flush().unwrap();
+                }
+                _ => panic!("unknown startup timeout child role"),
+            }
+            return;
+        }
+
+        let root = temporary_receipt_root("startup-lock-timeout");
+        let activation = install_startup_terminal_candidate_fixture(&root);
+        let before = startup_receipt_tree_snapshot(&root);
+        let holder_ready = root.with_extension("startup-timeout-holder-ready");
+        let holder_release = root.with_extension("startup-timeout-holder-release");
+        let trace_start = root.with_extension("startup-timeout-trace-start");
+        let trace_finish = root.with_extension("startup-timeout-trace-finish");
+
+        let mut holder = startup_lock_timeout_child(
+            "hold-receipts-lock",
+            &root,
+            &holder_ready,
+            &holder_release,
+            &trace_start,
+            &trace_finish,
+        );
+        wait_for_startup_child_ready(&mut holder, &holder_ready);
+        let timeout_child = startup_lock_timeout_child(
+            "verify-loaded-credentials-timeout",
+            &root,
+            &holder_ready,
+            &holder_release,
+            &trace_start,
+            &trace_finish,
+        );
+        let (timeout_output, timeout_watchdog_fired) =
+            wait_for_startup_timeout_child_bounded(timeout_child, &mut holder);
+        write_startup_test_signal(&holder_release, b"start");
+        let (holder_output, holder_watchdog_fired) = wait_for_startup_child_bounded(holder);
+
+        assert!(
+            !timeout_watchdog_fired,
+            "startup timeout child exceeded watchdog"
+        );
+        assert!(
+            !holder_watchdog_fired,
+            "startup timeout holder exceeded watchdog"
+        );
+        assert!(
+            timeout_output.status.success(),
+            "startup timeout child failed: {}\n{}",
+            timeout_output.status,
+            String::from_utf8_lossy(&timeout_output.stderr)
+        );
+        assert!(
+            holder_output.status.success(),
+            "startup timeout holder failed: {}\n{}",
+            holder_output.status,
+            String::from_utf8_lossy(&holder_output.stderr)
+        );
+
+        let timeout_stdout = String::from_utf8(timeout_output.stdout).unwrap();
+        let holder_stdout = String::from_utf8(holder_output.stdout).unwrap();
+        let timeout_pid = startup_test_output_value(&timeout_stdout, "startup-timeout-process-id=");
+        let timeout_tid =
+            startup_test_output_value(&timeout_stdout, "startup-timeout-lock-thread-id=");
+        let holder_pid =
+            startup_test_output_value(&holder_stdout, "startup-timeout-holder-process-id=");
+        let holder_tid =
+            startup_test_output_value(&holder_stdout, "startup-timeout-holder-thread-id=");
+        assert_ne!(timeout_pid, holder_pid);
+        assert_ne!(timeout_tid, holder_tid);
+        assert_eq!(
+            startup_test_output_value(&timeout_stdout, "startup-timeout-budget-ms="),
+            "5000"
+        );
+        assert_eq!(
+            startup_test_output_value(&timeout_stdout, "startup-timeout-http-core-attempts="),
+            "0"
+        );
+        let elapsed_ms = startup_test_output_value(&timeout_stdout, "startup-timeout-elapsed-ms=")
+            .parse::<u64>()
+            .expect("startup timeout elapsed milliseconds");
+        assert!((4_900..8_000).contains(&elapsed_ms));
+        assert_eq!(startup_receipt_tree_snapshot(&root), before);
+
+        let recovered = verify_loaded_credentials(
+            loaded_credentials_for_transport_test(),
+            activation,
+            ClaimDispatchLocation::for_transport_test(root.clone()),
+            matching_publication(),
+        )
+        .await
+        .unwrap();
+        assert!(recovered.core.is_none());
+        assert!(!recovered.access_service_token_verified());
+        assert_eq!(
+            recovered.execute_current().await.unwrap().action,
+            ExecuteCurrentAction::ReceiptSealed
+        );
+
+        println!("startup-timeout-process-ids={holder_pid},{timeout_pid}");
+        println!("startup-timeout-lock-thread-id={timeout_tid}");
+        println!("startup-timeout-fixture-root={}", root.display());
+        println!("startup-timeout-trace-start-path={}", trace_start.display());
+        println!(
+            "startup-timeout-trace-finish-path={}",
+            trace_finish.display()
+        );
+        println!("startup-timeout-budget-ms=5000");
+        println!("startup-timeout-elapsed-ms={elapsed_ms}");
+        println!("startup-timeout-http-core-attempts=0");
+        println!("startup-timeout-fixture-unchanged=true");
+        println!("startup-timeout-recovery-action=receipt-sealed");
+        std::io::stdout().flush().unwrap();
+
+        for path in [holder_ready, holder_release, trace_start, trace_finish] {
             let _ = std::fs::remove_file(path);
         }
         cleanup_receipt_root(&root);
@@ -6112,6 +6378,113 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    fn startup_lock_timeout_child(
+        role: &str,
+        root: &std::path::Path,
+        ready: &std::path::Path,
+        release: &std::path::Path,
+        trace_start: &std::path::Path,
+        trace_finish: &std::path::Path,
+    ) -> std::process::Child {
+        let mut command =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"));
+        command
+            .arg("--exact")
+            .arg(
+                "transport::tests::linux_multiprocess_startup_lock_timeout_has_no_authority_side_effect",
+            )
+            .arg("--nocapture")
+            .env_clear()
+            .env("CINATOKEN_RING_STARTUP_TIMEOUT_TEST_ROLE", role)
+            .env("CINATOKEN_RING_STARTUP_TIMEOUT_TEST_ROOT", root)
+            .env("CINATOKEN_RING_STARTUP_TIMEOUT_TEST_READY", ready)
+            .env("CINATOKEN_RING_STARTUP_TIMEOUT_TEST_RELEASE", release)
+            .env(
+                "CINATOKEN_RING_STARTUP_TIMEOUT_TEST_TRACE_START",
+                trace_start,
+            )
+            .env(
+                "CINATOKEN_RING_STARTUP_TIMEOUT_TEST_TRACE_FINISH",
+                trace_finish,
+            )
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn startup lock timeout child")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_startup_child_bounded(
+        mut child: std::process::Child,
+    ) -> (std::process::Output, bool) {
+        for _ in 0..900 {
+            if child
+                .try_wait()
+                .expect("query bounded startup child")
+                .is_some()
+            {
+                return (
+                    child
+                        .wait_with_output()
+                        .expect("bounded startup child output"),
+                    false,
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child.kill().expect("kill startup child after watchdog");
+        (
+            child
+                .wait_with_output()
+                .expect("watchdog-killed startup child output"),
+            true,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_startup_timeout_child_bounded(
+        mut child: std::process::Child,
+        holder: &mut std::process::Child,
+    ) -> (std::process::Output, bool) {
+        for _ in 0..900 {
+            if let Some(status) = holder.try_wait().expect("query startup lock holder") {
+                child
+                    .kill()
+                    .expect("kill startup timeout child after holder exit");
+                let output = child
+                    .wait_with_output()
+                    .expect("startup timeout child output after holder exit");
+                panic!(
+                    "startup lock holder exited before timeout child: {status}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            if child
+                .try_wait()
+                .expect("query bounded startup timeout child")
+                .is_some()
+            {
+                return (
+                    child
+                        .wait_with_output()
+                        .expect("bounded startup timeout child output"),
+                    false,
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child
+            .kill()
+            .expect("kill startup timeout child after watchdog");
+        (
+            child
+                .wait_with_output()
+                .expect("watchdog-killed startup timeout child output"),
+            true,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
     fn wait_for_startup_child_ready(child: &mut std::process::Child, ready: &std::path::Path) {
         for _ in 0..1000 {
             if matches!(std::fs::read(ready), Ok(bytes) if bytes == b"startup-ready") {
@@ -6122,6 +6495,12 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        child
+            .kill()
+            .expect("kill startup child after readiness watchdog");
+        child
+            .wait()
+            .expect("wait startup child after readiness watchdog");
         panic!("startup child did not become ready");
     }
 
@@ -6148,12 +6527,84 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    fn wait_for_startup_lock_holder_release(path: &std::path::Path) {
+        for _ in 0..1500 {
+            if matches!(std::fs::read(path), Ok(bytes) if bytes == b"start") {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("startup lock holder release gate was not published");
+    }
+
+    #[cfg(target_os = "linux")]
     fn startup_test_output_value(output: &str, prefix: &str) -> String {
         output
             .lines()
             .find_map(|line| line.strip_prefix(prefix))
             .unwrap_or_else(|| panic!("startup output missing {prefix}: {output}"))
             .to_owned()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn startup_receipt_tree_snapshot(
+        root: &std::path::Path,
+    ) -> Vec<(String, bool, u64, u64, u32, u64, Option<Vec<u8>>)> {
+        use std::os::unix::fs::MetadataExt;
+
+        fn visit(
+            root: &std::path::Path,
+            current: &std::path::Path,
+            entries: &mut Vec<(String, bool, u64, u64, u32, u64, Option<Vec<u8>>)>,
+        ) {
+            use std::os::unix::fs::MetadataExt;
+
+            let mut children = std::fs::read_dir(current)
+                .expect("read startup receipt snapshot directory")
+                .map(|entry| entry.expect("read startup receipt snapshot entry").path())
+                .collect::<Vec<_>>();
+            children.sort();
+            for child in children {
+                let metadata =
+                    std::fs::symlink_metadata(&child).expect("read startup receipt snapshot type");
+                assert!(
+                    !metadata.file_type().is_symlink(),
+                    "startup receipt snapshot contains a symlink"
+                );
+                let relative = child
+                    .strip_prefix(root)
+                    .expect("startup receipt snapshot relative path")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if metadata.is_dir() {
+                    entries.push((
+                        relative,
+                        true,
+                        metadata.dev(),
+                        metadata.ino(),
+                        metadata.mode(),
+                        metadata.nlink(),
+                        None,
+                    ));
+                    visit(root, &child, entries);
+                } else {
+                    assert!(metadata.is_file());
+                    entries.push((
+                        relative,
+                        false,
+                        metadata.dev(),
+                        metadata.ino(),
+                        metadata.mode(),
+                        metadata.nlink(),
+                        Some(std::fs::read(&child).expect("read startup receipt snapshot file")),
+                    ));
+                }
+            }
+        }
+
+        let mut entries = Vec::new();
+        visit(root, root, &mut entries);
+        entries
     }
 
     #[cfg(target_os = "linux")]

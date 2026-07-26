@@ -143,6 +143,8 @@ jobs:
           concurrent_second_pid_file="${trace_artifact_dir}/candidate-concurrent-recovery-second.pid"
           startup_trace_log="${trace_artifact_dir}/concurrent-startup-recovery.strace"
           startup_output="${trace_artifact_dir}/concurrent-startup-recovery.log"
+          startup_timeout_trace_log="${trace_artifact_dir}/startup-lock-timeout.strace"
+          startup_timeout_output="${trace_artifact_dir}/startup-lock-timeout.log"
           startup_trace_filter="%file,%network,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl"
           candidate_writer_tracer_pid=""
           candidate_writer_pid=""
@@ -720,6 +722,214 @@ jobs:
             }' > "${trace_artifact_dir}/concurrent-startup-recovery-boundary.json"
           echo "concurrent-startup-network-boundary=verified"
 
+          timeout --signal=TERM --kill-after=2s 15s \
+            strace -f -qq -yy -s 4096 \
+              -e "trace=${startup_trace_filter}" \
+              -o "${startup_timeout_trace_log}" \
+              "${test_binary}" \
+              --exact transport::tests::linux_multiprocess_startup_lock_timeout_has_no_authority_side_effect \
+              --nocapture \
+            2>&1 | tee "${startup_timeout_output}"
+          startup_timeout_process_ids="$(
+            grep '^startup-timeout-process-ids=' "${startup_timeout_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          startup_timeout_tid="$(
+            grep '^startup-timeout-lock-thread-id=' "${startup_timeout_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          startup_timeout_root="$(
+            grep '^startup-timeout-fixture-root=' "${startup_timeout_output}" |
+              tail -n 1 |
+              cut -d= -f2-
+          )"
+          startup_timeout_trace_start="$(
+            grep '^startup-timeout-trace-start-path=' "${startup_timeout_output}" |
+              tail -n 1 |
+              cut -d= -f2-
+          )"
+          startup_timeout_trace_finish="$(
+            grep '^startup-timeout-trace-finish-path=' "${startup_timeout_output}" |
+              tail -n 1 |
+              cut -d= -f2-
+          )"
+          startup_timeout_budget_ms="$(
+            grep '^startup-timeout-budget-ms=' "${startup_timeout_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          startup_timeout_elapsed_ms="$(
+            grep '^startup-timeout-elapsed-ms=' "${startup_timeout_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          startup_timeout_http_core_attempts="$(
+            grep '^startup-timeout-http-core-attempts=' "${startup_timeout_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          startup_timeout_fixture_unchanged="$(
+            grep '^startup-timeout-fixture-unchanged=' "${startup_timeout_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          startup_timeout_recovery_action="$(
+            grep '^startup-timeout-recovery-action=' "${startup_timeout_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          IFS=, read -r startup_timeout_holder_pid startup_timeout_process_pid \
+            <<< "${startup_timeout_process_ids}"
+          [[ "${startup_timeout_holder_pid}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${startup_timeout_process_pid}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${startup_timeout_tid}" =~ ^[1-9][0-9]*$ ]]
+          test "${startup_timeout_holder_pid}" != "${startup_timeout_process_pid}"
+          [[ "${startup_timeout_root}" == /* ]]
+          [[ "${startup_timeout_trace_start}" == /* ]]
+          [[ "${startup_timeout_trace_finish}" == /* ]]
+          test "${startup_timeout_trace_start}" != "${startup_timeout_trace_finish}"
+          test "${startup_timeout_budget_ms}" = "5000"
+          [[ "${startup_timeout_elapsed_ms}" =~ ^[0-9]+$ ]]
+          test "${startup_timeout_elapsed_ms}" -ge 4900
+          test "${startup_timeout_elapsed_ms}" -lt 8000
+          test "${startup_timeout_http_core_attempts}" = "0"
+          test "${startup_timeout_fixture_unchanged}" = "true"
+          test "${startup_timeout_recovery_action}" = "receipt-sealed"
+          startup_timeout_trace_sha256="$(
+            sha256sum "${startup_timeout_trace_log}" | cut -d' ' -f1
+          )"
+          startup_timeout_trace_bytes="$(stat -c '%s' "${startup_timeout_trace_log}")"
+
+          node tools/verify_ring_transition_runner_syscall_trace.mjs \
+            --trace "${startup_timeout_trace_log}" \
+            --fixture-root "${startup_timeout_root}" \
+            --label "startup receipts lock timeout" \
+            --expected-trace-pids "${startup_timeout_tid}" \
+            --expected-trace-start-paths "${startup_timeout_trace_start}" \
+            --expected-trace-finish-paths "${startup_timeout_trace_finish}" \
+            --require-zero-network \
+            --require-lock-timeout \
+            | tee "${trace_artifact_dir}/startup-lock-timeout.verification.json"
+          jq -e \
+            --arg timeoutTid "${startup_timeout_tid}" \
+            --arg traceStart "${startup_timeout_trace_start}" \
+            --arg traceFinish "${startup_timeout_trace_finish}" \
+            '(.networkPolicy == "zero-network-syscalls-for-pinned-windows-v1") and
+              (.networkScope == "reported-verify-loaded-credentials-test-thread-windows") and
+              (.traceWindowPolicy == "successful-create-new-marker-open-v1") and
+              (.lockPolicy == "exclusive-nonblocking-monotonic-deadline-v1") and
+              (.lockTimeoutPolicy == "typed-receipts-root-timeout-v1") and
+              (.lockTimeoutObserved == true) and
+              (.timedOutLockScope == "operation_receipts_lock") and
+              (.expectedTracePidValues == [$timeoutTid]) and
+              (.traceWindows == [{
+                pid: $timeoutTid,
+                startPath: $traceStart,
+                finishPath: $traceFinish,
+                complete: true
+              }]) and
+              (.scopedLockAttempts >= 1) and
+              (.scopedSuccessfulLocks == 0) and
+              (.scopedContentionRetries >= 1) and
+              (.scopedContentionRetries == .scopedMonotonicSleeps) and
+              (.scopedLockAttempts == (
+                .scopedContentionRetries + .scopedInterruptedRetries
+              )) and
+              (.blockingLockAttemptsObserved == 0) and
+              (.zeroNetworkSyscalls == true) and
+              (.networkSyscallsObserved == 0) and
+              ((.unscopedNetworkSyscallNames == []) or
+                (.unscopedNetworkSyscallNames == ["socketpair"])) and
+              (.observedPidValues | index($timeoutTid) != null)' \
+            "${trace_artifact_dir}/startup-lock-timeout.verification.json" \
+            > /dev/null
+
+          jq -n \
+            --arg gitSha "${GITHUB_SHA}" \
+            --arg holderProcessPid "${startup_timeout_holder_pid}" \
+            --arg startupProcessPid "${startup_timeout_process_pid}" \
+            --arg startupLockThreadId "${startup_timeout_tid}" \
+            --arg traceStartPath "${startup_timeout_trace_start}" \
+            --arg traceFinishPath "${startup_timeout_trace_finish}" \
+            --arg errorClass "receipt_lock_timeout" \
+            --arg scope "operation_receipts_lock" \
+            --arg recoveryAction "${startup_timeout_recovery_action}" \
+            --arg straceVersion "${strace_version}" \
+            --arg traceFilter "${startup_trace_filter}" \
+            --arg traceSha256 "${startup_timeout_trace_sha256}" \
+            --argjson timeoutMs "${startup_timeout_budget_ms}" \
+            --argjson elapsedMs "${startup_timeout_elapsed_ms}" \
+            --argjson watchdogMs 15000 \
+            --argjson httpExchangeConstructionAttempts "${startup_timeout_http_core_attempts}" \
+            --argjson traceBytes "${startup_timeout_trace_bytes}" \
+            --slurpfile verification \
+              "${trace_artifact_dir}/startup-lock-timeout.verification.json" \
+            '{
+              gitSha: $gitSha,
+              holderProcessPid: $holderProcessPid,
+              startupProcessPid: $startupProcessPid,
+              startupLockThreadId: $startupLockThreadId,
+              traceStartPath: $traceStartPath,
+              traceFinishPath: $traceFinishPath,
+              errorClass: $errorClass,
+              scope: $scope,
+              timeoutMs: $timeoutMs,
+              elapsedMs: $elapsedMs,
+              watchdogMs: $watchdogMs,
+              httpExchangeConstructionAttempts: $httpExchangeConstructionAttempts,
+              fixtureTreeUnchanged: true,
+              recoveryAction: $recoveryAction,
+              networkPolicy: $verification[0].networkPolicy,
+              networkScope: $verification[0].networkScope,
+              traceWindowPolicy: $verification[0].traceWindowPolicy,
+              lockPolicy: $verification[0].lockPolicy,
+              lockTimeoutPolicy: $verification[0].lockTimeoutPolicy,
+              lockEvidence: {
+                attempts: $verification[0].scopedLockAttempts,
+                successful: $verification[0].scopedSuccessfulLocks,
+                contention: $verification[0].scopedContentionRetries,
+                interrupted: $verification[0].scopedInterruptedRetries,
+                monotonicSleeps: $verification[0].scopedMonotonicSleeps,
+                interruptedSleeps: $verification[0].scopedInterruptedSleeps,
+                blockingAttempts: $verification[0].blockingLockAttemptsObserved
+              },
+              networkEvidence: {
+                scopedSyscalls: $verification[0].networkSyscallsObserved,
+                unscopedSyscalls: $verification[0].unscopedNetworkSyscallsObserved,
+                unscopedNames: $verification[0].unscopedNetworkSyscallNames
+              },
+              capture: {
+                straceVersion: $straceVersion,
+                traceFilter: ($traceFilter | split(",")),
+                followForks: true,
+                traceSha256: $traceSha256,
+                traceBytes: $traceBytes
+              }
+            }' > "${trace_artifact_dir}/startup-lock-timeout-boundary.json"
+          jq -e \
+            '.errorClass == "receipt_lock_timeout" and
+              .scope == "operation_receipts_lock" and
+              .timeoutMs == 5000 and
+              .elapsedMs >= 4900 and
+              .elapsedMs < 8000 and
+              .watchdogMs == 15000 and
+              .httpExchangeConstructionAttempts == 0 and
+              .fixtureTreeUnchanged == true and
+              .recoveryAction == "receipt-sealed" and
+              .lockEvidence.attempts >= 1 and
+              .lockEvidence.successful == 0 and
+              .lockEvidence.contention >= 1 and
+              .lockEvidence.contention == .lockEvidence.monotonicSleeps and
+              .lockEvidence.blockingAttempts == 0 and
+              .networkEvidence.scopedSyscalls == 0 and
+              (.capture.traceSha256 | test("^[0-9a-f]{64}$")) and
+              .capture.traceBytes > 0' \
+            "${trace_artifact_dir}/startup-lock-timeout-boundary.json" \
+            > /dev/null
+          echo "startup-lock-timeout-boundary=verified"
+
           {
             echo "### Terminal descriptor syscall traces"
             echo
@@ -729,6 +939,7 @@ jobs:
             echo "- candidate-after-sync recovery post-lock AT_FDCWD mutation: none"
             echo "- concurrent candidate recovery: two distinct ready-before-release processes converged on one closure identity"
             echo "- concurrent verify_loaded_credentials startup: two distinct current-thread Tokio TIDs converged on ReceiptSealed with zero network syscalls inside their create-new marker windows"
+            echo "- blocked verify_loaded_credentials startup: typed 5s receipts-root LockTimeout, zero scoped successful locks/network syscalls/HTTP exchange construction, unchanged receipt tree, safe ReceiptSealed recovery after release"
             echo "- exact successful paired nonblocking exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 6 per PID / 12 total"
             echo "- lock contention: one shared 5s CLOCK_MONOTONIC deadline per receipts/authorization pair with absolute retry sleeps and zero blocking flock attempts"
             echo "- successful retained-dirfd openat2/renameat2: observed in each standalone trace or the concurrent bundle"

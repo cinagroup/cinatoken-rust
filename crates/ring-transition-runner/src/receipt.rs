@@ -46,7 +46,7 @@ const OPERATION_CONTEXT_DIGEST_CONTRACT: &str =
 const HISTORY_DIGEST_CONTRACT: &str =
     "cinatoken-ring-transition-runner-execution-receipt-history-v1";
 const RECEIPTS_DIRECTORY_NAME: &str = "execution-receipts";
-const OPERATION_RECEIPTS_DIRECTORY_NAME: &str = "execution-operation-receipts";
+pub(crate) const OPERATION_RECEIPTS_DIRECTORY_NAME: &str = "execution-operation-receipts";
 const OPERATION_CLOSURES_DIRECTORY_NAME: &str = "execution-operation-closures";
 const RECEIPT_FILE_SUFFIX: &str = ".receipt.json";
 const OPERATION_RECEIPT_FILE_SUFFIX: &str = ".operation.json";

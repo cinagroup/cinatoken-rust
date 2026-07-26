@@ -7,6 +7,7 @@ import {
   LINUX_GATE_CONTRACT_VERSION,
   NODE_MOCK_IMAGE,
   RUST_BUILDER_IMAGE,
+  RUST_MUSL_TARGET_IMAGE,
   RUNTIME_ATTESTATION_CONTRACT_VERSION,
   RUNTIME_GID,
   RUNTIME_UID,
@@ -39,6 +40,7 @@ const packageJson = await Bun.file(new URL("../package.json", import.meta.url)).
 describe("linux container release gate", () => {
   test("pins the complete image and workflow supply chain", async () => {
     expect(dockerfile.match(/^FROM .+$/gm)).toEqual([
+      `FROM ${RUST_MUSL_TARGET_IMAGE} AS musl-target`,
       `FROM ${RUST_BUILDER_IMAGE} AS builder`,
       `FROM ${DISTROLESS_RUNTIME_IMAGE}`,
     ]);
@@ -71,6 +73,10 @@ describe("linux container release gate", () => {
     expect(dockerfile).toContain("\nWORKDIR /\n");
     expect(dockerfile).toStartWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`);
     expect(dockerfile).toContain("CARGO_BUILD_TARGET=x86_64-unknown-linux-musl");
+    expect(dockerfile).toContain("COPY --from=musl-target");
+    expect(dockerfile).toContain(
+      "/usr/local/rustup/toolchains/1.78.0-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-musl/",
+    );
     expect(dockerfile).toContain(
       "readelf -l /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime",
     );

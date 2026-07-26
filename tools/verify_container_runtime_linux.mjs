@@ -5,13 +5,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { runBoundedSubprocess } from "./lib/bounded_subprocess.mjs";
 
-export const LINUX_GATE_CONTRACT_VERSION = 7;
+export const LINUX_GATE_CONTRACT_VERSION = 8;
 export const RUNTIME_ATTESTATION_CONTRACT_VERSION = 1;
 export const RUNTIME_UID = 65_532;
 export const RUNTIME_GID = 65_532;
 export const SOURCE_DATE_EPOCH = 0;
-export const RUST_BUILDER_IMAGE =
+export const RUST_MUSL_TARGET_IMAGE =
   "rust:1.78.0-alpine3.20@sha256:214477ec837f9bedd80be4b087fec09e3f270831979412840f3f6c38e5a0d9c1";
+export const RUST_BUILDER_IMAGE =
+  "rust:1.78.0-bookworm@sha256:5907e96b0293eb53bcc8f09b4883d71449808af289862950ede9a0e3cca44ff5";
 export const DISTROLESS_RUNTIME_IMAGE =
   "gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35";
 export const NODE_MOCK_IMAGE =
@@ -141,16 +143,26 @@ export async function auditRepositoryContract() {
   const timestampRewriteOutputs =
     workflow.match(/--output type=image,rewrite-timestamp=true/g) ?? [];
   requireCondition(
-    fromLines.length === 2 &&
-      fromLines[0] === `FROM ${RUST_BUILDER_IMAGE} AS builder` &&
-      fromLines[1] === `FROM ${DISTROLESS_RUNTIME_IMAGE}`,
-    "Dockerfile must use the two exact digest-pinned base images",
+    fromLines.length === 3 &&
+      fromLines[0] === `FROM ${RUST_MUSL_TARGET_IMAGE} AS musl-target` &&
+      fromLines[1] === `FROM ${RUST_BUILDER_IMAGE} AS builder` &&
+      fromLines[2] === `FROM ${DISTROLESS_RUNTIME_IMAGE}`,
+    "Dockerfile must use the three exact digest-pinned base images",
   );
   requireCondition(
     dockerfile.startsWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`) &&
       dockerfile.includes("CARGO_BUILD_TARGET=x86_64-unknown-linux-musl") &&
       dockerfile.includes("CARGO_INCREMENTAL=0") &&
       dockerfile.includes("SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}") &&
+      dockerfile.includes(
+        "COPY --from=musl-target",
+      ) &&
+      dockerfile.includes(
+        "/usr/local/rustup/toolchains/1.78.0-x86_64-unknown-linux-musl/lib/rustlib/x86_64-unknown-linux-musl/",
+      ) &&
+      dockerfile.includes(
+        "/usr/local/rustup/toolchains/1.78.0-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-musl/",
+      ) &&
       dockerfile.includes(
         "readelf -l /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime",
       ) &&

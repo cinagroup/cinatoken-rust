@@ -1,11 +1,16 @@
 ARG SOURCE_DATE_EPOCH=0
-FROM rust:1.78.0-alpine3.20@sha256:214477ec837f9bedd80be4b087fec09e3f270831979412840f3f6c38e5a0d9c1 AS builder
+FROM rust:1.78.0-alpine3.20@sha256:214477ec837f9bedd80be4b087fec09e3f270831979412840f3f6c38e5a0d9c1 AS musl-target
+
+FROM rust:1.78.0-bookworm@sha256:5907e96b0293eb53bcc8f09b4883d71449808af289862950ede9a0e3cca44ff5 AS builder
 
 ARG SOURCE_DATE_EPOCH
 ENV CARGO_BUILD_TARGET=x86_64-unknown-linux-musl \
     CARGO_INCREMENTAL=0 \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 WORKDIR /build
+COPY --from=musl-target \
+    /usr/local/rustup/toolchains/1.78.0-x86_64-unknown-linux-musl/lib/rustlib/x86_64-unknown-linux-musl/ \
+    /usr/local/rustup/toolchains/1.78.0-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-musl/
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 RUN cargo build --locked --release -p cinatoken-container-runtime \

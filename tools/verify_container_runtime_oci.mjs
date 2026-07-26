@@ -15,6 +15,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 
 import { runBoundedSubprocess } from "./lib/bounded_subprocess.mjs";
+import {
+  DISTROLESS_RUNTIME_IMAGE,
+  RUST_BUILDER_IMAGE,
+  RUST_MUSL_TARGET_IMAGE,
+} from "./verify_container_runtime_linux.mjs";
 
 export const OCI_GATE_CONTRACT_VERSION = 1;
 export const OCI_LAYOUT_VERSION = "1.0.0";
@@ -104,6 +109,7 @@ export async function auditRepositoryContract() {
   const workflow = workflowText.replaceAll("\r\n", "\n");
   const dockerfile = dockerfileText.replaceAll("\r\n", "\n");
   const packageJson = JSON.parse(packageJsonText);
+  const fromLines = dockerfile.match(/^FROM .+$/gm) ?? [];
   const independentBuilds =
     workflow.match(/docker buildx build/g) ?? [];
   const buildBlocks = [
@@ -193,10 +199,24 @@ export async function auditRepositoryContract() {
     "OCI workflow must remain read-only and credential-free",
   );
   requireCondition(
+    fromLines.length === 3 &&
+      fromLines[0] === `FROM ${RUST_MUSL_TARGET_IMAGE} AS musl-target` &&
+      fromLines[1] === `FROM ${RUST_BUILDER_IMAGE} AS builder` &&
+      fromLines[2] === `FROM ${DISTROLESS_RUNTIME_IMAGE}`,
+    "runtime Dockerfile must use the exact digest-pinned musl target, builder, and runtime images",
+  );
+  requireCondition(
     dockerfile.startsWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`) &&
       dockerfile.includes("CARGO_BUILD_TARGET=x86_64-unknown-linux-musl") &&
       dockerfile.includes("CARGO_INCREMENTAL=0") &&
       dockerfile.includes("SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}") &&
+      dockerfile.includes("COPY --from=musl-target") &&
+      dockerfile.includes(
+        "/usr/local/rustup/toolchains/1.78.0-x86_64-unknown-linux-musl/lib/rustlib/x86_64-unknown-linux-musl/",
+      ) &&
+      dockerfile.includes(
+        "/usr/local/rustup/toolchains/1.78.0-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-musl/",
+      ) &&
       dockerfile.includes(
         "readelf -l /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime",
       ) &&

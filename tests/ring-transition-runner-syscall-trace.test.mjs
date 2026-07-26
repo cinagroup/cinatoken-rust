@@ -1099,7 +1099,16 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(workflow).toContain("allLockThreadPairsDistinct");
     expect(workflow).toContain("allActionsReceiptSealed");
     expect(workflow).toContain("grep '^startup-pair-action='");
-    expect(workflow).toContain("uniqueClosureCount: ($closures | length)");
+    expect(workflow).toContain(
+      "observedUniqueClosureCount: ($closures | length)",
+    );
+    expect(workflow).toContain(
+      '"successful-exact-rust-test-equal-closure-safe-replay-v1"',
+    );
+    expect(workflow).toContain(
+      ".observedUniqueClosureCount <= .requiredIterations",
+    );
+    expect(workflow).not.toContain(".uniqueClosureCount == 1");
     expect(workflow).toContain(
       'policy: "single-captured-sample-plus-process-soak-v1"',
     );

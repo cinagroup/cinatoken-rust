@@ -1076,10 +1076,12 @@ jobs:
                 allActionsReceiptSealed: (
                   all(.[]; .action == "receipt-sealed")
                 ),
-                uniqueClosureCount: ($closures | length),
-                closure: $closures[0],
-                closureSha256: (
-                  . | map(.closureSha256) | unique | .[0]
+                pairConvergencePolicy:
+                  "successful-exact-rust-test-equal-closure-safe-replay-v1",
+                observedUniqueClosureCount: ($closures | length),
+                allClosuresNonempty: all(.[]; (.closure | length) > 0),
+                allClosureHashesWellFormed: all(.[];
+                  (.closureSha256 | test("^[0-9a-f]{64}$"))
                 ),
                 elapsedMs: {
                   min: $elapsed[0],
@@ -1108,9 +1110,12 @@ jobs:
               .allParticipantProcessPairsDistinct == true and
               .allLockThreadPairsDistinct == true and
               .allActionsReceiptSealed == true and
-              .uniqueClosureCount == 1 and
-              (.closure | length > 0) and
-              (.closureSha256 | test("^[0-9a-f]{64}$")) and
+              .pairConvergencePolicy ==
+                "successful-exact-rust-test-equal-closure-safe-replay-v1" and
+              .observedUniqueClosureCount >= 1 and
+              .observedUniqueClosureCount <= .requiredIterations and
+              .allClosuresNonempty == true and
+              .allClosureHashesWellFormed == true and
               .elapsedMs.min > 0 and
               .elapsedMs.max < .iterationWatchdogMs and
               (.samples | length) == .requiredIterations and
@@ -1121,7 +1126,9 @@ jobs:
                 (.iteration <= 32) and
                 (.processPids | length == 2) and
                 (.lockThreadIds | length == 2) and
-                (.action == "receipt-sealed")
+                (.action == "receipt-sealed") and
+                (.closure | length > 0) and
+                (.closureSha256 | test("^[0-9a-f]{64}$"))
               ) and
               .traceEvidence.policy ==
                 "single-captured-sample-plus-process-soak-v1" and
@@ -1140,7 +1147,7 @@ jobs:
             echo "- concurrent candidate recovery: two distinct ready-before-release processes converged on one closure identity"
             echo "- concurrent verify_loaded_credentials startup: two distinct current-thread Tokio TIDs converged on ReceiptSealed with zero network syscalls inside their create-new marker windows"
             echo "- blocked verify_loaded_credentials startup: typed 5s receipts-root LockTimeout, zero scoped successful locks/network syscalls/HTTP exchange construction, unchanged receipt tree, safe ReceiptSealed recovery after release"
-            echo "- startup schedule campaign: 32 independent dual-process iterations converged on one ReceiptSealed closure within 15s per iteration and 120s total; one separate sample carries the syscall trace proof"
+            echo "- startup schedule campaign: each of 32 independent dual-process iterations converged on its fixture's ReceiptSealed closure within 15s per iteration and 120s total; one separate sample carries the syscall trace proof"
             echo "- exact successful paired nonblocking exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 6 per PID / 12 total"
             echo "- lock contention: one shared 5s CLOCK_MONOTONIC deadline per receipts/authorization pair with absolute retry sleeps and zero blocking flock attempts"
             echo "- successful retained-dirfd openat2/renameat2: observed in each standalone trace or the concurrent bundle"

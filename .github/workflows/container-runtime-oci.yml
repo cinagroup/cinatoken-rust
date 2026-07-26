@@ -8,7 +8,9 @@ on:
       - "Cargo.toml"
       - "crates/container-runtime/**"
       - "tools/verify_container_runtime_oci.mjs"
+      - "tools/verify_container_runtime_sbom.mjs"
       - "tests/container-runtime-oci-gate.test.mjs"
+      - "tests/container-runtime-sbom-gate.test.mjs"
       - "tests/fixtures/container-runtime-oci/**"
       - "package.json"
       - "docs/migration-completion-status.md"
@@ -22,7 +24,9 @@ on:
       - "Cargo.toml"
       - "crates/container-runtime/**"
       - "tools/verify_container_runtime_oci.mjs"
+      - "tools/verify_container_runtime_sbom.mjs"
       - "tests/container-runtime-oci-gate.test.mjs"
+      - "tests/container-runtime-sbom-gate.test.mjs"
       - "tests/fixtures/container-runtime-oci/**"
       - "package.json"
       - "docs/migration-completion-status.md"
@@ -44,6 +48,7 @@ jobs:
       BUILDX_BUILDER_A: cinatoken-oci-a-${{ github.run_id }}-${{ github.run_attempt }}
       BUILDX_BUILDER_B: cinatoken-oci-b-${{ github.run_id }}-${{ github.run_attempt }}
       BUILDKIT_IMAGE: moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+      SYFT_IMAGE: ghcr.io/anchore/syft:v1.49.0@sha256:13b53ebabe3d215268c90cf8fb9b875f0183908245f376fd4b3a2cb69d21d484
       EVIDENCE_DIR: /tmp/container-runtime-oci
       OCI_ARCHIVE_A: /tmp/container-runtime-oci/container-runtime-a.tar
       OCI_ARCHIVE_B: /tmp/container-runtime-oci/container-runtime-b.tar
@@ -107,6 +112,72 @@ jobs:
             2> >(tee "${EVIDENCE_DIR}/container-runtime-oci-verification.log" >&2) \
             | tee "${EVIDENCE_DIR}/container-runtime-oci-verification.json"
 
+      - name: Generate and verify deterministic SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          OCI_REPORT="${EVIDENCE_DIR}/container-runtime-oci-verification.json"
+          OCI_MANIFEST_DIGEST="$(
+            node -e '
+              const fs = require("node:fs");
+              const report = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              if (!/^sha256:[a-f0-9]{64}$/.test(report.ociManifestDigest ?? "")) {
+                throw new Error("OCI report manifest digest is invalid");
+              }
+              process.stdout.write(report.ociManifestDigest);
+            ' "${OCI_REPORT}"
+          )"
+          docker pull --platform linux/amd64 "${SYFT_IMAGE}" \
+            | tee "${EVIDENCE_DIR}/syft-pull.log"
+          docker image inspect "${SYFT_IMAGE}" \
+            > "${EVIDENCE_DIR}/syft-image-inspect.json"
+
+          generate_sbom() {
+            local archive="$1"
+            local output_directory="$2"
+            mkdir -p "${output_directory}"
+            docker run --rm \
+              --pull never \
+              --platform linux/amd64 \
+              --network none \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges=true \
+              --user "$(id -u):$(id -g)" \
+              --pids-limit 256 \
+              --memory 1g \
+              --cpus 2 \
+              --ulimit nofile=1024:1024 \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m \
+              --env HOME=/tmp \
+              --env XDG_CACHE_HOME=/tmp/cache \
+              --env SYFT_CHECK_FOR_APP_UPDATE=false \
+              --mount "type=bind,src=${archive},dst=/input/container-runtime.tar,readonly" \
+              --mount "type=bind,src=${output_directory},dst=/output" \
+              "${SYFT_IMAGE}" \
+              "oci-archive:/input/container-runtime.tar" \
+              --scope squashed \
+              --source-name cinatoken-container-runtime \
+              --source-version "${OCI_MANIFEST_DIGEST}" \
+              --output syft-json=/output/container-runtime.sbom.syft.json
+          }
+
+          generate_sbom \
+            "${OCI_ARCHIVE_A}" \
+            "${EVIDENCE_DIR}/sbom-a"
+          generate_sbom \
+            "${OCI_ARCHIVE_B}" \
+            "${EVIDENCE_DIR}/sbom-b"
+
+          set -o pipefail
+          node tools/verify_container_runtime_sbom.mjs \
+            --sbom-a "${EVIDENCE_DIR}/sbom-a/container-runtime.sbom.syft.json" \
+            --sbom-b "${EVIDENCE_DIR}/sbom-b/container-runtime.sbom.syft.json" \
+            --oci-report "${OCI_REPORT}" \
+            --json \
+            2> >(tee "${EVIDENCE_DIR}/container-runtime-sbom-verification.log" >&2) \
+            | tee "${EVIDENCE_DIR}/container-runtime-sbom-verification.json"
+
       - name: Retain OCI reproducibility evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -119,6 +190,12 @@ jobs:
             /tmp/container-runtime-oci/docker-version.log
             /tmp/container-runtime-oci/container-runtime-oci-verification.json
             /tmp/container-runtime-oci/container-runtime-oci-verification.log
+            /tmp/container-runtime-oci/syft-pull.log
+            /tmp/container-runtime-oci/syft-image-inspect.json
+            /tmp/container-runtime-oci/sbom-a/container-runtime.sbom.syft.json
+            /tmp/container-runtime-oci/sbom-b/container-runtime.sbom.syft.json
+            /tmp/container-runtime-oci/container-runtime-sbom-verification.json
+            /tmp/container-runtime-oci/container-runtime-sbom-verification.log
             /tmp/container-runtime-oci/container-runtime-a.tar
             /tmp/container-runtime-oci/container-runtime-b.tar
           if-no-files-found: warn

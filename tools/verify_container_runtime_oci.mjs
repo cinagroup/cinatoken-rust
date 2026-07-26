@@ -106,11 +106,14 @@ export async function auditRepositoryContract() {
   const packageJson = JSON.parse(packageJsonText);
   const independentBuilds =
     workflow.match(/docker buildx build/g) ?? [];
+  const buildBlocks = [
+    ...workflow.matchAll(
+      /docker buildx build \\\n([\s\S]*?)\n\s+\./g,
+    ),
+  ].map((match) => match[0]);
   const pinnedBuilderArguments =
     workflow.match(/--builder "\$\{BUILDX_BUILDER_[AB]\}"/g) ?? [];
   const noCacheArguments = workflow.match(/--no-cache/g) ?? [];
-  const platformArguments =
-    workflow.match(/--platform linux\/amd64/g) ?? [];
   const epochArguments =
     workflow.match(/--build-arg SOURCE_DATE_EPOCH=0/g) ?? [];
   const ociOutputs =
@@ -129,9 +132,12 @@ export async function auditRepositoryContract() {
   );
   requireCondition(
     independentBuilds.length === 2 &&
+      buildBlocks.length === 2 &&
+      buildBlocks.every((block) =>
+        block.includes("--platform linux/amd64"),
+      ) &&
       pinnedBuilderArguments.length === 2 &&
       noCacheArguments.length === 2 &&
-      platformArguments.length === 2 &&
       epochArguments.length === 2 &&
       ociOutputs.length === 2 &&
       provenanceDisabled.length === 2 &&

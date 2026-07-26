@@ -1940,3 +1940,14 @@ This mapping is deliberately `reproducible-only`. It does not claim an
 authenticated registry digest, SBOM, provenance, scan result, signature,
 Cloudflare deployment, P5 eligibility, customer traffic, or production
 authority. Go/VPS remains authoritative and production remains **NO-GO**.
+
+A fresh docs/schema-only hosted job independently repeated the mapping in
+[run 30197404664](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664).
+It reproduced the same `bdd67bd4...` OCI tar, `258828d4...` index,
+`84ff0214...` manifest, `7b1326fd...` config, all 19 compressed layers/diffIDs,
+and `1ec31f...` binary. Its diagnostic ZIP is
+[artifact 8630552244](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664/artifacts/8630552244),
+20,767,686 bytes with
+`sha256:36439496d6b6a1b61821a9ac0b3205b1a4dcc19bd13fcfdbef12f5b47cf14089`.
+This strengthens replaceable-compute evidence but still grants no registry,
+Cloudflare, P5 or production authority.

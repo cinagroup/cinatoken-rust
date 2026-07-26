@@ -919,6 +919,18 @@ provider, billing, N/N-1, image, fault, load/cost, canary, and rollback gates
 remain open. No deployment or secret operation occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
 
+Cross-job OCI reproduction is also complete for this scoped baseline.
+Docs/schema-only successor `61be8211f599a48b14e9419a1ce04e26d5128360`
+passed
+[run 30197404664](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664)
+with the same OCI archive/index/manifest/config, all 19 compressed layers and
+diffIDs, and the same runtime binary. Its
+[artifact 8630552244](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664/artifacts/8630552244)
+is 20,767,686 bytes,
+`sha256:36439496d6b6a1b61821a9ac0b3205b1a4dcc19bd13fcfdbef12f5b47cf14089`,
+and expires `2026-08-25T09:59:47Z`. Worker diagnostics make the ZIP identity
+job-specific; the portable OCI subject is exact.
+
 ## 2026-07-15 Audited Task Poll Recovery Status
 
 The current local D1 head is `0037_task_poll_recovery.sql`. It creates an

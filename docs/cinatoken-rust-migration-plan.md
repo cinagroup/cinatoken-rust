@@ -10714,6 +10714,25 @@ manifest, remote Queue/D1/DLQ and invoice reconciliation, fault/load/alert
 evidence, credential rotation, rollback, and signed G1-G8 approval remain open.
 Go/VPS remains authoritative and production remains **NO-GO**.
 
+The docs/schema-only successor
+`61be8211f599a48b14e9419a1ce04e26d5128360`, tree
+`26ce72fb18b0ad1bfe4789af2a580c54be598262`, passed on a fresh hosted worker in
+[run 30197404664](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664)
+and
+[job 89781274958](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664/job/89781274958).
+Its complete verifier output reproduces the same archive, index, manifest,
+config, 19 compressed layers, 19 diffIDs and runtime binary. Retained
+[artifact 8630552244](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664/artifacts/8630552244)
+is 20,767,686 bytes,
+`sha256:36439496d6b6a1b61821a9ac0b3205b1a4dcc19bd13fcfdbef12f5b47cf14089`,
+and expires `2026-08-25T09:59:47Z`.
+
+The artifact ZIP digest is expected to differ because it retains fresh worker
+and builder diagnostics; the OCI tar and all portable subject identities are
+exact. This closes two-hosted-job reproduction for the scoped pinned-builder
+baseline, while the per-run report conservatively leaves its unjoined
+`independentRunnerReproductionVerified` field false.
+
 ### 22.173 2026-07-13 Realtime Attachment Reconstruction And Lease Safety
 
 This increment closes the deterministic local lifecycle case requested in

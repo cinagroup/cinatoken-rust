@@ -3876,6 +3876,22 @@ vulnerability counts to zero. The current packet keeps signature, registry,
 Cloudflare, P5, traffic and cutover authorization false. Go/VPS remains the
 only production authority and production remains **NO-GO**.
 
+### R2 successor result
+
+Step R2 has now passed for one independent hosted successor. Candidate
+`61be8211f599a48b14e9419a1ce04e26d5128360` ran on a fresh worker in
+[run 30197404664](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664)
+and reproduced the exact archive SHA-256, OCI index, platform manifest, config,
+19 compressed layers, 19 diffIDs and runtime build. The successor diagnostic
+packet is
+[artifact 8630552244](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664/artifacts/8630552244),
+20,767,686 bytes,
+`sha256:36439496d6b6a1b61821a9ac0b3205b1a4dcc19bd13fcfdbef12f5b47cf14089`,
+expiring `2026-08-25T09:59:47Z`.
+
+R2 completion advances execution to S1/S2. It does not skip SBOM, scan,
+provenance/signature, registry readback or Cloudflare staging.
+
 ## 2026-07-26 K7 Reproducible Container Image Gate
 
 The release path now rejects an image whose executable behavior is stable but

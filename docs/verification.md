@@ -6262,6 +6262,23 @@ lifecycle remain required. The accepted run has only the pinned upload
 action's Node 20 deprecation warning while GitHub forces Node 24. Go/VPS
 remains authoritative and production remains **NO-GO**.
 
+### Independent successor reproduction
+
+Docs/schema-only successor
+`61be8211f599a48b14e9419a1ce04e26d5128360`, tree
+`26ce72fb18b0ad1bfe4789af2a580c54be598262`, passed on a fresh hosted worker:
+
+| Field | Successor result |
+| --- | --- |
+| Run / job | [30197404664](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664) / [89781274958](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664/job/89781274958) |
+| Archive / graph | Same `bdd67bd4...` archive, `258828d4...` index, `84ff0214...` manifest, `7b1326fd...` config and 19 layers/diffIDs |
+| Runtime binary | Same `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` |
+| Artifact | [8630552244](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664/artifacts/8630552244), 20,767,686 bytes, `sha256:36439496d6b6a1b61821a9ac0b3205b1a4dcc19bd13fcfdbef12f5b47cf14089`, expires `2026-08-25T09:59:47Z` |
+
+The complete job log contains the verifier JSON and all equality flags true.
+The ZIP digest differs because builder names, worker hostnames and timestamps
+are diagnostic evidence; these do not alter the byte-identical OCI archives.
+
 ## 2026-07-26 Bounded Nonblocking Receipt Lock Verification
 
 The production Linux lock path now has a fixed 5-second total deadline shared

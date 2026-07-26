@@ -2074,3 +2074,12 @@ retains both OCI archives and diagnostics for 30 days. It is not durable
 operation/financial authority and is not WORM evidence. D1/DO/R2 plus the
 approved external signed evidence chain remain authoritative. Go/VPS remains
 production authority and production remains **NO-GO**.
+
+The same runner input boundary was independently reproduced by successor
+[run 30197404664](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664):
+archive/index/manifest/config, all layer digests/diffIDs and runtime build are
+exact. Its
+[artifact 8630552244](https://github.com/cinagroup/cinatoken-rust/actions/runs/30197404664/artifacts/8630552244)
+has a job-specific diagnostic ZIP digest while the portable OCI subject stays
+unchanged. The ring-transition candidate still cannot consume this as a
+production image until registry readback and all P5 supply-chain sources pass.

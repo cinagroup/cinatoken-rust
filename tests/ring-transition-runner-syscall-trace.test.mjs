@@ -286,6 +286,19 @@ describe("ring-transition runner syscall trace verifier", () => {
         expectedTraceFinishPaths: [TRACE_FINISH],
       }),
     ).toThrow(/expected trace PIDs were not all observed/);
+    expect(() =>
+      verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText: startupWindowTrace({
+          after: [
+            "4000  connect(9, {sa_family=AF_INET}, 16) = -1 ECONNREFUSED (Connection refused)",
+          ],
+        }),
+        label: "concurrent startup recovery",
+        expectedTracePidValues: ["4100"],
+        expectedTraceStartPaths: [TRACE_START],
+        expectedTraceFinishPaths: [TRACE_FINISH],
+      }),
+    ).toThrow(/forbidden unscoped network syscall attempted/);
   });
 
   test("rejects successful legacy mutation but permits failed EEXIST probes", () => {
@@ -706,6 +719,12 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(workflow).toContain("traceSha256: $traceSha256");
     expect(workflow).toContain("preparedWithoutHttpCore: true");
     expect(workflow).toContain("networkSyscallsObserved: 0");
+    expect(workflow).toContain(
+      '(.unscopedNetworkSyscallsObserved == 3)',
+    );
+    expect(workflow).toContain(
+      '(.unscopedNetworkSyscallNames == ["socketpair"])',
+    );
     expect(workflow).toContain(
       "unscopedIncompleteTraceLinesObserved: $unscopedIncompleteTraceLinesObserved",
     );

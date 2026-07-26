@@ -67,6 +67,7 @@ const NETWORK_SYSCALLS = new Set([
   "socketcall",
   "socketpair",
 ]);
+const ALLOWED_UNSCOPED_NETWORK_SYSCALLS = new Set(["socketpair"]);
 
 export function verifyRingTransitionRunnerSyscallTrace({
   traceText,
@@ -518,6 +519,11 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
         );
       }
       if (NETWORK_SYSCALLS.has(unfinished.name)) {
+        if (!ALLOWED_UNSCOPED_NETWORK_SYSCALLS.has(unfinished.name)) {
+          throw new Error(
+            `[${label}] forbidden unscoped network syscall attempted: ${unfinished.name} by ${unfinished.pid}`,
+          );
+        }
         unscopedNetworkSyscallsObserved += 1;
         unscopedNetworkSyscallNames.add(unfinished.name);
       }
@@ -584,6 +590,11 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
       );
     }
     if (NETWORK_SYSCALLS.has(syscall.name)) {
+      if (!ALLOWED_UNSCOPED_NETWORK_SYSCALLS.has(syscall.name)) {
+        throw new Error(
+          `[${label}] forbidden unscoped network syscall attempted: ${syscall.name} by ${syscall.pid}`,
+        );
+      }
       unscopedNetworkSyscallsObserved += 1;
       unscopedNetworkSyscallNames.add(syscall.name);
     }

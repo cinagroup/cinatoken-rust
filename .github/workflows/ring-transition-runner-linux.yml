@@ -637,6 +637,8 @@ jobs:
               ]) and
               (.zeroNetworkSyscalls == true) and
               (.networkSyscallsObserved == 0) and
+              (.unscopedNetworkSyscallsObserved == 3) and
+              (.unscopedNetworkSyscallNames == ["socketpair"]) and
               (.observedPidValues | index($firstTid) != null) and
               (.observedPidValues | index($secondTid) != null)' \
             "${trace_artifact_dir}/concurrent-startup-recovery.verification.json" \
@@ -645,11 +647,16 @@ jobs:
             jq -r '.unscopedNetworkSyscallsObserved' \
               "${trace_artifact_dir}/concurrent-startup-recovery.verification.json"
           )"
+          startup_unscoped_network_syscall_names="$(
+            jq -c '.unscopedNetworkSyscallNames' \
+              "${trace_artifact_dir}/concurrent-startup-recovery.verification.json"
+          )"
           startup_unscoped_incomplete_trace_lines="$(
             jq -r '.unscopedIncompleteTraceLinesObserved' \
               "${trace_artifact_dir}/concurrent-startup-recovery.verification.json"
           )"
           [[ "${startup_unscoped_network_syscalls}" =~ ^[0-9]+$ ]]
+          test "${startup_unscoped_network_syscall_names}" = '["socketpair"]'
           [[ "${startup_unscoped_incomplete_trace_lines}" =~ ^[0-9]+$ ]]
           jq -n \
             --arg gitSha "${GITHUB_SHA}" \
@@ -667,6 +674,7 @@ jobs:
             --arg traceSha256 "${startup_trace_sha256}" \
             --argjson traceBytes "${startup_trace_bytes}" \
             --argjson unscopedNetworkSyscallsObserved "${startup_unscoped_network_syscalls}" \
+            --argjson unscopedNetworkSyscallNames "${startup_unscoped_network_syscall_names}" \
             --argjson unscopedIncompleteTraceLinesObserved "${startup_unscoped_incomplete_trace_lines}" \
             '{
               gitSha: $gitSha,
@@ -695,6 +703,7 @@ jobs:
               traceWindowPolicy: "successful-create-new-marker-open-v1",
               networkSyscallsObserved: 0,
               unscopedNetworkSyscallsObserved: $unscopedNetworkSyscallsObserved,
+              unscopedNetworkSyscallNames: $unscopedNetworkSyscallNames,
               unscopedIncompleteTraceLinesObserved: $unscopedIncompleteTraceLinesObserved,
               closureIdentity: $closure,
               capture: {

@@ -10714,6 +10714,60 @@ manifest, remote Queue/D1/DLQ and invoice reconciliation, fault/load/alert
 evidence, credential rotation, rollback, and signed G1-G8 approval remain open.
 Go/VPS remains authoritative and production remains **NO-GO**.
 
+## 22.300 K7 Deterministic Container SBOM Gate (2026-07-26)
+
+The S1 supply-chain boundary is now executable and accepted for the frozen
+local OCI subject. The existing pinned-builder workflow generates two
+independent Syft JSON catalogs from archives A and B and fails unless the
+complete output bytes match. Syft is pinned to
+`ghcr.io/anchore/syft:v1.49.0@sha256:13b53ebabe3d215268c90cf8fb9b875f0183908245f376fd4b3a2cb69d21d484`.
+Each catalog runs as the hosted runner UID/GID with no network, a read-only
+root, all capabilities dropped, no new privileges, bounded CPU/memory/PIDs/
+files/output, one read-only archive mount, and one pre-created output-file
+mount.
+
+Candidate `53c7e1802dd7461f58bd9755a30dfcf3e5201a20`, tree
+`4316200ef8fee1294ed583617c9ffab978b5175e`, passed
+[run 30200272629](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629)
+and
+[job 89788901459](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629/job/89788901459).
+
+| Accepted evidence | Frozen value |
+| --- | --- |
+| OCI subject | Archive `sha256:bdd67bd4335a922081e35fe344fb481599730ec37a3833d17fea85407852fb7e`; manifest `sha256:84ff02142ea078cb8ad3fa496c2a4ad49f001c9b1c3a08ab1e4d394a78bd5aaa`; config `sha256:7b1326fde55626bb8b5770fa88418eafe610d17f737c1f3fb1cb653362044b51` |
+| Runtime join | Binary `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910`; 19 compressed layers and 19 uncompressed diffIDs |
+| Generator | Syft `1.49.0`; schema `16.1.10`; `syft-json`; `squashed`; network disabled; nonroot |
+| SBOM equality | 973,539 bytes; exact A/B match; `sha256:0b28e8fb597b6294605a68977f33968b294cebbad79bdac9986e062ff432ec60` |
+| Catalog | 10 packages; 1,293 relationships; source layer kind `uncompressed-diff-id`; source platform metadata absent and the raw digest-bound OCI config remains authoritative |
+| Evidence artifact | [8631431136](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629/artifacts/8631431136), 22,725,635 bytes, `sha256:a189a1f5aaa4ba6d38042fc03fe5472c19b80b4fa9fbeab12c440f6084bfb3a2`, expires `2026-08-25T11:32:53Z` |
+
+The verifier rejects malformed or ambiguously scoped catalogs, unsafe
+generation arguments, missing package identities, unbound locations,
+inconsistent package metadata, dangling relationships, source manifest/config
+drift, layer drift, and any attempt to present this result as formal P5
+evidence. Its decision scope is
+`local-sbom-reproducibility-only`.
+
+This closes one hosted job's deterministic SBOM generation and subject
+binding. It does not perform a vulnerability scan, generate provenance, verify
+an image signature, choose a canonical registry digest, read back a registry
+or Cloudflare deployment, or create a P5 sources-v3 record. Critical/high
+counts remain null, not zero; `formalP5Evidence`, `p5Eligible`,
+`customerTrafficAuthorized`, and `productionCutoverAuthorized` remain false.
+
+The next mandatory order is:
+
+1. reproduce the exact SBOM bytes and semantic report on an independent hosted
+   successor;
+2. run S2 with a pinned Grype binary/image and a frozen, retained vulnerability
+   database identity against this exact manifest/SBOM subject;
+3. produce independently verified signed provenance and immutable retention;
+4. publish and read back only the frozen digest; and
+5. join that digest to isolated Cloudflare staging and the complete P5
+   candidate before any traffic review.
+
+Go/VPS remains authoritative and production remains **NO-GO**.
+
 The docs/schema-only successor
 `61be8211f599a48b14e9419a1ce04e26d5128360`, tree
 `26ce72fb18b0ad1bfe4789af2a580c54be598262`, passed on a fresh hosted worker in

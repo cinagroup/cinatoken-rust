@@ -919,6 +919,33 @@ provider, billing, N/N-1, image, fault, load/cost, canary, and rollback gates
 remain open. No deployment or secret operation occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
 
+## 2026-07-26 Deterministic Container SBOM Status
+
+S1 is complete for one frozen hosted-job subject. Candidate
+`53c7e1802dd7461f58bd9755a30dfcf3e5201a20` passed
+[run 30200272629](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629)
+and
+[job 89788901459](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629/job/89788901459).
+Two isolated, nonroot, network-disabled Syft 1.49.0 executions cataloged the
+two exact OCI archives and produced byte-identical 973,539-byte Syft JSON:
+`sha256:0b28e8fb597b6294605a68977f33968b294cebbad79bdac9986e062ff432ec60`.
+The catalog contains 10 packages and 1,293 relationships.
+
+The gate independently rebinds the OCI manifest/config, all 19 compressed
+layers, all 19 uncompressed diffIDs, and runtime binary
+`1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910`.
+[Artifact 8631431136](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629/artifacts/8631431136)
+is 22,725,635 bytes with
+`sha256:a189a1f5aaa4ba6d38042fc03fe5472c19b80b4fa9fbeab12c440f6084bfb3a2`
+and expires `2026-08-25T11:32:53Z`.
+
+This status is `local-sbom-reproducibility-only`. Independent hosted-job SBOM
+reproduction, vulnerability scanning with a frozen database, provenance,
+signature, immutable retention, registry/Cloudflare digest readback, P5 and
+production review remain open. Vulnerability counts remain null and all remote,
+traffic and cutover authorization remains false. Go/VPS stays authoritative
+and production remains **NO-GO**.
+
 Cross-job OCI reproduction is also complete for this scoped baseline.
 Docs/schema-only successor `61be8211f599a48b14e9419a1ce04e26d5128360`
 passed

@@ -3892,6 +3892,39 @@ expiring `2026-08-25T09:59:47Z`.
 R2 completion advances execution to S1/S2. It does not skip SBOM, scan,
 provenance/signature, registry readback or Cloudflare staging.
 
+### S1 deterministic SBOM result
+
+Step S1 has passed for one frozen hosted-job subject. Candidate
+`53c7e1802dd7461f58bd9755a30dfcf3e5201a20` passed
+[run 30200272629](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629)
+and
+[job 89788901459](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629/job/89788901459).
+The digest-pinned Syft 1.49.0 generator ran twice with no network, nonroot
+identity, read-only root, dropped capabilities, bounded resources, exact
+read-only archive input, and exact output-file binding.
+
+Both archives generated the same 973,539-byte `syft-json` document at
+`sha256:0b28e8fb597b6294605a68977f33968b294cebbad79bdac9986e062ff432ec60`.
+The verifier accepted 10 packages and 1,293 relationships and rebound the
+catalog to manifest `sha256:84ff0214...`, config `sha256:7b1326fd...`, all 19
+compressed layer descriptors, all 19 uncompressed diffIDs, and runtime build
+`1ec31f...`.
+
+The retained packet is
+[artifact 8631431136](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629/artifacts/8631431136),
+22,725,635 bytes,
+`sha256:a189a1f5aaa4ba6d38042fc03fe5472c19b80b4fa9fbeab12c440f6084bfb3a2`,
+expiring `2026-08-25T11:32:53Z`.
+
+S1 is intentionally scoped to local SBOM reproducibility. Promotion now
+requires an independent hosted-job reproduction before S2 can be accepted as
+the release-candidate scan. S2 must pin both the scanner and the complete
+vulnerability database identity, retain the database acquisition/source
+metadata, scan this exact subject, distinguish unapproved from policy-approved
+findings, and leave unavailable counts null. No SBOM result may itself assert
+zero vulnerabilities, provenance, signature validity, registry identity,
+Cloudflare deployment, P5 eligibility, or traffic authority.
+
 ## 2026-07-26 K7 Reproducible Container Image Gate
 
 The release path now rejects an image whose executable behavior is stable but

@@ -6200,6 +6200,56 @@ ACL/mounts, power-loss/restore and external WORM evidence remain open. Run
 passed, so repeated Ubuntu soak remains an explicit gate. Go/VPS remains
 authoritative and production remains **NO-GO**.
 
+## 2026-07-26 Deterministic Container SBOM Verification
+
+The offline contract is credential-free and Docker-independent:
+
+```powershell
+bun run check:container-runtime:sbom-contract
+node --check tools/verify_container_runtime_sbom.mjs
+node --check tests/container-runtime-sbom-gate.test.mjs
+actionlint .github/workflows/container-runtime-oci.yml
+```
+
+The contract suite passes 9/9 tests with 131 expectations. It validates the
+static generation boundary, unsafe/conflicting Docker argument rejection,
+descriptor/configuration scope, package identity and metadata, locations,
+licenses/CPEs, relationship anchors, source OCI graph, and fail-closed
+decision fields.
+
+The Linux workflow runs the digest-pinned Syft image twice and verifies:
+
+```bash
+node tools/verify_container_runtime_sbom.mjs \
+  --sbom-a /tmp/container-runtime-oci/sbom-a/container-runtime.sbom.syft.json \
+  --sbom-b /tmp/container-runtime-oci/sbom-b/container-runtime.sbom.syft.json \
+  --oci-report /tmp/container-runtime-oci/container-runtime-oci-verification.json \
+  --json
+```
+
+Candidate `53c7e1802dd7461f58bd9755a30dfcf3e5201a20`, tree
+`4316200ef8fee1294ed583617c9ffab978b5175e`, passed
+[run 30200272629](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629)
+and
+[job 89788901459](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629/job/89788901459).
+
+| Field | Accepted value |
+| --- | --- |
+| Generator | `ghcr.io/anchore/syft:v1.49.0@sha256:13b53ebabe3d215268c90cf8fb9b875f0183908245f376fd4b3a2cb69d21d484`; schema `16.1.10` |
+| Isolation | `linux/amd64`; network none; read-only root; nonroot; all capabilities dropped; NNP; bounded CPU, memory, PIDs, FDs, output and tmpfs |
+| Subject | Archive `bdd67bd4...`; manifest `84ff0214...`; config `7b1326fd...`; runtime binary `1ec31f...` |
+| Layers | 19 compressed descriptors and 19 uncompressed diffIDs rebound; Syft source layer kind `uncompressed-diff-id` |
+| SBOM | 973,539 bytes; exact A/B match; `sha256:0b28e8fb597b6294605a68977f33968b294cebbad79bdac9986e062ff432ec60` |
+| Catalog | 10 packages; 1,293 relationships; `squashed`; source platform metadata absent, raw OCI config authoritative |
+| Artifact | [8631431136](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200272629/artifacts/8631431136), 22,725,635 bytes, `sha256:a189a1f5aaa4ba6d38042fc03fe5472c19b80b4fa9fbeab12c440f6084bfb3a2`, expires `2026-08-25T11:32:53Z` |
+
+The JSON report must say `scope=local-sbom-reproducibility-only`,
+`formalP5Evidence=false`, `vulnerabilityDecision=not-performed`, and
+`productionDecision=not-authorized`. It records no vulnerability scan or
+provenance, leaves critical/high and canonical registry digest null, and keeps
+signature, registry, Cloudflare, P5, traffic and cutover fields false. A second
+hosted job must reproduce the SBOM before cross-job S1 acceptance.
+
 ## 2026-07-26 Real Dual-Startup Zero-Network Window Verification
 
 The Linux gate now launches two independent, environment-cleared child

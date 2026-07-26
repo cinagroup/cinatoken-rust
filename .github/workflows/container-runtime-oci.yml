@@ -15,6 +15,9 @@ on:
       - "tests/container-runtime-vulnerability-gate.test.mjs"
       - "tests/fixtures/container-runtime-oci/**"
       - "config/container-runtime-vulnerability-db.json"
+      - "config/container-runtime-vulnerability-db-listing.json"
+      - "config/container-runtime-vulnerability-policy.json"
+      - "config/container-runtime-vulnerability-approvals.json"
       - "package.json"
       - "docs/migration-completion-status.md"
       - "docs/verification.md"
@@ -34,6 +37,9 @@ on:
       - "tests/container-runtime-vulnerability-gate.test.mjs"
       - "tests/fixtures/container-runtime-oci/**"
       - "config/container-runtime-vulnerability-db.json"
+      - "config/container-runtime-vulnerability-db-listing.json"
+      - "config/container-runtime-vulnerability-policy.json"
+      - "config/container-runtime-vulnerability-approvals.json"
       - "package.json"
       - "docs/migration-completion-status.md"
       - "docs/verification.md"
@@ -56,6 +62,8 @@ jobs:
       BUILDKIT_IMAGE: moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
       SYFT_IMAGE: ghcr.io/anchore/syft:v1.49.0@sha256:13b53ebabe3d215268c90cf8fb9b875f0183908245f376fd4b3a2cb69d21d484
       GRYPE_IMAGE: ghcr.io/anchore/grype:v0.116.0@sha256:fd4ab4d1042b522c896e73bdf09ab8bf384fa417df99d6dd0d6e1008c7e7c821
+      GRYPE_IMAGE_INDEX_DIGEST: sha256:fd4ab4d1042b522c896e73bdf09ab8bf384fa417df99d6dd0d6e1008c7e7c821
+      GRYPE_IMAGE_AMD64_MANIFEST_DIGEST: sha256:3d08845e24eba657b8ea9bd28344a5a4e9dcd772818062a6522bf30137928616
       GRYPE_DB_ARCHIVE_URL: https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-07-26T00:41:33Z_1785049634.tar.zst
       GRYPE_DB_ARCHIVE_SHA256: 766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc
       GRYPE_DB_SCHEMA_VERSION: v6.1.9
@@ -220,6 +228,8 @@ jobs:
 
           docker pull --platform linux/amd64 "${GRYPE_IMAGE}" \
             | tee "${EVIDENCE_DIR}/grype-pull.log"
+          docker buildx imagetools inspect --raw "${GRYPE_IMAGE}" \
+            > "${EVIDENCE_DIR}/grype-image-index.json"
           docker image inspect "${GRYPE_IMAGE}" \
             > "${EVIDENCE_DIR}/grype-image-inspect.json"
 
@@ -245,7 +255,8 @@ jobs:
               --env GRYPE_CHECK_FOR_APP_UPDATE=false \
               --env GRYPE_DB_AUTO_UPDATE=false \
               --env GRYPE_DB_VALIDATE_BY_HASH_ON_START=true \
-              --env GRYPE_DB_VALIDATE_AGE=false \
+              --env GRYPE_DB_VALIDATE_AGE=true \
+              --env GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h \
               --env GRYPE_DB_REQUIRE_UPDATE_CHECK=false \
               --env GRYPE_DB_CACHE_DIR=/grype-db \
               --mount "type=bind,src=${GRYPE_DB_ARCHIVE},dst=/input/grype-db.tar.zst,readonly" \
@@ -281,11 +292,12 @@ jobs:
               --env GRYPE_CHECK_FOR_APP_UPDATE=false \
               --env GRYPE_DB_AUTO_UPDATE=false \
               --env GRYPE_DB_VALIDATE_BY_HASH_ON_START=true \
-              --env GRYPE_DB_VALIDATE_AGE=false \
+              --env GRYPE_DB_VALIDATE_AGE=true \
+              --env GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h \
               --env GRYPE_DB_REQUIRE_UPDATE_CHECK=false \
               --env GRYPE_DB_CACHE_DIR=/grype-db \
               --env GRYPE_TIMESTAMP=false \
-              --mount "type=bind,src=${database_root},dst=/grype-db" \
+              --mount "type=bind,src=${database_root},dst=/grype-db,readonly" \
               "${GRYPE_IMAGE}" \
               db status --output json \
               > "${status_file}"
@@ -308,15 +320,17 @@ jobs:
               --env GRYPE_CHECK_FOR_APP_UPDATE=false \
               --env GRYPE_DB_AUTO_UPDATE=false \
               --env GRYPE_DB_VALIDATE_BY_HASH_ON_START=true \
-              --env GRYPE_DB_VALIDATE_AGE=false \
+              --env GRYPE_DB_VALIDATE_AGE=true \
+              --env GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h \
               --env GRYPE_DB_REQUIRE_UPDATE_CHECK=false \
               --env GRYPE_DB_CACHE_DIR=/grype-db \
               --env GRYPE_TIMESTAMP=false \
-              --mount "type=bind,src=${database_root},dst=/grype-db" \
+              --mount "type=bind,src=${database_root},dst=/grype-db,readonly" \
               --mount "type=bind,src=${sbom_file},dst=/input/container-runtime.sbom.syft.json,readonly" \
               --mount "type=bind,src=${output_file},dst=/output/container-runtime.vulnerabilities.grype.json" \
               "${GRYPE_IMAGE}" \
               "sbom:/input/container-runtime.sbom.syft.json" \
+              --show-suppressed \
               --output json=/output/container-runtime.vulnerabilities.grype.json
           }
 
@@ -339,11 +353,22 @@ jobs:
           node tools/verify_container_runtime_vulnerabilities.mjs \
             --scan-a "${EVIDENCE_DIR}/scan-a/container-runtime.vulnerabilities.grype.json" \
             --scan-b "${EVIDENCE_DIR}/scan-b/container-runtime.vulnerabilities.grype.json" \
+            --sbom-a "${EVIDENCE_DIR}/sbom-a/container-runtime.sbom.syft.json" \
+            --sbom-b "${EVIDENCE_DIR}/sbom-b/container-runtime.sbom.syft.json" \
             --sbom-report "${EVIDENCE_DIR}/container-runtime-sbom-verification.json" \
             --db-status-a "${EVIDENCE_DIR}/grype-db-status-a.json" \
             --db-status-b "${EVIDENCE_DIR}/grype-db-status-b.json" \
             --db-archive "${GRYPE_DB_ARCHIVE}" \
+            --db-file-a "${EVIDENCE_DIR}/grype-db-a/6/vulnerability.db" \
+            --db-file-b "${EVIDENCE_DIR}/grype-db-b/6/vulnerability.db" \
+            --db-import-a "${EVIDENCE_DIR}/grype-db-a/6/import.json" \
+            --db-import-b "${EVIDENCE_DIR}/grype-db-b/6/import.json" \
             --db-metadata config/container-runtime-vulnerability-db.json \
+            --db-listing config/container-runtime-vulnerability-db-listing.json \
+            --policy config/container-runtime-vulnerability-policy.json \
+            --approvals config/container-runtime-vulnerability-approvals.json \
+            --scanner-index "${EVIDENCE_DIR}/grype-image-index.json" \
+            --scanner-inspect "${EVIDENCE_DIR}/grype-image-inspect.json" \
             --observed-at "${OBSERVED_AT}" \
             --json \
             2> >(tee "${EVIDENCE_DIR}/container-runtime-vulnerability-verification.log" >&2) \
@@ -368,10 +393,13 @@ jobs:
             /tmp/container-runtime-oci/container-runtime-sbom-verification.json
             /tmp/container-runtime-oci/container-runtime-sbom-verification.log
             /tmp/container-runtime-oci/grype-pull.log
+            /tmp/container-runtime-oci/grype-image-index.json
             /tmp/container-runtime-oci/grype-image-inspect.json
             /tmp/container-runtime-oci/grype-db.tar.zst
             /tmp/container-runtime-oci/grype-db-status-a.json
             /tmp/container-runtime-oci/grype-db-status-b.json
+            /tmp/container-runtime-oci/grype-db-a/6/import.json
+            /tmp/container-runtime-oci/grype-db-b/6/import.json
             /tmp/container-runtime-oci/scan-a/container-runtime.vulnerabilities.grype.json
             /tmp/container-runtime-oci/scan-b/container-runtime.vulnerabilities.grype.json
             /tmp/container-runtime-oci/container-runtime-vulnerability-verification.json

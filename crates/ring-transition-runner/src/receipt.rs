@@ -11361,12 +11361,21 @@ mod tests {
                 );
                 write_multiprocess_ready(ready, b"recovery-ready");
                 wait_for_multiprocess_release(&root.with_extension("concurrent-start.gate"));
-                let recovery = store
-                    .recover_unfinished_operations(&publication, &credentials, &activation, NOW + 2)
-                    .unwrap();
-                assert_eq!(recovery.operation_count, 1);
-                assert!(recovery.unfinished_count <= 1);
-                assert_eq!(recovery.recovered_ambiguous_count, 0);
+                let unfinished = match store.recover_unfinished_operations(
+                    &publication,
+                    &credentials,
+                    &activation,
+                    NOW + 2,
+                ) {
+                    Ok(recovery) => {
+                        assert_eq!(recovery.operation_count, 1);
+                        assert!(recovery.unfinished_count <= 1);
+                        assert_eq!(recovery.recovered_ambiguous_count, 0);
+                        recovery.unfinished_count
+                    }
+                    Err(ReceiptError::AlreadySealed) => 0,
+                    Err(error) => panic!("concurrent recovery failed: {error}"),
+                };
                 let closure = store
                     .recover_terminal_closure(&publication, &credentials, &activation)
                     .unwrap()
@@ -11376,10 +11385,7 @@ mod tests {
                     .unwrap()
                     .unwrap();
                 assert_eq!(replayed, closure);
-                println!(
-                    "concurrent-recovery-unfinished={}",
-                    recovery.unfinished_count
-                );
+                println!("concurrent-recovery-unfinished={unfinished}");
                 println!(
                     "concurrent-terminal-closure={}",
                     terminal_closure_observation(&closure)

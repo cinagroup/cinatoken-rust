@@ -10,6 +10,7 @@ import {
   RUNTIME_ATTESTATION_CONTRACT_VERSION,
   RUNTIME_GID,
   RUNTIME_UID,
+  SOURCE_DATE_EPOCH,
   UPLOAD_ARTIFACT_ACTION,
   auditRepositoryContract,
   buildOperationEnvelope,
@@ -17,6 +18,7 @@ import {
   parseLinuxMountInfo,
   parseArgs,
   validateContainerPolicy,
+  validateReproducibleImages,
   validateRuntimeProcessAttestation,
 } from "../tools/verify_container_runtime_linux.mjs";
 
@@ -44,14 +46,22 @@ describe("linux container release gate", () => {
     expect(workflow).toContain(`uses: ${UPLOAD_ARTIFACT_ACTION}`);
     expect(workflow).toContain("persist-credentials: false");
     expect(workflow).toContain("runs-on: ubuntu-24.04");
-    expect(workflow).toContain("docker build --platform linux/amd64");
+    expect(
+      workflow.match(/docker build --no-cache --platform linux\/amd64/g),
+    ).toHaveLength(2);
+    expect(workflow.match(/--build-arg SOURCE_DATE_EPOCH=0/g)).toHaveLength(2);
     expect(workflow).toContain("tests/fixtures/container-runtime-linux-probe.mjs");
     expect(workflow).toContain("node tools/verify_container_runtime_linux.mjs");
-    expect(workflow).toContain("--image cinatoken-container-runtime:linux-gate");
+    expect(workflow).toContain("--image cinatoken-container-runtime:linux-gate-a");
+    expect(workflow).toContain(
+      "--reproducible-image cinatoken-container-runtime:linux-gate-b",
+    );
     expect(workflow).toContain("container-runtime-linux-attestation.json");
     expect(workflow).toContain("retention-days: 30");
     expect(workflow).not.toMatch(/\$\{\{\s*secrets\.|wrangler|cloudflare api/i);
     expect(dockerfile).toContain("\nWORKDIR /\n");
+    expect(dockerfile).toStartWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`);
+    expect(dockerfile).toContain('touch --date="@${SOURCE_DATE_EPOCH}"');
     expect(dockerfile).toContain("--chown=0:0 --chmod=0755");
     expect(verifierSource).toContain(NODE_MOCK_IMAGE);
     expect(verifierSource).toContain('"network", "create", "--internal"');
@@ -77,8 +87,14 @@ describe("linux container release gate", () => {
 
   test("keeps the local aggregate credential-free and Docker-independent", () => {
     expect(packageJson.scripts.check).toContain("check:container-runtime:linux-contract");
+    expect(packageJson.scripts["check:container-runtime:linux-contract"]).toContain(
+      '--path-ignore-patterns="target/**"',
+    );
     expect(packageJson.scripts["check:container-runtime:linux-contract"]).toContain("--self-test");
     expect(packageJson.scripts["check:container-runtime:linux"]).toContain("--image");
+    expect(packageJson.scripts["check:container-runtime:linux"]).toContain(
+      "--reproducible-image",
+    );
     expect(packageJson.scripts.check).not.toContain("check:container-runtime:linux &&");
   });
 
@@ -107,18 +123,45 @@ describe("linux container release gate", () => {
     expect(parseArgs(["--self-test", "--json"])).toEqual({
       selfTest: true,
       image: null,
+      reproducibleImage: null,
       json: true,
     });
-    expect(parseArgs(["--image", "runtime:test"])).toEqual({
+    expect(
+      parseArgs([
+        "--image",
+        "runtime:test-a",
+        "--reproducible-image",
+        "runtime:test-b",
+      ]),
+    ).toEqual({
       selfTest: false,
-      image: "runtime:test",
+      image: "runtime:test-a",
+      reproducibleImage: "runtime:test-b",
       json: false,
     });
-    expect(() => parseArgs([])).toThrow("select exactly one");
-    expect(() => parseArgs(["--self-test", "--image", "runtime:test"])).toThrow(
-      "select exactly one",
+    expect(() => parseArgs([])).toThrow("select --self-test");
+    expect(() => parseArgs(["--image", "runtime:test"])).toThrow(
+      "both --image",
     );
-    expect(() => parseArgs(["--image", "--bad"])).toThrow("must not start");
+    expect(() =>
+      parseArgs([
+        "--self-test",
+        "--image",
+        "runtime:test-a",
+        "--reproducible-image",
+        "runtime:test-b",
+      ]),
+    ).toThrow(
+      "select --self-test",
+    );
+    expect(() =>
+      parseArgs([
+        "--image",
+        "--bad",
+        "--reproducible-image",
+        "runtime:test-b",
+      ]),
+    ).toThrow("must not start");
     expect(() => parseArgs(["--unknown"])).toThrow("unknown argument");
   });
 
@@ -128,6 +171,9 @@ describe("linux container release gate", () => {
       contractVersion: LINUX_GATE_CONTRACT_VERSION,
       status: "passed",
       dockerfileBaseImagesPinned: true,
+      sourceDateEpoch: SOURCE_DATE_EPOCH,
+      independentImageBuildsRequired: 2,
+      reproducibleImageGate: true,
       checkoutActionPinned: true,
       workflowCredentialFree: true,
       aggregateGateOffline: true,
@@ -149,6 +195,31 @@ describe("linux container release gate", () => {
     expect(command.timedOut).toBe(false);
     expect(command.outputLimitExceeded).toBe(false);
     expect(JSON.parse(command.stdout)).toEqual(report);
+  });
+
+  test("requires exact identity across independent image builds", () => {
+    const primary = imageInspection("a");
+    const secondary = imageInspection("a");
+    expect(validateReproducibleImages(primary, secondary)).toEqual({
+      sourceDateEpoch: SOURCE_DATE_EPOCH,
+      independentBuilds: 2,
+      imageId: `sha256:${"a".repeat(64)}`,
+      rootfsLayerCount: 2,
+      exactImageIdMatch: true,
+      exactConfigMatch: true,
+      exactRootfsLayerMatch: true,
+    });
+
+    const layerDrift = imageInspection("a");
+    layerDrift.RootFS.Layers[1] = `sha256:${"c".repeat(64)}`;
+    expect(() => validateReproducibleImages(primary, layerDrift)).toThrow(
+      "independent image builds",
+    );
+
+    const imageDrift = imageInspection("b");
+    expect(() => validateReproducibleImages(primary, imageDrift)).toThrow(
+      "independent image builds",
+    );
   });
 
   test("validates numeric runtime identity, mounts, ACLs, and descriptors", () => {
@@ -217,6 +288,23 @@ describe("linux container release gate", () => {
     expect(classifyRuntimeFileDescriptorTarget("/host/secret")).toBe("unexpected");
   });
 });
+
+function imageInspection(identity) {
+  return {
+    Id: `sha256:${identity.repeat(64)}`,
+    RootFS: {
+      Layers: [
+        `sha256:${"0".repeat(64)}`,
+        `sha256:${"1".repeat(64)}`,
+      ],
+    },
+    Config: {
+      User: "nonroot:nonroot",
+      WorkingDir: "/",
+      Entrypoint: ["/usr/local/bin/cinatoken-container-runtime"],
+    },
+  };
+}
 
 function containerInspection(network) {
   return {

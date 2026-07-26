@@ -5,10 +5,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { runBoundedSubprocess } from "./lib/bounded_subprocess.mjs";
 
-export const LINUX_GATE_CONTRACT_VERSION = 2;
+export const LINUX_GATE_CONTRACT_VERSION = 3;
 export const RUNTIME_ATTESTATION_CONTRACT_VERSION = 1;
 export const RUNTIME_UID = 65_532;
 export const RUNTIME_GID = 65_532;
+export const SOURCE_DATE_EPOCH = 0;
 export const RUST_BUILDER_IMAGE =
   "rust:1.78.0-bookworm@sha256:5907e96b0293eb53bcc8f09b4883d71449808af289862950ede9a0e3cca44ff5";
 export const DISTROLESS_RUNTIME_IMAGE =
@@ -69,7 +70,12 @@ const WRITABLE_MOUNT_ALLOWLIST = new Set([
 ]);
 
 export function parseArgs(argv) {
-  const options = { selfTest: false, image: null, json: false };
+  const options = {
+    selfTest: false,
+    image: null,
+    reproducibleImage: null,
+    json: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--self-test") {
@@ -79,15 +85,29 @@ export function parseArgs(argv) {
     } else if (argument === "--image") {
       options.image = argv[index + 1] ?? null;
       index += 1;
+    } else if (argument === "--reproducible-image") {
+      options.reproducibleImage = argv[index + 1] ?? null;
+      index += 1;
     } else {
       throw new Error(`unknown argument: ${argument}`);
     }
   }
-  if (options.selfTest === (options.image !== null)) {
-    throw new Error("select exactly one of --self-test or --image <reference>");
+  const realGateSelected =
+    options.image !== null && options.reproducibleImage !== null;
+  if (
+    options.selfTest === realGateSelected ||
+    (options.image === null) !== (options.reproducibleImage === null)
+  ) {
+    throw new Error(
+      "select --self-test or both --image and --reproducible-image references",
+    );
   }
-  if (options.image !== null && !validImageReference(options.image)) {
-    throw new Error("image reference must be bounded visible ASCII and must not start with '-'");
+  for (const reference of [options.image, options.reproducibleImage]) {
+    if (reference !== null && !validImageReference(reference)) {
+      throw new Error(
+        "image reference must be bounded visible ASCII and must not start with '-'",
+      );
+    }
   }
   return options;
 }
@@ -114,6 +134,10 @@ export async function auditRepositoryContract() {
     ]);
   const packageJson = JSON.parse(packageJsonText);
   const fromLines = dockerfile.match(/^FROM .+$/gm) ?? [];
+  const independentBuilds =
+    workflow.match(/docker build --no-cache --platform linux\/amd64/g) ?? [];
+  const epochBuildArgs =
+    workflow.match(/--build-arg SOURCE_DATE_EPOCH=0/g) ?? [];
   requireCondition(
     fromLines.length === 2 &&
       fromLines[0] === `FROM ${RUST_BUILDER_IMAGE} AS builder` &&
@@ -121,13 +145,16 @@ export async function auditRepositoryContract() {
     "Dockerfile must use the two exact digest-pinned base images",
   );
   requireCondition(
-    dockerfile.includes("USER nonroot:nonroot") &&
+    dockerfile.startsWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`) &&
+      dockerfile.includes("ENV CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}") &&
+      dockerfile.includes('touch --date="@${SOURCE_DATE_EPOCH}"') &&
+      dockerfile.includes("USER nonroot:nonroot") &&
       dockerfile.includes("\nWORKDIR /\n") &&
       dockerfile.includes(
         "COPY --from=builder --chown=0:0 --chmod=0755 /build/target/release/cinatoken-container-runtime /usr/local/bin/cinatoken-container-runtime",
       ) &&
       dockerfile.includes("ENTRYPOINT [\"/usr/local/bin/cinatoken-container-runtime\"]"),
-    "Dockerfile must retain the root-owned binary, fixed working directory, and non-root entrypoint",
+    "Dockerfile must retain reproducible timestamps, the root-owned binary, fixed working directory, and non-root entrypoint",
   );
   requireCondition(
     runtimeMain.includes('"--runtime-attestation-v1"') &&
@@ -142,12 +169,16 @@ export async function auditRepositoryContract() {
     workflow.includes(`uses: ${CHECKOUT_ACTION}`) &&
       workflow.includes(`uses: ${UPLOAD_ARTIFACT_ACTION}`) &&
       workflow.includes("persist-credentials: false") &&
-      workflow.includes("docker build --platform linux/amd64") &&
+      independentBuilds.length === 2 &&
+      epochBuildArgs.length === 2 &&
       workflow.includes("node tools/verify_container_runtime_linux.mjs") &&
-      workflow.includes("--image cinatoken-container-runtime:linux-gate") &&
+      workflow.includes("--image cinatoken-container-runtime:linux-gate-a") &&
+      workflow.includes(
+        "--reproducible-image cinatoken-container-runtime:linux-gate-b",
+      ) &&
       workflow.includes("container-runtime-linux-attestation.json") &&
       workflow.includes("retention-days: 30"),
-    "workflow must use pinned actions, execute the real linux/amd64 gate, and retain attestation",
+    "workflow must use pinned actions, perform two no-cache reproducible builds, execute the real linux/amd64 gate, and retain attestation",
   );
   requireCondition(
     workflow.includes("permissions:\n  contents: read") &&
@@ -188,6 +219,9 @@ export async function auditRepositoryContract() {
   requireCondition(
     packageJson.scripts["check:container-runtime:linux-contract"]?.includes("--self-test") &&
       packageJson.scripts["check:container-runtime:linux"]?.includes("--image") &&
+      packageJson.scripts["check:container-runtime:linux"]?.includes(
+        "--reproducible-image",
+      ) &&
       packageJson.scripts.check?.includes("check:container-runtime:linux-contract") &&
       !packageJson.scripts.check?.includes("check:container-runtime:linux &&"),
     "package scripts must keep the offline contract in the aggregate and real Docker in CI",
@@ -197,6 +231,9 @@ export async function auditRepositoryContract() {
     contractVersion: LINUX_GATE_CONTRACT_VERSION,
     status: "passed",
     dockerfileBaseImagesPinned: true,
+    sourceDateEpoch: SOURCE_DATE_EPOCH,
+    independentImageBuildsRequired: 2,
+    reproducibleImageGate: true,
     checkoutActionPinned: true,
     workflowCredentialFree: true,
     aggregateGateOffline: true,
@@ -249,14 +286,21 @@ export function buildOperationEnvelope({ operationId, kind, now = currentEpochSe
   };
 }
 
-export async function runLinuxGate(image) {
+export async function runLinuxGate(image, reproducibleImage) {
   await auditRepositoryContract();
   requireCondition(
     process.platform === "linux" && process.arch === "x64",
     "real container gate requires a Linux x64 host",
   );
 
-  const inspection = await inspectImage(image);
+  const [inspection, reproducibleInspection] = await Promise.all([
+    inspectImage(image),
+    inspectImage(reproducibleImage),
+  ]);
+  const imageReproducibility = validateReproducibleImages(
+    inspection,
+    reproducibleInspection,
+  );
   const suffix = `${process.pid}-${randomUUID().slice(0, 8)}`;
   const network = `cinatoken-linux-gate-${suffix}`;
   const mock = `${network}-mock`;
@@ -305,10 +349,12 @@ export async function runLinuxGate(image) {
       contractVersion: LINUX_GATE_CONTRACT_VERSION,
       status: "passed",
       image,
+      reproducibleImage,
       imageId: inspection.Id,
       imageArchitecture: inspection.Architecture,
       imageUser: inspection.Config.User,
       imageRootfsLayers: inspection.RootFS.Layers,
+      imageReproducibility,
       runtimeBuildId: primaryProbe.runtimeBuildId,
       runtimePolicySha256: primaryAttestation.policySha256,
       runtimeAttestation: primaryAttestation.report,
@@ -364,6 +410,28 @@ async function inspectImage(image) {
     "image must expose 8080/tcp",
   );
   return inspection;
+}
+
+export function validateReproducibleImages(primaryValue, secondaryValue) {
+  const primary = requireObject(primaryValue, "primary image inspection");
+  const secondary = requireObject(secondaryValue, "secondary image inspection");
+  requireCondition(
+    primary.Id === secondary.Id &&
+      /^sha256:[a-f0-9]{64}$/.test(primary.Id) &&
+      JSON.stringify(primary.RootFS?.Layers) ===
+        JSON.stringify(secondary.RootFS?.Layers) &&
+      JSON.stringify(primary.Config) === JSON.stringify(secondary.Config),
+    "independent image builds must have identical image, config, and rootfs identities",
+  );
+  return {
+    sourceDateEpoch: SOURCE_DATE_EPOCH,
+    independentBuilds: 2,
+    imageId: primary.Id,
+    rootfsLayerCount: primary.RootFS.Layers.length,
+    exactImageIdMatch: true,
+    exactConfigMatch: true,
+    exactRootfsLayerMatch: true,
+  };
 }
 
 async function inspectContainer(name) {
@@ -1038,7 +1106,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const report = options.selfTest
     ? await auditRepositoryContract()
-    : await runLinuxGate(options.image);
+    : await runLinuxGate(options.image, options.reproducibleImage);
   if (options.json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {

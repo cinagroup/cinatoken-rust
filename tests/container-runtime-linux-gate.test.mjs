@@ -61,13 +61,24 @@ describe("linux container release gate", () => {
     );
     expect(workflow).toContain("container-runtime-linux-image-a.json");
     expect(workflow).toContain("container-runtime-linux-image-b.json");
+    expect(workflow).toContain("container-runtime-linux-binary-sha256.log");
+    expect(workflow).toContain(
+      '"${container_id}:/usr/local/bin/cinatoken-container-runtime"',
+    );
     expect(workflow).toContain("container-runtime-linux-attestation.json");
     expect(workflow).toContain("retention-days: 30");
     expect(workflow).not.toMatch(/\$\{\{\s*secrets\.|wrangler|cloudflare api/i);
     expect(dockerfile).toContain("\nWORKDIR /\n");
     expect(dockerfile).toStartWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`);
-    expect(dockerfile).toContain('touch --date="@${SOURCE_DATE_EPOCH}"');
-    expect(dockerfile).toContain("--chown=0:0 --chmod=0755");
+    expect(dockerfile).toContain(
+      "install -D -m 0755 /build/target/release/cinatoken-container-runtime",
+    );
+    expect(dockerfile).toContain(
+      'find /runtime-root -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +',
+    );
+    expect(dockerfile).toContain(
+      "COPY --from=builder --chown=0:0 /runtime-root/ /",
+    );
     expect(verifierSource).toContain(NODE_MOCK_IMAGE);
     expect(verifierSource).toContain('"network", "create", "--internal"');
     expect(verifierSource).toContain('"r2-input.cinatoken.internal"');
@@ -179,7 +190,9 @@ describe("linux container release gate", () => {
       sourceDateEpoch: SOURCE_DATE_EPOCH,
       independentImageBuildsRequired: 2,
       imageLayerTimestampsRewritten: true,
+      runtimeRootMetadataNormalized: true,
       independentImageInspectionsRetained: true,
+      independentBinaryHashesRetained: true,
       reproducibleImageGate: true,
       checkoutActionPinned: true,
       workflowCredentialFree: true,

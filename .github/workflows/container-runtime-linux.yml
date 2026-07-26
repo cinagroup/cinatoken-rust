@@ -76,6 +76,19 @@ jobs:
             > "${evidence_dir}/container-runtime-linux-image-a.json"
           docker image inspect cinatoken-container-runtime:linux-gate-b \
             > "${evidence_dir}/container-runtime-linux-image-b.json"
+          : > "${evidence_dir}/container-runtime-linux-binary-sha256.log"
+          for suffix in a b; do
+            image="cinatoken-container-runtime:linux-gate-${suffix}"
+            container_id="$(docker create "${image}")"
+            binary="${evidence_dir}/container-runtime-linux-binary-${suffix}"
+            docker cp \
+              "${container_id}:/usr/local/bin/cinatoken-container-runtime" \
+              "${binary}"
+            docker rm "${container_id}" > /dev/null
+            printf '%s %s\n' "${image}" "$(sha256sum "${binary}" | cut -d ' ' -f 1)" \
+              >> "${evidence_dir}/container-runtime-linux-binary-sha256.log"
+            rm "${binary}"
+          done
           node tools/verify_container_runtime_linux.mjs \
             --image cinatoken-container-runtime:linux-gate-a \
             --reproducible-image cinatoken-container-runtime:linux-gate-b \

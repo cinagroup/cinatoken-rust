@@ -7,12 +7,14 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 RUN cargo build --locked --release -p cinatoken-container-runtime \
-    && touch --date="@${SOURCE_DATE_EPOCH}" /build/target/release/cinatoken-container-runtime
+    && install -D -m 0755 /build/target/release/cinatoken-container-runtime \
+        /runtime-root/usr/local/bin/cinatoken-container-runtime \
+    && find /runtime-root -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:66aa873a4a14fb164aa01296058efd8253744606d72715e45acface073359faa
 
 WORKDIR /
-COPY --from=builder --chown=0:0 --chmod=0755 /build/target/release/cinatoken-container-runtime /usr/local/bin/cinatoken-container-runtime
+COPY --from=builder --chown=0:0 /runtime-root/ /
 
 USER nonroot:nonroot
 EXPOSE 8080

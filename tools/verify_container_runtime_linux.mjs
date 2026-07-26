@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { runBoundedSubprocess } from "./lib/bounded_subprocess.mjs";
 
-export const LINUX_GATE_CONTRACT_VERSION = 4;
+export const LINUX_GATE_CONTRACT_VERSION = 5;
 export const RUNTIME_ATTESTATION_CONTRACT_VERSION = 1;
 export const RUNTIME_UID = 65_532;
 export const RUNTIME_GID = 65_532;
@@ -149,14 +149,19 @@ export async function auditRepositoryContract() {
   requireCondition(
     dockerfile.startsWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`) &&
       dockerfile.includes("ENV CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}") &&
-      dockerfile.includes('touch --date="@${SOURCE_DATE_EPOCH}"') &&
+      dockerfile.includes(
+        "install -D -m 0755 /build/target/release/cinatoken-container-runtime",
+      ) &&
+      dockerfile.includes(
+        'find /runtime-root -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +',
+      ) &&
       dockerfile.includes("USER nonroot:nonroot") &&
       dockerfile.includes("\nWORKDIR /\n") &&
       dockerfile.includes(
-        "COPY --from=builder --chown=0:0 --chmod=0755 /build/target/release/cinatoken-container-runtime /usr/local/bin/cinatoken-container-runtime",
+        "COPY --from=builder --chown=0:0 /runtime-root/ /",
       ) &&
       dockerfile.includes("ENTRYPOINT [\"/usr/local/bin/cinatoken-container-runtime\"]"),
-    "Dockerfile must retain reproducible timestamps, the root-owned binary, fixed working directory, and non-root entrypoint",
+    "Dockerfile must retain the normalized runtime root, root-owned binary, fixed working directory, and non-root entrypoint",
   );
   requireCondition(
     runtimeMain.includes('"--runtime-attestation-v1"') &&
@@ -181,9 +186,11 @@ export async function auditRepositoryContract() {
       ) &&
       workflow.includes("container-runtime-linux-image-a.json") &&
       workflow.includes("container-runtime-linux-image-b.json") &&
+      workflow.includes("container-runtime-linux-binary-sha256.log") &&
+      workflow.includes('"${container_id}:/usr/local/bin/cinatoken-container-runtime"') &&
       workflow.includes("container-runtime-linux-attestation.json") &&
       workflow.includes("retention-days: 30"),
-    "workflow must use pinned actions, rewrite image timestamps across two no-cache builds, execute the real linux/amd64 gate, and retain both inspections and attestation",
+    "workflow must use pinned actions, rewrite image timestamps across two no-cache builds, execute the real linux/amd64 gate, and retain both inspections, binary hashes, and attestation",
   );
   requireCondition(
     workflow.includes("permissions:\n  contents: read") &&
@@ -239,7 +246,9 @@ export async function auditRepositoryContract() {
     sourceDateEpoch: SOURCE_DATE_EPOCH,
     independentImageBuildsRequired: 2,
     imageLayerTimestampsRewritten: true,
+    runtimeRootMetadataNormalized: true,
     independentImageInspectionsRetained: true,
+    independentBinaryHashesRetained: true,
     reproducibleImageGate: true,
     checkoutActionPinned: true,
     workflowCredentialFree: true,

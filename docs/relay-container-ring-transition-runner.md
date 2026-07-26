@@ -2036,3 +2036,16 @@ manifest/compressed-layer identity, independent builders, signatures,
 Cloudflare installation, or DO lifecycle behavior. D1/DO/R2 and external
 signed evidence remain authoritative. Go/VPS remains production authority and
 production remains **NO-GO**.
+
+The docs-only successor
+`d407e44285a71d7d3fab50db0107eeca877450db` passed independent
+[run 30194409010](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010)
+with the same image, 19 layers, binary/build identity, runtime policy, and
+attestation JSON. Retained
+[artifact 8629649636](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010/artifacts/8629649636)
+is 7828 bytes,
+`sha256:ccef6562a6fa8d2774ef196a152c55506472e6c264bffe53c8aab1443c0d7648`,
+and expires `2026-08-25T08:20:56Z`. Docker storage-driver paths and tag time
+are host observations and changed without affecting the accepted image
+identity. The runner can now consume a cross-job-stable local image identity;
+registry publication and Cloudflare readback remain separate gates.

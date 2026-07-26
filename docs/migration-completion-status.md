@@ -1991,3 +1991,16 @@ digest to Controller, DO, shard generation, and Cloudflare Container
 deployment identities. This local status does not change remote migration or
 cutover authority. `productionCutoverAuthorized` remains false, Go/VPS stays
 authoritative, and production remains **NO-GO**.
+
+Cross-job reproduction is also complete. Docs-only successor
+`d407e44285a71d7d3fab50db0107eeca877450db` passed
+[run 30194409010](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010)
+with the same image ID, 19 layers, binary/build ID, policy ID, and attestation
+JSON digest. Its
+[artifact 8629649636](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010/artifacts/8629649636)
+is 7828 bytes,
+`sha256:ccef6562a6fa8d2774ef196a152c55506472e6c264bffe53c8aab1443c0d7648`,
+and expires `2026-08-25T08:20:56Z`. Cross-host Docker storage-driver paths and
+tag timestamps changed as expected and are not image identity. The next open
+supply-chain status is registry-bound OCI byte reproduction and signed
+provenance, not another local Docker image rebuild.

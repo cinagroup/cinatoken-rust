@@ -1897,3 +1897,15 @@ digest installation, lifecycle distribution, and external immutable evidence
 remain open. The mapping does not authorize a mutable image tag, remote
 deployment, or traffic. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+A docs-only successor independently repeated this mapping in
+[run 30194409010](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010):
+image ID, all 19 layer identities, binary/build identity, runtime policy, and
+the complete attestation JSON remained unchanged. The successor packet is
+[artifact 8629649636](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010/artifacts/8629649636),
+7828 bytes with digest
+`sha256:ccef6562a6fa8d2774ef196a152c55506472e6c264bffe53c8aab1443c0d7648`.
+Host-local `GraphDriver` paths and tag time changed and are correctly excluded
+from portable image identity. The cinaVibeSDK replacement assumption now has
+two independent local-job proofs; Cloudflare digest installation and
+lifecycle equivalence remain open.

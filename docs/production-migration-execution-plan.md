@@ -3868,8 +3868,14 @@ upstream of registry publication or Cloudflare deployment.
 
 ### Promotion sequence
 
-1. Re-run from a docs-only successor and require the same image, binary, and
-   policy identities to rule out same-job coincidence.
+1. **Complete:** docs-only successor
+   `d407e44285a71d7d3fab50db0107eeca877450db` passed
+   [run 30194409010](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010)
+   with the same image, 19 layers, binary, policy, and attestation identity.
+   Artifact
+   [8629649636](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010/artifacts/8629649636)
+   is 7828 bytes with
+   `sha256:ccef6562a6fa8d2774ef196a152c55506472e6c264bffe53c8aab1443c0d7648`.
 2. Pin the release builder/export compatibility and produce two independently
    retained registry-bound OCI packets; compare manifest/index and compressed
    layer digests, not only Docker image ID and uncompressed RootFS identity.
@@ -3887,6 +3893,12 @@ for digest identity. This gate still does not attest registry bytes,
 independent builders, signatures, Cloudflare deployment, or production
 lifecycle. No remote action or authority change occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+Portable equality excludes Docker `GraphDriver` storage paths and
+`Metadata.LastTagTime`; those differed across the two hosted jobs while image
+ID, Config, and RootFS layer identities remained exact. Release tooling must
+continue comparing defined OCI identities rather than serializing host-local
+Docker inspection state.
 
 ## 2026-07-26 K7 Container Runtime Isolation Gate
 

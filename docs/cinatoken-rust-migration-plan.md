@@ -21325,3 +21325,23 @@ packet under a pinned builder compatibility contract, sign and retain its
 SBOM/provenance, then join that exact digest to isolated Cloudflare staging.
 No credential, remote mutation, traffic change, or Go/VPS drain occurred.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+The docs-only successor
+`d407e44285a71d7d3fab50db0107eeca877450db`, tree
+`e162b98811fae1167e8f10547142cb9650b4a09d`, independently passed
+[run 30194409010](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010)
+and
+[job 89773225412](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010/job/89773225412).
+It reproduced the same image, 19 layers, binary/build identity, policy, and
+8270-byte attestation JSON SHA-256. Its
+[artifact 8629649636](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010/artifacts/8629649636)
+is 7828 bytes with
+`sha256:ccef6562a6fa8d2774ef196a152c55506472e6c264bffe53c8aab1443c0d7648`
+and expires `2026-08-25T08:20:56Z`.
+
+The complete image-inspection JSON is intentionally not a cross-host identity:
+Docker `GraphDriver` paths and `Metadata.LastTagTime` changed while `Id`,
+`Config`, and ordered `RootFS.Layers` remained exact. Each run still requires
+its A/B inspections to agree semantically. The independent-job local
+reproduction step is therefore complete; registry-bound OCI bytes and signed
+provenance are next.

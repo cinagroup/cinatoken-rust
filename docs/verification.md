@@ -10449,3 +10449,28 @@ registry-compressed layers, OCI manifest/index, SBOM, provenance, signature,
 independent-host reproduction, or deployed Cloudflare digest. Those remain
 mandatory release gates. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+### Independent successor reproduction
+
+Docs-only successor
+`d407e44285a71d7d3fab50db0107eeca877450db`, tree
+`e162b98811fae1167e8f10547142cb9650b4a09d`, passed
+[run 30194409010](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010)
+and
+[job 89773225412](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010/job/89773225412).
+
+| Cross-job check | Result |
+| --- | --- |
+| Image / layers | Same `sha256:6a2f92415570e2b13e033b8c0d3d1acaadccf2bfa60ebd8d63faa359b687c514`; 19; all equality flags true |
+| Binary/build | Both copied hashes and readiness remain `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` |
+| Policy | Primary and restart remain `d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d` |
+| Attestation JSON | Same 8270 bytes and `sha256:b17932d80e0e96465e81a10d3cd34f3be361d344ea05e753215f8180cb9eb326` |
+| Artifact | [8629649636](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194409010/artifacts/8629649636), 7828 bytes, `sha256:ccef6562a6fa8d2774ef196a152c55506472e6c264bffe53c8aab1443c0d7648`, expires `2026-08-25T08:20:56Z` |
+
+Within the successor run, image A/B inspection files are byte-identical at
+5401 bytes and
+`sha256:a36c373cc123732e104a504353a058689b0d86b01875441969beaabe887e0b67`.
+Across hosted jobs, the complete inspection member differs only in
+`GraphDriver.Data` paths and `Metadata.LastTagTime`; these are local daemon
+state and are excluded from `validateReproducibleImages`. The portable fields
+`Id`, `Config`, and ordered `RootFS.Layers` remain exact.

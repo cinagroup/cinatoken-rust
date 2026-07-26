@@ -97,6 +97,8 @@ jobs:
           artifact_log="$(mktemp)"
           trace_artifact_dir="${RUNNER_TEMP}/ring-transition-syscall-traces"
           mkdir -p "${trace_artifact_dir}"
+          trace_step_log="${trace_artifact_dir}/trace-step.log"
+          exec > >(tee "${trace_step_log}") 2>&1
           trace_log="${trace_artifact_dir}/terminal-recovery.strace"
           trace_root="$(mktemp -d)"
           prepare_ready="${trace_root}.prepared"
@@ -130,6 +132,15 @@ jobs:
           concurrent_first_pid=""
           concurrent_second_pid=""
           cleanup_trace_fixture() {
+            local trace_status="$?"
+            if [[ "${trace_status}" -ne 0 ]] && [[ -f "${trace_step_log}" ]]; then
+              local diagnostic
+              diagnostic="$(tail -n 120 "${trace_step_log}")"
+              diagnostic="${diagnostic//'%'/'%25'}"
+              diagnostic="${diagnostic//$'\r'/'%0D'}"
+              diagnostic="${diagnostic//$'\n'/'%0A'}"
+              echo "::error title=Terminal syscall trace failure::${diagnostic}"
+            fi
             if [[ -n "${candidate_writer_pid}" ]]; then
               kill -KILL "${candidate_writer_pid}" 2>/dev/null || true
             fi
@@ -162,6 +173,7 @@ jobs:
               "${candidate_writer_pid_file}" \
               "${concurrent_trace_parent}" \
               "${artifact_log}"
+            return "${trace_status}"
           }
           trap cleanup_trace_fixture EXIT
 

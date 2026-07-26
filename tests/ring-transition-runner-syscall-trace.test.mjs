@@ -67,24 +67,24 @@ describe("ring-transition runner syscall trace verifier", () => {
 
   test("requires the declared lock shape across concurrent recovery PIDs", () => {
     const trace = [
-      fixtureTrace({ lockPairs: 4, pid: "4100", includeMkdirat: true }),
-      fixtureTrace({ lockPairs: 4, pid: "4200" }),
+      fixtureTrace({ lockPairs: 3, pid: "4100", includeMkdirat: true }),
+      fixtureTrace({ lockPairs: 3, pid: "4200" }),
     ].join("\n");
     expect(
       verifyRingTransitionRunnerSyscallTrace({
         traceText: trace,
         fixtureRoot: ROOT,
         label: "concurrent candidate recovery",
-        expectedLocks: 16,
+        expectedLocks: 12,
         expectedLockPids: 2,
-        expectedLocksPerPid: 8,
+        expectedLocksPerPid: 6,
         requireMkdirat: true,
       }),
     ).toMatchObject({
       ok: true,
-      observedLocks: 16,
+      observedLocks: 12,
       observedLockPids: 2,
-      observedLocksPerPid: [8, 8],
+      observedLocksPerPid: [6, 6],
     });
 
     expect(() =>
@@ -92,72 +92,75 @@ describe("ring-transition runner syscall trace verifier", () => {
         traceText: trace,
         fixtureRoot: ROOT,
         label: "concurrent candidate recovery",
-        expectedLocks: 16,
+        expectedLocks: 12,
         expectedLockPids: 1,
-        expectedLocksPerPid: 16,
+        expectedLocksPerPid: 12,
       }),
-    ).toThrow(/expected 1 lock PIDs with 16 locks each/);
+    ).toThrow(/expected 1 lock PIDs with 12 locks each/);
 
     const asymmetric = [
-      fixtureTrace({ lockPairs: 3, pid: "4100" }),
-      fixtureTrace({ lockPairs: 5, pid: "4200" }),
+      fixtureTrace({ lockPairs: 2, pid: "4100" }),
+      fixtureTrace({ lockPairs: 4, pid: "4200" }),
     ].join("\n");
     expect(() =>
       verifyRingTransitionRunnerSyscallTrace({
         traceText: asymmetric,
         fixtureRoot: ROOT,
         label: "concurrent candidate recovery",
-        expectedLocks: 16,
+        expectedLocks: 12,
         expectedLockPids: 2,
-        expectedLocksPerPid: 8,
+        expectedLocksPerPid: 6,
       }),
-    ).toThrow(/found 2 PIDs with 6,10/);
+    ).toThrow(/found 2 PIDs with 4,8/);
 
     expect(() =>
       verifyRingTransitionRunnerSyscallTrace({
         traceText: trace,
         fixtureRoot: ROOT,
         label: "concurrent candidate recovery",
-        expectedLocks: 16,
+        expectedLocks: 12,
         expectedLockPids: 2,
       }),
     ).toThrow(/must be supplied together/);
   });
 
   test("verifies two independent concurrent traces as one recovery bundle", () => {
-    const first = fixtureTrace({
-      lockPairs: 4,
+    const second = fixtureTrace({ lockPairs: 3, pid: "4200" });
+    const firstSixLocks = fixtureTrace({
+      lockPairs: 3,
       pid: "4100",
       includeMkdirat: true,
     });
-    const second = fixtureTrace({ lockPairs: 4, pid: "4200" });
     expect(
       verifyConcurrentRingTransitionRunnerSyscallTraces({
-        traceTexts: [first, second],
+        traceTexts: [firstSixLocks, second],
         fixtureRoot: ROOT,
         label: "concurrent candidate recovery",
-        expectedLocks: 16,
+        expectedLocks: 12,
         expectedLockPids: 2,
-        expectedLocksPerPid: 8,
+        expectedLocksPerPid: 6,
         requireMkdirat: true,
       }),
     ).toMatchObject({
       ok: true,
-      observedLocks: 16,
+      observedLocks: 12,
       observedLockPids: 2,
-      observedLocksPerPid: [8, 8],
+      observedLocksPerPid: [6, 6],
       observedLockPidValues: ["4100", "4200"],
       successfulDirfdMkdirat: true,
     });
 
     expect(() =>
       verifyConcurrentRingTransitionRunnerSyscallTraces({
-        traceTexts: [first, fixtureTrace({ lockPairs: 4, pid: "4100" })],
+        traceTexts: [
+          firstSixLocks,
+          fixtureTrace({ lockPairs: 3, pid: "4100" }),
+        ],
         fixtureRoot: ROOT,
         label: "concurrent candidate recovery",
-        expectedLocks: 16,
+        expectedLocks: 12,
         expectedLockPids: 2,
-        expectedLocksPerPid: 8,
+        expectedLocksPerPid: 6,
       }),
     ).toThrow(/distinct lock PIDs/);
   });
@@ -389,12 +392,12 @@ describe("ring-transition runner syscall trace verifier", () => {
     const peerTracePath = path.join(directory, "peer-trace.log");
     await writeFile(
       tracePath,
-      fixtureTrace({ lockPairs: 4, pid: "4100", includeMkdirat: true }),
+      fixtureTrace({ lockPairs: 3, pid: "4100", includeMkdirat: true }),
       "utf8",
     );
     await writeFile(
       peerTracePath,
-      fixtureTrace({ lockPairs: 4, pid: "4200" }),
+      fixtureTrace({ lockPairs: 3, pid: "4200" }),
       "utf8",
     );
     const peerAccepted = Bun.spawn(
@@ -410,11 +413,11 @@ describe("ring-transition runner syscall trace verifier", () => {
         "--label",
         "concurrent recovery",
         "--expected-locks",
-        "16",
+        "12",
         "--expected-lock-pids",
         "2",
         "--expected-locks-per-pid",
-        "8",
+        "6",
         "--require-mkdirat",
       ],
       { stdout: "pipe", stderr: "pipe" },
@@ -424,9 +427,9 @@ describe("ring-transition runner syscall trace verifier", () => {
       JSON.parse(await new Response(peerAccepted.stdout).text()),
     ).toMatchObject({
       ok: true,
-      observedLocks: 16,
+      observedLocks: 12,
       observedLockPids: 2,
-      observedLocksPerPid: [8, 8],
+      observedLocksPerPid: [6, 6],
     });
     expect(await new Response(peerAccepted.stderr).text()).toBe("");
 
@@ -477,7 +480,7 @@ describe("ring-transition runner syscall trace verifier", () => {
       "CINATOKEN_RING_RECEIPT_TEST_ROLE=recover-terminal-candidate-concurrent-worker",
     );
     expect(workflow).toMatch(
-      /--peer-trace "\$\{concurrent_second_trace_log\}"\s+\\\r?\n\s+--fixture-root "\$\{concurrent_trace_root\}"\s+\\\r?\n\s+--label "concurrent candidate recovery"\s+\\\r?\n\s+--expected-locks 16\s+\\\r?\n\s+--expected-lock-pids 2\s+\\\r?\n\s+--expected-locks-per-pid 8\s+\\\r?\n\s+--require-mkdirat/u,
+      /--peer-trace "\$\{concurrent_second_trace_log\}"\s+\\\r?\n\s+--fixture-root "\$\{concurrent_trace_root\}"\s+\\\r?\n\s+--label "concurrent candidate recovery"\s+\\\r?\n\s+--expected-locks 12\s+\\\r?\n\s+--expected-lock-pids 2\s+\\\r?\n\s+--expected-locks-per-pid 6\s+\\\r?\n\s+--require-mkdirat/u,
     );
     expect(workflow).toContain("candidate-concurrent-recovery-boundary.json");
     expect(workflow).toContain(

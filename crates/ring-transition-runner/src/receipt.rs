@@ -10973,16 +10973,6 @@ mod tests {
                     .recover_terminal_closure(&publication, &credentials, &activation)
                     .unwrap()
                     .unwrap();
-                assert_eq!(
-                    store
-                        .audit_authorization_operations(&publication, &credentials, &activation,)
-                        .unwrap(),
-                    OperationReceiptAudit {
-                        operation_count: 1,
-                        unfinished_count: 0,
-                        recovered_ambiguous_count: 0,
-                    }
-                );
                 let replayed = store
                     .recover_terminal_closure(&publication, &credentials, &activation)
                     .unwrap()

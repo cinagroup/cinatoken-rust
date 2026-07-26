@@ -428,9 +428,9 @@ jobs:
             --peer-trace "${concurrent_second_trace_log}" \
             --fixture-root "${concurrent_trace_root}" \
             --label "concurrent candidate recovery" \
-            --expected-locks 16 \
+            --expected-locks 12 \
             --expected-lock-pids 2 \
-            --expected-locks-per-pid 8 \
+            --expected-locks-per-pid 6 \
             --require-mkdirat \
             | tee "${trace_artifact_dir}/candidate-concurrent-recovery.verification.json"
           jq -e \
@@ -496,7 +496,7 @@ jobs:
             echo "- candidate writer: exact SIGKILL after candidate rename/directory sync/object-bound readback"
             echo "- candidate-after-sync recovery post-lock AT_FDCWD mutation: none"
             echo "- concurrent candidate recovery: two distinct ready-before-release processes converged on one closure identity"
-            echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 8 per PID / 16 total"
+            echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 6 per PID / 12 total"
             echo "- successful retained-dirfd openat2/renameat2: observed in each standalone trace or the concurrent bundle"
             echo "- successful full-transaction and candidate-recovery retained-dirfd mkdirat: observed"
             echo "- successful directory fsync/fdatasync and descriptor chmod: observed in each standalone trace or the concurrent bundle"

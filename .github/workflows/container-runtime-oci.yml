@@ -14,6 +14,7 @@ on:
       - "tests/container-runtime-sbom-gate.test.mjs"
       - "tests/container-runtime-vulnerability-gate.test.mjs"
       - "tests/fixtures/container-runtime-oci/**"
+      - "tests/fixtures/container-runtime-vulnerability/**"
       - "config/container-runtime-vulnerability-db.json"
       - "config/container-runtime-vulnerability-db-listing.json"
       - "config/container-runtime-vulnerability-policy.json"
@@ -36,6 +37,7 @@ on:
       - "tests/container-runtime-sbom-gate.test.mjs"
       - "tests/container-runtime-vulnerability-gate.test.mjs"
       - "tests/fixtures/container-runtime-oci/**"
+      - "tests/fixtures/container-runtime-vulnerability/**"
       - "config/container-runtime-vulnerability-db.json"
       - "config/container-runtime-vulnerability-db-listing.json"
       - "config/container-runtime-vulnerability-policy.json"
@@ -66,6 +68,10 @@ jobs:
       GRYPE_IMAGE_AMD64_MANIFEST_DIGEST: sha256:3d08845e24eba657b8ea9bd28344a5a4e9dcd772818062a6522bf30137928616
       GRYPE_DB_ARCHIVE_URL: https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-07-26T00:41:33Z_1785049634.tar.zst
       GRYPE_DB_ARCHIVE_SHA256: 766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc
+      GRYPE_DB_FILE_SHA256: 55279915a94b36f1307f5104a66d2e6980f52f34a9c67f09c4413a46d7db9253
+      GRYPE_DB_FILE_BYTES: "1957412864"
+      GRYPE_DB_IMPORT_SHA256: 39b5d45042076f5071f77d7bea95ec8dac45f37fca84f69657d43afb679dea4f
+      GRYPE_DB_IMPORT_BYTES: "97"
       GRYPE_DB_SCHEMA_VERSION: v6.1.9
       GRYPE_DB_BUILT: "2026-07-26T07:07:14Z"
       EVIDENCE_DIR: /tmp/container-runtime-oci
@@ -334,10 +340,43 @@ jobs:
               --output json=/output/container-runtime.vulnerabilities.grype.json
           }
 
+          fingerprint_scan_inputs() {
+            local output_file="$1"
+            local label input_file bytes digest
+            : > "${output_file}"
+            while IFS='|' read -r label input_file; do
+              bytes="$(stat --format=%s "${input_file}")"
+              digest="$(sha256sum "${input_file}" | cut -d ' ' -f 1)"
+              printf '%s %s %s\n' "${label}" "${bytes}" "${digest}" \
+                >> "${output_file}"
+            done <<EOF
+          sbom-a|${EVIDENCE_DIR}/sbom-a/container-runtime.sbom.syft.json
+          sbom-b|${EVIDENCE_DIR}/sbom-b/container-runtime.sbom.syft.json
+          db-a|${EVIDENCE_DIR}/grype-db-a/6/vulnerability.db
+          db-b|${EVIDENCE_DIR}/grype-db-b/6/vulnerability.db
+          import-a|${EVIDENCE_DIR}/grype-db-a/6/import.json
+          import-b|${EVIDENCE_DIR}/grype-db-b/6/import.json
+          EOF
+          }
+
           import_database \
             "${EVIDENCE_DIR}/grype-db-a"
           import_database \
             "${EVIDENCE_DIR}/grype-db-b"
+          fingerprint_scan_inputs \
+            "${EVIDENCE_DIR}/vulnerability-scan-inputs-before.txt"
+          grep --fixed-strings --line-regexp \
+            "db-a ${GRYPE_DB_FILE_BYTES} ${GRYPE_DB_FILE_SHA256}" \
+            "${EVIDENCE_DIR}/vulnerability-scan-inputs-before.txt"
+          grep --fixed-strings --line-regexp \
+            "db-b ${GRYPE_DB_FILE_BYTES} ${GRYPE_DB_FILE_SHA256}" \
+            "${EVIDENCE_DIR}/vulnerability-scan-inputs-before.txt"
+          grep --fixed-strings --line-regexp \
+            "import-a ${GRYPE_DB_IMPORT_BYTES} ${GRYPE_DB_IMPORT_SHA256}" \
+            "${EVIDENCE_DIR}/vulnerability-scan-inputs-before.txt"
+          grep --fixed-strings --line-regexp \
+            "import-b ${GRYPE_DB_IMPORT_BYTES} ${GRYPE_DB_IMPORT_SHA256}" \
+            "${EVIDENCE_DIR}/vulnerability-scan-inputs-before.txt"
           scan_sbom \
             "${EVIDENCE_DIR}/grype-db-a" \
             "${EVIDENCE_DIR}/sbom-a/container-runtime.sbom.syft.json" \
@@ -348,6 +387,11 @@ jobs:
             "${EVIDENCE_DIR}/sbom-b/container-runtime.sbom.syft.json" \
             "${EVIDENCE_DIR}/grype-db-status-b.json" \
             "${EVIDENCE_DIR}/scan-b/container-runtime.vulnerabilities.grype.json"
+          fingerprint_scan_inputs \
+            "${EVIDENCE_DIR}/vulnerability-scan-inputs-after.txt"
+          cmp --silent \
+            "${EVIDENCE_DIR}/vulnerability-scan-inputs-before.txt" \
+            "${EVIDENCE_DIR}/vulnerability-scan-inputs-after.txt"
 
           set -o pipefail
           node tools/verify_container_runtime_vulnerabilities.mjs \
@@ -369,6 +413,8 @@ jobs:
             --approvals config/container-runtime-vulnerability-approvals.json \
             --scanner-index "${EVIDENCE_DIR}/grype-image-index.json" \
             --scanner-inspect "${EVIDENCE_DIR}/grype-image-inspect.json" \
+            --input-snapshot-before "${EVIDENCE_DIR}/vulnerability-scan-inputs-before.txt" \
+            --input-snapshot-after "${EVIDENCE_DIR}/vulnerability-scan-inputs-after.txt" \
             --observed-at "${OBSERVED_AT}" \
             --json \
             2> >(tee "${EVIDENCE_DIR}/container-runtime-vulnerability-verification.log" >&2) \
@@ -398,6 +444,8 @@ jobs:
             /tmp/container-runtime-oci/grype-db.tar.zst
             /tmp/container-runtime-oci/grype-db-status-a.json
             /tmp/container-runtime-oci/grype-db-status-b.json
+            /tmp/container-runtime-oci/vulnerability-scan-inputs-before.txt
+            /tmp/container-runtime-oci/vulnerability-scan-inputs-after.txt
             /tmp/container-runtime-oci/grype-db-a/6/import.json
             /tmp/container-runtime-oci/grype-db-b/6/import.json
             /tmp/container-runtime-oci/scan-a/container-runtime.vulnerabilities.grype.json

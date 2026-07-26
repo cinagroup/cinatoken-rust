@@ -4,7 +4,7 @@ import { open, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const VULNERABILITY_GATE_CONTRACT_VERSION = 1;
+export const VULNERABILITY_GATE_CONTRACT_VERSION = 2;
 export const GRYPE_VERSION = "0.116.0";
 export const GRYPE_IMAGE =
   "ghcr.io/anchore/grype:v0.116.0@sha256:fd4ab4d1042b522c896e73bdf09ab8bf384fa417df99d6dd0d6e1008c7e7c821";
@@ -16,6 +16,12 @@ export const GRYPE_DB_ARCHIVE_URL =
   "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-07-26T00:41:33Z_1785049634.tar.zst";
 export const GRYPE_DB_ARCHIVE_SHA256 =
   "766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc";
+export const GRYPE_DB_FILE_SHA256 =
+  "55279915a94b36f1307f5104a66d2e6980f52f34a9c67f09c4413a46d7db9253";
+export const GRYPE_DB_FILE_BYTES = 1_957_412_864;
+export const GRYPE_DB_IMPORT_SHA256 =
+  "39b5d45042076f5071f77d7bea95ec8dac45f37fca84f69657d43afb679dea4f";
+export const GRYPE_DB_IMPORT_BYTES = 97;
 export const GRYPE_DB_SCHEMA_VERSION = "v6.1.9";
 export const GRYPE_DB_BUILT = "2026-07-26T07:07:14Z";
 export const GRYPE_SOURCE_REFERENCE =
@@ -53,6 +59,7 @@ const MAX_DB_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_DB_IMPORT_BYTES = 64 * 1024;
 const MAX_SCANNER_IDENTITY_BYTES = 2 * 1024 * 1024;
 const MAX_POLICY_BYTES = 64 * 1024;
+const MAX_INPUT_SNAPSHOT_BYTES = 8 * 1024;
 const GRYPE_DB_FILE_PATH = "/grype-db/6/vulnerability.db";
 const SYFT_SOURCE_INPUT = "/input/container-runtime.tar";
 const OCI_MANIFEST_MEDIA_TYPE =
@@ -92,6 +99,8 @@ export function parseArgs(argv) {
     approvals: null,
     scannerIndex: null,
     scannerInspect: null,
+    inputSnapshotBefore: null,
+    inputSnapshotAfter: null,
     observedAt: null,
     json: false,
   };
@@ -114,6 +123,8 @@ export function parseArgs(argv) {
     ["--approvals", "approvals"],
     ["--scanner-index", "scannerIndex"],
     ["--scanner-inspect", "scannerInspect"],
+    ["--input-snapshot-before", "inputSnapshotBefore"],
+    ["--input-snapshot-after", "inputSnapshotAfter"],
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -151,6 +162,8 @@ export function parseArgs(argv) {
     options.approvals,
     options.scannerIndex,
     options.scannerInspect,
+    options.inputSnapshotBefore,
+    options.inputSnapshotAfter,
     options.observedAt,
   ];
   const realGateSelected = required.every((value) => value !== null);
@@ -229,6 +242,14 @@ export async function auditRepositoryContract() {
       workflow.includes(
         `GRYPE_DB_ARCHIVE_SHA256: ${GRYPE_DB_ARCHIVE_SHA256}`,
       ) &&
+      workflow.includes(`GRYPE_DB_FILE_SHA256: ${GRYPE_DB_FILE_SHA256}`) &&
+      workflow.includes(`GRYPE_DB_FILE_BYTES: "${GRYPE_DB_FILE_BYTES}"`) &&
+      workflow.includes(
+        `GRYPE_DB_IMPORT_SHA256: ${GRYPE_DB_IMPORT_SHA256}`,
+      ) &&
+      workflow.includes(
+        `GRYPE_DB_IMPORT_BYTES: "${GRYPE_DB_IMPORT_BYTES}"`,
+      ) &&
       workflow.includes(
         `GRYPE_DB_SCHEMA_VERSION: ${GRYPE_DB_SCHEMA_VERSION}`,
       ) &&
@@ -269,9 +290,14 @@ export async function auditRepositoryContract() {
   requireCondition(
     countMatches(workflow, /^\s*import_database\s+\\$/gm) === 2 &&
       countMatches(workflow, /^\s*scan_sbom\s+\\$/gm) === 2 &&
+      countMatches(workflow, /^\s*fingerprint_scan_inputs\s+\\$/gm) === 2 &&
       countMatches(workflow, /^\s{10}import_database\(\) \{$/gm) === 1 &&
-      countMatches(workflow, /^\s{10}scan_sbom\(\) \{$/gm) === 1,
-    "vulnerability workflow must independently import and scan exactly twice",
+      countMatches(workflow, /^\s{10}scan_sbom\(\) \{$/gm) === 1 &&
+      countMatches(
+        workflow,
+        /^\s{10}fingerprint_scan_inputs\(\) \{$/gm,
+      ) === 1,
+    "vulnerability workflow must independently import, fingerprint, and scan exactly twice",
   );
   for (const fragment of [
     '"${EVIDENCE_DIR}/grype-db-a"',
@@ -282,6 +308,12 @@ export async function auditRepositoryContract() {
     '--db-file-b "${EVIDENCE_DIR}/grype-db-b/6/vulnerability.db"',
     '--db-import-a "${EVIDENCE_DIR}/grype-db-a/6/import.json"',
     '--db-import-b "${EVIDENCE_DIR}/grype-db-b/6/import.json"',
+    '"db-a ${GRYPE_DB_FILE_BYTES} ${GRYPE_DB_FILE_SHA256}"',
+    '"db-b ${GRYPE_DB_FILE_BYTES} ${GRYPE_DB_FILE_SHA256}"',
+    '"import-a ${GRYPE_DB_IMPORT_BYTES} ${GRYPE_DB_IMPORT_SHA256}"',
+    '"import-b ${GRYPE_DB_IMPORT_BYTES} ${GRYPE_DB_IMPORT_SHA256}"',
+    "/tmp/container-runtime-oci/vulnerability-scan-inputs-before.txt",
+    "/tmp/container-runtime-oci/vulnerability-scan-inputs-after.txt",
   ]) {
     requireCondition(
       workflow.includes(fragment),
@@ -290,8 +322,13 @@ export async function auditRepositoryContract() {
   }
   const importBlock = extractShellFunction(workflow, "import_database");
   const scanBlock = extractShellFunction(workflow, "scan_sbom");
+  const fingerprintBlock = extractShellFunction(
+    workflow,
+    "fingerprint_scan_inputs",
+  );
   validateImportFunction(importBlock);
   validateScanFunction(scanBlock);
+  validateInputFingerprintFunction(fingerprintBlock);
   requireCondition(
     workflow.includes("--proto '=https'") &&
       workflow.includes("--tlsv1.2") &&
@@ -308,6 +345,11 @@ export async function auditRepositoryContract() {
       workflow.includes("--db-file-a") &&
       workflow.includes("--db-import-a") &&
       workflow.includes("--scanner-index") &&
+      workflow.includes("--input-snapshot-before") &&
+      workflow.includes("--input-snapshot-after") &&
+      workflow.includes(
+        'cmp --silent \\\n            "${EVIDENCE_DIR}/vulnerability-scan-inputs-before.txt" \\\n            "${EVIDENCE_DIR}/vulnerability-scan-inputs-after.txt"',
+      ) &&
       workflow.includes("container-runtime-vulnerability-verification.json") &&
       workflow.includes("retention-days: 30") &&
       workflow.includes("if: always()"),
@@ -363,6 +405,7 @@ export async function auditRepositoryContract() {
       actualSbomBytesRequired: true,
       actualDatabaseBytesRequired: true,
       databaseReadOnlyDuringScan: true,
+      scanInputPrePostMatchRequired: true,
       suppressedFindingsVisible: true,
     },
     database: {
@@ -371,6 +414,10 @@ export async function auditRepositoryContract() {
     },
     policy: {
       ...policy,
+      policySha256: sha256Hex(Buffer.from(policyText)),
+      policyBytes: Buffer.byteLength(policyText),
+      approvalsSha256: sha256Hex(Buffer.from(approvalsText)),
+      approvalsBytes: Buffer.byteLength(approvalsText),
       approvalCount: approvals.length,
     },
     generatedSbomPresent: false,
@@ -519,6 +566,32 @@ export function validateScanFunction(block) {
   );
 }
 
+export function validateInputFingerprintFunction(block) {
+  const requiredFragments = [
+    'local output_file="$1"',
+    'local label input_file bytes digest',
+    ': > "${output_file}"',
+    "while IFS='|' read -r label input_file; do",
+    'bytes="$(stat --format=%s "${input_file}")"',
+    'digest="$(sha256sum "${input_file}" | cut -d \' \' -f 1)"',
+    "printf '%s %s %s\\n' \"${label}\" \"${bytes}\" \"${digest}\"",
+    "sbom-a|${EVIDENCE_DIR}/sbom-a/container-runtime.sbom.syft.json",
+    "sbom-b|${EVIDENCE_DIR}/sbom-b/container-runtime.sbom.syft.json",
+    "db-a|${EVIDENCE_DIR}/grype-db-a/6/vulnerability.db",
+    "db-b|${EVIDENCE_DIR}/grype-db-b/6/vulnerability.db",
+    "import-a|${EVIDENCE_DIR}/grype-db-a/6/import.json",
+    "import-b|${EVIDENCE_DIR}/grype-db-b/6/import.json",
+  ];
+  requireCondition(
+    typeof block === "string" &&
+      block.length <= 16 * 1024 &&
+      requiredFragments.every((fragment) => block.includes(fragment)) &&
+      countMatches(block, /\bsha256sum\b/g) === 1 &&
+      countMatches(block, /\bstat --format=%s\b/g) === 1,
+    "input fingerprint function must hash and size the exact six scan inputs",
+  );
+}
+
 function validateDockerFunction(block, fragments, maximumMounts, label) {
   requireCondition(
     typeof block === "string" && block.length <= 32 * 1024,
@@ -540,6 +613,10 @@ function validateDockerFunction(block, fragments, maximumMounts, label) {
 }
 
 function validateDockerRun(command, expectedMounts, label) {
+  const commandLines = command
+    .split("\n")
+    .map((line) => line.trim().replace(/\\$/, "").trim())
+    .filter(Boolean);
   const commonFragments = [
     "docker run --rm",
     "--pull never",
@@ -567,19 +644,27 @@ function validateDockerRun(command, expectedMounts, label) {
   ];
   for (const fragment of commonFragments) {
     requireCondition(
-      countMatches(command, new RegExp(escapeRegex(fragment), "g")) === 1,
+      commandLines.filter((line) => line === fragment).length === 1,
       `${label} must apply ${fragment} exactly once`,
     );
   }
   for (const mount of expectedMounts) {
     requireCondition(
-      countMatches(command, new RegExp(escapeRegex(mount), "g")) === 1,
+      commandLines.filter((line) => line === mount).length === 1,
       `${label} must apply ${mount} exactly once`,
     );
   }
   requireCondition(
     countMatches(command, /--mount /g) === expectedMounts.length,
     `${label} must expose exactly ${expectedMounts.length} bounded mounts`,
+  );
+  requireCondition(
+    !commandLines.some((line) =>
+      /^(?:--read-only=|--mount=|--volume(?:=|\s)|-v(?:=|\s)|--env-file(?:=|\s))/i.test(
+        line,
+      ),
+    ),
+    `${label} contains an ambiguous or unapproved Docker input option`,
   );
   const environmentNames = [
     ...command.matchAll(/--env\s+([A-Z][A-Z0-9_]*)=/g),
@@ -632,6 +717,8 @@ export async function runVulnerabilityGate(paths) {
     dbImportBBytes,
     scannerIndexBytes,
     scannerInspectBytes,
+    inputSnapshotBeforeBytes,
+    inputSnapshotAfterBytes,
     sbomA,
     sbomB,
     archive,
@@ -694,6 +781,16 @@ export async function runVulnerabilityGate(paths) {
       paths.scannerInspect,
       MAX_SCANNER_IDENTITY_BYTES,
       "Grype image inspect",
+    ),
+    readBoundedFile(
+      paths.inputSnapshotBefore,
+      MAX_INPUT_SNAPSHOT_BYTES,
+      "pre-scan input snapshot",
+    ),
+    readBoundedFile(
+      paths.inputSnapshotAfter,
+      MAX_INPUT_SNAPSHOT_BYTES,
+      "post-scan input snapshot",
     ),
     hashBoundedFile(paths.sbomA, MAX_SBOM_BYTES, "Syft SBOM A"),
     hashBoundedFile(paths.sbomB, MAX_SBOM_BYTES, "Syft SBOM B"),
@@ -767,6 +864,7 @@ export async function runVulnerabilityGate(paths) {
   validateIndependentEvidenceBindings({
     databaseA,
     databaseB,
+    metadata,
     sbomA,
     sbomB,
     sbomFacts,
@@ -774,6 +872,33 @@ export async function runVulnerabilityGate(paths) {
   const importFacts = validateDatabaseImportMetadata(
     parseJsonObject(dbImportABytes, "Grype database import metadata"),
     metadata,
+  );
+  const importA = {
+    sha256: sha256Hex(dbImportABytes),
+    bytes: dbImportABytes.length,
+  };
+  const importB = {
+    sha256: sha256Hex(dbImportBBytes),
+    bytes: dbImportBBytes.length,
+  };
+  requireCondition(
+    importA.sha256 === metadata.importMetadataSha256 &&
+      importA.bytes === metadata.importMetadataBytes &&
+      importB.sha256 === metadata.importMetadataSha256 &&
+      importB.bytes === metadata.importMetadataBytes,
+    "database import metadata bytes do not match the frozen identity",
+  );
+  const inputSnapshot = validateInputSnapshots(
+    inputSnapshotBeforeBytes,
+    inputSnapshotAfterBytes,
+    {
+      databaseA,
+      databaseB,
+      importA,
+      importB,
+      sbomA,
+      sbomB,
+    },
   );
   const scannerFacts = validateScannerImageIdentity(
     scannerIndexBytes,
@@ -793,14 +918,22 @@ export async function runVulnerabilityGate(paths) {
     dbFacts,
     importFacts: {
       ...importFacts,
-      sha256: sha256Hex(dbImportABytes),
-      bytes: dbImportABytes.length,
+      ...importA,
       exactIndependentMatch: true,
     },
+    inputSnapshot,
     listingFacts,
     metadata,
     observedAt: paths.observedAt,
     policy,
+    policyFile: {
+      sha256: sha256Hex(policyBytes),
+      bytes: policyBytes.length,
+    },
+    approvalsFile: {
+      sha256: sha256Hex(approvalsBytes),
+      bytes: approvalsBytes.length,
+    },
     scannerFacts,
     sbomInput: {
       ...sbomA,
@@ -826,12 +959,73 @@ export function validateIndependentEvidenceBindings(facts) {
   );
   requireCondition(
     facts.databaseA.sha256 === facts.databaseB.sha256 &&
-      facts.databaseA.bytes === facts.databaseB.bytes,
-    "independently imported vulnerability database files differ",
+      facts.databaseA.bytes === facts.databaseB.bytes &&
+      facts.databaseA.sha256 === facts.metadata.importedFileSha256 &&
+      facts.databaseA.bytes === facts.metadata.importedFileBytes,
+    "independently imported vulnerability database files differ from the frozen identity",
   );
   return {
     actualSbomBytesMatch: true,
     independentDatabaseFilesMatch: true,
+  };
+}
+
+export function validateInputSnapshots(beforeBytes, afterBytes, facts) {
+  requireCondition(
+    Buffer.isBuffer(beforeBytes) &&
+      Buffer.isBuffer(afterBytes) &&
+      beforeBytes.equals(afterBytes),
+    "scan input snapshots differ before and after Grype execution",
+  );
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(beforeBytes);
+  requireCondition(
+    text.endsWith("\n") && !text.endsWith("\n\n") && !text.includes("\r"),
+    "scan input snapshot must use LF and end with exactly one newline",
+  );
+  const labels = [
+    "sbom-a",
+    "sbom-b",
+    "db-a",
+    "db-b",
+    "import-a",
+    "import-b",
+  ];
+  const expected = new Map([
+    ["sbom-a", facts.sbomA],
+    ["sbom-b", facts.sbomB],
+    ["db-a", facts.databaseA],
+    ["db-b", facts.databaseB],
+    ["import-a", facts.importA],
+    ["import-b", facts.importB],
+  ]);
+  const lines = text.trimEnd().split("\n");
+  requireCondition(
+    lines.length === labels.length,
+    "scan input snapshot must contain exactly six records",
+  );
+  const inputs = lines.map((line, index) => {
+    const match = /^([a-z]+-[ab]) ([1-9][0-9]*) ([a-f0-9]{64})$/.exec(line);
+    requireCondition(
+      match !== null && match[1] === labels[index],
+      "scan input snapshot labels or record syntax drifted",
+    );
+    const bytes = Number(match[2]);
+    const sha256 = match[3];
+    const actual = expected.get(match[1]);
+    requireCondition(
+      actual !== undefined &&
+        Number.isSafeInteger(bytes) &&
+        bytes === actual.bytes &&
+        sha256 === actual.sha256,
+      `scan input snapshot ${match[1]} does not match the verified file`,
+    );
+    return { label: match[1], bytes, sha256 };
+  });
+  return {
+    bytes: beforeBytes.length,
+    sha256: sha256Hex(beforeBytes),
+    exactPrePostMatch: true,
+    inputs,
   };
 }
 
@@ -850,6 +1044,10 @@ export function validateDatabaseMetadata(metadata) {
       "listingSnapshotSha256",
       "archiveUrl",
       "archiveSha256",
+      "importedFileBytes",
+      "importedFileSha256",
+      "importMetadataBytes",
+      "importMetadataSha256",
       "schemaVersion",
       "built",
       "maximumCandidateAgeSeconds",
@@ -870,6 +1068,10 @@ export function validateDatabaseMetadata(metadata) {
       validSha256(metadata.listingSnapshotSha256) &&
       metadata.archiveUrl === GRYPE_DB_ARCHIVE_URL &&
       metadata.archiveSha256 === GRYPE_DB_ARCHIVE_SHA256 &&
+      metadata.importedFileBytes === GRYPE_DB_FILE_BYTES &&
+      metadata.importedFileSha256 === GRYPE_DB_FILE_SHA256 &&
+      metadata.importMetadataBytes === GRYPE_DB_IMPORT_BYTES &&
+      metadata.importMetadataSha256 === GRYPE_DB_IMPORT_SHA256 &&
       metadata.schemaVersion === GRYPE_DB_SCHEMA_VERSION &&
       metadata.built === GRYPE_DB_BUILT &&
       Number.isSafeInteger(metadata.maximumCandidateAgeSeconds) &&
@@ -928,36 +1130,18 @@ export function validateVulnerabilityPolicy(policy) {
       "criticalApprovalsAllowed",
       "highApprovalMode",
       "wildcardsAllowed",
-      "requiredHighApprovalBindings",
       "approvalsPath",
     ],
     "container vulnerability policy",
   );
-  const requiredBindings = [
-    "vulnerabilityId",
-    "namespace",
-    "artifactId",
-    "purl",
-    "version",
-    "ociManifestDigest",
-    "sbomSha256",
-    "scannerImage",
-    "databaseArchiveSha256",
-    "owner",
-    "reason",
-    "externalRecord",
-    "expiresAt",
-  ];
   requireCondition(
     policy.contractVersion === VULNERABILITY_GATE_CONTRACT_VERSION &&
       JSON.stringify(policy.blockedSeverities) ===
         JSON.stringify(["Unknown", "Critical", "High"]) &&
       policy.unknownApprovalsAllowed === false &&
       policy.criticalApprovalsAllowed === false &&
-      policy.highApprovalMode === "exact-finding-only" &&
+      policy.highApprovalMode === "disabled" &&
       policy.wildcardsAllowed === false &&
-      JSON.stringify(policy.requiredHighApprovalBindings) ===
-        JSON.stringify(requiredBindings) &&
       policy.approvalsPath ===
         "config/container-runtime-vulnerability-approvals.json",
     "container vulnerability policy is not the fail-closed S2 policy",
@@ -972,11 +1156,11 @@ export function validateVulnerabilityApprovals(approvals, policy) {
     "container vulnerability approvals",
   );
   requireCondition(
-    policy.highApprovalMode === "exact-finding-only" &&
+    policy.highApprovalMode === "disabled" &&
       approvals.contractVersion === VULNERABILITY_GATE_CONTRACT_VERSION &&
       Array.isArray(approvals.approvals) &&
       approvals.approvals.length === 0,
-    "initial S2 policy must not contain vulnerability approvals",
+    "disabled S2 approval policy must not contain vulnerability approvals",
   );
   return approvals.approvals;
 }
@@ -1565,16 +1749,23 @@ export function buildVulnerabilityDecision(facts) {
       exactIndependentStatusMatch: true,
       importedFileSha256: facts.database.sha256,
       importedFileBytes: facts.database.bytes,
+      expectedImportedFileSha256: facts.metadata.importedFileSha256,
+      expectedImportedFileBytes: facts.metadata.importedFileBytes,
       exactIndependentFileMatch: true,
       importMetadata: facts.importFacts,
     },
     policy: {
+      policySha256: facts.policyFile.sha256,
+      policyBytes: facts.policyFile.bytes,
+      approvalsSha256: facts.approvalsFile.sha256,
+      approvalsBytes: facts.approvalsFile.bytes,
       blockedSeverities: facts.policy.blockedSeverities,
       unknownApprovalsAllowed: facts.policy.unknownApprovalsAllowed,
       criticalApprovalsAllowed: facts.policy.criticalApprovalsAllowed,
       highApprovalMode: facts.policy.highApprovalMode,
       approvalCount: facts.approvals.length,
     },
+    scanInputSnapshot: facts.inputSnapshot,
     sbomInput: facts.sbomInput,
     scan: {
       format: "grype-json",

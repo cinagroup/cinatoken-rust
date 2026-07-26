@@ -4542,6 +4542,8 @@ mod tests {
         const ROOT_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_ROOT";
         const READY_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_READY";
         const RELEASE_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_RELEASE";
+        const TRACE_START_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_TRACE_START";
+        const TRACE_FINISH_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_TRACE_FINISH";
 
         if let Some(role) = std::env::var_os(ROLE_ENV) {
             assert_eq!(
@@ -4557,12 +4559,19 @@ mod tests {
             let release = std::path::PathBuf::from(
                 std::env::var_os(RELEASE_ENV).expect("startup child release path"),
             );
+            let trace_start = std::path::PathBuf::from(
+                std::env::var_os(TRACE_START_ENV).expect("startup child trace start path"),
+            );
+            let trace_finish = std::path::PathBuf::from(
+                std::env::var_os(TRACE_FINISH_ENV).expect("startup child trace finish path"),
+            );
             let lock_thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
             assert!(lock_thread_id > 0);
             println!("startup-process-id={}", std::process::id());
             println!("startup-lock-thread-id={lock_thread_id}");
             write_startup_test_signal(&ready, b"startup-ready");
             wait_for_startup_test_release(&release);
+            write_startup_test_signal(&trace_start, b"verify-loaded-credentials-start");
 
             let prepared = verify_loaded_credentials(
                 loaded_credentials_for_transport_test(),
@@ -4583,6 +4592,7 @@ mod tests {
             assert_eq!(outcome.state_version, Some(1));
             assert_eq!(outcome.claim_classification, None);
             assert_eq!(outcome.mutation_transport_outcome, None);
+            write_startup_test_signal(&trace_finish, b"verify-loaded-credentials-finish");
             println!(
                 "startup-terminal-closure={}",
                 startup_terminal_closure_observation(&closure)
@@ -4597,8 +4607,24 @@ mod tests {
         let first_ready = root.with_extension("startup-first-ready");
         let second_ready = root.with_extension("startup-second-ready");
         let release = root.with_extension("startup-release");
-        let mut first = startup_terminal_candidate_child(&root, &first_ready, &release);
-        let mut second = startup_terminal_candidate_child(&root, &second_ready, &release);
+        let first_trace_start = root.with_extension("startup-first-trace-start");
+        let first_trace_finish = root.with_extension("startup-first-trace-finish");
+        let second_trace_start = root.with_extension("startup-second-trace-start");
+        let second_trace_finish = root.with_extension("startup-second-trace-finish");
+        let mut first = startup_terminal_candidate_child(
+            &root,
+            &first_ready,
+            &release,
+            &first_trace_start,
+            &first_trace_finish,
+        );
+        let mut second = startup_terminal_candidate_child(
+            &root,
+            &second_ready,
+            &release,
+            &second_trace_start,
+            &second_trace_finish,
+        );
         wait_for_startup_child_ready(&mut first, &first_ready);
         wait_for_startup_child_ready(&mut second, &second_ready);
         write_startup_test_signal(&release, b"start");
@@ -4638,6 +4664,16 @@ mod tests {
         assert_ne!(first_pid, second_pid);
         println!("startup-pair-process-ids={first_pid},{second_pid}");
         println!("startup-pair-lock-thread-ids={first_tid},{second_tid}");
+        println!(
+            "startup-pair-trace-start-paths={},{}",
+            first_trace_start.display(),
+            second_trace_start.display()
+        );
+        println!(
+            "startup-pair-trace-finish-paths={},{}",
+            first_trace_finish.display(),
+            second_trace_finish.display()
+        );
         println!("startup-pair-closure={first_closure}");
         std::io::stdout().flush().unwrap();
 
@@ -4672,7 +4708,15 @@ mod tests {
             Err(ReceiptError::AlreadySealed)
         );
 
-        for path in [first_ready, second_ready, release] {
+        for path in [
+            first_ready,
+            second_ready,
+            release,
+            first_trace_start,
+            first_trace_finish,
+            second_trace_start,
+            second_trace_finish,
+        ] {
             let _ = std::fs::remove_file(path);
         }
         cleanup_receipt_root(&root);
@@ -6040,6 +6084,8 @@ mod tests {
         root: &std::path::Path,
         ready: &std::path::Path,
         release: &std::path::Path,
+        trace_start: &std::path::Path,
+        trace_finish: &std::path::Path,
     ) -> std::process::Child {
         let mut command =
             std::process::Command::new(std::env::current_exe().expect("current test executable"));
@@ -6057,6 +6103,8 @@ mod tests {
             .env("CINATOKEN_RING_STARTUP_TEST_ROOT", root)
             .env("CINATOKEN_RING_STARTUP_TEST_READY", ready)
             .env("CINATOKEN_RING_STARTUP_TEST_RELEASE", release)
+            .env("CINATOKEN_RING_STARTUP_TEST_TRACE_START", trace_start)
+            .env("CINATOKEN_RING_STARTUP_TEST_TRACE_FINISH", trace_finish)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()

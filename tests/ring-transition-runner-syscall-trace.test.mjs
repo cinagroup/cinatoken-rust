@@ -16,6 +16,8 @@ import {
 } from "../tools/verify_ring_transition_runner_syscall_trace.mjs";
 
 const ROOT = "/tmp/cinatoken-ring-trace";
+const TRACE_START = `${ROOT}.startup-trace-start`;
+const TRACE_FINISH = `${ROOT}.startup-trace-finish`;
 const RECEIPTS = `${ROOT}/execution-operation-receipts`;
 const AUTHORIZATION = `${RECEIPTS}/${"a".repeat(64)}`;
 const CLI = fileURLToPath(
@@ -191,19 +193,25 @@ describe("ring-transition runner syscall trace verifier", () => {
   test("proves zero network syscalls and rejects even failed attempts", () => {
     expect(
       verifyRingTransitionRunnerZeroNetworkTrace({
-        traceText: [
-          fixtureTrace({ lockPairs: 2 }),
-          "4000  socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC, 0, [7, 8]) = 0",
-          '4000  readlink("/proc/self/exe",  <unfinished ...>',
-          '4000  <... readlink resumed>"/tmp/runner", 4096) = 11',
-        ].join("\n"),
+        traceText: startupWindowTrace({
+          before: [
+            "4000  socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC, 0, [7, 8]) = 0",
+          ],
+          after: [
+            '4000  readlink("/proc/self/exe",  <unfinished ...>',
+            '4000  <... readlink resumed>"/tmp/runner", 4096) = 11',
+          ],
+        }),
         label: "concurrent startup recovery",
         expectedTracePidValues: ["4100"],
+        expectedTraceStartPaths: [TRACE_START],
+        expectedTraceFinishPaths: [TRACE_FINISH],
       }),
     ).toMatchObject({
       ok: true,
-      networkPolicy: "zero-network-syscalls-for-pinned-identities-v1",
-      networkScope: "reported-verify-loaded-credentials-test-threads",
+      networkPolicy: "zero-network-syscalls-for-pinned-windows-v1",
+      networkScope: "reported-verify-loaded-credentials-test-thread-windows",
+      traceWindowPolicy: "successful-create-new-marker-open-v1",
       expectedTracePidValues: ["4100"],
       networkSyscallsObserved: 0,
       networkSyscallNames: [],
@@ -223,42 +231,59 @@ describe("ring-transition runner syscall trace verifier", () => {
     ]) {
       expect(() =>
         verifyRingTransitionRunnerZeroNetworkTrace({
-          traceText: `${fixtureTrace({ lockPairs: 2 })}\n4100  ${syscall}`,
+          traceText: startupWindowTrace({ inside: [`4100  ${syscall}`] }),
           label: "concurrent startup recovery",
           expectedTracePidValues: ["4100"],
+          expectedTraceStartPaths: [TRACE_START],
+          expectedTraceFinishPaths: [TRACE_FINISH],
         }),
       ).toThrow(/forbidden network syscall attempted/);
     }
     expect(() =>
       verifyRingTransitionRunnerZeroNetworkTrace({
-        traceText: `${fixtureTrace({ lockPairs: 2 })}\n4100  socket(AF_INET, <unfinished ...>`,
+        traceText: startupWindowTrace({
+          inside: ["4100  socket(AF_INET, <unfinished ...>"],
+        }),
         label: "concurrent startup recovery",
         expectedTracePidValues: ["4100"],
+        expectedTraceStartPaths: [TRACE_START],
+        expectedTraceFinishPaths: [TRACE_FINISH],
       }),
     ).toThrow(/forbidden network syscall attempted/);
     expect(
       verifyRingTransitionRunnerZeroNetworkTrace({
-        traceText: [
-          fixtureTrace({ lockPairs: 2 }),
-          '4100  readlink("/proc/self/exe",  <unfinished ...>',
-          '4100  <... readlink resumed>"/tmp/runner", 4096) = 11',
-        ].join("\n"),
+        traceText: startupWindowTrace({
+          inside: [
+            '4100  readlink("/proc/self/exe",  <unfinished ...>',
+            '4100  <... readlink resumed>"/tmp/runner", 4096) = 11',
+          ],
+        }),
         label: "concurrent startup recovery",
         expectedTracePidValues: ["4100"],
+        expectedTraceStartPaths: [TRACE_START],
+        expectedTraceFinishPaths: [TRACE_FINISH],
       }).zeroNetworkSyscalls,
     ).toBe(true);
     expect(() =>
       verifyRingTransitionRunnerZeroNetworkTrace({
-        traceText: `${fixtureTrace({ lockPairs: 2 })}\n4100  readlink("/proc/self/exe",  <unfinished ...>`,
+        traceText: startupWindowTrace({
+          inside: [
+            '4100  readlink("/proc/self/exe",  <unfinished ...>',
+          ],
+        }),
         label: "concurrent startup recovery",
         expectedTracePidValues: ["4100"],
+        expectedTraceStartPaths: [TRACE_START],
+        expectedTraceFinishPaths: [TRACE_FINISH],
       }),
-    ).toThrow(/unfinished scoped syscalls were not resumed/);
+    ).toThrow(/unfinished expected-PID syscalls were not resumed/);
     expect(() =>
       verifyRingTransitionRunnerZeroNetworkTrace({
-        traceText: fixtureTrace({ lockPairs: 2 }),
+        traceText: startupWindowTrace(),
         label: "concurrent startup recovery",
         expectedTracePidValues: ["4200"],
+        expectedTraceStartPaths: [TRACE_START],
+        expectedTraceFinishPaths: [TRACE_FINISH],
       }),
     ).toThrow(/expected trace PIDs were not all observed/);
   });
@@ -487,6 +512,7 @@ describe("ring-transition runner syscall trace verifier", () => {
     });
     expect(await new Response(accepted.stderr).text()).toBe("");
 
+    await writeFile(tracePath, startupWindowTrace(), "utf8");
     const zeroNetworkAccepted = Bun.spawn(
       [
         process.execPath,
@@ -497,6 +523,10 @@ describe("ring-transition runner syscall trace verifier", () => {
         "concurrent startup recovery",
         "--expected-trace-pids",
         "4100",
+        "--expected-trace-start-paths",
+        TRACE_START,
+        "--expected-trace-finish-paths",
+        TRACE_FINISH,
         "--require-zero-network",
       ],
       { stdout: "pipe", stderr: "pipe" },
@@ -523,6 +553,10 @@ describe("ring-transition runner syscall trace verifier", () => {
         "concurrent startup recovery",
         "--expected-trace-pids",
         "4100",
+        "--expected-trace-start-paths",
+        TRACE_START,
+        "--expected-trace-finish-paths",
+        TRACE_FINISH,
         "--require-zero-network",
       ],
       { stdout: "pipe", stderr: "pipe" },
@@ -652,12 +686,21 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(workflow).toContain(
       '--expected-trace-pids "${startup_first_tid},${startup_second_tid}"',
     );
-    expect(workflow).toContain("concurrent-startup-recovery-boundary.json");
     expect(workflow).toContain(
-      'networkPolicy: "zero-network-syscalls-for-pinned-identities-v1"',
+      '--expected-trace-start-paths "${startup_first_trace_start},${startup_second_trace_start}"',
     );
     expect(workflow).toContain(
-      'networkScope: "reported-verify-loaded-credentials-test-threads"',
+      '--expected-trace-finish-paths "${startup_first_trace_finish},${startup_second_trace_finish}"',
+    );
+    expect(workflow).toContain("concurrent-startup-recovery-boundary.json");
+    expect(workflow).toContain(
+      'networkPolicy: "zero-network-syscalls-for-pinned-windows-v1"',
+    );
+    expect(workflow).toContain(
+      'networkScope: "reported-verify-loaded-credentials-test-thread-windows"',
+    );
+    expect(workflow).toContain(
+      'traceWindowPolicy: "successful-create-new-marker-open-v1"',
     );
     expect(workflow).toContain("followForks: true");
     expect(workflow).toContain("traceSha256: $traceSha256");
@@ -670,6 +713,22 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(workflow).toContain("retention-days: 30");
   });
 });
+
+function startupWindowTrace({
+  pid = "4100",
+  before = [],
+  inside = [],
+  after = [],
+} = {}) {
+  return [
+    ...before,
+    `${pid}  openat(AT_FDCWD, "${TRACE_START}", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0666) = 9<${TRACE_START}>`,
+    fixtureTrace({ lockPairs: 2, pid }),
+    ...inside,
+    `${pid}  openat(AT_FDCWD, "${TRACE_FINISH}", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0666) = 10<${TRACE_FINISH}>`,
+    ...after,
+  ].join("\n");
+}
 
 function fixtureTrace({
   lockPairs,

@@ -567,6 +567,16 @@ jobs:
               tail -n 1 |
               cut -d= -f2
           )"
+          startup_trace_start_paths="$(
+            grep '^startup-pair-trace-start-paths=' "${startup_output}" |
+              tail -n 1 |
+              cut -d= -f2-
+          )"
+          startup_trace_finish_paths="$(
+            grep '^startup-pair-trace-finish-paths=' "${startup_output}" |
+              tail -n 1 |
+              cut -d= -f2-
+          )"
           startup_closure="$(
             grep '^startup-pair-closure=' "${startup_output}" |
               tail -n 1 |
@@ -574,12 +584,20 @@ jobs:
           )"
           IFS=, read -r startup_first_pid startup_second_pid <<< "${startup_process_ids}"
           IFS=, read -r startup_first_tid startup_second_tid <<< "${startup_lock_thread_ids}"
+          IFS=, read -r startup_first_trace_start startup_second_trace_start <<< "${startup_trace_start_paths}"
+          IFS=, read -r startup_first_trace_finish startup_second_trace_finish <<< "${startup_trace_finish_paths}"
           [[ "${startup_first_pid}" =~ ^[1-9][0-9]*$ ]]
           [[ "${startup_second_pid}" =~ ^[1-9][0-9]*$ ]]
           [[ "${startup_first_tid}" =~ ^[1-9][0-9]*$ ]]
           [[ "${startup_second_tid}" =~ ^[1-9][0-9]*$ ]]
           test "${startup_first_pid}" != "${startup_second_pid}"
           test "${startup_first_tid}" != "${startup_second_tid}"
+          [[ "${startup_first_trace_start}" == /* ]]
+          [[ "${startup_second_trace_start}" == /* ]]
+          [[ "${startup_first_trace_finish}" == /* ]]
+          [[ "${startup_second_trace_finish}" == /* ]]
+          test "${startup_first_trace_start}" != "${startup_second_trace_start}"
+          test "${startup_first_trace_finish}" != "${startup_second_trace_finish}"
           test -n "${startup_closure}"
           startup_trace_sha256="$(sha256sum "${startup_trace_log}" | cut -d' ' -f1)"
           startup_trace_bytes="$(stat -c '%s' "${startup_trace_log}")"
@@ -588,14 +606,35 @@ jobs:
             --trace "${startup_trace_log}" \
             --label "concurrent startup recovery" \
             --expected-trace-pids "${startup_first_tid},${startup_second_tid}" \
+            --expected-trace-start-paths "${startup_first_trace_start},${startup_second_trace_start}" \
+            --expected-trace-finish-paths "${startup_first_trace_finish},${startup_second_trace_finish}" \
             --require-zero-network \
             | tee "${trace_artifact_dir}/concurrent-startup-recovery.verification.json"
           jq -e \
             --arg firstTid "${startup_first_tid}" \
             --arg secondTid "${startup_second_tid}" \
-            '(.networkPolicy == "zero-network-syscalls-for-pinned-identities-v1") and
-              (.networkScope == "reported-verify-loaded-credentials-test-threads") and
+            --arg firstTraceStart "${startup_first_trace_start}" \
+            --arg secondTraceStart "${startup_second_trace_start}" \
+            --arg firstTraceFinish "${startup_first_trace_finish}" \
+            --arg secondTraceFinish "${startup_second_trace_finish}" \
+            '(.networkPolicy == "zero-network-syscalls-for-pinned-windows-v1") and
+              (.networkScope == "reported-verify-loaded-credentials-test-thread-windows") and
+              (.traceWindowPolicy == "successful-create-new-marker-open-v1") and
               (.expectedTracePidValues == [$firstTid, $secondTid]) and
+              (.traceWindows == [
+                {
+                  pid: $firstTid,
+                  startPath: $firstTraceStart,
+                  finishPath: $firstTraceFinish,
+                  complete: true
+                },
+                {
+                  pid: $secondTid,
+                  startPath: $secondTraceStart,
+                  finishPath: $secondTraceFinish,
+                  complete: true
+                }
+              ]) and
               (.zeroNetworkSyscalls == true) and
               (.networkSyscallsObserved == 0) and
               (.observedPidValues | index($firstTid) != null) and
@@ -618,6 +657,10 @@ jobs:
             --arg secondProcessPid "${startup_second_pid}" \
             --arg firstLockThreadId "${startup_first_tid}" \
             --arg secondLockThreadId "${startup_second_tid}" \
+            --arg firstTraceStart "${startup_first_trace_start}" \
+            --arg secondTraceStart "${startup_second_trace_start}" \
+            --arg firstTraceFinish "${startup_first_trace_finish}" \
+            --arg secondTraceFinish "${startup_second_trace_finish}" \
             --arg closure "${startup_closure}" \
             --arg straceVersion "${strace_version}" \
             --arg traceFilter "${startup_trace_filter}" \
@@ -631,20 +674,25 @@ jobs:
                 {
                   name: "first",
                   processPid: $firstProcessPid,
-                  lockThreadId: $firstLockThreadId
+                  lockThreadId: $firstLockThreadId,
+                  traceStartPath: $firstTraceStart,
+                  traceFinishPath: $firstTraceFinish
                 },
                 {
                   name: "second",
                   processPid: $secondProcessPid,
-                  lockThreadId: $secondLockThreadId
+                  lockThreadId: $secondLockThreadId,
+                  traceStartPath: $secondTraceStart,
+                  traceFinishPath: $secondTraceFinish
                 }
               ],
               sharedStartGate: true,
               verifyLoadedCredentials: true,
               preparedWithoutHttpCore: true,
               action: "receipt_sealed",
-              networkPolicy: "zero-network-syscalls-for-pinned-identities-v1",
-              networkScope: "reported-verify-loaded-credentials-test-threads",
+              networkPolicy: "zero-network-syscalls-for-pinned-windows-v1",
+              networkScope: "reported-verify-loaded-credentials-test-thread-windows",
+              traceWindowPolicy: "successful-create-new-marker-open-v1",
               networkSyscallsObserved: 0,
               unscopedNetworkSyscallsObserved: $unscopedNetworkSyscallsObserved,
               unscopedIncompleteTraceLinesObserved: $unscopedIncompleteTraceLinesObserved,
@@ -667,7 +715,7 @@ jobs:
             echo "- candidate writer: exact SIGKILL after candidate rename/directory sync/object-bound readback"
             echo "- candidate-after-sync recovery post-lock AT_FDCWD mutation: none"
             echo "- concurrent candidate recovery: two distinct ready-before-release processes converged on one closure identity"
-            echo "- concurrent verify_loaded_credentials startup: two distinct current-thread Tokio TIDs converged on ReceiptSealed with zero network syscalls on those pinned TIDs"
+            echo "- concurrent verify_loaded_credentials startup: two distinct current-thread Tokio TIDs converged on ReceiptSealed with zero network syscalls inside their create-new marker windows"
             echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 6 per PID / 12 total"
             echo "- successful retained-dirfd openat2/renameat2: observed in each standalone trace or the concurrent bundle"
             echo "- successful full-transaction and candidate-recovery retained-dirfd mkdirat: observed"

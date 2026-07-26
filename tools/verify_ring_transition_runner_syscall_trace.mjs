@@ -429,6 +429,8 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
   traceText,
   label,
   expectedTracePidValues,
+  expectedTraceStartPaths,
+  expectedTraceFinishPaths,
 }) {
   if (typeof label !== "string" || label.length < 1 || label.length > 80) {
     throw new Error("[input] trace label is invalid");
@@ -444,6 +446,22 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
   ) {
     throw new Error("[input] expected trace PIDs are invalid");
   }
+  validateTraceMarkerPaths(
+    expectedTraceStartPaths,
+    expectedTracePidValues.length,
+    "start",
+  );
+  validateTraceMarkerPaths(
+    expectedTraceFinishPaths,
+    expectedTracePidValues.length,
+    "finish",
+  );
+  if (
+    new Set([...expectedTraceStartPaths, ...expectedTraceFinishPaths]).size !==
+    expectedTracePidValues.length * 2
+  ) {
+    throw new Error("[input] trace marker paths must be distinct");
+  }
   if (
     typeof traceText !== "string" ||
     traceText.length < 1 ||
@@ -457,9 +475,21 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
   let unscopedIncompleteTraceLinesObserved = 0;
   let unscopedNetworkSyscallsObserved = 0;
   const observedPidValues = new Set();
-  const expectedPidSet = new Set(expectedTracePidValues);
-  const pendingScopedSyscalls = new Map();
+  const pendingExpectedSyscalls = new Map();
   const unscopedNetworkSyscallNames = new Set();
+  const traceWindows = new Map(
+    expectedTracePidValues.map((pid, index) => [
+      pid,
+      {
+        pid,
+        startPath: expectedTraceStartPaths[index],
+        finishPath: expectedTraceFinishPaths[index],
+        started: false,
+        active: false,
+        finished: false,
+      },
+    ]),
+  );
   for (const rawLine of traceText.split(/\r?\n/u)) {
     const line = rawLine.trim();
     if (line === "") continue;
@@ -469,37 +499,62 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
     const unfinished = parseUnfinishedSyscallLine(line);
     if (unfinished) {
       observedPidValues.add(unfinished.pid);
-      if (!expectedPidSet.has(unfinished.pid)) {
+      const traceWindow = traceWindows.get(unfinished.pid);
+      if (!traceWindow) {
         unscopedIncompleteTraceLinesObserved += 1;
         continue;
       }
-      scopedParsedSyscalls += 1;
-      if (NETWORK_SYSCALLS.has(unfinished.name)) {
+      const markerKind = traceMarkerKind(
+        unfinished.name,
+        line,
+        traceWindow,
+      );
+      if (traceWindow.active) {
+        scopedParsedSyscalls += 1;
+      }
+      if (NETWORK_SYSCALLS.has(unfinished.name) && traceWindow.active) {
         throw new Error(
           `[${label}] forbidden network syscall attempted: ${unfinished.name} by ${unfinished.pid}`,
         );
       }
-      if (pendingScopedSyscalls.has(unfinished.pid)) {
+      if (NETWORK_SYSCALLS.has(unfinished.name)) {
+        unscopedNetworkSyscallsObserved += 1;
+        unscopedNetworkSyscallNames.add(unfinished.name);
+      }
+      if (pendingExpectedSyscalls.has(unfinished.pid)) {
         throw new Error(
           `[${label}] overlapping unfinished syscalls for ${unfinished.pid}`,
         );
       }
-      pendingScopedSyscalls.set(unfinished.pid, unfinished.name);
+      pendingExpectedSyscalls.set(unfinished.pid, {
+        name: unfinished.name,
+        markerKind,
+      });
       continue;
     }
     const resumed = parseResumedSyscallLine(line);
     if (resumed) {
       observedPidValues.add(resumed.pid);
-      if (!expectedPidSet.has(resumed.pid)) {
+      const traceWindow = traceWindows.get(resumed.pid);
+      if (!traceWindow) {
         unscopedIncompleteTraceLinesObserved += 1;
         continue;
       }
-      if (pendingScopedSyscalls.get(resumed.pid) !== resumed.name) {
+      const pending = pendingExpectedSyscalls.get(resumed.pid);
+      if (!pending || pending.name !== resumed.name) {
         throw new Error(
           `[${label}] resumed syscall has no matching unfinished syscall: ${line}`,
         );
       }
-      pendingScopedSyscalls.delete(resumed.pid);
+      pendingExpectedSyscalls.delete(resumed.pid);
+      if (pending.markerKind) {
+        if (!resultIsSuccess(resumed.result)) {
+          throw new Error(
+            `[${label}] trace ${pending.markerKind} marker failed for ${resumed.pid}`,
+          );
+        }
+        applyTraceMarker(traceWindow, pending.markerKind, label);
+      }
       continue;
     }
     if (line.includes("<unfinished ...>") || line.includes("resumed>")) {
@@ -519,10 +574,11 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
     }
     parsedSyscalls += 1;
     observedPidValues.add(syscall.pid);
-    if (expectedPidSet.has(syscall.pid)) {
+    const traceWindow = traceWindows.get(syscall.pid);
+    if (traceWindow?.active) {
       scopedParsedSyscalls += 1;
     }
-    if (NETWORK_SYSCALLS.has(syscall.name) && expectedPidSet.has(syscall.pid)) {
+    if (NETWORK_SYSCALLS.has(syscall.name) && traceWindow?.active) {
       throw new Error(
         `[${label}] forbidden network syscall attempted: ${syscall.name} by ${syscall.pid}`,
       );
@@ -531,16 +587,31 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
       unscopedNetworkSyscallsObserved += 1;
       unscopedNetworkSyscallNames.add(syscall.name);
     }
+    if (traceWindow) {
+      const markerKind = traceMarkerKind(
+        syscall.name,
+        syscall.args,
+        traceWindow,
+      );
+      if (markerKind) {
+        if (!resultIsSuccess(syscall.result)) {
+          throw new Error(
+            `[${label}] trace ${markerKind} marker failed for ${syscall.pid}`,
+          );
+        }
+        applyTraceMarker(traceWindow, markerKind, label);
+      }
+    }
   }
   if (parsedSyscalls === 0) {
     throw new Error(`[${label}] trace contains no parsed syscall`);
   }
-  if (pendingScopedSyscalls.size !== 0) {
+  if (pendingExpectedSyscalls.size !== 0) {
     throw new Error(
-      `[${label}] unfinished scoped syscalls were not resumed: ${[
-        ...pendingScopedSyscalls.entries(),
+      `[${label}] unfinished expected-PID syscalls were not resumed: ${[
+        ...pendingExpectedSyscalls.entries(),
       ]
-        .map(([pid, name]) => `${pid}:${name}`)
+        .map(([pid, pending]) => `${pid}:${pending.name}`)
         .join(",")}`,
     );
   }
@@ -552,17 +623,37 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
       `[${label}] expected trace PIDs were not all observed: ${missingPidValues.join(",")}`,
     );
   }
+  for (const traceWindow of traceWindows.values()) {
+    if (
+      !traceWindow.started ||
+      traceWindow.active ||
+      !traceWindow.finished
+    ) {
+      throw new Error(
+        `[${label}] trace window is incomplete for ${traceWindow.pid}`,
+      );
+    }
+  }
 
   return {
     ok: true,
     label,
-    networkPolicy: "zero-network-syscalls-for-pinned-identities-v1",
-    networkScope: "reported-verify-loaded-credentials-test-threads",
+    networkPolicy: "zero-network-syscalls-for-pinned-windows-v1",
+    networkScope: "reported-verify-loaded-credentials-test-thread-windows",
+    traceWindowPolicy: "successful-create-new-marker-open-v1",
     parsedSyscalls,
     scopedParsedSyscalls,
     observedProcessIdentities: observedPidValues.size,
     observedPidValues: [...observedPidValues].sort(),
     expectedTracePidValues: [...expectedTracePidValues],
+    traceWindows: [...traceWindows.values()].map(
+      ({ pid, startPath, finishPath }) => ({
+        pid,
+        startPath,
+        finishPath,
+        complete: true,
+      }),
+    ),
     networkSyscallsObserved: 0,
     networkSyscallNames: [],
     unscopedIncompleteTraceLinesObserved,
@@ -570,6 +661,63 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
     unscopedNetworkSyscallNames: [...unscopedNetworkSyscallNames].sort(),
     zeroNetworkSyscalls: true,
   };
+}
+
+function validateTraceMarkerPaths(values, expectedLength, kind) {
+  if (
+    !Array.isArray(values) ||
+    values.length !== expectedLength ||
+    values.some(
+      (value) =>
+        typeof value !== "string" ||
+        value.length < 2 ||
+        value.length > 4096 ||
+        !path.posix.isAbsolute(value) ||
+        path.posix.normalize(value) !== value,
+    ) ||
+    new Set(values).size !== values.length
+  ) {
+    throw new Error(`[input] expected trace ${kind} paths are invalid`);
+  }
+}
+
+function traceMarkerKind(syscallName, args, traceWindow) {
+  if (!["creat", "open", "openat", "openat2"].includes(syscallName)) {
+    return null;
+  }
+  if (args.includes(JSON.stringify(traceWindow.startPath))) {
+    return "start";
+  }
+  if (args.includes(JSON.stringify(traceWindow.finishPath))) {
+    return "finish";
+  }
+  return null;
+}
+
+function applyTraceMarker(traceWindow, kind, label) {
+  if (
+    kind === "start" &&
+    !traceWindow.started &&
+    !traceWindow.active &&
+    !traceWindow.finished
+  ) {
+    traceWindow.started = true;
+    traceWindow.active = true;
+    return;
+  }
+  if (
+    kind === "finish" &&
+    traceWindow.started &&
+    traceWindow.active &&
+    !traceWindow.finished
+  ) {
+    traceWindow.active = false;
+    traceWindow.finished = true;
+    return;
+  }
+  throw new Error(
+    `[${label}] invalid trace ${kind} marker order for ${traceWindow.pid}`,
+  );
 }
 
 function observeTerminalCandidateEvidence({
@@ -905,13 +1053,14 @@ function parseUnfinishedSyscallLine(raw) {
 
 function parseResumedSyscallLine(raw) {
   const match =
-    /^(?:(\d+)\s+|\[pid\s+(\d+)\]\s+)<\.\.\. ([A-Za-z_][A-Za-z0-9_]*) resumed>.*$/u.exec(
+    /^(?:(\d+)\s+|\[pid\s+(\d+)\]\s+)<\.\.\. ([A-Za-z_][A-Za-z0-9_]*) resumed>.*\)\s+=\s+(.+)$/u.exec(
       raw,
     );
   if (!match) return null;
   return {
     pid: match[1] ?? match[2],
     name: match[3],
+    result: match[4],
   };
 }
 
@@ -1073,6 +1222,8 @@ function parseArgs(argv) {
         "--expected-lock-pids",
         "--expected-locks-per-pid",
         "--expected-trace-pids",
+        "--expected-trace-start-paths",
+        "--expected-trace-finish-paths",
       ].includes(argument)
     ) {
       usage(2, `[input] unknown argument: ${argument}`);
@@ -1098,11 +1249,21 @@ function parseArgs(argv) {
     ) {
       usage(2, "[input] zero-network trace arguments are invalid");
     }
-    if (!values.has("--expected-trace-pids")) {
-      usage(2, "[input] missing argument: --expected-trace-pids");
+    for (const name of [
+      "--expected-trace-pids",
+      "--expected-trace-start-paths",
+      "--expected-trace-finish-paths",
+    ]) {
+      if (!values.has(name)) usage(2, `[input] missing argument: ${name}`);
     }
     const expectedTracePidValues = values
       .get("--expected-trace-pids")
+      .split(",");
+    const expectedTraceStartPaths = values
+      .get("--expected-trace-start-paths")
+      .split(",");
+    const expectedTraceFinishPaths = values
+      .get("--expected-trace-finish-paths")
       .split(",");
     return {
       tracePath: values.get("--trace"),
@@ -1117,9 +1278,15 @@ function parseArgs(argv) {
       requireTerminalCandidateSync: false,
       requireZeroNetwork: true,
       expectedTracePidValues,
+      expectedTraceStartPaths,
+      expectedTraceFinishPaths,
     };
   }
-  if (values.has("--expected-trace-pids")) {
+  if (
+    values.has("--expected-trace-pids") ||
+    values.has("--expected-trace-start-paths") ||
+    values.has("--expected-trace-finish-paths")
+  ) {
     usage(2, "[input] zero-network trace arguments are invalid");
   }
   for (const name of ["--fixture-root", "--expected-locks"]) {
@@ -1145,6 +1312,8 @@ function parseArgs(argv) {
     requireTerminalCandidateSync,
     requireZeroNetwork: false,
     expectedTracePidValues: null,
+    expectedTraceStartPaths: null,
+    expectedTraceFinishPaths: null,
   };
 }
 
@@ -1159,6 +1328,8 @@ function usage(exitCode, message) {
       "[--require-sigkill-exit] [--require-terminal-candidate-sync]\n" +
       "   or: node tools/verify_ring_transition_runner_syscall_trace.mjs " +
       "--trace <path> --label <label> --expected-trace-pids <pid,...> " +
+      "--expected-trace-start-paths <path,...> " +
+      "--expected-trace-finish-paths <path,...> " +
       "--require-zero-network\n",
   );
   process.exit(exitCode);
@@ -1177,6 +1348,8 @@ async function main() {
         traceText: trace.toString("utf8"),
         label: options.label,
         expectedTracePidValues: options.expectedTracePidValues,
+        expectedTraceStartPaths: options.expectedTraceStartPaths,
+        expectedTraceFinishPaths: options.expectedTraceFinishPaths,
       });
     } else if (options.peerTracePath !== null) {
       if (

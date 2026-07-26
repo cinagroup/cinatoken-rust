@@ -63,13 +63,26 @@ jobs:
           if cargo test --locked -p cinatoken-ring-transition-runner --lib 2>&1 | tee "${log_file}"; then
             exit 0
           fi
+          focused_log="${trace_artifact_dir}/linux-multiprocess-terminal-recovery.log"
+          set +e
+          RUST_BACKTRACE=1 cargo test --locked -p cinatoken-ring-transition-runner \
+            --lib \
+            receipt::tests::linux_multiprocess_terminal_rename_and_kill_recovery \
+            -- \
+            --exact \
+            --nocapture \
+            2>&1 | tee "${focused_log}"
+          focused_status="${PIPESTATUS[0]}"
+          set -e
           {
             echo "### Linux receipt test failure"
+            echo
+            echo "- focused replay status: ${focused_status}"
             echo '```text'
-            tail -n 120 "${log_file}"
+            tail -n 200 "${focused_log}"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
-          diagnostic="$(tail -n 80 "${log_file}")"
+          diagnostic="$(tail -n 120 "${focused_log}")"
           diagnostic="${diagnostic//'%'/'%25'}"
           diagnostic="${diagnostic//$'\r'/'%0D'}"
           diagnostic="${diagnostic//$'\n'/'%0A'}"

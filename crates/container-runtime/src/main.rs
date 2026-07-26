@@ -1,9 +1,35 @@
-use std::{error::Error, net::SocketAddr};
+use std::{env, error::Error, io, net::SocketAddr};
 
 use tokio::{net::TcpListener, signal};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let mut arguments = env::args_os().skip(1);
+    match (arguments.next(), arguments.next()) {
+        (None, None) => {}
+        (Some(argument), None) if argument == "--runtime-attestation-v1" => {
+            #[cfg(target_os = "linux")]
+            {
+                let report = cinatoken_container_runtime::runtime_process_attestation()?;
+                println!("{}", serde_json::to_string(&report)?);
+                return Ok(());
+            }
+            #[cfg(not(target_os = "linux"))]
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "runtime attestation requires Linux",
+            )
+            .into());
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported container runtime argument",
+            )
+            .into());
+        }
+    }
+
     let port = cinatoken_container_runtime::container_port()?;
     let address = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(address).await?;

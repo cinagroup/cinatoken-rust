@@ -7,9 +7,16 @@ import {
   LINUX_GATE_CONTRACT_VERSION,
   NODE_MOCK_IMAGE,
   RUST_BUILDER_IMAGE,
+  RUNTIME_ATTESTATION_CONTRACT_VERSION,
+  RUNTIME_GID,
+  RUNTIME_UID,
+  UPLOAD_ARTIFACT_ACTION,
   auditRepositoryContract,
   buildOperationEnvelope,
+  classifyRuntimeFileDescriptorTarget,
+  parseLinuxMountInfo,
   parseArgs,
+  validateRuntimeProcessAttestation,
 } from "../tools/verify_container_runtime_linux.mjs";
 
 const dockerfile = await Bun.file(
@@ -33,13 +40,15 @@ describe("linux container release gate", () => {
       `FROM ${DISTROLESS_RUNTIME_IMAGE}`,
     ]);
     expect(workflow).toContain(`uses: ${CHECKOUT_ACTION}`);
+    expect(workflow).toContain(`uses: ${UPLOAD_ARTIFACT_ACTION}`);
     expect(workflow).toContain("persist-credentials: false");
     expect(workflow).toContain("runs-on: ubuntu-24.04");
     expect(workflow).toContain("docker build --platform linux/amd64");
     expect(workflow).toContain("tests/fixtures/container-runtime-linux-probe.mjs");
-    expect(workflow).toContain(
-      "node tools/verify_container_runtime_linux.mjs --image cinatoken-container-runtime:linux-gate --json",
-    );
+    expect(workflow).toContain("node tools/verify_container_runtime_linux.mjs");
+    expect(workflow).toContain("--image cinatoken-container-runtime:linux-gate");
+    expect(workflow).toContain("container-runtime-linux-attestation.json");
+    expect(workflow).toContain("retention-days: 30");
     expect(workflow).not.toMatch(/\$\{\{\s*secrets\.|wrangler|cloudflare api/i);
     expect(verifierSource).toContain(NODE_MOCK_IMAGE);
     expect(verifierSource).toContain('"network", "create", "--internal"');
@@ -47,6 +56,10 @@ describe("linux container release gate", () => {
     expect(verifierSource).toContain('"provider-egress.cinatoken.internal"');
     expect(verifierSource).toContain('"runtime.cinatoken.internal"');
     expect(verifierSource).toContain('"exec"');
+    expect(verifierSource).toContain('"--runtime-attestation-v1"');
+    expect(verifierSource).toContain(
+      "/tmp:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=65532,gid=65532",
+    );
     expect(probeSource).toContain("http://runtime.cinatoken.internal:8080");
     expect(probeSource).toContain('MOCK_BASE_URL = "http://127.0.0.1"');
     for (const fragment of [
@@ -115,6 +128,8 @@ describe("linux container release gate", () => {
       checkoutActionPinned: true,
       workflowCredentialFree: true,
       aggregateGateOffline: true,
+      runtimeAttestationCompiled: true,
+      runtimeAttestationHttpExposed: false,
       inNetworkProbe: true,
       hostPortsPublished: false,
       remoteMutationAuthorized: false,
@@ -132,4 +147,130 @@ describe("linux container release gate", () => {
     expect(command.outputLimitExceeded).toBe(false);
     expect(JSON.parse(command.stdout)).toEqual(report);
   });
+
+  test("validates numeric runtime identity, mounts, ACLs, and descriptors", () => {
+    const report = validateRuntimeProcessAttestation(runtimeAttestation());
+    expect(report.process.uid).toEqual(Array(4).fill(RUNTIME_UID));
+    expect(report.process.gid).toEqual(Array(4).fill(RUNTIME_GID));
+    expect(report.processSecurity.noNewPrivileges).toBe(1);
+    expect(report.processSecurity.seccompMode).toBe(2);
+    expect(report.filesystem.rootMount.mountOptions).toContain("ro");
+    expect(report.filesystem.tmpMount.superOptions).toContain("size=16384k");
+    expect(report.filesystem.unexpectedWritableMounts).toEqual([]);
+    expect(report.fileDescriptors.classCounts).toEqual({
+      "dev-null": 1,
+      eventpoll: 1,
+      pipe: 2,
+      socket: 1,
+    });
+
+    const capabilityDrift = runtimeAttestation();
+    capabilityDrift.status.CapEff = "0000000000000001";
+    expect(() => validateRuntimeProcessAttestation(capabilityDrift)).toThrow(
+      "CapEff must be zero",
+    );
+
+    const descriptorDrift = runtimeAttestation();
+    descriptorDrift.fileDescriptors.push({
+      fd: 5,
+      target: "/run/containerd/containerd.sock",
+    });
+    expect(() => validateRuntimeProcessAttestation(descriptorDrift)).toThrow(
+      "unexpected path-backed",
+    );
+
+    const writableDrift = runtimeAttestation();
+    writableDrift.mountInfo +=
+      "43 36 0:44 / /usr/local/share rw,relatime - tmpfs tmpfs rw,size=4k\n";
+    expect(() => validateRuntimeProcessAttestation(writableDrift)).toThrow(
+      "unexpected writable mount",
+    );
+  });
+
+  test("parses escaped mount paths and classifies only bounded FD targets", () => {
+    const mounts = parseLinuxMountInfo(
+      "41 36 0:42 /path\\040with\\040spaces /tmp rw,nosuid,nodev,noexec - tmpfs tmpfs rw,size=16m\n",
+    );
+    expect(mounts[0].mountSource).toBe("tmpfs");
+    expect(classifyRuntimeFileDescriptorTarget("/dev/null")).toBe("dev-null");
+    expect(classifyRuntimeFileDescriptorTarget("socket:[123]")).toBe("socket");
+    expect(classifyRuntimeFileDescriptorTarget("anon_inode:[eventpoll]")).toBe(
+      "eventpoll",
+    );
+    expect(classifyRuntimeFileDescriptorTarget("/host/secret")).toBe("unexpected");
+  });
 });
+
+function runtimeAttestation() {
+  return {
+    schemaVersion: RUNTIME_ATTESTATION_CONTRACT_VERSION,
+    contract: "cinatoken-container-runtime-process-attestation-v1",
+    targetPid: 1,
+    status: {
+      Name: "cinatoken-conta",
+      State: "S (sleeping)",
+      Tgid: "1",
+      Pid: "1",
+      PPid: "0",
+      TracerPid: "0",
+      Uid: `${RUNTIME_UID} ${RUNTIME_UID} ${RUNTIME_UID} ${RUNTIME_UID}`,
+      Gid: `${RUNTIME_GID} ${RUNTIME_GID} ${RUNTIME_GID} ${RUNTIME_GID}`,
+      Groups: String(RUNTIME_GID),
+      CapInh: "0000000000000000",
+      CapPrm: "0000000000000000",
+      CapEff: "0000000000000000",
+      CapBnd: "0000000000000000",
+      CapAmb: "0000000000000000",
+      NoNewPrivs: "1",
+      Seccomp: "2",
+      Seccomp_filters: "1",
+    },
+    links: {
+      cwd: "/",
+      executable: "/usr/local/bin/cinatoken-container-runtime",
+      root: "/",
+    },
+    mountInfo: [
+      "36 25 0:31 / / ro,relatime - overlay overlay rw,lowerdir=/layers",
+      "37 36 0:32 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw",
+      `42 36 0:43 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=16384k,mode=700,uid=${RUNTIME_UID},gid=${RUNTIME_GID}`,
+      "",
+    ].join("\n"),
+    fileDescriptors: [
+      { fd: 0, target: "/dev/null" },
+      { fd: 1, target: "pipe:[101]" },
+      { fd: 2, target: "pipe:[102]" },
+      { fd: 3, target: "anon_inode:[eventpoll]" },
+      { fd: 4, target: "socket:[103]" },
+    ],
+    paths: [
+      pathAttestation("/", "directory", 0, 0, "0755", 4_096),
+      pathAttestation("/usr", "directory", 0, 0, "0755", 4_096),
+      pathAttestation("/usr/local", "directory", 0, 0, "0755", 4_096),
+      pathAttestation("/usr/local/bin", "directory", 0, 0, "0755", 4_096),
+      pathAttestation("/tmp", "directory", RUNTIME_UID, RUNTIME_GID, "0700", 0),
+      pathAttestation(
+        "/usr/local/bin/cinatoken-container-runtime",
+        "file",
+        RUNTIME_UID,
+        RUNTIME_GID,
+        "0755",
+        1024,
+      ),
+    ],
+  };
+}
+
+function pathAttestation(path, fileType, uid, gid, mode, size) {
+  return {
+    path,
+    fileType,
+    uid,
+    gid,
+    mode,
+    linkCount: 1,
+    size,
+    posixAclAccess: false,
+    posixAclDefault: false,
+  };
+}

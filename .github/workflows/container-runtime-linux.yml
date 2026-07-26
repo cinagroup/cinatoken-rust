@@ -57,4 +57,24 @@ jobs:
         run: docker build --platform linux/amd64 --tag cinatoken-container-runtime:linux-gate --file crates/container-runtime/Dockerfile .
 
       - name: Exercise isolated runtime process
-        run: node tools/verify_container_runtime_linux.mjs --image cinatoken-container-runtime:linux-gate --json
+        shell: bash
+        run: |
+          set -o pipefail
+          evidence_dir="${RUNNER_TEMP}/container-runtime-linux"
+          mkdir -p "${evidence_dir}"
+          node tools/verify_container_runtime_linux.mjs \
+            --image cinatoken-container-runtime:linux-gate \
+            --json \
+            2> >(tee "${evidence_dir}/container-runtime-linux-attestation.log" >&2) |
+            tee "${evidence_dir}/container-runtime-linux-attestation.json"
+
+      - name: Retain runtime attestation
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: container-runtime-linux-attestation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/container-runtime-linux/*.json
+            ${{ runner.temp }}/container-runtime-linux/*.log
+          if-no-files-found: ignore
+          retention-days: 30

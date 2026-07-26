@@ -25,6 +25,9 @@ mod client;
 
 use client::{ExecutionError, ExecutionOutcome, InternalProviderClient, OperationExecutor};
 
+#[cfg(target_os = "linux")]
+mod attestation;
+
 pub const DEFAULT_PORT: u16 = 8080;
 pub const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 pub const MAX_EXECUTION_WINDOW_SECONDS: u64 = 300;
@@ -49,6 +52,11 @@ const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CLIENT_RESPONSE_ARTIFACT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CONTAINER_SHARDS: u16 = 1_024;
 static RUNTIME_BUILD_ID: OnceLock<Result<String, String>> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+pub fn runtime_process_attestation() -> std::io::Result<serde_json::Value> {
+    attestation::collect_runtime_attestation()
+}
 
 pub fn app() -> Router {
     let _ = runtime_build_id();

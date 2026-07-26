@@ -606,7 +606,12 @@ jobs:
             jq -r '.unscopedNetworkSyscallsObserved' \
               "${trace_artifact_dir}/concurrent-startup-recovery.verification.json"
           )"
+          startup_unscoped_incomplete_trace_lines="$(
+            jq -r '.unscopedIncompleteTraceLinesObserved' \
+              "${trace_artifact_dir}/concurrent-startup-recovery.verification.json"
+          )"
           [[ "${startup_unscoped_network_syscalls}" =~ ^[0-9]+$ ]]
+          [[ "${startup_unscoped_incomplete_trace_lines}" =~ ^[0-9]+$ ]]
           jq -n \
             --arg gitSha "${GITHUB_SHA}" \
             --arg firstProcessPid "${startup_first_pid}" \
@@ -619,6 +624,7 @@ jobs:
             --arg traceSha256 "${startup_trace_sha256}" \
             --argjson traceBytes "${startup_trace_bytes}" \
             --argjson unscopedNetworkSyscallsObserved "${startup_unscoped_network_syscalls}" \
+            --argjson unscopedIncompleteTraceLinesObserved "${startup_unscoped_incomplete_trace_lines}" \
             '{
               gitSha: $gitSha,
               participants: [
@@ -641,6 +647,7 @@ jobs:
               networkScope: "reported-verify-loaded-credentials-test-threads",
               networkSyscallsObserved: 0,
               unscopedNetworkSyscallsObserved: $unscopedNetworkSyscallsObserved,
+              unscopedIncompleteTraceLinesObserved: $unscopedIncompleteTraceLinesObserved,
               closureIdentity: $closure,
               capture: {
                 straceVersion: $straceVersion,

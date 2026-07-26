@@ -194,6 +194,8 @@ describe("ring-transition runner syscall trace verifier", () => {
         traceText: [
           fixtureTrace({ lockPairs: 2 }),
           "4000  socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC, 0, [7, 8]) = 0",
+          '4000  readlink("/proc/self/exe",  <unfinished ...>',
+          '4000  <... readlink resumed>"/tmp/runner", 4096) = 11',
         ].join("\n"),
         label: "concurrent startup recovery",
         expectedTracePidValues: ["4100"],
@@ -206,6 +208,7 @@ describe("ring-transition runner syscall trace verifier", () => {
       networkSyscallsObserved: 0,
       networkSyscallNames: [],
       observedProcessIdentities: 2,
+      unscopedIncompleteTraceLinesObserved: 2,
       unscopedNetworkSyscallsObserved: 1,
       unscopedNetworkSyscallNames: ["socketpair"],
       zeroNetworkSyscalls: true,
@@ -232,7 +235,25 @@ describe("ring-transition runner syscall trace verifier", () => {
         label: "concurrent startup recovery",
         expectedTracePidValues: ["4100"],
       }),
-    ).toThrow(/incomplete or diagnostic/);
+    ).toThrow(/forbidden network syscall attempted/);
+    expect(
+      verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText: [
+          fixtureTrace({ lockPairs: 2 }),
+          '4100  readlink("/proc/self/exe",  <unfinished ...>',
+          '4100  <... readlink resumed>"/tmp/runner", 4096) = 11',
+        ].join("\n"),
+        label: "concurrent startup recovery",
+        expectedTracePidValues: ["4100"],
+      }).zeroNetworkSyscalls,
+    ).toBe(true);
+    expect(() =>
+      verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText: `${fixtureTrace({ lockPairs: 2 })}\n4100  readlink("/proc/self/exe",  <unfinished ...>`,
+        label: "concurrent startup recovery",
+        expectedTracePidValues: ["4100"],
+      }),
+    ).toThrow(/unfinished scoped syscalls were not resumed/);
     expect(() =>
       verifyRingTransitionRunnerZeroNetworkTrace({
         traceText: fixtureTrace({ lockPairs: 2 }),
@@ -642,6 +663,9 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(workflow).toContain("traceSha256: $traceSha256");
     expect(workflow).toContain("preparedWithoutHttpCore: true");
     expect(workflow).toContain("networkSyscallsObserved: 0");
+    expect(workflow).toContain(
+      "unscopedIncompleteTraceLinesObserved: $unscopedIncompleteTraceLinesObserved",
+    );
     expect(workflow).toContain("Retain successful syscall traces");
     expect(workflow).toContain("retention-days: 30");
   });

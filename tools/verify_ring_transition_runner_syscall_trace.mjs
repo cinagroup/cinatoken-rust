@@ -454,18 +454,55 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
 
   let parsedSyscalls = 0;
   let scopedParsedSyscalls = 0;
+  let unscopedIncompleteTraceLinesObserved = 0;
   let unscopedNetworkSyscallsObserved = 0;
   const observedPidValues = new Set();
   const expectedPidSet = new Set(expectedTracePidValues);
+  const pendingScopedSyscalls = new Map();
   const unscopedNetworkSyscallNames = new Set();
   for (const rawLine of traceText.split(/\r?\n/u)) {
     const line = rawLine.trim();
     if (line === "") continue;
-    if (
-      line.includes("<unfinished ...>") ||
-      line.includes("resumed>") ||
-      line.startsWith("strace:")
-    ) {
+    if (line.startsWith("strace:")) {
+      throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
+    }
+    const unfinished = parseUnfinishedSyscallLine(line);
+    if (unfinished) {
+      observedPidValues.add(unfinished.pid);
+      if (!expectedPidSet.has(unfinished.pid)) {
+        unscopedIncompleteTraceLinesObserved += 1;
+        continue;
+      }
+      scopedParsedSyscalls += 1;
+      if (NETWORK_SYSCALLS.has(unfinished.name)) {
+        throw new Error(
+          `[${label}] forbidden network syscall attempted: ${unfinished.name} by ${unfinished.pid}`,
+        );
+      }
+      if (pendingScopedSyscalls.has(unfinished.pid)) {
+        throw new Error(
+          `[${label}] overlapping unfinished syscalls for ${unfinished.pid}`,
+        );
+      }
+      pendingScopedSyscalls.set(unfinished.pid, unfinished.name);
+      continue;
+    }
+    const resumed = parseResumedSyscallLine(line);
+    if (resumed) {
+      observedPidValues.add(resumed.pid);
+      if (!expectedPidSet.has(resumed.pid)) {
+        unscopedIncompleteTraceLinesObserved += 1;
+        continue;
+      }
+      if (pendingScopedSyscalls.get(resumed.pid) !== resumed.name) {
+        throw new Error(
+          `[${label}] resumed syscall has no matching unfinished syscall: ${line}`,
+        );
+      }
+      pendingScopedSyscalls.delete(resumed.pid);
+      continue;
+    }
+    if (line.includes("<unfinished ...>") || line.includes("resumed>")) {
       throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
     }
     if (parseProcessTerminationLine(line)) continue;
@@ -498,6 +535,15 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
   if (parsedSyscalls === 0) {
     throw new Error(`[${label}] trace contains no parsed syscall`);
   }
+  if (pendingScopedSyscalls.size !== 0) {
+    throw new Error(
+      `[${label}] unfinished scoped syscalls were not resumed: ${[
+        ...pendingScopedSyscalls.entries(),
+      ]
+        .map(([pid, name]) => `${pid}:${name}`)
+        .join(",")}`,
+    );
+  }
   const missingPidValues = expectedTracePidValues.filter(
     (pid) => !observedPidValues.has(pid),
   );
@@ -519,6 +565,7 @@ export function verifyRingTransitionRunnerZeroNetworkTrace({
     expectedTracePidValues: [...expectedTracePidValues],
     networkSyscallsObserved: 0,
     networkSyscallNames: [],
+    unscopedIncompleteTraceLinesObserved,
     unscopedNetworkSyscallsObserved,
     unscopedNetworkSyscallNames: [...unscopedNetworkSyscallNames].sort(),
     zeroNetworkSyscalls: true,
@@ -841,6 +888,30 @@ function parseSyscallLine(raw) {
     name: match[3],
     args: match[4],
     result: match[5],
+  };
+}
+
+function parseUnfinishedSyscallLine(raw) {
+  const match =
+    /^(?:(\d+)\s+|\[pid\s+(\d+)\]\s+)([A-Za-z_][A-Za-z0-9_]*)\(.*<unfinished \.\.\.>$/u.exec(
+      raw,
+    );
+  if (!match) return null;
+  return {
+    pid: match[1] ?? match[2],
+    name: match[3],
+  };
+}
+
+function parseResumedSyscallLine(raw) {
+  const match =
+    /^(?:(\d+)\s+|\[pid\s+(\d+)\]\s+)<\.\.\. ([A-Za-z_][A-Za-z0-9_]*) resumed>.*$/u.exec(
+      raw,
+    );
+  if (!match) return null;
+  return {
+    pid: match[1] ?? match[2],
+    name: match[3],
   };
 }
 

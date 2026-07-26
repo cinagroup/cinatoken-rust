@@ -10677,14 +10677,8 @@ mod tests {
             }
         );
         assert_eq!(
-            store
-                .audit_authorization_operations(&publication, &credentials, &activation)
-                .unwrap(),
-            OperationReceiptAudit {
-                operation_count: 1,
-                unfinished_count: 0,
-                recovered_ambiguous_count: 0,
-            }
+            store.audit_authorization_operations(&publication, &credentials, &activation),
+            Err(ReceiptError::AlreadySealed)
         );
 
         let plan = plan_terminal_receipts(&snapshot, &publication, &credentials).unwrap();

@@ -349,6 +349,7 @@ async function inspectImage(image) {
     "image identity and rootfs layer identities must be complete",
   );
   requireCondition(inspection.Config?.User === "nonroot:nonroot", "image user must be nonroot");
+  requireCondition(inspection.Config?.WorkingDir === "/", "image working directory must be fixed");
   requireCondition(
     JSON.stringify(inspection.Config?.Entrypoint) ===
       JSON.stringify(["/usr/local/bin/cinatoken-container-runtime"]),

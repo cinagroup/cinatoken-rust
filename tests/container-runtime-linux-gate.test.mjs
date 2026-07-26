@@ -51,6 +51,7 @@ describe("linux container release gate", () => {
     expect(workflow).toContain("container-runtime-linux-attestation.json");
     expect(workflow).toContain("retention-days: 30");
     expect(workflow).not.toMatch(/\$\{\{\s*secrets\.|wrangler|cloudflare api/i);
+    expect(dockerfile).toContain("\nWORKDIR /\n");
     expect(verifierSource).toContain(NODE_MOCK_IMAGE);
     expect(verifierSource).toContain('"network", "create", "--internal"');
     expect(verifierSource).toContain('"r2-input.cinatoken.internal"');

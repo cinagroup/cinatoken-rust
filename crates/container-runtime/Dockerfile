@@ -7,6 +7,7 @@ RUN cargo build --locked --release -p cinatoken-container-runtime
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:66aa873a4a14fb164aa01296058efd8253744606d72715e45acface073359faa
 
+WORKDIR /
 COPY --from=builder --chown=nonroot:nonroot /build/target/release/cinatoken-container-runtime /usr/local/bin/cinatoken-container-runtime
 
 USER nonroot:nonroot

@@ -134,8 +134,9 @@ jobs:
 
           generate_sbom() {
             local archive="$1"
-            local output_directory="$2"
-            mkdir -p "${output_directory}"
+            local output_file="$2"
+            mkdir -p "$(dirname "${output_file}")"
+            : > "${output_file}"
             docker run --rm \
               --pull never \
               --platform linux/amd64 \
@@ -148,12 +149,13 @@ jobs:
               --memory 1g \
               --cpus 2 \
               --ulimit nofile=1024:1024 \
+              --ulimit fsize=67108864:67108864 \
               --tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777 \
               --env HOME=/tmp \
               --env XDG_CACHE_HOME=/tmp/cache \
               --env SYFT_CHECK_FOR_APP_UPDATE=false \
               --mount "type=bind,src=${archive},dst=/input/container-runtime.tar,readonly" \
-              --mount "type=bind,src=${output_directory},dst=/output" \
+              --mount "type=bind,src=${output_file},dst=/output/container-runtime.sbom.syft.json" \
               "${SYFT_IMAGE}" \
               "oci-archive:/input/container-runtime.tar" \
               --scope squashed \
@@ -164,10 +166,10 @@ jobs:
 
           generate_sbom \
             "${OCI_ARCHIVE_A}" \
-            "${EVIDENCE_DIR}/sbom-a"
+            "${EVIDENCE_DIR}/sbom-a/container-runtime.sbom.syft.json"
           generate_sbom \
             "${OCI_ARCHIVE_B}" \
-            "${EVIDENCE_DIR}/sbom-b"
+            "${EVIDENCE_DIR}/sbom-b/container-runtime.sbom.syft.json"
 
           set -o pipefail
           node tools/verify_container_runtime_sbom.mjs \

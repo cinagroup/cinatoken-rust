@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { open, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -23,6 +24,11 @@ const OCI_MANIFEST_MEDIA_TYPE =
   "application/vnd.oci.image.manifest.v1+json";
 const OCI_LAYER_MEDIA_TYPE =
   "application/vnd.oci.image.layer.v1.tar+gzip";
+const DOCKER_MANIFEST_MEDIA_TYPE =
+  "application/vnd.docker.distribution.manifest.v2+json";
+const DOCKER_LAYER_MEDIA_TYPE =
+  "application/vnd.docker.image.rootfs.diff.tar.gzip";
+const LOCAL_EVIDENCE_SCOPE = "local-sbom-reproducibility-only";
 const SHA256_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
@@ -93,6 +99,7 @@ export async function auditRepositoryContract() {
   const packageJson = JSON.parse(packageJsonText);
   const generatorCalls =
     workflow.match(/^\s*generate_sbom\s+\\$/gm) ?? [];
+  const generatorFunction = extractGeneratorFunction(workflow);
 
   requireCondition(
     workflow.includes(`SYFT_IMAGE: ${SYFT_IMAGE}`) &&
@@ -105,40 +112,10 @@ export async function auditRepositoryContract() {
       workflow.includes('docker image inspect "${SYFT_IMAGE}"'),
     "SBOM workflow must pin and record the Syft image identity",
   );
+  validateGeneratorFunction(generatorFunction);
   requireCondition(
-    generatorCalls.length === 2 &&
-      workflow.includes("docker run --rm") &&
-      workflow.includes("--pull never") &&
-      workflow.includes("--platform linux/amd64") &&
-      workflow.includes("--network none") &&
-      workflow.includes("--read-only") &&
-      workflow.includes("--cap-drop ALL") &&
-      workflow.includes("--security-opt no-new-privileges=true") &&
-      workflow.includes('--user "$(id -u):$(id -g)"') &&
-      workflow.includes("--pids-limit 256") &&
-      workflow.includes("--memory 1g") &&
-      workflow.includes("--cpus 2") &&
-      workflow.includes("--ulimit nofile=1024:1024") &&
-      workflow.includes(
-        "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777",
-      ),
-    "SBOM workflow must run two resource-bounded nonroot offline catalogers",
-  );
-  requireCondition(
-    workflow.includes(
-      "--mount \"type=bind,src=${archive},dst=/input/container-runtime.tar,readonly\"",
-    ) &&
-      workflow.includes(
-        "--mount \"type=bind,src=${output_directory},dst=/output\"",
-      ) &&
-      workflow.includes(`"${SBOM_INPUT_REFERENCE}"`) &&
-      workflow.includes("--scope squashed") &&
-      workflow.includes(`--source-name ${SBOM_SOURCE_NAME}`) &&
-      workflow.includes('--source-version "${OCI_MANIFEST_DIGEST}"') &&
-      workflow.includes(
-        "--output syft-json=/output/container-runtime.sbom.syft.json",
-      ),
-    "SBOM workflow must scan only the verified archives through a fixed source boundary",
+    generatorCalls.length === 2,
+    "SBOM workflow must invoke the audited cataloger exactly twice",
   );
   requireCondition(
     workflow.includes("node tools/verify_container_runtime_sbom.mjs") &&
@@ -183,6 +160,13 @@ export async function auditRepositoryContract() {
   return {
     contractVersion: SBOM_GATE_CONTRACT_VERSION,
     status: "passed",
+    reportKind: "container-runtime-sbom-contract-audit",
+    decision: {
+      scope: LOCAL_EVIDENCE_SCOPE,
+      formalP5Evidence: false,
+      vulnerabilityDecision: "not-performed",
+      productionDecision: "not-authorized",
+    },
     syftImage: SYFT_IMAGE,
     syftVersion: SYFT_VERSION,
     syftSchemaVersion: SYFT_SCHEMA_VERSION,
@@ -198,6 +182,7 @@ export async function auditRepositoryContract() {
     unapprovedCriticalVulnerabilities: null,
     unapprovedHighVulnerabilities: null,
     canonicalContainerImageDigest: null,
+    imageSignatureVerificationPerformed: false,
     imageSignatureVerified: false,
     registryDigestAuthorized: false,
     registryReadbackVerified: false,
@@ -210,6 +195,61 @@ export async function auditRepositoryContract() {
     customerTrafficAuthorized: false,
     productionCutoverAuthorized: false,
   };
+}
+
+export function validateGeneratorFunction(block) {
+  requireCondition(
+    typeof block === "string" && block.length <= 16 * 1024,
+    "SBOM generator function must be a bounded static shell block",
+  );
+  const requiredFragments = [
+    "local archive=\"$1\"",
+    "local output_file=\"$2\"",
+    'mkdir -p "$(dirname "${output_file}")"',
+    ': > "${output_file}"',
+    "docker run --rm",
+    "--pull never",
+    "--platform linux/amd64",
+    "--network none",
+    "--read-only",
+    "--cap-drop ALL",
+    "--security-opt no-new-privileges=true",
+    '--user "$(id -u):$(id -g)"',
+    "--pids-limit 256",
+    "--memory 1g",
+    "--cpus 2",
+    "--ulimit nofile=1024:1024",
+    "--ulimit fsize=67108864:67108864",
+    "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777",
+    "--env HOME=/tmp",
+    "--env XDG_CACHE_HOME=/tmp/cache",
+    "--env SYFT_CHECK_FOR_APP_UPDATE=false",
+    '--mount "type=bind,src=${archive},dst=/input/container-runtime.tar,readonly"',
+    '--mount "type=bind,src=${output_file},dst=/output/container-runtime.sbom.syft.json"',
+    '"${SYFT_IMAGE}"',
+    `"${SBOM_INPUT_REFERENCE}"`,
+    "--scope squashed",
+    `--source-name ${SBOM_SOURCE_NAME}`,
+    '--source-version "${OCI_MANIFEST_DIGEST}"',
+    "--output syft-json=/output/container-runtime.sbom.syft.json",
+  ];
+  for (const fragment of requiredFragments) {
+    requireCondition(
+      countOccurrences(block, fragment) === 1,
+      `SBOM generator must contain exactly one ${fragment}`,
+    );
+  }
+  requireCondition(
+    countOccurrences(block, "--mount ") === 2 &&
+      countOccurrences(block, "docker run ") === 1,
+    "SBOM generator must expose exactly one input file and one output file",
+  );
+  requireCondition(
+    !/--privileged\b|--cap-add\b|--device\b|--network(?:=|\s+)(?:host|bridge)\b|--user(?:=|\s+)0(?::0)?\b|--pid(?:=|\s+)host\b|--ipc(?:=|\s+)host\b|--uts(?:=|\s+)host\b|--entrypoint\b|seccomp=unconfined|apparmor=unconfined|docker\.sock|type=volume|src=\/(?:,|")/i.test(
+      block,
+    ),
+    "SBOM generator contains a conflicting privileged Docker option",
+  );
 }
 
 export async function runSbomGate(sbomAPath, sbomBPath, ociReportPath) {
@@ -240,6 +280,13 @@ export async function runSbomGate(sbomAPath, sbomBPath, ociReportPath) {
   return {
     contractVersion: SBOM_GATE_CONTRACT_VERSION,
     status: "passed",
+    reportKind: "container-runtime-sbom-reproducibility",
+    decision: {
+      scope: LOCAL_EVIDENCE_SCOPE,
+      formalP5Evidence: false,
+      vulnerabilityDecision: "not-performed",
+      productionDecision: "not-authorized",
+    },
     subject: {
       archiveSha256: ociReport.reproducibility.archiveSha256,
       ociIndexDigest: ociReport.ociIndexDigest,
@@ -270,6 +317,7 @@ export async function runSbomGate(sbomAPath, sbomBPath, ociReportPath) {
       sourceId: sbomFacts.sourceId,
       sourceManifestDigest: sbomFacts.sourceManifestDigest,
       sourceConfigDigest: sbomFacts.sourceConfigDigest,
+      sourceMediaType: sbomFacts.sourceMediaType,
       sourceLayerCount: sbomFacts.sourceLayerCount,
     },
     generatedSbomPresent: true,
@@ -278,6 +326,7 @@ export async function runSbomGate(sbomAPath, sbomBPath, ociReportPath) {
     unapprovedCriticalVulnerabilities: null,
     unapprovedHighVulnerabilities: null,
     canonicalContainerImageDigest: null,
+    imageSignatureVerificationPerformed: false,
     imageSignatureVerified: false,
     registryDigestAuthorized: false,
     registryReadbackVerified: false,
@@ -344,6 +393,19 @@ export function validateOciReport(report) {
 
 export function validateSyftSbom(sbom, ociReport) {
   requireObject(sbom, "Syft SBOM");
+  requireAllowedKeys(
+    sbom,
+    [
+      "artifacts",
+      "artifactRelationships",
+      "files",
+      "source",
+      "distro",
+      "descriptor",
+      "schema",
+    ],
+    "Syft SBOM",
+  );
   const schema = requireObject(sbom.schema, "Syft SBOM schema");
   requireCondition(
     schema.version === SYFT_SCHEMA_VERSION &&
@@ -359,8 +421,21 @@ export function validateSyftSbom(sbom, ociReport) {
     descriptor.name === "syft" && descriptor.version === SYFT_VERSION,
     "Syft generator identity drifted",
   );
+  const descriptorConfiguration = requireObject(
+    descriptor.configuration,
+    "Syft generator configuration",
+  );
+  requireCondition(
+    descriptorConfiguration.scope === "squashed",
+    "Syft generator scope is not squashed",
+  );
 
   const source = requireObject(sbom.source, "Syft SBOM source");
+  requireAllowedKeys(
+    source,
+    ["id", "name", "version", "supplier", "type", "metadata"],
+    "Syft SBOM source",
+  );
   requireCondition(
     typeof source.id === "string" &&
       source.id.length > 0 &&
@@ -377,6 +452,27 @@ export function validateSyftSbom(sbom, ociReport) {
     source.metadata,
     "Syft image metadata",
   );
+  requireAllowedKeys(
+    metadata,
+    [
+      "userInput",
+      "imageID",
+      "manifestDigest",
+      "mediaType",
+      "tags",
+      "imageSize",
+      "layers",
+      "manifest",
+      "config",
+      "repoDigests",
+      "architecture",
+      "architectureVariant",
+      "os",
+      "labels",
+      "annotations",
+    ],
+    "Syft image metadata",
+  );
   requireCondition(
     metadata.userInput === SBOM_SOURCE_REFERENCE,
     "Syft source reference escaped the fixed OCI archive boundary",
@@ -387,10 +483,16 @@ export function validateSyftSbom(sbom, ociReport) {
     "Syft image or manifest digest does not match the OCI report",
   );
   requireCondition(
-    metadata.mediaType === OCI_MANIFEST_MEDIA_TYPE &&
-      metadata.architecture === "amd64" &&
-      metadata.os === "linux",
-    "Syft image media type or platform drifted",
+    [OCI_MANIFEST_MEDIA_TYPE, DOCKER_MANIFEST_MEDIA_TYPE].includes(
+      metadata.mediaType,
+    ),
+    `Syft image media type drifted: ${String(metadata.mediaType)}`,
+  );
+  requireCondition(
+    metadata.architecture === "amd64" && metadata.os === "linux",
+    `Syft image platform drifted: ${String(metadata.os)}/${String(
+      metadata.architecture,
+    )}`,
   );
   requireCondition(
     Number.isSafeInteger(metadata.imageSize) &&
@@ -414,7 +516,9 @@ export function validateSyftSbom(sbom, ociReport) {
   for (let index = 0; index < layers.length; index += 1) {
     const layer = requireObject(layers[index], `Syft layer ${index}`);
     requireCondition(
-      layer.mediaType === OCI_LAYER_MEDIA_TYPE &&
+      [OCI_LAYER_MEDIA_TYPE, DOCKER_LAYER_MEDIA_TYPE].includes(
+        layer.mediaType,
+      ) &&
         layer.digest === ociReport.compressedLayerDigests[index] &&
         Number.isSafeInteger(layer.size) &&
         layer.size > 0,
@@ -481,9 +585,53 @@ export function validateSyftSbom(sbom, ociReport) {
   const artifactIds = new Set();
   for (const [index, artifact] of artifacts.entries()) {
     const pkg = requireObject(artifact, `Syft package ${index}`);
+    requireAllowedKeys(
+      pkg,
+      [
+        "id",
+        "name",
+        "version",
+        "type",
+        "foundBy",
+        "locations",
+        "licenses",
+        "language",
+        "cpes",
+        "purl",
+        "metadataType",
+        "metadata",
+      ],
+      `Syft package ${index}`,
+    );
     requireBoundedString(pkg.id, `Syft package ${index} ID`, 256);
     requireBoundedString(pkg.name, `Syft package ${index} name`, 4096);
+    requireBoundedString(
+      pkg.version,
+      `Syft package ${index} version`,
+      4096,
+    );
     requireBoundedString(pkg.type, `Syft package ${index} type`, 256);
+    requireBoundedString(
+      pkg.foundBy,
+      `Syft package ${index} cataloger`,
+      4096,
+    );
+    requireBoundedString(pkg.purl, `Syft package ${index} PURL`, 8192);
+    requireCondition(
+      typeof pkg.language === "string" && pkg.language.length <= 256,
+      `Syft package ${index} language must be bounded`,
+    );
+    validatePackageLocations(pkg.locations, index);
+    validatePackageLicenses(pkg.licenses, index);
+    validatePackageCpes(pkg.cpes, index);
+    requireCondition(
+      (pkg.metadataType === undefined && pkg.metadata === undefined) ||
+        (typeof pkg.metadataType === "string" &&
+          pkg.metadataType.length > 0 &&
+          pkg.metadataType.length <= 512 &&
+          pkg.metadata !== undefined),
+      `Syft package ${index} metadata type and payload must be paired`,
+    );
     requireCondition(
       !artifactIds.has(pkg.id),
       "Syft package IDs must be unique",
@@ -498,6 +646,50 @@ export function validateSyftSbom(sbom, ociReport) {
     relationships.length <= 4_000_000,
     "Syft relationship inventory exceeds the bound",
   );
+  for (const [index, relationship] of relationships.entries()) {
+    const value = requireObject(
+      relationship,
+      `Syft relationship ${index}`,
+    );
+    requireAllowedKeys(
+      value,
+      ["parent", "child", "type", "metadata"],
+      `Syft relationship ${index}`,
+    );
+    requireBoundedString(
+      value.parent,
+      `Syft relationship ${index} parent`,
+      256,
+    );
+    requireBoundedString(
+      value.child,
+      `Syft relationship ${index} child`,
+      256,
+    );
+    requireBoundedString(
+      value.type,
+      `Syft relationship ${index} type`,
+      256,
+    );
+    requireCondition(
+      value.parent !== value.child &&
+        (artifactIds.has(value.parent) || artifactIds.has(value.child)),
+      `Syft relationship ${index} is not anchored to a package`,
+    );
+  }
+  if (sbom.files !== undefined) {
+    const files = requireArray(sbom.files, "Syft file inventory");
+    requireCondition(
+      files.length <= 4_000_000 &&
+        files.every(
+          (file) =>
+            file !== null &&
+            typeof file === "object" &&
+            !Array.isArray(file),
+        ),
+      "Syft file inventory must contain bounded objects",
+    );
+  }
 
   return {
     packageCount: artifacts.length,
@@ -505,26 +697,149 @@ export function validateSyftSbom(sbom, ociReport) {
     sourceId: source.id,
     sourceManifestDigest: metadata.manifestDigest,
     sourceConfigDigest: metadata.imageID,
+    sourceMediaType: metadata.mediaType,
     sourceLayerCount: layers.length,
   };
 }
 
+function validatePackageLocations(value, packageIndex) {
+  const locations = requireArray(
+    value,
+    `Syft package ${packageIndex} locations`,
+  );
+  requireCondition(
+    locations.length > 0 && locations.length <= 1_000_000,
+    `Syft package ${packageIndex} must have bounded locations`,
+  );
+  for (const [locationIndex, location] of locations.entries()) {
+    const item = requireObject(
+      location,
+      `Syft package ${packageIndex} location ${locationIndex}`,
+    );
+    requireAllowedKeys(
+      item,
+      ["path", "layerID", "accessPath", "annotations"],
+      `Syft package ${packageIndex} location ${locationIndex}`,
+    );
+    requireBoundedString(
+      item.path,
+      `Syft package ${packageIndex} location ${locationIndex} path`,
+      32 * 1024,
+    );
+    requireCondition(
+      item.path.startsWith("/") &&
+        typeof item.accessPath === "string" &&
+        item.accessPath.startsWith("/") &&
+        item.accessPath.length <= 32 * 1024,
+      `Syft package ${packageIndex} location ${locationIndex} must use absolute image paths`,
+    );
+    if (item.layerID !== undefined) {
+      requireCondition(
+        validDigest(item.layerID),
+        `Syft package ${packageIndex} location ${locationIndex} layer ID must be SHA-256`,
+      );
+    }
+  }
+}
+
+function validatePackageLicenses(value, packageIndex) {
+  const licenses = requireArray(
+    value,
+    `Syft package ${packageIndex} licenses`,
+  );
+  requireCondition(
+    licenses.length <= 100_000,
+    `Syft package ${packageIndex} license inventory exceeds the bound`,
+  );
+  for (const [licenseIndex, license] of licenses.entries()) {
+    const item = requireObject(
+      license,
+      `Syft package ${packageIndex} license ${licenseIndex}`,
+    );
+    requireAllowedKeys(
+      item,
+      [
+        "value",
+        "spdxExpression",
+        "type",
+        "urls",
+        "locations",
+        "contents",
+      ],
+      `Syft package ${packageIndex} license ${licenseIndex}`,
+    );
+    requireCondition(
+      typeof item.value === "string" &&
+        item.value.length <= 32 * 1024 &&
+        typeof item.spdxExpression === "string" &&
+        item.spdxExpression.length <= 32 * 1024 &&
+        typeof item.type === "string" &&
+        item.type.length <= 256 &&
+        Array.isArray(item.urls) &&
+        Array.isArray(item.locations),
+      `Syft package ${packageIndex} license ${licenseIndex} is malformed`,
+    );
+  }
+}
+
+function validatePackageCpes(value, packageIndex) {
+  const cpes = requireArray(value, `Syft package ${packageIndex} CPEs`);
+  requireCondition(
+    cpes.length <= 100_000,
+    `Syft package ${packageIndex} CPE inventory exceeds the bound`,
+  );
+  for (const [cpeIndex, cpe] of cpes.entries()) {
+    const item = requireObject(
+      cpe,
+      `Syft package ${packageIndex} CPE ${cpeIndex}`,
+    );
+    requireAllowedKeys(
+      item,
+      ["cpe", "source"],
+      `Syft package ${packageIndex} CPE ${cpeIndex}`,
+    );
+    requireBoundedString(
+      item.cpe,
+      `Syft package ${packageIndex} CPE ${cpeIndex} value`,
+      8192,
+    );
+  }
+}
+
 async function readBoundedFile(path, maximumBytes, label) {
   const resolved = resolve(path);
-  const fileStat = await stat(resolved);
-  requireCondition(
-    fileStat.isFile() &&
-      fileStat.size > 0 &&
-      fileStat.size <= maximumBytes,
-    `${label} must be a nonempty bounded regular file`,
-  );
-  return readFile(resolved);
+  let handle;
+  try {
+    handle = await open(
+      resolved,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+    );
+    const before = await handle.stat();
+    requireCondition(
+      before.isFile() &&
+        before.size > 0 &&
+        before.size <= maximumBytes,
+      `${label} must be a nonempty bounded regular file`,
+    );
+    const bytes = await handle.readFile();
+    const after = await handle.stat();
+    requireCondition(
+      bytes.length === before.size &&
+        after.size === before.size &&
+        after.mtimeMs === before.mtimeMs,
+      `${label} changed while it was being read`,
+    );
+    return bytes;
+  } finally {
+    await handle?.close();
+  }
 }
 
 function parseJsonObject(bytes, label) {
   let value;
   try {
-    value = JSON.parse(bytes.toString("utf8"));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    value = JSON.parse(text);
   } catch {
     throw new Error(`${label} must be valid UTF-8 JSON`);
   }
@@ -571,6 +886,15 @@ function requireArray(value, label) {
   return value;
 }
 
+function requireAllowedKeys(value, keys, label) {
+  const object = requireObject(value, label);
+  const allowed = new Set(keys);
+  requireCondition(
+    Object.keys(object).every((key) => allowed.has(key)),
+    `${label} contains an unsupported key`,
+  );
+}
+
 function requireObject(value, label) {
   requireCondition(
     value !== null && typeof value === "object" && !Array.isArray(value),
@@ -599,6 +923,23 @@ function validSha256(value) {
 
 function sha256Hex(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function extractGeneratorFunction(workflow) {
+  const matches = [
+    ...workflow.matchAll(
+      /^\s{10}generate_sbom\(\) \{\n([\s\S]*?)^\s{10}\}$/gm,
+    ),
+  ];
+  requireCondition(
+    matches.length === 1,
+    "SBOM workflow must declare exactly one static generator function",
+  );
+  return matches[0][0];
+}
+
+function countOccurrences(value, fragment) {
+  return value.split(fragment).length - 1;
 }
 
 function requireCondition(condition, message) {

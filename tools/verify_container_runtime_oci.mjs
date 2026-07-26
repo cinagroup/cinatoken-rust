@@ -111,15 +111,16 @@ export async function auditRepositoryContract() {
       /docker buildx build \\\n([\s\S]*?)\n\s+\./g,
     ),
   ].map((match) => match[0]);
-  const pinnedBuilderArguments =
-    workflow.match(/--builder "\$\{BUILDX_BUILDER_[AB]\}"/g) ?? [];
-  const noCacheArguments = workflow.match(/--no-cache/g) ?? [];
-  const epochArguments =
-    workflow.match(/--build-arg SOURCE_DATE_EPOCH=0/g) ?? [];
-  const ociOutputs =
-    workflow.match(/type=oci,[^\r\n]*rewrite-timestamp=true/g) ?? [];
-  const provenanceDisabled = workflow.match(/--provenance=false/g) ?? [];
-  const sbomDisabled = workflow.match(/--sbom=false/g) ?? [];
+  const buildContracts = [
+    {
+      builder: '--builder "${BUILDX_BUILDER_A}"',
+      archive: "dest=${OCI_ARCHIVE_A}",
+    },
+    {
+      builder: '--builder "${BUILDX_BUILDER_B}"',
+      archive: "dest=${OCI_ARCHIVE_B}",
+    },
+  ];
 
   requireCondition(
     workflow.includes(`uses: ${CHECKOUT_ACTION}`) &&
@@ -133,20 +134,35 @@ export async function auditRepositoryContract() {
   requireCondition(
     independentBuilds.length === 2 &&
       buildBlocks.length === 2 &&
-      buildBlocks.every((block) =>
-        block.includes("--platform linux/amd64"),
-      ) &&
-      pinnedBuilderArguments.length === 2 &&
-      noCacheArguments.length === 2 &&
-      epochArguments.length === 2 &&
-      ociOutputs.length === 2 &&
-      provenanceDisabled.length === 2 &&
-      sbomDisabled.length === 2 &&
-      workflow.includes("compression=gzip") &&
-      workflow.includes("compression-level=9") &&
-      workflow.includes("force-compression=true") &&
-      workflow.includes("oci-mediatypes=true") &&
-      workflow.includes("compatibility-version=20"),
+      buildBlocks.every((block, index) => {
+        const required = [
+          buildContracts[index].builder,
+          "--no-cache",
+          "--platform linux/amd64",
+          "--build-arg SOURCE_DATE_EPOCH=0",
+          "--provenance=false",
+          "--sbom=false",
+          "--file crates/container-runtime/Dockerfile",
+          "type=oci",
+          buildContracts[index].archive,
+          "rewrite-timestamp=true",
+          "compression=gzip",
+          "compression-level=9",
+          "force-compression=true",
+          "oci-mediatypes=true",
+          "compatibility-version=20",
+        ];
+        return (
+          required.every(
+            (fragment) => countOccurrences(block, fragment) === 1,
+          ) &&
+          countOccurrences(block, "--builder ") === 1 &&
+          countOccurrences(block, "--output ") === 1 &&
+          !/--push\b|--load\b|--secret\b|--ssh\b|--network\b/.test(
+            block,
+          )
+        );
+      }),
     "OCI workflow must perform two deterministic no-cache exports with default attestations disabled",
   );
   requireCondition(
@@ -998,6 +1014,10 @@ function sha256Hex(bytes) {
 
 function equalSets(left, right) {
   return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function countOccurrences(value, fragment) {
+  return value.split(fragment).length - 1;
 }
 
 function requireCondition(condition, message) {

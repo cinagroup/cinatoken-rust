@@ -22,6 +22,7 @@ import {
   auditRepositoryContract,
   parseArgs,
   runSbomGate,
+  validateGeneratorFunction,
   validateOciReport,
   validateSyftSbom,
 } from "../tools/verify_container_runtime_sbom.mjs";
@@ -72,6 +73,7 @@ describe("container runtime SBOM release gate", () => {
       "--memory 1g",
       "--cpus 2",
       "--ulimit nofile=1024:1024",
+      "--ulimit fsize=67108864:67108864",
       "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777",
       "--scope squashed",
       `--source-name ${SBOM_SOURCE_NAME}`,
@@ -82,6 +84,9 @@ describe("container runtime SBOM release gate", () => {
     }
     expect(workflow).toContain(`"${SBOM_INPUT_REFERENCE}"`);
     expect(workflow).toContain(
+      '--mount "type=bind,src=${output_file},dst=/output/container-runtime.sbom.syft.json"',
+    );
+    expect(workflow).toContain(
       "node tools/verify_container_runtime_sbom.mjs",
     );
     expect(workflow).not.toMatch(
@@ -90,6 +95,36 @@ describe("container runtime SBOM release gate", () => {
     expect(workflow).not.toMatch(
       /docker login|registry login|cosign sign|wrangler|cloudflare api/i,
     );
+  });
+
+  test("rejects conflicting privileged cataloger options", async () => {
+    const workflow = await Bun.file(
+      new URL(
+        "../.github/workflows/container-runtime-oci.yml",
+        import.meta.url,
+      ),
+    ).text();
+    const block = workflow.match(
+      /^\s{10}generate_sbom\(\) \{\n[\s\S]*?^\s{10}\}$/m,
+    )?.[0];
+    expect(block).toBeDefined();
+    validateGeneratorFunction(block);
+
+    for (const fragment of [
+      "              --privileged \\",
+      "              --network host \\",
+      "              --user 0:0 \\",
+      "              --cap-add SYS_ADMIN \\",
+      "              --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \\",
+    ]) {
+      const drifted = block.replace(
+        "              --pull never \\",
+        `              --pull never \\\n${fragment}`,
+      );
+      expect(() => validateGeneratorFunction(drifted)).toThrow(
+        /conflicting privileged|exactly one/i,
+      );
+    }
   });
 
   test("keeps self-test and complete real-gate CLI modes exclusive", () => {
@@ -149,6 +184,13 @@ describe("container runtime SBOM release gate", () => {
     expect(report).toMatchObject({
       contractVersion: SBOM_GATE_CONTRACT_VERSION,
       status: "passed",
+      reportKind: "container-runtime-sbom-contract-audit",
+      decision: {
+        scope: "local-sbom-reproducibility-only",
+        formalP5Evidence: false,
+        vulnerabilityDecision: "not-performed",
+        productionDecision: "not-authorized",
+      },
       syftImage: SYFT_IMAGE,
       syftVersion: SYFT_VERSION,
       syftSchemaVersion: SYFT_SCHEMA_VERSION,
@@ -164,6 +206,7 @@ describe("container runtime SBOM release gate", () => {
       unapprovedCriticalVulnerabilities: null,
       unapprovedHighVulnerabilities: null,
       canonicalContainerImageDigest: null,
+      imageSignatureVerificationPerformed: false,
       imageSignatureVerified: false,
       registryReadbackVerified: false,
       cloudflareDeploymentDigestVerified: false,
@@ -201,6 +244,7 @@ describe("container runtime SBOM release gate", () => {
       sourceId: fixture.sbom.source.id,
       sourceManifestDigest: fixture.ociReport.ociManifestDigest,
       sourceConfigDigest: fixture.ociReport.ociConfigDigest,
+      sourceMediaType: OCI_MANIFEST_MEDIA_TYPE,
       sourceLayerCount: 2,
     });
 
@@ -213,6 +257,13 @@ describe("container runtime SBOM release gate", () => {
     expect(report).toMatchObject({
       contractVersion: SBOM_GATE_CONTRACT_VERSION,
       status: "passed",
+      reportKind: "container-runtime-sbom-reproducibility",
+      decision: {
+        scope: "local-sbom-reproducibility-only",
+        formalP5Evidence: false,
+        vulnerabilityDecision: "not-performed",
+        productionDecision: "not-authorized",
+      },
       subject: {
         archiveSha256:
           fixture.ociReport.reproducibility.archiveSha256,
@@ -242,6 +293,7 @@ describe("container runtime SBOM release gate", () => {
         packageCount: 2,
         relationshipCount: 1,
         sourceLayerCount: 2,
+        sourceMediaType: OCI_MANIFEST_MEDIA_TYPE,
       },
       generatedSbomPresent: true,
       generatedProvenancePresent: false,
@@ -249,10 +301,12 @@ describe("container runtime SBOM release gate", () => {
       unapprovedCriticalVulnerabilities: null,
       unapprovedHighVulnerabilities: null,
       canonicalContainerImageDigest: null,
+      imageSignatureVerificationPerformed: false,
       p5SbomSourceGenerated: false,
       p5Eligible: false,
       productionCutoverAuthorized: false,
     });
+    assertNoFormalP5Fields(report);
   });
 
   test("rejects nonidentical independent SBOM bytes", async () => {
@@ -458,12 +512,36 @@ function buildFixture() {
         name: "base-files",
         version: "1",
         type: "deb",
+        foundBy: "dpkg-db-cataloger",
+        locations: [
+          {
+            path: "/var/lib/dpkg/status",
+            layerID: layerDigests[0],
+            accessPath: "/var/lib/dpkg/status",
+          },
+        ],
+        licenses: [],
+        language: "",
+        cpes: [],
+        purl: "pkg:deb/debian/base-files@1",
       },
       {
         id: sha256Hex("package-b"),
         name: "ca-certificates",
         version: "2",
         type: "deb",
+        foundBy: "dpkg-db-cataloger",
+        locations: [
+          {
+            path: "/var/lib/dpkg/status",
+            layerID: layerDigests[1],
+            accessPath: "/var/lib/dpkg/status",
+          },
+        ],
+        licenses: [],
+        language: "",
+        cpes: [],
+        purl: "pkg:deb/debian/ca-certificates@2",
       },
     ],
     artifactRelationships: [
@@ -535,4 +613,24 @@ function digest(value) {
 
 function sha256Hex(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function assertNoFormalP5Fields(value) {
+  const forbidden = new Set([
+    "containerImageDigest",
+    "containerImageProvenanceSha256",
+    "containerSbomSha256",
+    "containerSignatureVerified",
+    "runtimeImageProvenanceVerified",
+    "candidateDigestSha256",
+    "sources",
+  ]);
+  const visit = (node) => {
+    if (node === null || typeof node !== "object") return;
+    for (const [key, child] of Object.entries(node)) {
+      expect(forbidden.has(key)).toBe(false);
+      visit(child);
+    }
+  };
+  visit(value);
 }

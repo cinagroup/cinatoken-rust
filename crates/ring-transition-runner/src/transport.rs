@@ -4717,6 +4717,7 @@ mod tests {
             second_trace_finish.display()
         );
         println!("startup-pair-closure={first_closure}");
+        println!("startup-pair-action=receipt-sealed");
         std::io::stdout().flush().unwrap();
 
         let replayed = verify_loaded_credentials(

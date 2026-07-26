@@ -1073,6 +1073,57 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(workflow).toContain("traceBytes: $traceBytes");
     expect(workflow).toContain("startup-lock-timeout-boundary=verified");
   });
+
+  test("Linux workflow runs a bounded startup schedule campaign without pinning retries", async () => {
+    const workflow = await readFile(WORKFLOW, "utf8");
+    expect(workflow).toContain("startup_soak_iterations=32");
+    expect(workflow).toContain("startup_soak_iteration_watchdog_ms=15000");
+    expect(workflow).toContain("startup_soak_campaign_budget_ms=120000");
+    expect(workflow).toContain(
+      'for iteration in $(seq 1 "${startup_soak_iterations}"); do',
+    );
+    expect(workflow).toContain(
+      'timeout --signal=TERM --kill-after=2s \\',
+    );
+    expect(workflow).toContain(
+      "transport::tests::linux_multiprocess_startup_terminal_candidate_converges_without_http",
+    );
+    expect(workflow).toContain("startup-schedule-soak-records.ndjson");
+    expect(workflow).toContain("startup-schedule-soak-boundary.json");
+    expect(workflow).toContain(
+      'contract: "cinatoken-ring-transition-startup-schedule-soak-v1"',
+    );
+    expect(workflow).toContain(
+      "allParticipantProcessPairsDistinct",
+    );
+    expect(workflow).toContain("allLockThreadPairsDistinct");
+    expect(workflow).toContain("allActionsReceiptSealed");
+    expect(workflow).toContain("grep '^startup-pair-action='");
+    expect(workflow).toContain("uniqueClosureCount: ($closures | length)");
+    expect(workflow).toContain(
+      'policy: "single-captured-sample-plus-process-soak-v1"',
+    );
+    expect(workflow).toContain(
+      ".observedIterations == .requiredIterations",
+    );
+    expect(workflow).toContain(
+      ".campaignElapsedMs < .campaignBudgetMs",
+    );
+    expect(workflow).toContain("recordsSha256: $recordsSha256");
+    expect(workflow).toContain(
+      "(.samples | map(.iteration) | unique | length) ==",
+    );
+    expect(workflow).toContain(
+      ".elapsedMs.max < .iterationWatchdogMs",
+    );
+    expect(workflow).toContain(
+      "${{ runner.temp }}/ring-transition-syscall-traces/*.ndjson",
+    );
+    expect(workflow).toContain("startup-schedule-soak-boundary=verified");
+    expect(workflow).not.toMatch(
+      /startup[_-]soak[^\n]*(?:contention|retry)[^\n]*==\s*\d+/u,
+    );
+  });
 });
 
 function startupWindowTrace({

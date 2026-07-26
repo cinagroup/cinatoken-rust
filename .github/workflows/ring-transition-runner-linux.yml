@@ -145,6 +145,8 @@ jobs:
           startup_output="${trace_artifact_dir}/concurrent-startup-recovery.log"
           startup_timeout_trace_log="${trace_artifact_dir}/startup-lock-timeout.strace"
           startup_timeout_output="${trace_artifact_dir}/startup-lock-timeout.log"
+          startup_soak_output="${trace_artifact_dir}/startup-schedule-soak.log"
+          startup_soak_records="${trace_artifact_dir}/startup-schedule-soak-records.ndjson"
           startup_trace_filter="%file,%network,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl"
           candidate_writer_tracer_pid=""
           candidate_writer_pid=""
@@ -930,6 +932,204 @@ jobs:
             > /dev/null
           echo "startup-lock-timeout-boundary=verified"
 
+          startup_soak_iterations=32
+          startup_soak_iteration_watchdog_ms=15000
+          startup_soak_campaign_budget_ms=120000
+          startup_soak_campaign_started_ns="$(date +%s%N)"
+          startup_soak_campaign_deadline_seconds="$((SECONDS + startup_soak_campaign_budget_ms / 1000))"
+          : > "${startup_soak_output}"
+          : > "${startup_soak_records}"
+          for iteration in $(seq 1 "${startup_soak_iterations}"); do
+            startup_soak_remaining_seconds="$((startup_soak_campaign_deadline_seconds - SECONDS))"
+            test "${startup_soak_remaining_seconds}" -gt 0
+            startup_soak_iteration_timeout_seconds=15
+            if test "${startup_soak_remaining_seconds}" -lt 15; then
+              startup_soak_iteration_timeout_seconds="${startup_soak_remaining_seconds}"
+            fi
+            startup_soak_iteration_started_ns="$(date +%s%N)"
+            set +e
+            startup_soak_iteration_output="$(
+              timeout --signal=TERM --kill-after=2s \
+                "${startup_soak_iteration_timeout_seconds}s" \
+                "${test_binary}" \
+                --exact transport::tests::linux_multiprocess_startup_terminal_candidate_converges_without_http \
+                --nocapture \
+                2>&1
+            )"
+            startup_soak_iteration_status="$?"
+            set -e
+            {
+              echo "startup-soak-iteration=${iteration}"
+              printf '%s\n' "${startup_soak_iteration_output}"
+            } | tee -a "${startup_soak_output}"
+            test "${startup_soak_iteration_status}" -eq 0
+            startup_soak_iteration_finished_ns="$(date +%s%N)"
+            startup_soak_iteration_elapsed_ms="$((
+              (startup_soak_iteration_finished_ns - startup_soak_iteration_started_ns) /
+                1000000
+            ))"
+            test "${startup_soak_iteration_elapsed_ms}" -gt 0
+            test "${startup_soak_iteration_elapsed_ms}" \
+              -lt "${startup_soak_iteration_watchdog_ms}"
+
+            startup_soak_process_ids="$(
+              grep '^startup-pair-process-ids=' \
+                <<< "${startup_soak_iteration_output}" |
+                tail -n 1 |
+                cut -d= -f2
+            )"
+            startup_soak_lock_thread_ids="$(
+              grep '^startup-pair-lock-thread-ids=' \
+                <<< "${startup_soak_iteration_output}" |
+                tail -n 1 |
+                cut -d= -f2
+            )"
+            startup_soak_closure="$(
+              grep '^startup-pair-closure=' \
+                <<< "${startup_soak_iteration_output}" |
+                tail -n 1 |
+                cut -d= -f2-
+            )"
+            startup_soak_action="$(
+              grep '^startup-pair-action=' \
+                <<< "${startup_soak_iteration_output}" |
+                tail -n 1 |
+                cut -d= -f2
+            )"
+            IFS=, read -r startup_soak_first_pid startup_soak_second_pid \
+              <<< "${startup_soak_process_ids}"
+            IFS=, read -r startup_soak_first_tid startup_soak_second_tid \
+              <<< "${startup_soak_lock_thread_ids}"
+            [[ "${startup_soak_first_pid}" =~ ^[1-9][0-9]*$ ]]
+            [[ "${startup_soak_second_pid}" =~ ^[1-9][0-9]*$ ]]
+            [[ "${startup_soak_first_tid}" =~ ^[1-9][0-9]*$ ]]
+            [[ "${startup_soak_second_tid}" =~ ^[1-9][0-9]*$ ]]
+            test "${startup_soak_first_pid}" != "${startup_soak_second_pid}"
+            test "${startup_soak_first_tid}" != "${startup_soak_second_tid}"
+            test -n "${startup_soak_closure}"
+            test "${startup_soak_action}" = "receipt-sealed"
+            startup_soak_closure_sha256="$(
+              printf '%s' "${startup_soak_closure}" |
+                sha256sum |
+                cut -d' ' -f1
+            )"
+
+            jq -cn \
+              --argjson iteration "${iteration}" \
+              --argjson elapsedMs "${startup_soak_iteration_elapsed_ms}" \
+              --arg firstProcessPid "${startup_soak_first_pid}" \
+              --arg secondProcessPid "${startup_soak_second_pid}" \
+              --arg firstLockThreadId "${startup_soak_first_tid}" \
+              --arg secondLockThreadId "${startup_soak_second_tid}" \
+              --arg closure "${startup_soak_closure}" \
+              --arg closureSha256 "${startup_soak_closure_sha256}" \
+              --arg action "${startup_soak_action}" \
+              '{
+                iteration: $iteration,
+                elapsedMs: $elapsedMs,
+                processPids: [$firstProcessPid, $secondProcessPid],
+                lockThreadIds: [$firstLockThreadId, $secondLockThreadId],
+                action: $action,
+                closure: $closure,
+                closureSha256: $closureSha256
+              }' >> "${startup_soak_records}"
+          done
+          startup_soak_campaign_finished_ns="$(date +%s%N)"
+          startup_soak_campaign_elapsed_ms="$((
+            (startup_soak_campaign_finished_ns - startup_soak_campaign_started_ns) /
+              1000000
+          ))"
+          test "${startup_soak_campaign_elapsed_ms}" \
+            -lt "${startup_soak_campaign_budget_ms}"
+          startup_soak_records_sha256="$(
+            sha256sum "${startup_soak_records}" |
+              cut -d' ' -f1
+          )"
+
+          jq -s \
+            --arg gitSha "${GITHUB_SHA}" \
+            --arg traceSha256 "${startup_trace_sha256}" \
+            --arg traceFilter "${startup_trace_filter}" \
+            --arg recordsSha256 "${startup_soak_records_sha256}" \
+            --argjson requiredIterations "${startup_soak_iterations}" \
+            --argjson iterationWatchdogMs "${startup_soak_iteration_watchdog_ms}" \
+            --argjson campaignBudgetMs "${startup_soak_campaign_budget_ms}" \
+            --argjson campaignElapsedMs "${startup_soak_campaign_elapsed_ms}" \
+            '(. | map(.elapsedMs) | sort) as $elapsed |
+              (. | map(.closure) | unique) as $closures |
+              {
+                schemaVersion: 1,
+                contract: "cinatoken-ring-transition-startup-schedule-soak-v1",
+                gitSha: $gitSha,
+                requiredIterations: $requiredIterations,
+                observedIterations: length,
+                iterationWatchdogMs: $iterationWatchdogMs,
+                campaignBudgetMs: $campaignBudgetMs,
+                campaignElapsedMs: $campaignElapsedMs,
+                recordsSha256: $recordsSha256,
+                allParticipantProcessPairsDistinct: (
+                  all(.[]; .processPids[0] != .processPids[1])
+                ),
+                allLockThreadPairsDistinct: (
+                  all(.[]; .lockThreadIds[0] != .lockThreadIds[1])
+                ),
+                allActionsReceiptSealed: (
+                  all(.[]; .action == "receipt-sealed")
+                ),
+                uniqueClosureCount: ($closures | length),
+                closure: $closures[0],
+                closureSha256: (
+                  . | map(.closureSha256) | unique | .[0]
+                ),
+                elapsedMs: {
+                  min: $elapsed[0],
+                  max: $elapsed[-1],
+                  total: ($elapsed | add)
+                },
+                traceEvidence: {
+                  policy: "single-captured-sample-plus-process-soak-v1",
+                  traceFilter: ($traceFilter | split(",")),
+                  followForks: true,
+                  traceSha256: $traceSha256
+                },
+                samples: .
+              }' \
+            "${startup_soak_records}" \
+            > "${trace_artifact_dir}/startup-schedule-soak-boundary.json"
+          jq -e \
+            '.contract == "cinatoken-ring-transition-startup-schedule-soak-v1" and
+              .requiredIterations == 32 and
+              .observedIterations == .requiredIterations and
+              .iterationWatchdogMs == 15000 and
+              .campaignBudgetMs == 120000 and
+              .campaignElapsedMs > 0 and
+              .campaignElapsedMs < .campaignBudgetMs and
+              (.recordsSha256 | test("^[0-9a-f]{64}$")) and
+              .allParticipantProcessPairsDistinct == true and
+              .allLockThreadPairsDistinct == true and
+              .allActionsReceiptSealed == true and
+              .uniqueClosureCount == 1 and
+              (.closure | length > 0) and
+              (.closureSha256 | test("^[0-9a-f]{64}$")) and
+              .elapsedMs.min > 0 and
+              .elapsedMs.max < .iterationWatchdogMs and
+              (.samples | length) == .requiredIterations and
+              (.samples | map(.iteration) | unique | length) ==
+                .requiredIterations and
+              all(.samples[];
+                (.iteration >= 1) and
+                (.iteration <= 32) and
+                (.processPids | length == 2) and
+                (.lockThreadIds | length == 2) and
+                (.action == "receipt-sealed")
+              ) and
+              .traceEvidence.policy ==
+                "single-captured-sample-plus-process-soak-v1" and
+              (.traceEvidence.traceSha256 | test("^[0-9a-f]{64}$"))' \
+            "${trace_artifact_dir}/startup-schedule-soak-boundary.json" \
+            > /dev/null
+          echo "startup-schedule-soak-boundary=verified"
+
           {
             echo "### Terminal descriptor syscall traces"
             echo
@@ -940,6 +1140,7 @@ jobs:
             echo "- concurrent candidate recovery: two distinct ready-before-release processes converged on one closure identity"
             echo "- concurrent verify_loaded_credentials startup: two distinct current-thread Tokio TIDs converged on ReceiptSealed with zero network syscalls inside their create-new marker windows"
             echo "- blocked verify_loaded_credentials startup: typed 5s receipts-root LockTimeout, zero scoped successful locks/network syscalls/HTTP exchange construction, unchanged receipt tree, safe ReceiptSealed recovery after release"
+            echo "- startup schedule campaign: 32 independent dual-process iterations converged on one ReceiptSealed closure within 15s per iteration and 120s total; one separate sample carries the syscall trace proof"
             echo "- exact successful paired nonblocking exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 6 per PID / 12 total"
             echo "- lock contention: one shared 5s CLOCK_MONOTONIC deadline per receipts/authorization pair with absolute retry sleeps and zero blocking flock attempts"
             echo "- successful retained-dirfd openat2/renameat2: observed in each standalone trace or the concurrent bundle"
@@ -955,6 +1156,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ring-transition-syscall-traces/*.verification.json
             ${{ runner.temp }}/ring-transition-syscall-traces/*-boundary.json
+            ${{ runner.temp }}/ring-transition-syscall-traces/*.ndjson
             ${{ runner.temp }}/ring-transition-syscall-traces/*.log
             ${{ runner.temp }}/ring-transition-syscall-traces/*.pid
           if-no-files-found: ignore

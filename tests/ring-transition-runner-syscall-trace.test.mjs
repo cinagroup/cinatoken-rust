@@ -125,7 +125,11 @@ describe("ring-transition runner syscall trace verifier", () => {
   });
 
   test("verifies two independent concurrent traces as one recovery bundle", () => {
-    const second = fixtureTrace({ lockPairs: 3, pid: "4200" });
+    const second = fixtureTrace({
+      lockPairs: 3,
+      pid: "4200",
+      includeMutation: false,
+    });
     const firstSixLocks = fixtureTrace({
       lockPairs: 3,
       pid: "4100",
@@ -163,6 +167,24 @@ describe("ring-transition runner syscall trace verifier", () => {
         expectedLocksPerPid: 6,
       }),
     ).toThrow(/distinct lock PIDs/);
+
+    expect(() =>
+      verifyConcurrentRingTransitionRunnerSyscallTraces({
+        traceTexts: [
+          fixtureTrace({
+            lockPairs: 3,
+            pid: "4100",
+            includeMutation: false,
+          }),
+          second,
+        ],
+        fixtureRoot: ROOT,
+        label: "concurrent candidate recovery",
+        expectedLocks: 12,
+        expectedLockPids: 2,
+        expectedLocksPerPid: 6,
+      }),
+    ).toThrow(/successful_dirfd_openat2/);
   });
 
   test("rejects successful legacy mutation but permits failed EEXIST probes", () => {
@@ -397,7 +419,11 @@ describe("ring-transition runner syscall trace verifier", () => {
     );
     await writeFile(
       peerTracePath,
-      fixtureTrace({ lockPairs: 3, pid: "4200" }),
+      fixtureTrace({
+        lockPairs: 3,
+        pid: "4200",
+        includeMutation: false,
+      }),
       "utf8",
     );
     const peerAccepted = Bun.spawn(
@@ -497,6 +523,7 @@ describe("ring-transition runner syscall trace verifier", () => {
 function fixtureTrace({
   lockPairs,
   pid = "4100",
+  includeMutation = true,
   includeMkdirat = false,
   includeTerminalCandidateSync = false,
   terminalSignal = null,
@@ -513,7 +540,7 @@ function fixtureTrace({
       `${pid}  flock(5<${AUTHORIZATION}>, LOCK_EX) = 0`,
     );
     if (pair === 0 && extraAfterFirstLock) lines.push(extraAfterFirstLock);
-    if (pair === 0) {
+    if (pair === 0 && includeMutation) {
       if (includeMkdirat) {
         lines.push(
           `${pid}  mkdirat(5<${AUTHORIZATION}>, "execution-chain", 0700) = 0`,

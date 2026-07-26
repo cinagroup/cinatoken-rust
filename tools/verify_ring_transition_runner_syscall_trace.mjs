@@ -229,7 +229,9 @@ export function verifyRingTransitionRunnerSyscallTrace({
     );
   }
   const missing = [];
-  if (!evidence.dirfdOpenat2) missing.push("successful_dirfd_openat2");
+  if (requireMutationEvidence && !evidence.dirfdOpenat2) {
+    missing.push("successful_dirfd_openat2");
+  }
   if (requireMutationEvidence && !evidence.dirfdRenameat2) {
     missing.push("successful_dirfd_renameat2");
   }
@@ -343,7 +345,7 @@ export function verifyConcurrentRingTransitionRunnerSyscallTraces({
     );
   }
   const evidence = {
-    successfulDirfdOpenat2: participants.every(
+    successfulDirfdOpenat2: participants.some(
       (participant) => participant.successfulDirfdOpenat2,
     ),
     successfulDirfdRenameat2: participants.some(
@@ -360,6 +362,9 @@ export function verifyConcurrentRingTransitionRunnerSyscallTraces({
     ),
   };
   const missing = [];
+  if (!evidence.successfulDirfdOpenat2) {
+    missing.push("successful_dirfd_openat2");
+  }
   if (!evidence.successfulDirfdRenameat2) {
     missing.push("successful_dirfd_renameat2");
   }

@@ -9,9 +9,12 @@ on:
       - "crates/container-runtime/**"
       - "tools/verify_container_runtime_oci.mjs"
       - "tools/verify_container_runtime_sbom.mjs"
+      - "tools/verify_container_runtime_vulnerabilities.mjs"
       - "tests/container-runtime-oci-gate.test.mjs"
       - "tests/container-runtime-sbom-gate.test.mjs"
+      - "tests/container-runtime-vulnerability-gate.test.mjs"
       - "tests/fixtures/container-runtime-oci/**"
+      - "config/container-runtime-vulnerability-db.json"
       - "package.json"
       - "docs/migration-completion-status.md"
       - "docs/verification.md"
@@ -25,9 +28,12 @@ on:
       - "crates/container-runtime/**"
       - "tools/verify_container_runtime_oci.mjs"
       - "tools/verify_container_runtime_sbom.mjs"
+      - "tools/verify_container_runtime_vulnerabilities.mjs"
       - "tests/container-runtime-oci-gate.test.mjs"
       - "tests/container-runtime-sbom-gate.test.mjs"
+      - "tests/container-runtime-vulnerability-gate.test.mjs"
       - "tests/fixtures/container-runtime-oci/**"
+      - "config/container-runtime-vulnerability-db.json"
       - "package.json"
       - "docs/migration-completion-status.md"
       - "docs/verification.md"
@@ -49,6 +55,11 @@ jobs:
       BUILDX_BUILDER_B: cinatoken-oci-b-${{ github.run_id }}-${{ github.run_attempt }}
       BUILDKIT_IMAGE: moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
       SYFT_IMAGE: ghcr.io/anchore/syft:v1.49.0@sha256:13b53ebabe3d215268c90cf8fb9b875f0183908245f376fd4b3a2cb69d21d484
+      GRYPE_IMAGE: ghcr.io/anchore/grype:v0.116.0@sha256:fd4ab4d1042b522c896e73bdf09ab8bf384fa417df99d6dd0d6e1008c7e7c821
+      GRYPE_DB_ARCHIVE_URL: https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-07-26T00:41:33Z_1785049634.tar.zst
+      GRYPE_DB_ARCHIVE_SHA256: 766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc
+      GRYPE_DB_SCHEMA_VERSION: v6.1.9
+      GRYPE_DB_BUILT: "2026-07-26T07:07:14Z"
       EVIDENCE_DIR: /tmp/container-runtime-oci
       OCI_ARCHIVE_A: /tmp/container-runtime-oci/container-runtime-a.tar
       OCI_ARCHIVE_B: /tmp/container-runtime-oci/container-runtime-b.tar
@@ -180,6 +191,164 @@ jobs:
             2> >(tee "${EVIDENCE_DIR}/container-runtime-sbom-verification.log" >&2) \
             | tee "${EVIDENCE_DIR}/container-runtime-sbom-verification.json"
 
+      - name: Generate and verify deterministic vulnerability decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          GRYPE_DB_ARCHIVE="${EVIDENCE_DIR}/grype-db.tar.zst"
+          OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          curl \
+            --proto '=https' \
+            --tlsv1.2 \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --retry 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 600 \
+            --output "${GRYPE_DB_ARCHIVE}" \
+            "${GRYPE_DB_ARCHIVE_URL}"
+          DATABASE_ARCHIVE_BYTES="$(stat --format=%s "${GRYPE_DB_ARCHIVE}")"
+          if [[ "${DATABASE_ARCHIVE_BYTES}" -le 0 || "${DATABASE_ARCHIVE_BYTES}" -gt 536870912 ]]; then
+            echo "Grype database archive size is outside the 512 MiB bound" >&2
+            exit 1
+          fi
+          echo "${GRYPE_DB_ARCHIVE_SHA256}  ${GRYPE_DB_ARCHIVE}" | sha256sum --check --strict -
+
+          docker pull --platform linux/amd64 "${GRYPE_IMAGE}" \
+            | tee "${EVIDENCE_DIR}/grype-pull.log"
+          docker image inspect "${GRYPE_IMAGE}" \
+            > "${EVIDENCE_DIR}/grype-image-inspect.json"
+
+          import_database() {
+            local database_root="$1"
+            mkdir -p "${database_root}"
+            docker run --rm \
+              --pull never \
+              --platform linux/amd64 \
+              --network none \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges=true \
+              --user "$(id -u):$(id -g)" \
+              --pids-limit 256 \
+              --memory 2g \
+              --cpus 2 \
+              --ulimit nofile=1024:1024 \
+              --ulimit fsize=2147483648:2147483648 \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777 \
+              --env HOME=/tmp \
+              --env XDG_CACHE_HOME=/tmp/cache \
+              --env GRYPE_CHECK_FOR_APP_UPDATE=false \
+              --env GRYPE_DB_AUTO_UPDATE=false \
+              --env GRYPE_DB_VALIDATE_BY_HASH_ON_START=true \
+              --env GRYPE_DB_VALIDATE_AGE=false \
+              --env GRYPE_DB_REQUIRE_UPDATE_CHECK=false \
+              --env GRYPE_DB_CACHE_DIR=/grype-db \
+              --mount "type=bind,src=${GRYPE_DB_ARCHIVE},dst=/input/grype-db.tar.zst,readonly" \
+              --mount "type=bind,src=${database_root},dst=/grype-db" \
+              "${GRYPE_IMAGE}" \
+              db import /input/grype-db.tar.zst
+          }
+
+          scan_sbom() {
+            local database_root="$1"
+            local sbom_file="$2"
+            local status_file="$3"
+            local output_file="$4"
+            mkdir -p "$(dirname "${status_file}")" "$(dirname "${output_file}")"
+            : > "${status_file}"
+            : > "${output_file}"
+            docker run --rm \
+              --pull never \
+              --platform linux/amd64 \
+              --network none \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges=true \
+              --user "$(id -u):$(id -g)" \
+              --pids-limit 256 \
+              --memory 2g \
+              --cpus 2 \
+              --ulimit nofile=1024:1024 \
+              --ulimit fsize=134217728:134217728 \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777 \
+              --env HOME=/tmp \
+              --env XDG_CACHE_HOME=/tmp/cache \
+              --env GRYPE_CHECK_FOR_APP_UPDATE=false \
+              --env GRYPE_DB_AUTO_UPDATE=false \
+              --env GRYPE_DB_VALIDATE_BY_HASH_ON_START=true \
+              --env GRYPE_DB_VALIDATE_AGE=false \
+              --env GRYPE_DB_REQUIRE_UPDATE_CHECK=false \
+              --env GRYPE_DB_CACHE_DIR=/grype-db \
+              --env GRYPE_TIMESTAMP=false \
+              --mount "type=bind,src=${database_root},dst=/grype-db" \
+              "${GRYPE_IMAGE}" \
+              db status --output json \
+              > "${status_file}"
+            docker run --rm \
+              --pull never \
+              --platform linux/amd64 \
+              --network none \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges=true \
+              --user "$(id -u):$(id -g)" \
+              --pids-limit 256 \
+              --memory 2g \
+              --cpus 2 \
+              --ulimit nofile=1024:1024 \
+              --ulimit fsize=134217728:134217728 \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777 \
+              --env HOME=/tmp \
+              --env XDG_CACHE_HOME=/tmp/cache \
+              --env GRYPE_CHECK_FOR_APP_UPDATE=false \
+              --env GRYPE_DB_AUTO_UPDATE=false \
+              --env GRYPE_DB_VALIDATE_BY_HASH_ON_START=true \
+              --env GRYPE_DB_VALIDATE_AGE=false \
+              --env GRYPE_DB_REQUIRE_UPDATE_CHECK=false \
+              --env GRYPE_DB_CACHE_DIR=/grype-db \
+              --env GRYPE_TIMESTAMP=false \
+              --mount "type=bind,src=${database_root},dst=/grype-db" \
+              --mount "type=bind,src=${sbom_file},dst=/input/container-runtime.sbom.syft.json,readonly" \
+              --mount "type=bind,src=${output_file},dst=/output/container-runtime.vulnerabilities.grype.json" \
+              "${GRYPE_IMAGE}" \
+              "sbom:/input/container-runtime.sbom.syft.json" \
+              --output json=/output/container-runtime.vulnerabilities.grype.json
+          }
+
+          import_database \
+            "${EVIDENCE_DIR}/grype-db-a"
+          import_database \
+            "${EVIDENCE_DIR}/grype-db-b"
+          scan_sbom \
+            "${EVIDENCE_DIR}/grype-db-a" \
+            "${EVIDENCE_DIR}/sbom-a/container-runtime.sbom.syft.json" \
+            "${EVIDENCE_DIR}/grype-db-status-a.json" \
+            "${EVIDENCE_DIR}/scan-a/container-runtime.vulnerabilities.grype.json"
+          scan_sbom \
+            "${EVIDENCE_DIR}/grype-db-b" \
+            "${EVIDENCE_DIR}/sbom-b/container-runtime.sbom.syft.json" \
+            "${EVIDENCE_DIR}/grype-db-status-b.json" \
+            "${EVIDENCE_DIR}/scan-b/container-runtime.vulnerabilities.grype.json"
+
+          set -o pipefail
+          node tools/verify_container_runtime_vulnerabilities.mjs \
+            --scan-a "${EVIDENCE_DIR}/scan-a/container-runtime.vulnerabilities.grype.json" \
+            --scan-b "${EVIDENCE_DIR}/scan-b/container-runtime.vulnerabilities.grype.json" \
+            --sbom-report "${EVIDENCE_DIR}/container-runtime-sbom-verification.json" \
+            --db-status-a "${EVIDENCE_DIR}/grype-db-status-a.json" \
+            --db-status-b "${EVIDENCE_DIR}/grype-db-status-b.json" \
+            --db-archive "${GRYPE_DB_ARCHIVE}" \
+            --db-metadata config/container-runtime-vulnerability-db.json \
+            --observed-at "${OBSERVED_AT}" \
+            --json \
+            2> >(tee "${EVIDENCE_DIR}/container-runtime-vulnerability-verification.log" >&2) \
+            | tee "${EVIDENCE_DIR}/container-runtime-vulnerability-verification.json"
+
       - name: Retain OCI reproducibility evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -198,6 +367,15 @@ jobs:
             /tmp/container-runtime-oci/sbom-b/container-runtime.sbom.syft.json
             /tmp/container-runtime-oci/container-runtime-sbom-verification.json
             /tmp/container-runtime-oci/container-runtime-sbom-verification.log
+            /tmp/container-runtime-oci/grype-pull.log
+            /tmp/container-runtime-oci/grype-image-inspect.json
+            /tmp/container-runtime-oci/grype-db.tar.zst
+            /tmp/container-runtime-oci/grype-db-status-a.json
+            /tmp/container-runtime-oci/grype-db-status-b.json
+            /tmp/container-runtime-oci/scan-a/container-runtime.vulnerabilities.grype.json
+            /tmp/container-runtime-oci/scan-b/container-runtime.vulnerabilities.grype.json
+            /tmp/container-runtime-oci/container-runtime-vulnerability-verification.json
+            /tmp/container-runtime-oci/container-runtime-vulnerability-verification.log
             /tmp/container-runtime-oci/container-runtime-a.tar
             /tmp/container-runtime-oci/container-runtime-b.tar
           if-no-files-found: warn

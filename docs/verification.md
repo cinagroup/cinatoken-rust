@@ -6250,6 +6250,18 @@ provenance, leaves critical/high and canonical registry digest null, and keeps
 signature, registry, Cloudflare, P5, traffic and cutover fields false. A second
 hosted job must reproduce the SBOM before cross-job S1 acceptance.
 
+That independent reproduction passed for docs-only candidate
+`24a7252641bb7906b9a9091a39b624b18cedcbf9` in
+[run 30200802649](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200802649)
+and
+[job 89790289672](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200802649/job/89790289672).
+The fresh northcentralus worker reproduced the exact 973,539-byte SBOM hash,
+10 packages, 1,293 relationships, source identities and 19 layers.
+[Artifact 8631590135](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200802649/artifacts/8631590135)
+is 22,725,602 bytes,
+`sha256:66d3786ffe01cf3cbe38cf4bdba8ea77f173cfe4ad870d9db5402e9b2a5c9b6f`,
+and expires `2026-08-25T11:49:32Z`.
+
 ## 2026-07-26 Real Dual-Startup Zero-Network Window Verification
 
 The Linux gate now launches two independent, environment-cleared child

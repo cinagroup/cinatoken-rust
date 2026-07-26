@@ -939,12 +939,22 @@ is 22,725,635 bytes with
 `sha256:a189a1f5aaa4ba6d38042fc03fe5472c19b80b4fa9fbeab12c440f6084bfb3a2`
 and expires `2026-08-25T11:32:53Z`.
 
-This status is `local-sbom-reproducibility-only`. Independent hosted-job SBOM
-reproduction, vulnerability scanning with a frozen database, provenance,
-signature, immutable retention, registry/Cloudflare digest readback, P5 and
-production review remain open. Vulnerability counts remain null and all remote,
-traffic and cutover authorization remains false. Go/VPS stays authoritative
-and production remains **NO-GO**.
+Cross-hosted-job reproduction is complete. Docs-only successor
+`24a7252641bb7906b9a9091a39b624b18cedcbf9` passed
+[run 30200802649](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200802649)
+with the same 973,539-byte SBOM hash, package/relationship counts, OCI graph,
+19 source layers, and runtime binary.
+[Artifact 8631590135](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200802649/artifacts/8631590135)
+is 22,725,602 bytes with
+`sha256:66d3786ffe01cf3cbe38cf4bdba8ea77f173cfe4ad870d9db5402e9b2a5c9b6f`
+and expires `2026-08-25T11:49:32Z`.
+
+This status remains `local-sbom-reproducibility-only`. Vulnerability scanning
+with a frozen database, provenance, signature, immutable retention,
+registry/Cloudflare digest readback, P5 and production review remain open.
+Vulnerability counts remain null and all remote, traffic and cutover
+authorization remains false. Go/VPS stays authoritative and production
+remains **NO-GO**.
 
 Cross-job OCI reproduction is also complete for this scoped baseline.
 Docs/schema-only successor `61be8211f599a48b14e9419a1ce04e26d5128360`

@@ -3916,14 +3916,23 @@ The retained packet is
 `sha256:a189a1f5aaa4ba6d38042fc03fe5472c19b80b4fa9fbeab12c440f6084bfb3a2`,
 expiring `2026-08-25T11:32:53Z`.
 
-S1 is intentionally scoped to local SBOM reproducibility. Promotion now
-requires an independent hosted-job reproduction before S2 can be accepted as
-the release-candidate scan. S2 must pin both the scanner and the complete
-vulnerability database identity, retain the database acquisition/source
-metadata, scan this exact subject, distinguish unapproved from policy-approved
-findings, and leave unavailable counts null. No SBOM result may itself assert
-zero vulnerabilities, provenance, signature validity, registry identity,
-Cloudflare deployment, P5 eligibility, or traffic authority.
+The independent successor is also accepted. Candidate
+`24a7252641bb7906b9a9091a39b624b18cedcbf9` passed
+[run 30200802649](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200802649)
+and reproduced the exact OCI and SBOM portable identities on a fresh worker.
+Its
+[artifact 8631590135](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200802649/artifacts/8631590135)
+is 22,725,602 bytes,
+`sha256:66d3786ffe01cf3cbe38cf4bdba8ea77f173cfe4ad870d9db5402e9b2a5c9b6f`,
+expiring `2026-08-25T11:49:32Z`.
+
+S1 is intentionally scoped to local SBOM reproducibility. S2 must pin both the
+scanner and the complete vulnerability database identity, retain the database
+acquisition/source metadata, scan this exact subject, distinguish unapproved
+from policy-approved findings, and leave unavailable counts null. No SBOM
+result may itself assert zero vulnerabilities, provenance, signature
+validity, registry identity, Cloudflare deployment, P5 eligibility, or traffic
+authority.
 
 ## 2026-07-26 K7 Reproducible Container Image Gate
 

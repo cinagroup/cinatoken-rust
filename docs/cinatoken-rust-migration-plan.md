@@ -10748,22 +10748,35 @@ drift, layer drift, and any attempt to present this result as formal P5
 evidence. Its decision scope is
 `local-sbom-reproducibility-only`.
 
-This closes one hosted job's deterministic SBOM generation and subject
-binding. It does not perform a vulnerability scan, generate provenance, verify
-an image signature, choose a canonical registry digest, read back a registry
-or Cloudflare deployment, or create a P5 sources-v3 record. Critical/high
-counts remain null, not zero; `formalP5Evidence`, `p5Eligible`,
+Cross-hosted-job S1 reproduction is also complete. The docs-only successor
+`24a7252641bb7906b9a9091a39b624b18cedcbf9` ran on a fresh northcentralus
+worker in
+[run 30200802649](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200802649)
+and
+[job 89790289672](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200802649/job/89790289672).
+It reproduced the exact OCI archive/graph/runtime identities and the same
+973,539-byte SBOM hash, 10 packages, 1,293 relationships, and 19 source
+layers. Its diagnostic
+[artifact 8631590135](https://github.com/cinagroup/cinatoken-rust/actions/runs/30200802649/artifacts/8631590135)
+is 22,725,602 bytes,
+`sha256:66d3786ffe01cf3cbe38cf4bdba8ea77f173cfe4ad870d9db5402e9b2a5c9b6f`,
+and expires `2026-08-25T11:49:32Z`. The ZIP differs because runner/builder
+diagnostics are job-local; the portable OCI and SBOM subjects are exact.
+
+This closes deterministic SBOM generation and subject binding across two
+hosted jobs. It does not perform a vulnerability scan, generate provenance,
+verify an image signature, choose a canonical registry digest, read back a
+registry or Cloudflare deployment, or create a P5 sources-v3 record.
+Critical/high counts remain null, not zero; `formalP5Evidence`, `p5Eligible`,
 `customerTrafficAuthorized`, and `productionCutoverAuthorized` remain false.
 
 The next mandatory order is:
 
-1. reproduce the exact SBOM bytes and semantic report on an independent hosted
-   successor;
-2. run S2 with a pinned Grype binary/image and a frozen, retained vulnerability
+1. run S2 with a pinned Grype binary/image and a frozen, retained vulnerability
    database identity against this exact manifest/SBOM subject;
-3. produce independently verified signed provenance and immutable retention;
-4. publish and read back only the frozen digest; and
-5. join that digest to isolated Cloudflare staging and the complete P5
+2. produce independently verified signed provenance and immutable retention;
+3. publish and read back only the frozen digest; and
+4. join that digest to isolated Cloudflare staging and the complete P5
    candidate before any traffic review.
 
 Go/VPS remains authoritative and production remains **NO-GO**.

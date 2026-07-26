@@ -257,7 +257,7 @@ jobs:
               --nocapture
 
           strace -f -q -yy -s 4096 \
-            -e trace=%file,flock,clock_nanosleep,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
+            -e trace=%file,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl \
             -o "${candidate_writer_trace_log}" \
             bash -c '
               printf "%s\n" "$$" > "$1"

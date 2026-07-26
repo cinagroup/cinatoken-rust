@@ -409,7 +409,7 @@ async function attestRuntime({ name, network }) {
   };
 }
 
-function validateContainerPolicy(inspection, network) {
+export function validateContainerPolicy(inspection, network) {
   const host = requireObject(inspection.HostConfig, "container HostConfig");
   const state = requireObject(inspection.State, "container State");
   requireCondition(state.Running === true, "attested runtime must be running");
@@ -457,13 +457,20 @@ function validateContainerPolicy(inspection, network) {
     "runtime /tmp options drifted",
   );
 
-  const mounts = Array.isArray(inspection.Mounts) ? inspection.Mounts : [];
   requireCondition(
-    mounts.length === 1 &&
-      mounts[0]?.Type === "tmpfs" &&
-      mounts[0]?.Destination === "/tmp" &&
-      mounts[0]?.RW === true,
-    "runtime inspect must expose only the private /tmp mount",
+    Array.isArray(inspection.Mounts),
+    "runtime inspect mount inventory must be present",
+  );
+  const mounts = inspection.Mounts;
+  requireCondition(
+    mounts.length <= 1 &&
+      mounts.every(
+        (mount) =>
+          mount?.Type === "tmpfs" &&
+          mount?.Destination === "/tmp" &&
+          mount?.RW === true,
+      ),
+    "runtime inspect must not expose a mount beyond the private /tmp tmpfs",
   );
 
   return {

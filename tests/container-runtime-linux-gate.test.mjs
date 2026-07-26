@@ -16,6 +16,7 @@ import {
   classifyRuntimeFileDescriptorTarget,
   parseLinuxMountInfo,
   parseArgs,
+  validateContainerPolicy,
   validateRuntimeProcessAttestation,
 } from "../tools/verify_container_runtime_linux.mjs";
 
@@ -187,6 +188,20 @@ describe("linux container release gate", () => {
     );
   });
 
+  test("accepts Docker tmpfs inventory variants without accepting another mount", () => {
+    const network = "cinatoken-linux-gate-test";
+    const inspection = containerInspection(network);
+    expect(validateContainerPolicy(inspection, network).tmpfs.path).toBe("/tmp");
+
+    inspection.Mounts = [{ Type: "tmpfs", Destination: "/tmp", RW: true }];
+    expect(validateContainerPolicy(inspection, network).tmpfs.path).toBe("/tmp");
+
+    inspection.Mounts = [{ Type: "volume", Destination: "/data", RW: true }];
+    expect(() => validateContainerPolicy(inspection, network)).toThrow(
+      "must not expose a mount beyond",
+    );
+  });
+
   test("parses escaped mount paths and classifies only bounded FD targets", () => {
     const mounts = parseLinuxMountInfo(
       "41 36 0:42 /path\\040with\\040spaces /tmp rw,nosuid,nodev,noexec - tmpfs tmpfs rw,size=16m\n",
@@ -200,6 +215,31 @@ describe("linux container release gate", () => {
     expect(classifyRuntimeFileDescriptorTarget("/host/secret")).toBe("unexpected");
   });
 });
+
+function containerInspection(network) {
+  return {
+    State: { Running: true, Pid: 100 },
+    HostConfig: {
+      Privileged: false,
+      ReadonlyRootfs: true,
+      CapDrop: ["ALL"],
+      SecurityOpt: ["no-new-privileges"],
+      Memory: 256 * 1024 * 1024,
+      PidsLimit: 128,
+      NetworkMode: network,
+      PublishAllPorts: false,
+      PortBindings: {},
+      Binds: null,
+      Devices: [],
+      DeviceRequests: null,
+      Mounts: [],
+      Tmpfs: {
+        "/tmp": "rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=65532,gid=65532",
+      },
+    },
+    Mounts: [],
+  };
+}
 
 function runtimeAttestation() {
   return {

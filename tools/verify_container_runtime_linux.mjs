@@ -122,8 +122,12 @@ export async function auditRepositoryContract() {
   );
   requireCondition(
     dockerfile.includes("USER nonroot:nonroot") &&
+      dockerfile.includes("\nWORKDIR /\n") &&
+      dockerfile.includes(
+        "COPY --from=builder --chown=0:0 --chmod=0755 /build/target/release/cinatoken-container-runtime /usr/local/bin/cinatoken-container-runtime",
+      ) &&
       dockerfile.includes("ENTRYPOINT [\"/usr/local/bin/cinatoken-container-runtime\"]"),
-    "Dockerfile must retain the non-root fixed entrypoint",
+    "Dockerfile must retain the root-owned binary, fixed working directory, and non-root entrypoint",
   );
   requireCondition(
     runtimeMain.includes('"--runtime-attestation-v1"') &&
@@ -660,7 +664,7 @@ function validatePathAttestations(value) {
     ["/tmp", ["directory", RUNTIME_UID, RUNTIME_GID, "0700"]],
     [
       "/usr/local/bin/cinatoken-container-runtime",
-      ["file", RUNTIME_UID, RUNTIME_GID, "0755"],
+      ["file", 0, 0, "0755"],
     ],
   ]);
   requireCondition(paths.size === expected.size, "runtime path inventory drifted");

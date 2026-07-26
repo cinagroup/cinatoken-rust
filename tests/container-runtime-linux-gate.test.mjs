@@ -52,6 +52,7 @@ describe("linux container release gate", () => {
     expect(workflow).toContain("retention-days: 30");
     expect(workflow).not.toMatch(/\$\{\{\s*secrets\.|wrangler|cloudflare api/i);
     expect(dockerfile).toContain("\nWORKDIR /\n");
+    expect(dockerfile).toContain("--chown=0:0 --chmod=0755");
     expect(verifierSource).toContain(NODE_MOCK_IMAGE);
     expect(verifierSource).toContain('"network", "create", "--internal"');
     expect(verifierSource).toContain('"r2-input.cinatoken.internal"');
@@ -293,8 +294,8 @@ function runtimeAttestation() {
       pathAttestation(
         "/usr/local/bin/cinatoken-container-runtime",
         "file",
-        RUNTIME_UID,
-        RUNTIME_GID,
+        0,
+        0,
         "0755",
         1024,
       ),

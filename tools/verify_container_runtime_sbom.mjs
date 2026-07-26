@@ -318,6 +318,8 @@ export async function runSbomGate(sbomAPath, sbomBPath, ociReportPath) {
       sourceManifestDigest: sbomFacts.sourceManifestDigest,
       sourceConfigDigest: sbomFacts.sourceConfigDigest,
       sourceMediaType: sbomFacts.sourceMediaType,
+      sourcePlatformMetadataPresent:
+        sbomFacts.sourcePlatformMetadataPresent,
       sourceLayerCount: sbomFacts.sourceLayerCount,
     },
     generatedSbomPresent: true,
@@ -492,8 +494,13 @@ export function validateSyftSbom(sbom, ociReport) {
     ),
     `Syft image media type drifted: ${String(metadata.mediaType)}`,
   );
+  const sourcePlatformMetadataPresent =
+    metadata.architecture !== "" || metadata.os !== "";
   requireCondition(
-    metadata.architecture === "amd64" && metadata.os === "linux",
+    (!sourcePlatformMetadataPresent &&
+      metadata.architecture === "" &&
+      metadata.os === "") ||
+      (metadata.architecture === "amd64" && metadata.os === "linux"),
     `Syft image platform drifted: ${String(metadata.os)}/${String(
       metadata.architecture,
     )}`,
@@ -702,6 +709,7 @@ export function validateSyftSbom(sbom, ociReport) {
     sourceManifestDigest: metadata.manifestDigest,
     sourceConfigDigest: metadata.imageID,
     sourceMediaType: metadata.mediaType,
+    sourcePlatformMetadataPresent,
     sourceLayerCount: layers.length,
   };
 }

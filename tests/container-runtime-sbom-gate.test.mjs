@@ -245,6 +245,7 @@ describe("container runtime SBOM release gate", () => {
       sourceManifestDigest: fixture.ociReport.ociManifestDigest,
       sourceConfigDigest: fixture.ociReport.ociConfigDigest,
       sourceMediaType: OCI_MANIFEST_MEDIA_TYPE,
+      sourcePlatformMetadataPresent: true,
       sourceLayerCount: 2,
     });
 
@@ -294,6 +295,7 @@ describe("container runtime SBOM release gate", () => {
         relationshipCount: 1,
         sourceLayerCount: 2,
         sourceMediaType: OCI_MANIFEST_MEDIA_TYPE,
+        sourcePlatformMetadataPresent: true,
       },
       generatedSbomPresent: true,
       generatedProvenancePresent: false,
@@ -344,6 +346,14 @@ describe("container runtime SBOM release gate", () => {
 
   test("rejects generator, schema, source, and platform drift", () => {
     const fixture = buildFixture();
+    const omittedPlatform = structuredClone(fixture.sbom);
+    omittedPlatform.source.metadata.architecture = "";
+    omittedPlatform.source.metadata.os = "";
+    expect(
+      validateSyftSbom(omittedPlatform, fixture.ociReport)
+        .sourcePlatformMetadataPresent,
+    ).toBe(false);
+
     const cases = [
       [
         (value) => {

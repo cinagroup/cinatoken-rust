@@ -47,15 +47,20 @@ describe("linux container release gate", () => {
     expect(workflow).toContain("persist-credentials: false");
     expect(workflow).toContain("runs-on: ubuntu-24.04");
     expect(
-      workflow.match(/docker build --no-cache --platform linux\/amd64/g),
+      workflow.match(/docker buildx build --no-cache --platform linux\/amd64/g),
     ).toHaveLength(2);
     expect(workflow.match(/--build-arg SOURCE_DATE_EPOCH=0/g)).toHaveLength(2);
+    expect(
+      workflow.match(/--output type=image,rewrite-timestamp=true/g),
+    ).toHaveLength(2);
     expect(workflow).toContain("tests/fixtures/container-runtime-linux-probe.mjs");
     expect(workflow).toContain("node tools/verify_container_runtime_linux.mjs");
     expect(workflow).toContain("--image cinatoken-container-runtime:linux-gate-a");
     expect(workflow).toContain(
       "--reproducible-image cinatoken-container-runtime:linux-gate-b",
     );
+    expect(workflow).toContain("container-runtime-linux-image-a.json");
+    expect(workflow).toContain("container-runtime-linux-image-b.json");
     expect(workflow).toContain("container-runtime-linux-attestation.json");
     expect(workflow).toContain("retention-days: 30");
     expect(workflow).not.toMatch(/\$\{\{\s*secrets\.|wrangler|cloudflare api/i);
@@ -173,6 +178,8 @@ describe("linux container release gate", () => {
       dockerfileBaseImagesPinned: true,
       sourceDateEpoch: SOURCE_DATE_EPOCH,
       independentImageBuildsRequired: 2,
+      imageLayerTimestampsRewritten: true,
+      independentImageInspectionsRetained: true,
       reproducibleImageGate: true,
       checkoutActionPinned: true,
       workflowCredentialFree: true,
@@ -213,12 +220,18 @@ describe("linux container release gate", () => {
     const layerDrift = imageInspection("a");
     layerDrift.RootFS.Layers[1] = `sha256:${"c".repeat(64)}`;
     expect(() => validateReproducibleImages(primary, layerDrift)).toThrow(
-      "independent image builds",
+      '"exactRootfsLayerMatch":false',
     );
 
     const imageDrift = imageInspection("b");
     expect(() => validateReproducibleImages(primary, imageDrift)).toThrow(
-      "independent image builds",
+      '"exactImageIdMatch":false',
+    );
+
+    const malformed = imageInspection("a");
+    delete malformed.RootFS.Layers;
+    expect(() => validateReproducibleImages(primary, malformed)).toThrow(
+      '"exactRootfsLayerMatch":false',
     );
   });
 

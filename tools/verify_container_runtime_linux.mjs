@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { runBoundedSubprocess } from "./lib/bounded_subprocess.mjs";
 
-export const LINUX_GATE_CONTRACT_VERSION = 3;
+export const LINUX_GATE_CONTRACT_VERSION = 4;
 export const RUNTIME_ATTESTATION_CONTRACT_VERSION = 1;
 export const RUNTIME_UID = 65_532;
 export const RUNTIME_GID = 65_532;
@@ -135,9 +135,11 @@ export async function auditRepositoryContract() {
   const packageJson = JSON.parse(packageJsonText);
   const fromLines = dockerfile.match(/^FROM .+$/gm) ?? [];
   const independentBuilds =
-    workflow.match(/docker build --no-cache --platform linux\/amd64/g) ?? [];
+    workflow.match(/docker buildx build --no-cache --platform linux\/amd64/g) ?? [];
   const epochBuildArgs =
     workflow.match(/--build-arg SOURCE_DATE_EPOCH=0/g) ?? [];
+  const timestampRewriteOutputs =
+    workflow.match(/--output type=image,rewrite-timestamp=true/g) ?? [];
   requireCondition(
     fromLines.length === 2 &&
       fromLines[0] === `FROM ${RUST_BUILDER_IMAGE} AS builder` &&
@@ -171,14 +173,17 @@ export async function auditRepositoryContract() {
       workflow.includes("persist-credentials: false") &&
       independentBuilds.length === 2 &&
       epochBuildArgs.length === 2 &&
+      timestampRewriteOutputs.length === 2 &&
       workflow.includes("node tools/verify_container_runtime_linux.mjs") &&
       workflow.includes("--image cinatoken-container-runtime:linux-gate-a") &&
       workflow.includes(
         "--reproducible-image cinatoken-container-runtime:linux-gate-b",
       ) &&
+      workflow.includes("container-runtime-linux-image-a.json") &&
+      workflow.includes("container-runtime-linux-image-b.json") &&
       workflow.includes("container-runtime-linux-attestation.json") &&
       workflow.includes("retention-days: 30"),
-    "workflow must use pinned actions, perform two no-cache reproducible builds, execute the real linux/amd64 gate, and retain attestation",
+    "workflow must use pinned actions, rewrite image timestamps across two no-cache builds, execute the real linux/amd64 gate, and retain both inspections and attestation",
   );
   requireCondition(
     workflow.includes("permissions:\n  contents: read") &&
@@ -233,6 +238,8 @@ export async function auditRepositoryContract() {
     dockerfileBaseImagesPinned: true,
     sourceDateEpoch: SOURCE_DATE_EPOCH,
     independentImageBuildsRequired: 2,
+    imageLayerTimestampsRewritten: true,
+    independentImageInspectionsRetained: true,
     reproducibleImageGate: true,
     checkoutActionPinned: true,
     workflowCredentialFree: true,
@@ -415,19 +422,48 @@ async function inspectImage(image) {
 export function validateReproducibleImages(primaryValue, secondaryValue) {
   const primary = requireObject(primaryValue, "primary image inspection");
   const secondary = requireObject(secondaryValue, "secondary image inspection");
+  const primaryLayers = primary.RootFS?.Layers;
+  const secondaryLayers = secondary.RootFS?.Layers;
+  const validPrimaryId =
+    typeof primary.Id === "string" &&
+    /^sha256:[a-f0-9]{64}$/.test(primary.Id);
+  const validSecondaryId =
+    typeof secondary.Id === "string" &&
+    /^sha256:[a-f0-9]{64}$/.test(secondary.Id);
+  const validLayers =
+    Array.isArray(primaryLayers) &&
+    primaryLayers.length > 0 &&
+    primaryLayers.every(validDigest) &&
+    Array.isArray(secondaryLayers) &&
+    secondaryLayers.length > 0 &&
+    secondaryLayers.every(validDigest);
+  const validConfigs =
+    isNonArrayObject(primary.Config) && isNonArrayObject(secondary.Config);
+  const exactImageIdMatch =
+    validPrimaryId && validSecondaryId && primary.Id === secondary.Id;
+  const exactRootfsLayerMatch =
+    validLayers &&
+    JSON.stringify(primaryLayers) === JSON.stringify(secondaryLayers);
+  const exactConfigMatch =
+    validConfigs &&
+    JSON.stringify(primary.Config) === JSON.stringify(secondary.Config);
   requireCondition(
-    primary.Id === secondary.Id &&
-      /^sha256:[a-f0-9]{64}$/.test(primary.Id) &&
-      JSON.stringify(primary.RootFS?.Layers) ===
-        JSON.stringify(secondary.RootFS?.Layers) &&
-      JSON.stringify(primary.Config) === JSON.stringify(secondary.Config),
-    "independent image builds must have identical image, config, and rootfs identities",
+    exactImageIdMatch && exactRootfsLayerMatch && exactConfigMatch,
+    `independent image builds must have identical image, config, and rootfs identities (${JSON.stringify(
+      {
+        primaryImageId: validPrimaryId ? primary.Id : null,
+        secondaryImageId: validSecondaryId ? secondary.Id : null,
+        exactImageIdMatch,
+        exactConfigMatch,
+        exactRootfsLayerMatch,
+      },
+    )})`,
   );
   return {
     sourceDateEpoch: SOURCE_DATE_EPOCH,
     independentBuilds: 2,
     imageId: primary.Id,
-    rootfsLayerCount: primary.RootFS.Layers.length,
+    rootfsLayerCount: primaryLayers.length,
     exactImageIdMatch: true,
     exactConfigMatch: true,
     exactRootfsLayerMatch: true,
@@ -926,10 +962,18 @@ function parseSingleStatusInteger(value, label) {
 
 function requireObject(value, label) {
   requireCondition(
-    value !== null && typeof value === "object" && !Array.isArray(value),
+    isNonArrayObject(value),
     `${label} must be an object`,
   );
   return value;
+}
+
+function isNonArrayObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validDigest(value) {
+  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
 }
 
 function emptyArray(value) {

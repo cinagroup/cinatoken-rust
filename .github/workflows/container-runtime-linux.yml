@@ -55,12 +55,14 @@ jobs:
 
       - name: Build two independent linux/amd64 runtime images
         run: |
-          docker build --no-cache --platform linux/amd64 \
+          docker buildx build --no-cache --platform linux/amd64 \
             --build-arg SOURCE_DATE_EPOCH=0 \
+            --output type=image,rewrite-timestamp=true \
             --tag cinatoken-container-runtime:linux-gate-a \
             --file crates/container-runtime/Dockerfile .
-          docker build --no-cache --platform linux/amd64 \
+          docker buildx build --no-cache --platform linux/amd64 \
             --build-arg SOURCE_DATE_EPOCH=0 \
+            --output type=image,rewrite-timestamp=true \
             --tag cinatoken-container-runtime:linux-gate-b \
             --file crates/container-runtime/Dockerfile .
 
@@ -70,6 +72,10 @@ jobs:
           set -o pipefail
           evidence_dir="${RUNNER_TEMP}/container-runtime-linux"
           mkdir -p "${evidence_dir}"
+          docker image inspect cinatoken-container-runtime:linux-gate-a \
+            > "${evidence_dir}/container-runtime-linux-image-a.json"
+          docker image inspect cinatoken-container-runtime:linux-gate-b \
+            > "${evidence_dir}/container-runtime-linux-image-b.json"
           node tools/verify_container_runtime_linux.mjs \
             --image cinatoken-container-runtime:linux-gate-a \
             --reproducible-image cinatoken-container-runtime:linux-gate-b \

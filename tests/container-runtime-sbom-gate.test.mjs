@@ -580,7 +580,9 @@ function buildFixture() {
       name: "syft",
       version: SYFT_VERSION,
       configuration: {
-        scope: "squashed",
+        search: {
+          scope: "squashed",
+        },
       },
     },
     schema: {

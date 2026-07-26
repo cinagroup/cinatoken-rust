@@ -425,8 +425,12 @@ export function validateSyftSbom(sbom, ociReport) {
     descriptor.configuration,
     "Syft generator configuration",
   );
+  const searchConfiguration = requireObject(
+    descriptorConfiguration.search,
+    "Syft generator search configuration",
+  );
   requireCondition(
-    descriptorConfiguration.scope === "squashed",
+    searchConfiguration.scope === "squashed",
     "Syft generator scope is not squashed",
   );
 

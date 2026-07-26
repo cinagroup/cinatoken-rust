@@ -2049,3 +2049,28 @@ and expires `2026-08-25T08:20:56Z`. Docker storage-driver paths and tag time
 are host observations and changed without affecting the accepted image
 identity. The runner can now consume a cross-job-stable local image identity;
 registry publication and Cloudflare readback remain separate gates.
+
+## OCI Reproduction Input Boundary
+
+The runner's immutable-image input now has a stronger local precursor. Two
+separate pinned BuildKit daemons produced byte-identical OCI archives in
+[run 30196543635](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635).
+The frozen archive SHA-256 is
+`bdd67bd4335a922081e35fe344fb481599730ec37a3833d17fea85407852fb7e`;
+its index, platform manifest and config are `258828d4...`, `84ff0214...` and
+`7b1326fd...`; all 19 compressed layers and diffIDs match. The final-layer
+binary is the existing runner/runtime build
+`1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910`.
+
+This result still cannot populate a production ring-transition candidate by
+itself. A local OCI archive hash is not the authenticated registry or
+Cloudflare image digest, and the P5 contract separately requires SBOM,
+provenance, signature and vulnerability evidence. Until those sources and
+remote readbacks exist, the runner must keep image publication, activation,
+traffic and cutover gates false.
+
+[Artifact 8630296572](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635/artifacts/8630296572)
+retains both OCI archives and diagnostics for 30 days. It is not durable
+operation/financial authority and is not WORM evidence. D1/DO/R2 plus the
+approved external signed evidence chain remain authoritative. Go/VPS remains
+production authority and production remains **NO-GO**.

@@ -1909,3 +1909,34 @@ Host-local `GraphDriver` paths and tag time changed and are correctly excluded
 from portable image identity. The cinaVibeSDK replacement assumption now has
 two independent local-job proofs; Cloudflare digest installation and
 lifecycle equivalence remain open.
+
+## 2026-07-26 OCI Subject Reproduction Mapping
+
+The cinaVibeSDK replacement model requires more than equal uncompressed
+RootFS state: the distributable Container subject must also be stable at the
+OCI boundary. The Rust migration now maps that requirement to two distinct,
+digest-pinned BuildKit instances and byte-identical OCI exports.
+
+| cinaVibeSDK responsibility | Rust/Cloudflare mapping | Accepted proof | Still open |
+| --- | --- | --- | --- |
+| Replacement uses one distributable subject | Freeze OCI index, platform manifest, config, compressed layers, and diffIDs | A/B tar bytes and complete 19-layer graph are exact | Independent-runner repetition and registry readback |
+| Executable identity survives packaging | Join the final OCI layer to runtime readiness/build identity | OCI binary is `1ec31f...`, equal to both prior Docker images and live readiness | Cloudflare cold-start sampling |
+| Builder drift is bounded | Two separate BuildKit `v0.31.2` daemon instances use one pinned image digest and compatibility contract | Distinct worker hostnames produced the same tar SHA-256 | Pinned Dockerfile frontend and independent host/client |
+| Supply-chain evidence does not mutate the subject | Generate SBOM/provenance later as digest-bound referrers | Default attestations are explicitly disabled for the reproduction baseline | Pinned SBOM, scan, DSSE signature, transparency and WORM |
+| Durable authority stays outside the Container | OCI bytes are executable evidence, never operation or financial truth | No D1/DO/R2 authority changed | Remote lifecycle and recovery joins |
+
+Candidate `383f53f5559674a9947b1939993ef2d9bdf0dd6a` passed
+[run 30196543635](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635).
+Both 10,378,752-byte archives hash to
+`bdd67bd4335a922081e35fe344fb481599730ec37a3833d17fea85407852fb7e`;
+the OCI index is `258828d4...`, the platform manifest is `84ff0214...`,
+the config is `7b1326fd...`, and all 19 compressed layers and diffIDs match.
+[Artifact 8630296572](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635/artifacts/8630296572)
+is 20,767,686 bytes with
+`sha256:8ccbf80f44f8d134579b89f4cde8806d7f1460ee33524b27244ee5c8ed4d8014`
+and expires `2026-08-25T09:31:03Z`.
+
+This mapping is deliberately `reproducible-only`. It does not claim an
+authenticated registry digest, SBOM, provenance, scan result, signature,
+Cloudflare deployment, P5 eligibility, customer traffic, or production
+authority. Go/VPS remains authoritative and production remains **NO-GO**.

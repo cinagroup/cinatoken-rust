@@ -3835,6 +3835,47 @@ lifecycle rehearsal. This gate is not namespace/seccomp, remote lifecycle or
 production deployment evidence. No credential or remote authority was used.
 Go/VPS remains all production authority and production remains **NO-GO**.
 
+## K7 OCI Supply-Chain Execution Packet (2026-07-26)
+
+The first executable OCI packet is accepted for the reproduction-only
+boundary:
+
+| Evidence | Result |
+| --- | --- |
+| Candidate / tree | `383f53f5559674a9947b1939993ef2d9bdf0dd6a` / `3ced752e73b6e82faaa29ceff85dc1bad3e012cf` |
+| Ubuntu run/job | [30196543635](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635) / [89778965995](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635/job/89778965995) |
+| Builder contract | Two separate BuildKit `v0.31.2` daemons from one pinned image digest; Buildx `v0.35.0`; Docker Engine `28.0.4` |
+| Archive equality | A/B 10,378,752 bytes; exact `sha256:bdd67bd4335a922081e35fe344fb481599730ec37a3833d17fea85407852fb7e` |
+| OCI graph | index `258828d4...`; manifest `84ff0214...`; config `7b1326fd...`; 19 exact compressed layers and diffIDs |
+| Runtime join | final-layer binary `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` |
+| Retained packet | [artifact 8630296572](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635/artifacts/8630296572), 20,767,686 bytes, `sha256:8ccbf80f44f8d134579b89f4cde8806d7f1460ee33524b27244ee5c8ed4d8014`, expires `2026-08-25T09:31:03Z` |
+
+### Mandatory continuation order
+
+1. **R2: independent-runner reproduction.** Re-run the same contract on a
+   successor candidate and compare archive plus portable OCI graph. A mismatch
+   blocks release; host-local logs are diagnostic only.
+2. **S1: SBOM.** Use a version- and digest-pinned generator against the frozen
+   OCI subject. Hash canonical output, inventory packages/licenses, and bind it
+   to the platform manifest without changing that subject.
+3. **S2: vulnerability decision.** Scan the same subject with pinned database
+   identity and retention metadata. Critical/high counts remain unknown until
+   the scan exists and may never be inferred as zero.
+4. **S3: provenance/signature.** Produce DSSE/SLSA-style source/build
+   provenance, verify the subject digest and signer policy, record transparency
+   inclusion, and copy evidence to approved immutable/WORM retention.
+5. **R3: registry publication/readback.** Push only by digest, read back index
+   and platform manifest identities, reject tag-only evidence, and decide the
+   canonical P5 `containerImageDigest`.
+6. **C1: isolated Cloudflare staging.** Deploy the read-back digest with all
+   traffic and financial action gates false; join Controller, DO, Container
+   class, shard generation, runtime build, policy and cold-start observations.
+
+No step may synthesize missing SBOM/provenance hashes or convert unknown
+vulnerability counts to zero. The current packet keeps signature, registry,
+Cloudflare, P5, traffic and cutover authorization false. Go/VPS remains the
+only production authority and production remains **NO-GO**.
+
 ## 2026-07-26 K7 Reproducible Container Image Gate
 
 The release path now rejects an image whose executable behavior is stable but

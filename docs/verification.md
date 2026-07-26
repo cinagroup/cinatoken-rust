@@ -10474,3 +10474,65 @@ Across hosted jobs, the complete inspection member differs only in
 `GraphDriver.Data` paths and `Metadata.LastTagTime`; these are local daemon
 state and are excluded from `validateReproducibleImages`. The portable fields
 `Id`, `Config`, and ordered `RootFS.Layers` remain exact.
+
+## 2026-07-26 OCI Archive Reproducibility Verification
+
+The offline contract is credential-free and Docker-independent:
+
+```powershell
+bun run check:container-runtime:oci-contract
+node --check tools/verify_container_runtime_oci.mjs
+node --check tests/container-runtime-oci-gate.test.mjs
+actionlint .github/workflows/container-runtime-oci.yml
+```
+
+The Bun suite passes 8/8 tests with 61 expectations. It constructs a minimal
+OCI fixture and proves descriptor/blob size and digest checks, gzip/diffID
+verification, exact runtime config, epoch history, final-layer metadata,
+orphan-blob rejection, CLI mode separation, and complete A/B identity.
+
+The Linux-only gate is:
+
+```bash
+node tools/verify_container_runtime_oci.mjs \
+  --archive-a /tmp/container-runtime-oci/container-runtime-a.tar \
+  --archive-b /tmp/container-runtime-oci/container-runtime-b.tar \
+  --json
+```
+
+It passed for candidate
+`383f53f5559674a9947b1939993ef2d9bdf0dd6a`, tree
+`3ced752e73b6e82faaa29ceff85dc1bad3e012cf`, in
+[run 30196543635](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635)
+and
+[job 89778965995](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635/job/89778965995).
+
+| Field | Accepted value |
+| --- | --- |
+| BuildKit | Two independent daemon instances, `v0.31.2`, pinned image `sha256:2f5adac4...` |
+| Buildx / Docker | `v0.35.0` (`a319e5b...`) / Engine `28.0.4` |
+| Archive A/B | 10,378,752 bytes each; `sha256:bdd67bd4335a922081e35fe344fb481599730ec37a3833d17fea85407852fb7e` |
+| OCI index | `sha256:258828d41403fa220231c18327e83f9451978bec296b9aef1fd0003f1ea3cc80` |
+| Manifest / config | `sha256:84ff02142ea078cb8ad3fa496c2a4ad49f001c9b1c3a08ab1e4d394a78bd5aaa` / `sha256:7b1326fde55626bb8b5770fa88418eafe610d17f737c1f3fb1cb653362044b51` |
+| Platform / layers | `linux/amd64`, epoch creation, 19 exact compressed layers and 19 exact diffIDs |
+| Runtime binary | `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` |
+| Verifier report | 5223 bytes, `sha256:d87b6ec6fd08593ee8fc652ef0b51739797701f04c22a8c76bf17a9cb8cb8120` |
+| Verifier stderr | Empty, `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| Artifact | [8630296572](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635/artifacts/8630296572), 20,767,686 bytes, `sha256:8ccbf80f44f8d134579b89f4cde8806d7f1460ee33524b27244ee5c8ed4d8014`, expires `2026-08-25T09:31:03Z` |
+
+Independent verification range-downloaded the retained artifact, reconstructed
+the exact ZIP digest, extracted both archives, rehashed every OCI blob and both
+tar files, recomputed all diffIDs, checked the final-layer tree, and reproduced
+all equality flags.
+
+[Run 30195875838](https://github.com/cinagroup/cinatoken-rust/actions/runs/30195875838)
+is retained static negative calibration: GitHub rejected an unavailable
+job-level `runner` context before any job started. The corrected file passes
+`actionlint`.
+
+The report intentionally records generated SBOM/provenance and vulnerability
+scan as absent, vulnerability counts as null, and signature, registry
+readback, Cloudflare deployment digest, independent-runner reproduction,
+transparency/WORM, P5 eligibility, remote mutation, customer traffic and
+production cutover as false. This is OCI reproduction evidence only. Go/VPS
+remains authoritative and production remains **NO-GO**.

@@ -2004,3 +2004,34 @@ and expires `2026-08-25T08:20:56Z`. Cross-host Docker storage-driver paths and
 tag timestamps changed as expected and are not image identity. The next open
 supply-chain status is registry-bound OCI byte reproduction and signed
 provenance, not another local Docker image rebuild.
+
+## 2026-07-26 OCI Archive Reproducibility Status
+
+The pinned-builder OCI baseline is locally complete. Contract version 1 uses
+two distinct BuildKit `v0.31.2` daemon instances, two no-cache linux/amd64
+builds, deterministic gzip/OCI exporter options, and a fail-closed parser for
+the complete archive, descriptor graph, layer digests/diffIDs, application
+metadata, and binary.
+
+Candidate `383f53f5559674a9947b1939993ef2d9bdf0dd6a` passed
+[run 30196543635](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635)
+and [job 89778965995](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635/job/89778965995).
+A/B archives are byte-identical at 10,378,752 bytes and
+`sha256:bdd67bd4335a922081e35fe344fb481599730ec37a3833d17fea85407852fb7e`.
+The exact index/manifest/config values are `258828d4...`, `84ff0214...`, and
+`7b1326fd...`; all 19 compressed layers and diffIDs match, and the runtime
+binary remains `1ec31f...`.
+
+[Artifact 8630296572](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635/artifacts/8630296572)
+is 20,767,686 bytes,
+`sha256:8ccbf80f44f8d134579b89f4cde8806d7f1460ee33524b27244ee5c8ed4d8014`,
+and expires `2026-08-25T09:31:03Z`. Independent download and extraction
+matched the artifact, both tar files, both complete OCI graphs, and the
+5223-byte verifier report.
+
+This does not complete the image supply chain. Independent-runner repetition,
+registry/Cloudflare digest readback, SBOM, vulnerability policy, signed
+provenance, transparency/WORM retention, runtime deployment join, and P5
+remain open. Unknown vulnerability counts remain null, not zero.
+`p5Eligible` and `productionCutoverAuthorized` remain false; Go/VPS remains
+authoritative and production remains **NO-GO**.

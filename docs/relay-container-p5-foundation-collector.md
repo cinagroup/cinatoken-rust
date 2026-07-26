@@ -15,9 +15,9 @@ are ready for independent evidence assembly and owner review. The other eight
 P5 evidence kinds, the signed manifest, and all five independent approvals are
 still mandatory.
 
-Current local candidate baseline: D1 head 0056/count 56, 64 tables, 814
-incremental columns, and 94 key indexes. Migration 0055 remains the historical
-shard-activation campaign baseline, but a new candidate must bind 0056. No live
+Current local candidate baseline: D1 head 0060/count 60, 69 tables, 909
+incremental columns, and 101 key indexes. Migration 0055 remains the historical
+shard-activation campaign baseline, but a new candidate must bind 0060. No live
 Cloudflare readback, migration application,
 deployment, Durable Object/Container wake, or traffic change is claimed.
 
@@ -97,12 +97,13 @@ The candidate remains pinned to:
   `918e97480ee44e357abe99bf33c27259d6ac7ebd`;
 - Container image digest, runtime executable build SHA-256, and a separate
   runtime-to-image provenance SHA-256;
-- migration `0056_relay_http_stream_handoffs.sql`, count 56; and
+- migration `0060_relay_container_ring_transition_authority.sql`, count 60;
+  and
 - response/status/financial-terminal/terminal-ACK contracts 3/4/2/3.
 
-The earlier 0054/54 candidate was the pre-campaign activation baseline. It is
-retained as history only; a new foundation request using it must fail the
-current P5 candidate validator.
+Earlier 0054/54 through 0059/59 candidates are retained as history only; a new
+foundation request using any of them must fail the current P5 candidate
+validator.
 
 Unknown fields, production identities, short observation windows, candidate
 drift, unsafe integers, noncanonical JSON, symbolic links, multiply linked
@@ -319,9 +320,9 @@ The evidence order is fixed:
 1. rotate the exposed credential and freeze commits, Worker versions, image,
    runtime build, provenance, SBOM, resources, migration, and rollback facts;
 2. with every tracked action gate at its default `false`, back up D1 and
-   apply/read back 0054, 0055, 0056, 0057, then 0058, proving the 0058/58 and
-   66/848/97 baseline while retaining the sealed 0055 campaign evidence and
-   keeping every HTTP SSE producer disabled;
+   apply/read back 0054 through 0060 in order, proving the 0060/60 and
+   69/909/101 baseline while retaining the sealed 0055 campaign evidence and
+   keeping every HTTP SSE and ring-transition producer disabled;
 3. deploy provider-egress, Controller reader, then edge reader while activation
    recording remains false;
 4. roll the Container image at 10% and 100% and prove its image/runtime identity
@@ -370,13 +371,15 @@ boundaries; they are not authenticated Cloudflare evidence. No authenticated
 readback was run in this implementation increment, no remote resource changed,
 and foundation, P5, and production remain **NO-GO**.
 
-## 0058 Foundation Readback Overlay
+## 0060 Foundation Readback Overlay
 
-Ordered foundation capture now applies and reads back 0054, 0055, 0056, 0057,
-then 0058. Candidate-freeze and schema-readback facts must both report head
-0058/58 and 66/848/97, include the exact abort table/index/five triggers/seven
-columns and `enable_request_signal`, and prove every SSE authority remains
-false during collection. N-1 is reader-only; N is the sole possible drain
-owner. Any 0057 head, unexpected abort row, provider call, financial delta,
-partial pagination, or candidate drift fails closed. No authenticated remote
-capture occurred; foundation and P5 remain **NO-GO**.
+Ordered foundation capture now applies and reads back 0054 through 0060.
+Candidate-freeze and schema-readback facts must both report
+`0060_relay_container_ring_transition_authority.sql`, count 60 and
+69/909/101, including the exact 0058 abort, 0059 transition-claim and 0060
+expiry/authority schema. Every SSE, ring-transition, provider, financial and
+traffic authority remains false during collection. N-1 is reader-only; N is
+the sole possible drain owner. Any older head, active claim, unexpected abort
+or expiry row, provider call, financial delta, partial pagination, or candidate
+drift fails closed. No authenticated remote capture occurred; foundation and
+P5 remain **NO-GO**.

@@ -21345,3 +21345,72 @@ Docker `GraphDriver` paths and `Metadata.LastTagTime` changed while `Id`,
 its A/B inspections to agree semantically. The independent-job local
 reproduction step is therefore complete; registry-bound OCI bytes and signed
 provenance are next.
+
+## 22.299 K7 Pinned-Builder OCI Byte Reproduction (2026-07-26)
+
+The next image-supply-chain boundary is now executable. The credential-free
+`.github/workflows/container-runtime-oci.yml` creates two distinct
+`docker-container` builders from
+`moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec`.
+Each builder performs one `linux/amd64 --no-cache` build with
+`SOURCE_DATE_EPOCH=0`, gzip level 9, forced compression, OCI media types,
+`compatibility-version=20`, and timestamp rewriting. Default SBOM and
+provenance emission are disabled so that this gate measures the image subject
+without conflating later referrer artifacts.
+
+Contract version 1 rejects traversal, duplicate members, links, unexpected
+files, orphan blobs, descriptor size/digest drift, malformed JSON, unexpected
+platform/runtime config, non-epoch history, invalid gzip, diffID drift, final
+application-layer metadata drift, and any A/B tar, index, manifest, config,
+compressed-layer, diffID, or runtime-binary mismatch.
+
+Candidate `383f53f5559674a9947b1939993ef2d9bdf0dd6a`, tree
+`3ced752e73b6e82faaa29ceff85dc1bad3e012cf`, passed
+[run 30196543635](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635)
+and
+[job 89778965995](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635/job/89778965995).
+
+| Accepted evidence | Frozen value |
+| --- | --- |
+| Builders | Two distinct worker instances; BuildKit `v0.31.2` from the pinned image digest |
+| Client / engine | Buildx `v0.35.0` (`a319e5b...`); Docker Engine `28.0.4` |
+| OCI archives A/B | 10,378,752 bytes each; exact `sha256:bdd67bd4335a922081e35fe344fb481599730ec37a3833d17fea85407852fb7e` |
+| OCI index | `sha256:258828d41403fa220231c18327e83f9451978bec296b9aef1fd0003f1ea3cc80` |
+| Platform manifest | `sha256:84ff02142ea078cb8ad3fa496c2a4ad49f001c9b1c3a08ab1e4d394a78bd5aaa`, 3969 bytes |
+| Image config | `sha256:7b1326fde55626bb8b5770fa88418eafe610d17f737c1f3fb1cb653362044b51`, 4117 bytes |
+| Platform / layers | `linux/amd64`, epoch creation, 19 exact compressed layer digests and 19 exact diffIDs |
+| Runtime binary | `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910`, matching the Docker/process gate |
+| Evidence artifact | [8630296572](https://github.com/cinagroup/cinatoken-rust/actions/runs/30196543635/artifacts/8630296572), 20,767,686 bytes, `sha256:8ccbf80f44f8d134579b89f4cde8806d7f1460ee33524b27244ee5c8ed4d8014`, expires `2026-08-25T09:31:03Z` |
+| Verifier report | 5223 bytes, `sha256:d87b6ec6fd08593ee8fc652ef0b51739797701f04c22a8c76bf17a9cb8cb8120`; stderr empty |
+
+Independent local extraction rechecked both complete OCI descriptor graphs,
+all raw blob hashes and sizes, every compressed layer and diffID, final-layer
+ownership/mode/mtime, and the runtime binary. The artifact ZIP and both tar
+hashes match the GitHub and verifier records exactly.
+
+Run
+[30195875838](https://github.com/cinagroup/cinatoken-rust/actions/runs/30195875838)
+is negative workflow calibration only: GitHub rejected the job-level
+`runner.temp` context before creating a job. The corrected workflow passes
+`actionlint`; no build or remote mutation occurred in the rejected run.
+
+This closes same-job, two-builder OCI byte reproduction. It does not assign a
+P5 `containerImageDigest`, because registry and Cloudflare readback have not
+yet established whether the deployed subject is the index or platform
+manifest. SBOM and provenance digests remain null, vulnerability counts remain
+unknown rather than zero, and signature, registry readback, Cloudflare
+deployment digest, independent-runner reproduction, transparency/WORM,
+`p5Eligible`, and `productionCutoverAuthorized` remain false.
+
+The next mandatory order is:
+
+1. repeat the OCI gate in a successor job and compare the portable OCI graph;
+2. generate a digest-bound SBOM and vulnerability decision with pinned tools;
+3. generate and verify signed DSSE/SLSA-style provenance as an independent
+   referrer, then retain it outside GitHub's 30-day artifact store;
+4. push only the frozen digest to the approved registry and read back the exact
+   index/platform identities; and
+5. deploy that digest to isolated Cloudflare staging and join readback to the
+   Controller, DO, shard generation, runtime build, and policy identities.
+
+Go/VPS remains authoritative and production remains **NO-GO**.

@@ -4536,7 +4536,7 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn linux_multiprocess_startup_terminal_candidate_converges_without_http() {
         const ROLE_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_ROLE";
         const ROOT_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_ROOT";

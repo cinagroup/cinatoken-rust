@@ -191,15 +191,23 @@ describe("ring-transition runner syscall trace verifier", () => {
   test("proves zero network syscalls and rejects even failed attempts", () => {
     expect(
       verifyRingTransitionRunnerZeroNetworkTrace({
-        traceText: fixtureTrace({ lockPairs: 2 }),
+        traceText: [
+          fixtureTrace({ lockPairs: 2 }),
+          "4000  socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC, 0, [7, 8]) = 0",
+        ].join("\n"),
         label: "concurrent startup recovery",
+        expectedTracePidValues: ["4100"],
       }),
     ).toMatchObject({
       ok: true,
-      networkPolicy: "zero-network-syscalls-v1",
+      networkPolicy: "zero-network-syscalls-for-pinned-identities-v1",
+      networkScope: "reported-verify-loaded-credentials-test-threads",
+      expectedTracePidValues: ["4100"],
       networkSyscallsObserved: 0,
       networkSyscallNames: [],
-      observedProcessIdentities: 1,
+      observedProcessIdentities: 2,
+      unscopedNetworkSyscallsObserved: 1,
+      unscopedNetworkSyscallNames: ["socketpair"],
       zeroNetworkSyscalls: true,
     });
 
@@ -214,6 +222,7 @@ describe("ring-transition runner syscall trace verifier", () => {
         verifyRingTransitionRunnerZeroNetworkTrace({
           traceText: `${fixtureTrace({ lockPairs: 2 })}\n4100  ${syscall}`,
           label: "concurrent startup recovery",
+          expectedTracePidValues: ["4100"],
         }),
       ).toThrow(/forbidden network syscall attempted/);
     }
@@ -221,8 +230,16 @@ describe("ring-transition runner syscall trace verifier", () => {
       verifyRingTransitionRunnerZeroNetworkTrace({
         traceText: `${fixtureTrace({ lockPairs: 2 })}\n4100  socket(AF_INET, <unfinished ...>`,
         label: "concurrent startup recovery",
+        expectedTracePidValues: ["4100"],
       }),
     ).toThrow(/incomplete or diagnostic/);
+    expect(() =>
+      verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText: fixtureTrace({ lockPairs: 2 }),
+        label: "concurrent startup recovery",
+        expectedTracePidValues: ["4200"],
+      }),
+    ).toThrow(/expected trace PIDs were not all observed/);
   });
 
   test("rejects successful legacy mutation but permits failed EEXIST probes", () => {
@@ -457,6 +474,8 @@ describe("ring-transition runner syscall trace verifier", () => {
         tracePath,
         "--label",
         "concurrent startup recovery",
+        "--expected-trace-pids",
+        "4100",
         "--require-zero-network",
       ],
       { stdout: "pipe", stderr: "pipe" },
@@ -481,6 +500,8 @@ describe("ring-transition runner syscall trace verifier", () => {
         ROOT,
         "--label",
         "concurrent startup recovery",
+        "--expected-trace-pids",
+        "4100",
         "--require-zero-network",
       ],
       { stdout: "pipe", stderr: "pipe" },
@@ -607,8 +628,16 @@ describe("ring-transition runner syscall trace verifier", () => {
     );
     expect(workflow).toContain('-e "trace=${startup_trace_filter}"');
     expect(workflow).toContain("--require-zero-network");
+    expect(workflow).toContain(
+      '--expected-trace-pids "${startup_first_tid},${startup_second_tid}"',
+    );
     expect(workflow).toContain("concurrent-startup-recovery-boundary.json");
-    expect(workflow).toContain('networkPolicy: "zero-network-syscalls-v1"');
+    expect(workflow).toContain(
+      'networkPolicy: "zero-network-syscalls-for-pinned-identities-v1"',
+    );
+    expect(workflow).toContain(
+      'networkScope: "reported-verify-loaded-credentials-test-threads"',
+    );
     expect(workflow).toContain("followForks: true");
     expect(workflow).toContain("traceSha256: $traceSha256");
     expect(workflow).toContain("preparedWithoutHttpCore: true");

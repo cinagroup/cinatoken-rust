@@ -587,18 +587,26 @@ jobs:
           node tools/verify_ring_transition_runner_syscall_trace.mjs \
             --trace "${startup_trace_log}" \
             --label "concurrent startup recovery" \
+            --expected-trace-pids "${startup_first_tid},${startup_second_tid}" \
             --require-zero-network \
             | tee "${trace_artifact_dir}/concurrent-startup-recovery.verification.json"
           jq -e \
             --arg firstTid "${startup_first_tid}" \
             --arg secondTid "${startup_second_tid}" \
-            '(.networkPolicy == "zero-network-syscalls-v1") and
+            '(.networkPolicy == "zero-network-syscalls-for-pinned-identities-v1") and
+              (.networkScope == "reported-verify-loaded-credentials-test-threads") and
+              (.expectedTracePidValues == [$firstTid, $secondTid]) and
               (.zeroNetworkSyscalls == true) and
               (.networkSyscallsObserved == 0) and
               (.observedPidValues | index($firstTid) != null) and
               (.observedPidValues | index($secondTid) != null)' \
             "${trace_artifact_dir}/concurrent-startup-recovery.verification.json" \
             > /dev/null
+          startup_unscoped_network_syscalls="$(
+            jq -r '.unscopedNetworkSyscallsObserved' \
+              "${trace_artifact_dir}/concurrent-startup-recovery.verification.json"
+          )"
+          [[ "${startup_unscoped_network_syscalls}" =~ ^[0-9]+$ ]]
           jq -n \
             --arg gitSha "${GITHUB_SHA}" \
             --arg firstProcessPid "${startup_first_pid}" \
@@ -610,6 +618,7 @@ jobs:
             --arg traceFilter "${startup_trace_filter}" \
             --arg traceSha256 "${startup_trace_sha256}" \
             --argjson traceBytes "${startup_trace_bytes}" \
+            --argjson unscopedNetworkSyscallsObserved "${startup_unscoped_network_syscalls}" \
             '{
               gitSha: $gitSha,
               participants: [
@@ -628,8 +637,10 @@ jobs:
               verifyLoadedCredentials: true,
               preparedWithoutHttpCore: true,
               action: "receipt_sealed",
-              networkPolicy: "zero-network-syscalls-v1",
+              networkPolicy: "zero-network-syscalls-for-pinned-identities-v1",
+              networkScope: "reported-verify-loaded-credentials-test-threads",
               networkSyscallsObserved: 0,
+              unscopedNetworkSyscallsObserved: $unscopedNetworkSyscallsObserved,
               closureIdentity: $closure,
               capture: {
                 straceVersion: $straceVersion,
@@ -649,7 +660,7 @@ jobs:
             echo "- candidate writer: exact SIGKILL after candidate rename/directory sync/object-bound readback"
             echo "- candidate-after-sync recovery post-lock AT_FDCWD mutation: none"
             echo "- concurrent candidate recovery: two distinct ready-before-release processes converged on one closure identity"
-            echo "- concurrent verify_loaded_credentials startup: two distinct processes/TIDs converged on ReceiptSealed with zero network syscalls"
+            echo "- concurrent verify_loaded_credentials startup: two distinct current-thread Tokio TIDs converged on ReceiptSealed with zero network syscalls on those pinned TIDs"
             echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 6 per PID / 12 total"
             echo "- successful retained-dirfd openat2/renameat2: observed in each standalone trace or the concurrent bundle"
             echo "- successful full-transaction and candidate-recovery retained-dirfd mkdirat: observed"

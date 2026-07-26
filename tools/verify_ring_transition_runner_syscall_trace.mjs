@@ -44,6 +44,29 @@ const ALLOWED_DIRFD_MUTATIONS = new Set([
   "renameat2",
   "unlinkat",
 ]);
+const NETWORK_SYSCALLS = new Set([
+  "accept",
+  "accept4",
+  "bind",
+  "connect",
+  "getpeername",
+  "getsockname",
+  "getsockopt",
+  "listen",
+  "recvfrom",
+  "recvmmsg",
+  "recvmsg",
+  "recv",
+  "send",
+  "sendmmsg",
+  "sendmsg",
+  "sendto",
+  "setsockopt",
+  "shutdown",
+  "socket",
+  "socketcall",
+  "socketpair",
+]);
 
 export function verifyRingTransitionRunnerSyscallTrace({
   traceText,
@@ -399,6 +422,70 @@ export function verifyConcurrentRingTransitionRunnerSyscallTraces({
     postLockUnconfinedMutation: false,
     ...evidence,
     participants,
+  };
+}
+
+export function verifyRingTransitionRunnerZeroNetworkTrace({
+  traceText,
+  label,
+}) {
+  if (typeof label !== "string" || label.length < 1 || label.length > 80) {
+    throw new Error("[input] trace label is invalid");
+  }
+  if (
+    typeof traceText !== "string" ||
+    traceText.length < 1 ||
+    Buffer.byteLength(traceText, "utf8") > MAX_TRACE_BYTES
+  ) {
+    throw new Error(`[${label}] trace size is invalid`);
+  }
+
+  let parsedSyscalls = 0;
+  const observedPidValues = new Set();
+  for (const rawLine of traceText.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (line === "") continue;
+    if (
+      line.includes("<unfinished ...>") ||
+      line.includes("resumed>") ||
+      line.startsWith("strace:")
+    ) {
+      throw new Error(`[${label}] incomplete or diagnostic trace line: ${line}`);
+    }
+    if (parseProcessTerminationLine(line)) continue;
+    if (
+      /^(?:(?:\d+\s+)|(?:\[pid\s+\d+\]\s+))?(?:--- |\+\+\+ |Process )/u.test(
+        line,
+      )
+    ) {
+      continue;
+    }
+    const syscall = parseSyscallLine(line);
+    if (!syscall) {
+      throw new Error(`[${label}] unparsed trace line: ${line}`);
+    }
+    parsedSyscalls += 1;
+    observedPidValues.add(syscall.pid);
+    if (NETWORK_SYSCALLS.has(syscall.name)) {
+      throw new Error(
+        `[${label}] forbidden network syscall attempted: ${syscall.name} by ${syscall.pid}`,
+      );
+    }
+  }
+  if (parsedSyscalls === 0) {
+    throw new Error(`[${label}] trace contains no parsed syscall`);
+  }
+
+  return {
+    ok: true,
+    label,
+    networkPolicy: "zero-network-syscalls-v1",
+    parsedSyscalls,
+    observedProcessIdentities: observedPidValues.size,
+    observedPidValues: [...observedPidValues].sort(),
+    networkSyscallsObserved: 0,
+    networkSyscallNames: [],
+    zeroNetworkSyscalls: true,
   };
 }
 
@@ -850,6 +937,7 @@ function parseArgs(argv) {
   let requireMkdirat = false;
   let requireSigkillExit = false;
   let requireTerminalCandidateSync = false;
+  let requireZeroNetwork = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--require-mkdirat") {
@@ -862,6 +950,10 @@ function parseArgs(argv) {
     }
     if (argument === "--require-terminal-candidate-sync") {
       requireTerminalCandidateSync = true;
+      continue;
+    }
+    if (argument === "--require-zero-network") {
+      requireZeroNetwork = true;
       continue;
     }
     if (
@@ -882,12 +974,37 @@ function parseArgs(argv) {
     }
     values.set(argument, argv[++index]);
   }
-  for (const name of [
-    "--trace",
-    "--fixture-root",
-    "--label",
-    "--expected-locks",
-  ]) {
+  for (const name of ["--trace", "--label"]) {
+    if (!values.has(name)) usage(2, `[input] missing argument: ${name}`);
+  }
+  if (requireZeroNetwork) {
+    if (
+      values.has("--peer-trace") ||
+      values.has("--fixture-root") ||
+      values.has("--expected-locks") ||
+      values.has("--expected-lock-pids") ||
+      values.has("--expected-locks-per-pid") ||
+      requireMkdirat ||
+      requireSigkillExit ||
+      requireTerminalCandidateSync
+    ) {
+      usage(2, "[input] zero-network trace arguments are invalid");
+    }
+    return {
+      tracePath: values.get("--trace"),
+      peerTracePath: null,
+      fixtureRoot: null,
+      label: values.get("--label"),
+      expectedLocks: null,
+      expectedLockPids: null,
+      expectedLocksPerPid: null,
+      requireMkdirat: false,
+      requireSigkillExit: false,
+      requireTerminalCandidateSync: false,
+      requireZeroNetwork: true,
+    };
+  }
+  for (const name of ["--fixture-root", "--expected-locks"]) {
     if (!values.has(name)) usage(2, `[input] missing argument: ${name}`);
   }
   const expectedLocks = Number(values.get("--expected-locks"));
@@ -908,6 +1025,7 @@ function parseArgs(argv) {
     requireMkdirat,
     requireSigkillExit,
     requireTerminalCandidateSync,
+    requireZeroNetwork: false,
   };
 }
 
@@ -919,7 +1037,9 @@ function usage(exitCode, message) {
       "--expected-locks <even-count> [--require-mkdirat] " +
       "[--peer-trace <path>] " +
       "[--expected-lock-pids <count> --expected-locks-per-pid <even-count>] " +
-      "[--require-sigkill-exit] [--require-terminal-candidate-sync]\n",
+      "[--require-sigkill-exit] [--require-terminal-candidate-sync]\n" +
+      "   or: node tools/verify_ring_transition_runner_syscall_trace.mjs " +
+      "--trace <path> --label <label> --require-zero-network\n",
   );
   process.exit(exitCode);
 }
@@ -932,7 +1052,12 @@ async function main() {
       throw new Error(`[${options.label}] trace size is invalid`);
     }
     let result;
-    if (options.peerTracePath !== null) {
+    if (options.requireZeroNetwork) {
+      result = verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText: trace.toString("utf8"),
+        label: options.label,
+      });
+    } else if (options.peerTracePath !== null) {
       if (
         options.expectedLockPids === null ||
         options.expectedLocksPerPid === null ||

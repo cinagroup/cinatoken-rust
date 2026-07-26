@@ -565,25 +565,42 @@ pub(crate) async fn verify_loaded_credentials(
         execution_activation.clone(),
     )
     .map_err(ControlPlaneError::Receipt)?;
-    let operation_audit = receipt_recorder
-        .audit_operations(&identity)
-        .map_err(ControlPlaneError::Receipt)?;
+    let operation_audit = match receipt_recorder.audit_operations(&identity) {
+        Ok(audit) => audit,
+        Err(ReceiptError::AlreadySealed) => {
+            return recover_already_sealed_control_plane(
+                &receipt_recorder,
+                identity,
+                execution_activation,
+                dispatch_location,
+            );
+        }
+        Err(error) => return Err(ControlPlaneError::Receipt(error)),
+    };
     if operation_audit.unfinished_count != 0 {
-        receipt_recorder
-            .recover_unfinished_operations(&identity, system_time_seconds()?)
-            .map_err(ControlPlaneError::Receipt)?;
+        match receipt_recorder.recover_unfinished_operations(&identity, system_time_seconds()?) {
+            Ok(_) => {}
+            Err(ReceiptError::AlreadySealed) => {
+                return recover_already_sealed_control_plane(
+                    &receipt_recorder,
+                    identity,
+                    execution_activation,
+                    dispatch_location,
+                );
+            }
+            Err(error) => return Err(ControlPlaneError::Receipt(error)),
+        }
     }
     if let Some(terminal_closure) = receipt_recorder
         .recover_terminal_closure(&identity)
         .map_err(ControlPlaneError::Receipt)?
     {
-        return Ok(PreparedControlPlane {
-            core: None,
+        return Ok(prepared_terminal_control_plane(
             identity,
             execution_activation,
             dispatch_location,
-            terminal_closure: Some(terminal_closure),
-        });
+            terminal_closure,
+        ));
     }
     let exchange = HyperHttpsExchange::new()?;
     let now = system_time_seconds()?;
@@ -597,6 +614,39 @@ pub(crate) async fn verify_loaded_credentials(
         dispatch_location,
         terminal_closure: None,
     })
+}
+
+fn recover_already_sealed_control_plane(
+    receipt_recorder: &PersistentReceiptRecorder,
+    identity: CredentialIdentity,
+    execution_activation: ExecutionActivationIdentity,
+    dispatch_location: ClaimDispatchLocation,
+) -> Result<PreparedControlPlane, ControlPlaneError> {
+    let terminal_closure = receipt_recorder
+        .recover_terminal_closure(&identity)
+        .map_err(ControlPlaneError::Receipt)?
+        .ok_or(ControlPlaneError::Receipt(ReceiptError::AlreadySealed))?;
+    Ok(prepared_terminal_control_plane(
+        identity,
+        execution_activation,
+        dispatch_location,
+        terminal_closure,
+    ))
+}
+
+fn prepared_terminal_control_plane(
+    identity: CredentialIdentity,
+    execution_activation: ExecutionActivationIdentity,
+    dispatch_location: ClaimDispatchLocation,
+    terminal_closure: VerifiedTerminalClosure,
+) -> PreparedControlPlane {
+    PreparedControlPlane {
+        core: None,
+        identity,
+        execution_activation,
+        dispatch_location,
+        terminal_closure: Some(terminal_closure),
+    }
 }
 
 trait ReceiptRecorder: Send + Sync {
@@ -4450,65 +4500,13 @@ mod tests {
     #[tokio::test]
     async fn startup_recovers_a_terminal_candidate_before_constructing_the_http_core() {
         let root = temporary_receipt_root("startup-terminal-candidate");
-        let publication = matching_publication();
-        let activation = transport_activation();
-        let snapshot_value = aborted_snapshot_value();
-        let snapshot = verified_snapshot(&snapshot_value);
-        let identity = matching_identity();
-        let request_id = "startup-terminal-candidate-read";
-        let target = format!(
-            "/internal/v1/ring-transition/claims/{}?claimDigestSha256={}&claimOwnerSha256={}",
-            snapshot.authorization_id_sha256(),
-            snapshot.claim_digest_sha256(),
-            snapshot.claim_owner_sha256(),
-        );
-        let request_id_sha256 = sha256_hex(request_id.as_bytes());
-        let request_sha256 =
-            read_operation_request_sha256(&sha256_hex(target.as_bytes()), &request_id_sha256)
-                .unwrap();
-        let start = operation_start(
-            operation_identity(
-                OperationKind::AuthorityClaimRead,
-                0,
-                &target,
-                &request_sha256,
-            ),
-            request_id,
-            NOW,
-        );
-        let response = scripted_json(
-            StatusCode::OK,
-            serde_json::from_slice(&exact_claim_response(
-                &snapshot_value,
-                &identity,
-                request_id,
-            ))
-            .unwrap(),
-        );
-        let finish = operation_finish(OperationOutcome::Accepted, NOW, Some(&response));
-        let store = ReceiptStore::open(&root).unwrap();
-        assert_eq!(
-            store
-                .reserve_operation(&publication, &identity, &activation, &start)
-                .unwrap(),
-            OperationReservation::Fresh
-        );
-        store
-            .install_terminal_snapshot_candidate(
-                &snapshot,
-                &publication,
-                &identity,
-                &activation,
-                &start.identity,
-                &finish,
-            )
-            .unwrap();
+        let activation = install_startup_terminal_candidate_fixture(&root);
 
         let prepared = verify_loaded_credentials(
             loaded_credentials_for_transport_test(),
             activation.clone(),
             ClaimDispatchLocation::for_transport_test(root.clone()),
-            publication,
+            matching_publication(),
         )
         .await
         .unwrap();
@@ -4520,6 +4518,163 @@ mod tests {
         let outcome = prepared.execute_current().await.unwrap();
         assert_eq!(outcome.action, ExecuteCurrentAction::ReceiptSealed);
         assert_eq!(outcome.mutation_transport_outcome, None);
+
+        let replayed = verify_loaded_credentials(
+            loaded_credentials_for_transport_test(),
+            activation.clone(),
+            ClaimDispatchLocation::for_transport_test(root.clone()),
+            matching_publication(),
+        )
+        .await
+        .unwrap();
+        assert!(replayed.core.is_none());
+        assert_eq!(
+            replayed.execute_current().await.unwrap().action,
+            ExecuteCurrentAction::ReceiptSealed
+        );
+        cleanup_receipt_root(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_multiprocess_startup_terminal_candidate_converges_without_http() {
+        const ROLE_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_ROLE";
+        const ROOT_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_ROOT";
+        const READY_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_READY";
+        const RELEASE_ENV: &str = "CINATOKEN_RING_STARTUP_TEST_RELEASE";
+
+        if let Some(role) = std::env::var_os(ROLE_ENV) {
+            assert_eq!(
+                role.to_str(),
+                Some("verify-loaded-credentials"),
+                "unknown startup child role"
+            );
+            let root =
+                std::path::PathBuf::from(std::env::var_os(ROOT_ENV).expect("startup child root"));
+            let ready = std::path::PathBuf::from(
+                std::env::var_os(READY_ENV).expect("startup child ready path"),
+            );
+            let release = std::path::PathBuf::from(
+                std::env::var_os(RELEASE_ENV).expect("startup child release path"),
+            );
+            let lock_thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
+            assert!(lock_thread_id > 0);
+            println!("startup-process-id={}", std::process::id());
+            println!("startup-lock-thread-id={lock_thread_id}");
+            write_startup_test_signal(&ready, b"startup-ready");
+            wait_for_startup_test_release(&release);
+
+            let prepared = verify_loaded_credentials(
+                loaded_credentials_for_transport_test(),
+                transport_activation(),
+                ClaimDispatchLocation::for_transport_test(root),
+                matching_publication(),
+            )
+            .await
+            .unwrap();
+            assert!(prepared.core.is_none());
+            assert!(!prepared.access_service_token_verified());
+            let closure = prepared.terminal_closure.clone().unwrap();
+            assert_eq!(closure.terminal_status, ClaimStatus::Aborted);
+            assert_eq!(closure.terminal_state_version, 1);
+            let outcome = prepared.execute_current().await.unwrap();
+            assert_eq!(outcome.action, ExecuteCurrentAction::ReceiptSealed);
+            assert_eq!(outcome.status, Some(ClaimStatus::Aborted));
+            assert_eq!(outcome.state_version, Some(1));
+            assert_eq!(outcome.claim_classification, None);
+            assert_eq!(outcome.mutation_transport_outcome, None);
+            println!(
+                "startup-terminal-closure={}",
+                startup_terminal_closure_observation(&closure)
+            );
+            println!("startup-action=receipt-sealed");
+            std::io::stdout().flush().unwrap();
+            return;
+        }
+
+        let root = temporary_receipt_root("startup-terminal-candidate-concurrent");
+        let activation = install_startup_terminal_candidate_fixture(&root);
+        let first_ready = root.with_extension("startup-first-ready");
+        let second_ready = root.with_extension("startup-second-ready");
+        let release = root.with_extension("startup-release");
+        let mut first = startup_terminal_candidate_child(&root, &first_ready, &release);
+        let mut second = startup_terminal_candidate_child(&root, &second_ready, &release);
+        wait_for_startup_child_ready(&mut first, &first_ready);
+        wait_for_startup_child_ready(&mut second, &second_ready);
+        write_startup_test_signal(&release, b"start");
+
+        let first_output = first.wait_with_output().expect("first startup output");
+        let second_output = second.wait_with_output().expect("second startup output");
+        assert!(
+            first_output.status.success(),
+            "first startup child failed: {}\n{}",
+            first_output.status,
+            String::from_utf8_lossy(&first_output.stderr)
+        );
+        assert!(
+            second_output.status.success(),
+            "second startup child failed: {}\n{}",
+            second_output.status,
+            String::from_utf8_lossy(&second_output.stderr)
+        );
+        let first_stdout = String::from_utf8(first_output.stdout).unwrap();
+        let second_stdout = String::from_utf8(second_output.stdout).unwrap();
+        let first_closure = startup_test_output_value(&first_stdout, "startup-terminal-closure=");
+        let second_closure = startup_test_output_value(&second_stdout, "startup-terminal-closure=");
+        assert_eq!(first_closure, second_closure);
+        assert_eq!(
+            startup_test_output_value(&first_stdout, "startup-action="),
+            "receipt-sealed"
+        );
+        assert_eq!(
+            startup_test_output_value(&second_stdout, "startup-action="),
+            "receipt-sealed"
+        );
+        let first_tid = startup_test_output_value(&first_stdout, "startup-lock-thread-id=");
+        let second_tid = startup_test_output_value(&second_stdout, "startup-lock-thread-id=");
+        assert_ne!(first_tid, second_tid);
+        let first_pid = startup_test_output_value(&first_stdout, "startup-process-id=");
+        let second_pid = startup_test_output_value(&second_stdout, "startup-process-id=");
+        assert_ne!(first_pid, second_pid);
+        println!("startup-pair-process-ids={first_pid},{second_pid}");
+        println!("startup-pair-lock-thread-ids={first_tid},{second_tid}");
+        println!("startup-pair-closure={first_closure}");
+        std::io::stdout().flush().unwrap();
+
+        let replayed = verify_loaded_credentials(
+            loaded_credentials_for_transport_test(),
+            activation.clone(),
+            ClaimDispatchLocation::for_transport_test(root.clone()),
+            matching_publication(),
+        )
+        .await
+        .unwrap();
+        assert!(replayed.core.is_none());
+        assert_eq!(
+            replayed.execute_current().await.unwrap().action,
+            ExecuteCurrentAction::ReceiptSealed
+        );
+        let store = ReceiptStore::open(&root).unwrap();
+        let installed = store
+            .recover_terminal_closure(&matching_publication(), &matching_identity(), &activation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            startup_terminal_closure_observation(&installed),
+            first_closure
+        );
+        assert_eq!(
+            store.audit_authorization_operations(
+                &matching_publication(),
+                &matching_identity(),
+                &activation,
+            ),
+            Err(ReceiptError::AlreadySealed)
+        );
+
+        for path in [first_ready, second_ready, release] {
+            let _ = std::fs::remove_file(path);
+        }
         cleanup_receipt_root(&root);
     }
 
@@ -5819,6 +5974,151 @@ mod tests {
             stable_readback_observation_seconds: 5,
             activation_sequence: 1,
         }
+    }
+
+    fn install_startup_terminal_candidate_fixture(
+        root: &std::path::Path,
+    ) -> ExecutionActivationIdentity {
+        let publication = matching_publication();
+        let activation = transport_activation();
+        let snapshot_value = aborted_snapshot_value();
+        let snapshot = verified_snapshot(&snapshot_value);
+        let identity = matching_identity();
+        let request_id = "startup-terminal-candidate-read";
+        let target = format!(
+            "/internal/v1/ring-transition/claims/{}?claimDigestSha256={}&claimOwnerSha256={}",
+            snapshot.authorization_id_sha256(),
+            snapshot.claim_digest_sha256(),
+            snapshot.claim_owner_sha256(),
+        );
+        let request_id_sha256 = sha256_hex(request_id.as_bytes());
+        let request_sha256 =
+            read_operation_request_sha256(&sha256_hex(target.as_bytes()), &request_id_sha256)
+                .unwrap();
+        let start = operation_start(
+            operation_identity(
+                OperationKind::AuthorityClaimRead,
+                0,
+                &target,
+                &request_sha256,
+            ),
+            request_id,
+            NOW,
+        );
+        let response = scripted_json(
+            StatusCode::OK,
+            serde_json::from_slice(&exact_claim_response(
+                &snapshot_value,
+                &identity,
+                request_id,
+            ))
+            .unwrap(),
+        );
+        let finish = operation_finish(OperationOutcome::Accepted, NOW, Some(&response));
+        let store = ReceiptStore::open(root).unwrap();
+        assert_eq!(
+            store
+                .reserve_operation(&publication, &identity, &activation, &start)
+                .unwrap(),
+            OperationReservation::Fresh
+        );
+        store
+            .install_terminal_snapshot_candidate(
+                &snapshot,
+                &publication,
+                &identity,
+                &activation,
+                &start.identity,
+                &finish,
+            )
+            .unwrap();
+        activation
+    }
+
+    #[cfg(target_os = "linux")]
+    fn startup_terminal_candidate_child(
+        root: &std::path::Path,
+        ready: &std::path::Path,
+        release: &std::path::Path,
+    ) -> std::process::Child {
+        let mut command =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"));
+        command
+            .arg("--exact")
+            .arg(
+                "transport::tests::linux_multiprocess_startup_terminal_candidate_converges_without_http",
+            )
+            .arg("--nocapture")
+            .env_clear()
+            .env(
+                "CINATOKEN_RING_STARTUP_TEST_ROLE",
+                "verify-loaded-credentials",
+            )
+            .env("CINATOKEN_RING_STARTUP_TEST_ROOT", root)
+            .env("CINATOKEN_RING_STARTUP_TEST_READY", ready)
+            .env("CINATOKEN_RING_STARTUP_TEST_RELEASE", release)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn startup terminal candidate child")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_startup_child_ready(child: &mut std::process::Child, ready: &std::path::Path) {
+        for _ in 0..1000 {
+            if matches!(std::fs::read(ready), Ok(bytes) if bytes == b"startup-ready") {
+                return;
+            }
+            if let Some(status) = child.try_wait().expect("query startup child") {
+                panic!("startup child exited before readiness: {status}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("startup child did not become ready");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn write_startup_test_signal(path: &std::path::Path, bytes: &[u8]) {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)
+            .expect("create startup test signal");
+        file.write_all(bytes).expect("write startup test signal");
+        file.sync_all().expect("sync startup test signal");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_startup_test_release(path: &std::path::Path) {
+        for _ in 0..1000 {
+            if matches!(std::fs::read(path), Ok(bytes) if bytes == b"start") {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("startup test release gate was not published");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn startup_test_output_value(output: &str, prefix: &str) -> String {
+        output
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .unwrap_or_else(|| panic!("startup output missing {prefix}: {output}"))
+            .to_owned()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn startup_terminal_closure_observation(closure: &VerifiedTerminalClosure) -> String {
+        format!(
+            "authorization={};status={:?};state_version={};execution_head={};operation_head_set={};local_seal={}",
+            closure.authorization_id_sha256,
+            closure.terminal_status,
+            closure.terminal_state_version,
+            closure.execution_receipt_head_sha256,
+            closure.operation_head_set_sha256,
+            closure.local_seal_sha256,
+        )
     }
 
     fn matching_publication() -> PublicationIdentity {

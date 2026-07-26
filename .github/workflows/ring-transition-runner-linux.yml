@@ -109,6 +109,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v strace
+          strace_version="$(strace --version | head -n 1)"
           artifact_log="$(mktemp)"
           trace_artifact_dir="${RUNNER_TEMP}/ring-transition-syscall-traces"
           mkdir -p "${trace_artifact_dir}"
@@ -140,6 +141,9 @@ jobs:
           concurrent_second_output="${trace_artifact_dir}/candidate-concurrent-recovery-second.log"
           concurrent_first_pid_file="${trace_artifact_dir}/candidate-concurrent-recovery-first.pid"
           concurrent_second_pid_file="${trace_artifact_dir}/candidate-concurrent-recovery-second.pid"
+          startup_trace_log="${trace_artifact_dir}/concurrent-startup-recovery.strace"
+          startup_output="${trace_artifact_dir}/concurrent-startup-recovery.log"
+          startup_trace_filter="%file,%network,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl"
           candidate_writer_tracer_pid=""
           candidate_writer_pid=""
           concurrent_first_tracer_pid=""
@@ -546,6 +550,97 @@ jobs:
             > /dev/null
           echo "concurrent-boundary-manifest=verified"
 
+          strace -f -qq -yy -s 4096 \
+            -e "trace=${startup_trace_filter}" \
+            -o "${startup_trace_log}" \
+            "${test_binary}" \
+            --exact transport::tests::linux_multiprocess_startup_terminal_candidate_converges_without_http \
+            --nocapture \
+            2>&1 | tee "${startup_output}"
+          startup_process_ids="$(
+            grep '^startup-pair-process-ids=' "${startup_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          startup_lock_thread_ids="$(
+            grep '^startup-pair-lock-thread-ids=' "${startup_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          startup_closure="$(
+            grep '^startup-pair-closure=' "${startup_output}" |
+              tail -n 1 |
+              cut -d= -f2-
+          )"
+          IFS=, read -r startup_first_pid startup_second_pid <<< "${startup_process_ids}"
+          IFS=, read -r startup_first_tid startup_second_tid <<< "${startup_lock_thread_ids}"
+          [[ "${startup_first_pid}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${startup_second_pid}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${startup_first_tid}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${startup_second_tid}" =~ ^[1-9][0-9]*$ ]]
+          test "${startup_first_pid}" != "${startup_second_pid}"
+          test "${startup_first_tid}" != "${startup_second_tid}"
+          test -n "${startup_closure}"
+          startup_trace_sha256="$(sha256sum "${startup_trace_log}" | cut -d' ' -f1)"
+          startup_trace_bytes="$(stat -c '%s' "${startup_trace_log}")"
+
+          node tools/verify_ring_transition_runner_syscall_trace.mjs \
+            --trace "${startup_trace_log}" \
+            --label "concurrent startup recovery" \
+            --require-zero-network \
+            | tee "${trace_artifact_dir}/concurrent-startup-recovery.verification.json"
+          jq -e \
+            --arg firstTid "${startup_first_tid}" \
+            --arg secondTid "${startup_second_tid}" \
+            '(.networkPolicy == "zero-network-syscalls-v1") and
+              (.zeroNetworkSyscalls == true) and
+              (.networkSyscallsObserved == 0) and
+              (.observedPidValues | index($firstTid) != null) and
+              (.observedPidValues | index($secondTid) != null)' \
+            "${trace_artifact_dir}/concurrent-startup-recovery.verification.json" \
+            > /dev/null
+          jq -n \
+            --arg gitSha "${GITHUB_SHA}" \
+            --arg firstProcessPid "${startup_first_pid}" \
+            --arg secondProcessPid "${startup_second_pid}" \
+            --arg firstLockThreadId "${startup_first_tid}" \
+            --arg secondLockThreadId "${startup_second_tid}" \
+            --arg closure "${startup_closure}" \
+            --arg straceVersion "${strace_version}" \
+            --arg traceFilter "${startup_trace_filter}" \
+            --arg traceSha256 "${startup_trace_sha256}" \
+            --argjson traceBytes "${startup_trace_bytes}" \
+            '{
+              gitSha: $gitSha,
+              participants: [
+                {
+                  name: "first",
+                  processPid: $firstProcessPid,
+                  lockThreadId: $firstLockThreadId
+                },
+                {
+                  name: "second",
+                  processPid: $secondProcessPid,
+                  lockThreadId: $secondLockThreadId
+                }
+              ],
+              sharedStartGate: true,
+              verifyLoadedCredentials: true,
+              preparedWithoutHttpCore: true,
+              action: "receipt_sealed",
+              networkPolicy: "zero-network-syscalls-v1",
+              networkSyscallsObserved: 0,
+              closureIdentity: $closure,
+              capture: {
+                straceVersion: $straceVersion,
+                traceFilter: ($traceFilter | split(",")),
+                followForks: true,
+                traceSha256: $traceSha256,
+                traceBytes: $traceBytes
+              }
+            }' > "${trace_artifact_dir}/concurrent-startup-recovery-boundary.json"
+          echo "concurrent-startup-network-boundary=verified"
+
           {
             echo "### Terminal descriptor syscall traces"
             echo
@@ -554,6 +649,7 @@ jobs:
             echo "- candidate writer: exact SIGKILL after candidate rename/directory sync/object-bound readback"
             echo "- candidate-after-sync recovery post-lock AT_FDCWD mutation: none"
             echo "- concurrent candidate recovery: two distinct ready-before-release processes converged on one closure identity"
+            echo "- concurrent verify_loaded_credentials startup: two distinct processes/TIDs converged on ReceiptSealed with zero network syscalls"
             echo "- exact paired exclusive locks: recovery 4; full transaction 10; candidate writer 4; candidate recovery 8; concurrent recovery 6 per PID / 12 total"
             echo "- successful retained-dirfd openat2/renameat2: observed in each standalone trace or the concurrent bundle"
             echo "- successful full-transaction and candidate-recovery retained-dirfd mkdirat: observed"
@@ -570,8 +666,16 @@ jobs:
             ${{ runner.temp }}/ring-transition-syscall-traces/*-boundary.json
             ${{ runner.temp }}/ring-transition-syscall-traces/*.log
             ${{ runner.temp }}/ring-transition-syscall-traces/*.pid
-            ${{ runner.temp }}/ring-transition-syscall-traces/*.strace
           if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Retain successful syscall traces
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ring-transition-successful-syscall-traces-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ring-transition-syscall-traces/*.strace
+          if-no-files-found: error
           retention-days: 30
 
       - name: Retain failed syscall traces

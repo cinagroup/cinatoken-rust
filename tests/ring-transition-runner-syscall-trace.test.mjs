@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   verifyConcurrentRingTransitionRunnerSyscallTraces,
   verifyRingTransitionRunnerSyscallTrace,
+  verifyRingTransitionRunnerZeroNetworkTrace,
 } from "../tools/verify_ring_transition_runner_syscall_trace.mjs";
 
 const ROOT = "/tmp/cinatoken-ring-trace";
@@ -185,6 +186,43 @@ describe("ring-transition runner syscall trace verifier", () => {
         expectedLocksPerPid: 6,
       }),
     ).toThrow(/successful_dirfd_openat2/);
+  });
+
+  test("proves zero network syscalls and rejects even failed attempts", () => {
+    expect(
+      verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText: fixtureTrace({ lockPairs: 2 }),
+        label: "concurrent startup recovery",
+      }),
+    ).toMatchObject({
+      ok: true,
+      networkPolicy: "zero-network-syscalls-v1",
+      networkSyscallsObserved: 0,
+      networkSyscallNames: [],
+      observedProcessIdentities: 1,
+      zeroNetworkSyscalls: true,
+    });
+
+    for (const syscall of [
+      "socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC, IPPROTO_TCP) = -1 EACCES (Permission denied)",
+      "connect(9, {sa_family=AF_INET, sin_port=htons(443)}, 16) = -1 ECONNREFUSED (Connection refused)",
+      "recv(9, \"\", 1, 0) = -1 EBADF (Bad file descriptor)",
+      "send(9, \"x\", 1, 0) = -1 EBADF (Bad file descriptor)",
+      "sendto(9, \"x\", 1, 0, NULL, 0) = -1 EBADF (Bad file descriptor)",
+    ]) {
+      expect(() =>
+        verifyRingTransitionRunnerZeroNetworkTrace({
+          traceText: `${fixtureTrace({ lockPairs: 2 })}\n4100  ${syscall}`,
+          label: "concurrent startup recovery",
+        }),
+      ).toThrow(/forbidden network syscall attempted/);
+    }
+    expect(() =>
+      verifyRingTransitionRunnerZeroNetworkTrace({
+        traceText: `${fixtureTrace({ lockPairs: 2 })}\n4100  socket(AF_INET, <unfinished ...>`,
+        label: "concurrent startup recovery",
+      }),
+    ).toThrow(/incomplete or diagnostic/);
   });
 
   test("rejects successful legacy mutation but permits failed EEXIST probes", () => {
@@ -411,6 +449,47 @@ describe("ring-transition runner syscall trace verifier", () => {
     });
     expect(await new Response(accepted.stderr).text()).toBe("");
 
+    const zeroNetworkAccepted = Bun.spawn(
+      [
+        process.execPath,
+        CLI,
+        "--trace",
+        tracePath,
+        "--label",
+        "concurrent startup recovery",
+        "--require-zero-network",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await zeroNetworkAccepted.exited).toBe(0);
+    expect(
+      JSON.parse(await new Response(zeroNetworkAccepted.stdout).text()),
+    ).toMatchObject({
+      ok: true,
+      networkSyscallsObserved: 0,
+      zeroNetworkSyscalls: true,
+    });
+    expect(await new Response(zeroNetworkAccepted.stderr).text()).toBe("");
+
+    const zeroNetworkRejected = Bun.spawn(
+      [
+        process.execPath,
+        CLI,
+        "--trace",
+        tracePath,
+        "--fixture-root",
+        ROOT,
+        "--label",
+        "concurrent startup recovery",
+        "--require-zero-network",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await zeroNetworkRejected.exited).not.toBe(0);
+    expect(await new Response(zeroNetworkRejected.stderr).text()).toMatch(
+      /zero-network trace arguments are invalid/,
+    );
+
     const peerTracePath = path.join(directory, "peer-trace.log");
     await writeFile(
       tracePath,
@@ -520,6 +599,21 @@ describe("ring-transition runner syscall trace verifier", () => {
     expect(workflow).toContain(
       "case \"${concurrent_first_unfinished}:${concurrent_second_unfinished}\" in",
     );
+    expect(workflow).toContain(
+      "transport::tests::linux_multiprocess_startup_terminal_candidate_converges_without_http",
+    );
+    expect(workflow).toContain(
+      'startup_trace_filter="%file,%network,flock,fsync,fdatasync,fchmod,close,dup,dup2,dup3,fcntl"',
+    );
+    expect(workflow).toContain('-e "trace=${startup_trace_filter}"');
+    expect(workflow).toContain("--require-zero-network");
+    expect(workflow).toContain("concurrent-startup-recovery-boundary.json");
+    expect(workflow).toContain('networkPolicy: "zero-network-syscalls-v1"');
+    expect(workflow).toContain("followForks: true");
+    expect(workflow).toContain("traceSha256: $traceSha256");
+    expect(workflow).toContain("preparedWithoutHttpCore: true");
+    expect(workflow).toContain("networkSyscallsObserved: 0");
+    expect(workflow).toContain("Retain successful syscall traces");
     expect(workflow).toContain("retention-days: 30");
   });
 });

@@ -1955,3 +1955,39 @@ storage/power-loss/restore, load/cost/SLO/alerts, signed/WORM retention,
 credential revocation, financial reconciliation, rollback, and G1-G8 remain
 open. No remote mutation or traffic switch occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-26 Container Image Reproducibility Status
+
+The local same-checkout image reproducibility item is complete. Contract
+version 5 builds the production image twice without cache, rewrites exported
+layer timestamps to `SOURCE_DATE_EPOCH=0`, installs the binary into a fully
+normalized runtime root, and fails closed unless image ID, image config,
+ordered RootFS layers, copied binary hashes, live build identity, runtime
+policy, and restart policy all agree.
+
+Accepted candidate
+`cbe749907931435e280686c9b8c935b08fdd085f` passed
+[run 30194108625](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625).
+Both builds produced image
+`sha256:6a2f92415570e2b13e033b8c0d3d1acaadccf2bfa60ebd8d63faa359b687c514`,
+19 equal ordered layers, binary/build identity
+`1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910`,
+and runtime policy
+`sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d`.
+[Artifact 8629556865](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625/artifacts/8629556865)
+is 7822 bytes with
+`sha256:1bfac70cb2dd38418da1115ef5b6a15a67b46bb893fd00076a1cc5e8fe2b8ffe`
+and expires `2026-08-25T08:10:57Z`.
+
+Runs 30192996455 and 30193875952 are retained negative calibration: the first
+rejected epoch-only builds; the second proved that config equality and exporter
+timestamp rewriting still left final layer 18 different. Normalizing the
+complete runtime root closed that drift.
+
+Remaining image-supply-chain work is independent-host and pinned-builder OCI
+manifest reproduction, registry digest readback, SBOM and vulnerability
+policy, signed provenance, transparency/WORM retention, and joining the exact
+digest to Controller, DO, shard generation, and Cloudflare Container
+deployment identities. This local status does not change remote migration or
+cutover authority. `productionCutoverAuthorized` remains false, Go/VPS stays
+authoritative, and production remains **NO-GO**.

@@ -1865,3 +1865,35 @@ mapping evidence must join those remote observations to the same image,
 runtime-build, policy, Controller deployment, and shard generation identities.
 Until that join and the remaining durability/financial/cutover gates pass,
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-26 Reproducible Image Mapping
+
+The cinaVibeSDK lifecycle model assumes that a DO can discard and replace a
+Container without changing the executable workload. `cinatoken-rust` now
+enforces the local prerequisite for that assumption: two independent,
+no-cache builds from one source candidate must resolve to the same Docker image
+identity before lifecycle behavior is tested.
+
+| cinaVibeSDK responsibility | Rust/Cloudflare mapping | Accepted local proof | Still required remotely |
+| --- | --- | --- | --- |
+| Replacement instances run one immutable workload | Controller and DO must name a digest-bound image, never a mutable tag | Two builds have image ID `sha256:6a2f92415570e2b13e033b8c0d3d1acaadccf2bfa60ebd8d63faa359b687c514` | Registry manifest/index digest and Cloudflare deployment readback |
+| Build timestamps do not create false versions | Normalize source epoch and every final application-path mtime | Exact 19-layer RootFS and config equality | Independent-host and pinned-builder reproduction |
+| Disposable processes share executable bytes | Runtime root is root-owned and binary is copied out and hashed independently | Both binaries and live readiness equal `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` | Cloudflare instance build-ID sampling across cold starts and evictions |
+| Lifecycle replacement preserves security policy | Rebuild identity is joined to process attestation | Primary/restart policy remains `sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d` | Managed namespace, cgroup, mount, FD, and outbound-policy evidence |
+| Durable authority remains external | Reproducible compute is still not a durable source of truth | D1/DO/R2 authority remains unchanged | Fault campaign joining operation, shard, deployment, image, and policy IDs |
+
+The accepted candidate is
+`cbe749907931435e280686c9b8c935b08fdd085f`, tree
+`0a21ce473d857fbcfc2adc60a5e7362bd7784bff`, from
+[run 30194108625](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625).
+[Artifact 8629556865](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625/artifacts/8629556865)
+is 7822 bytes with digest
+`sha256:1bfac70cb2dd38418da1115ef5b6a15a67b46bb893fd00076a1cc5e8fe2b8ffe`
+and expires `2026-08-25T08:10:57Z`.
+
+This mapping closes local replacement-byte equivalence only. Registry
+compression and manifest identity, SBOM/provenance signatures, Cloudflare
+digest installation, lifecycle distribution, and external immutable evidence
+remain open. The mapping does not authorize a mutable image tag, remote
+deployment, or traffic. Go/VPS remains authoritative and production remains
+**NO-GO**.

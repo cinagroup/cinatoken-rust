@@ -21263,3 +21263,65 @@ The next K7 sequence is:
 No remote credential, Cloudflare mutation, provider call, customer traffic
 movement, or Go/VPS drain was used for this acceptance. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.298 K7 Reproducible Container Image Identity (2026-07-26)
+
+The isolation gate exposed a supply-chain defect after the first accepted
+runtime packet: the runtime binary and policy stayed stable, but a docs-only
+commit produced a different final image layer and image ID. The release gate
+now treats that as a hard failure instead of accepting source or binary
+identity as a substitute for image identity.
+
+Contract version 5 performs two sequential, independent
+`linux/amd64 --no-cache` Buildx builds from the same checkout. Both use
+`SOURCE_DATE_EPOCH=0`, the image exporter's `rewrite-timestamp=true`, disabled
+Cargo incrementality, and a builder-created runtime root whose file and
+directory mtimes, ownership, and modes are normalized before one root-owned
+copy into the distroless stage. Acceptance requires:
+
+- equal valid image IDs;
+- equal complete runtime image configuration;
+- equal ordered non-empty RootFS layer identities;
+- equal independently copied runtime-binary SHA-256 values;
+- the same binary hash reported by the live readiness endpoint; and
+- the complete runtime isolation and restart-policy gate to remain green.
+
+The frozen candidate is
+`cbe749907931435e280686c9b8c935b08fdd085f`, tree
+`0a21ce473d857fbcfc2adc60a5e7362bd7784bff`.
+[Run 30194108625](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625)
+and
+[job 89772437472](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625/job/89772437472)
+passed on Ubuntu 24.04.4 with runner image `20260720.247.2`.
+
+| Accepted evidence | Frozen value |
+| --- | --- |
+| Image identity | `sha256:6a2f92415570e2b13e033b8c0d3d1acaadccf2bfa60ebd8d63faa359b687c514` for both independent builds |
+| RootFS/config | 19 ordered layers; exact image, config, and layer matches all true |
+| Runtime binary/build | `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` for build A, build B, and live readiness |
+| Runtime policy | `sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d` for primary, restart, embedded, and independent recomputation |
+| Artifact | [8629556865](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625/artifacts/8629556865), 7822 bytes, `sha256:1bfac70cb2dd38418da1115ef5b6a15a67b46bb893fd00076a1cc5e8fe2b8ffe`, expires `2026-08-25T08:10:57Z` |
+| Attestation JSON | 8270 bytes, `sha256:b17932d80e0e96465e81a10d3cd34f3be361d344ea05e753215f8180cb9eb326` |
+| Image inspections | 5400 bytes each and byte-identical, `sha256:ebb3609b1ff0bcd9e0de3931691446bac231d355ad5eb52dc336df920c8f3f7c` |
+| Binary-hash log | 212 bytes, `sha256:705e2dd4f9af9a0d1d07f3edc88eb6505c64d4fff36ed8b91826d47366f93981` |
+
+Two retained failures calibrate the boundary. Run
+[30192996455](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192996455)
+proved that `SOURCE_DATE_EPOCH` alone did not normalize file timestamps.
+Run
+[30193875952](https://github.com/cinagroup/cinatoken-rust/actions/runs/30193875952)
+proved that exporter rewriting alone still left only final RootFS layer 18
+different while image config, size, and epoch creation time matched. The
+normalized runtime-root construction closed that last-layer drift without
+weakening equality.
+
+This closes same-checkout, same-runner local Docker image identity and runtime
+binary identity. It does not yet prove byte-identical compressed registry
+layers or manifest/index bytes across independent hosts and BuildKit versions,
+nor SBOM, vulnerability policy, signed provenance, transparency/WORM
+retention, Cloudflare image readback, or managed runtime lifecycle. The next
+K7 release step must export and independently compare the registry-bound OCI
+packet under a pinned builder compatibility contract, sign and retain its
+SBOM/provenance, then join that exact digest to isolated Cloudflare staging.
+No credential, remote mutation, traffic change, or Go/VPS drain occurred.
+Go/VPS remains authoritative and production remains **NO-GO**.

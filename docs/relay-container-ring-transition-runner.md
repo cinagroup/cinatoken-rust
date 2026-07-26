@@ -1996,3 +1996,43 @@ Cloudflare host, managed namespace/cgroup, DO supervisor, persistent volume,
 power-loss/restore, deployed image provenance, or external immutable anchor.
 D1/DO/R2 and the signed external evidence chain remain the durable sources of
 truth. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Container Image Reproducibility Gate
+
+The relay Container gate now binds runtime attestation to reproducible local
+image identity. It runs two no-cache Buildx builds from one candidate, with
+epoch-normalized export and a normalized builder-created runtime root, before
+creating any runtime network or process. It rejects a missing or malformed
+layer list and any image ID, complete config, ordered RootFS layer, or binary
+hash difference.
+
+Candidate `cbe749907931435e280686c9b8c935b08fdd085f`, tree
+`0a21ce473d857fbcfc2adc60a5e7362bd7784bff`, passed
+[run 30194108625](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625)
+and
+[job 89772437472](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625/job/89772437472).
+Both builds produced image
+`sha256:6a2f92415570e2b13e033b8c0d3d1acaadccf2bfa60ebd8d63faa359b687c514`
+with the same 19 layers. Both copied binaries and live readiness produced
+`1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910`.
+The primary, restarted, embedded, and independently recomputed policy values
+remain
+`sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d`.
+
+[Artifact 8629556865](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625/artifacts/8629556865)
+is 7822 bytes with ZIP digest
+`sha256:1bfac70cb2dd38418da1115ef5b6a15a67b46bb893fd00076a1cc5e8fe2b8ffe`
+and expiry `2026-08-25T08:10:57Z`. Its two image-inspection members are
+byte-identical; its binary-hash log binds both image references to the live
+build identity.
+
+Run 30193875952 is important negative evidence: both configs and creation
+timestamps matched, but only final layer 18 differed. The accepted runtime-root
+normalization closes that layer without weakening the gate.
+
+This proves the local Docker artifact that carries relay compute. It does not
+make Container-local state authoritative and does not yet prove registry
+manifest/compressed-layer identity, independent builders, signatures,
+Cloudflare installation, or DO lifecycle behavior. D1/DO/R2 and external
+signed evidence remain authoritative. Go/VPS remains production authority and
+production remains **NO-GO**.

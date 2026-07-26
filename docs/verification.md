@@ -10385,3 +10385,67 @@ not prove Cloudflare Containers host isolation, deployed image identity,
 managed lifecycle, persistent storage durability, external evidence retention,
 or production authorization. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-26 Reproducible Container Image Verification
+
+This section supersedes the single-image commands above for the reproducibility
+gate. The offline contract remains credential-free and Docker-independent:
+
+```powershell
+bun run check:container-runtime:linux-contract
+cargo test --locked -p cinatoken-container-runtime
+cargo clippy --locked -p cinatoken-container-runtime --all-targets -- -D warnings
+cargo clippy --locked -p cinatoken-container-runtime --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+cargo fmt --all --check
+```
+
+The real Linux gate is the pinned workflow
+`.github/workflows/container-runtime-linux.yml`. It performs two no-cache
+Buildx builds with `SOURCE_DATE_EPOCH=0` and
+`--output type=image,rewrite-timestamp=true`, retains both image inspections
+and copied binary hashes, then invokes:
+
+```bash
+node tools/verify_container_runtime_linux.mjs \
+  --image cinatoken-container-runtime:linux-gate-a \
+  --reproducible-image cinatoken-container-runtime:linux-gate-b \
+  --json
+```
+
+### Accepted evidence
+
+| Field | Value |
+| --- | --- |
+| Contract | Version 5; local offline test 9/9 with 86 expectations |
+| Candidate / tree | `cbe749907931435e280686c9b8c935b08fdd085f` / `0a21ce473d857fbcfc2adc60a5e7362bd7784bff` |
+| Run / job | [30194108625](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625) / [89772437472](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625/job/89772437472) |
+| Image | `sha256:6a2f92415570e2b13e033b8c0d3d1acaadccf2bfa60ebd8d63faa359b687c514`; exact ID, config, and 19-layer equality |
+| Binary/build | `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` for build A, build B, and live readiness |
+| Policy | `sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d`; primary/restart/embedded/recomputed equality |
+| Artifact | [8629556865](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625/artifacts/8629556865), 7822 bytes, `sha256:1bfac70cb2dd38418da1115ef5b6a15a67b46bb893fd00076a1cc5e8fe2b8ffe`, expires `2026-08-25T08:10:57Z` |
+| Attestation JSON | 8270 bytes, `sha256:b17932d80e0e96465e81a10d3cd34f3be361d344ea05e753215f8180cb9eb326` |
+| Image A/B inspections | 5400 bytes each, identical `sha256:ebb3609b1ff0bcd9e0de3931691446bac231d355ad5eb52dc336df920c8f3f7c` |
+| Binary-hash log | 212 bytes, `sha256:705e2dd4f9af9a0d1d07f3edc88eb6505c64d4fff36ed8b91826d47366f93981` |
+| Empty stderr log | `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+
+Independent verification downloaded the artifact, matched its ZIP digest,
+parsed both image inspections, confirmed their byte equality, parsed both
+binary hashes, and reconstructed the ordered policy object. The recomputed
+policy value equals the top-level, embedded, and restart values. The report
+also keeps `remoteMutationAuthorized`, `customerTrafficAuthorized`, and
+`productionCutoverAuthorized` false.
+
+### Negative calibration
+
+| Run | Observation | Result |
+| --- | --- | --- |
+| [30192996455](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192996455) | Two epoch-only no-cache builds produced image IDs `86a4...` and `d39f...` | Rejected; file timestamps were not fully normalized |
+| [30193875952](https://github.com/cinagroup/cinatoken-rust/actions/runs/30193875952) | Config, size, and epoch creation matched, but final RootFS layer 18 differed | Rejected; complete runtime-root metadata normalization added |
+| [30194108625](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625) | Image/config/19 layers, both binaries, live build, and runtime policy all match | Accepted for the scoped local Docker boundary |
+
+The accepted equality is Docker image ID plus uncompressed RootFS/config
+identity on one hosted runner. It is not yet a claim of byte-identical
+registry-compressed layers, OCI manifest/index, SBOM, provenance, signature,
+independent-host reproduction, or deployed Cloudflare digest. Those remain
+mandatory release gates. Go/VPS remains authoritative and production remains
+**NO-GO**.

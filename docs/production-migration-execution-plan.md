@@ -3835,6 +3835,59 @@ lifecycle rehearsal. This gate is not namespace/seccomp, remote lifecycle or
 production deployment evidence. No credential or remote authority was used.
 Go/VPS remains all production authority and production remains **NO-GO**.
 
+## 2026-07-26 K7 Reproducible Container Image Gate
+
+The release path now rejects an image whose executable behavior is stable but
+whose image identity drifts. This gate is downstream of source tests and
+upstream of registry publication or Cloudflare deployment.
+
+### Mandatory build controls
+
+| Control | Required state |
+| --- | --- |
+| Source | One frozen checkout and lockfile; no credential-bearing build input |
+| Builder/runtime bases | Exact digest-pinned Rust 1.78 builder and distroless runtime |
+| Build isolation | Two sequential `linux/amd64 --no-cache` Buildx builds |
+| Time | `SOURCE_DATE_EPOCH=0`; image exporter `rewrite-timestamp=true` |
+| Rust | `CARGO_INCREMENTAL=0`; one release package and locked dependencies |
+| Runtime root | Builder installs mode-0755 binary, normalizes every root-tree mtime, and final stage copies it as root-owned |
+| Equality | Valid equal image IDs, complete configs, ordered non-empty RootFS layers, and copied binary SHA-256 values |
+| Runtime | Live readiness build ID equals copied binary hash; isolation and restart policy remain stable |
+| Evidence | Both image inspections, both binary hashes, attestation JSON, and stderr retained for 30 days |
+
+### Accepted packet
+
+| Field | Value |
+| --- | --- |
+| Candidate / tree | `cbe749907931435e280686c9b8c935b08fdd085f` / `0a21ce473d857fbcfc2adc60a5e7362bd7784bff` |
+| Run / job | [30194108625](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625) / [89772437472](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625/job/89772437472) |
+| Image | `sha256:6a2f92415570e2b13e033b8c0d3d1acaadccf2bfa60ebd8d63faa359b687c514`; 19 exact layers across two builds |
+| Binary/build | `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` for both copied binaries and live runtime |
+| Policy | `sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d`; primary, restart, embedded, and independent recomputation equal |
+| Artifact | [8629556865](https://github.com/cinagroup/cinatoken-rust/actions/runs/30194108625/artifacts/8629556865), 7822 bytes, `sha256:1bfac70cb2dd38418da1115ef5b6a15a67b46bb893fd00076a1cc5e8fe2b8ffe`, expires `2026-08-25T08:10:57Z` |
+
+### Promotion sequence
+
+1. Re-run from a docs-only successor and require the same image, binary, and
+   policy identities to rule out same-job coincidence.
+2. Pin the release builder/export compatibility and produce two independently
+   retained registry-bound OCI packets; compare manifest/index and compressed
+   layer digests, not only Docker image ID and uncompressed RootFS identity.
+3. Generate and policy-check an SBOM and vulnerability report, then bind
+   source, lockfile, builder, OCI digest, SBOM, and test evidence in signed
+   provenance with independent transparency/WORM retention.
+4. Publish by digest to the approved registry and require authenticated
+   readback before isolated Cloudflare staging installation.
+5. Join the deployed digest to Controller/edge version, Container class, DO
+   binding, shard/ring generation, runtime build/policy, lifecycle and fault
+   evidence before canary review.
+
+Failure at any step quarantines the candidate; no mutable tag may substitute
+for digest identity. This gate still does not attest registry bytes,
+independent builders, signatures, Cloudflare deployment, or production
+lifecycle. No remote action or authority change occurred. Go/VPS remains
+authoritative and production remains **NO-GO**.
+
 ## 2026-07-26 K7 Container Runtime Isolation Gate
 
 The first production-image isolation gate is now implemented and accepted for

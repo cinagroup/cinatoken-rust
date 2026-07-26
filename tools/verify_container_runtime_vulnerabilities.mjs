@@ -1999,27 +1999,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const report = options.selfTest
     ? await auditRepositoryContract()
-    : await runVulnerabilityGate({
-        scanA: options.scanA,
-        scanB: options.scanB,
-        sbomA: options.sbomA,
-        sbomB: options.sbomB,
-        sbomReport: options.sbomReport,
-        dbStatusA: options.dbStatusA,
-        dbStatusB: options.dbStatusB,
-        dbArchive: options.dbArchive,
-        dbFileA: options.dbFileA,
-        dbFileB: options.dbFileB,
-        dbImportA: options.dbImportA,
-        dbImportB: options.dbImportB,
-        dbMetadata: options.dbMetadata,
-        dbListing: options.dbListing,
-        policy: options.policy,
-        approvals: options.approvals,
-        scannerIndex: options.scannerIndex,
-        scannerInspect: options.scannerInspect,
-        observedAt: options.observedAt,
-      });
+    : await runVulnerabilityGate(options);
   if (options.json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {

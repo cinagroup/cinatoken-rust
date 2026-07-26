@@ -1923,3 +1923,35 @@ billing/provider uniqueness, and rollback. Routing-secret rotation is a
 separate candidate and the exposed Cloudflare credential remains unusable
 until revocation is proven. Go/VPS stays authoritative and production remains
 **NO-GO**.
+
+## 2026-07-26 Container Runtime Isolation Status
+
+The local production-image isolation increment is complete. The runtime now
+has a fixed read-only attestation subcommand and the Linux gate proves the
+digest-pinned distroless image, root-owned immutable application layout,
+nonroot UID/GID 65532 process, zero capability masks, NNP, seccomp, read-only
+root, exact private `/tmp`, bounded writable mounts, no ACL override, bounded
+FD classes, no path-backed FD leak, internal-only networking, graceful
+shutdown, and same-image restart policy stability.
+
+Accepted candidate
+`304a8c1569db9c479430ef003379cc55d688ce54` passed
+[run 30192249580](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580).
+Its image ID is
+`sha256:85b333c3804a82031359929ea422baf98f35aed15e3062bff95ba0744f86f9e6`,
+runtime build ID is
+`1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910`,
+and independently recomputed primary/restart policy ID is
+`sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d`.
+[Artifact 8628969468](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580/artifacts/8628969468)
+is 2761 bytes with
+`sha256:c9d7d549c39e6879cf1cb29f7ea1982f93f4c39a537d5381037935c30686964a`
+and expires `2026-08-25T07:08:57Z`.
+
+This status closes the local Ubuntu/Docker image/process gate only. Remote
+Cloudflare image/version/class readback, host namespace/cgroup and lifecycle
+evidence, DO supervisor recovery, D1/DO/R2 provenance joins, persistent
+storage/power-loss/restore, load/cost/SLO/alerts, signed/WORM retention,
+credential revocation, financial reconciliation, rollback, and G1-G8 remain
+open. No remote mutation or traffic switch occurred. Go/VPS remains
+authoritative and production remains **NO-GO**.

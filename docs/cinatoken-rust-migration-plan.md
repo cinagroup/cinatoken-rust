@@ -21187,3 +21187,79 @@ anchoring, Cloudflare DO/Container lifecycle behavior or G1-G8 approval. No
 credential was read, no Cloudflare or provider mutation occurred, no customer
 traffic moved and no Go/VPS drain began. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.297 K7 Container Runtime Isolation Attestation (2026-07-26)
+
+The local Linux image boundary now has an executable attestation contract
+instead of Dockerfile-only assertions. The same fixed distroless binary exposes
+one non-HTTP, read-only `--runtime-attestation-v1` subcommand. The Ubuntu gate
+starts the production image twice on an internal Docker network, inspects each
+PID 1 process, and requires an identical normalized policy identity across the
+initial and restarted instances.
+
+The enforced image and process contract is:
+
+- digest-pinned Rust builder and distroless runtime images;
+- fixed `/` working directory, fixed entrypoint, and UID/GID 65532 execution;
+- root-owned, mode-0755 executable and `/usr/local` layout;
+- read-only overlay root, no caller bind/volume/device mounts, and no published
+  host port;
+- one 16 MiB `/tmp` tmpfs owned by 65532:65532 with mode 0700 and
+  `rw,nodev,noexec,nosuid`;
+- all inherited, permitted, effective, bounding, and ambient capability sets
+  zero;
+- `NoNewPrivs=1`, seccomp filter mode, a 256 MiB memory limit, and PID limit
+  128;
+- no POSIX ACL override on the fixed path inventory;
+- bounded PID 1 file descriptors with `/dev/null` stdin, pipe stdout/stderr,
+  only the approved socket/eventpoll/eventfd/timerfd classes, and no unexpected
+  path-backed descriptor; and
+- no writable `/usr`, `/opt`, or `/app` mount and no writable mount outside the
+  finite Docker system-mount allowlist.
+
+The accepted source candidate is
+`304a8c1569db9c479430ef003379cc55d688ce54`, tree
+`66e7ecdbad0430ba38ef120be1957d202afbb170`. Its
+[Ubuntu run 30192249580](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580)
+and
+[job 89767475624](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580/job/89767475624)
+passed the offline contract, linux/amd64 image build, real isolated operation
+probe, SIGTERM shutdown, restart, and both runtime attestations.
+
+| Accepted evidence | Frozen value |
+| --- | --- |
+| Runner | Ubuntu 24.04.4, runner image `20260720.247.2` |
+| Image | `sha256:85b333c3804a82031359929ea422baf98f35aed15e3062bff95ba0744f86f9e6`, 19 rootfs layers |
+| Runtime build | `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` |
+| Policy identity | `sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d`, identical after restart and independently recomputed |
+| Primary/restart FD observations | 12 / 10; policy classes and maximum remain identical |
+| Artifact | [8628969468](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580/artifacts/8628969468), 2761 bytes, `sha256:c9d7d549c39e6879cf1cb29f7ea1982f93f4c39a537d5381037935c30686964a`, expires `2026-08-25T07:08:57Z` |
+| Attestation JSON | 7901 bytes, `sha256:29d05f1d142423140d4f479e2817d59020ebdab804c8099a5356cb1467412977` |
+
+Local exact-candidate validation also passes 13 library tests, 7 HTTP tests,
+strict native and `x86_64-unknown-linux-gnu` Clippy, formatting, 8 Bun tests
+with 69 expectations, and the credential-free self-test.
+
+This closes the local Ubuntu/Docker production-image identity, process
+privilege, selected filesystem metadata, mount, ACL, and inherited-FD gate. It
+does not attest the Cloudflare Containers host kernel, namespace, cgroup,
+runtime injection, image deployment/readback, lifecycle supervisor, or
+persistent volume semantics. It also does not close hostile same-UID
+interference, ext4/XFS power-loss and restore, independent signed/WORM
+retention, remote load/cost/SLO evidence, or G1-G8 approval.
+
+The next K7 sequence is:
+
+1. deploy the same digest-bound image to isolated Cloudflare staging and
+   collect authenticated image/version, runtime policy, lifecycle, and
+   Controller-to-Container provenance readback;
+2. run disposable Container restart/eviction/network-partition campaigns while
+   proving D1/DO/R2 remain durable authority;
+3. execute ext4/XFS power-loss, backup/restore, and external immutable
+   attestation-anchor campaigns; and
+4. repeat the gate under the final signed release and replacement credential
+   before any traffic authorization.
+
+No remote credential, Cloudflare mutation, provider call, customer traffic
+movement, or Go/VPS drain was used for this acceptance. Go/VPS remains
+authoritative and production remains **NO-GO**.

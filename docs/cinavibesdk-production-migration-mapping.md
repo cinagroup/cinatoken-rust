@@ -1824,3 +1824,44 @@ or code failure. This reinforces the production design: Container-local
 receipts are fail-closed execution evidence, while durable authority and
 recovery must remain anchored in D1/DO/R2 and immutable external evidence.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-26 Container Runtime Isolation Mapping
+
+The cinaVibeSDK topology remains the design authority for lifecycle
+supervision: a Durable Object owns one Container instance, reconstructs
+disposable compute, and keeps durable state outside the process. The Rust
+target now adds a concrete local image/process proof for that disposable
+compute boundary.
+
+| cinaVibeSDK design responsibility | cinatoken-rust production mapping | Current evidence |
+| --- | --- | --- |
+| DO supervises disposable Container lifecycle | Controller/DO remains the owner; `cinatoken-container-runtime` is replaceable compute | Local image starts, stops with SIGTERM, restarts, and retains build/policy identity |
+| Container runs with minimum privilege | Distroless nonroot PID 1, UID/GID 65532, all capability sets zero, NNP and seccomp enabled | Accepted Ubuntu/Docker process attestation |
+| Image is immutable application code | Read-only overlay root; root-owned 0755 binary and layout; no writable application mount | Exact path, mount, owner/mode, and ACL inventory |
+| Ephemeral scratch is explicit | Only `/tmp` is provisioned as private 16 MiB 0700 tmpfs for the application | HostConfig plus PID 1 mountinfo agree |
+| Network access is topology-controlled | Internal network, no host-published port, no caller bind/device mount | Docker inspect and in-network probe |
+| Process inheritance is bounded | Standard descriptors fixed; only socket/event-loop pseudo descriptors allowed | 12 primary and 10 restart FDs; stable policy, no path-backed leak |
+| Durable authority is external | D1/DO/R2 continue to own operation, financial, receipt, and recovery truth | Architectural rule only; no new remote evidence claimed |
+
+The accepted candidate is
+`304a8c1569db9c479430ef003379cc55d688ce54`, tree
+`66e7ecdbad0430ba38ef120be1957d202afbb170`, from
+[run 30192249580](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580).
+The image identity is
+`sha256:85b333c3804a82031359929ea422baf98f35aed15e3062bff95ba0744f86f9e6`;
+the runtime policy identity is
+`sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d`
+for both initial and restarted instances. The retained
+[artifact 8628969468](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580/artifacts/8628969468)
+is 2761 bytes with ZIP digest
+`sha256:c9d7d549c39e6879cf1cb29f7ea1982f93f4c39a537d5381037935c30686964a`
+and expires `2026-08-25T07:08:57Z`.
+
+The mapping is intentionally asymmetric. Local Docker proves the code-owned
+image and PID 1 policy, but only authenticated Cloudflare staging can prove the
+managed host runtime, Container class/version, namespace and cgroup behavior,
+DO lifecycle replacement, outbound policy, and deployed provenance. The next
+mapping evidence must join those remote observations to the same image,
+runtime-build, policy, Controller deployment, and shard generation identities.
+Until that join and the remaining durability/financial/cutover gates pass,
+Go/VPS remains authoritative and production remains **NO-GO**.

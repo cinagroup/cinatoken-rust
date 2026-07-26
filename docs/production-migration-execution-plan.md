@@ -3835,6 +3835,78 @@ lifecycle rehearsal. This gate is not namespace/seccomp, remote lifecycle or
 production deployment evidence. No credential or remote authority was used.
 Go/VPS remains all production authority and production remains **NO-GO**.
 
+## 2026-07-26 K7 Container Runtime Isolation Gate
+
+The first production-image isolation gate is now implemented and accepted for
+the local Ubuntu/Docker boundary. The gate builds the digest-pinned
+linux/amd64 image, starts it on an internal network without host ports, probes
+the real HTTP contract, runs a read-only PID 1 attestation subcommand, performs
+graceful shutdown, starts a second instance from the same image, and requires
+the normalized policy hash to remain identical.
+
+### Mandatory local controls
+
+| Control | Enforced state |
+| --- | --- |
+| Image supply chain | Two exact digest-pinned bases; fixed root-owned 0755 binary, `/` workdir, nonroot entrypoint |
+| Container privilege | Nonprivileged, read-only rootfs, `cap-drop=ALL`, NNP, 256 MiB, 128 PIDs |
+| PID 1 identity | UID/GID 65532, PPID 0, no tracer, fixed executable and cwd |
+| Kernel controls | All five capability masks zero; seccomp mode 2 with at least one filter |
+| Writable state | Private `/tmp` only for application data: 16 MiB, 0700, uid/gid 65532, nodev/noexec/nosuid |
+| Application layout | `/usr`, `/usr/local`, `/usr/local/bin`, and binary are root-owned 0755 with no POSIX ACL override |
+| Mount denial | No caller bind, volume, device, writable `/usr`, `/opt`, `/app`, or unexpected writable mount |
+| FD denial | 4-64 descriptors; fixed standard streams; bounded socket/event-loop classes; no unexpected path-backed target |
+| Network | Internal Docker network, in-network probe, no host port publication |
+| Restart identity | Same runtime build ID and normalized policy SHA-256 |
+
+### Accepted packet
+
+| Field | Value |
+| --- | --- |
+| Candidate / tree | `304a8c1569db9c479430ef003379cc55d688ce54` / `66e7ecdbad0430ba38ef120be1957d202afbb170` |
+| Run / job | [30192249580](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580) / [89767475624](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580/job/89767475624) |
+| Environment | Ubuntu 24.04.4; runner image `20260720.247.2`; read-only workflow token |
+| Image | `sha256:85b333c3804a82031359929ea422baf98f35aed15e3062bff95ba0744f86f9e6`; 19 rootfs layers |
+| Build identity | `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` |
+| Policy identity | `sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d`; primary, restart, embedded, and independent recomputation all equal |
+| FD observations | Primary 12; restart 10; policy stable and both within bound |
+| Artifact | [8628969468](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580/artifacts/8628969468), 2761 bytes, `sha256:c9d7d549c39e6879cf1cb29f7ea1982f93f4c39a537d5381037935c30686964a`, expires `2026-08-25T07:08:57Z` |
+| JSON | 7901 bytes, `sha256:29d05f1d142423140d4f479e2817d59020ebdab804c8099a5356cb1467412977`; empty stderr log has standard empty-file SHA-256 |
+
+Three retained negative packets document fail-closed calibration:
+
+| Run | Rejected assumption | Artifact |
+| --- | --- | --- |
+| [30191008408](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191008408) | Docker inspect had to repeat HostConfig tmpfs as exactly one `Mounts` entry | [8628562669](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191008408/artifacts/8628562669), 442 bytes, `sha256:82576ff8a2676d8cab07301486646120759ec0844ca3b351f08e34f1e01d9e79` |
+| [30191475197](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191475197) | Runtime workdir could be inherited from the base image | [8628703302](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191475197/artifacts/8628703302), 438 bytes, `sha256:5c73a0237bf99ca5d3d7bcfba3424d364a7b794741ae1964ffb520f0b31cbc07` |
+| [30191703953](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191703953) | `--chown=nonroot` could own the immutable `/usr/local` layout | [8628772816](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191703953/artifacts/8628772816), 435 bytes, `sha256:11bd960cf69716ed75b6b1838b23f679612f2c2362bae25747877d02aa54f3ec` |
+
+The corrections preserve the core controls: Docker inspect may omit its
+redundant tmpfs entry, while HostConfig and PID 1 mountinfo must still agree;
+the image now pins `/`; and immutable application files are root-owned while
+the process remains nonroot.
+
+### Next execution order
+
+1. Publish the digest-bound image to the approved registry with signed
+   provenance and independently retained SBOM/vulnerability evidence.
+2. Deploy only to an isolated Cloudflare staging Container class with every
+   traffic, paid execution, financial, and cutover gate false.
+3. Read back image/version/class, Controller/DO binding, runtime policy,
+   namespace/cgroup/lifecycle observations, and join them to the candidate,
+   build, policy, shard generation, and deployment identities.
+4. Exercise restart, eviction, network loss, mixed version, bounded load,
+   cost/SLO/alerts, and D1/DO/R2 recovery while proving at-most-once provider
+   execution and exactly-once financial finalization.
+5. Complete ext4/XFS power-loss, backup/restore, external signed/WORM evidence,
+   credential revocation, G1-G8 approval, and rollback rehearsal before any
+   canary authorization.
+
+This packet is not Cloudflare-host attestation and not a release authorization.
+No credential, remote mutation, provider request, customer traffic change, or
+Go/VPS drain occurred. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
 ### K7 repeated startup schedule soak
 
 The local repeated-schedule gate is now accepted with this immutable boundary:

@@ -1948,3 +1948,51 @@ interleaving or durability boundary. Production UID/GID and ACL/mount
 attestation, ext4/XFS power-loss, restore, immutable external evidence,
 Cloudflare lifecycle and G1-G8 remain mandatory. Production remains
 **NO-GO**.
+
+## Container Runtime Isolation Attestation
+
+The disposable relay Container image now carries a non-HTTP process
+attestation subcommand. `--runtime-attestation-v1` reads only the fixed PID 1
+`/proc` and path inventory, including status, mountinfo, cwd/executable/root
+links, descriptors, metadata, and POSIX ACL xattrs. Unknown runtime arguments
+fail closed and the subcommand is not reachable through an HTTP route.
+
+`tools/verify_container_runtime_linux.mjs` joins that observation to Docker
+image and container inspection. It rejects image user/workdir/entrypoint drift,
+privilege, writable root, capability, NNP, seccomp, memory/PID, network,
+host-port, bind/volume/device, tmpfs, fixed-path, ACL, writable-mount, and
+path-backed-FD drift. It then hashes the normalized policy fields, excluding
+dynamic FD counts/inodes and overlay backing paths, and requires a separately
+started instance of the same image to produce the same hash.
+
+The accepted candidate is
+`304a8c1569db9c479430ef003379cc55d688ce54`, tree
+`66e7ecdbad0430ba38ef120be1957d202afbb170`.
+[Run 30192249580](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580)
+and
+[job 89767475624](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580/job/89767475624)
+passed on Ubuntu 24.04.4. The resulting image is
+`sha256:85b333c3804a82031359929ea422baf98f35aed15e3062bff95ba0744f86f9e6`
+with 19 rootfs layers, runtime build identity
+`1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910`,
+and runtime policy identity
+`sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d`.
+The primary/restart policy values and an independent recomputation all match.
+
+[Artifact 8628969468](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580/artifacts/8628969468)
+is 2761 bytes, has ZIP digest
+`sha256:c9d7d549c39e6879cf1cb29f7ea1982f93f4c39a537d5381037935c30686964a`,
+and expires `2026-08-25T07:08:57Z`. Its 7901-byte JSON has digest
+`sha256:29d05f1d142423140d4f479e2817d59020ebdab804c8099a5356cb1467412977`.
+It records UID/GID 65532, all capability masks zero, NNP 1, seccomp mode 2,
+read-only overlay root, the exact private `/tmp`, no unexpected writable mount,
+root-owned application layout without ACL override, and no unexpected
+path-backed FD. Primary and restart FD counts were 12 and 10; the policy is
+defined by the bounded classes and maximum, not one transient count.
+
+This image proof complements the runner receipt/storage work but does not turn
+Container-local evidence into durable authority. It does not attest the
+Cloudflare host, managed namespace/cgroup, DO supervisor, persistent volume,
+power-loss/restore, deployed image provenance, or external immutable anchor.
+D1/DO/R2 and the signed external evidence chain remain the durable sources of
+truth. Go/VPS remains authoritative and production remains **NO-GO**.

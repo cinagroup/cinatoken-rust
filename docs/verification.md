@@ -10282,3 +10282,106 @@ No credential, provider request, Cloudflare mutation or traffic change was
 performed. Full crash-boundary, ACL/mount, power-loss, restore, immutable
 external evidence, Cloudflare lifecycle and G1-G8 gates remain open. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-26 Container Runtime Isolation Verification
+
+### Local exact-source checks
+
+```powershell
+cargo test --locked -p cinatoken-container-runtime
+cargo clippy --locked -p cinatoken-container-runtime --all-targets -- -D warnings
+cargo clippy --locked -p cinatoken-container-runtime --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+cargo fmt --all --check
+bun test C:/cinagroup/cinatoken-rust/tests/container-runtime-linux-gate.test.mjs
+node tools/verify_container_runtime_linux.mjs --self-test --json
+```
+
+Expected result for candidate
+`304a8c1569db9c479430ef003379cc55d688ce54`:
+
+- 13 container-runtime library tests and 7 HTTP tests pass;
+- native and Linux-target strict Clippy pass;
+- formatting passes;
+- 8 Bun tests pass with 69 expectations; and
+- the offline self-test reports contract version 2, `status=passed`, no
+  credential/remote mutation/customer traffic/cutover authority, and a compiled
+  non-HTTP runtime attestation.
+
+The self-test is intentionally Docker-independent. The real image gate must run
+on Linux x64:
+
+```bash
+docker build --platform linux/amd64 \
+  --tag cinatoken-container-runtime:linux-gate \
+  --file crates/container-runtime/Dockerfile .
+node tools/verify_container_runtime_linux.mjs \
+  --image cinatoken-container-runtime:linux-gate \
+  --json
+```
+
+The verifier creates and removes a private internal network and two runtime
+instances. It must not publish host ports, consume Cloudflare/provider
+credentials, or authorize remote mutation.
+
+### Accepted Ubuntu evidence
+
+| Field | Value |
+| --- | --- |
+| Candidate / tree | `304a8c1569db9c479430ef003379cc55d688ce54` / `66e7ecdbad0430ba38ef120be1957d202afbb170` |
+| Run / job | [30192249580](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580) / [89767475624](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580/job/89767475624) |
+| Host | Ubuntu 24.04.4, runner image `20260720.247.2`, Git 2.54.0 |
+| Image | `sha256:85b333c3804a82031359929ea422baf98f35aed15e3062bff95ba0744f86f9e6`, amd64, 19 rootfs layers |
+| Runtime build | `1ec31f049fed4aef27770cadde470e69b63e55b35dd53fa5721ee1af71112910` |
+| Runtime policy | `sha256:d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d` for primary and restart |
+| Artifact | [8628969468](https://github.com/cinagroup/cinatoken-rust/actions/runs/30192249580/artifacts/8628969468), 2761 bytes, `sha256:c9d7d549c39e6879cf1cb29f7ea1982f93f4c39a537d5381037935c30686964a`, expires `2026-08-25T07:08:57Z` |
+| JSON member | 7901 bytes, `sha256:29d05f1d142423140d4f479e2817d59020ebdab804c8099a5356cb1467412977` |
+| Log member | 0 bytes, `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+
+Independent verification downloaded the artifact, recomputed the ZIP and member
+hashes, reconstructed this exact ordered policy object, and SHA-256 hashed its
+compact JSON:
+
+```javascript
+const policy = {
+  contract: "cinatoken-container-runtime-policy-v1",
+  container: report.runtimeAttestation.container,
+  processSecurity: report.runtimeAttestation.processSecurity,
+  filesystem: report.runtimeAttestation.filesystem,
+  fileDescriptorPolicy: report.runtimeAttestation.fileDescriptors.policy,
+};
+```
+
+The recomputed value, top-level value, embedded attestation value, and restart
+value all equal
+`d62ffa86ab957048547364d69b78f8c09b7b21d87f1d97a46fa2ebaea32d5e7d`.
+The JSON also confirms UID/GID 65532, all capability masks zero, NNP 1,
+seccomp mode 2/one filter, no unexpected writable mount, no POSIX ACL override,
+and no unexpected path-backed descriptor.
+
+### Negative calibration evidence
+
+- [run 30191008408](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191008408)
+  failed the overly strict Docker inspect tmpfs representation assumption;
+  [artifact 8628562669](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191008408/artifacts/8628562669)
+  is 442 bytes with
+  `sha256:82576ff8a2676d8cab07301486646120759ec0844ca3b351f08e34f1e01d9e79`.
+- [run 30191475197](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191475197)
+  rejected inherited base-image cwd;
+  [artifact 8628703302](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191475197/artifacts/8628703302)
+  is 438 bytes with
+  `sha256:5c73a0237bf99ca5d3d7bcfba3424d364a7b794741ae1964ffb520f0b31cbc07`.
+- [run 30191703953](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191703953)
+  rejected nonroot ownership of the immutable `/usr/local` layout;
+  [artifact 8628772816](https://github.com/cinagroup/cinatoken-rust/actions/runs/30191703953/artifacts/8628772816)
+  is 435 bytes with
+  `sha256:11bd960cf69716ed75b6b1838b23f679612f2c2362bae25747877d02aa54f3ec`.
+
+All four artifacts expire on 2026-08-25 at their recorded creation-relative
+times; durable evidence must be copied into the approved signed/WORM system
+before expiry.
+
+This verification proves the source-owned image under Ubuntu/Docker. It does
+not prove Cloudflare Containers host isolation, deployed image identity,
+managed lifecycle, persistent storage durability, external evidence retention,
+or production authorization. Go/VPS remains authoritative and production
+remains **NO-GO**.

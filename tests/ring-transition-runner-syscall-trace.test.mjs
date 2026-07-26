@@ -509,9 +509,13 @@ describe("ring-transition runner syscall trace verifier", () => {
       /--peer-trace "\$\{concurrent_second_trace_log\}"\s+\\\r?\n\s+--fixture-root "\$\{concurrent_trace_root\}"\s+\\\r?\n\s+--label "concurrent candidate recovery"\s+\\\r?\n\s+--expected-locks 12\s+\\\r?\n\s+--expected-lock-pids 2\s+\\\r?\n\s+--expected-locks-per-pid 6\s+\\\r?\n\s+--require-mkdirat/u,
     );
     expect(workflow).toContain("candidate-concurrent-recovery-boundary.json");
+    expect(workflow).toContain("grep '^concurrent-lock-thread-id='");
     expect(workflow).toContain(
-      "'(.observedLockPidValues | sort) == ([$firstPid, $secondPid] | sort)'",
+      "'.observedLockPidValues | sort'",
     );
+    expect(workflow).toContain("concurrent-lock-thread-identity=verified");
+    expect(workflow).toContain("processPid: $firstProcessPid");
+    expect(workflow).toContain("lockThreadId: $firstLockThreadId");
     expect(workflow).toContain("exactlyOneRecoveryWriter");
     expect(workflow).toContain(
       "case \"${concurrent_first_unfinished}:${concurrent_second_unfinished}\" in",

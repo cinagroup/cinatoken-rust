@@ -410,8 +410,21 @@ jobs:
               tail -n 1 |
               cut -d= -f2
           )"
+          concurrent_first_lock_tid="$(
+            grep '^concurrent-lock-thread-id=' "${concurrent_first_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
+          concurrent_second_lock_tid="$(
+            grep '^concurrent-lock-thread-id=' "${concurrent_second_output}" |
+              tail -n 1 |
+              cut -d= -f2
+          )"
           test -n "${concurrent_first_closure}"
           test "${concurrent_first_closure}" = "${concurrent_second_closure}"
+          [[ "${concurrent_first_lock_tid}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${concurrent_second_lock_tid}" =~ ^[1-9][0-9]*$ ]]
+          test "${concurrent_first_lock_tid}" != "${concurrent_second_lock_tid}"
           case "${concurrent_first_unfinished}:${concurrent_second_unfinished}" in
             1:0|0:1) ;;
             *)
@@ -460,21 +473,21 @@ jobs:
             --expected-locks-per-pid 6 \
             --require-mkdirat \
             | tee "${trace_artifact_dir}/candidate-concurrent-recovery.verification.json"
-          expected_concurrent_pids="$(
+          expected_concurrent_lock_tids="$(
             jq -cn \
-              --arg firstPid "$(cat "${concurrent_first_pid_file}")" \
-              --arg secondPid "$(cat "${concurrent_second_pid_file}")" \
-              '[$firstPid, $secondPid] | sort'
+              --arg firstLockTid "${concurrent_first_lock_tid}" \
+              --arg secondLockTid "${concurrent_second_lock_tid}" \
+              '[$firstLockTid, $secondLockTid] | sort'
           )"
-          observed_concurrent_pids="$(
+          observed_concurrent_lock_tids="$(
             jq -c \
               '.observedLockPidValues | sort' \
               "${trace_artifact_dir}/candidate-concurrent-recovery.verification.json"
           )"
-          printf "concurrent-expected-pids=%s\n" "${expected_concurrent_pids}"
-          printf "concurrent-observed-lock-pids=%s\n" "${observed_concurrent_pids}"
-          test "${observed_concurrent_pids}" = "${expected_concurrent_pids}"
-          echo "concurrent-pid-identity=verified"
+          printf "concurrent-expected-lock-tids=%s\n" "${expected_concurrent_lock_tids}"
+          printf "concurrent-observed-lock-tids=%s\n" "${observed_concurrent_lock_tids}"
+          test "${observed_concurrent_lock_tids}" = "${expected_concurrent_lock_tids}"
+          echo "concurrent-lock-thread-identity=verified"
 
           jq -n \
             --arg gitSha "${GITHUB_SHA}" \
@@ -494,8 +507,10 @@ jobs:
 
           jq -n \
             --arg gitSha "${GITHUB_SHA}" \
-            --arg firstPid "$(cat "${concurrent_first_pid_file}")" \
-            --arg secondPid "$(cat "${concurrent_second_pid_file}")" \
+            --arg firstProcessPid "$(cat "${concurrent_first_pid_file}")" \
+            --arg secondProcessPid "$(cat "${concurrent_second_pid_file}")" \
+            --arg firstLockThreadId "${concurrent_first_lock_tid}" \
+            --arg secondLockThreadId "${concurrent_second_lock_tid}" \
             --arg closure "${concurrent_first_closure#concurrent-terminal-closure=}" \
             --argjson firstStatus "${concurrent_first_status}" \
             --argjson secondStatus "${concurrent_second_status}" \
@@ -506,13 +521,15 @@ jobs:
               participants: [
                 {
                   name: "first",
-                  pid: $firstPid,
+                  processPid: $firstProcessPid,
+                  lockThreadId: $firstLockThreadId,
                   tracerStatus: $firstStatus,
                   unfinishedObserved: $firstUnfinished
                 },
                 {
                   name: "second",
-                  pid: $secondPid,
+                  processPid: $secondProcessPid,
+                  lockThreadId: $secondLockThreadId,
                   tracerStatus: $secondStatus,
                   unfinishedObserved: $secondUnfinished
                 }

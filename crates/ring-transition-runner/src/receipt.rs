@@ -10946,6 +10946,10 @@ mod tests {
                 println!("concurrent-pair-closure={first_observation}");
             }
             "recover-terminal-candidate-concurrent-worker" => {
+                let lock_thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
+                assert!(lock_thread_id > 0);
+                println!("concurrent-lock-thread-id={lock_thread_id}");
+                std::io::stdout().flush().unwrap();
                 let store = ReceiptStore::open(root).unwrap();
                 let (publication, credentials, activation, _) = terminal_snapshot_context();
                 assert_terminal_candidate_crash_fixture(

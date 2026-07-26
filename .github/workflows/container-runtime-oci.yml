@@ -1,0 +1,133 @@
+name: container-runtime-oci
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/container-runtime-oci.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/container-runtime/**"
+      - "tools/verify_container_runtime_oci.mjs"
+      - "tests/container-runtime-oci-gate.test.mjs"
+      - "tests/fixtures/container-runtime-oci/**"
+      - "package.json"
+      - "docs/migration-completion-status.md"
+      - "docs/verification.md"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/container-runtime-oci.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/container-runtime/**"
+      - "tools/verify_container_runtime_oci.mjs"
+      - "tests/container-runtime-oci-gate.test.mjs"
+      - "tests/fixtures/container-runtime-oci/**"
+      - "package.json"
+      - "docs/migration-completion-status.md"
+      - "docs/verification.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-runtime-oci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reproducible-linux-amd64-oci:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BUILDX_BUILDER_A: cinatoken-oci-a-${{ github.run_id }}-${{ github.run_attempt }}
+      BUILDX_BUILDER_B: cinatoken-oci-b-${{ github.run_id }}-${{ github.run_attempt }}
+      BUILDKIT_IMAGE: moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+      EVIDENCE_DIR: ${{ runner.temp }}/container-runtime-oci
+      OCI_ARCHIVE_A: ${{ runner.temp }}/container-runtime-oci/container-runtime-a.tar
+      OCI_ARCHIVE_B: ${{ runner.temp }}/container-runtime-oci/container-runtime-b.tar
+    steps:
+      - name: Check out frozen source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Create pinned BuildKit builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${EVIDENCE_DIR}"
+          for builder in "${BUILDX_BUILDER_A}" "${BUILDX_BUILDER_B}"; do
+            docker buildx create \
+              --name "${builder}" \
+              --driver docker-container \
+              --driver-opt "image=${BUILDKIT_IMAGE}"
+          done
+          docker buildx inspect "${BUILDX_BUILDER_A}" --bootstrap \
+            | tee "${EVIDENCE_DIR}/builder-a-info.log"
+          docker buildx inspect "${BUILDX_BUILDER_B}" --bootstrap \
+            | tee "${EVIDENCE_DIR}/builder-b-info.log"
+          docker buildx version | tee "${EVIDENCE_DIR}/buildx-version.log"
+          docker version | tee "${EVIDENCE_DIR}/docker-version.log"
+
+      - name: Build two independent OCI archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --builder "${BUILDX_BUILDER_A}" \
+            --no-cache \
+            --platform linux/amd64 \
+            --build-arg SOURCE_DATE_EPOCH=0 \
+            --provenance=false \
+            --sbom=false \
+            --file crates/container-runtime/Dockerfile \
+            --output "type=oci,dest=${OCI_ARCHIVE_A},rewrite-timestamp=true,compression=gzip,compression-level=9,force-compression=true,oci-mediatypes=true,compatibility-version=20" \
+            .
+          docker buildx build \
+            --builder "${BUILDX_BUILDER_B}" \
+            --no-cache \
+            --platform linux/amd64 \
+            --build-arg SOURCE_DATE_EPOCH=0 \
+            --provenance=false \
+            --sbom=false \
+            --file crates/container-runtime/Dockerfile \
+            --output "type=oci,dest=${OCI_ARCHIVE_B},rewrite-timestamp=true,compression=gzip,compression-level=9,force-compression=true,oci-mediatypes=true,compatibility-version=20" \
+            .
+
+      - name: Verify OCI archive reproducibility
+        shell: bash
+        run: |
+          set -o pipefail
+          node tools/verify_container_runtime_oci.mjs \
+            --archive-a "${OCI_ARCHIVE_A}" \
+            --archive-b "${OCI_ARCHIVE_B}" \
+            --json \
+            2> >(tee "${EVIDENCE_DIR}/container-runtime-oci-verification.log" >&2) \
+            | tee "${EVIDENCE_DIR}/container-runtime-oci-verification.json"
+
+      - name: Retain OCI reproducibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: container-runtime-oci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/container-runtime-oci/builder-a-info.log
+            ${{ runner.temp }}/container-runtime-oci/builder-b-info.log
+            ${{ runner.temp }}/container-runtime-oci/buildx-version.log
+            ${{ runner.temp }}/container-runtime-oci/docker-version.log
+            ${{ runner.temp }}/container-runtime-oci/container-runtime-oci-verification.json
+            ${{ runner.temp }}/container-runtime-oci/container-runtime-oci-verification.log
+            ${{ runner.temp }}/container-runtime-oci/container-runtime-a.tar
+            ${{ runner.temp }}/container-runtime-oci/container-runtime-b.tar
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+
+      - name: Remove BuildKit builder
+        if: always()
+        shell: bash
+        run: |
+          docker buildx rm --force "${BUILDX_BUILDER_A}" || true
+          docker buildx rm --force "${BUILDX_BUILDER_B}" || true

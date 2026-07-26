@@ -10781,6 +10781,41 @@ The next mandatory order is:
 
 Go/VPS remains authoritative and production remains **NO-GO**.
 
+## 22.301 K7 Reproducible Container Vulnerability Gate (2026-07-26)
+
+The S2 decision boundary is now executable and fail-closed, but the frozen
+glibc-based runtime candidate is rejected. Candidate
+`93dca768deca3f09a3085772e8ba3dff1781c1e9` ran in
+[run 30204421553](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553)
+and
+[job 89799900370](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553/job/89799900370).
+The OCI and S1 SBOM gates passed before the S2 verifier returned exit code 1
+for the policy decision.
+
+| S2 evidence | Frozen value |
+| --- | --- |
+| Scanner | Grype `0.116.0`; index `sha256:fd4ab4d1042b522c896e73bdf09ab8bf384fa417df99d6dd0d6e1008c7e7c821`; linux/amd64 manifest `sha256:3d08845e24eba657b8ea9bd28344a5a4e9dcd772818062a6522bf30137928616` |
+| Scan isolation | Exact S1 SBOM input; network disabled; nonroot; read-only root and database mounts; all capabilities dropped; suppressed findings visible |
+| Database | Grype DB `v6.1.9`, built `2026-07-26T07:07:14Z`; retained archive 137,741,137 bytes at `sha256:766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc` |
+| Imported DB | 1,957,412,864 bytes; `sha256:55279915a94b36f1307f5104a66d2e6980f52f34a9c67f09c4413a46d7db9253`; exact A/B status, file and import-metadata match |
+| Policy | Block `Unknown`, `Critical`, and `High`; no Unknown/Critical approval; High approval requires an exact bound finding; approval count `0` |
+| Decision | 17 unique findings: 12 Negligible, 2 Medium, 2 High, 1 Critical; ignored count `0`; blocked count `3`; finding-set `sha256:60455e147510a64e744e72fff8f3069c73637490b4cd39472497d3f83fc4c194` |
+| Evidence artifact | [8632661369](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553/artifacts/8632661369), 160,649,108 bytes, `sha256:7b3abc803ba0af46da58bc78d3cfdd9d0bf88d7d1969fa61b85469772cbc2b91`, expires `2026-08-25T13:41:35Z` |
+
+All three blocking findings affect Debian 12 `libc6`
+`2.36-9+deb12u14`: `CVE-2026-5450` is Critical, while
+`CVE-2026-5435` and `CVE-2026-5928` are High. No ignored or approved finding
+changes this result. The gate also keeps the canonical registry digest null and
+signature, registry readback, Cloudflare readback, transparency/WORM, P5,
+remote mutation, customer traffic, and production cutover fields false.
+
+S2 is therefore operational but not accepted for this candidate. The next
+mandatory action is to replace the glibc runtime with a digest-pinned static
+musl build, regenerate the OCI and SBOM subjects, and obtain a clean S2
+decision before S3 provenance/signature work. Adding an exception for these
+base-image findings is not an accepted remediation. Go/VPS remains
+authoritative and production remains **NO-GO**.
+
 The docs/schema-only successor
 `61be8211f599a48b14e9419a1ce04e26d5128360`, tree
 `26ce72fb18b0ad1bfe4789af2a580c54be598262`, passed on a fresh hosted worker in

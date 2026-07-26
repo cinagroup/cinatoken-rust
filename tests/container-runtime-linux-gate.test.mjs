@@ -70,11 +70,13 @@ describe("linux container release gate", () => {
     expect(workflow).not.toMatch(/\$\{\{\s*secrets\.|wrangler|cloudflare api/i);
     expect(dockerfile).toContain("\nWORKDIR /\n");
     expect(dockerfile).toStartWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`);
+    expect(dockerfile).toContain("CARGO_BUILD_TARGET=x86_64-unknown-linux-musl");
+    expect(dockerfile).toContain('RUSTFLAGS="-C target-feature=+crt-static"');
     expect(dockerfile).toContain(
-      "install -D -m 0755 /build/target/release/cinatoken-container-runtime",
+      "install -D -m 0755 /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime",
     );
     expect(dockerfile).toContain(
-      'find /runtime-root -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +',
+      'find /runtime-root -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +',
     );
     expect(dockerfile).toContain(
       "COPY --from=builder --chown=0:0 /runtime-root/ /",

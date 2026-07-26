@@ -194,19 +194,20 @@ export async function auditRepositoryContract() {
   );
   requireCondition(
     dockerfile.startsWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`) &&
+      dockerfile.includes("CARGO_BUILD_TARGET=x86_64-unknown-linux-musl") &&
+      dockerfile.includes("CARGO_INCREMENTAL=0") &&
+      dockerfile.includes('RUSTFLAGS="-C target-feature=+crt-static"') &&
+      dockerfile.includes("SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}") &&
       dockerfile.includes(
-        "ENV CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}",
+        "install -D -m 0755 /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime",
       ) &&
       dockerfile.includes(
-        "install -D -m 0755 /build/target/release/cinatoken-container-runtime",
-      ) &&
-      dockerfile.includes(
-        'find /runtime-root -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +',
+        'find /runtime-root -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +',
       ) &&
       dockerfile.includes(
         "COPY --from=builder --chown=0:0 /runtime-root/ /",
       ),
-    "runtime Dockerfile must retain the normalized reproducible root contract",
+    "runtime Dockerfile must retain the static-musl normalized reproducible root contract",
   );
   requireCondition(
     packageJson.scripts["check:container-runtime:oci-contract"]?.includes(

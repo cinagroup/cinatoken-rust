@@ -956,6 +956,43 @@ Vulnerability counts remain null and all remote, traffic and cutover
 authorization remains false. Go/VPS stays authoritative and production
 remains **NO-GO**.
 
+## 2026-07-26 Container Vulnerability Gate Status
+
+S2 is implemented and reproducible, but the current glibc runtime candidate is
+blocked. Candidate `93dca768deca3f09a3085772e8ba3dff1781c1e9` completed
+[run 30204421553](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553)
+and
+[job 89799900370](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553/job/89799900370).
+OCI reproduction and deterministic SBOM generation passed; the final S2
+process exited 1 only after emitting a complete decision.
+
+The scan used digest-pinned Grype 0.116.0, exact linux/amd64 scanner manifest
+`sha256:3d08845e...`, the exact 973,539-byte S1 SBOM, and a frozen Grype DB
+`v6.1.9`. The retained database archive is 137,741,137 bytes at
+`sha256:766bec0e...`; both imports produced the same 1,957,412,864-byte
+database at `sha256:55279915...`. Network was disabled during both scans, all
+database and SBOM inputs were read-only, suppressed findings were visible, and
+the ignored match count was zero.
+
+The policy blocks Unknown, Critical, and High findings and has zero approvals.
+The exact scan contains 17 unique findings: 12 Negligible, 2 Medium, 2 High,
+and 1 Critical. The three blockers are Debian 12 `libc6`
+`2.36-9+deb12u14`: Critical `CVE-2026-5450`, High `CVE-2026-5435`, and High
+`CVE-2026-5928`. The finding-set digest is
+`sha256:60455e147510a64e744e72fff8f3069c73637490b4cd39472497d3f83fc4c194`.
+
+[Artifact 8632661369](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553/artifacts/8632661369)
+is 160,649,108 bytes with
+`sha256:7b3abc803ba0af46da58bc78d3cfdd9d0bf88d7d1969fa61b85469772cbc2b91`
+and expires `2026-08-25T13:41:35Z`.
+
+This is a successful policy rejection, not an accepted release candidate.
+Static-musl image remediation and a new OCI/SBOM/S2 subject are required before
+S3. No exception was added. Canonical registry identity remains null and every
+signature, registry, Cloudflare, P5, remote mutation, traffic, and cutover
+authorization remains false. Go/VPS stays authoritative and production
+remains **NO-GO**.
+
 Cross-job OCI reproduction is also complete for this scoped baseline.
 Docs/schema-only successor `61be8211f599a48b14e9419a1ce04e26d5128360`
 passed

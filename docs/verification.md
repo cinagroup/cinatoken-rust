@@ -6262,6 +6262,50 @@ is 22,725,602 bytes,
 `sha256:66d3786ffe01cf3cbe38cf4bdba8ea77f173cfe4ad870d9db5402e9b2a5c9b6f`,
 and expires `2026-08-25T11:49:32Z`.
 
+## 2026-07-26 Reproducible Container Vulnerability Verification
+
+The credential-free, Docker-independent contract commands are:
+
+```powershell
+bun run check:container-runtime:vulnerabilities-contract
+node --check tools/verify_container_runtime_vulnerabilities.mjs
+node --check tests/container-runtime-vulnerability-gate.test.mjs
+actionlint .github/workflows/container-runtime-oci.yml
+```
+
+The suite passes 12/12 tests with 70 expectations. Negative coverage includes
+SBOM drift, database A/B mutation, listing mutation, future or expired
+databases, writable DB mounts, duplicate environment controls, hidden ignored
+findings, an Unknown blocker, and any true P5/remote/traffic/cutover field.
+
+Candidate `93dca768deca3f09a3085772e8ba3dff1781c1e9` executed the real Linux
+gate in
+[run 30204421553](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553)
+and
+[job 89799900370](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553/job/89799900370).
+The OCI and SBOM steps passed. The vulnerability step emitted a complete JSON
+report and returned exit 1 because the frozen policy correctly rejected the
+subject.
+
+| Field | Verified value |
+| --- | --- |
+| Scanner | Grype `0.116.0`; index `sha256:fd4ab4d1042b522c896e73bdf09ab8bf384fa417df99d6dd0d6e1008c7e7c821`; linux/amd64 manifest `sha256:3d08845e24eba657b8ea9bd28344a5a4e9dcd772818062a6522bf30137928616` |
+| Input | S1 SBOM 973,539 bytes at `sha256:0b28e8fb597b6294605a68977f33968b294cebbad79bdac9986e062ff432ec60`; exact OCI source binding |
+| DB source | `v6.1.9`, built `2026-07-26T07:07:14Z`; archive 137,741,137 bytes at `sha256:766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc` |
+| DB import | 1,957,412,864 bytes at `sha256:55279915a94b36f1307f5104a66d2e6980f52f34a9c67f09c4413a46d7db9253`; A/B file, status, and import metadata exact |
+| Isolation | Nonroot, no network, read-only root/SBOM/DB, dropped capabilities, no-new-privileges, bounded resources, age validation enabled |
+| Policy | Block Unknown/Critical/High; no Unknown/Critical approvals; exact-only High approvals; approval count `0` |
+| Findings | 17 unique; 12 Negligible, 2 Medium, 2 High, 1 Critical; ignored `0`; blocked `3`; finding-set `sha256:60455e147510a64e744e72fff8f3069c73637490b4cd39472497d3f83fc4c194` |
+| Artifact | [8632661369](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553/artifacts/8632661369), 160,649,108 bytes, `sha256:7b3abc803ba0af46da58bc78d3cfdd9d0bf88d7d1969fa61b85469772cbc2b91`, expires `2026-08-25T13:41:35Z` |
+
+The blockers are Critical `CVE-2026-5450`, High `CVE-2026-5435`, and High
+`CVE-2026-5928` against Debian 12 `libc6` `2.36-9+deb12u14`. The candidate is
+rejected with no ignore or approval. A new static-musl image must establish a
+new OCI/SBOM/S2 subject before provenance work. Canonical registry identity
+remains null and all signature, registry, Cloudflare, P5, remote mutation,
+traffic, and cutover fields remain false. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
 ## 2026-07-26 Real Dual-Startup Zero-Network Window Verification
 
 The Linux gate now launches two independent, environment-cleared child

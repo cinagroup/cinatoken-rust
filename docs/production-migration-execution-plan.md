@@ -3934,6 +3934,45 @@ result may itself assert zero vulnerabilities, provenance, signature
 validity, registry identity, Cloudflare deployment, P5 eligibility, or traffic
 authority.
 
+### S2 vulnerability decision result
+
+The S2 mechanism is complete and fail-closed; the current release subject is
+not promotable. Candidate `93dca768deca3f09a3085772e8ba3dff1781c1e9`
+completed
+[run 30204421553](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553)
+and
+[job 89799900370](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553/job/89799900370).
+OCI and S1 checks passed first. S2 then emitted its full report and failed the
+job because the blocked count was nonzero.
+
+The verifier binds digest-pinned Grype 0.116.0 and its exact linux/amd64
+manifest to the exact S1 SBOM, a retained `v6.1.9` source listing/archive, two
+independent DB imports/status reports/files, two read-only and network-disabled
+scans, the checked-in policy, and the empty approval set. The imported DB is
+1,957,412,864 bytes at
+`sha256:55279915a94b36f1307f5104a66d2e6980f52f34a9c67f09c4413a46d7db9253`.
+Both scans are exact, expose suppressed matches, and contain no ignored match.
+
+The result is 17 unique findings: 12 Negligible, 2 Medium, 2 High, and
+1 Critical. The three unapproved blockers all affect Debian 12 `libc6`
+`2.36-9+deb12u14`: `CVE-2026-5450` (Critical), `CVE-2026-5435` (High), and
+`CVE-2026-5928` (High). Policy blocks Unknown/Critical/High, forbids
+Unknown/Critical approval, and currently contains zero exact High approvals.
+No exception is authorized.
+
+The retained packet is
+[artifact 8632661369](https://github.com/cinagroup/cinatoken-rust/actions/runs/30204421553/artifacts/8632661369),
+160,649,108 bytes,
+`sha256:7b3abc803ba0af46da58bc78d3cfdd9d0bf88d7d1969fa61b85469772cbc2b91`,
+expiring `2026-08-25T13:41:35Z`.
+
+Promotion remains stopped between S2 and S3. Replace the glibc runtime with a
+digest-pinned static-musl image, rebuild the OCI subject, regenerate S1, and
+repeat S2 until the blocked count is zero. Provenance/signature, registry
+publication/readback, Cloudflare deployment, P5, remote mutation, traffic, and
+cutover stay false. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
 ## 2026-07-26 K7 Reproducible Container Image Gate
 
 The release path now rejects an image whose executable behavior is stable but

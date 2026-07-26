@@ -5,15 +5,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { runBoundedSubprocess } from "./lib/bounded_subprocess.mjs";
 
-export const LINUX_GATE_CONTRACT_VERSION = 5;
+export const LINUX_GATE_CONTRACT_VERSION = 6;
 export const RUNTIME_ATTESTATION_CONTRACT_VERSION = 1;
 export const RUNTIME_UID = 65_532;
 export const RUNTIME_GID = 65_532;
 export const SOURCE_DATE_EPOCH = 0;
 export const RUST_BUILDER_IMAGE =
-  "rust:1.78.0-bookworm@sha256:5907e96b0293eb53bcc8f09b4883d71449808af289862950ede9a0e3cca44ff5";
+  "rust:1.78.0-alpine3.20@sha256:214477ec837f9bedd80be4b087fec09e3f270831979412840f3f6c38e5a0d9c1";
 export const DISTROLESS_RUNTIME_IMAGE =
-  "gcr.io/distroless/cc-debian12:nonroot@sha256:66aa873a4a14fb164aa01296058efd8253744606d72715e45acface073359faa";
+  "gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35";
 export const NODE_MOCK_IMAGE =
   "node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3";
 export const CHECKOUT_ACTION =
@@ -148,12 +148,15 @@ export async function auditRepositoryContract() {
   );
   requireCondition(
     dockerfile.startsWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`) &&
-      dockerfile.includes("ENV CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}") &&
+      dockerfile.includes("CARGO_BUILD_TARGET=x86_64-unknown-linux-musl") &&
+      dockerfile.includes("CARGO_INCREMENTAL=0") &&
+      dockerfile.includes('RUSTFLAGS="-C target-feature=+crt-static"') &&
+      dockerfile.includes("SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}") &&
       dockerfile.includes(
-        "install -D -m 0755 /build/target/release/cinatoken-container-runtime",
+        "install -D -m 0755 /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime",
       ) &&
       dockerfile.includes(
-        'find /runtime-root -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +',
+        'find /runtime-root -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +',
       ) &&
       dockerfile.includes("USER nonroot:nonroot") &&
       dockerfile.includes("\nWORKDIR /\n") &&
@@ -161,7 +164,7 @@ export async function auditRepositoryContract() {
         "COPY --from=builder --chown=0:0 /runtime-root/ /",
       ) &&
       dockerfile.includes("ENTRYPOINT [\"/usr/local/bin/cinatoken-container-runtime\"]"),
-    "Dockerfile must retain the normalized runtime root, root-owned binary, fixed working directory, and non-root entrypoint",
+    "Dockerfile must retain the static-musl target, normalized runtime root, root-owned binary, fixed working directory, and non-root entrypoint",
   );
   requireCondition(
     runtimeMain.includes('"--runtime-attestation-v1"') &&

@@ -10705,3 +10705,89 @@ This verifies R2/S1/S2 only for the frozen local subject. Provenance/signature,
 registry readback, Cloudflare deployment digest, transparency/WORM, P5,
 remote mutation, customer traffic, production cutover, and Go/VPS drain remain
 false. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-27 Subject-Bound Sigstore S3 Verification
+
+Local credential-free verification for the action/runtime update and complete
+S3 contract:
+
+```powershell
+npx.cmd --yes bun test --path-ignore-patterns=target/** `
+  tests/container-runtime-linux-gate.test.mjs `
+  tests/container-runtime-oci-gate.test.mjs `
+  tests/container-runtime-sbom-gate.test.mjs `
+  tests/container-runtime-vulnerability-gate.test.mjs `
+  tests/container-runtime-provenance-gate.test.mjs `
+  tests/ring-transition-runner-syscall-trace.test.mjs
+
+node --check tools/verify_container_runtime_linux.mjs
+node --check tools/verify_container_runtime_oci.mjs
+node --check tools/verify_container_runtime_provenance.mjs
+actionlint .github/workflows/container-runtime-linux.yml `
+  .github/workflows/container-runtime-oci.yml `
+  .github/workflows/container-runtime-provenance.yml `
+  .github/workflows/ring-transition-runner-linux.yml
+npx.cmd --yes yaml-lint .github/workflows/container-runtime-linux.yml `
+  .github/workflows/container-runtime-oci.yml `
+  .github/workflows/container-runtime-provenance.yml `
+  .github/workflows/ring-transition-runner-linux.yml
+git diff --check
+```
+
+The focused Bun run passed 67 tests with 578 expectations. The explicit
+`target/**` ignore prevents historical release-source snapshots from being
+rediscovered as current tests; no snapshot was deleted or rewritten.
+Actionlint, YAML lint, all three JavaScript syntax checks, and diff checking
+passed.
+
+The repository pins `actions/upload-artifact` v7.0.1 at
+`043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`. Official `action.yml` metadata
+for that commit declares Node 24. Real Linux
+[run 30235408002](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235408002),
+ring
+[run 30235408001](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235408001),
+OCI
+[run 30235408005](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235408005),
+and S3
+[run 30235508407](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235508407)
+all completed successfully with the new action.
+
+### Remote evidence
+
+| Field | Verified value |
+| --- | --- |
+| Source commit/run | `882b5e66d79df39ff29d28beff7d4348e3d12bda` / `30235408005` |
+| Source artifact | `8641492714`, 144,729,919 bytes, `sha256:f013d0faf4ab1c94fd87dd7ae72e6aa2e948e9f8d820430f3fe09e06e8f69c11` |
+| Signer run/job | `30235508407` / `89882466443`; all 10 substantive steps passed |
+| S3 artifact | `8641497252`, 23,680 bytes, `sha256:5d66b6e92e77285c9946e1d04bda18b3df35360156b9aec8fc3c3749cacb164d` |
+| Statement | 14,574 bytes, `sha256:352827dbd9e6f7023f4d10144679a2afb10d00d982911eb6d4e0034d07cc4d18` |
+| Bundle | Sigstore v0.3, 30,189 bytes, `sha256:bfe0ab28b3124a92c7e71caad1d3eb78047789444d96cff79ccad40bea567e52` |
+| DSSE | `application/vnd.in-toto+json`; one signature; decoded payload exactly equals statement bytes |
+| Signer | Cosign v3.1.2, exact binary SHA-256, exact workflow identity/OIDC issuer/claims |
+| Transparency/time | Rekor `dsse/0.0.1`, index `2256847653`, integrated time `1785124175`, promise/proof present, one RFC3161 timestamp |
+
+The downloaded packet was independently parsed after the workflow completed.
+Its ZIP digest equals GitHub's artifact digest. The decoded DSSE payload and
+statement have the same `352827db...` SHA-256 and are byte-identical. The
+final report binds the unchanged OCI archive/index/manifest/config, runtime,
+SBOM, and vulnerability-report identities.
+
+Cosign emitted `Verified OK`, and the fail-closed Node verifier independently
+required exact bundle media type, DSSE payload, one signature, Fulcio
+certificate, Rekor body/promise/proof, and RFC3161 timestamp. The final
+decision is deliberately
+`cryptographic-subgate-passed-worm-pending`.
+
+GitHub artifact retention is 90 days and is not accepted as immutable/WORM
+storage. Complete S3 still requires Cloudflare R2 bucket-lock configuration
+and readback, content-addressed object readback, provider-side overwrite and
+delete failure, separate operator/verifier authority, and an independently
+signed or reviewed external receipt. Cloudflare's current S3 compatibility
+table does not implement AWS `x-amz-object-lock-*` or legal-hold headers, so
+verification must use Cloudflare's bucket-lock API.
+
+No immutable bucket, registry, or Cloudflare runtime mutation was performed.
+`wormRetentionVerified`, `s3Complete`, `registryDigestAuthorized`,
+`cloudflareDeploymentDigestVerified`, `p5Eligible`, customer traffic, and
+production cutover remain false. Go/VPS remains authoritative and production
+remains **NO-GO**.

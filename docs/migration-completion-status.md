@@ -2158,3 +2158,43 @@ transparency/WORM retention, registry and Cloudflare digest readback, isolated
 staging, managed lifecycle, P5, remote mutation, traffic, and cutover remain
 open and unauthorized. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-27 S3 Cryptographic Subgate Accepted
+
+The status above is superseded only for S3 cryptographic evidence. Commit
+`882b5e66d79df39ff29d28beff7d4348e3d12bda` passed source
+[run 30235408005](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235408005)
+and signer
+[run 30235508407](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235508407),
+[job 89882466443](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235508407/job/89882466443).
+
+| Status item | Current value |
+| --- | --- |
+| S3 source/subject binding | PASS for the exact seven OCI/runtime/SBOM/scan subjects |
+| S3 signer policy | PASS; exact workflow identity, GitHub OIDC issuer, source event/ref/commit |
+| Sigstore verification | PASS; one exact DSSE signature, Fulcio/SCT, Rekor inclusion, RFC3161 |
+| Statement / bundle | `352827db...` / `bfe0ab28...` |
+| Retained diagnostic packet | [artifact 8641497252](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235508407/artifacts/8641497252), `sha256:5d66b6e...`, 90 days |
+| Approved immutable/WORM retention | **PENDING** |
+| Complete S3 | **FALSE** |
+| Registry publication/readback | Not performed |
+| Cloudflare C1 deployment/readback | Not performed |
+| P5/canary/cutover | Not authorized |
+
+Independent download reproduced the artifact, statement, bundle, and DSSE
+payload hashes. Rekor log index is `2256847653`; both inclusion promise and
+proof exist; one signed timestamp is verified. The final report correctly
+keeps `imageSignatureVerified=false`, `wormRetentionVerified=false`,
+`s3Complete=false`, `p5Eligible=false`, and
+`productionCutoverAuthorized=false`.
+
+The next status transition requires a dedicated R2 evidence bucket, reviewed
+bucket-lock rule, separate publisher/lock/verifier identities, exact object
+readback, provider-side overwrite/delete rejection, and an independently
+signed or reviewed receipt. R2's AWS S3 Object Lock headers are not the
+selected mechanism; Cloudflare bucket-lock configuration and readback are
+required. Only after that evidence passes may R3 registry publication and C1
+isolated Cloudflare staging begin.
+
+Go/VPS remains the traffic, scheduler, provider, and financial authority.
+Production remains **NO-GO**.

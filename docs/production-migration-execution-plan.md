@@ -4182,3 +4182,76 @@ approved immutable storage. Only then may registry publication/readback and
 isolated Cloudflare staging begin. All registry, Cloudflare, P5, production,
 traffic, billing, and Go/VPS shutdown authorities remain false. Production
 remains **NO-GO**.
+
+## 2026-07-27 S3 Cryptographic Acceptance And Retention Runbook
+
+The cryptographic half of S3 is accepted for commit
+`882b5e66d79df39ff29d28beff7d4348e3d12bda`. Source
+[run 30235408005](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235408005)
+and signer
+[run 30235508407](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235508407)
+bound one exact source artifact, commit, OCI graph, runtime binary, SBOM, and
+vulnerability report to a canonical SLSA v1 statement.
+
+| Execution checkpoint | Result |
+| --- | --- |
+| Source run/artifact | `30235408005` / `8641492714`; `sha256:f013d0faf4ab1c94fd87dd7ae72e6aa2e948e9f8d820430f3fe09e06e8f69c11` |
+| Signer run/job | `30235508407` / `89882466443`; all steps passed |
+| Statement | 14,574 bytes; `sha256:352827dbd9e6f7023f4d10144679a2afb10d00d982911eb6d4e0034d07cc4d18` |
+| Bundle | Sigstore v0.3, 30,189 bytes; `sha256:bfe0ab28b3124a92c7e71caad1d3eb78047789444d96cff79ccad40bea567e52` |
+| Transparency/time | Rekor index `2256847653`; inclusion promise/proof; one verified RFC3161 timestamp |
+| Retained S3 packet | [artifact 8641497252](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235508407/artifacts/8641497252), 23,680 bytes, `sha256:5d66b6e92e77285c9946e1d04bda18b3df35360156b9aec8fc3c3749cacb164d`, expires `2026-10-25T03:49:20Z` |
+| Current decision | `cryptographic-subgate-passed-worm-pending`; complete S3 false |
+
+The signer job has only read access to Actions and contents plus GitHub OIDC.
+It downloads only the named source artifact from the triggering run, rejects
+digest mismatch, replays OCI/SBOM/vulnerability gates, signs only the generated
+statement, verifies exact workflow claims, then fail-closed parses the bundle.
+GitHub's 90-day artifact is a diagnostic copy, not the approved immutable
+record.
+
+### R2 bucket-lock ceremony
+
+The next production execution unit is evidence retention, not registry push.
+Cloudflare R2 bucket locks are the selected provider control, subject to live
+capability and permission verification.
+
+| Phase | Required action | Acceptance evidence | Abort condition |
+| --- | --- | --- | --- |
+| B1 isolate | Create a dedicated non-application evidence bucket and content-addressed release prefix | Account, bucket, jurisdiction, prefix, creation time, owner, and empty baseline | Existing unknown object, shared customer data, or placeholder identity |
+| B2 separate authority | Issue separate publisher, lock-operator, and read-only verifier identities | Redacted token IDs, permission inventory, expiry/revocation owner; no secret output | Broad account token, one identity can publish and alter locks, or secret in argv/file/log |
+| B3 lock | Apply reviewed age/date/indefinite bucket-lock rule and read it back | Canonical lock JSON digest, prefix, retention deadline, API request ID, independent review | Disabled/wrong prefix, shorter retention, unreadable configuration, or lifecycle conflict |
+| B4 publish | Create-only upload source packet, statement, bundle, final report, and canonical manifest | Provider metadata plus local/upload/readback SHA-256 equality for every member | Overwrite, multipart residue, digest mismatch, or missing member |
+| B5 enforce | Attempt overwrite and delete through the publisher path | Both provider operations fail; original object still reads back identically | Success, ambiguous timeout, client-only denial, or object drift |
+| B6 anchor | Independently sign/review lock and object receipt under a separate trust root | Receipt binds bucket/prefix, lock digest, object manifest, retention, request IDs, and test results | Same signer/operator root, unsigned receipt, stale readback, or incomplete object set |
+| B7 reverify | Fresh verifier repeats lock/object/receipt checks | `wormRetentionVerified=true` only from complete evidence | Any unknown or unavailable fact |
+
+R2 bucket locks take precedence over lifecycle deletion and the strictest
+matching rule wins. However, Cloudflare documents lock-rule removal and update,
+so the lock configuration, enforcement probes, separate authority, and
+external receipt are all mandatory. The AWS S3 Object Lock headers and legal
+hold fields are currently unsupported by R2's S3 compatibility layer; use the
+Cloudflare bucket-lock API or Wrangler surface.
+
+### R3-C1 release sequence
+
+After B1-B7 pass, set complete S3 true for this exact subject and no other.
+Then:
+
+1. create an isolated registry repository and verify empty/expected baseline;
+2. publish the frozen OCI layout by digest, never by mutable tag authority;
+3. read back index, platform manifest, config, layers, and referrers with an
+   independent identity;
+4. attach and verify the exact SBOM and SLSA statement/bundle; add an image
+   signature if the approved registry admission policy requires it;
+5. freeze the canonical P5 image digest only after index/platform policy is
+   explicit;
+6. deploy that digest to isolated Cloudflare C1 with all traffic, provider,
+   scheduler, billing, and drain gates false;
+7. join registry digest to Worker/Controller version, DO namespace/class,
+   shard generation, Container runtime build/policy, and readiness readback;
+8. run lifecycle and rollback rehearsal before considering any canary.
+
+Failure at any point leaves the new registry artifact quarantined, deletes no
+evidence, performs no Go/VPS drain, and preserves Go/VPS as the sole production
+authority. Production remains **NO-GO**.

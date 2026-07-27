@@ -21580,3 +21580,129 @@ publication/readback, canonical P5 digest selection, isolated Cloudflare
 staging, managed Container lifecycle, P5 completion, remote mutation, customer
 traffic, and cutover remain false. Go/VPS remains the traffic, scheduler, and
 financial authority; production remains **NO-GO**.
+
+## 22.305 Subject-Bound Sigstore S3 Cryptographic Subgate (2026-07-27)
+
+The S3 cryptographic subgate is now accepted for the same static-musl subject.
+It is intentionally narrower than complete S3: immutable/WORM retention is
+still unverified.
+
+Commit `882b5e66d79df39ff29d28beff7d4348e3d12bda` passed the source
+[run 30235408005](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235408005)
+and automatically triggered the least-privilege signer
+[run 30235508407](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235508407),
+[job 89882466443](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235508407/job/89882466443).
+The source and signer both used the exact same repository, `main` ref, and
+commit. The signer token exposed only `Actions: read`, `Contents: read`, and
+metadata read; OIDC was used only after the complete source packet passed
+offline revalidation.
+
+| Accepted S3 evidence | Frozen value |
+| --- | --- |
+| Source packet | [artifact 8641492714](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235408005/artifacts/8641492714), 144,729,919 bytes, `sha256:f013d0faf4ab1c94fd87dd7ae72e6aa2e948e9f8d820430f3fe09e06e8f69c11`, expires `2026-08-26T03:49:11Z` |
+| S3 packet | [artifact 8641497252](https://github.com/cinagroup/cinatoken-rust/actions/runs/30235508407/artifacts/8641497252), 23,680 bytes, `sha256:5d66b6e92e77285c9946e1d04bda18b3df35360156b9aec8fc3c3749cacb164d`, expires `2026-10-25T03:49:20Z` |
+| Statement | Canonical in-toto Statement v1 / SLSA provenance v1, 14,574 bytes, `sha256:352827dbd9e6f7023f4d10144679a2afb10d00d982911eb6d4e0034d07cc4d18` |
+| Sigstore bundle | Bundle v0.3, 30,189 bytes, `sha256:bfe0ab28b3124a92c7e71caad1d3eb78047789444d96cff79ccad40bea567e52` |
+| Signer | Cosign v3.1.2, binary `sha256:f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf`; exact GitHub workflow identity and OIDC issuer |
+| DSSE | Payload is byte-identical to the retained statement; one signature; payload type `application/vnd.in-toto+json` |
+| Transparency | Rekor `dsse/0.0.1`, log index `2256847653`, integrated time `1785124175`, inclusion promise and inclusion proof present |
+| Time | One RFC3161 signed timestamp; `--use-signed-timestamps` verification passed |
+
+The seven signed subjects remain exact:
+
+| Subject | SHA-256 identity |
+| --- | --- |
+| OCI archive | `7089fef231ff3365e154d80f6d31de99ebaf1a0317718af60c4eda62568b8ca1` |
+| OCI index | `ad706ef69fd8f954828ebd00756af1112d4598f032d89e2a1fd62b6bb5c3943a` |
+| Platform manifest | `21a453f455eef730d0e2251cdcadb27fe99feb8633c15037f2ddf09d59a39203` |
+| Image config | `6feab2131885f5c3d025befc01f140699e6d7067cd224bd3ba7e0775f276d067` |
+| Runtime binary | `01fa7759baa1e27c4169835853b9dd85a8d36c44767de5d7b1fc6cdef054c274` |
+| SBOM | `76aa5ae7bc8f849f0bd5af8dd3bb257be191a0e37639f28e858748bc9064ab9c` |
+| Vulnerability report | `62c9c6e8feca90edc0ff740703f7d594fd26b79057d9f85b0bd0b3201d28c95f` |
+
+The repository pins `actions/upload-artifact` v7.0.1 by immutable commit
+`043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`. Its official action metadata
+uses Node 24. Linux, OCI, provenance, and ring workflows all executed the new
+action successfully. Local verification passed 67 focused tests with 578
+expectations, actionlint, YAML lint, JavaScript syntax checks, and
+`git diff --check`.
+
+### S3 closure matrix
+
+| Subgate | Result | Remaining authority |
+| --- | --- | --- |
+| Exact source and subject binding | PASS | None for this exact commit and packet |
+| Fulcio signer/workflow policy | PASS | None for this exact signer run |
+| Rekor inclusion, SCT, and RFC3161 time | PASS | None for this exact bundle |
+| GitHub retention | PASS for a 90-day diagnostic copy | Not immutable/WORM evidence |
+| Approved immutable/WORM retention | PENDING | Required before complete S3 |
+| Image signature | NOT PERFORMED | Required separately if R3 registry policy mandates it |
+| Complete S3 | **FALSE** | `wormRetentionVerified=false` |
+
+### Immutable retention execution order
+
+Cloudflare now documents R2 bucket locks that prevent overwrite and deletion
+for an age, date, or indefinite period. Bucket-lock rules apply to existing
+and new objects, the strictest matching rule wins, and locks take precedence
+over lifecycle deletion. The same documentation also permits lock-rule
+configuration changes. Therefore configuration alone is not evidence: the
+release ceremony must prove the exact object, active lock, enforcement, and
+independent anchor.
+
+1. Provision a dedicated release-evidence bucket and content-addressed prefix;
+   do not reuse application artifacts, logs, or customer-content buckets.
+2. Split publisher, lock-configuration operator, and read-only verifier
+   identities. No CI job receives a broad account token or lock-rule mutation
+   permission.
+3. Set and read back a reviewed bucket-lock rule whose retention exceeds the
+   approved audit period. Reject a lifecycle rule that would expire evidence
+   earlier, even though the lock should take precedence.
+4. Upload the source packet, statement, Sigstore bundle, final report, exact
+   lock configuration, and a canonical manifest under the signed subject
+   digest. Use create-only semantics and reject a pre-existing key.
+5. With an independent read-only identity, download every object, recompute
+   all SHA-256 values, and bind provider object metadata plus bucket/prefix
+   identity to the signed manifest.
+6. Attempt overwrite and deletion using the publisher identity. Both must
+   fail while the lock is active. Record redacted status, provider request ID,
+   time, and post-attempt readback; a client-side refusal is insufficient.
+7. Sign or independently review an external receipt containing the lock
+   configuration digest, object-manifest digest, readback digest, retention
+   deadline, and negative-test results. Keep this trust root separate from the
+   publisher and bucket-lock operator.
+8. Only after the retained receipt is independently reverified may
+   `wormRetentionVerified` and `s3Complete` become true.
+
+Use the Cloudflare bucket-lock API or Wrangler commands, not AWS S3 Object Lock
+headers. Cloudflare's current S3 compatibility table marks
+`x-amz-object-lock-*`, legal hold, and governance-bypass headers unsupported.
+The production implementation must be tested against the current Cloudflare
+API before approval.
+
+### R3 and C1 boundary after S3
+
+R3 remains blocked until complete S3. When unblocked, publish only the frozen
+OCI layout to an isolated registry repository, read back both index and
+platform-manifest digests, attach the exact SBOM/provenance referrers, and
+verify any required image signature against a distinct registry policy.
+Tag-only evidence is rejected. The canonical P5 `containerImageDigest` remains
+null until registry readback and Cloudflare deployment readback identify the
+same deployed subject.
+
+C1 then deploys that digest to isolated Cloudflare staging with customer
+routes, scheduler/provider mutation, billing settlement, and Go/VPS drain
+gates all false. It must join Worker version, Controller version, DO
+namespace/class/migration, shard generation, Container image/runtime build,
+policy digest, and cold-start/readiness observations. Any digest mismatch,
+unlocked evidence, unknown writer, provider request, billing mutation, or
+customer traffic aborts and rolls back the staging candidate.
+
+Official capability references:
+
+- [Cloudflare R2 bucket locks](https://developers.cloudflare.com/r2/buckets/bucket-locks/)
+- [Cloudflare R2 S3 compatibility](https://developers.cloudflare.com/r2/api/s3/api/)
+- [upload-artifact v7.0.1](https://github.com/actions/upload-artifact/releases/tag/v7.0.1)
+
+No registry write, Cloudflare deployment, provider request, customer traffic,
+billing mutation, or Go/VPS drain occurred. Go/VPS remains authoritative and
+production remains **NO-GO**.

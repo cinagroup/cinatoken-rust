@@ -4,7 +4,7 @@ import { open, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const VULNERABILITY_GATE_CONTRACT_VERSION = 2;
+export const VULNERABILITY_GATE_CONTRACT_VERSION = 3;
 export const GRYPE_VERSION = "0.116.0";
 export const GRYPE_IMAGE =
   "ghcr.io/anchore/grype:v0.116.0@sha256:fd4ab4d1042b522c896e73bdf09ab8bf384fa417df99d6dd0d6e1008c7e7c821";
@@ -17,11 +17,12 @@ export const GRYPE_DB_ARCHIVE_URL =
 export const GRYPE_DB_ARCHIVE_SHA256 =
   "766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc";
 export const GRYPE_DB_FILE_SHA256 =
-  "55279915a94b36f1307f5104a66d2e6980f52f34a9c67f09c4413a46d7db9253";
-export const GRYPE_DB_FILE_BYTES = 1_957_412_864;
+  "5e1fd5545a3c4188cb9542003fd3717753c60730c17dcecde14f45e7ee691b50";
+export const GRYPE_DB_FILE_BYTES = 1_475_883_008;
+export const GRYPE_DB_FILE_XXH64 = "d8a8cef5bc65efe7";
 export const GRYPE_DB_IMPORT_SHA256 =
-  "39b5d45042076f5071f77d7bea95ec8dac45f37fca84f69657d43afb679dea4f";
-export const GRYPE_DB_IMPORT_BYTES = 97;
+  "303e1b7f0192f60b76198859b1896504a2f857e56aa89deca93b43562d6c119c";
+export const GRYPE_DB_IMPORT_BYTES = 109;
 export const GRYPE_DB_SCHEMA_VERSION = "v6.1.9";
 export const GRYPE_DB_BUILT = "2026-07-26T07:07:14Z";
 export const GRYPE_SOURCE_REFERENCE =
@@ -244,6 +245,7 @@ export async function auditRepositoryContract() {
       ) &&
       workflow.includes(`GRYPE_DB_FILE_SHA256: ${GRYPE_DB_FILE_SHA256}`) &&
       workflow.includes(`GRYPE_DB_FILE_BYTES: "${GRYPE_DB_FILE_BYTES}"`) &&
+      workflow.includes(`GRYPE_DB_FILE_XXH64: ${GRYPE_DB_FILE_XXH64}`) &&
       workflow.includes(
         `GRYPE_DB_IMPORT_SHA256: ${GRYPE_DB_IMPORT_SHA256}`,
       ) &&
@@ -288,16 +290,16 @@ export async function auditRepositoryContract() {
     "vulnerability workflow must pull and record the pinned Grype image",
   );
   requireCondition(
-    countMatches(workflow, /^\s*import_database\s+\\$/gm) === 2 &&
+    countMatches(workflow, /^\s*extract_database\s+\\$/gm) === 2 &&
       countMatches(workflow, /^\s*scan_sbom\s+\\$/gm) === 2 &&
       countMatches(workflow, /^\s*fingerprint_scan_inputs\s+\\$/gm) === 2 &&
-      countMatches(workflow, /^\s{10}import_database\(\) \{$/gm) === 1 &&
+      countMatches(workflow, /^\s{10}extract_database\(\) \{$/gm) === 1 &&
       countMatches(workflow, /^\s{10}scan_sbom\(\) \{$/gm) === 1 &&
       countMatches(
         workflow,
         /^\s{10}fingerprint_scan_inputs\(\) \{$/gm,
       ) === 1,
-    "vulnerability workflow must independently import, fingerprint, and scan exactly twice",
+    "vulnerability workflow must independently extract, fingerprint, and scan exactly twice",
   );
   for (const fragment of [
     '"${EVIDENCE_DIR}/grype-db-a"',
@@ -314,19 +316,23 @@ export async function auditRepositoryContract() {
     '"import-b ${GRYPE_DB_IMPORT_BYTES} ${GRYPE_DB_IMPORT_SHA256}"',
     "/tmp/container-runtime-oci/vulnerability-scan-inputs-before.txt",
     "/tmp/container-runtime-oci/vulnerability-scan-inputs-after.txt",
+    "/tmp/container-runtime-oci/grype-db-a-archive-listing.txt",
+    "/tmp/container-runtime-oci/grype-db-b-archive-listing.txt",
+    "/tmp/container-runtime-oci/grype-db-a-inventory.txt",
+    "/tmp/container-runtime-oci/grype-db-b-inventory.txt",
   ]) {
     requireCondition(
       workflow.includes(fragment),
       `vulnerability workflow must bind independent A/B evidence via ${fragment}`,
     );
   }
-  const importBlock = extractShellFunction(workflow, "import_database");
+  const extractionBlock = extractShellFunction(workflow, "extract_database");
   const scanBlock = extractShellFunction(workflow, "scan_sbom");
   const fingerprintBlock = extractShellFunction(
     workflow,
     "fingerprint_scan_inputs",
   );
-  validateImportFunction(importBlock);
+  validateDatabaseExtractionFunction(extractionBlock);
   validateScanFunction(scanBlock);
   validateInputFingerprintFunction(fingerprintBlock);
   requireCondition(
@@ -397,9 +403,9 @@ export async function auditRepositoryContract() {
       image: GRYPE_IMAGE,
       version: GRYPE_VERSION,
       imagePinnedByDigest: true,
-      networkDisabledDuringImportAndScan: true,
+      networkDisabledDuringScan: true,
       runsAsRoot: false,
-      independentDatabaseImportsRequired: 2,
+      independentDatabaseExtractionsRequired: 2,
       independentScansRequired: 2,
       exactScanBytesRequired: true,
       actualSbomBytesRequired: true,
@@ -442,55 +448,57 @@ export async function auditRepositoryContract() {
   };
 }
 
-export function validateImportFunction(block) {
-  validateDockerFunction(
-    block,
-    [
-      "local database_root=\"$1\"",
-      "mkdir -p \"${database_root}\"",
-      "docker run --rm",
-      "--pull never",
-      "--platform linux/amd64",
-      "--network none",
-      "--read-only",
-      "--cap-drop ALL",
-      "--security-opt no-new-privileges=true",
-      '--user "$(id -u):$(id -g)"',
-      "--pids-limit 256",
-      "--memory 2g",
-      "--cpus 2",
-      "--ulimit nofile=1024:1024",
-      "--ulimit fsize=2147483648:2147483648",
-      "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777",
-      "--env HOME=/tmp",
-      "--env XDG_CACHE_HOME=/tmp/cache",
-      "--env GRYPE_CHECK_FOR_APP_UPDATE=false",
-      "--env GRYPE_DB_AUTO_UPDATE=false",
-      "--env GRYPE_DB_VALIDATE_BY_HASH_ON_START=true",
-      "--env GRYPE_DB_VALIDATE_AGE=true",
-      "--env GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h",
-      "--env GRYPE_DB_REQUIRE_UPDATE_CHECK=false",
-      "--env GRYPE_DB_CACHE_DIR=/grype-db",
-      '--mount "type=bind,src=${GRYPE_DB_ARCHIVE},dst=/input/grype-db.tar.zst,readonly"',
-      '--mount "type=bind,src=${database_root},dst=/grype-db"',
-      '"${GRYPE_IMAGE}"',
-      "db import /input/grype-db.tar.zst",
-    ],
-    2,
-    "database importer",
-  );
-  const commands = extractDockerRuns(block);
+export function validateDatabaseExtractionFunction(block) {
   requireCondition(
-    commands.length === 1,
-    "database importer must contain exactly one Docker run",
+    typeof block === "string" && block.length <= 32 * 1024,
+    "database extractor must be a bounded static shell block",
   );
-  validateDockerRun(
-    commands[0],
-    [
-      '--mount "type=bind,src=${GRYPE_DB_ARCHIVE},dst=/input/grype-db.tar.zst,readonly"',
-      '--mount "type=bind,src=${database_root},dst=/grype-db"',
-    ],
-    "database importer",
+  for (const fragment of [
+    'local database_root="$1"',
+    'local archive_listing="${database_root}-archive-listing.txt"',
+    'local database_inventory="${database_root}-inventory.txt"',
+    'local database_file="${database_root}/6/vulnerability.db"',
+    'local import_file="${database_root}/6/import.json"',
+    'if [[ -e "${database_root}" || -e "${archive_listing}" || -e "${database_inventory}" ]]',
+    'tar --zstd --list --file "${GRYPE_DB_ARCHIVE}" > "${archive_listing}"',
+    'mapfile -t archive_entries < "${archive_listing}"',
+    '[[ "${#archive_entries[@]}" -ne 1 || "${archive_entries[0]}" != "vulnerability.db" ]]',
+    'mkdir -p "${database_root}/6"',
+    "tar --zstd --extract",
+    '--file "${GRYPE_DB_ARCHIVE}"',
+    '--directory "${database_root}/6"',
+    "--no-same-owner",
+    "--no-same-permissions",
+    "-- vulnerability.db",
+    '[[ ! -f "${database_file}" || -L "${database_file}" ]]',
+    "\"digest\\\": \\\"xxh64:${GRYPE_DB_FILE_XXH64}",
+    '\' "source": "frozen archive extraction",\'',
+    "\"client_version\\\": \\\"${GRYPE_DB_SCHEMA_VERSION}",
+    '[[ ! -f "${import_file}" || -L "${import_file}" ]]',
+    'find "${database_root}" -mindepth 1 -maxdepth 2 -printf \'%P|%y\\n\'',
+    "| LC_ALL=C sort > \"${database_inventory}\"",
+    'mapfile -t database_entries < "${database_inventory}"',
+    '[[ "${#database_entries[@]}" -ne 3 ||',
+    '"${database_entries[0]}" != "6/import.json|f" ||',
+    '"${database_entries[1]}" != "6/vulnerability.db|f" ||',
+    '"${database_entries[2]}" != "6|d" ]]',
+    '[[ "$(stat --format=%s "${database_file}")" == "${GRYPE_DB_FILE_BYTES}" ]]',
+    'echo "${GRYPE_DB_FILE_SHA256}  ${database_file}" | sha256sum --check --strict -',
+    '[[ "$(stat --format=%s "${import_file}")" == "${GRYPE_DB_IMPORT_BYTES}" ]]',
+    'echo "${GRYPE_DB_IMPORT_SHA256}  ${import_file}" | sha256sum --check --strict -',
+  ]) {
+    requireCondition(
+      block.includes(fragment),
+      `database extractor must contain ${fragment}`,
+    );
+  }
+  requireCondition(
+    countMatches(block, /tar --zstd --list\b/g) === 1 &&
+      countMatches(block, /tar --zstd --extract\b/g) === 1 &&
+      !/\bdocker\b|--strip-components\b|--overwrite\b|--absolute-names\b|--keep-directory-symlink\b|--transform\b|--wildcards\b/.test(
+        block,
+      ),
+    "database extractor must use one exact, non-overwriting archive extraction",
   );
 }
 
@@ -1046,6 +1054,7 @@ export function validateDatabaseMetadata(metadata) {
       "archiveSha256",
       "importedFileBytes",
       "importedFileSha256",
+      "importedFileXxh64",
       "importMetadataBytes",
       "importMetadataSha256",
       "schemaVersion",
@@ -1070,6 +1079,7 @@ export function validateDatabaseMetadata(metadata) {
       metadata.archiveSha256 === GRYPE_DB_ARCHIVE_SHA256 &&
       metadata.importedFileBytes === GRYPE_DB_FILE_BYTES &&
       metadata.importedFileSha256 === GRYPE_DB_FILE_SHA256 &&
+      metadata.importedFileXxh64 === GRYPE_DB_FILE_XXH64 &&
       metadata.importMetadataBytes === GRYPE_DB_IMPORT_BYTES &&
       metadata.importMetadataSha256 === GRYPE_DB_IMPORT_SHA256 &&
       metadata.schemaVersion === GRYPE_DB_SCHEMA_VERSION &&
@@ -1172,8 +1182,8 @@ export function validateDatabaseImportMetadata(importMetadata, metadata) {
     "Grype database import metadata",
   );
   requireCondition(
-    /^xxh64:[a-f0-9]{16}$/.test(importMetadata.digest) &&
-      importMetadata.source === "manual import" &&
+    importMetadata.digest === `xxh64:${metadata.importedFileXxh64}` &&
+      importMetadata.source === "frozen archive extraction" &&
       importMetadata.client_version === metadata.schemaVersion,
     "Grype database import metadata does not bind the imported v6 database",
   );
@@ -1241,7 +1251,7 @@ export function validateDatabaseStatus(status, metadata, observedAt) {
   requireCondition(
     status.schemaVersion === metadata.schemaVersion &&
       status.built === metadata.built &&
-      status.from === "manual import" &&
+      status.from === "frozen archive extraction" &&
       status.valid === true &&
       status.error === undefined &&
       status.path === GRYPE_DB_FILE_PATH,
@@ -1392,7 +1402,7 @@ export function validateGrypeScan(scan, expected = null) {
   requireCondition(
     descriptorStatus.schemaVersion === expectedMetadata.schemaVersion &&
       descriptorStatus.built === expectedMetadata.built &&
-      descriptorStatus.from === "manual import" &&
+      descriptorStatus.from === "frozen archive extraction" &&
       descriptorStatus.path === expectedDatabase.path &&
       descriptorStatus.valid === true &&
       descriptorStatus.error === undefined &&
@@ -1749,6 +1759,7 @@ export function buildVulnerabilityDecision(facts) {
       exactIndependentStatusMatch: true,
       importedFileSha256: facts.database.sha256,
       importedFileBytes: facts.database.bytes,
+      importedFileXxh64: facts.metadata.importedFileXxh64,
       expectedImportedFileSha256: facts.metadata.importedFileSha256,
       expectedImportedFileBytes: facts.metadata.importedFileBytes,
       exactIndependentFileMatch: true,

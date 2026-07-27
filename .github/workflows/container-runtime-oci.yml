@@ -68,10 +68,11 @@ jobs:
       GRYPE_IMAGE_AMD64_MANIFEST_DIGEST: sha256:3d08845e24eba657b8ea9bd28344a5a4e9dcd772818062a6522bf30137928616
       GRYPE_DB_ARCHIVE_URL: https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-07-26T00:41:33Z_1785049634.tar.zst
       GRYPE_DB_ARCHIVE_SHA256: 766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc
-      GRYPE_DB_FILE_SHA256: 55279915a94b36f1307f5104a66d2e6980f52f34a9c67f09c4413a46d7db9253
-      GRYPE_DB_FILE_BYTES: "1957412864"
-      GRYPE_DB_IMPORT_SHA256: 39b5d45042076f5071f77d7bea95ec8dac45f37fca84f69657d43afb679dea4f
-      GRYPE_DB_IMPORT_BYTES: "97"
+      GRYPE_DB_FILE_SHA256: 5e1fd5545a3c4188cb9542003fd3717753c60730c17dcecde14f45e7ee691b50
+      GRYPE_DB_FILE_BYTES: "1475883008"
+      GRYPE_DB_FILE_XXH64: d8a8cef5bc65efe7
+      GRYPE_DB_IMPORT_SHA256: 303e1b7f0192f60b76198859b1896504a2f857e56aa89deca93b43562d6c119c
+      GRYPE_DB_IMPORT_BYTES: "109"
       GRYPE_DB_SCHEMA_VERSION: v6.1.9
       GRYPE_DB_BUILT: "2026-07-26T07:07:14Z"
       EVIDENCE_DIR: /tmp/container-runtime-oci
@@ -239,36 +240,62 @@ jobs:
           docker image inspect "${GRYPE_IMAGE}" \
             > "${EVIDENCE_DIR}/grype-image-inspect.json"
 
-          import_database() {
+          extract_database() {
             local database_root="$1"
-            mkdir -p "${database_root}"
-            docker run --rm \
-              --pull never \
-              --platform linux/amd64 \
-              --network none \
-              --read-only \
-              --cap-drop ALL \
-              --security-opt no-new-privileges=true \
-              --user "$(id -u):$(id -g)" \
-              --pids-limit 256 \
-              --memory 2g \
-              --cpus 2 \
-              --ulimit nofile=1024:1024 \
-              --ulimit fsize=2147483648:2147483648 \
-              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777 \
-              --env HOME=/tmp \
-              --env XDG_CACHE_HOME=/tmp/cache \
-              --env GRYPE_CHECK_FOR_APP_UPDATE=false \
-              --env GRYPE_DB_AUTO_UPDATE=false \
-              --env GRYPE_DB_VALIDATE_BY_HASH_ON_START=true \
-              --env GRYPE_DB_VALIDATE_AGE=true \
-              --env GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h \
-              --env GRYPE_DB_REQUIRE_UPDATE_CHECK=false \
-              --env GRYPE_DB_CACHE_DIR=/grype-db \
-              --mount "type=bind,src=${GRYPE_DB_ARCHIVE},dst=/input/grype-db.tar.zst,readonly" \
-              --mount "type=bind,src=${database_root},dst=/grype-db" \
-              "${GRYPE_IMAGE}" \
-              db import /input/grype-db.tar.zst
+            local archive_listing="${database_root}-archive-listing.txt"
+            local database_inventory="${database_root}-inventory.txt"
+            local database_file="${database_root}/6/vulnerability.db"
+            local import_file="${database_root}/6/import.json"
+            local -a archive_entries database_entries
+
+            if [[ -e "${database_root}" || -e "${archive_listing}" || -e "${database_inventory}" ]]; then
+              echo "database extraction targets must not preexist" >&2
+              return 1
+            fi
+            tar --zstd --list --file "${GRYPE_DB_ARCHIVE}" > "${archive_listing}"
+            mapfile -t archive_entries < "${archive_listing}"
+            if [[ "${#archive_entries[@]}" -ne 1 || "${archive_entries[0]}" != "vulnerability.db" ]]; then
+              echo "Grype database archive must contain only vulnerability.db" >&2
+              return 1
+            fi
+
+            mkdir -p "${database_root}/6"
+            tar --zstd --extract \
+              --file "${GRYPE_DB_ARCHIVE}" \
+              --directory "${database_root}/6" \
+              --no-same-owner \
+              --no-same-permissions \
+              -- vulnerability.db
+            if [[ ! -f "${database_file}" || -L "${database_file}" ]]; then
+              echo "extracted Grype database must be one regular non-symlink file" >&2
+              return 1
+            fi
+            printf '%s\n' \
+              '{' \
+              " \"digest\": \"xxh64:${GRYPE_DB_FILE_XXH64}\"," \
+              ' "source": "frozen archive extraction",' \
+              " \"client_version\": \"${GRYPE_DB_SCHEMA_VERSION}\"" \
+              '}' \
+              > "${import_file}"
+            if [[ ! -f "${import_file}" || -L "${import_file}" ]]; then
+              echo "Grype import metadata must be one regular non-symlink file" >&2
+              return 1
+            fi
+
+            find "${database_root}" -mindepth 1 -maxdepth 2 -printf '%P|%y\n' \
+              | LC_ALL=C sort > "${database_inventory}"
+            mapfile -t database_entries < "${database_inventory}"
+            if [[ "${#database_entries[@]}" -ne 3 ||
+                  "${database_entries[0]}" != "6/import.json|f" ||
+                  "${database_entries[1]}" != "6/vulnerability.db|f" ||
+                  "${database_entries[2]}" != "6|d" ]]; then
+              echo "extracted Grype database layout is not exact" >&2
+              return 1
+            fi
+            [[ "$(stat --format=%s "${database_file}")" == "${GRYPE_DB_FILE_BYTES}" ]]
+            echo "${GRYPE_DB_FILE_SHA256}  ${database_file}" | sha256sum --check --strict -
+            [[ "$(stat --format=%s "${import_file}")" == "${GRYPE_DB_IMPORT_BYTES}" ]]
+            echo "${GRYPE_DB_IMPORT_SHA256}  ${import_file}" | sha256sum --check --strict -
           }
 
           scan_sbom() {
@@ -359,9 +386,9 @@ jobs:
           EOF
           }
 
-          import_database \
+          extract_database \
             "${EVIDENCE_DIR}/grype-db-a"
-          import_database \
+          extract_database \
             "${EVIDENCE_DIR}/grype-db-b"
           fingerprint_scan_inputs \
             "${EVIDENCE_DIR}/vulnerability-scan-inputs-before.txt"
@@ -444,6 +471,10 @@ jobs:
             /tmp/container-runtime-oci/grype-db.tar.zst
             /tmp/container-runtime-oci/grype-db-status-a.json
             /tmp/container-runtime-oci/grype-db-status-b.json
+            /tmp/container-runtime-oci/grype-db-a-archive-listing.txt
+            /tmp/container-runtime-oci/grype-db-b-archive-listing.txt
+            /tmp/container-runtime-oci/grype-db-a-inventory.txt
+            /tmp/container-runtime-oci/grype-db-b-inventory.txt
             /tmp/container-runtime-oci/vulnerability-scan-inputs-before.txt
             /tmp/container-runtime-oci/vulnerability-scan-inputs-after.txt
             /tmp/container-runtime-oci/grype-db-a/6/import.json
